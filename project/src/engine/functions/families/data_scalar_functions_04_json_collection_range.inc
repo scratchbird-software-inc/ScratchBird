@@ -991,11 +991,106 @@
   }
 
   if (IdIs(id, {"data.scalar.cast", "cast"})) {
-    if (request.arguments.size() != 2) {
-      return RefuseFunctionInvalidInput(request, "cast expects value and target descriptor id");
+    if (request.arguments.size() < 2 || request.arguments.size() > 3) {
+      return RefuseFunctionInvalidInput(
+          request,
+          "cast expects value, target descriptor text, and optional rounding profile text");
     }
-    const auto target_descriptor = LowerAscii(ValueAsText(request.arguments[1].value));
+    const auto& target_value = request.arguments[1].value;
+    if (IsSqlNull(target_value)) {
+      return RefuseFunctionInvalidInput(request, "cast target descriptor text cannot be NULL");
+    }
+    if (target_value.payload_kind !=
+        scratchbird::engine::sblr::SblrValuePayloadKind::text) {
+      return RefuseFunctionInvalidInput(request, "cast target descriptor must be typed text");
+    }
+    const auto target_descriptor =
+        LowerAscii(TrimAscii(ValueAsText(target_value)));
     if (target_descriptor.empty()) return RefuseFunctionInvalidInput(request, "cast target descriptor id is required");
+
+    const auto decimal_descriptor =
+        ParseDecimalTargetDescriptor(target_descriptor);
+    namespace dt = scratchbird::core::datatypes;
+    dt::DatatypeRoundingMode rounding = dt::DatatypeRoundingMode::half_even;
+    std::optional<std::string> cast_profile;
+    if (request.arguments.size() == 3) {
+      const auto& profile_value = request.arguments[2].value;
+      if (IsSqlNull(profile_value)) {
+        return RefuseFunctionInvalidInput(request, "cast profile text cannot be NULL");
+      }
+      if (profile_value.payload_kind !=
+          scratchbird::engine::sblr::SblrValuePayloadKind::text) {
+        return RefuseFunctionInvalidInput(request, "cast profile must be typed text");
+      }
+      cast_profile =
+          LowerAscii(TrimAscii(ValueAsText(profile_value)));
+      if (*cast_profile == kFirebirdTemporalCastProfile) {
+        if (decimal_descriptor) {
+          return RefuseFunctionInvalidInput(
+              request,
+              "Firebird temporal cast profile cannot target decimal");
+        }
+        return EvaluateFirebirdTemporalCast(request, target_descriptor);
+      }
+      if (!ParseDecimalRoundingProfile(*cast_profile, &rounding)) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "cast profile must be half_even, half_up, truncate, or firebird.temporal_cast.v1");
+      }
+      if (!decimal_descriptor) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "cast rounding profile is only valid for a decimal(precision,scale) target");
+      }
+    }
+
+    if (decimal_descriptor) {
+      if (IsSqlNull(request.arguments[0].value)) {
+        return MakeFunctionSuccess(request, {MakeNullValue("decimal")});
+      }
+      dt::DatatypeNumericOperationRequest numeric_request;
+      numeric_request.operation = dt::DatatypeNumericOperationKind::canonicalize;
+      numeric_request.type_id = dt::CanonicalTypeId::decimal;
+      numeric_request.left.type_id = dt::CanonicalTypeId::decimal;
+      numeric_request.left.encoded_value =
+          ValueAsText(request.arguments[0].value);
+      numeric_request.context.precision = decimal_descriptor->precision;
+      numeric_request.context.scale = decimal_descriptor->scale;
+      numeric_request.context.rounding = rounding;
+      const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
+      if (!numeric_result.ok()) {
+        bool overflow = false;
+        std::string detail = "cast source is not a valid finite decimal value";
+        for (const auto& argument : numeric_result.diagnostic.arguments) {
+          if (argument.key != "detail") continue;
+          detail = argument.value;
+          overflow = argument.value.find("out_of_range") != std::string::npos;
+          break;
+        }
+        if (overflow) {
+          return RefuseFunctionOverflow(
+              request,
+              "cast result exceeds the requested decimal precision and scale: " + detail);
+        }
+        return RefuseFunctionInvalidInput(
+            request,
+            "cast source is not valid for the requested decimal descriptor: " + detail);
+      }
+      if (numeric_result.value.is_null) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "cast numeric canonicalization returned an unexpected NULL result");
+      }
+      return MakeFunctionSuccess(
+          request,
+          {MakeEncodedNumericValue("decimal", numeric_result.value.encoded_value)});
+    }
+
+    if (target_descriptor.rfind("decimal", 0) == 0) {
+      return RefuseFunctionInvalidInput(
+          request,
+          "cast decimal target must use decimal(precision,scale) with precision 1 to 38 and scale not exceeding precision");
+    }
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue(target_descriptor)});
     const auto& value = request.arguments[0].value;
     if (target_descriptor == "character" || target_descriptor == "varchar" ||

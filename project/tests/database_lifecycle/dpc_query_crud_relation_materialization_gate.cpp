@@ -7,8 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/select_api.hpp"
+#include "dml/update_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/plan_api.hpp"
 #include "transaction/transaction_api.hpp"
@@ -47,6 +49,14 @@ void RequireOk(const TResult& result, std::string_view message) {
     }
     Fail(message);
   }
+}
+
+template <typename TResult>
+bool HasDiagnosticDetail(const TResult& result, std::string_view detail) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.detail.find(detail) != std::string::npos) return true;
+  }
+  return false;
 }
 
 platform::u64 NowMillis() {
@@ -110,6 +120,7 @@ struct Fixture {
   std::string database_uuid;
   std::string left_table_uuid;
   std::string right_table_uuid;
+  std::string window_table_uuid;
   api::EngineRequestContext context;
 
   ~Fixture() {
@@ -189,6 +200,102 @@ void InsertRows(Fixture& fixture,
           "DPC-065 fixture insert count mismatch");
 }
 
+api::EnginePredicateEnvelope ComparisonPredicate(std::string kind,
+                                                 std::int64_t bound) {
+  api::EnginePredicateEnvelope predicate;
+  predicate.predicate_kind = std::move(kind);
+  predicate.canonical_predicate_envelope = "id";
+  predicate.bound_values.push_back(Int64Value(bound));
+  return predicate;
+}
+
+api::EngineSelectRowsResult SelectComparison(Fixture& fixture,
+                                             const std::string& table_uuid,
+                                             std::string kind,
+                                             std::int64_t bound) {
+  api::EngineSelectRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = "dpc065-neutral-comparison-select-" + kind;
+  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.object_kind = "table";
+  request.select_predicate = ComparisonPredicate(std::move(kind), bound);
+  return api::EngineSelectRows(request);
+}
+
+api::EngineUpdateRowsResult UpdateComparison(Fixture& fixture,
+                                             const std::string& table_uuid,
+                                             std::string kind,
+                                             std::int64_t bound,
+                                             std::string assignment_column,
+                                             std::int64_t assignment_value) {
+  api::EngineUpdateRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = "dpc065-neutral-comparison-update-" + kind;
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.update_predicate = ComparisonPredicate(std::move(kind), bound);
+  request.assignments.push_back(
+      {std::move(assignment_column), Int64Value(assignment_value)});
+  return api::EngineUpdateRows(request);
+}
+
+api::EngineDeleteRowsResult DeleteComparison(Fixture& fixture,
+                                             const std::string& table_uuid,
+                                             std::string kind,
+                                             std::int64_t bound) {
+  api::EngineDeleteRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = "dpc065-neutral-comparison-delete-" + kind;
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.delete_predicate = ComparisonPredicate(std::move(kind), bound);
+  return api::EngineDeleteRows(request);
+}
+
+api::EngineSelectRowsResult SelectAll(Fixture& fixture,
+                                      const std::string& table_uuid,
+                                      std::string request_id) {
+  api::EngineSelectRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = std::move(request_id);
+  request.source_object.uuid.canonical = table_uuid;
+  request.source_object.object_kind = "table";
+  return api::EngineSelectRows(request);
+}
+
+api::EngineUpdateRowsResult UpdateComparisonWindow(
+    Fixture& fixture,
+    const std::string& table_uuid,
+    api::EngineApiU64 limit,
+    api::EngineApiU64 offset) {
+  api::EngineUpdateRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = "dpc065-neutral-update-row-window";
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.update_predicate = ComparisonPredicate("column_greater", 0);
+  request.assignments.push_back({"payload", Int64Value(-300)});
+  request.limit = limit;
+  request.offset = offset;
+  return api::EngineUpdateRows(request);
+}
+
+api::EngineDeleteRowsResult DeleteComparisonWindow(
+    Fixture& fixture,
+    const std::string& table_uuid,
+    api::EngineApiU64 limit,
+    api::EngineApiU64 offset) {
+  api::EngineDeleteRowsRequest request;
+  request.context = fixture.context;
+  request.context.request_id = "dpc065-neutral-delete-row-window";
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.delete_predicate = ComparisonPredicate("column_greater", 0);
+  request.limit = limit;
+  request.offset = offset;
+  return api::EngineDeleteRows(request);
+}
+
 Fixture MakeFixture() {
   Fixture fixture;
   fixture.dir = std::filesystem::temp_directory_path() /
@@ -214,6 +321,7 @@ Fixture MakeFixture() {
   fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
   fixture.left_table_uuid = NewUuidText(platform::UuidKind::object, 20);
   fixture.right_table_uuid = NewUuidText(platform::UuidKind::object, 21);
+  fixture.window_table_uuid = NewUuidText(platform::UuidKind::object, 22);
   fixture.context = Begin(fixture, "dpc065-query-relation-metadata");
 
   const auto left_table =
@@ -228,9 +336,16 @@ Fixture MakeFixture() {
                                         fixture.right_table_uuid,
                                         "dpc065_query_right"));
   Require(!right_table.error, "DPC-065 right table metadata append failed");
+  const auto window_table =
+      api::AppendMgaTableMetadata(fixture.context,
+                                  Table(fixture,
+                                        fixture.window_table_uuid,
+                                        "dpc065_mutation_window"));
+  Require(!window_table.error, "DPC-065 window table metadata append failed");
 
   InsertRows(fixture, fixture.left_table_uuid, 128, false);
   InsertRows(fixture, fixture.right_table_uuid, 512, true);
+  InsertRows(fixture, fixture.window_table_uuid, 10, false);
   return fixture;
 }
 
@@ -297,6 +412,27 @@ int main() {
   Require(counted.result_shape.rows.front().fields.front().second.encoded_value == "128",
           "DPC-065 descriptor-cached CRUD count value mismatch");
 
+  api::EngineSelectRowsRequest projected_count;
+  projected_count.context = fixture.context;
+  projected_count.context.request_id = "dpc065-neutral-count-projection";
+  projected_count.source_object.uuid.canonical = fixture.left_table_uuid;
+  projected_count.source_object.object_kind = "table";
+  projected_count.select_predicate = ComparisonPredicate("column_less", 4);
+  projected_count.option_envelopes.push_back("result_projection:count");
+  projected_count.option_envelopes.push_back(
+      "actual_column_name:FIREBIRD_COUNT");
+  const auto selected_count = api::EngineSelectRows(projected_count);
+  RequireOk(selected_count, "DPC-065 neutral count projection failed");
+  Require(selected_count.visible_count == 1 &&
+              selected_count.result_shape.rows.size() == 1,
+          "DPC-065 neutral count projection result cardinality mismatch");
+  Require(FieldI64ByName(selected_count.result_shape.rows.front(),
+                         "FIREBIRD_COUNT") == 3,
+          "DPC-065 neutral count projection value mismatch");
+  Require(HasEvidence(selected_count, "dml_result_projection", "count") &&
+              HasEvidence(selected_count, "row_scan_predicate", "column_less"),
+          "DPC-065 neutral count projection bypassed MGA-visible row scan");
+
   api::EngineSelectRowsRequest select;
   select.context = fixture.context;
   select.context.request_id = "dpc065-bounded-predicate-order-select";
@@ -320,6 +456,229 @@ int main() {
           "DPC-065 bounded descriptor predicate/order select returned wrong id");
   Require(FieldI64ByName(bounded.result_shape.rows.front(), "payload") == 1000,
           "DPC-065 bounded descriptor predicate/order select returned wrong payload");
+
+  for (const auto& [kind, expected_count] :
+       std::vector<std::pair<std::string, api::EngineApiU64>>{
+           {"column_less", 3},
+           {"column_less_equal", 4},
+           {"column_not_equals", 127}}) {
+    const auto compared = SelectComparison(fixture, fixture.left_table_uuid, kind, 4);
+    RequireOk(compared, "DPC-065 neutral comparison select failed");
+    Require(compared.visible_count == expected_count,
+            "DPC-065 neutral comparison select row count mismatch");
+    Require(HasEvidence(compared, "row_scan_predicate", kind),
+            "DPC-065 neutral comparison select did not use visible row scan");
+  }
+
+  api::EngineSelectRowsRequest select_always_false;
+  select_always_false.context = fixture.context;
+  select_always_false.context.request_id = "dpc065-neutral-always-false-select";
+  select_always_false.source_object.uuid.canonical = fixture.left_table_uuid;
+  select_always_false.source_object.object_kind = "table";
+  select_always_false.select_predicate.predicate_kind = "always_false";
+  const auto selected_always_false = api::EngineSelectRows(select_always_false);
+  RequireOk(selected_always_false, "DPC-065 neutral always_false select failed");
+  Require(selected_always_false.visible_count == 0 &&
+              selected_always_false.result_shape.rows.empty(),
+          "DPC-065 neutral always_false select matched rows");
+  Require(HasEvidence(selected_always_false, "row_scan_predicate", "always_false"),
+          "DPC-065 neutral always_false select did not use table scan");
+
+  api::EngineUpdateRowsRequest update_always_false;
+  update_always_false.context = fixture.context;
+  update_always_false.context.request_id = "dpc065-neutral-always-false-update";
+  update_always_false.target_table.uuid.canonical = fixture.left_table_uuid;
+  update_always_false.target_table.object_kind = "table";
+  update_always_false.update_predicate.predicate_kind = "always_false";
+  update_always_false.assignments.push_back({"payload", Int64Value(-1)});
+  const auto updated_always_false = api::EngineUpdateRows(update_always_false);
+  RequireOk(updated_always_false, "DPC-065 neutral always_false update failed");
+  Require(updated_always_false.matched_count == 0 &&
+              updated_always_false.updated_count == 0,
+          "DPC-065 neutral always_false update mutated rows");
+  Require(HasEvidence(updated_always_false,
+                      "update_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral always_false update did not use table scan");
+
+  api::EngineDeleteRowsRequest delete_always_false;
+  delete_always_false.context = fixture.context;
+  delete_always_false.context.request_id = "dpc065-neutral-always-false-delete";
+  delete_always_false.target_table.uuid.canonical = fixture.left_table_uuid;
+  delete_always_false.target_table.object_kind = "table";
+  delete_always_false.delete_predicate.predicate_kind = "always_false";
+  const auto deleted_always_false = api::EngineDeleteRows(delete_always_false);
+  RequireOk(deleted_always_false, "DPC-065 neutral always_false delete failed");
+  Require(deleted_always_false.matched_count == 0 &&
+              deleted_always_false.deleted_count == 0,
+          "DPC-065 neutral always_false delete mutated rows");
+  Require(HasEvidence(deleted_always_false,
+                      "delete_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral always_false delete did not use table scan");
+
+  const auto update_less = UpdateComparison(fixture,
+                                            fixture.left_table_uuid,
+                                            "column_less",
+                                            3,
+                                            "payload",
+                                            -100);
+  RequireOk(update_less, "DPC-065 neutral column_less update failed");
+  Require(update_less.matched_count == 2 && update_less.updated_count == 2,
+          "DPC-065 neutral column_less update count mismatch");
+  Require(HasEvidence(update_less, "update_target_access_kind", "table_scan"),
+          "DPC-065 neutral column_less update did not use MGA-visible table scan");
+
+  const auto update_less_equal = UpdateComparison(fixture,
+                                                  fixture.left_table_uuid,
+                                                  "column_less_equal",
+                                                  4,
+                                                  "payload",
+                                                  -200);
+  RequireOk(update_less_equal,
+            "DPC-065 neutral column_less_equal update failed");
+  Require(update_less_equal.matched_count == 4 &&
+              update_less_equal.updated_count == 4,
+          "DPC-065 neutral column_less_equal update count mismatch");
+  Require(HasEvidence(update_less_equal,
+                      "update_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral column_less_equal update did not use MGA-visible table scan");
+
+  const auto update_not_equals = UpdateComparison(fixture,
+                                                  fixture.left_table_uuid,
+                                                  "column_not_equals",
+                                                  4,
+                                                  "bucket",
+                                                  99);
+  RequireOk(update_not_equals,
+            "DPC-065 neutral column_not_equals update failed");
+  Require(update_not_equals.matched_count == 127 &&
+              update_not_equals.updated_count == 127,
+          "DPC-065 neutral column_not_equals update count mismatch");
+  Require(HasEvidence(update_not_equals,
+                      "update_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral column_not_equals update did not use MGA-visible table scan");
+
+  const auto window_baseline = SelectAll(fixture,
+                                         fixture.window_table_uuid,
+                                         "dpc065-neutral-window-baseline");
+  RequireOk(window_baseline, "DPC-065 neutral mutation window baseline failed");
+  Require(window_baseline.result_shape.rows.size() == 10,
+          "DPC-065 neutral mutation window baseline row count mismatch");
+  std::vector<std::string> stable_row_uuids;
+  stable_row_uuids.reserve(window_baseline.result_shape.rows.size());
+  for (const auto& row : window_baseline.result_shape.rows) {
+    stable_row_uuids.push_back(row.requested_row_uuid.canonical);
+  }
+
+  const auto update_window = UpdateComparisonWindow(fixture,
+                                                    fixture.window_table_uuid,
+                                                    3,
+                                                    2);
+  RequireOk(update_window, "DPC-065 neutral update row window failed");
+  Require(update_window.matched_count == 3 && update_window.updated_count == 3,
+          "DPC-065 neutral update row window count mismatch");
+  Require(HasEvidence(update_window, "update_target_access_kind", "table_scan") &&
+              HasEvidence(update_window,
+                          "mutation_row_window_order",
+                          "mga_visible_row_uuid_ascending"),
+          "DPC-065 neutral update row window did not preserve stable MGA scan order");
+  Require(update_window.result_shape.rows.size() == 3,
+          "DPC-065 neutral update row window result count mismatch");
+  for (std::size_t index = 0; index < 3; ++index) {
+    Require(update_window.result_shape.rows[index].requested_row_uuid.canonical ==
+                stable_row_uuids[index + 2],
+            "DPC-065 neutral update row window selected an unstable row");
+  }
+
+  const auto delete_window = DeleteComparisonWindow(fixture,
+                                                    fixture.window_table_uuid,
+                                                    2,
+                                                    4);
+  RequireOk(delete_window, "DPC-065 neutral delete row window failed");
+  Require(delete_window.matched_count == 2 && delete_window.deleted_count == 2,
+          "DPC-065 neutral delete row window count mismatch");
+  Require(HasEvidence(delete_window, "delete_target_access_kind", "table_scan") &&
+              HasEvidence(delete_window,
+                          "mutation_row_window_order",
+                          "mga_visible_row_uuid_ascending"),
+          "DPC-065 neutral delete row window did not preserve stable MGA scan order");
+  Require(delete_window.result_shape.rows.size() == 2,
+          "DPC-065 neutral delete row window result count mismatch");
+  for (std::size_t index = 0; index < 2; ++index) {
+    Require(delete_window.result_shape.rows[index].requested_row_uuid.canonical ==
+                stable_row_uuids[index + 4],
+            "DPC-065 neutral delete row window selected an unstable row");
+  }
+
+  const auto window_remaining = SelectAll(fixture,
+                                          fixture.window_table_uuid,
+                                          "dpc065-neutral-window-remaining");
+  RequireOk(window_remaining, "DPC-065 neutral mutation window remainder failed");
+  Require(window_remaining.visible_count == 8,
+          "DPC-065 neutral delete row window changed the wrong row count");
+
+  const auto offset_without_limit =
+      UpdateComparisonWindow(fixture, fixture.window_table_uuid, 0, 1);
+  Require(!offset_without_limit.ok &&
+              HasDiagnosticDetail(offset_without_limit,
+                                  "mutation_row_window_offset_requires_limit"),
+          "DPC-065 neutral mutation offset without limit did not fail closed");
+
+  api::EngineDeleteRowsRequest conflicting_window;
+  conflicting_window.context = fixture.context;
+  conflicting_window.context.request_id = "dpc065-neutral-window-batch-conflict";
+  conflicting_window.target_table.uuid.canonical = fixture.window_table_uuid;
+  conflicting_window.target_table.object_kind = "table";
+  conflicting_window.delete_predicate = ComparisonPredicate("column_greater", 0);
+  conflicting_window.delete_surface_variant = "batch_delete";
+  conflicting_window.batch_limit_rows = 1;
+  conflicting_window.limit = 1;
+  const auto conflict = api::EngineDeleteRows(conflicting_window);
+  Require(!conflict.ok &&
+              HasDiagnosticDetail(conflict,
+                                  "mutation_row_window_conflicts_with_batch_limit"),
+          "DPC-065 neutral batch/window conflict did not fail closed");
+
+  const auto delete_less = DeleteComparison(fixture,
+                                            fixture.right_table_uuid,
+                                            "column_less",
+                                            2);
+  RequireOk(delete_less, "DPC-065 neutral column_less delete failed");
+  Require(delete_less.matched_count == 4 && delete_less.deleted_count == 4,
+          "DPC-065 neutral column_less delete count mismatch");
+  Require(HasEvidence(delete_less, "delete_target_access_kind", "table_scan"),
+          "DPC-065 neutral column_less delete did not use MGA-visible table scan");
+
+  const auto delete_less_equal = DeleteComparison(fixture,
+                                                  fixture.right_table_uuid,
+                                                  "column_less_equal",
+                                                  3);
+  RequireOk(delete_less_equal,
+            "DPC-065 neutral column_less_equal delete failed");
+  Require(delete_less_equal.matched_count == 8 &&
+              delete_less_equal.deleted_count == 8,
+          "DPC-065 neutral column_less_equal delete count mismatch");
+  Require(HasEvidence(delete_less_equal,
+                      "delete_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral column_less_equal delete did not use MGA-visible table scan");
+
+  const auto delete_not_equals = DeleteComparison(fixture,
+                                                  fixture.right_table_uuid,
+                                                  "column_not_equals",
+                                                  128);
+  RequireOk(delete_not_equals,
+            "DPC-065 neutral column_not_equals delete failed");
+  Require(delete_not_equals.matched_count == 496 &&
+              delete_not_equals.deleted_count == 496,
+          "DPC-065 neutral column_not_equals delete count mismatch");
+  Require(HasEvidence(delete_not_equals,
+                      "delete_target_access_kind",
+                      "table_scan"),
+          "DPC-065 neutral column_not_equals delete did not use MGA-visible table scan");
 
   return EXIT_SUCCESS;
 }

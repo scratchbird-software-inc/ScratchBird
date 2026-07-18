@@ -72,6 +72,30 @@ inline constexpr const char* kExecutableObjectDiagnosticEventTriggerAuthorityUna
     "SBSQL.EVENT_TRIGGER_AUTHORITY_UNAVAILABLE";
 inline constexpr const char* kExecutableObjectDiagnosticEventTriggerEventUnsupported =
     "EXECUTABLE.OBJECT.EVENT_TRIGGER_EVENT_UNSUPPORTED";
+inline constexpr const char* kExecutableObjectDiagnosticExactMgaSelectorRequired =
+    "EXECUTABLE.OBJECT.EXACT_MGA_SELECTOR_REQUIRED";
+inline constexpr const char* kExecutableObjectDiagnosticExactMgaSelectorMismatch =
+    "EXECUTABLE.OBJECT.EXACT_MGA_SELECTOR_MISMATCH";
+inline constexpr const char* kExecutableObjectDiagnosticRoutineDescriptorInvalid =
+    "EXECUTABLE.OBJECT.ROUTINE_DESCRIPTOR_INVALID";
+inline constexpr const char* kExecutableObjectDiagnosticRoutineArgumentInvalid =
+    "EXECUTABLE.OBJECT.ROUTINE_ARGUMENT_INVALID";
+inline constexpr const char* kExecutableObjectDiagnosticRoutineBindingNotVisible =
+    "EXECUTABLE.OBJECT.ROUTINE_BINDING_NOT_VISIBLE";
+inline constexpr const char* kExecutableObjectDiagnosticPreparedMetadataVersionMismatch =
+    "EXECUTABLE.OBJECT.PREPARED_METADATA_VERSION_MISMATCH";
+
+// Canonical engine-owned instruction descriptor for the bounded procedure
+// vertical slice. The encoded descriptor is positional and contains no SQL:
+//
+//   <tag>|<table_uuid>|<column_uuid>|<lower_in_slot>|<upper_in_slot>|
+//   <affected_rows_out_slot>|<yield_out_slot>
+//
+// The current v1 instruction admits exactly two INTEGER input slots and one
+// INTEGER output slot. The output slot receives EngineDeleteRows::deleted_count
+// and is yielded as one routine result row.
+inline constexpr const char* kRoutineDeleteColumnRangeCountDescriptorV1 =
+    "engine.routine.delete_column_range_count.v1";
 
 struct EngineExecutableObjectRecord {
   std::uint64_t creator_tx = 0;
@@ -141,7 +165,12 @@ struct EngineExecutableObjectLifecycleResult : EngineApiResult {
   std::string invocation_lease_uuid;
 };
 
-struct EngineCreateExecutableObjectRequest : EngineApiRequest {};
+struct EngineCreateExecutableObjectRequest : EngineApiRequest {
+  // Set only by the neutral DDL create-or-alter coordinator after it has
+  // allocated the create-half identity. It is intentionally not represented
+  // by an SBLR operand.
+  bool create_or_alter_identity_engine_allocated = false;
+};
 struct EngineAlterExecutableObjectRequest : EngineApiRequest {};
 struct EngineDropExecutableObjectRequest : EngineApiRequest {};
 struct EngineQuiesceExecutableObjectRequest : EngineApiRequest {};
@@ -165,6 +194,8 @@ using EngineInspectExecutableObjectResult = EngineExecutableObjectLifecycleResul
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
     const EngineCreateExecutableObjectRequest& request);
+EngineApiDiagnostic PreflightCreateExecutableObject(
+    const EngineCreateExecutableObjectRequest& request);
 EngineAlterExecutableObjectResult EngineAlterExecutableObject(
     const EngineAlterExecutableObjectRequest& request);
 EngineDropExecutableObjectResult EngineDropExecutableObject(
@@ -187,6 +218,8 @@ EngineInspectExecutableObjectResult EngineInspectExecutableObjects(
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleState(
     const EngineRequestContext& context);
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
+    const EngineRequestContext& context);
+EngineApiDiagnostic ValidateExecutableObjectExactMgaSelector(
     const EngineRequestContext& context);
 
 }  // namespace scratchbird::engine::internal_api

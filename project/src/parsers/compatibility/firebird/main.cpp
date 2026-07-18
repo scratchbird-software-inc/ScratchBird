@@ -219,7 +219,7 @@ int main(int argc, char** argv) {
     return RunParameterBufferDecodeCli(argv[2], argv[3]);
   }
 
-  const std::string sql = argc > 1 ? argv[1] : "select 1";
+  const std::string sql = argc > 1 ? argv[1] : "select 1 from rdb$database";
   const auto result = scratchbird::parser::firebird::ParseStatement(sql);
   if (!result.ok) {
     std::cerr << result.message_vector_json << '\n';

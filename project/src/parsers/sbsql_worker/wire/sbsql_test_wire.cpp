@@ -248,7 +248,7 @@ struct ResolvedObjectReferenceSeed {
 };
 
 bool IsWord(const Token& token, std::string_view word) {
-  return ToUpperAscii(token.text) == ToUpperAscii(word);
+  return !token.quoted && ToUpperAscii(token.text) == ToUpperAscii(word);
 }
 
 bool IsLiteralKind(TokenKind kind) {
@@ -702,6 +702,21 @@ std::string LowerObjectReferenceName(std::string_view text) {
     out.push_back(static_cast<char>(std::tolower(ch)));
   }
   return out;
+}
+
+bool IsEngineOwnedProjectionReference(const ObjectReference& ref) {
+  if (ref.object_class != "relation" &&
+      ref.object_class != "table" &&
+      ref.object_class != "view") {
+    return false;
+  }
+  const std::string lowered = LowerObjectReferenceName(ref.presented_name);
+  return lowered.rfind("sys.", 0) == 0 ||
+         lowered.find(".sys.") != std::string::npos ||
+         lowered.rfind("information.", 0) == 0 ||
+         lowered.find(".information.") != std::string::npos ||
+         lowered.rfind("emulated.", 0) == 0 ||
+         lowered.find(".emulated.") != std::string::npos;
 }
 
 bool IsCanonicalBuiltInFunctionReference(std::string_view presented_name) {
@@ -4560,6 +4575,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     const auto refs = ExtractObjectReferences(cst);
     mark_phase("extract_object_references");
     for (const auto& ref : refs) {
+      if (IsEngineOwnedProjectionReference(ref)) {
+        continue;
+      }
       PublicNameResolutionResult resolved;
       if (ref.create_reservation) {
         auto existing =

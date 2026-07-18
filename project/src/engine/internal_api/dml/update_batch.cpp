@@ -93,6 +93,15 @@ bool EnvelopeTouchesAssignedColumn(const std::string& envelope, const std::vecto
   if (envelope.rfind("desc:", 0) == 0) {
     return AssignmentTouchesColumn(assigned_columns, envelope.substr(5));
   }
+  if (envelope.rfind("sum:", 0) == 0) {
+    const auto body = envelope.substr(4);
+    const auto colon = body.find(':');
+    if (colon == std::string::npos) {
+      return false;
+    }
+    return AssignmentTouchesColumn(assigned_columns, body.substr(0, colon)) ||
+           AssignmentTouchesColumn(assigned_columns, body.substr(colon + 1));
+  }
   if (envelope.rfind("cast:", 0) == 0) {
     const auto body = envelope.substr(5);
     const auto colon = body.find(':');

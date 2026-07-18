@@ -2373,10 +2373,15 @@ DatatypeDisplayRenderResult RenderDatatypeValueForDisplay(
 CanonicalTypeId CanonicalTypeIdFromStableName(const std::string& stable_name) {
   const std::string lower = LowerAscii(stable_name);
   if (lower == "string" || lower == "varchar" || lower == "char" || lower == "text") { return CanonicalTypeId::character; }
-  if (lower == "integer") { return CanonicalTypeId::int32; }
+  if (lower == "integer" || lower == "int") {
+    return CanonicalTypeId::int32;
+  }
   if (lower == "bigint") { return CanonicalTypeId::int64; }
   if (lower == "smallint") { return CanonicalTypeId::int16; }
-  if (lower == "double" || lower == "double_precision") { return CanonicalTypeId::real64; }
+  if (lower == "double" || lower == "double_precision" ||
+      lower == "double precision") {
+    return CanonicalTypeId::real64;
+  }
   if (lower == "float") { return CanonicalTypeId::real32; }
   if (lower == "set") { return CanonicalTypeId::set_value; }
   for (const auto& descriptor : BuiltinDatatypeDescriptors()) {

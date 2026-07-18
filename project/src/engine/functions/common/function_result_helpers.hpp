@@ -35,6 +35,10 @@ FunctionCallResult RefuseFunctionWithDiagnostic(const FunctionCallRequest& reque
 FunctionCallResult RefuseFunctionForGate(const FunctionCallRequest& request,
                                          const FunctionGateDecision& decision);
 FunctionCallResult RefuseFunctionInvalidInput(const FunctionCallRequest& request, std::string detail);
+FunctionCallResult RefuseFunctionConversionInput(
+    const FunctionCallRequest& request,
+    std::string conversion_input_text,
+    std::string detail);
 FunctionCallResult RefuseFunctionOverflow(const FunctionCallRequest& request, std::string detail);
 FunctionCallResult RefuseFunctionNumericDomain(const FunctionCallRequest& request, std::string detail);
 FunctionCallResult RefuseFunctionNumericDivisionByZero(const FunctionCallRequest& request, std::string detail);

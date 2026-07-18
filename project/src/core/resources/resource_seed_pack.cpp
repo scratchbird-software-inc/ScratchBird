@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -309,6 +310,7 @@ void AddIndexDependency(ResourceSeedCatalogImage* image,
 
 void FinalizeResourceSeedLifecycle(ResourceSeedCatalogImage* image,
                                    const std::map<ResourceSeedFamily, std::string>& family_aggregates);
+void FinalizeResourceSeedDescriptors(ResourceSeedCatalogImage* image);
 
 bool HasWildcard(const std::string& path) {
   return path.find('*') != std::string::npos;
@@ -519,16 +521,7 @@ void FinalizeResourceSeedLifecycle(ResourceSeedCatalogImage* image,
                      image->timezone_content_hash,
                      image->timezone_epoch,
                      "index_dependency_timezone_epoch_v1");
-}
-
-u32 CountOccurrences(const std::string& text, const std::string& needle) {
-  u32 count = 0;
-  std::size_t pos = 0;
-  while ((pos = text.find(needle, pos)) != std::string::npos) {
-    ++count;
-    pos += needle.size();
-  }
-  return count;
+  FinalizeResourceSeedDescriptors(image);
 }
 
 std::string ExtractJsonStringAt(const std::string& text, std::size_t key_pos) {
@@ -598,27 +591,188 @@ std::vector<std::string> ExtractJsonStringArrayAt(const std::string& text, std::
   return values;
 }
 
-u32 CountJsonAliasValues(const std::string& text) {
-  u32 count = 0;
-  std::size_t pos = 0;
-  while ((pos = text.find("\"aliases\"", pos)) != std::string::npos) {
-    const std::size_t open = text.find('[', pos);
-    const std::size_t close = text.find(']', open == std::string::npos ? pos : open);
-    if (open == std::string::npos || close == std::string::npos) {
-      break;
-    }
-    bool in_string = false;
-    for (std::size_t i = open + 1; i < close; ++i) {
-      if (text[i] == '"' && (i == 0 || text[i - 1] != '\\')) {
-        in_string = !in_string;
-        if (in_string) {
-          ++count;
-        }
-      }
-    }
-    pos = close + 1;
+std::vector<std::string> ExtractJsonObjectArray(const std::string& text,
+                                                const std::string& key) {
+  std::vector<std::string> objects;
+  const std::size_t key_pos = text.find(std::string("\"") + key + "\"");
+  const std::size_t open = text.find('[', key_pos);
+  if (key_pos == std::string::npos || open == std::string::npos) {
+    return objects;
   }
-  return count;
+
+  bool in_string = false;
+  bool escaped = false;
+  std::size_t object_begin = std::string::npos;
+  unsigned depth = 0;
+  for (std::size_t index = open + 1; index < text.size(); ++index) {
+    const char ch = text[index];
+    if (in_string) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch == '\\') {
+        escaped = true;
+      } else if (ch == '"') {
+        in_string = false;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      in_string = true;
+      continue;
+    }
+    if (ch == '{') {
+      if (depth++ == 0) {
+        object_begin = index;
+      }
+      continue;
+    }
+    if (ch == '}') {
+      if (depth == 0) {
+        return {};
+      }
+      if (--depth == 0 && object_begin != std::string::npos) {
+        objects.push_back(text.substr(object_begin, index - object_begin + 1));
+        object_begin = std::string::npos;
+      }
+      continue;
+    }
+    if (ch == ']' && depth == 0) {
+      return objects;
+    }
+  }
+  return {};
+}
+
+bool ReadJsonQuotedString(const std::string& text,
+                          std::size_t* cursor,
+                          std::string* value) {
+  if (cursor == nullptr || value == nullptr || *cursor >= text.size() ||
+      text[*cursor] != '"') {
+    return false;
+  }
+  ++*cursor;
+  value->clear();
+  bool escaped = false;
+  while (*cursor < text.size()) {
+    const char ch = text[(*cursor)++];
+    if (escaped) {
+      value->push_back(ch);
+      escaped = false;
+    } else if (ch == '\\') {
+      escaped = true;
+    } else if (ch == '"') {
+      return true;
+    } else {
+      value->push_back(ch);
+    }
+  }
+  return false;
+}
+
+std::vector<std::pair<std::string, std::string>> ExtractJsonStringObject(
+    const std::string& text,
+    const std::string& key) {
+  std::vector<std::pair<std::string, std::string>> fields;
+  const std::size_t key_pos = text.find(std::string("\"") + key + "\"");
+  const std::size_t open = text.find('{', key_pos);
+  if (key_pos == std::string::npos || open == std::string::npos) {
+    return fields;
+  }
+  std::size_t cursor = open + 1;
+  while (cursor < text.size()) {
+    while (cursor < text.size() &&
+           (std::isspace(static_cast<unsigned char>(text[cursor])) != 0 ||
+            text[cursor] == ',')) {
+      ++cursor;
+    }
+    if (cursor >= text.size() || text[cursor] == '}') {
+      return fields;
+    }
+    std::string field_name;
+    std::string field_value;
+    if (!ReadJsonQuotedString(text, &cursor, &field_name)) return {};
+    while (cursor < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
+      ++cursor;
+    }
+    if (cursor >= text.size() || text[cursor++] != ':') return {};
+    while (cursor < text.size() &&
+           std::isspace(static_cast<unsigned char>(text[cursor])) != 0) {
+      ++cursor;
+    }
+    if (!ReadJsonQuotedString(text, &cursor, &field_value)) return {};
+    fields.emplace_back(std::move(field_name), std::move(field_value));
+  }
+  return {};
+}
+
+std::size_t JsonFieldPosition(const std::string& object, const std::string& key) {
+  return object.find(std::string("\"") + key + "\"");
+}
+
+std::string JsonStringField(const std::string& object, const std::string& key) {
+  const std::size_t position = JsonFieldPosition(object, key);
+  return position == std::string::npos ? std::string{}
+                                       : ExtractJsonStringAt(object, position);
+}
+
+std::vector<std::string> JsonStringArrayField(const std::string& object,
+                                              const std::string& key) {
+  const std::size_t position = JsonFieldPosition(object, key);
+  return position == std::string::npos ? std::vector<std::string>{}
+                                       : ExtractJsonStringArrayAt(object, position);
+}
+
+bool JsonU32Field(const std::string& object, const std::string& key, u32* value) {
+  const std::size_t position = JsonFieldPosition(object, key);
+  const std::size_t colon = object.find(':', position);
+  if (position == std::string::npos || colon == std::string::npos || value == nullptr) {
+    return false;
+  }
+  std::size_t begin = colon + 1;
+  while (begin < object.size() &&
+         std::isspace(static_cast<unsigned char>(object[begin])) != 0) {
+    ++begin;
+  }
+  std::size_t end = begin;
+  while (end < object.size() &&
+         std::isdigit(static_cast<unsigned char>(object[end])) != 0) {
+    ++end;
+  }
+  u64 parsed = 0;
+  if (end == begin || !ParseU64(object.substr(begin, end - begin), &parsed) ||
+      parsed > static_cast<u64>(std::numeric_limits<u32>::max())) {
+    return false;
+  }
+  *value = static_cast<u32>(parsed);
+  return true;
+}
+
+bool JsonBoolField(const std::string& object, const std::string& key, bool* value) {
+  const std::size_t position = JsonFieldPosition(object, key);
+  const std::size_t colon = object.find(':', position);
+  if (position == std::string::npos || colon == std::string::npos || value == nullptr) {
+    return false;
+  }
+  const std::string tail = Trim(object.substr(colon + 1));
+  if (tail.rfind("true", 0) == 0) {
+    *value = true;
+    return true;
+  }
+  if (tail.rfind("false", 0) == 0) {
+    *value = false;
+    return true;
+  }
+  return false;
+}
+
+std::string ResourceRelationshipKey(std::string value) {
+  value = LowerAscii(std::move(value));
+  value.erase(std::remove_if(value.begin(), value.end(), [](char ch) {
+                return std::isalnum(static_cast<unsigned char>(ch)) == 0;
+              }),
+              value.end());
+  return value;
 }
 
 bool AddAlias(ResourceSeedCatalogImage* image,
@@ -663,26 +817,47 @@ bool AccumulateCharsetAliases(ResourceSeedCatalogImage* image,
                               const ResourceSeedArtifact& artifact,
                               const std::string& text,
                               std::string* conflict_detail) {
-  std::size_t pos = 0;
-  while ((pos = text.find("\"name\"", pos)) != std::string::npos) {
-    const std::string canonical_name = ExtractJsonStringAt(text, pos);
+  const auto objects = ExtractJsonObjectArray(text, "character_sets");
+  if (objects.empty()) {
+    if (conflict_detail != nullptr) {
+      *conflict_detail = artifact.canonical_path + ":character_sets";
+    }
+    return false;
+  }
+  for (const auto& object : objects) {
+    ResourceSeedCharsetDescriptor descriptor;
+    descriptor.canonical_name = JsonStringField(object, "name");
+    descriptor.description = JsonStringField(object, "description");
+    descriptor.aliases = JsonStringArrayField(object, "aliases");
+    descriptor.encoding_type = JsonStringField(object, "encoding_type");
+    descriptor.iana_name = JsonStringField(object, "iana_name");
+    descriptor.supported_by = JsonStringArrayField(object, "supported_by");
+    descriptor.source_path = artifact.canonical_path;
+    if (descriptor.canonical_name.empty() ||
+        !JsonU32Field(object, "min_bytes", &descriptor.min_bytes) ||
+        !JsonU32Field(object, "max_bytes", &descriptor.max_bytes) ||
+        !JsonBoolField(object, "is_variable_width", &descriptor.variable_width) ||
+        descriptor.min_bytes == 0 || descriptor.max_bytes < descriptor.min_bytes) {
+      if (conflict_detail != nullptr) {
+        *conflict_detail = artifact.canonical_path + ":charset_descriptor_invalid";
+      }
+      return false;
+    }
+    const std::string canonical_name = descriptor.canonical_name;
     if (!canonical_name.empty() &&
         !AddAlias(image, ResourceSeedFamily::charset, canonical_name, canonical_name, artifact.canonical_path, conflict_detail)) {
       return false;
     }
 
-    const std::size_t next_name = text.find("\"name\"", pos + 6);
-    const std::size_t aliases = text.find("\"aliases\"", pos);
-    if (!canonical_name.empty() && aliases != std::string::npos &&
-        (next_name == std::string::npos || aliases < next_name)) {
-      for (const auto& alias : ExtractJsonStringArrayAt(text, aliases)) {
-        if (!AddAlias(image, ResourceSeedFamily::charset, alias, canonical_name, artifact.canonical_path, conflict_detail)) {
-          return false;
-        }
+    for (const auto& alias : descriptor.aliases) {
+      if (!AddAlias(image, ResourceSeedFamily::charset, alias, canonical_name, artifact.canonical_path, conflict_detail)) {
+        return false;
       }
     }
-    pos += 6;
+    image->charset_alias_records += static_cast<u32>(descriptor.aliases.size());
+    image->charsets.push_back(std::move(descriptor));
   }
+  image->charset_records = static_cast<u32>(image->charsets.size());
   return true;
 }
 
@@ -690,9 +865,30 @@ bool AccumulateCollationAliases(ResourceSeedCatalogImage* image,
                                 const ResourceSeedArtifact& artifact,
                                 const std::string& text,
                                 std::string* conflict_detail) {
-  std::size_t pos = 0;
-  while ((pos = text.find("\"name\"", pos)) != std::string::npos) {
-    const std::string canonical_name = ExtractJsonStringAt(text, pos);
+  const auto objects = ExtractJsonObjectArray(text, "collations");
+  if (objects.empty()) {
+    if (conflict_detail != nullptr) {
+      *conflict_detail = artifact.canonical_path + ":collations";
+    }
+    return false;
+  }
+  for (const auto& object : objects) {
+    ResourceSeedCollationDescriptor descriptor;
+    descriptor.canonical_name = JsonStringField(object, "name");
+    descriptor.charset_name = JsonStringField(object, "charset");
+    descriptor.language = JsonStringField(object, "language");
+    descriptor.description = JsonStringField(object, "description");
+    descriptor.supported_by = JsonStringArrayField(object, "supported_by");
+    descriptor.source_path = artifact.canonical_path;
+    if (descriptor.canonical_name.empty() || descriptor.charset_name.empty() ||
+        !JsonBoolField(object, "case_insensitive", &descriptor.case_insensitive) ||
+        !JsonBoolField(object, "accent_insensitive", &descriptor.accent_insensitive)) {
+      if (conflict_detail != nullptr) {
+        *conflict_detail = artifact.canonical_path + ":collation_descriptor_invalid";
+      }
+      return false;
+    }
+    const std::string canonical_name = descriptor.canonical_name;
     if (!canonical_name.empty()) {
       if (!AddAlias(image, ResourceSeedFamily::collation, canonical_name, canonical_name, artifact.canonical_path, conflict_detail)) {
         return false;
@@ -700,12 +896,141 @@ bool AccumulateCollationAliases(ResourceSeedCatalogImage* image,
       const std::string folded = LowerAscii(canonical_name);
       if (folded != canonical_name &&
           !AddAlias(image, ResourceSeedFamily::collation, folded, canonical_name, artifact.canonical_path, conflict_detail)) {
-        return false;
+          return false;
       }
     }
-    pos += 6;
+    image->collations.push_back(std::move(descriptor));
   }
+  const auto default_collations =
+      ExtractJsonStringObject(text, "default_collations");
+  if (default_collations.empty()) {
+    if (conflict_detail != nullptr) {
+      *conflict_detail = artifact.canonical_path +
+                         ":default_collations_authority_missing";
+    }
+    return false;
+  }
+  std::set<std::string> bound_charsets;
+  for (const auto& [charset_name, collation_name] : default_collations) {
+    const std::string charset_key = ResourceRelationshipKey(charset_name);
+    if (charset_key.empty() || !bound_charsets.insert(charset_key).second) {
+      if (conflict_detail != nullptr) {
+        *conflict_detail = artifact.canonical_path +
+                           ":default_collation_charset_ambiguous:" + charset_name;
+      }
+      return false;
+    }
+    ResourceSeedCollationDescriptor* match = nullptr;
+    for (auto& descriptor : image->collations) {
+      if (LowerAscii(descriptor.canonical_name) != LowerAscii(collation_name)) {
+        continue;
+      }
+      if (match != nullptr) {
+        match = nullptr;
+        break;
+      }
+      match = &descriptor;
+    }
+    if (match == nullptr ||
+        ResourceRelationshipKey(match->charset_name) != charset_key) {
+      if (conflict_detail != nullptr) {
+        *conflict_detail = artifact.canonical_path +
+                           ":default_collation_target_invalid:" + charset_name +
+                           ":" + collation_name;
+      }
+      return false;
+    }
+    match->default_for_charset = true;
+    match->default_authority = "seed_pack.default_collations.v1";
+  }
+  image->collation_records = static_cast<u32>(image->collations.size());
   return true;
+}
+
+ResourceSeedCharsetDescriptor* FindCharsetForRelationship(
+    ResourceSeedCatalogImage* image,
+    const std::string& name) {
+  if (image == nullptr) {
+    return nullptr;
+  }
+  const std::string folded = LowerAscii(name);
+  const std::string relationship_key = ResourceRelationshipKey(name);
+  using Matcher = bool (*)(const ResourceSeedCharsetDescriptor&,
+                           const std::string&,
+                           const std::string&);
+  const auto exact_canonical = [](const ResourceSeedCharsetDescriptor& charset,
+                                  const std::string& wanted,
+                                  const std::string&) {
+    return LowerAscii(charset.canonical_name) == wanted;
+  };
+  const auto exact_alias = [](const ResourceSeedCharsetDescriptor& charset,
+                              const std::string& wanted,
+                              const std::string&) {
+    return std::any_of(charset.aliases.begin(), charset.aliases.end(),
+                       [&](const std::string& alias) {
+                         return LowerAscii(alias) == wanted;
+                       });
+  };
+  const auto normalized_canonical = [](
+                                        const ResourceSeedCharsetDescriptor& charset,
+                                        const std::string&,
+                                        const std::string& wanted) {
+    return ResourceRelationshipKey(charset.canonical_name) == wanted;
+  };
+  const auto normalized_alias = [](const ResourceSeedCharsetDescriptor& charset,
+                                   const std::string&,
+                                   const std::string& wanted) {
+    return std::any_of(charset.aliases.begin(), charset.aliases.end(),
+                       [&](const std::string& alias) {
+                         return ResourceRelationshipKey(alias) == wanted;
+                       });
+  };
+  for (const Matcher matcher : {+exact_canonical, +exact_alias,
+                                +normalized_canonical, +normalized_alias}) {
+    ResourceSeedCharsetDescriptor* match = nullptr;
+    for (auto& charset : image->charsets) {
+      if (!matcher(charset, folded, relationship_key)) {
+        continue;
+      }
+      if (match != nullptr && match != &charset) {
+        return nullptr;
+      }
+      match = &charset;
+    }
+    if (match != nullptr) {
+      return match;
+    }
+  }
+  return nullptr;
+}
+
+void FinalizeResourceSeedDescriptors(ResourceSeedCatalogImage* image) {
+  if (image == nullptr || image->minimal_bootstrap) {
+    return;
+  }
+  for (auto& charset : image->charsets) {
+    charset.resource_epoch = image->resource_epoch;
+    charset.family_epoch = image->charset_epoch;
+    charset.family_version = image->charset_version;
+    charset.default_collation_name.clear();
+    charset.default_collation_uuid.clear();
+  }
+  for (auto& collation : image->collations) {
+    collation.resource_epoch = image->resource_epoch;
+    collation.family_epoch = image->collation_epoch;
+    collation.family_version = image->collation_version;
+    auto* charset = FindCharsetForRelationship(image, collation.charset_name);
+    if (charset == nullptr) {
+      collation.charset_uuid.clear();
+      continue;
+    }
+    collation.charset_name = charset->canonical_name;
+    collation.charset_uuid = charset->resource_uuid;
+    if (collation.default_for_charset && charset->default_collation_name.empty()) {
+      charset->default_collation_name = collation.canonical_name;
+      charset->default_collation_uuid = collation.resource_uuid;
+    }
+  }
 }
 
 bool IsDataLine(const std::string& line) {
@@ -757,14 +1082,11 @@ bool AccumulateArtifact(ResourceSeedCatalogImage* image,
                         std::string* conflict_detail) {
   switch (artifact.family) {
     case ResourceSeedFamily::charset:
-      image->charset_records += CountOccurrences(text, "\"name\"");
-      image->charset_alias_records += CountJsonAliasValues(text);
       return AccumulateCharsetAliases(image, artifact, text, conflict_detail);
     case ResourceSeedFamily::charset_mapping:
       ++image->charset_mapping_artifacts;
       break;
     case ResourceSeedFamily::collation:
-      image->collation_records += CountOccurrences(text, "\"name\"");
       return AccumulateCollationAliases(image, artifact, text, conflict_detail);
     case ResourceSeedFamily::locale:
       ++image->locale_records;
@@ -1114,6 +1436,83 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
       return ResourceSeedError("RESOURCE.MANIFEST.INVALID",
                                "resource.seed_pack.family_version_records_missing");
     }
+    if (image.charsets.size() != image.charset_records ||
+        image.collations.size() != image.collation_records) {
+      return ResourceSeedError("RESOURCE.MANIFEST.INVALID",
+                               "resource.seed_pack.descriptor_record_count_mismatch");
+    }
+    const bool durable_identities_present =
+        std::any_of(image.charsets.begin(), image.charsets.end(),
+                    [](const ResourceSeedCharsetDescriptor& descriptor) {
+                      return !descriptor.resource_uuid.empty();
+                    }) ||
+        std::any_of(image.collations.begin(), image.collations.end(),
+                    [](const ResourceSeedCollationDescriptor& descriptor) {
+                      return !descriptor.resource_uuid.empty();
+                    });
+    for (const auto& charset : image.charsets) {
+      if (charset.canonical_name.empty() || charset.min_bytes == 0 ||
+          charset.max_bytes < charset.min_bytes || charset.resource_epoch == 0 ||
+          charset.family_epoch == 0 || charset.family_version.empty() ||
+          (durable_identities_present && charset.resource_uuid.empty())) {
+        return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
+                                 "resource.seed_pack.charset_descriptor_invalid",
+                                 charset.canonical_name);
+      }
+      if (!charset.default_collation_name.empty()) {
+        const auto* default_collation = FindResourceSeedCollation(
+            image, charset.default_collation_name);
+        if (default_collation == nullptr ||
+            !default_collation->default_for_charset ||
+            default_collation->default_authority !=
+                "seed_pack.default_collations.v1" ||
+            ResourceRelationshipKey(default_collation->charset_name) !=
+                ResourceRelationshipKey(charset.canonical_name) ||
+            (durable_identities_present &&
+             (charset.default_collation_uuid.empty() ||
+              charset.default_collation_uuid !=
+                  default_collation->resource_uuid))) {
+          return ResourceSeedError(
+              "RESOURCE.VALIDATION.FAILED",
+              "resource.seed_pack.charset_default_collation_invalid",
+              charset.canonical_name);
+        }
+      } else if (!charset.default_collation_uuid.empty()) {
+        return ResourceSeedError(
+            "RESOURCE.VALIDATION.FAILED",
+            "resource.seed_pack.charset_default_collation_invalid",
+            charset.canonical_name);
+      }
+    }
+    for (const auto& collation : image.collations) {
+      const auto* parent_charset =
+          FindResourceSeedCharset(image, collation.charset_name);
+      if (collation.canonical_name.empty() || collation.charset_name.empty() ||
+          collation.resource_epoch == 0 || collation.family_epoch == 0 ||
+          collation.family_version.empty() ||
+          parent_charset == nullptr ||
+          (durable_identities_present &&
+           (collation.resource_uuid.empty() || collation.charset_uuid.empty() ||
+            parent_charset->resource_uuid != collation.charset_uuid))) {
+        return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
+                                 "resource.seed_pack.collation_descriptor_invalid",
+                                 collation.canonical_name);
+      }
+      if (collation.default_for_charset &&
+          collation.default_authority !=
+              "seed_pack.default_collations.v1") {
+        return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
+                                 "resource.seed_pack.default_collation_authority_invalid",
+                                 collation.canonical_name);
+      }
+      if (durable_identities_present && collation.default_for_charset &&
+          (parent_charset->default_collation_name != collation.canonical_name ||
+           parent_charset->default_collation_uuid != collation.resource_uuid)) {
+        return ResourceSeedError("RESOURCE.VALIDATION.FAILED",
+                                 "resource.seed_pack.default_collation_relationship_invalid",
+                                 collation.canonical_name);
+      }
+    }
   }
 
   ResourceSeedCatalogImageResult result;
@@ -1334,6 +1733,41 @@ ResourceSeedAliasResolutionResult ResolveResourceSeedAlias(const ResourceSeedCat
   return ResourceSeedAliasError("SB_RESOURCE_ALIAS_NOT_FOUND",
                                 "resource.seed_pack.alias_not_found",
                                 ResourceSeedFamilyName(family) + std::string(":") + alias);
+}
+
+const ResourceSeedCharsetDescriptor* FindResourceSeedCharset(
+    const ResourceSeedCatalogImage& image,
+    const std::string& name_or_alias) {
+  const std::string requested = LowerAscii(name_or_alias);
+  for (const auto& charset : image.charsets) {
+    if (LowerAscii(charset.canonical_name) == requested) {
+      return &charset;
+    }
+  }
+  const auto alias = ResolveResourceSeedAlias(
+      image, ResourceSeedFamily::charset, name_or_alias);
+  if (!alias.ok()) {
+    return nullptr;
+  }
+  const std::string canonical = LowerAscii(alias.alias.canonical_name);
+  for (const auto& charset : image.charsets) {
+    if (LowerAscii(charset.canonical_name) == canonical) {
+      return &charset;
+    }
+  }
+  return nullptr;
+}
+
+const ResourceSeedCollationDescriptor* FindResourceSeedCollation(
+    const ResourceSeedCatalogImage& image,
+    const std::string& name) {
+  const std::string requested = LowerAscii(name);
+  for (const auto& collation : image.collations) {
+    if (LowerAscii(collation.canonical_name) == requested) {
+      return &collation;
+    }
+  }
+  return nullptr;
 }
 
 DiagnosticRecord MakeResourceSeedDiagnostic(Status status,

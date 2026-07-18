@@ -42,7 +42,12 @@ std::optional<CrudTableRecord> FindVisibleCrudTable(const CrudState& state,
                                                     std::uint64_t observer_tx) {
   std::optional<CrudTableRecord> visible;
   for (const auto& table : state.tables) {
-    if (table.table_uuid == table_uuid && TxVisible(state, table.creator_tx, observer_tx)) { visible = table; }
+    if (table.table_uuid != table_uuid || !TxVisible(state, table.creator_tx, observer_tx)) {
+      continue;
+    }
+    if (!visible || table.creator_tx >= visible->creator_tx) {
+      visible = table;
+    }
   }
   return visible;
 }
@@ -238,6 +243,7 @@ bool CrudSqlLikePatternMatches(std::string_view value, std::string_view pattern)
 
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate) {
   if (predicate.predicate_kind.empty()) { return true; }
+  if (predicate.predicate_kind == "always_false") { return false; }
   if (predicate.predicate_kind == "row_uuid_match") { return row.row_uuid == predicate.canonical_predicate_envelope; }
   if (predicate.predicate_kind == "row_uuid_in_list") {
     for (const auto& bound : predicate.bound_values) {
@@ -246,8 +252,11 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     return false;
   }
   if (predicate.predicate_kind == "column_equals") {
-    return !predicate.bound_values.empty() &&
-           CrudFieldValue(row.values, predicate.canonical_predicate_envelope) == predicate.bound_values.front().encoded_value;
+    if (predicate.bound_values.empty()) { return false; }
+    const std::string value =
+        CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    const std::string& bound = predicate.bound_values.front().encoded_value;
+    return value == bound || CompareCrudScalar(value, bound) == 0;
   }
   if (predicate.predicate_kind == "columns_all_equal") {
     const auto columns = Split(predicate.canonical_predicate_envelope, ',');
@@ -262,11 +271,12 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
   if (predicate.predicate_kind == "columns_all_null") {
     for (const auto& column : Split(predicate.canonical_predicate_envelope, ',')) {
       bool present = false;
-      bool is_null = true;
+      bool is_null = false;
+      const std::string lowered_column = LowerAscii(column);
       for (const auto& [field, value] : row.values) {
-        if (field != column) { continue; }
+        if (field != column && LowerAscii(field) != lowered_column) { continue; }
         present = true;
-        is_null = value == "<NULL>";
+        is_null = value.empty() || value == "<NULL>";
         break;
       }
       if (present && !is_null) { return false; }
@@ -277,10 +287,11 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     for (const auto& column : Split(predicate.canonical_predicate_envelope, ',')) {
       bool present = false;
       bool is_null = true;
+      const std::string lowered_column = LowerAscii(column);
       for (const auto& [field, value] : row.values) {
-        if (field != column) { continue; }
+        if (field != column && LowerAscii(field) != lowered_column) { continue; }
         present = true;
-        is_null = value == "<NULL>";
+        is_null = value.empty() || value == "<NULL>";
         break;
       }
       if (!present || is_null) { return false; }
@@ -289,8 +300,12 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
   }
   if (predicate.predicate_kind == "column_is_not_null") {
     if (predicate.canonical_predicate_envelope.empty()) return false;
+    const std::string lowered_column = LowerAscii(predicate.canonical_predicate_envelope);
     for (const auto& [field, value] : row.values) {
-      if (field != predicate.canonical_predicate_envelope) continue;
+      if (field != predicate.canonical_predicate_envelope &&
+          LowerAscii(field) != lowered_column) {
+        continue;
+      }
       return value != "<NULL>";
     }
     return false;
@@ -327,6 +342,19 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     }
     return true;
   }
+  if (predicate.predicate_kind == "column_in_list_scalar_compare" ||
+      predicate.predicate_kind == "column_not_in_list_scalar_compare") {
+    const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    bool matched = false;
+    for (const auto& bound : predicate.bound_values) {
+      if (value == bound.encoded_value ||
+          CompareCrudScalar(value, bound.encoded_value) == 0) {
+        matched = true;
+        break;
+      }
+    }
+    return predicate.predicate_kind == "column_in_list_scalar_compare" ? matched : !matched;
+  }
   if (predicate.predicate_kind == "column_like" ||
       predicate.predicate_kind == "column_not_like") {
     if (predicate.bound_values.empty()) return false;
@@ -341,13 +369,22 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     if (value.empty() || value == "<NULL>") return true;
     return CompareCrudScalar(value, predicate.bound_values.front().encoded_value) < 0;
   }
-  if (predicate.predicate_kind == "column_greater" ||
-      predicate.predicate_kind == "column_greater_equal") {
+  if (predicate.predicate_kind == "column_less" ||
+      predicate.predicate_kind == "column_less_equal" ||
+      predicate.predicate_kind == "column_greater" ||
+      predicate.predicate_kind == "column_greater_equal" ||
+      predicate.predicate_kind == "column_not_equals") {
     if (predicate.bound_values.empty()) return false;
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    const auto& bound = predicate.bound_values.front();
+    if (value == "<NULL>" || bound.isSqlNull()) return false;
     const int compared = CompareCrudScalar(value,
-                                           predicate.bound_values.front().encoded_value);
-    return predicate.predicate_kind == "column_greater" ? compared > 0 : compared >= 0;
+                                           bound.encoded_value);
+    if (predicate.predicate_kind == "column_less") return compared < 0;
+    if (predicate.predicate_kind == "column_less_equal") return compared <= 0;
+    if (predicate.predicate_kind == "column_greater") return compared > 0;
+    if (predicate.predicate_kind == "column_greater_equal") return compared >= 0;
+    return compared != 0;
   }
   if (predicate.predicate_kind == "column_range") {
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);

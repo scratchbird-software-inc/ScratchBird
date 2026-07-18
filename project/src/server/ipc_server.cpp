@@ -25,7 +25,11 @@
 
 #include "catalog/name_registry.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/global_aggregate_view.hpp"
+#include "catalog/relation_projection_view.hpp"
+#include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "dml/global_aggregate_projection.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
@@ -41,6 +45,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -475,14 +480,51 @@ bool ReadString(const std::vector<std::uint8_t>& data, std::size_t* offset, std:
   return true;
 }
 
-std::vector<std::uint8_t> AcceptFrame(const sbps::Frame& request,
-                                      const ServerBootstrapConfig& config) {
+struct ClientNegotiationState {
+  bool hello_admitted = false;
+  bool connection_authenticated = false;
+  std::array<std::uint8_t, 16> server_channel_uuid{};
+  std::array<std::uint8_t, 32> accepted_capability_bitmap{};
+  std::uint16_t admitted_protocol_major = 0;
+  std::uint16_t admitted_protocol_minor = 0;
+  std::vector<std::uint8_t> admitted_hello_payload;
+};
+
+std::vector<std::uint8_t> AcceptFrame(
+    const sbps::Frame& request,
+    const ServerBootstrapConfig& config,
+    ClientNegotiationState* negotiation_state) {
   sbps::HelloAccept accept;
   accept.server_uuid = sbps::MakeUuidV7Bytes();
-  accept.channel_uuid = sbps::MakeUuidV7Bytes();
+  accept.channel_uuid =
+      negotiation_state != nullptr && negotiation_state->hello_admitted
+          ? negotiation_state->server_channel_uuid
+          : sbps::MakeUuidV7Bytes();
   accept.max_frame_bytes = static_cast<std::uint32_t>(config.sbps_max_frame_bytes);
   accept.max_streams = static_cast<std::uint32_t>(config.sbps_max_streams);
-  accept.accepted_capability_bitmap[0] = 1;
+  if (const auto hello = sbps::DecodeHelloRequest(request.payload)) {
+    if (negotiation_state != nullptr && negotiation_state->hello_admitted) {
+      accept.accepted_capability_bitmap =
+          negotiation_state->accepted_capability_bitmap;
+    } else {
+      accept.accepted_capability_bitmap[0] =
+          hello->capability_bitmap[0] & sbps::kKnownCapabilityByte0;
+    }
+  }
+  if (negotiation_state != nullptr) {
+    const bool first_hello = !negotiation_state->hello_admitted;
+    negotiation_state->hello_admitted = true;
+    negotiation_state->server_channel_uuid = accept.channel_uuid;
+    negotiation_state->accepted_capability_bitmap =
+        accept.accepted_capability_bitmap;
+    if (first_hello) {
+      negotiation_state->admitted_protocol_major =
+          request.header.protocol_major;
+      negotiation_state->admitted_protocol_minor =
+          request.header.protocol_minor;
+      negotiation_state->admitted_hello_payload = request.payload;
+    }
+  }
   accept.registry_snapshot_uuid = sbps::MakeUuidV7Bytes();
   const auto payload = sbps::EncodeHelloAccept(accept);
   sbps::FrameHeader header;
@@ -636,7 +678,8 @@ std::optional<ParserServerEventSession> EventSessionFromFrame(
                                           : UuidBytesToText(request.header.connection_uuid);
   event_session.engine_context = EventEngineContextFromSession(*session, engine_state, request);
   event_session.session_bound = true;
-  event_session.draining = registry->channel_state == ServerChannelState::kDraining;
+  event_session.draining =
+      session->channel_state == ServerChannelState::kDraining;
   return event_session;
 }
 
@@ -787,6 +830,12 @@ void PsNamePutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
   out->push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
 }
 
+void PsNamePutU32(std::vector<std::uint8_t>* out, std::uint32_t value) {
+  for (int shift = 0; shift < 32; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+  }
+}
+
 void PsNamePutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   for (int shift = 0; shift < 64; shift += 8) {
     out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
@@ -809,13 +858,50 @@ std::uint16_t PsNameGetU16(const std::vector<std::uint8_t>& data, std::size_t of
          static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[offset + 1]) << 8u);
 }
 
+bool PsNameReadU64(const std::vector<std::uint8_t>& data,
+                   std::size_t* offset,
+                   std::uint64_t* out) {
+  if (offset == nullptr || out == nullptr || *offset + 8 > data.size()) {
+    return false;
+  }
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < 8; ++index) {
+    value |= static_cast<std::uint64_t>(data[*offset + index]) << (index * 8u);
+  }
+  *offset += 8;
+  *out = value;
+  return true;
+}
+
 bool PsNameReadString(const std::vector<std::uint8_t>& data,
                       std::size_t* offset,
                       std::string* out) {
-  if (*offset + 2 > data.size()) return false;
+  if (offset == nullptr || out == nullptr || *offset > data.size() ||
+      data.size() - *offset < 2) {
+    return false;
+  }
   const auto length = PsNameGetU16(data, *offset);
   *offset += 2;
-  if (*offset + length > data.size()) return false;
+  if (*offset > data.size() || length > data.size() - *offset) return false;
+  out->assign(reinterpret_cast<const char*>(data.data() + *offset), length);
+  *offset += length;
+  return true;
+}
+
+bool PsNameReadBoundedString(const std::vector<std::uint8_t>& data,
+                             std::size_t* offset,
+                             std::string* out,
+                             std::size_t max_bytes) {
+  if (offset == nullptr || out == nullptr || *offset > data.size() ||
+      data.size() - *offset < 2) {
+    return false;
+  }
+  const auto length = PsNameGetU16(data, *offset);
+  *offset += 2;
+  if (length > max_bytes || *offset > data.size() ||
+      length > data.size() - *offset) {
+    return false;
+  }
   out->assign(reinterpret_cast<const char*>(data.data() + *offset), length);
   *offset += length;
   return true;
@@ -1073,14 +1159,16 @@ std::optional<engine_api::NameRegistryEntry> PsNameResolveUniqueRegistryLeaf(
     const engine_api::EngineRequestContext& context,
     const PsNamePart& leaf,
     std::string_view object_class,
-    std::string_view identifier_profile) {
+    std::string_view identifier_profile,
+    bool require_transaction_context) {
   auto load_context = context;
   const std::uint64_t observer_tx =
       context.snapshot_visible_through_local_transaction_id != 0
           ? context.snapshot_visible_through_local_transaction_id
           : context.local_transaction_id;
   auto loaded = engine_api::LoadNameRegistryState(load_context, observer_tx);
-  if (!loaded.ok && load_context.local_transaction_id != 0) {
+  if (!loaded.ok && load_context.local_transaction_id != 0 &&
+      !require_transaction_context) {
     load_context.local_transaction_id = 0;
     loaded = engine_api::LoadNameRegistryState(load_context, observer_tx);
   }
@@ -1124,6 +1212,7 @@ bool PsNameResolutionCacheable(const engine_api::EngineRequestContext& context,
                                std::string_view object_class,
                                std::string_view object_uuid) {
   if (object_uuid.empty()) return false;
+  if (object_class == "charset" || object_class == "collation") return false;
   if (object_class != "table" && object_class != "relation") {
     return true;
   }
@@ -1177,6 +1266,7 @@ std::vector<std::uint8_t> PsNameResponseFrame(const sbps::Frame& request,
 }
 
 struct PsNameResolveRequest {
+  std::array<std::uint8_t, 16> session_uuid{};
   std::string presented_name;
   bool quoted = false;
   std::string dialect_profile;
@@ -1184,22 +1274,101 @@ struct PsNameResolveRequest {
   std::string search_path;
   std::string object_class;
   bool bypass_cache = false;
+  bool transaction_routed = false;
+  std::uint64_t local_transaction_id = 0;
+  std::string transaction_uuid;
+  std::uint8_t projection_flags = 0;
+  bool include_persisted_relation_descriptor = false;
 };
 
+constexpr std::uint8_t kPsNameProjectionRelationDescriptorV1 = 0x01u;
+constexpr std::uint8_t kPsRelationDescriptorExtensionKind = 0x02u;
+constexpr std::uint8_t kPsRelationDescriptorExtensionVersion = 0x01u;
+constexpr std::size_t kMaxPsRelationProjectionBytes = 512u * 1024u;
+constexpr std::uint32_t kMaxPsRelationProjectionColumns = 4096;
+constexpr std::size_t kMaxPsRelationMetadataTextBytes = 4096;
+constexpr std::size_t kMaxPsEncodedTypeDescriptorBytes = 65534;
+
 std::optional<PsNameResolveRequest> DecodePsNameResolveRequest(
-    const std::vector<std::uint8_t>& payload) {
+    const std::vector<std::uint8_t>& payload,
+    std::uint32_t schema) {
+  if (schema != sbps::kSchemaResolveNameRequestV1 &&
+      schema != sbps::kSchemaResolveNameRequestV2 &&
+      schema != sbps::kSchemaResolveNameRequestV3) {
+    return std::nullopt;
+  }
   PsNameResolveRequest request;
   std::size_t offset = 0;
-  if (!PsNameReadString(payload, &offset, &request.presented_name)) return std::nullopt;
-  if (offset >= payload.size()) return std::nullopt;
-  request.quoted = payload[offset++] != 0;
-  if (!PsNameReadString(payload, &offset, &request.dialect_profile)) return std::nullopt;
-  if (!PsNameReadString(payload, &offset, &request.language)) return std::nullopt;
-  if (!PsNameReadString(payload, &offset, &request.search_path)) return std::nullopt;
-  if (!PsNameReadString(payload, &offset, &request.object_class)) return std::nullopt;
-  if (offset < payload.size()) {
-    request.bypass_cache = payload[offset++] != 0;
+  const bool v3 = schema == sbps::kSchemaResolveNameRequestV3;
+  auto read_request_string = [&](std::string* value,
+                                 std::size_t max_bytes) {
+    return v3 ? PsNameReadBoundedString(payload,
+                                        &offset,
+                                        value,
+                                        max_bytes)
+              : PsNameReadString(payload, &offset, value);
+  };
+  if (!read_request_string(&request.presented_name,
+                           kMaxPsRelationMetadataTextBytes)) {
+    return std::nullopt;
   }
+  if (offset >= payload.size()) return std::nullopt;
+  const std::uint8_t quoted = payload[offset++];
+  if (v3 && quoted > 1) return std::nullopt;
+  request.quoted = quoted != 0;
+  if (!read_request_string(&request.dialect_profile,
+                           kMaxPsRelationMetadataTextBytes) ||
+      !read_request_string(&request.language,
+                           kMaxPsRelationMetadataTextBytes) ||
+      !read_request_string(&request.search_path,
+                           kMaxPsRelationMetadataTextBytes) ||
+      !read_request_string(&request.object_class, 128)) {
+    return std::nullopt;
+  }
+  if (schema == sbps::kSchemaResolveNameRequestV1) {
+    if (offset < payload.size()) {
+      request.bypass_cache = payload[offset++] != 0;
+    }
+    // Preserve the V1 decoder's historical tolerance of trailing extension
+    // bytes.  V2 is exact and fail-closed below.
+    return request;
+  }
+  if (offset >= payload.size()) return std::nullopt;
+  const std::uint8_t bypass_cache = payload[offset++];
+  if (v3 && bypass_cache > 1) return std::nullopt;
+  request.bypass_cache = bypass_cache != 0;
+  if (offset + 16 > payload.size()) return std::nullopt;
+  request.session_uuid = PsNameGetUuid(payload, offset);
+  offset += 16;
+  if (!PsNameReadU64(payload, &offset, &request.local_transaction_id)) {
+    return std::nullopt;
+  }
+  if (!read_request_string(&request.transaction_uuid, 64)) {
+    return std::nullopt;
+  }
+  if (schema == sbps::kSchemaResolveNameRequestV2) {
+    if (offset != payload.size()) return std::nullopt;
+  } else {
+    if (offset >= payload.size()) return std::nullopt;
+    request.projection_flags = payload[offset++];
+    if ((request.projection_flags &
+         ~kPsNameProjectionRelationDescriptorV1) != 0 ||
+        offset != payload.size()) {
+      return std::nullopt;
+    }
+    request.include_persisted_relation_descriptor =
+        (request.projection_flags &
+         kPsNameProjectionRelationDescriptorV1) != 0;
+    const std::string object_class = PsNameLower(request.object_class);
+    if (request.include_persisted_relation_descriptor &&
+        object_class != "relation" && object_class != "table") {
+      return std::nullopt;
+    }
+  }
+  request.transaction_routed = true;
+  // Transaction-routed resolution must never consult or populate a
+  // session/global cache because visibility belongs to this exact snapshot.
+  request.bypass_cache = true;
   return request;
 }
 
@@ -1622,7 +1791,9 @@ std::vector<std::uint8_t> EncodePsNameResolvePayload(std::string_view outcome,
                                                      std::string_view object_class,
                                                      std::uint64_t catalog_epoch,
                                                      std::uint64_t security_epoch,
-                                                     std::string_view detail) {
+                                                     std::string_view detail,
+                                                     const engine_api::EngineResolvedResourceDescriptor*
+                                                         resource_descriptor = nullptr) {
   std::vector<std::uint8_t> payload;
   PsNamePutString(&payload, outcome);
   PsNamePutUuid(&payload, object_uuid);
@@ -1631,13 +1802,741 @@ std::vector<std::uint8_t> EncodePsNameResolvePayload(std::string_view outcome,
   PsNamePutU64(&payload, catalog_epoch);
   PsNamePutU64(&payload, security_epoch);
   PsNamePutString(&payload, detail);
+  if (resource_descriptor != nullptr && resource_descriptor->present) {
+    constexpr std::uint8_t kResourceDescriptorExtensionV1 = 1;
+    PsNamePutU8(&payload, kResourceDescriptorExtensionV1);
+    PsNamePutString(&payload, resource_descriptor->resource_family);
+    PsNamePutString(&payload, resource_descriptor->canonical_name);
+    PsNamePutString(&payload,
+                    resource_descriptor->parent_resource_uuid.canonical);
+    PsNamePutString(&payload, resource_descriptor->parent_canonical_name);
+    PsNamePutString(&payload,
+                    resource_descriptor->default_collation_uuid.canonical);
+    PsNamePutString(&payload, resource_descriptor->default_collation_name);
+    PsNamePutU64(&payload, resource_descriptor->resource_epoch);
+    PsNamePutU64(&payload, resource_descriptor->family_epoch);
+    PsNamePutString(&payload, resource_descriptor->family_version);
+    PsNamePutU32(&payload, resource_descriptor->min_bytes);
+    PsNamePutU32(&payload, resource_descriptor->max_bytes);
+    std::uint8_t attributes = 0;
+    if (resource_descriptor->variable_width) attributes |= 0x01u;
+    if (resource_descriptor->default_for_parent) attributes |= 0x02u;
+    if (resource_descriptor->case_insensitive) attributes |= 0x04u;
+    if (resource_descriptor->accent_insensitive) attributes |= 0x08u;
+    PsNamePutU8(&payload, attributes);
+  }
   return payload;
+}
+
+struct PsPublicRelationColumnProjection {
+  std::array<std::uint8_t, 16> column_uuid{};
+  std::uint32_t ordinal = 0;
+  std::string canonical_name_key;
+  std::array<std::uint8_t, 16> type_descriptor_uuid{};
+  std::string type_descriptor_kind;
+  std::string canonical_type_name;
+  std::string encoded_type_descriptor;
+  bool nullable = true;
+  bool generated = false;
+  bool identity_column = false;
+  std::array<std::uint8_t, 16> charset_uuid{};
+  std::string charset_canonical_name;
+  std::array<std::uint8_t, 16> collation_uuid{};
+  std::string collation_canonical_name;
+  std::uint32_t character_length = 0;
+  std::uint32_t charset_min_bytes = 0;
+  std::uint32_t charset_max_bytes = 0;
+  bool charset_variable_width = false;
+};
+
+struct PsPublicRelationProjection {
+  std::array<std::uint8_t, 16> descriptor_uuid{};
+  std::array<std::uint8_t, 16> relation_uuid{};
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t validated_resource_epoch = 0;
+  std::vector<PsPublicRelationColumnProjection> columns;
+};
+
+struct PsPublicRelationProjectionResult {
+  bool ok = false;
+  PsPublicRelationProjection projection;
+  ServerDiagnostic diagnostic;
+};
+
+ServerDiagnostic PsRelationProjectionDiagnostic(
+    std::string code,
+    std::string key,
+    std::string safe_message,
+    std::string reason = {}) {
+  std::vector<ServerDiagnosticField> fields;
+  if (!reason.empty()) fields.push_back({"reason", std::move(reason)});
+  return sbps::IpcDiagnostic(std::move(code),
+                             std::move(key),
+                             std::move(safe_message),
+                             std::move(fields));
+}
+
+ServerDiagnostic PsRelationProjectionEngineDiagnostic(
+    const engine_api::EngineApiDiagnostic& diagnostic,
+    std::string_view fallback_code,
+    std::string_view fallback_key,
+    std::string_view safe_message) {
+  return PsRelationProjectionDiagnostic(
+      diagnostic.code.empty() ? std::string(fallback_code) : diagnostic.code,
+      diagnostic.message_key.empty() ? std::string(fallback_key)
+                                     : diagnostic.message_key,
+      std::string(safe_message),
+      diagnostic.detail);
+}
+
+bool PsEncodedDescriptorHasExactField(std::string_view descriptor,
+                                      std::string_view key,
+                                      std::string_view expected_value) {
+  const std::string expected =
+      std::string(key) + "=" + std::string(expected_value);
+  const std::string prefix = std::string(key) + "=";
+  bool matched = false;
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto delimiter = descriptor.find(';', offset);
+    const auto field = descriptor.substr(
+        offset,
+        delimiter == std::string_view::npos
+            ? descriptor.size() - offset
+            : delimiter - offset);
+    if (field == expected) {
+      if (matched) return false;
+      matched = true;
+    } else if (field.starts_with(prefix)) {
+      return false;
+    }
+    if (delimiter == std::string_view::npos) break;
+    offset = delimiter + 1;
+  }
+  return matched;
+}
+
+PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
+    const engine_api::EngineRequestContext& context,
+    std::string_view resolved_relation_uuid) {
+  PsPublicRelationProjectionResult result;
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.resource_epoch == 0 || resolved_relation_uuid.empty()) {
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUEST_INVALID",
+        "parser_server_ipc.relation_descriptor_request_invalid",
+        "Persisted relation projection requires an exact active transaction and current resource epoch.",
+        "exact_transaction_and_resource_epoch_required");
+    return result;
+  }
+  const auto loaded = engine_api::LoadMgaRelationStorageDescriptor(
+      context, std::string(resolved_relation_uuid));
+  if (!loaded.ok) {
+    result.diagnostic = PsRelationProjectionEngineDiagnostic(
+        loaded.diagnostic,
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUIRED",
+        "parser_server_ipc.relation_descriptor_required",
+        "The persisted MGA relation descriptor is unavailable at the selected transaction snapshot.");
+    return result;
+  }
+  const auto descriptor_uuid = PsNameUuidFromText(
+      loaded.descriptor.descriptor_uuid.canonical);
+  const auto relation_uuid = PsNameUuidFromText(
+      loaded.descriptor.relation_uuid.canonical);
+  if (!descriptor_uuid || !relation_uuid ||
+      loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid ||
+      loaded.descriptor.descriptor_generation == 0 ||
+      loaded.descriptor.columns.empty()) {
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid
+            ? "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RELATION_MISMATCH"
+            : "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+        loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid
+            ? "parser_server_ipc.relation_descriptor_relation_mismatch"
+            : "parser_server_ipc.relation_descriptor_invalid",
+        "The persisted MGA relation descriptor failed neutral projection validation.",
+        "descriptor_identity_invalid");
+    return result;
+  }
+  if (loaded.descriptor.columns.size() >
+      kMaxPsRelationProjectionColumns) {
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE",
+        "parser_server_ipc.relation_descriptor_too_large",
+        "The persisted MGA relation descriptor exceeds the public projection limit.",
+        "column_count_limit_exceeded");
+    return result;
+  }
+  result.projection.descriptor_uuid = *descriptor_uuid;
+  result.projection.relation_uuid = *relation_uuid;
+  result.projection.descriptor_generation =
+      loaded.descriptor.descriptor_generation;
+  result.projection.validated_resource_epoch = context.resource_epoch;
+  result.projection.columns.reserve(loaded.descriptor.columns.size());
+  std::set<std::string> column_uuids;
+  std::set<std::uint32_t> ordinals;
+  for (const auto& source : loaded.descriptor.columns) {
+    const auto column_uuid =
+        PsNameUuidFromText(source.column_uuid.canonical);
+    const auto type_descriptor_uuid = PsNameUuidFromText(
+        source.value_descriptor.descriptor_uuid.canonical);
+    if (!column_uuid || !type_descriptor_uuid ||
+        source.canonical_name_key.empty() ||
+        source.canonical_name_key.size() >
+            kMaxPsRelationMetadataTextBytes ||
+        source.value_descriptor.descriptor_kind.empty() ||
+        source.value_descriptor.descriptor_kind.size() >
+            kMaxPsRelationMetadataTextBytes ||
+        source.value_descriptor.canonical_type_name.empty() ||
+        source.value_descriptor.canonical_type_name.size() >
+            kMaxPsRelationMetadataTextBytes ||
+        source.value_descriptor.encoded_descriptor.empty() ||
+        source.value_descriptor.encoded_descriptor.size() >
+            kMaxPsEncodedTypeDescriptorBytes ||
+        !column_uuids.insert(source.column_uuid.canonical).second ||
+        !ordinals.insert(source.ordinal).second) {
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+          "parser_server_ipc.relation_descriptor_invalid",
+          "A persisted MGA relation column failed neutral projection validation.",
+          "column_descriptor_invalid");
+      return result;
+    }
+    PsPublicRelationColumnProjection column;
+    column.column_uuid = *column_uuid;
+    column.ordinal = source.ordinal;
+    column.canonical_name_key = source.canonical_name_key;
+    column.type_descriptor_uuid = *type_descriptor_uuid;
+    column.type_descriptor_kind =
+        source.value_descriptor.descriptor_kind;
+    column.canonical_type_name =
+        source.value_descriptor.canonical_type_name;
+    column.encoded_type_descriptor =
+        source.value_descriptor.encoded_descriptor;
+    column.nullable = source.nullable;
+    column.generated = source.generated;
+    column.identity_column = source.identity_column;
+    column.character_length = source.character_length;
+
+    if (!source.charset_uuid.empty()) {
+      const auto charset_uuid = PsNameUuidFromText(source.charset_uuid);
+      if (!charset_uuid) {
+        result.diagnostic = PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "A persisted relation column has an invalid charset identity.",
+            "charset_uuid_invalid");
+        return result;
+      }
+      engine_api::EngineUuid engine_charset_uuid;
+      engine_charset_uuid.canonical = source.charset_uuid;
+      const auto charset = engine_api::LookupEngineResourceDescriptorByUuid(
+          context, engine_charset_uuid, "charset");
+      if (!charset.ok) {
+        result.diagnostic = PsRelationProjectionEngineDiagnostic(
+            charset.diagnostic,
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "The persisted relation charset identity is not valid at the selected transaction snapshot.");
+        return result;
+      }
+      const auto& resource = charset.resource_descriptor;
+      const bool text_large_object = PsEncodedDescriptorHasExactField(
+          source.value_descriptor.encoded_descriptor,
+          "text_resource_storage",
+          "large_object");
+      if (!resource.present || resource.resource_family != "charset" ||
+          resource.resource_uuid.canonical != source.charset_uuid ||
+          resource.canonical_name.empty() ||
+          resource.canonical_name.size() >
+              kMaxPsRelationMetadataTextBytes ||
+          resource.resource_epoch != context.resource_epoch ||
+          resource.min_bytes == 0 ||
+          resource.max_bytes < resource.min_bytes ||
+          (text_large_object ? source.character_length != 0
+                             : source.character_length == 0)) {
+        result.diagnostic = PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "The persisted relation charset descriptor is inconsistent with resource authority.",
+            "charset_descriptor_mismatch");
+        return result;
+      }
+      column.charset_uuid = *charset_uuid;
+      column.charset_canonical_name = resource.canonical_name;
+      column.charset_min_bytes = resource.min_bytes;
+      column.charset_max_bytes = resource.max_bytes;
+      column.charset_variable_width = resource.variable_width;
+    } else if (!source.collation_uuid.empty() ||
+               source.character_length != 0) {
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+          "parser_server_ipc.relation_descriptor_resource_mismatch",
+          "A persisted relation column has incomplete text resource identity.",
+          "charset_identity_required");
+      return result;
+    }
+
+    if (!source.collation_uuid.empty()) {
+      const auto collation_uuid =
+          PsNameUuidFromText(source.collation_uuid);
+      if (!collation_uuid || source.charset_uuid.empty()) {
+        result.diagnostic = PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "A persisted relation column has an invalid collation identity.",
+            "collation_uuid_invalid");
+        return result;
+      }
+      engine_api::EngineUuid engine_collation_uuid;
+      engine_collation_uuid.canonical = source.collation_uuid;
+      const auto collation = engine_api::LookupEngineResourceDescriptorByUuid(
+          context, engine_collation_uuid, "collation");
+      if (!collation.ok) {
+        result.diagnostic = PsRelationProjectionEngineDiagnostic(
+            collation.diagnostic,
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "The persisted relation collation identity is not valid at the selected transaction snapshot.");
+        return result;
+      }
+      const auto& resource = collation.resource_descriptor;
+      if (!resource.present || resource.resource_family != "collation" ||
+          resource.resource_uuid.canonical != source.collation_uuid ||
+          resource.parent_resource_uuid.canonical != source.charset_uuid ||
+          resource.canonical_name.empty() ||
+          resource.canonical_name.size() >
+              kMaxPsRelationMetadataTextBytes ||
+          resource.resource_epoch != context.resource_epoch) {
+        result.diagnostic = PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
+            "parser_server_ipc.relation_descriptor_resource_mismatch",
+            "The persisted relation collation descriptor is inconsistent with resource authority.",
+            "collation_charset_relationship_mismatch");
+        return result;
+      }
+      column.collation_uuid = *collation_uuid;
+      column.collation_canonical_name = resource.canonical_name;
+    }
+    result.projection.columns.push_back(std::move(column));
+  }
+  result.ok = true;
+  return result;
+}
+
+std::optional<std::vector<std::uint8_t>>
+EncodePsNameResolvePayloadV3(
+    std::string_view outcome,
+    const std::array<std::uint8_t, 16>& object_uuid,
+    std::string_view canonical_name,
+    std::string_view object_class,
+    std::uint64_t catalog_epoch,
+    std::uint64_t security_epoch,
+    std::string_view detail,
+    const PsPublicRelationProjection* relation_projection) {
+  if (canonical_name.size() > kMaxPsRelationMetadataTextBytes ||
+      object_class.size() > kMaxPsRelationMetadataTextBytes ||
+      detail.size() > kMaxPsRelationMetadataTextBytes) {
+    return std::nullopt;
+  }
+  auto payload = EncodePsNameResolvePayload(outcome,
+                                            object_uuid,
+                                            canonical_name,
+                                            object_class,
+                                            catalog_epoch,
+                                            security_epoch,
+                                            detail);
+  PsNamePutU8(&payload, relation_projection == nullptr ? 0 : 1);
+  if (relation_projection == nullptr) return payload;
+
+  std::vector<std::uint8_t> extension;
+  PsNamePutUuid(&extension, relation_projection->descriptor_uuid);
+  PsNamePutUuid(&extension, relation_projection->relation_uuid);
+  PsNamePutU64(&extension, relation_projection->descriptor_generation);
+  PsNamePutU64(&extension, relation_projection->validated_resource_epoch);
+  PsNamePutU32(
+      &extension,
+      static_cast<std::uint32_t>(relation_projection->columns.size()));
+  for (const auto& column : relation_projection->columns) {
+    PsNamePutUuid(&extension, column.column_uuid);
+    PsNamePutU32(&extension, column.ordinal);
+    PsNamePutString(&extension, column.canonical_name_key);
+    PsNamePutUuid(&extension, column.type_descriptor_uuid);
+    PsNamePutString(&extension, column.type_descriptor_kind);
+    PsNamePutString(&extension, column.canonical_type_name);
+    PsNamePutString(&extension, column.encoded_type_descriptor);
+    std::uint8_t attributes = 0;
+    if (column.nullable) attributes |= 0x01u;
+    if (column.generated) attributes |= 0x02u;
+    if (column.identity_column) attributes |= 0x04u;
+    if (column.charset_variable_width) attributes |= 0x08u;
+    PsNamePutU8(&extension, attributes);
+    PsNamePutUuid(&extension, column.charset_uuid);
+    PsNamePutString(&extension, column.charset_canonical_name);
+    PsNamePutUuid(&extension, column.collation_uuid);
+    PsNamePutString(&extension, column.collation_canonical_name);
+    PsNamePutU32(&extension, column.character_length);
+    PsNamePutU32(&extension, column.charset_min_bytes);
+    PsNamePutU32(&extension, column.charset_max_bytes);
+    if (extension.size() > kMaxPsRelationProjectionBytes) {
+      return std::nullopt;
+    }
+  }
+  PsNamePutU8(&payload, kPsRelationDescriptorExtensionKind);
+  PsNamePutU8(&payload, kPsRelationDescriptorExtensionVersion);
+  PsNamePutU32(&payload, static_cast<std::uint32_t>(extension.size()));
+  payload.insert(payload.end(), extension.begin(), extension.end());
+  return payload;
+}
+
+struct PsNameV3PayloadResult {
+  bool ok = false;
+  std::vector<std::uint8_t> payload;
+  ServerDiagnostic diagnostic;
+};
+
+struct PsNameSemanticDetailResult {
+  bool ok = true;
+  std::string detail;
+  ServerDiagnostic diagnostic;
+};
+
+// SB_SERVER_GLOBAL_AGGREGATE_VIEW_SEMANTIC_DETAIL_V1_BEGIN
+std::string PsNameHexEncode(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2u);
+  for (const unsigned char byte : value) {
+    encoded.push_back(kHex[(byte >> 4u) & 0x0fu]);
+    encoded.push_back(kHex[byte & 0x0fu]);
+  }
+  return encoded;
+}
+
+std::optional<std::string> EncodeGlobalAggregateViewSemanticDetail(
+    const engine_api::EngineResolvedSemanticProjection& projection) {
+  const auto expected_result =
+      engine_api::EngineGlobalAggregateAvgIntegerResultDescriptor();
+  if (!projection.present ||
+      projection.marker != engine_api::kEngineGlobalAggregateViewMarkerV1 ||
+      projection.projection_descriptor.descriptor_uuid.canonical.empty() ||
+      projection.projection_descriptor.descriptor_kind !=
+          "global_aggregate_view" ||
+      projection.projection_descriptor.canonical_type_name !=
+          engine_api::kEngineGlobalAggregateViewMarkerV1 ||
+      projection.projection_descriptor.encoded_descriptor.empty() ||
+      projection.descriptor_generation == 0 ||
+      projection.result_alias.empty() ||
+      projection.result_descriptor.descriptor_kind !=
+          expected_result.descriptor_kind ||
+      projection.result_descriptor.canonical_type_name !=
+          expected_result.canonical_type_name ||
+      projection.result_descriptor.encoded_descriptor !=
+          expected_result.encoded_descriptor) {
+    return std::nullopt;
+  }
+
+  std::ostringstream packed;
+  packed << "gavs1|" << PsNameHexEncode(projection.marker) << '|'
+         << PsNameHexEncode(
+                projection.projection_descriptor.descriptor_uuid.canonical)
+         << '|' << projection.descriptor_generation << '|'
+         << PsNameHexEncode(
+                projection.projection_descriptor.descriptor_kind)
+         << '|'
+         << PsNameHexEncode(
+                projection.projection_descriptor.canonical_type_name)
+         << '|'
+         << PsNameHexEncode(
+                projection.projection_descriptor.encoded_descriptor)
+         << '|' << PsNameHexEncode(projection.result_alias) << '|'
+         << PsNameHexEncode(projection.result_descriptor.descriptor_kind)
+         << '|'
+         << PsNameHexEncode(
+                projection.result_descriptor.canonical_type_name)
+         << '|'
+         << PsNameHexEncode(
+                projection.result_descriptor.encoded_descriptor);
+  return packed.str();
+}
+
+std::optional<std::string> EncodeRelationProjectionViewSemanticDetail(
+    const engine_api::EngineResolvedSemanticProjection& projection) {
+  const bool v1 = projection.marker ==
+                  engine_api::kEngineRelationProjectionViewMarkerV1;
+  const bool v2 = projection.marker ==
+                  engine_api::kEngineRelationProjectionViewMarkerV2;
+  const std::size_t expected_output_count = v1 ? 2u : 1u;
+  if (!projection.present ||
+      (!v1 && !v2) ||
+      projection.projection_descriptor.descriptor_uuid.canonical.empty() ||
+      projection.projection_descriptor.descriptor_kind !=
+          "relation_projection_view" ||
+      projection.projection_descriptor.canonical_type_name !=
+          projection.marker ||
+      projection.projection_descriptor.encoded_descriptor.empty() ||
+      projection.descriptor_generation == 0 ||
+      projection.ordered_outputs.size() != expected_output_count) {
+    return std::nullopt;
+  }
+
+  std::set<std::string> identities = {
+      projection.projection_descriptor.descriptor_uuid.canonical};
+  std::set<std::string> names;
+  for (std::size_t index = 0; index < projection.ordered_outputs.size();
+       ++index) {
+    const auto& output = projection.ordered_outputs[index];
+    if (output.ordinal != index || output.output_name.empty() ||
+        output.output_column_uuid.canonical.empty() ||
+        output.output_type.type_descriptor_uuid.canonical.empty() ||
+        output.output_type.descriptor_kind.empty() ||
+        output.output_type.canonical_type_name.empty() ||
+        output.output_type.encoded_descriptor.empty() ||
+        !identities.insert(output.output_column_uuid.canonical).second ||
+        !identities.insert(
+             output.output_type.type_descriptor_uuid.canonical).second ||
+        !names.insert(output.output_name).second) {
+      return std::nullopt;
+    }
+  }
+
+  std::ostringstream packed;
+  packed << (v1 ? "rpvs1|" : "rpvd2|")
+         << PsNameHexEncode(projection.marker) << '|'
+         << PsNameHexEncode(
+                projection.projection_descriptor.descriptor_uuid.canonical)
+         << '|' << projection.descriptor_generation << '|'
+         << expected_output_count;
+  for (const auto& output : projection.ordered_outputs) {
+    packed << '|' << output.ordinal << '|'
+           << PsNameHexEncode(output.output_name) << '|'
+           << PsNameHexEncode(output.output_column_uuid.canonical) << '|'
+           << PsNameHexEncode(
+                  output.output_type.type_descriptor_uuid.canonical)
+           << '|' << PsNameHexEncode(output.output_type.descriptor_kind)
+           << '|' << PsNameHexEncode(
+                  output.output_type.canonical_type_name)
+           << '|' << PsNameHexEncode(
+                  output.output_type.encoded_descriptor)
+           << '|' << PsNameHexEncode(output.nullable ? "1" : "0");
+  }
+  return packed.str();
+}
+// SB_SERVER_GLOBAL_AGGREGATE_VIEW_SEMANTIC_DETAIL_V1_END
+
+PsNameSemanticDetailResult BuildPsNameSemanticDetail(
+    const engine_api::EngineRequestContext& context,
+    std::string_view object_uuid,
+    std::string_view object_class,
+    std::string_view ordinary_detail,
+    const engine_api::EngineResolvedSemanticProjection*
+        resolved_semantic_projection) {
+  PsNameSemanticDetailResult result;
+  result.detail = std::string(ordinary_detail);
+  if (PsNameLower(std::string(object_class)) != "view") return result;
+
+  if (resolved_semantic_projection != nullptr &&
+      resolved_semantic_projection->present) {
+    const auto encoded =
+        (resolved_semantic_projection->marker ==
+                 engine_api::kEngineRelationProjectionViewMarkerV1 ||
+         resolved_semantic_projection->marker ==
+                 engine_api::kEngineRelationProjectionViewMarkerV2)
+            ? EncodeRelationProjectionViewSemanticDetail(
+                  *resolved_semantic_projection)
+            : resolved_semantic_projection->marker ==
+                      engine_api::kEngineGlobalAggregateViewMarkerV1
+                  ? EncodeGlobalAggregateViewSemanticDetail(
+                        *resolved_semantic_projection)
+                  : std::optional<std::string>{};
+    if (!encoded) {
+      result.ok = false;
+      result.detail.clear();
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+          "parser_server_ipc.view_descriptor_invalid",
+          "The exact engine-owned persisted view semantic descriptor is invalid.",
+          "engine_view_semantic_descriptor_invalid");
+      return result;
+    }
+    result.detail = *encoded;
+    return result;
+  }
+
+  const auto aggregate_view =
+      engine_api::DescribeEngineGlobalAggregateView(
+          context, std::string(object_uuid));
+  if (aggregate_view.diagnostic.error) {
+    result.ok = false;
+    result.detail.clear();
+    result.diagnostic = PsRelationProjectionEngineDiagnostic(
+        aggregate_view.diagnostic,
+        "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+        "parser_server_ipc.view_descriptor_invalid",
+        "The exact engine-owned persisted view descriptor is invalid or not visible.");
+    return result;
+  }
+  if (aggregate_view.present) {
+    engine_api::EngineResolvedSemanticProjection projection;
+    projection.present = true;
+    projection.marker = engine_api::kEngineGlobalAggregateViewMarkerV1;
+    projection.projection_descriptor =
+        engine_api::EngineGlobalAggregateViewSemanticDescriptor(
+            aggregate_view);
+    projection.descriptor_generation =
+        aggregate_view.view_descriptor_generation;
+    projection.result_alias = aggregate_view.result_alias;
+    projection.result_descriptor = aggregate_view.result_descriptor;
+    const auto encoded =
+        EncodeGlobalAggregateViewSemanticDetail(projection);
+    if (!encoded) {
+      result.ok = false;
+      result.detail.clear();
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+          "parser_server_ipc.view_descriptor_invalid",
+          "The exact engine-owned persisted view semantic descriptor is invalid.",
+          "global_aggregate_view_semantic_descriptor_invalid");
+      return result;
+    }
+    result.detail = *encoded;
+    return result;
+  }
+
+  const auto relation_view =
+      engine_api::DescribeEngineRelationProjectionView(
+          context, std::string(object_uuid));
+  if (relation_view.diagnostic.error) {
+    result.ok = false;
+    result.detail.clear();
+    result.diagnostic = PsRelationProjectionEngineDiagnostic(
+        relation_view.diagnostic,
+        "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+        "parser_server_ipc.view_descriptor_invalid",
+        "The exact engine-owned persisted relation-view descriptor is invalid or not visible.");
+    return result;
+  }
+  if (relation_view.present) {
+    engine_api::EngineResolvedSemanticProjection projection;
+    projection.present = true;
+    projection.marker = relation_view.marker;
+    projection.projection_descriptor =
+        engine_api::EngineRelationProjectionViewSemanticDescriptor(
+            relation_view);
+    projection.descriptor_generation =
+        relation_view.view_descriptor_generation;
+    projection.ordered_outputs =
+        engine_api::EngineRelationProjectionViewSemanticOutputs(
+            relation_view);
+    const auto encoded =
+        EncodeRelationProjectionViewSemanticDetail(projection);
+    if (!encoded) {
+      result.ok = false;
+      result.detail.clear();
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+          "parser_server_ipc.view_descriptor_invalid",
+          "The exact engine-owned persisted relation-view semantic descriptor is invalid.",
+          "relation_projection_view_semantic_descriptor_invalid");
+      return result;
+    }
+    result.detail = *encoded;
+    return result;
+  }
+
+  const auto descriptor =
+      engine_api::DescribeEngineCatalogRelationProjectionView(
+          context, std::string(object_uuid));
+  if (descriptor.diagnostic.error) {
+    result.ok = false;
+    result.detail.clear();
+    result.diagnostic = PsRelationProjectionEngineDiagnostic(
+        descriptor.diagnostic,
+        "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+        "parser_server_ipc.view_descriptor_invalid",
+        "The exact engine-owned persisted view descriptor is invalid or not visible.");
+    return result;
+  }
+  if (!descriptor.present) return result;
+
+  const bool supported_variant =
+      descriptor.semantic_variant ==
+          engine_api::kRelationDescriptorProjectionTypeInventoryVariantV1 ||
+      descriptor.semantic_variant ==
+          engine_api::kRelationDescriptorProjectionCharsetInventoryVariantV1;
+  if (!supported_variant) {
+    result.ok = false;
+    result.detail.clear();
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        "PARSER_SERVER_IPC.VIEW_DESCRIPTOR_INVALID",
+        "parser_server_ipc.view_descriptor_invalid",
+        "The exact engine-owned persisted view descriptor has an unsupported semantic variant.",
+        "semantic_variant_unsupported");
+    return result;
+  }
+  result.detail =
+      std::string(engine_api::kRelationDescriptorProjectionMarkerV1) + ":" +
+      descriptor.semantic_variant;
+  return result;
+}
+
+PsNameV3PayloadResult BuildPsNameResolvedPayloadV3(
+    const PsNameResolveRequest& decoded,
+    const engine_api::EngineRequestContext& context,
+    const std::array<std::uint8_t, 16>& object_uuid,
+    std::string_view canonical_name,
+    std::string_view object_class,
+    std::uint64_t catalog_epoch,
+    std::uint64_t security_epoch,
+    std::string_view detail) {
+  PsNameV3PayloadResult result;
+  std::optional<PsPublicRelationProjection> projection;
+  if (decoded.include_persisted_relation_descriptor) {
+    const auto built = BuildPsPublicRelationProjection(
+        context, UuidBytesToText(object_uuid));
+    if (!built.ok) {
+      result.diagnostic = built.diagnostic;
+      return result;
+    }
+    projection = built.projection;
+  }
+  auto encoded = EncodePsNameResolvePayloadV3(
+      "resolved",
+      object_uuid,
+      canonical_name,
+      object_class,
+      catalog_epoch,
+      security_epoch,
+      detail,
+      projection ? &*projection : nullptr);
+  if (!encoded) {
+    result.diagnostic = PsRelationProjectionDiagnostic(
+        "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE",
+        "parser_server_ipc.relation_descriptor_too_large",
+        "The persisted MGA relation descriptor exceeds the public projection limit.",
+        "encoded_projection_limit_exceeded");
+    return result;
+  }
+  result.ok = true;
+  result.payload = std::move(*encoded);
+  return result;
 }
 
 std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                                  const HostedEngineState& engine_state,
                                                  ServerSessionRegistry* session_registry) {
   const auto trace_begin = std::chrono::steady_clock::now();
+  const bool transaction_routed =
+      frame.header.payload_schema_id == sbps::kSchemaResolveNameRequestV2 ||
+      frame.header.payload_schema_id == sbps::kSchemaResolveNameRequestV3;
+  const bool relation_projection_schema =
+      frame.header.payload_schema_id == sbps::kSchemaResolveNameRequestV3;
+  const std::uint32_t response_schema =
+      relation_projection_schema
+          ? sbps::kSchemaResolveNameResultV3
+          : transaction_routed ? sbps::kSchemaResolveNameResultV2
+                               : sbps::kSchemaResolveNameResultV1;
   if (!PsNameSessionBound(session_registry, frame.header.session_uuid)) {
     return ErrorFrame({sbps::IpcDiagnostic("PARSER_SERVER_IPC.SESSION_REQUIRED",
                                            "parser_server_ipc.session_required",
@@ -1654,11 +2553,157 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                       frame.header.sequence_number,
                       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
   }
-  const auto decoded = DecodePsNameResolveRequest(frame.payload);
+  const auto decoded = DecodePsNameResolveRequest(frame.payload,
+                                                  frame.header.payload_schema_id);
   if (!decoded || decoded->presented_name.empty()) {
-    return ErrorFrame({sbps::IpcDiagnostic("PARSER_SERVER_IPC.RESOLVE_NAME_INVALID",
-                                           "parser_server_ipc.resolve_name_invalid",
-                                           "The public name-resolution request is malformed.")},
+    return ErrorFrame({sbps::IpcDiagnostic(
+                          relation_projection_schema
+                              ? "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUEST_INVALID"
+                              : "PARSER_SERVER_IPC.RESOLVE_NAME_INVALID",
+                          relation_projection_schema
+                              ? "parser_server_ipc.relation_descriptor_request_invalid"
+                              : "parser_server_ipc.resolve_name_invalid",
+                          "The public name-resolution request is malformed.")},
+                      frame.header.request_uuid,
+                      frame.header.sequence_number,
+                      static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+  }
+  std::optional<ServerSessionRecord> session;
+  std::unique_lock<std::mutex> transaction_lock;
+  if (session_registry != nullptr) {
+    const auto found = session_registry->sessions_by_uuid.find(
+        UuidBytesToText(frame.header.session_uuid));
+    if (found != session_registry->sessions_by_uuid.end()) {
+      if (found->second.detached_recovery_quarantined) {
+        return ErrorFrame(
+            {sbps::IpcDiagnostic(
+                "PARSER_SERVER_IPC.SESSION_RECOVERY_QUARANTINED",
+                "parser_server_ipc.session_recovery_quarantined",
+                "Name resolution is blocked while detached transaction finality awaits engine recovery.")},
+            frame.header.request_uuid,
+            frame.header.sequence_number,
+            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+      }
+      if (found->second.transaction_mutex != nullptr) {
+        transaction_lock =
+            std::unique_lock<std::mutex>(*found->second.transaction_mutex);
+      }
+      const bool exact_frame_binding =
+          !sbps::IsZeroUuid(frame.header.connection_uuid) &&
+          !sbps::IsZeroUuid(frame.header.session_uuid) &&
+          !sbps::IsZeroUuid(found->second.connection_uuid) &&
+          frame.header.session_uuid == found->second.session_uuid &&
+          frame.header.connection_uuid == found->second.connection_uuid;
+      if (!exact_frame_binding) {
+        return ErrorFrame(
+            {sbps::IpcDiagnostic(
+                "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                "parser_server_ipc.route_association_mismatch",
+                "Name resolution requires exact connection, header, and session binding.")},
+            frame.header.request_uuid,
+            frame.header.sequence_number,
+            static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+      }
+      if (transaction_routed) {
+        const bool exact_binding =
+            !sbps::IsZeroUuid(decoded->session_uuid) &&
+            frame.header.session_uuid == decoded->session_uuid &&
+            found->second.session_uuid == decoded->session_uuid;
+        if (!exact_binding) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                  "parser_server_ipc.route_association_mismatch",
+                  "Transaction-routed name resolution requires exact connection, header, payload, and session binding.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        if (!found->second.transaction_routing_v2_negotiated) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.TRANSACTION_ROUTING_V2_NOT_NEGOTIATED",
+                  "parser_server_ipc.transaction_routing_v2_not_negotiated",
+                  "Transaction-routed name resolution was not negotiated for this server session.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        if (relation_projection_schema &&
+            !found->second.relation_descriptor_projection_v3_negotiated) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_V3_NOT_NEGOTIATED",
+                  "parser_server_ipc.relation_descriptor_v3_not_negotiated",
+                  "Persisted relation projection was not negotiated for this server session.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        const auto selected = found->second.transactions_by_local_id.find(
+            decoded->local_transaction_id);
+        if (decoded->local_transaction_id == 0 ||
+            decoded->transaction_uuid.empty() ||
+            selected == found->second.transactions_by_local_id.end() ||
+            selected->second.transaction_uuid != decoded->transaction_uuid ||
+            selected->second.lifecycle_state !=
+                ServerTransactionLifecycleState::kActive) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_INVALID",
+                  "parser_server_ipc.transaction_selector_invalid",
+                  "The transaction selector is not active and owned by this session.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        session = found->second;
+        session->local_transaction_id =
+            selected->second.local_transaction_id;
+        session->snapshot_visible_through_local_transaction_id =
+            selected->second.snapshot_visible_through_local_transaction_id;
+        session->transaction_uuid = selected->second.transaction_uuid;
+        session->transaction_timestamp = selected->second.transaction_timestamp;
+      } else {
+        const std::uint64_t default_id =
+            found->second.default_local_transaction_id != 0
+                ? found->second.default_local_transaction_id
+                : found->second.local_transaction_id;
+        const auto default_transaction =
+            found->second.transactions_by_local_id.find(default_id);
+        if (default_transaction !=
+                found->second.transactions_by_local_id.end() &&
+            default_transaction->second.lifecycle_state ==
+                ServerTransactionLifecycleState::kFinalityUnknown) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_FINALITY_UNKNOWN",
+                  "parser_server_ipc.default_transaction_finality_unknown",
+                  "Legacy name resolution is blocked while default transaction finality is unknown.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        const auto* active_default =
+            AdoptAndFindExactActiveDefaultTransaction(&found->second);
+        if (active_default == nullptr) {
+          return ErrorFrame(
+              {sbps::IpcDiagnostic(
+                  "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE",
+                  "parser_server_ipc.default_transaction_not_active",
+                  "Legacy name resolution requires one exact active default transaction.")},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
+        }
+        session = found->second;
+      }
+    }
+  }
+  if (!session) {
+    return ErrorFrame({sbps::IpcDiagnostic("PARSER_SERVER_IPC.SESSION_REQUIRED",
+                                           "parser_server_ipc.session_required",
+                                           "Public name resolution requires a bound server session.")},
                       frame.header.request_uuid,
                       frame.header.sequence_number,
                       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
@@ -1666,8 +2711,20 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
   const auto normalized = PsNameLower(decoded->presented_name);
   const std::string virtual_system_name = PsNameVirtualSystemName(normalized);
   if (!virtual_system_name.empty()) {
+    if (decoded->include_persisted_relation_descriptor) {
+      return ErrorFrame(
+          {PsRelationProjectionDiagnostic(
+              "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUIRED",
+              "parser_server_ipc.relation_descriptor_required",
+              "A virtual system relation has no persisted MGA relation descriptor.",
+              "persisted_descriptor_required")},
+          frame.header.request_uuid,
+          frame.header.sequence_number,
+          static_cast<std::uint16_t>(
+              sbps::MessageType::kResolveNameResult));
+    }
     WritePsNameResolutionTrace(*decoded,
-                               nullptr,
+                               &*session,
                                "resolved",
                                "virtual_system_object",
                                virtual_system_name,
@@ -1680,23 +2737,45 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                false,
                                PsNameTraceElapsedMicros(trace_begin),
                                session_registry);
+    const auto virtual_uuid = PsNameSyntheticUuid(virtual_system_name);
+    const auto virtual_payload = relation_projection_schema
+        ? EncodePsNameResolvePayloadV3(
+              "resolved",
+              virtual_uuid,
+              virtual_system_name,
+              decoded->object_class.empty() ? "relation"
+                                            : decoded->object_class,
+              1,
+              1,
+              "public virtual system object",
+              nullptr)
+        : std::optional<std::vector<std::uint8_t>>(
+              EncodePsNameResolvePayload(
+                  "resolved",
+                  virtual_uuid,
+                  virtual_system_name,
+                  decoded->object_class.empty() ? "relation"
+                                                : decoded->object_class,
+                  1,
+                  1,
+                  "public virtual system object"));
+    if (!virtual_payload) {
+      return ErrorFrame(
+          {PsRelationProjectionDiagnostic(
+              "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE",
+              "parser_server_ipc.relation_descriptor_too_large",
+              "The public relation result exceeds the V3 projection limit.")},
+          frame.header.request_uuid,
+          frame.header.sequence_number,
+          static_cast<std::uint16_t>(
+              sbps::MessageType::kResolveNameResult));
+    }
     return PsNameResponseFrame(
         frame,
         static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-        sbps::kSchemaResolveNameResultV1,
-        EncodePsNameResolvePayload("resolved",
-                                   PsNameSyntheticUuid(virtual_system_name),
-                                   virtual_system_name,
-                                   decoded->object_class.empty() ? "relation" : decoded->object_class,
-                                   1,
-                                   1,
-                                   "public virtual system object"),
+        response_schema,
+        *virtual_payload,
         false);
-  }
-  std::optional<ServerSessionRecord> session;
-  if (session_registry != nullptr) {
-    const auto found = session_registry->sessions_by_uuid.find(UuidBytesToText(frame.header.session_uuid));
-    if (found != session_registry->sessions_by_uuid.end()) session = found->second;
   }
   const auto parts = PsNameSplitPresentedName(decoded->presented_name, decoded->quoted);
   if (session && parts && !parts->empty()) {
@@ -1706,11 +2785,33 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         PsNameResolutionCacheKey(*session, *decoded, identifier_profile);
     const std::string stable_cache_key =
         PsNameStableResolutionCacheKey(*session, *decoded, identifier_profile);
-    bool normal_cache_checked = !decoded->bypass_cache;
+    const bool resource_resolution_request =
+        PsNameLower(decoded->object_class) == "charset" ||
+        PsNameLower(decoded->object_class) == "collation";
+    // A marked view's semantic variant is engine-owned, transaction-visible
+    // metadata. Generic name caches do not retain that descriptor, so view
+    // resolution remains uncached and is classified on the exact selector.
+    const bool semantic_view_resolution_request =
+        relation_projection_schema &&
+        PsNameLower(decoded->object_class) == "view";
+    // A V3 persisted-relation-descriptor request is also transaction-visible
+    // engine metadata.  Ordinary name-cache entries carry only the V1 name
+    // payload; returning one under a V3 response schema would omit the
+    // required descriptor and can expose stale relation identity.  Resolve
+    // these requests against the exact engine/MGA context instead.
+    const bool descriptor_resolution_request =
+        relation_projection_schema &&
+        decoded->include_persisted_relation_descriptor;
+    bool normal_cache_checked =
+        !decoded->bypass_cache && !resource_resolution_request &&
+        !semantic_view_resolution_request &&
+        !descriptor_resolution_request;
     bool normal_cache_hit = false;
     bool stable_cache_checked = false;
     bool stable_cache_hit = false;
-    if (!decoded->bypass_cache) {
+    if (!decoded->bypass_cache && !resource_resolution_request &&
+        !semantic_view_resolution_request &&
+        !descriptor_resolution_request) {
       if (const auto cached =
               LookupPsNameCache(session_registry, *session, cache_key)) {
         if (const auto object_uuid = PsNameUuidFromText(cached->object_uuid)) {
@@ -1732,7 +2833,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
           return PsNameResponseFrame(
               frame,
               static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-              sbps::kSchemaResolveNameResultV1,
+              response_schema,
               EncodePsNameResolvePayload("resolved",
                                          *object_uuid,
                                          cached->canonical_name,
@@ -1767,7 +2868,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
           return PsNameResponseFrame(
               frame,
               static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-              sbps::kSchemaResolveNameResultV1,
+              response_schema,
               EncodePsNameResolvePayload("resolved",
                                          *object_uuid,
                                          stable_cached->canonical_name,
@@ -1781,6 +2882,11 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
     }
     engine_api::EngineResolveNameRequest request;
     request.context = PsNameEngineContextFromSession(*session, engine_state, frame, decoded->language);
+    // Registry bootstrap entries are materialized under the request's
+    // identifier profile.  Keep the engine context and identifier atoms on
+    // the same profile so one parser-family request cannot be compared
+    // against another profile's cached registry image.
+    request.context.identifier_profile_uuid = identifier_profile;
     request.sql_object_reference.expected_object_type =
         decoded->object_class == "relation" ? std::string{} : decoded->object_class;
     request.sql_object_reference.path_type = parts->size() > 1 ? "qualified" : "unqualified";
@@ -1807,7 +2913,9 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
             resolved.primary_object.object_kind.empty()
                 ? decoded->object_class
                 : resolved.primary_object.object_kind;
-        if (!decoded->bypass_cache &&
+        if (!decoded->bypass_cache && !resource_resolution_request &&
+            !semantic_view_resolution_request &&
+            !descriptor_resolution_request &&
             PsNameResolutionCacheable(request.context,
                                       resolved_object_class,
                                       resolved.primary_object.uuid.canonical)) {
@@ -1836,28 +2944,83 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                    stable_cache_hit,
                                    PsNameTraceElapsedMicros(trace_begin),
                                    session_registry);
+        const std::string response_name =
+            resolved.resource_descriptor.present
+                ? resolved.resource_descriptor.canonical_name
+                : decoded->presented_name;
+        PsNameSemanticDetailResult semantic_detail;
+        semantic_detail.detail = "engine catalog resolver";
+        if (relation_projection_schema) {
+          semantic_detail = BuildPsNameSemanticDetail(
+              request.context,
+              resolved.primary_object.uuid.canonical,
+              resolved_object_class,
+              semantic_detail.detail,
+              &resolved.semantic_projection);
+        }
+        if (!semantic_detail.ok) {
+          return ErrorFrame(
+              {semantic_detail.diagnostic},
+              frame.header.request_uuid,
+              frame.header.sequence_number,
+              static_cast<std::uint16_t>(
+                  sbps::MessageType::kResolveNameResult));
+        }
+        std::vector<std::uint8_t> response_payload;
+        if (relation_projection_schema) {
+          const auto projected = BuildPsNameResolvedPayloadV3(
+              *decoded,
+              request.context,
+              *object_uuid,
+              response_name,
+              resolved_object_class,
+              catalog_epoch,
+              security_epoch,
+              semantic_detail.detail);
+          if (!projected.ok) {
+            return ErrorFrame(
+                {projected.diagnostic},
+                frame.header.request_uuid,
+                frame.header.sequence_number,
+                static_cast<std::uint16_t>(
+                    sbps::MessageType::kResolveNameResult));
+          }
+          response_payload = projected.payload;
+        } else {
+          response_payload = EncodePsNameResolvePayload(
+              "resolved",
+              *object_uuid,
+              response_name,
+              resolved_object_class,
+              catalog_epoch,
+              security_epoch,
+              semantic_detail.detail,
+              resolved.resource_descriptor.present
+                  ? &resolved.resource_descriptor
+                  : nullptr);
+        }
         return PsNameResponseFrame(
             frame,
             static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-            sbps::kSchemaResolveNameResultV1,
-            EncodePsNameResolvePayload("resolved",
-                                       *object_uuid,
-                                       decoded->presented_name,
-                                       resolved_object_class,
-                                       catalog_epoch,
-                                       security_epoch,
-                                       "engine catalog resolver"),
+            response_schema,
+            response_payload,
             false);
       }
     }
-    if (parts->size() == 1) {
+    if (parts->size() == 1 && !resource_resolution_request) {
       const auto registry_match = PsNameResolveUniqueRegistryLeaf(
-          request.context, parts->back(), decoded->object_class, identifier_profile);
+          request.context,
+          parts->back(),
+          decoded->object_class,
+          identifier_profile,
+          transaction_routed);
       if (registry_match &&
           PsNameRegistryMatchVisibleForSession(request.context, *registry_match)) {
         const auto object_uuid = PsNameUuidFromText(registry_match->object_uuid);
         if (object_uuid) {
           if (!decoded->bypass_cache &&
+              !semantic_view_resolution_request &&
+              !descriptor_resolution_request &&
               PsNameResolutionCacheable(request.context,
                                         registry_match->object_class,
                                         registry_match->object_uuid)) {
@@ -1888,19 +3051,63 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                      stable_cache_hit,
                                      PsNameTraceElapsedMicros(trace_begin),
                                      session_registry);
+          const auto registry_catalog_epoch =
+              registry_match->catalog_generation_id == 0
+                  ? session->catalog_generation
+                  : registry_match->catalog_generation_id;
+          PsNameSemanticDetailResult semantic_detail;
+          semantic_detail.detail = "engine name registry resolver";
+          if (relation_projection_schema) {
+            semantic_detail = BuildPsNameSemanticDetail(
+                request.context,
+                registry_match->object_uuid,
+                registry_match->object_class,
+                semantic_detail.detail,
+                nullptr);
+          }
+          if (!semantic_detail.ok) {
+            return ErrorFrame(
+                {semantic_detail.diagnostic},
+                frame.header.request_uuid,
+                frame.header.sequence_number,
+                static_cast<std::uint16_t>(
+                    sbps::MessageType::kResolveNameResult));
+          }
+          std::vector<std::uint8_t> response_payload;
+          if (relation_projection_schema) {
+            const auto projected = BuildPsNameResolvedPayloadV3(
+                *decoded,
+                request.context,
+                *object_uuid,
+                decoded->presented_name,
+                registry_match->object_class,
+                registry_catalog_epoch,
+                session->security_epoch,
+                semantic_detail.detail);
+            if (!projected.ok) {
+              return ErrorFrame(
+                  {projected.diagnostic},
+                  frame.header.request_uuid,
+                  frame.header.sequence_number,
+                  static_cast<std::uint16_t>(
+                      sbps::MessageType::kResolveNameResult));
+            }
+            response_payload = projected.payload;
+          } else {
+            response_payload = EncodePsNameResolvePayload(
+                "resolved",
+                *object_uuid,
+                decoded->presented_name,
+                registry_match->object_class,
+                registry_catalog_epoch,
+                session->security_epoch,
+                semantic_detail.detail);
+          }
           return PsNameResponseFrame(
               frame,
               static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-              sbps::kSchemaResolveNameResultV1,
-              EncodePsNameResolvePayload("resolved",
-                                         *object_uuid,
-                                         decoded->presented_name,
-                                         registry_match->object_class,
-                                         registry_match->catalog_generation_id == 0
-                                             ? session->catalog_generation
-                                             : registry_match->catalog_generation_id,
-                                         session->security_epoch,
-                                         "engine name registry resolver"),
+              response_schema,
+              response_payload,
               false);
         }
       }
@@ -1936,17 +3143,41 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                                PsNameTraceElapsedMicros(trace_begin),
                                session_registry);
   }
+  const auto not_found_payload = relation_projection_schema
+      ? EncodePsNameResolvePayloadV3(
+            "not_found_or_not_visible",
+            {},
+            "",
+            decoded->object_class,
+            1,
+            1,
+            "public resolver returned no UUID",
+            nullptr)
+      : std::optional<std::vector<std::uint8_t>>(
+            EncodePsNameResolvePayload(
+                "not_found_or_not_visible",
+                {},
+                "",
+                decoded->object_class,
+                1,
+                1,
+                "public resolver returned no UUID"));
+  if (!not_found_payload) {
+    return ErrorFrame(
+        {PsRelationProjectionDiagnostic(
+            "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_TOO_LARGE",
+            "parser_server_ipc.relation_descriptor_too_large",
+            "The public relation result exceeds the V3 projection limit.")},
+        frame.header.request_uuid,
+        frame.header.sequence_number,
+        static_cast<std::uint16_t>(
+            sbps::MessageType::kResolveNameResult));
+  }
   return PsNameResponseFrame(
       frame,
       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-      sbps::kSchemaResolveNameResultV1,
-      EncodePsNameResolvePayload("not_found_or_not_visible",
-                                 {},
-                                 "",
-                                 decoded->object_class,
-                                 1,
-                                 1,
-                                 "public resolver returned no UUID"),
+      response_schema,
+      *not_found_payload,
       false);
 }
 
@@ -1959,6 +3190,33 @@ std::vector<std::uint8_t> RenderUuidPublicFrame(const sbps::Frame& frame,
                       frame.header.request_uuid,
                       frame.header.sequence_number,
                       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult));
+  }
+  const auto session = session_registry->sessions_by_uuid.find(
+      UuidBytesToText(frame.header.session_uuid));
+  const bool exact_binding =
+      session != session_registry->sessions_by_uuid.end() &&
+      !sbps::IsZeroUuid(frame.header.connection_uuid) &&
+      !sbps::IsZeroUuid(session->second.connection_uuid) &&
+      frame.header.connection_uuid == session->second.connection_uuid;
+  if (!exact_binding) {
+    return ErrorFrame(
+        {sbps::IpcDiagnostic(
+            "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+            "parser_server_ipc.route_association_mismatch",
+            "UUID rendering requires exact connection and session binding.")},
+        frame.header.request_uuid,
+        frame.header.sequence_number,
+        static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult));
+  }
+  if (session->second.transaction_routing_v2_negotiated) {
+    return ErrorFrame(
+        {sbps::IpcDiagnostic(
+            "PARSER_SERVER_IPC.TRANSACTIONAL_UUID_RENDER_UNSUPPORTED",
+            "parser_server_ipc.transactional_uuid_render_unsupported",
+            "Shared V1 UUID rendering is prohibited for transaction-routed sessions.")},
+        frame.header.request_uuid,
+        frame.header.sequence_number,
+        static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult));
   }
   if (frame.payload.size() < 16) {
     return ErrorFrame({sbps::IpcDiagnostic("PARSER_SERVER_IPC.RENDER_UUID_INVALID",
@@ -2035,6 +3293,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                        ServerMaintenanceCoordinator* maintenance_coordinator,
                        ServerAgentRuntime* agent_runtime,
                        ServerObservabilityState* observability,
+                       ClientNegotiationState* negotiation_state,
                        bool* release_heap_after_close) {
   sbps::Frame frame;
   std::vector<ServerDiagnostic> frame_diagnostics;
@@ -2059,6 +3318,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kFetch) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kCloseCursor) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kClosePreparedSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kManagementRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kEventSubscribeRequest) ||
@@ -2075,6 +3335,49 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                                                 "A pre-authentication SBPS frame carried a session UUID.")},
                            frame.header.request_uuid, frame.header.sequence_number));
     return false;
+  }
+  if (session_bound_message && sbps::IsZeroUuid(frame.header.session_uuid)) {
+    WriteAll(client_fd,
+             ErrorFrame(
+                 {sbps::IpcDiagnostic(
+                     "PARSER_SERVER_IPC.SESSION_REQUIRED",
+                     "parser_server_ipc.session_required",
+                     "A session-bound frame requires an exact nonzero session UUID.")},
+                 frame.header.request_uuid,
+                 frame.header.sequence_number));
+    return false;
+  }
+  if (session_bound_message) {
+    bool exact_physical_binding = false;
+    if (session_registry != nullptr && negotiation_state != nullptr &&
+        negotiation_state->hello_admitted &&
+        !sbps::IsZeroUuid(negotiation_state->server_channel_uuid) &&
+        !sbps::IsZeroUuid(frame.header.connection_uuid)) {
+      const auto session_it = session_registry->sessions_by_uuid.find(
+          UuidBytesToText(frame.header.session_uuid));
+      const auto owner_it =
+          session_registry->physical_channel_by_connection_uuid.find(
+              UuidBytesToText(frame.header.connection_uuid));
+      exact_physical_binding =
+          session_it != session_registry->sessions_by_uuid.end() &&
+          owner_it !=
+              session_registry->physical_channel_by_connection_uuid.end() &&
+          owner_it->second == negotiation_state->server_channel_uuid &&
+          session_it->second.server_channel_uuid ==
+              negotiation_state->server_channel_uuid &&
+          session_it->second.connection_uuid == frame.header.connection_uuid;
+    }
+    if (!exact_physical_binding) {
+      WriteAll(client_fd,
+               ErrorFrame(
+                   {sbps::IpcDiagnostic(
+                       "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                       "parser_server_ipc.route_association_mismatch",
+                       "The session-bound frame does not belong to this physical parser channel.")},
+                   frame.header.request_uuid,
+                   frame.header.sequence_number));
+      return false;
+    }
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kHello)) {
     auto hello = sbps::DecodeHelloRequest(frame.payload);
@@ -2114,6 +3417,40 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                              "PARSER_SERVER_IPC.PARSER_PROFILE_MISMATCH");
       return false;
     }
+    const bool repeated_hello =
+        negotiation_state != nullptr && negotiation_state->hello_admitted;
+    std::array<std::uint8_t, 32> requested_capabilities{};
+    requested_capabilities[0] =
+        hello->capability_bitmap[0] & sbps::kKnownCapabilityByte0;
+    const bool capabilities_unchanged =
+        !repeated_hello ||
+        requested_capabilities ==
+            negotiation_state->accepted_capability_bitmap;
+    const bool hello_identity_unchanged =
+        !repeated_hello ||
+        (frame.header.protocol_major ==
+             negotiation_state->admitted_protocol_major &&
+         frame.header.protocol_minor ==
+             negotiation_state->admitted_protocol_minor &&
+         frame.payload == negotiation_state->admitted_hello_payload);
+    if (!ParserChannelHelloMayBeAdmittedForTest(
+            repeated_hello,
+            capabilities_unchanged,
+            hello_identity_unchanged,
+            negotiation_state != nullptr &&
+                negotiation_state->connection_authenticated)) {
+      WriteAll(client_fd,
+               ErrorFrame(
+                   {sbps::IpcDiagnostic(
+                       "PARSER_SERVER_IPC.HELLO_RENEGOTIATION_REFUSED",
+                       "parser_server_ipc.hello_renegotiation_refused",
+                       "An admitted physical parser channel cannot change its negotiated capabilities.")},
+                   frame.header.request_uuid,
+                   frame.header.sequence_number,
+                   static_cast<std::uint16_t>(
+                       sbps::MessageType::kHelloReject)));
+      return false;
+    }
     const auto admission = AdmitParserPackage(
         parser_registry, *hello, frame.header.protocol_major, frame.header.protocol_minor);
     if (!admission.admitted) {
@@ -2145,7 +3482,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                            "server.parser.hello",
                            "accepted",
                            "parser package admitted");
-    WriteAll(client_fd, AcceptFrame(frame, config));
+    WriteAll(client_fd, AcceptFrame(frame, config, negotiation_state));
     return true;
   }
   if (frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPing)) {
@@ -2215,7 +3552,61 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kAuthHandoff)) {
+    if (session_registry == nullptr || negotiation_state == nullptr ||
+        !negotiation_state->hello_admitted ||
+        sbps::IsZeroUuid(negotiation_state->server_channel_uuid) ||
+        sbps::IsZeroUuid(frame.header.connection_uuid)) {
+      WriteAll(client_fd,
+               ErrorFrame(
+                   {sbps::IpcDiagnostic(
+                       "PARSER_SERVER_IPC.HELLO_REQUIRED",
+                       "parser_server_ipc.hello_required",
+                       "Authentication requires an admitted hello on this physical parser channel.")},
+                   frame.header.request_uuid,
+                   frame.header.sequence_number,
+                   static_cast<std::uint16_t>(sbps::MessageType::kAuthResult)));
+      return false;
+    }
+    const std::string connection_key =
+        UuidBytesToText(frame.header.connection_uuid);
+    const auto existing_owner =
+        session_registry->physical_channel_by_connection_uuid.find(
+            connection_key);
+    if (existing_owner !=
+            session_registry->physical_channel_by_connection_uuid.end() &&
+        existing_owner->second != negotiation_state->server_channel_uuid) {
+      WriteAll(client_fd,
+               ErrorFrame(
+                   {sbps::IpcDiagnostic(
+                       "PARSER_SERVER_IPC.CONNECTION_REPLAY_REFUSED",
+                       "parser_server_ipc.connection_replay_refused",
+                       "The connection UUID is already owned by another physical parser channel.")},
+                   frame.header.request_uuid,
+                   frame.header.sequence_number,
+                   static_cast<std::uint16_t>(sbps::MessageType::kAuthResult)));
+      return false;
+    }
+    session_registry->physical_channel_by_connection_uuid.insert_or_assign(
+        connection_key, negotiation_state->server_channel_uuid);
+    session_registry->negotiated_capabilities_by_connection_uuid
+        .insert_or_assign(connection_key,
+                          negotiation_state->accepted_capability_bitmap);
     const auto result = HandleAuthHandoff(session_registry, engine_state, frame);
+    if (result.accepted && negotiation_state != nullptr) {
+      negotiation_state->connection_authenticated = true;
+    }
+    if (!result.accepted) {
+      const auto owner =
+          session_registry->physical_channel_by_connection_uuid.find(
+              connection_key);
+      if (owner !=
+              session_registry->physical_channel_by_connection_uuid.end() &&
+          owner->second == negotiation_state->server_channel_uuid) {
+        session_registry->physical_channel_by_connection_uuid.erase(owner);
+        session_registry->negotiated_capabilities_by_connection_uuid.erase(
+            connection_key);
+      }
+    }
     IncrementServerMetric(observability,
                           "sys.metrics.ipc.parser_server.auth.latency_microseconds",
                           1,
@@ -2230,6 +3621,31 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kAttachDatabase)) {
+    bool exact_attach_channel = false;
+    if (session_registry != nullptr && negotiation_state != nullptr &&
+        negotiation_state->hello_admitted &&
+        !sbps::IsZeroUuid(negotiation_state->server_channel_uuid) &&
+        !sbps::IsZeroUuid(frame.header.connection_uuid)) {
+      const auto owner =
+          session_registry->physical_channel_by_connection_uuid.find(
+              UuidBytesToText(frame.header.connection_uuid));
+      exact_attach_channel =
+          owner !=
+              session_registry->physical_channel_by_connection_uuid.end() &&
+          owner->second == negotiation_state->server_channel_uuid;
+    }
+    if (!exact_attach_channel) {
+      WriteAll(client_fd,
+               ErrorFrame(
+                   {sbps::IpcDiagnostic(
+                       "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                       "parser_server_ipc.route_association_mismatch",
+                       "Attach does not belong to the physical parser channel that authenticated the connection.")},
+                   frame.header.request_uuid,
+                   frame.header.sequence_number,
+                   static_cast<std::uint16_t>(sbps::MessageType::kAttachResult)));
+      return false;
+    }
     if (maintenance_coordinator != nullptr && !MaintenanceAllowsAttach(*maintenance_coordinator)) {
       WriteAll(client_fd, ErrorFrame(
                              {MaintenanceAdmissionDiagnostic(*maintenance_coordinator,
@@ -2307,12 +3723,15 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr)) {
     if (maintenance_coordinator != nullptr && !MaintenanceAllowsSblr(*maintenance_coordinator)) {
-      WriteAll(client_fd, ErrorFrame(
-                             {MaintenanceAdmissionDiagnostic(*maintenance_coordinator,
-                                                             "prepare_sblr",
-                                                             "sblr_admission_fenced")},
-                             frame.header.request_uuid, frame.header.sequence_number,
-                             static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult)));
+      auto refused = RejectPrepareSblrBeforeEngine(
+          frame,
+          "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
+          "sblr_admission_fenced");
+      refused.diagnostics.push_back(MaintenanceAdmissionDiagnostic(
+          *maintenance_coordinator,
+          "prepare_sblr",
+          "sblr_admission_fenced"));
+      WriteAll(client_fd, SessionOperationFrame(frame, refused));
       return true;
     }
     WriteAll(client_fd, SessionOperationFrame(
@@ -2322,12 +3741,15 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr)) {
     if (maintenance_coordinator != nullptr && !MaintenanceAllowsSblr(*maintenance_coordinator)) {
-      WriteAll(client_fd, ErrorFrame(
-                             {MaintenanceAdmissionDiagnostic(*maintenance_coordinator,
-                                                             "execute_sblr",
-                                                             "sblr_admission_fenced")},
-                             frame.header.request_uuid, frame.header.sequence_number,
-                             static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult)));
+      auto refused = RejectExecuteSblrBeforeEngine(
+          frame,
+          "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
+          "sblr_admission_fenced");
+      refused.diagnostics.push_back(MaintenanceAdmissionDiagnostic(
+          *maintenance_coordinator,
+          "execute_sblr",
+          "sblr_admission_fenced"));
+      WriteAll(client_fd, SessionOperationFrame(frame, refused));
       return true;
     }
     IparProjectionSourceContext ipar_context{agent_runtime, observability};
@@ -2381,6 +3803,13 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
     WriteAll(client_fd, SessionOperationFrame(frame, HandleCloseCursor(session_registry, frame)));
     return true;
   }
+  if (frame.header.message_type ==
+      static_cast<std::uint16_t>(sbps::MessageType::kClosePreparedSblr)) {
+    WriteAll(client_fd,
+             SessionOperationFrame(
+                 frame, HandleClosePreparedSblr(session_registry, frame)));
+    return true;
+  }
   WriteAll(client_fd, ErrorFrame(
                          {sbps::IpcDiagnostic("PARSER_SERVER_IPC.MESSAGE_TYPE_UNSUPPORTED",
                                               "parser_server_ipc.message_type_unsupported",
@@ -2414,6 +3843,75 @@ std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(
     const sbps::Frame& frame,
     const ServerSessionRegistry* session_registry) {
   return RenderUuidPublicFrame(frame, session_registry);
+}
+
+std::vector<SessionOperationResult> HandleUnexpectedParserChannelClose(
+    ServerSessionRegistry* session_registry,
+    const std::array<std::uint8_t, 16>& server_channel_uuid) {
+  std::vector<SessionOperationResult> results;
+  if (session_registry == nullptr || sbps::IsZeroUuid(server_channel_uuid)) {
+    return results;
+  }
+
+  struct OwnedSessionBinding {
+    std::array<std::uint8_t, 16> session_uuid{};
+    std::array<std::uint8_t, 16> connection_uuid{};
+  };
+  std::vector<OwnedSessionBinding> owned_sessions;
+  for (const auto& [_, session] : session_registry->sessions_by_uuid) {
+    if (session.server_channel_uuid == server_channel_uuid) {
+      owned_sessions.push_back(
+          {session.session_uuid, session.connection_uuid});
+    }
+  }
+  std::sort(owned_sessions.begin(),
+            owned_sessions.end(),
+            [](const OwnedSessionBinding& left,
+               const OwnedSessionBinding& right) {
+              return left.session_uuid < right.session_uuid;
+            });
+
+  for (const auto& owned : owned_sessions) {
+    sbps::Frame trusted_disconnect;
+    trusted_disconnect.header.message_type =
+        static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
+    trusted_disconnect.header.request_uuid = sbps::MakeUuidV7Bytes();
+    trusted_disconnect.header.connection_uuid = owned.connection_uuid;
+    trusted_disconnect.header.session_uuid = owned.session_uuid;
+    trusted_disconnect.payload.insert(trusted_disconnect.payload.end(),
+                                      owned.session_uuid.begin(),
+                                      owned.session_uuid.end());
+    PutString(&trusted_disconnect.payload,
+              "physical_parser_channel_lost");
+    results.push_back(
+        HandleDisconnectNotice(session_registry, trusted_disconnect));
+  }
+
+  // A dead physical channel can no longer own a reusable connection binding.
+  // Unknown transaction outcomes remain in their quarantined session record;
+  // removing transport ownership does not resolve or discard MGA finality.
+  for (auto it =
+           session_registry->physical_channel_by_connection_uuid.begin();
+       it != session_registry->physical_channel_by_connection_uuid.end();) {
+    if (it->second == server_channel_uuid) {
+      session_registry->negotiated_capabilities_by_connection_uuid.erase(
+          it->first);
+      it = session_registry->physical_channel_by_connection_uuid.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return results;
+}
+
+bool ParserChannelHelloMayBeAdmittedForTest(
+    bool hello_already_admitted,
+    bool capability_bitmap_unchanged,
+    bool hello_identity_unchanged,
+    bool connection_authenticated) {
+  return !hello_already_admitted ||
+         (!connection_authenticated && capability_bitmap_unchanged &&
+          hello_identity_unchanged);
 }
 
 ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& config,
@@ -2630,6 +4128,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                  &observability,
                                  &client_dispatch_mutex]() {
       bool release_heap_after_close = false;
+      ClientNegotiationState negotiation_state;
       while (!ParserServerStopRequested()) {
         if (!ClientSocketReady(client_fd)) {
           continue;
@@ -2648,6 +4147,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                                         &maintenance_coordinator,
                                         &agent_runtime,
                                         &observability,
+                                        &negotiation_state,
                                         &release_heap_after_close);
           if (maintenance_coordinator.shutdown_requested) {
             RequestParserServerStop();
@@ -2655,6 +4155,24 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
         }
         if (!keep_open) {
           break;
+        }
+      }
+      {
+        std::lock_guard<std::mutex> dispatch_guard(client_dispatch_mutex);
+        const auto channel_cleanup = HandleUnexpectedParserChannelClose(
+            &session_registry, negotiation_state.server_channel_uuid);
+        if (!channel_cleanup.empty()) {
+          release_heap_after_close = true;
+          SetServerMetric(
+              &observability,
+              "sys.metrics.server.session.active",
+              static_cast<std::uint64_t>(
+                  session_registry.sessions_by_uuid.size()));
+          RecordServerAuditEvent(
+              &observability,
+              "server.parser_channel_lost",
+              "cleanup_attempted",
+              "server-owned cleanup processed all sessions bound to a closed physical parser channel");
         }
       }
       CloseIpcSocket(client_fd);

@@ -10,7 +10,11 @@
 
 #include <cstdlib>
 #include <cstdint>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -71,6 +75,207 @@ std::uint32_t ReadXdrU32(const std::vector<std::uint8_t>& bytes, std::size_t off
          static_cast<std::uint32_t>(bytes[offset + 3]);
 }
 
+bool ReadBoundedXdrString(const std::vector<std::uint8_t>& bytes,
+                          std::size_t* offset,
+                          std::string* value) {
+  if (offset == nullptr || value == nullptr || *offset + 4 > bytes.size()) {
+    return false;
+  }
+  const std::uint32_t length = ReadXdrU32(bytes, *offset);
+  *offset += 4;
+  const std::size_t padded =
+      static_cast<std::size_t>(length) + ((4u - (length & 3u)) & 3u);
+  if (*offset + padded > bytes.size()) return false;
+  value->assign(reinterpret_cast<const char*>(bytes.data() + *offset), length);
+  *offset += padded;
+  return true;
+}
+
+bool ExpectConversionPresentation(std::string_view source) {
+  scratchbird::parser::ipc::MessageVectorSet messages;
+  messages.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR",
+      "prose is not a presentation contract", "engine",
+      {{"detail", "must not be parsed"},
+       {"conversion_input_text", std::string(source)}}));
+  const auto presentation =
+      scratchbird::parser::firebird::PresentFirebirdConversionInputDiagnostic(
+          messages, "op_execute");
+  bool ok = Expect(presentation.has_value(),
+                   "structured conversion diagnostic was not presented");
+  if (!presentation) return false;
+  ok = Expect(presentation->conversion_input_text == source,
+              "conversion presentation changed the engine input") && ok;
+  ok = ExpectResponseToken(presentation->response_json, "\"ok\":false") && ok;
+  ok = ExpectResponseToken(presentation->response_json,
+                           "FIREBIRD.CONVERSION.INPUT_ERROR") && ok;
+  ok = ExpectResponseToken(presentation->response_json,
+                           "\"sqlstate\":\"22018\"") && ok;
+  ok = Expect(presentation->response_json.find("must not be parsed") ==
+                  std::string::npos,
+              "worker parsed diagnostic detail prose") && ok;
+  ok = Expect(presentation->response_json.find("\"row") ==
+                  std::string::npos,
+              "conversion failure presentation exposed a result row") && ok;
+  if (source == "bad\"\\value") {
+    ok = ExpectResponseToken(
+             presentation->response_json,
+             "\"conversion_input\":\"bad\\\"\\\\value\"") && ok;
+  }
+
+  const auto& status = presentation->encoded_status_vector;
+  std::size_t offset = 0;
+  ok = Expect(status.size() >= 20 && ReadXdrU32(status, offset) == 1,
+              "conversion status missing isc_arg_gds") && ok;
+  offset += 4;
+  ok = Expect(offset + 4 <= status.size() &&
+                  ReadXdrU32(status, offset) == 335544334u,
+              "conversion status did not use isc_convert_error") && ok;
+  offset += 4;
+  ok = Expect(offset + 4 <= status.size() &&
+                  ReadXdrU32(status, offset) == 2,
+              "conversion status missing isc_arg_string") && ok;
+  offset += 4;
+  std::string status_source;
+  ok = Expect(ReadBoundedXdrString(status, &offset, &status_source) &&
+                  status_source == source,
+              "conversion status source string drifted") && ok;
+  ok = Expect(offset + 4 <= status.size() &&
+                  ReadXdrU32(status, offset) == 19,
+              "conversion status missing isc_arg_sql_state") && ok;
+  offset += 4;
+  std::string sqlstate;
+  ok = Expect(ReadBoundedXdrString(status, &offset, &sqlstate) &&
+                  sqlstate == "22018",
+              "conversion status SQLSTATE drifted") && ok;
+  ok = Expect(offset + 4 == status.size() &&
+                  ReadXdrU32(status, offset) == 0,
+              "conversion status missing terminal isc_arg_end") && ok;
+  return ok;
+}
+
+bool RunConversionDiagnosticPresentationCase() {
+  bool ok = true;
+  for (const std::string_view source :
+       {std::string_view("1"), std::string_view("29.2.2002"),
+        std::string_view("9:11:60"),
+        std::string_view("bad\"\\value")}) {
+    ok = ExpectConversionPresentation(source) && ok;
+  }
+
+  constexpr char kHex[] = "0123456789ABCDEF";
+  std::string all_controls;
+  std::string expected_control_escapes;
+  for (unsigned value = 0; value < 0x20u; ++value) {
+    all_controls.push_back(static_cast<char>(value));
+    expected_control_escapes += "\\u00";
+    expected_control_escapes.push_back(kHex[(value >> 4) & 0x0fu]);
+    expected_control_escapes.push_back(kHex[value & 0x0fu]);
+  }
+  const auto escaped_controls = scratchbird::parser::firebird::
+      EscapeFirebirdConversionDiagnosticJsonString(all_controls);
+  ok = Expect(escaped_controls.has_value() &&
+                  *escaped_controls == expected_control_escapes,
+              "conversion JSON did not escape every C0 control") && ok;
+  if (escaped_controls) {
+    for (const unsigned char ch : *escaped_controls) {
+      ok = Expect(ch >= 0x20u,
+                  "conversion JSON retained a raw C0 control") && ok;
+    }
+  }
+
+  const std::string non_nul_controls = all_controls.substr(1);
+  ok = ExpectConversionPresentation(non_nul_controls) && ok;
+  scratchbird::parser::ipc::MessageVectorSet control_messages;
+  control_messages.diagnostics.push_back(
+      scratchbird::parser::ipc::MakeDiagnostic(
+          "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "ignored",
+          "engine", {{"conversion_input_text", non_nul_controls}}));
+  const auto control_presentation = scratchbird::parser::firebird::
+      PresentFirebirdConversionInputDiagnostic(control_messages, "op_execute");
+  if (control_presentation) {
+    for (unsigned value = 1; value < 0x20u; ++value) {
+      std::string escape = "\\u00";
+      escape.push_back(kHex[(value >> 4) & 0x0fu]);
+      escape.push_back(kHex[value & 0x0fu]);
+      ok = ExpectResponseToken(control_presentation->response_json, escape) && ok;
+    }
+  }
+
+  const std::vector<std::string> invalid_utf8{
+      std::string("\x80", 1),
+      std::string("\xC0\xAF", 2),
+      std::string("\xE0\x80\x80", 3),
+      std::string("\xED\xA0\x80", 3),
+      std::string("\xF4\x90\x80\x80", 4),
+      std::string("\xF0\x9F", 2),
+  };
+  for (const auto& invalid : invalid_utf8) {
+    ok = Expect(
+             !scratchbird::parser::firebird::
+                  EscapeFirebirdConversionDiagnosticJsonString(invalid)
+                      .has_value(),
+             "conversion JSON accepted malformed UTF-8") && ok;
+    scratchbird::parser::ipc::MessageVectorSet invalid_messages;
+    invalid_messages.diagnostics.push_back(
+        scratchbird::parser::ipc::MakeDiagnostic(
+            "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "ignored",
+            "engine", {{"conversion_input_text", invalid}}));
+    ok = Expect(!scratchbird::parser::firebird::
+                     PresentFirebirdConversionInputDiagnostic(
+                         invalid_messages, "op_execute")
+                     .has_value(),
+                "conversion presenter did not fail malformed UTF-8 to generic") &&
+         ok;
+  }
+
+  const auto present = [](scratchbird::parser::ipc::MessageVectorSet messages) {
+    return scratchbird::parser::firebird::
+        PresentFirebirdConversionInputDiagnostic(messages, "op_execute");
+  };
+  scratchbird::parser::ipc::MessageVectorSet unrelated;
+  unrelated.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_INVALID_INPUT", "ERROR", "generic", "engine",
+      {{"conversion_input_text", "29.2.2002"}}));
+  ok = Expect(!present(std::move(unrelated)).has_value(),
+              "generic invalid input was mapped as Firebird conversion") && ok;
+
+  scratchbird::parser::ipc::MessageVectorSet missing;
+  missing.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "missing", "engine"));
+  ok = Expect(!present(std::move(missing)).has_value(),
+              "missing conversion field did not fail closed") && ok;
+
+  scratchbird::parser::ipc::MessageVectorSet empty;
+  empty.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "empty", "engine",
+      {{"conversion_input_text", ""}}));
+  ok = Expect(!present(std::move(empty)).has_value(),
+              "empty conversion field did not fail closed") && ok;
+
+  scratchbird::parser::ipc::MessageVectorSet duplicate;
+  duplicate.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "duplicate", "engine",
+      {{"conversion_input_text", "1"}, {"conversion_input_text", "2"}}));
+  ok = Expect(!present(std::move(duplicate)).has_value(),
+              "duplicate conversion fields did not fail closed") && ok;
+
+  scratchbird::parser::ipc::MessageVectorSet oversized;
+  oversized.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "oversized", "engine",
+      {{"conversion_input_text", std::string(1025, 'x')}}));
+  ok = Expect(!present(std::move(oversized)).has_value(),
+              "oversized conversion field did not fail closed") && ok;
+
+  scratchbird::parser::ipc::MessageVectorSet embedded_nul;
+  embedded_nul.diagnostics.push_back(scratchbird::parser::ipc::MakeDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", "ERROR", "nul", "engine",
+      {{"conversion_input_text", std::string("a\0b", 3)}}));
+  ok = Expect(!present(std::move(embedded_nul)).has_value(),
+              "NUL conversion field did not fail closed") && ok;
+  return ok;
+}
+
 bool WriteAll(int fd, const std::vector<std::uint8_t>& bytes) {
   std::size_t written = 0;
   while (written < bytes.size()) {
@@ -107,7 +312,34 @@ bool ReadFirebirdResponse(int fd,
   if (!ReadExact(fd, header, 20)) return false;
   const auto data_len = ReadXdrU32(*header, 16);
   const auto padding = (4u - (data_len & 3u)) & 3u;
-  if (!ReadExact(fd, data_and_status, static_cast<std::size_t>(data_len + padding + 12))) {
+  if (!ReadExact(fd, data_and_status, static_cast<std::size_t>(data_len + padding))) {
+    return false;
+  }
+  for (;;) {
+    std::vector<std::uint8_t> word;
+    if (!ReadExact(fd, &word, 4)) return false;
+    data_and_status->insert(data_and_status->end(), word.begin(), word.end());
+    const auto tag = ReadXdrU32(word, 0);
+    if (tag == 0) break;
+    if (tag == 1 || tag == 4 || tag == 6 || tag == 7 || tag == 9 || tag == 18) {
+      if (!ReadExact(fd, &word, 4)) return false;
+      data_and_status->insert(data_and_status->end(), word.begin(), word.end());
+      continue;
+    }
+    if (tag == 2 || tag == 5 || tag == 19) {
+      if (!ReadExact(fd, &word, 4)) return false;
+      data_and_status->insert(data_and_status->end(), word.begin(), word.end());
+      const auto string_len = ReadXdrU32(word, 0);
+      const auto string_padding = (4u - (string_len & 3u)) & 3u;
+      std::vector<std::uint8_t> string_payload;
+      if (!ReadExact(fd, &string_payload,
+                     static_cast<std::size_t>(string_len + string_padding))) {
+        return false;
+      }
+      data_and_status->insert(data_and_status->end(),
+                              string_payload.begin(), string_payload.end());
+      continue;
+    }
     return false;
   }
   data_text->assign(reinterpret_cast<const char*>(data_and_status->data()), data_len);
@@ -154,7 +386,7 @@ std::vector<std::uint8_t> AttachPacket(std::uint32_t opcode) {
   AppendXdrU32(&out, opcode);
   AppendXdrU32(&out, 0);
   AppendXdrString(&out, "employee");
-  AppendXdrString(&out, std::string_view("\x01\x1c\x06SYSDBA", 9));
+  AppendXdrString(&out, std::string_view("\x01\x1c\x07SBPROBE", 10));
   return out;
 }
 
@@ -168,13 +400,36 @@ std::vector<std::uint8_t> AttachPacketWithBuffer(std::uint32_t opcode,
   return out;
 }
 
+std::vector<std::uint8_t> AttachPacketNamed(std::uint32_t opcode,
+                                            std::string_view database_name,
+                                            std::string_view buffer) {
+  std::vector<std::uint8_t> out;
+  AppendXdrU32(&out, opcode);
+  AppendXdrU32(&out, 0);
+  AppendXdrString(&out, database_name);
+  AppendXdrString(&out, buffer);
+  return out;
+}
+
+std::vector<std::uint8_t> ExecImmediatePacket(std::uint32_t transaction_id,
+                                              std::string_view sql) {
+  std::vector<std::uint8_t> out;
+  AppendXdrU32(&out, 64);
+  AppendXdrU32(&out, transaction_id);
+  AppendXdrU32(&out, 0);
+  AppendXdrU32(&out, 3);
+  AppendXdrString(&out, sql);
+  AppendXdrString(&out, "");
+  AppendXdrU32(&out, 512);
+  return out;
+}
+
 std::vector<std::uint8_t> ServiceStartPacket(std::uint32_t object_id) {
   std::vector<std::uint8_t> out;
   AppendXdrU32(&out, 85);  // op_service_start
   AppendXdrU32(&out, object_id);
   AppendXdrU32(&out, 0);
-  AppendXdrString(&out, std::string_view("\x01\x01", 2));
-  AppendXdrU32(&out, 256);
+  AppendXdrString(&out, std::string_view("\x01", 1));
   return out;
 }
 
@@ -300,6 +555,16 @@ std::vector<std::uint8_t> SegmentPacket(std::uint32_t opcode,
   return out;
 }
 
+std::vector<std::uint8_t> SegmentReadPacket(std::uint32_t blob_id,
+                                            std::uint32_t requested_length) {
+  std::vector<std::uint8_t> out;
+  AppendXdrU32(&out, 36);
+  AppendXdrU32(&out, blob_id);
+  AppendXdrU32(&out, requested_length);
+  AppendXdrString(&out, "");
+  return out;
+}
+
 std::vector<std::uint8_t> EventPacket(std::uint32_t database_id,
                                       std::uint32_t client_event_id) {
   std::vector<std::uint8_t> out;
@@ -335,16 +600,56 @@ bool ReadAndExpectResponse(int fd,
   const auto response_object_id = ReadXdrU32(header, 4);
   if (object_id != nullptr) *object_id = response_object_id;
   if (response_data_text != nullptr) *response_data_text = data_text;
-  return Expect(ReadXdrU32(header, 0) == 9, "Firebird packet was not op_response") &&
-         Expect(!expect_nonzero_object || response_object_id != 0,
-                "Firebird response did not allocate an object handle") &&
-         ExpectResponseToken(data_text, expected_response_data) &&
+  bool ok = Expect(ReadXdrU32(header, 0) == 9, "Firebird packet was not op_response") &&
+            Expect(!expect_nonzero_object || response_object_id != 0,
+                   "Firebird response did not allocate an object handle") &&
+            ExpectResponseToken(data_text, expected_response_data);
+  if (!ok) return false;
+  if (expected_status_code == 0) {
+    return Expect(tail.size() >= 12, "Firebird success vector was too short") &&
+           Expect(ReadXdrU32(tail, tail.size() - 12) == 1,
+                  "Firebird success vector missing isc_arg_gds") &&
+           Expect(ReadXdrU32(tail, tail.size() - 8) == 0,
+                  "Firebird success vector code was not FB_SUCCESS") &&
+           Expect(ReadXdrU32(tail, tail.size() - 4) == 0,
+                  "Firebird success vector missing isc_arg_end");
+  }
+  return Expect(tail.size() >= 12, "Firebird error vector was too short") &&
          Expect(ReadXdrU32(tail, tail.size() - 12) == 1,
                 "Firebird status vector missing isc_arg_gds") &&
          Expect(ReadXdrU32(tail, tail.size() - 8) == expected_status_code,
-                "Firebird status vector code mismatch") &&
+                ("Firebird status vector code mismatch actual=" +
+                 std::to_string(ReadXdrU32(tail, tail.size() - 8)) +
+                 " expected=" + std::to_string(expected_status_code)).c_str()) &&
          Expect(ReadXdrU32(tail, tail.size() - 4) == 0,
                 "Firebird status vector missing isc_arg_end");
+}
+
+bool ReadAndExpectResponseContainingStatus(int fd,
+                                           std::string_view expected_response_data,
+                                           std::uint32_t expected_status_code,
+                                           const char* step_name) {
+  std::vector<std::uint8_t> header;
+  std::vector<std::uint8_t> tail;
+  std::string data_text;
+  if (!Expect(ReadFirebirdResponse(fd, &header, &tail, &data_text), step_name)) {
+    return false;
+  }
+  bool ok = Expect(ReadXdrU32(header, 0) == 9, "Firebird packet was not op_response") &&
+            ExpectResponseToken(data_text, expected_response_data) &&
+            Expect(tail.size() >= 12, "Firebird status vector was too short");
+  if (!ok) return false;
+  bool found = false;
+  for (std::size_t offset = 0; offset + 8 <= tail.size(); offset += 4) {
+    if (ReadXdrU32(tail, offset) == 1 &&
+        ReadXdrU32(tail, offset + 4) == expected_status_code) {
+      found = true;
+      break;
+    }
+  }
+  return Expect(found,
+                ("Firebird status vector did not contain expected code " +
+                 std::to_string(expected_status_code)).c_str());
 }
 
 bool ReadAndExpectFetchEof(int fd) {
@@ -356,6 +661,282 @@ bool ReadAndExpectFetchEof(int fd) {
                 "fetch response did not return EOF status") &&
          Expect(ReadXdrU32(response, 8) == 0,
                 "fetch response unexpectedly carried messages");
+}
+
+bool ReadAndExpectFetchEndOfBatch(int fd) {
+  std::vector<std::uint8_t> response;
+  return Expect(ReadExact(fd, &response, 12), "fetch batch response read failed") &&
+         Expect(ReadXdrU32(response, 0) == 66,
+                "fetch batch response was not op_fetch_response") &&
+         Expect(ReadXdrU32(response, 4) == 0,
+                "fetch batch response did not use in-batch status") &&
+         Expect(ReadXdrU32(response, 8) == 0,
+                "fetch batch response unexpectedly carried messages");
+}
+
+bool ReadAndExpectFetchSingleIntegerThenEof(int fd, std::uint32_t expected_value) {
+  std::vector<std::uint8_t> response;
+  return Expect(ReadExact(fd, &response, 20), "fetch row response read failed") &&
+         Expect(ReadXdrU32(response, 0) == 66,
+                "fetch row response was not op_fetch_response") &&
+         Expect(ReadXdrU32(response, 4) == 0,
+                "fetch row response did not indicate row availability") &&
+         Expect(ReadXdrU32(response, 8) == 1,
+                "fetch row response did not carry one message") &&
+         Expect(ReadXdrU32(response, 12) == expected_value,
+                "fetch row integer value mismatch") &&
+         Expect(ReadXdrU32(response, 16) == 0,
+                "fetch row null indicator mismatch") &&
+         ReadAndExpectFetchEof(fd);
+}
+
+bool ReadAndExpectFetchTwoIntegers(int fd,
+                                   std::int32_t first,
+                                   std::int32_t second) {
+  std::vector<std::uint8_t> response;
+  return Expect(ReadExact(fd, &response, 28), "fetch two-int row response read failed") &&
+         Expect(ReadXdrU32(response, 0) == 66,
+                "fetch two-int response was not op_fetch_response") &&
+         Expect(ReadXdrU32(response, 4) == 0,
+                "fetch two-int response did not indicate row availability") &&
+         Expect(ReadXdrU32(response, 8) == 1,
+                "fetch two-int response did not carry one message") &&
+         Expect(ReadXdrU32(response, 12) == static_cast<std::uint32_t>(first),
+                "fetch first integer value mismatch") &&
+         Expect(ReadXdrU32(response, 16) == 0,
+                "fetch first integer null indicator mismatch") &&
+         Expect(ReadXdrU32(response, 20) == static_cast<std::uint32_t>(second),
+                "fetch second integer value mismatch") &&
+         Expect(ReadXdrU32(response, 24) == 0,
+                "fetch second integer null indicator mismatch");
+}
+
+std::string HexEncodeTest(std::string_view data) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(data.size() * 2);
+  for (const unsigned char ch : data) {
+    out.push_back(kHex[(ch >> 4) & 0x0f]);
+    out.push_back(kHex[ch & 0x0f]);
+  }
+  return out;
+}
+
+std::string ReadFileText(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream out;
+  out << in.rdbuf();
+  return out.str();
+}
+
+bool WriteScopedUserOverlay(std::string_view database_name,
+                            std::string_view user_name) {
+  const std::string path =
+      std::string(database_name) + ".scratchbird-firebird-metadata.tsv";
+  const std::string scope = "firebird:" + std::string(database_name);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out << "scratchbird_firebird_metadata_overlay_v6\n";
+  out << "security_scope\t" << HexEncodeTest(scope) << '\n';
+  out << "firebird_user_v2\t" << HexEncodeTest(scope)
+      << '\t' << HexEncodeTest(user_name)
+      << "\t\t"
+      << '\t' << HexEncodeTest("Srp")
+      << '\t' << HexEncodeTest("offline_probe_user")
+      << "\t1\n";
+  return true;
+}
+
+std::string DpbUserNameBuffer(std::string_view user_name) {
+  std::string out;
+  out.push_back('\x01');
+  out.push_back('\x1c');
+  out.push_back(static_cast<char>(user_name.size()));
+  out.append(user_name);
+  return out;
+}
+
+std::string DpbCreateCharsetBuffer(std::string_view user_name,
+                                   std::string_view attachment_charset,
+                                   std::string_view database_default_charset) {
+  std::string out = DpbUserNameBuffer(user_name);
+  auto append_text = [&](unsigned char tag, std::string_view value) {
+    out.push_back(static_cast<char>(tag));
+    out.push_back(static_cast<char>(value.size()));
+    out.append(value);
+  };
+  append_text(48, attachment_charset);        // isc_dpb_lc_ctype
+  append_text(68, database_default_charset);  // isc_dpb_set_db_charset
+  return out;
+}
+
+bool WriteScopedCreateTableGrantOverlay(std::string_view database_name,
+                                        std::string_view user_name) {
+  const std::string path =
+      std::string(database_name) + ".scratchbird-firebird-metadata.tsv";
+  const std::string scope = "firebird:" + std::string(database_name);
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  out << "scratchbird_firebird_metadata_overlay_v6\n";
+  out << "security_scope\t" << HexEncodeTest(scope) << '\n';
+  out << "firebird_user_v2\t" << HexEncodeTest(scope)
+      << '\t' << HexEncodeTest(user_name)
+      << "\t\t"
+      << '\t' << HexEncodeTest("Srp")
+      << '\t' << HexEncodeTest("offline_probe_user")
+      << "\t1\n";
+  out << "grant_v2\t" << HexEncodeTest(scope)
+      << '\t' << HexEncodeTest("GRANT CREATE TABLE TO " + std::string(user_name))
+      << "\t\t\n";
+  return true;
+}
+
+bool WriteMixedScopeCatalogOverlay(std::string_view database_name) {
+  const std::string path =
+      std::string(database_name) + ".scratchbird-firebird-metadata.tsv";
+  const std::string scope_a = "firebird:" + std::string(database_name);
+  const std::string scope_b = scope_a + ":other";
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return false;
+  auto scope_row = [&](std::string_view kind,
+                       std::string_view name,
+                       std::string_view scope) {
+    out << "catalog_scope\t" << HexEncodeTest(kind)
+        << '\t' << HexEncodeTest(name)
+        << '\t' << HexEncodeTest(scope)
+        << '\n';
+  };
+  auto table_row = [&](std::string_view name,
+                       std::string_view scope) {
+    scope_row("TABLE", name, scope);
+    out << "table\t" << HexEncodeTest(name) << '\n';
+    out << "column\t" << HexEncodeTest(name)
+        << '\t' << HexEncodeTest("ID")
+        << '\t' << HexEncodeTest(name)
+        << "\t496\t4\t0\t0\t0\t\t\t\t0\t0\n";
+  };
+  auto sequence_row = [&](std::string_view name,
+                          std::string_view scope) {
+    scope_row("SEQUENCE", name, scope);
+    out << "sequence\t" << HexEncodeTest(name) << '\n';
+  };
+  out << "scratchbird_firebird_metadata_overlay_v6\n";
+  out << "security_scope\t" << HexEncodeTest(scope_a) << '\n';
+  table_row("A_ONLY", scope_a);
+  table_row("B_ONLY", scope_b);
+  sequence_row("A_SEQ", scope_a);
+  sequence_row("B_SEQ", scope_b);
+  out << "role_v2\t" << HexEncodeTest(scope_a)
+      << '\t' << HexEncodeTest("ROLE_A") << "\t\t\t1\n";
+  out << "role_v2\t" << HexEncodeTest(scope_b)
+      << '\t' << HexEncodeTest("ROLE_B") << "\t\t\t1\n";
+  out << "grant_v2\t" << HexEncodeTest(scope_a)
+      << '\t' << HexEncodeTest("GRANT SELECT ON A_ONLY TO PUBLIC")
+      << "\t\t\n";
+  out << "grant_v2\t" << HexEncodeTest(scope_b)
+      << '\t' << HexEncodeTest("GRANT SELECT ON B_ONLY TO PUBLIC")
+      << "\t\t\n";
+  out << "firebird_user_v2\t" << HexEncodeTest(scope_a)
+      << '\t' << HexEncodeTest("SBPROBE")
+      << "\t\t"
+      << '\t' << HexEncodeTest("Srp")
+      << '\t' << HexEncodeTest("offline_probe_user")
+      << "\t1\n";
+  out << "firebird_user_v2\t" << HexEncodeTest(scope_b)
+      << '\t' << HexEncodeTest("DB_B_USER")
+      << "\t\t"
+      << '\t' << HexEncodeTest("Srp")
+      << '\t' << HexEncodeTest("other_scope_user")
+      << "\t1\n";
+  return true;
+}
+
+struct FileCleanupGuard {
+  std::vector<std::string> paths;
+  ~FileCleanupGuard() {
+    for (const auto& path : paths) {
+      std::remove(path.c_str());
+    }
+  }
+};
+
+bool RunScopedCreateTableGrantCase() {
+  const std::string unique =
+      "sb_firebird_create_table_grant_" +
+      std::to_string(static_cast<long long>(::getpid()));
+  const std::string overlay = unique + ".scratchbird-firebird-metadata.tsv";
+  std::remove(overlay.c_str());
+  FileCleanupGuard cleanup{{overlay}};
+  const std::string scope = "firebird:" + unique;
+  bool ok = Expect(WriteScopedCreateTableGrantOverlay(unique, "SBPROBE"),
+                   "scoped create-table grant overlay setup failed");
+
+  int sockets[2] = {-1, -1};
+  if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
+              "create-table grant socketpair failed")) {
+    return false;
+  }
+  const pid_t pid = ::fork();
+  if (pid == 0) {
+    CloseFd(&sockets[0]);
+    const int rc = scratchbird::parser::firebird::ServeFirebirdWorkerSession(sockets[1]);
+    CloseFd(&sockets[1]);
+    _exit(rc == 0 ? 0 : 1);
+  }
+  CloseFd(&sockets[1]);
+  if (!Expect(pid > 0, "create-table grant fork failed")) {
+    CloseFd(&sockets[0]);
+    return false;
+  }
+
+  ok = ok && Expect(WriteAll(sockets[0], ConnectPacket()),
+                    "create-table grant connect write failed");
+  std::vector<std::uint8_t> response;
+  ok = ok && Expect(ReadExact(sockets[0], &response, 16),
+                    "create-table grant accept read failed") &&
+       Expect(ReadXdrU32(response, 0) == 3,
+              "create-table grant connect did not accept");
+  std::uint32_t database_id = 0;
+  const std::string dpb = DpbUserNameBuffer("SBPROBE");
+  ok = ok && Expect(WriteAll(sockets[0],
+                             AttachPacketNamed(19, unique, dpb)),
+                    "create-table grant attach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, true, &database_id,
+                             "create-table grant attach response failed");
+  ok = ok && Expect(WriteAll(
+                        sockets[0],
+                        ExecImmediatePacket(
+                            0, "CREATE TABLE grant_created_table (id int)")),
+                    "create-table grant DDL write failed") &&
+       ReadAndExpectResponse(sockets[0],
+                             "FIREBIRD.TRANSACTION.HANDLE_REQUIRED",
+                             335544332u, false, nullptr,
+                             "route-less create-table DDL did not fail closed");
+  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(21, database_id)),
+                    "create-table grant detach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                             "create-table grant detach response failed");
+
+  CloseFd(&sockets[0]);
+  int status = 0;
+  ok = Expect(::waitpid(pid, &status, 0) == pid,
+              "create-table grant waitpid failed") && ok;
+  ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Firebird scoped create-table grant failed") && ok;
+
+  const std::string text = ReadFileText(overlay);
+  ok = ok && Expect(text.find("security_scope\t" + HexEncodeTest(scope)) !=
+                        std::string::npos,
+                    "create-table grant overlay missing scope");
+  ok = ok && Expect(text.find(HexEncodeTest(
+                        "GRANT DELETE ON TABLE GRANT_CREATED_TABLE TO USER SBPROBE")) ==
+                        std::string::npos,
+                    "route-less create-table added creator DELETE privilege");
+  ok = ok && Expect(text.find(HexEncodeTest(
+                        "GRANT SELECT ON TABLE GRANT_CREATED_TABLE TO USER SBPROBE")) ==
+                        std::string::npos,
+                    "route-less create-table added creator SELECT privilege");
+  return ok;
 }
 
 bool RunWorkerCase(const std::vector<std::uint8_t>& connect_packet,
@@ -413,6 +994,98 @@ bool RunWorkerCase(const std::vector<std::uint8_t>& connect_packet,
   return ok;
 }
 
+bool RunCreateDatabaseCharsetBoundaryCase() {
+  const std::string database_name =
+      "sb_firebird_create_charset_" +
+      std::to_string(static_cast<long long>(::getpid()));
+  const std::string overlay =
+      database_name + ".scratchbird-firebird-metadata.tsv";
+  std::remove(overlay.c_str());
+  FileCleanupGuard cleanup{{overlay}};
+  bool ok = Expect(WriteScopedUserOverlay(database_name, "SBPROBE"),
+                   "create charset overlay setup failed");
+
+  int sockets[2] = {-1, -1};
+  if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
+              "create charset socketpair failed")) {
+    return false;
+  }
+  const pid_t pid = ::fork();
+  if (pid == 0) {
+    CloseFd(&sockets[0]);
+    const int rc =
+        scratchbird::parser::firebird::ServeFirebirdWorkerSession(sockets[1]);
+    CloseFd(&sockets[1]);
+    _exit(rc == 0 ? 0 : 1);
+  }
+  CloseFd(&sockets[1]);
+  if (!Expect(pid > 0, "create charset fork failed")) {
+    CloseFd(&sockets[0]);
+    return false;
+  }
+
+  ok = ok && Expect(WriteAll(sockets[0], ConnectPacket()),
+                    "create charset connect write failed");
+  std::vector<std::uint8_t> response;
+  ok = ok && Expect(ReadExact(sockets[0], &response, 16),
+                    "create charset accept read failed") &&
+       Expect(ReadXdrU32(response, 0) == 3,
+              "create charset connect did not accept");
+
+  // Load a scoped test principal first. The subsequent protocol create uses
+  // the same database scope, so this remains a self-contained worker probe and
+  // does not require an external engine authentication route.
+  std::uint32_t attached_database_id = 0;
+  ok = ok && Expect(
+                 WriteAll(sockets[0],
+                          AttachPacketNamed(19, database_name,
+                                            DpbUserNameBuffer("SBPROBE"))),
+                 "create charset prerequisite attach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, true,
+                             &attached_database_id,
+                             "create charset prerequisite attach failed");
+
+  std::uint32_t created_database_id = 0;
+  const std::string create_dpb =
+      DpbCreateCharsetBuffer("SBPROBE", "WIN1251", "UTF8");
+  ok = ok && Expect(
+                 WriteAll(sockets[0],
+                          AttachPacketNamed(20, database_name, create_dpb)),
+                 "create charset op_create write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, true,
+                             &created_database_id,
+                             "create charset op_create response failed");
+
+  ok = ok && Expect(WriteAll(sockets[0],
+                             ReleasePacket(21, attached_database_id)),
+                    "create charset prerequisite detach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                             "create charset prerequisite detach failed");
+  ok = ok && Expect(WriteAll(sockets[0],
+                             ReleasePacket(21, created_database_id)),
+                    "create charset created database detach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                             "create charset created database detach failed");
+
+  CloseFd(&sockets[0]);
+  int status = 0;
+  ok = Expect(::waitpid(pid, &status, 0) == pid,
+              "create charset waitpid failed") && ok;
+  ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Firebird create-database charset boundary failed") && ok;
+
+  const std::string text = ReadFileText(overlay);
+  const std::string default_row =
+      "database_default_charset\t" + HexEncodeTest("UTF8") + "\n";
+  const std::string attachment_row =
+      "database_default_charset\t" + HexEncodeTest("WIN1251") + "\n";
+  ok = ok && Expect(text.find(default_row) != std::string::npos,
+                    "create DPB did not persist set_db_charset as database default");
+  ok = ok && Expect(text.find(attachment_row) == std::string::npos,
+                    "create DPB persisted lc_ctype as database default");
+  return ok;
+}
+
 bool RunServiceLifecycleCase() {
   int sockets[2] = {-1, -1};
   if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
@@ -441,7 +1114,7 @@ bool RunServiceLifecycleCase() {
   std::uint32_t service_id = 0;
   ok = ok && Expect(WriteAll(sockets[0], AttachPacket(82)),
                     "service attach write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_service_attach", 0, true,
+       ReadAndExpectResponse(sockets[0], "", 0, true,
                              &service_id, "service attach response failed");
   ok = ok && Expect(WriteAll(sockets[0], ServiceStartPacket(service_id)),
                     "service start write failed") &&
@@ -449,7 +1122,7 @@ bool RunServiceLifecycleCase() {
                              nullptr, "service start response failed");
   ok = ok && Expect(WriteAll(sockets[0], ServiceInfoPacket(service_id)),
                     "service info write failed") &&
-       ReadAndExpectResponse(sockets[0], "emulated_service_report", 0, false,
+       ReadAndExpectResponse(sockets[0], "", 0, false,
                              nullptr, "service info response failed");
   ok = ok && Expect(WriteAll(sockets[0], PingPacket()), "ping write failed") &&
        ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
@@ -496,27 +1169,28 @@ bool RunStatementLifecycleCase() {
   std::uint32_t statement_id = 0;
   ok = ok && Expect(WriteAll(sockets[0], AttachPacket(19)),
                     "statement database attach write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_attach", 0, true,
+       ReadAndExpectResponse(sockets[0], "", 0, true,
                              &database_id, "statement attach response failed");
   ok = ok && Expect(WriteAll(sockets[0], AllocateStatementPacket(database_id)),
                     "allocate statement write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_allocate_statement", 0, true,
+       ReadAndExpectResponse(sockets[0], "", 0, true,
                              &statement_id, "allocate statement response failed");
-  ok = ok && Expect(WriteAll(sockets[0], PrepareStatementPacket(statement_id, "select 1")),
+  ok = ok && Expect(WriteAll(sockets[0], PrepareStatementPacket(
+                                statement_id,
+                                "select * from (select rdb$relation_id from rdb$database) "
+                                "where sum(rdb$relation_id) = 0")),
+                    "prepare invalid aggregate statement write failed") &&
+       ReadAndExpectResponse(sockets[0], "FIREBIRD.DSQL.AGGREGATE_WHERE",
+                             335544822u, false, nullptr,
+                             "prepare invalid aggregate response failed");
+  ok = ok && Expect(WriteAll(sockets[0], PrepareStatementPacket(
+                                statement_id,
+                                "select 1 from rdb$database")),
                     "prepare statement write failed") &&
-       ReadAndExpectResponse(sockets[0], "firebird.query.select", 0, false,
-                             nullptr, "prepare statement response failed");
-  ok = ok && Expect(WriteAll(sockets[0], InfoSqlPacket(statement_id)),
-                    "info sql write failed") &&
-       ReadAndExpectResponse(sockets[0], "statement_info_descriptor", 0, false,
-                             nullptr, "info sql response failed");
-  ok = ok && Expect(WriteAll(sockets[0], ExecutePacket(statement_id)),
-                    "execute statement write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_execute", 0, false,
-                             nullptr, "execute response failed");
-  ok = ok && Expect(WriteAll(sockets[0], FetchPacket(statement_id)),
-                    "fetch write failed") &&
-       ReadAndExpectFetchEof(sockets[0]);
+       ReadAndExpectResponse(
+           sockets[0], "FIREBIRD.TRANSACTION.SELECTOR_REQUIRED",
+           335544378u, false, nullptr,
+           "route-less executable prepare did not fail closed");
   ok = ok && Expect(WriteAll(sockets[0], FreeStatementPacket(statement_id)),
                     "free statement write failed") &&
        ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
@@ -527,6 +1201,307 @@ bool RunStatementLifecycleCase() {
   ok = Expect(::waitpid(pid, &status, 0) == pid, "statement waitpid failed") && ok;
   ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
               "Firebird statement lifecycle failed") && ok;
+  return ok;
+}
+
+bool RunRouteLessSqlRefusalCase() {
+  int sockets[2] = {-1, -1};
+  if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
+              "route-less SQL socketpair failed")) {
+    return false;
+  }
+  const pid_t pid = ::fork();
+  if (pid == 0) {
+    CloseFd(&sockets[0]);
+    const int rc = scratchbird::parser::firebird::ServeFirebirdWorkerSession(sockets[1]);
+    CloseFd(&sockets[1]);
+    _exit(rc == 0 ? 0 : 1);
+  }
+  CloseFd(&sockets[1]);
+  if (!Expect(pid > 0, "route-less SQL fork failed")) {
+    CloseFd(&sockets[0]);
+    return false;
+  }
+
+  bool ok = Expect(WriteAll(sockets[0], ConnectPacket()),
+                   "route-less SQL connect write failed");
+  std::vector<std::uint8_t> response;
+  ok = ok && Expect(ReadExact(sockets[0], &response, 16),
+                    "route-less SQL accept read failed") &&
+       Expect(ReadXdrU32(response, 0) == 3,
+              "route-less SQL connect did not accept");
+
+  std::uint32_t database_id = 0;
+  ok = ok && Expect(WriteAll(sockets[0], AttachPacket(19)),
+                    "route-less SQL attach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, true,
+                             &database_id,
+                             "route-less SQL attach response failed");
+  ok = ok && Expect(WriteAll(
+                        sockets[0],
+                        ExecImmediatePacket(0, "CREATE DOMAIN dm_test AS INTEGER")),
+                    "route-less immediate SQL write failed") &&
+       ReadAndExpectResponse(sockets[0], "FIREBIRD.TRANSACTION.HANDLE_REQUIRED",
+                             335544332u, false, nullptr,
+                             "route-less immediate SQL did not fail closed");
+
+  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(21, database_id)),
+                    "route-less SQL detach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                             "route-less SQL detach response failed");
+
+  CloseFd(&sockets[0]);
+  int status = 0;
+  ok = Expect(::waitpid(pid, &status, 0) == pid,
+              "route-less SQL waitpid failed") && ok;
+  ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Firebird route-less SQL refusal failed") && ok;
+  return ok;
+}
+
+bool RunScopedSecurityOverlayCase() {
+  const std::string unique =
+      "sb_firebird_security_scope_" + std::to_string(static_cast<long long>(::getpid()));
+  const std::string db_a = unique + "_a";
+  const std::string db_b = unique + "_b";
+  const std::string overlay_a = db_a + ".scratchbird-firebird-metadata.tsv";
+  const std::string overlay_b = db_b + ".scratchbird-firebird-metadata.tsv";
+  std::remove(overlay_a.c_str());
+  std::remove(overlay_b.c_str());
+  FileCleanupGuard cleanup{{overlay_a, overlay_b}};
+  bool ok = Expect(WriteScopedUserOverlay(db_a, "SBPROBE"),
+                   "scoped security overlay A setup failed") &&
+            Expect(WriteScopedUserOverlay(db_b, "SBPROBE"),
+                   "scoped security overlay B setup failed");
+
+  auto run_one = [&](const std::string& database_name,
+                     const char* label) -> bool {
+    int sockets[2] = {-1, -1};
+    if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
+                "scoped security socketpair failed")) {
+      return false;
+    }
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+      CloseFd(&sockets[0]);
+      const int rc = scratchbird::parser::firebird::ServeFirebirdWorkerSession(sockets[1]);
+      CloseFd(&sockets[1]);
+      _exit(rc == 0 ? 0 : 1);
+    }
+    CloseFd(&sockets[1]);
+    if (!Expect(pid > 0, "scoped security fork failed")) {
+      CloseFd(&sockets[0]);
+      return false;
+    }
+
+    bool ok = Expect(WriteAll(sockets[0], ConnectPacket()),
+                     "scoped security connect write failed");
+    std::vector<std::uint8_t> response;
+    ok = ok && Expect(ReadExact(sockets[0], &response, 16),
+                      "scoped security accept read failed") &&
+         Expect(ReadXdrU32(response, 0) == 3,
+                "scoped security connect did not accept");
+    std::uint32_t database_id = 0;
+    ok = ok && Expect(WriteAll(
+                          sockets[0],
+                          AttachPacketNamed(19, database_name,
+                                            std::string_view("\x01\x1c\x07SBPROBE",
+                                                             10))),
+                      "scoped security attach write failed") &&
+         ReadAndExpectResponse(sockets[0], "", 0, true,
+                               &database_id, "scoped security attach response failed");
+    ok = ok && Expect(WriteAll(sockets[0],
+                               ExecImmediatePacket(
+                                   0, "GRANT SELECT ON scoped_table TO PUBLIC")),
+                      "scoped security grant write failed") &&
+         ReadAndExpectResponse(sockets[0],
+                               "FIREBIRD.TRANSACTION.HANDLE_REQUIRED",
+                               335544332u, false, nullptr,
+                               "route-less scoped grant did not fail closed");
+    ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(21, database_id)),
+                      "scoped security detach write failed") &&
+         ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                               "scoped security detach response failed");
+
+    CloseFd(&sockets[0]);
+    int status = 0;
+    ok = Expect(::waitpid(pid, &status, 0) == pid,
+                "scoped security waitpid failed") && ok;
+    ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0, label) && ok;
+    return ok;
+  };
+
+  ok = ok && run_one(db_a, "Firebird scoped security database A failed") &&
+       run_one(db_b, "Firebird scoped security database B failed");
+  const std::string text_a = ReadFileText(overlay_a);
+  const std::string text_b = ReadFileText(overlay_b);
+  const std::string scope_a = "firebird:" + db_a;
+  const std::string scope_b = "firebird:" + db_b;
+  ok = ok && Expect(text_a.find("scratchbird_firebird_metadata_overlay_v6") !=
+                        std::string::npos,
+                    "route-less grant rewrote scoped security overlay A");
+  ok = ok && Expect(text_b.find("scratchbird_firebird_metadata_overlay_v6") !=
+                        std::string::npos,
+                    "route-less grant rewrote scoped security overlay B");
+  ok = ok && Expect(text_a.find("security_scope\t" + HexEncodeTest(scope_a)) !=
+                        std::string::npos,
+                    "scoped security overlay A missing scope");
+  ok = ok && Expect(text_b.find("security_scope\t" + HexEncodeTest(scope_b)) !=
+                        std::string::npos,
+                    "scoped security overlay B missing scope");
+  ok = ok && Expect(text_a.find("grant_v2\t") == std::string::npos,
+                    "route-less grant mutated scoped security overlay A");
+  ok = ok && Expect(text_b.find("grant_v2\t") == std::string::npos,
+                    "route-less grant mutated scoped security overlay B");
+  ok = ok && Expect(text_a.find(HexEncodeTest(scope_b)) == std::string::npos,
+                    "scoped security overlay A leaked database B scope");
+  ok = ok && Expect(text_b.find(HexEncodeTest(scope_a)) == std::string::npos,
+                    "scoped security overlay B leaked database A scope");
+
+  std::remove(overlay_a.c_str());
+  std::remove(overlay_b.c_str());
+  return ok;
+}
+
+bool RunCatalogCountQuery(int fd,
+                          std::uint32_t database_id,
+                          std::string_view sql,
+                          std::uint32_t expected_value,
+                          const char* label) {
+  (void)expected_value;
+  std::uint32_t statement_id = 0;
+  bool ok = Expect(WriteAll(fd, AllocateStatementPacket(database_id)),
+                   "scoped catalog allocate statement write failed") &&
+            ReadAndExpectResponse(fd, "", 0, true, &statement_id,
+                                  "scoped catalog allocate statement response failed");
+  ok = ok && Expect(WriteAll(fd, PrepareStatementPacket(statement_id, sql)),
+                    "scoped catalog prepare write failed") &&
+       ReadAndExpectResponse(
+           fd, "FIREBIRD.TRANSACTION.SELECTOR_REQUIRED", 335544378u,
+           false, nullptr,
+           "route-less catalog prepare did not fail closed");
+  ok = ok && Expect(WriteAll(fd, FreeStatementPacket(statement_id)),
+                    "scoped catalog free statement write failed") &&
+       ReadAndExpectResponse(fd, "", 0, false, nullptr,
+                             "scoped catalog free statement response failed");
+  return Expect(ok, label);
+}
+
+bool RunScopedCatalogOverlayCase() {
+  const std::string unique =
+      "sb_firebird_catalog_scope_" + std::to_string(static_cast<long long>(::getpid()));
+  const std::string overlay = unique + ".scratchbird-firebird-metadata.tsv";
+  std::remove(overlay.c_str());
+  FileCleanupGuard cleanup{{overlay}};
+  bool ok = Expect(WriteMixedScopeCatalogOverlay(unique),
+                   "scoped catalog overlay setup failed");
+
+  int sockets[2] = {-1, -1};
+  if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
+              "scoped catalog socketpair failed")) {
+    return false;
+  }
+  const pid_t pid = ::fork();
+  if (pid == 0) {
+    CloseFd(&sockets[0]);
+    const int rc = scratchbird::parser::firebird::ServeFirebirdWorkerSession(sockets[1]);
+    CloseFd(&sockets[1]);
+    _exit(rc == 0 ? 0 : 1);
+  }
+  CloseFd(&sockets[1]);
+  if (!Expect(pid > 0, "scoped catalog fork failed")) {
+    CloseFd(&sockets[0]);
+    return false;
+  }
+
+  ok = ok && Expect(WriteAll(sockets[0], ConnectPacket()),
+                    "scoped catalog connect write failed");
+  std::vector<std::uint8_t> response;
+  ok = ok && Expect(ReadExact(sockets[0], &response, 16),
+                    "scoped catalog accept read failed") &&
+       Expect(ReadXdrU32(response, 0) == 3,
+              "scoped catalog connect did not accept");
+  std::uint32_t database_id = 0;
+  ok = ok && Expect(WriteAll(
+                        sockets[0],
+                        AttachPacketNamed(19, unique,
+                                          std::string_view("\x01\x1c\x07SBPROBE",
+                                                           10))),
+                    "scoped catalog attach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, true,
+                             &database_id, "scoped catalog attach response failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$relations "
+                 "where rdb$relation_name = 'A_ONLY'",
+                 1, "Firebird catalog table scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$relations "
+                 "where rdb$relation_name = 'B_ONLY'",
+                 0, "Firebird catalog table scope leaked sibling object");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$relation_fields "
+                 "where rdb$relation_name = 'A_ONLY'",
+                 1, "Firebird catalog column scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$relation_fields "
+                 "where rdb$relation_name = 'B_ONLY'",
+                 0, "Firebird catalog column scope leaked sibling object");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$generators "
+                 "where rdb$generator_name = 'A_SEQ'",
+                 1, "Firebird catalog sequence scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$generators "
+                 "where rdb$generator_name = 'B_SEQ'",
+                 0, "Firebird catalog sequence scope leaked sibling object");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$roles "
+                 "where rdb$role_name = 'ROLE_A'",
+                 1, "Firebird catalog role scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$roles "
+                 "where rdb$role_name = 'ROLE_B'",
+                 0, "Firebird catalog role scope leaked sibling object");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from sec$users "
+                 "where sec$user_name = 'SBPROBE'",
+                 1, "Firebird catalog user scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from sec$users "
+                 "where sec$user_name = 'DB_B_USER'",
+                 0, "Firebird catalog user scope leaked sibling object");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$user_privileges "
+                 "where rdb$relation_name = 'A_ONLY'",
+                 1, "Firebird catalog grant scope allowed object failed");
+  ok = ok && RunCatalogCountQuery(
+                 sockets[0], database_id,
+                 "select count(*) from rdb$user_privileges "
+                 "where rdb$relation_name = 'B_ONLY'",
+                 0, "Firebird catalog grant scope leaked sibling object");
+  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(21, database_id)),
+                    "scoped catalog detach write failed") &&
+       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
+                             "scoped catalog detach response failed");
+
+  CloseFd(&sockets[0]);
+  int status = 0;
+  ok = Expect(::waitpid(pid, &status, 0) == pid,
+              "scoped catalog waitpid failed") && ok;
+  ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+              "Firebird scoped catalog overlay failed") && ok;
+  std::remove(overlay.c_str());
   return ok;
 }
 
@@ -556,108 +1531,17 @@ bool RunRuntimeLifecycleCase() {
        Expect(ReadXdrU32(response, 0) == 3, "runtime connect did not accept");
 
   std::uint32_t database_id = 0;
-  std::uint32_t transaction_id = 0;
-  std::uint32_t blob_id = 0;
   std::uint32_t event_id = 0;
   ok = ok && Expect(WriteAll(sockets[0], AttachPacket(19)),
                     "runtime database attach write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_attach", 0, true,
+       ReadAndExpectResponse(sockets[0], "", 0, true,
                              &database_id, "runtime attach response failed");
-  std::string transaction_start_text;
   ok = ok && Expect(WriteAll(sockets[0], TransactionPacket(database_id)),
                     "transaction start write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_transaction", 0, true,
-                             &transaction_id, "transaction response failed",
-                             &transaction_start_text);
-  ok = ok && ExpectResponseToken(
-                  transaction_start_text,
-                  "\"database_handle\":" + std::to_string(database_id));
-  ok = ok && ExpectResponseToken(
-                  transaction_start_text,
-                  "\"transaction_handle\":" + std::to_string(transaction_id));
-  ok = ok && ExpectResponseToken(transaction_start_text,
-                                 "\"real_firebird_file_effects\":false");
-  ok = ok && ExpectResponseToken(transaction_start_text,
-                                 "\"reference_engine_sql_executed\":false");
-  ok = ok && ExpectResponseToken(transaction_start_text,
-                                 "\"parser_storage_authority\":false");
-  ok = ok && ExpectResponseToken(
-                  transaction_start_text,
-                  "\"parser_transaction_finality_authority\":false");
-  ok = ok && ExpectResponseToken(
-                  transaction_start_text,
-                  "\"runtime_policy\":\"emulated_transaction_handle_started\"");
-  ok = ok && Expect(WriteAll(sockets[0], BlobPacket(34, transaction_id)),
-                    "create blob write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_create_blob", 0, true,
-                             &blob_id, "create blob response failed");
-  ok = ok && Expect(WriteAll(sockets[0], SegmentPacket(37, blob_id, "hello")),
-                    "put segment write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_put_segment", 0, false,
-                             nullptr, "put segment response failed");
-  ok = ok && Expect(WriteAll(sockets[0], SegmentPacket(36, blob_id)),
-                    "get segment write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_get_segment", 335544367u, false,
-                             nullptr, "get segment EOF response failed");
-  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(39, blob_id)),
-                    "close blob write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_close_blob", 0, false,
-                             nullptr, "close blob response failed");
-  std::string commit_text;
-  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(30, transaction_id)),
-                    "commit write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_commit", 0, false,
-                             nullptr, "commit response failed", &commit_text);
-  ok = ok && ExpectResponseToken(
-                  commit_text,
-                  "\"object_handle\":" + std::to_string(transaction_id));
-  ok = ok && ExpectResponseToken(commit_text,
-                                 "\"reference_engine_sql_executed\":false");
-  ok = ok && ExpectResponseToken(commit_text,
-                                 "\"parser_storage_authority\":false");
-  ok = ok && ExpectResponseToken(
-                  commit_text,
-                  "\"parser_transaction_finality_authority\":false");
-  ok = ok && ExpectResponseToken(commit_text,
-                                 "\"runtime_policy\":\"emulated_transaction_closed\"");
-
-  std::string second_transaction_start_text;
-  ok = ok && Expect(WriteAll(sockets[0], TransactionPacket(database_id)),
-                    "second transaction start write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_transaction", 0, true,
-                             &transaction_id, "second transaction response failed",
-                             &second_transaction_start_text);
-  ok = ok && ExpectResponseToken(
-                  second_transaction_start_text,
-                  "\"transaction_handle\":" + std::to_string(transaction_id));
-  ok = ok && ExpectResponseToken(
-                  second_transaction_start_text,
-                  "\"parser_transaction_finality_authority\":false");
-  ok = ok && Expect(WriteAll(sockets[0], BlobPacket(35, transaction_id, 7)),
-                    "open blob write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_open_blob", 0, true,
-                             &blob_id, "open blob response failed");
-  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(38, blob_id)),
-                    "cancel blob write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_cancel_blob", 0, false,
-                             nullptr, "cancel blob response failed");
-  std::string rollback_text;
-  ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(31, transaction_id)),
-                    "rollback write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_rollback", 0, false,
-                             nullptr, "rollback response failed", &rollback_text);
-  ok = ok && ExpectResponseToken(
-                  rollback_text,
-                  "\"object_handle\":" + std::to_string(transaction_id));
-  ok = ok && ExpectResponseToken(rollback_text,
-                                 "\"reference_engine_sql_executed\":false");
-  ok = ok && ExpectResponseToken(rollback_text,
-                                 "\"parser_storage_authority\":false");
-  ok = ok && ExpectResponseToken(
-                  rollback_text,
-                  "\"parser_transaction_finality_authority\":false");
-  ok = ok && ExpectResponseToken(rollback_text,
-                                 "\"runtime_policy\":\"emulated_transaction_closed\"");
+       ReadAndExpectResponse(
+           sockets[0], "FIREBIRD.TRANSACTION.ENGINE_ROUTE_REQUIRED",
+           335544378u, false, nullptr,
+           "route-less transaction did not fail closed");
 
   std::string event_queue_text;
   ok = ok && Expect(WriteAll(sockets[0], EventPacket(database_id, 77)),
@@ -706,7 +1590,7 @@ bool RunRuntimeLifecycleCase() {
                   "\"runtime_policy\":\"emulated_event_cancelled\"");
   ok = ok && Expect(WriteAll(sockets[0], ReleasePacket(21, database_id)),
                     "detach write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_detach", 0, false,
+       ReadAndExpectResponse(sockets[0], "", 0, false,
                              nullptr, "detach response failed");
 
   CloseFd(&sockets[0]);
@@ -757,7 +1641,7 @@ bool RunRuntimeFailureCase() {
                              nullptr, "invalid put segment response failed");
   ok = ok && Expect(WriteAll(sockets[0], AttachPacket(19)),
                     "failure attach write failed") &&
-       ReadAndExpectResponse(sockets[0], "op_attach", 0, true,
+       ReadAndExpectResponse(sockets[0], "", 0, true,
                              &database_id, "failure attach response failed");
   ok = ok && Expect(WriteAll(sockets[0], CancelEventPacket(database_id, 404)),
                     "invalid cancel events write failed") &&
@@ -783,13 +1667,23 @@ int main() {
 #ifdef _WIN32
   return EXIT_SUCCESS;
 #else
+  const std::string employee_overlay = "employee.scratchbird-firebird-metadata.tsv";
+  std::remove(employee_overlay.c_str());
+  FileCleanupGuard cleanup{{employee_overlay}};
+  if (!Expect(WriteScopedUserOverlay("employee", "SBPROBE"),
+              "employee scoped security overlay setup failed")) {
+    return EXIT_FAILURE;
+  }
+  if (!RunConversionDiagnosticPresentationCase()) {
+    return EXIT_FAILURE;
+  }
   if (!RunWorkerCase(ConnectPacket(), AttachPacket(19), true, true,
-                     "isc_dpb_user_name", 0, true,
+                     "", 0, true,
                      "Firebird attach handshake failed")) {
     return EXIT_FAILURE;
   }
   if (!RunWorkerCase(ConnectPacket(), AttachPacket(82), true, true,
-                     "op_service_attach", 0, true,
+                     "", 0, true,
                      "Firebird service attach handshake failed")) {
     return EXIT_FAILURE;
   }
@@ -810,10 +1704,25 @@ int main() {
                      "Firebird malformed connect reject failed")) {
     return EXIT_FAILURE;
   }
+  if (!RunCreateDatabaseCharsetBoundaryCase()) {
+    return EXIT_FAILURE;
+  }
   if (!RunServiceLifecycleCase()) {
     return EXIT_FAILURE;
   }
   if (!RunStatementLifecycleCase()) {
+    return EXIT_FAILURE;
+  }
+  if (!RunRouteLessSqlRefusalCase()) {
+    return EXIT_FAILURE;
+  }
+  if (!RunScopedSecurityOverlayCase()) {
+    return EXIT_FAILURE;
+  }
+  if (!RunScopedCreateTableGrantCase()) {
+    return EXIT_FAILURE;
+  }
+  if (!RunScopedCatalogOverlayCase()) {
     return EXIT_FAILURE;
   }
   if (!RunRuntimeLifecycleCase()) {

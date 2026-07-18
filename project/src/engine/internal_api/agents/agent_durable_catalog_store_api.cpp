@@ -96,20 +96,29 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
   if (!loaded.ok) { return ErrorResult(std::move(loaded.diagnostic)); }
   const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
   const auto existing = FindCatalogTable(state, context);
+  CrudTableRecord table;
   if (existing) {
-    AgentDurableCatalogStoreResult result;
-    result.ok = true;
-    result.diagnostic = OkDiagnostic();
-    result.table_uuid = existing->table_uuid;
-    return result;
+    table = *existing;
+  } else {
+    table.table_uuid = GenerateCrudEngineUuid("agent_catalog_table");
+    table.default_name = kAgentDurableCatalogStoreTableName;
+    table.columns = CatalogColumns();
+    const auto appended = AppendMgaTableMetadata(context, table);
+    if (appended.error) { return ErrorResult(appended); }
   }
 
-  CrudTableRecord table;
-  table.table_uuid = GenerateCrudEngineUuid("agent_catalog_table");
-  table.default_name = kAgentDurableCatalogStoreTableName;
-  table.columns = CatalogColumns();
-  const auto appended = AppendMgaTableMetadata(context, table);
-  if (appended.error) { return ErrorResult(appended); }
+  // The durable agent catalog is an MGA relation, not an exceptional
+  // descriptorless metadata row.  Persist its relation descriptor through
+  // the same engine authority used by every other visible relation so
+  // catalog-wide UUID inventories can remain fail-closed.  Running this for
+  // an existing table also repairs databases created before the descriptor
+  // invariant was enforced.
+  MgaRelationStorageDescriptor descriptor;
+  const auto descriptor_status = EnsureMgaRelationStorageDescriptor(
+      context, table, {}, &descriptor);
+  if (descriptor_status.error) {
+    return ErrorResult(descriptor_status);
+  }
 
   AgentDurableCatalogStoreResult result;
   result.ok = true;

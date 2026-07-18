@@ -53,4 +53,16 @@ std::vector<std::uint8_t> RenderUuidPublicFrameForEmbedded(
     const sbps::Frame& frame,
     const ServerSessionRegistry* session_registry);
 
+// Server-owned teardown for a physical parser channel that closes without a
+// trustworthy disconnect frame.  Session and transaction identities are
+// selected exclusively from the registry's channel binding.
+std::vector<SessionOperationResult> HandleUnexpectedParserChannelClose(
+    ServerSessionRegistry* session_registry,
+    const std::array<std::uint8_t, 16>& server_channel_uuid);
+bool ParserChannelHelloMayBeAdmittedForTest(
+    bool hello_already_admitted,
+    bool capability_bitmap_unchanged,
+    bool hello_identity_unchanged,
+    bool connection_authenticated = false);
+
 }  // namespace scratchbird::server

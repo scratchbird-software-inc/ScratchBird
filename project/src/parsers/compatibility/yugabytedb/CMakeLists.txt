@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_yugabytedb_parser_pipeline STATIC
   yugabytedb_dialect.cpp
+  yugabytedb_worker_session.cpp
 )
 
 target_compile_features(sbl_yugabytedb_parser_pipeline PUBLIC cxx_std_23)

@@ -22,7 +22,7 @@ namespace {
 
 namespace exec = scratchbird::engine::executor;
 namespace ipc = scratchbird::ipc;
-namespace parser_ipc = scratchbird::parser::sbsql;
+namespace parser_ipc = scratchbird::parser::ipc;
 namespace server = scratchbird::server;
 namespace wire = scratchbird::wire;
 

@@ -1,0 +1,11 @@
+rule_id,status,rule,required_check,blocker_if_failed,evidence_key
+RPR-DB-001,required,Each parser family uses a dedicated namespace prefix,pre_run_and_post_run_namespace_inventory,yes,namespace_inventory_digest
+RPR-DB-002,required,Each parser run records transaction inventory before and after replay,mga_transaction_inventory_diff,yes,transaction_inventory_digest
+RPR-DB-003,required,Each parser run resets its namespace before replay,namespace_reset_transcript,yes,namespace_reset_evidence
+RPR-DB-004,required,Each parser run verifies no leftover uncommitted transactions,transaction_scan_after_stop,yes,leftover_transaction_count
+RPR-DB-005,required,Each parser run verifies system catalog consistency,catalog_consistency_probe,yes,catalog_consistency_digest
+RPR-DB-006,required,Each parser run verifies restart persistence for committed data,restart_and_checksum_proof,yes,restart_checksum_digest
+RPR-DB-007,required,Each parser run verifies rollback cleanup for failed cases,rollback_visibility_probe,yes,rollback_cleanup_digest
+RPR-DB-008,required,Database rebuild is allowed only for durable format or server rewrite,rebuild_exception_event_record,yes,rebuild_exception_id
+RPR-DB-009,required,Parser listener stop releases default port before next serial group,port_availability_probe,yes,port_release_probe
+RPR-DB-010,required,Example database build cannot depend on replay leftovers,clean_example_build_source_probe,yes,example_source_clean_digest

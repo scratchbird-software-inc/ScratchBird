@@ -93,13 +93,14 @@ std::string ToString(ShowIdentityKind value) {
 ShowIdentityAst MakeShowIdentityAst(ShowIdentityKind show_kind,
                                     std::string raw_command_form,
                                     std::string surface_key_candidate,
+                                    std::string command_family_candidate,
                                     SourceRange source_range) {
   ShowIdentityAst ast;
   ast.header.ast_format_version = 1;
   ast.header.parser_mode = ParserMode::kNativeSbsql;
   ast.header.reference_mode = ReferenceMode::kNone;
   ast.header.family = AstFamily::kShowIdentity;
-  ast.header.command_family_candidate = "sbsql.identity_session";
+  ast.header.command_family_candidate = std::move(command_family_candidate);
   ast.header.surface_key_candidate = std::move(surface_key_candidate);
   ast.header.source_range = source_range;
   ast.header.token_spans.push_back(source_range);

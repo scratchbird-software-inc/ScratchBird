@@ -1,0 +1,13 @@
+[
+  "cmake_foreign_owned_file",
+  "cmake_foreign_path",
+  "cmake_foreign_target",
+  "neutral_family_symbol",
+  "neutral_family_semantic_policy",
+  "neutral_family_semantic_selector",
+  "neutral_parser_semantic_renderer",
+  "neutral_sql_parser_surface",
+  "resource_foreign_reference",
+  "source_foreign_include",
+  "source_foreign_symbol"
+]

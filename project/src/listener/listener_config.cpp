@@ -93,7 +93,7 @@ bool ApplyKeyValue(ListenerConfig* cfg, std::string_view raw_key, std::string_vi
   }
   else if (key == "controller_type") cfg->controller_type = Lower(value);
   else if (key == "controller_uuid") cfg->controller_uuid = value;
-  else if (key == "protocol_family") cfg->protocol_family = Lower(value);
+  else if (key == "protocol_family") cfg->protocol_family = value;
   else if (key == "parser_package") cfg->parser_package = value;
   else if (key == "parser_package_uuid") cfg->parser_package_uuid = value;
   else if (key == "dialect_profile_uuid") cfg->dialect_profile_uuid = value;
@@ -274,24 +274,30 @@ bool ApplyKeyValue(ListenerConfig* cfg, std::string_view raw_key, std::string_vi
   return true;
 }
 
-void ApplyProfileDefaults(ListenerConfig* cfg) {
-  if (auto profile = FindReferenceProtocolProfile(cfg->protocol_family)) {
-    if (cfg->parser_package.empty()) {
-      cfg->parser_package = profile->default_parser_package;
-    }
-    if (cfg->dialect.empty()) {
-      cfg->dialect = profile->default_wire_protocol;
-    }
-    if (cfg->port == 0) {
-      cfg->port = profile->default_port;
-    }
-  }
-}
-
 bool ValidateConfig(const ListenerConfig& cfg, std::vector<proto::Diagnostic>* diagnostics) {
   bool ok = true;
-  if (!FindReferenceProtocolProfile(cfg.protocol_family)) {
-    AddError(diagnostics, "LISTENER.CONFIG.UNKNOWN_PROTOCOL_FAMILY", "protocol_family is not a registered source-backed reference family", {{"protocol_family", cfg.protocol_family}});
+  if (cfg.protocol_family.empty()) {
+    AddError(diagnostics,
+             "LISTENER.CONFIG.MISSING_PROTOCOL_FAMILY",
+             "protocol_family is required and must be supplied by the listener controller");
+    ok = false;
+  }
+  if (cfg.parser_executable.empty()) {
+    AddError(diagnostics,
+             "LISTENER.CONFIG.MISSING_PARSER_EXECUTABLE",
+             "parser_executable is required and must be supplied by the listener controller");
+    ok = false;
+  }
+  if (cfg.bind_address.empty()) {
+    AddError(diagnostics,
+             "LISTENER.CONFIG.MISSING_BIND_ADDRESS",
+             "bind_address is required and must be supplied by the listener controller");
+    ok = false;
+  }
+  if (cfg.port == 0) {
+    AddError(diagnostics,
+             "LISTENER.CONFIG.MISSING_PORT",
+             "port is required and must be supplied by the listener controller");
     ok = false;
   }
   if (cfg.database_selector.empty()) {
@@ -344,18 +350,11 @@ bool ValidateConfig(const ListenerConfig& cfg, std::vector<proto::Diagnostic>* d
     ok = false;
   }
   if (cfg.tls_required) {
-    if (cfg.protocol_family != "native" && cfg.protocol_family != "sbsql") {
-      AddError(diagnostics,
-               "LISTENER.TLS_POLICY_FAILED",
-               "tls_required=true is currently supported only by native or sbsql SBWP listener workers",
-               {{"protocol_family", cfg.protocol_family}});
-      ok = false;
-    }
     if (cfg.tls_cert_file.empty() || cfg.tls_key_file.empty()) {
       AddError(diagnostics,
                "LISTENER.TLS_POLICY_FAILED",
                "tls_required=true requires tls_cert_file and tls_key_file",
-               {{"protocol_family", cfg.protocol_family}});
+               {{"listener_profile", cfg.listener_profile}});
       ok = false;
     }
     if (!cfg.tls_cert_file.empty() && !ReadableRegularFile(cfg.tls_cert_file)) {
@@ -397,48 +396,6 @@ bool ValidateConfig(const ListenerConfig& cfg, std::vector<proto::Diagnostic>* d
 
 } // namespace
 
-const std::vector<ReferenceProtocolProfile>& ReferenceProtocolProfiles() {
-  static const std::vector<ReferenceProtocolProfile> profiles = {
-      {"apache_ignite", "sbp_apache_ignite", "ignite.sql.v1", 10800, false},
-      {"cassandra", "sbp_cassandra", "cql.v3", 9042, false},
-      {"clickhouse", "sbp_clickhouse", "clickhouse.sql.v1", 9000, false},
-      {"cockroachdb", "sbp_cockroachdb", "postgresql.wire.v3", 26257, false},
-      {"dolt", "sbp_dolt", "mysql.wire.v10", 3306, false},
-      {"duckdb", "sbp_duckdb", "duckdb.embedded.v1", 0, false},
-      {"firebird", "sbp_firebird", "firebird.wire.v13", 3050, false},
-      {"foundationdb", "sbp_foundationdb", "foundationdb.api.v7", 4500, false},
-      {"immudb", "sbp_immudb", "immudb.sql.v1", 3322, false},
-      {"influxdb", "sbp_influxdb", "influxql.v1", 8086, false},
-      {"mariadb", "sbp_mariadb", "mysql.wire.v10", 3306, false},
-      {"milvus", "sbp_milvus", "milvus.grpc.v2", 19530, false},
-      {"mongodb", "sbp_mongodb", "mongodb.wire.v6", 27017, false},
-      {"mysql", "sbp_mysql", "mysql.wire.v10", 3306, false},
-      {"native", "sbp_native", "sbwp.v1", 3092, true},
-      {"neo4j", "sbp_neo4j", "bolt.v5", 7687, false},
-      {"opensearch", "sbp_opensearch", "opensearch.rest.v2", 9200, false},
-      {"postgresql", "sbp_postgresql", "postgresql.wire.v3", 5432, false},
-      {"redis", "sbp_redis", "resp.v3", 6379, false},
-      {"sqlite", "sbp_sqlite", "sqlite.api.v3", 0, false},
-      {"tidb", "sbp_tidb", "mysql.wire.v10", 4000, false},
-      {"tikv", "sbp_tikv", "tikv.grpc.v1", 20160, false},
-      {"vitess", "sbp_vitess", "mysql.wire.v10", 15306, false},
-      {"xtdb", "sbp_xtdb", "xtql.v2", 3000, false},
-      {"yugabytedb", "sbp_yugabytedb", "postgresql.wire.v3", 5433, false},
-      {"sbsql", "sbp_sbsql", "sbsql.v3", 3092, true},
-  };
-  return profiles;
-}
-
-std::optional<ReferenceProtocolProfile> FindReferenceProtocolProfile(std::string_view family) {
-  const std::string needle = Lower(std::string(family));
-  for (const auto& profile : ReferenceProtocolProfiles()) {
-    if (profile.family == needle) {
-      return profile;
-    }
-  }
-  return std::nullopt;
-}
-
 ConfigResult LoadListenerConfigFile(const std::string& path, ListenerConfig base) {
   std::vector<proto::Diagnostic> diagnostics;
   base.config_path = path;
@@ -466,7 +423,6 @@ ConfigResult LoadListenerConfigFile(const std::string& path, ListenerConfig base
     }
     ok = ApplyKeyValue(&base, trimmed.substr(0, pos), trimmed.substr(pos + 1), &diagnostics) && ok;
   }
-  ApplyProfileDefaults(&base);
   ok = ValidateConfig(base, &diagnostics) && ok;
   return {base, MakeMessageVectorSet(std::move(diagnostics), base.language, base.dialect), ok};
 }
@@ -525,7 +481,6 @@ ConfigResult LoadListenerConfigFromArgs(int argc, char** argv) {
     }
     return file_result;
   }
-  ApplyProfileDefaults(&cfg);
   ok = ValidateConfig(cfg, &diagnostics) && ok;
   return {cfg, MakeMessageVectorSet(std::move(diagnostics), cfg.language, cfg.dialect), ok};
 }
@@ -565,12 +520,12 @@ std::string HelpText() {
       << "  --validate-config                validate configuration and exit\n"
       << "  --foreground|-F                  run in foreground\n"
       << "  --managed                        run under SBsrv/SBmgr control\n"
-      << "  --protocol-family=<family>       source-backed reference or sbsql family\n"
+      << "  --protocol-family=<family>       opaque protocol family assigned to this endpoint\n"
       << "  --database-selector=<selector>   opaque server-side database selector\n"
       << "  --server-endpoint=<endpoint>     SBsrv IPC endpoint for parser workers\n"
       << "  --parser-executable=<path>       parser worker executable; SBParser is the core parser worker\n"
       << "  --bundle-contract-id=<id>        parser bundle contract expected in HELLO\n"
-      << "  --tls-required=<bool>            require TLS before SBWP frames for native or sbsql listeners\n"
+      << "  --tls-required=<bool>            require parser-owned TLS for this endpoint\n"
       << "  --tls-cert-file=<path>           listener TLS certificate chain\n"
       << "  --tls-key-file=<path>            listener TLS private key\n"
       << "  --tls-ca-file=<path>             optional CA bundle for TLS peer-proof policy\n"

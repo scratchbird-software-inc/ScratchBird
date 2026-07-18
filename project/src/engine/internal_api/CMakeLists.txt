@@ -115,9 +115,12 @@ add_library(sb_engine_internal_api
   catalog/descriptor_mutation_api.cpp
   catalog/descriptor_api.cpp
   catalog/datatype_index_optimizer_admission_api.cpp
+  catalog/global_aggregate_view.cpp
   catalog/ipar_fast_path_support.cpp
   catalog/name_registry.cpp
   catalog/name_resolution_api.cpp
+  catalog/relation_descriptor_projection.cpp
+  catalog/relation_projection_view.cpp
   catalog/pinned_descriptor_cache.cpp
   catalog/schema_tree_api.cpp
   catalog/sbsql_language_elements_catalog.cpp
@@ -145,6 +148,7 @@ add_library(sb_engine_internal_api
   dml/dml_operation_path_proof.cpp
   dml/dml_row_locator_stream.cpp
   dml/dml_target_access_plan.cpp
+  dml/global_aggregate_projection.cpp
   dml/hot_cold_row_split_api.cpp
   dml/index_apply_locality_bridge.cpp
   dml/insert_batch.cpp

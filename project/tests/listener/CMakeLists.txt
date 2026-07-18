@@ -26,6 +26,23 @@ add_test(NAME sb_listener_native_worker_storage_policy_gate
           ${PROJECT_SOURCE_DIR}/src/parsers/native/v3/worker/CMakeLists.txt)
 
 find_program(SB_POLICY_PYTHON3 python3 REQUIRED)
+add_test(NAME sb_listener_parser_neutrality_gate_fixture_tests
+  COMMAND ${SB_POLICY_PYTHON3}
+          ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate_test.py
+          --gate-script
+          ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate.py)
+set_tests_properties(sb_listener_parser_neutrality_gate_fixture_tests PROPERTIES
+  LABELS "listener;parser_neutrality;listener_single_executable")
+
+add_test(NAME sb_listener_parser_neutrality_gate
+  COMMAND ${SB_POLICY_PYTHON3}
+          ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate.py
+          --project-root
+          ${PROJECT_SOURCE_DIR})
+set_tests_properties(sb_listener_parser_neutrality_gate PROPERTIES
+  DEPENDS sb_listener_parser_neutrality_gate_fixture_tests
+  LABELS "listener;parser_neutrality;listener_single_executable")
+
 add_test(NAME sb_listener_mga_transaction_authority_gate
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/mga_transaction_authority_gate.py
@@ -44,16 +61,32 @@ set_tests_properties(legacy_execution_plan10_scratchbird_benchmark_compat_gate P
   LABELS "benchmark;performance;legacy_execution_plan10;scratchbird_dialect"
 )
 
-add_executable(sb_listener_protocol_profile_defaults_probe protocol_profile_defaults_probe.cpp)
-target_compile_features(sb_listener_protocol_profile_defaults_probe PRIVATE cxx_std_23)
-target_link_libraries(sb_listener_protocol_profile_defaults_probe PRIVATE sbl_listener_runtime)
-add_test(NAME sb_listener_protocol_profile_defaults_probe
-  COMMAND sb_listener_protocol_profile_defaults_probe)
-set_tests_properties(sb_listener_protocol_profile_defaults_probe PROPERTIES
-  LABELS "firebird_runtime_absence_gate;firebird_parser_worker;listener"
+add_executable(sb_listener_explicit_config_probe protocol_profile_defaults_probe.cpp)
+target_compile_features(sb_listener_explicit_config_probe PRIVATE cxx_std_23)
+target_link_libraries(sb_listener_explicit_config_probe PRIVATE sbl_listener_runtime)
+add_test(NAME sb_listener_explicit_config_probe
+  COMMAND sb_listener_explicit_config_probe)
+set_tests_properties(sb_listener_explicit_config_probe PROPERTIES
+  LABELS "listener;parser_neutrality;listener_explicit_configuration"
 )
 
 if(NOT WIN32)
+add_executable(sb_listener_parser_child_environment_conformance
+  parser_child_environment_conformance.cpp)
+target_compile_features(sb_listener_parser_child_environment_conformance
+  PRIVATE cxx_std_23)
+target_link_libraries(sb_listener_parser_child_environment_conformance
+  PRIVATE sbl_listener_control_plane)
+add_dependencies(sb_listener_parser_child_environment_conformance sb_listener)
+add_test(
+  NAME sb_listener_parser_child_environment_conformance
+  COMMAND sb_listener_parser_child_environment_conformance
+          $<TARGET_FILE:sb_listener>
+)
+set_tests_properties(sb_listener_parser_child_environment_conformance PROPERTIES
+  LABELS "listener;parser_neutrality;parser_child_environment"
+)
+
 add_executable(sb_listener_runtime_handoff_smoke runtime_handoff_smoke.cpp)
 target_compile_features(sb_listener_runtime_handoff_smoke PRIVATE cxx_std_23)
 add_test(
@@ -292,6 +325,29 @@ add_test(
 )
 
 if(TARGET sb_server)
+  add_executable(sb_server_generic_listener_profile_probe
+    server_generic_listener_profile_probe.cpp)
+  target_compile_features(sb_server_generic_listener_profile_probe PRIVATE cxx_std_23)
+  target_link_libraries(sb_server_generic_listener_profile_probe PRIVATE sb_server_core)
+  add_test(
+    NAME sb_server_generic_listener_profile_probe
+    COMMAND sb_server_generic_listener_profile_probe
+  )
+  set_property(TEST sb_server_generic_listener_profile_probe APPEND PROPERTY LABELS
+    server_listener_orchestration parser_neutrality listener_explicit_configuration
+  )
+
+  add_test(
+    NAME sb_server_listener_orchestration_neutrality_gate
+    COMMAND ${SB_POLICY_PYTHON3}
+            ${CMAKE_CURRENT_SOURCE_DIR}/server_listener_orchestration_neutrality_gate.py
+            --project-root
+            ${PROJECT_SOURCE_DIR}
+  )
+  set_property(TEST sb_server_listener_orchestration_neutrality_gate APPEND PROPERTY LABELS
+    server_listener_orchestration parser_neutrality listener_single_executable
+  )
+
   add_executable(sb_server_managed_listener_smoke server_managed_listener_smoke.cpp)
   target_compile_features(sb_server_managed_listener_smoke PRIVATE cxx_std_23)
   add_dependencies(sb_server_managed_listener_smoke sb_server sb_listener sb_parser_dummy)
@@ -359,7 +415,7 @@ set(SB_LISTENER_LIFECYCLE_TESTS
   sb_listener_diagnostic_registry_gate
   sb_listener_native_worker_storage_policy_gate
   sb_listener_mga_transaction_authority_gate
-  sb_listener_protocol_profile_defaults_probe
+  sb_listener_explicit_config_probe
   sb_listener_runtime_handoff_smoke
   sb_listener_management_commands_smoke
   sb_listener_manager_active_status_smoke
@@ -383,6 +439,8 @@ set(SB_LISTENER_LIFECYCLE_TESTS
   sb_listener_dummy_fault_modes_smoke
   sb_listener_parser_crash_recovery_smoke
   sb_listener_kill_after_handoff_smoke
+  sb_server_generic_listener_profile_probe
+  sb_server_listener_orchestration_neutrality_gate
   sb_server_managed_listener_smoke
   sb_server_shutdown_stops_listener_smoke
   sb_server_restart_killed_listener_smoke

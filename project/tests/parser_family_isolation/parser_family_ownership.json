@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "registry_id": "scratchbird_parser_family_source_ownership",
+  "discovery": {
+    "compatibility_root": "project/src/parsers/compatibility",
+    "compatibility_exclusions": [
+      "common"
+    ],
+    "udr_root": "project/src/udr",
+    "udr_glob": "sbu_*_parser_support"
+  },
+  "strict_standalone_families": [
+    "firebird"
+  ],
+  "legacy_shared_parser_roots": [
+    "project/src/parsers/compatibility/common"
+  ],
+  "legacy_shared_parser_targets": [
+    "sbl_compatibility_parser_common"
+  ],
+  "forbidden_neutral_parser_targets": [
+    "sbl_compatibility_parser_common",
+    "sbl_parser_neutral_evidence"
+  ],
+  "neutral_roots": [
+    "project/src/parsers/shared/ast",
+    "project/src/parsers/shared/bound_ast",
+    "project/src/parsers/shared/lowering",
+    "project/src/parsers/shared/registry",
+    "project/src/wire/parser_server_ipc"
+  ],
+  "families": {
+    "apache_ignite": {
+      "roots": [
+        "project/src/parsers/compatibility/apache_ignite",
+        "project/src/udr/sbu_apache_ignite_parser_support"
+      ]
+    },
+    "cassandra": {
+      "roots": [
+        "project/src/parsers/compatibility/cassandra",
+        "project/src/udr/sbu_cassandra_parser_support"
+      ]
+    },
+    "clickhouse": {
+      "roots": [
+        "project/src/parsers/compatibility/clickhouse",
+        "project/src/udr/sbu_clickhouse_parser_support"
+      ]
+    },
+    "cockroachdb": {
+      "roots": [
+        "project/src/parsers/compatibility/cockroachdb",
+        "project/src/udr/sbu_cockroachdb_parser_support"
+      ]
+    },
+    "dolt": {
+      "roots": [
+        "project/src/parsers/compatibility/dolt",
+        "project/src/udr/sbu_dolt_parser_support"
+      ]
+    },
+    "duckdb": {
+      "roots": [
+        "project/src/parsers/compatibility/duckdb",
+        "project/src/udr/sbu_duckdb_parser_support"
+      ]
+    },
+    "firebird": {
+      "roots": [
+        "project/src/parsers/compatibility/firebird",
+        "project/src/udr/sbu_firebird_parser_support"
+      ]
+    },
+    "foundationdb": {
+      "roots": [
+        "project/src/parsers/compatibility/foundationdb",
+        "project/src/udr/sbu_foundationdb_parser_support"
+      ]
+    },
+    "immudb": {
+      "roots": [
+        "project/src/parsers/compatibility/immudb",
+        "project/src/udr/sbu_immudb_parser_support"
+      ]
+    },
+    "influxdb": {
+      "roots": [
+        "project/src/parsers/compatibility/influxdb",
+        "project/src/udr/sbu_influxdb_parser_support"
+      ]
+    },
+    "mariadb": {
+      "roots": [
+        "project/src/parsers/compatibility/mariadb",
+        "project/src/udr/sbu_mariadb_parser_support"
+      ]
+    },
+    "milvus": {
+      "roots": [
+        "project/src/parsers/compatibility/milvus",
+        "project/src/udr/sbu_milvus_parser_support"
+      ]
+    },
+    "mongodb": {
+      "roots": [
+        "project/src/parsers/compatibility/mongodb",
+        "project/src/udr/sbu_mongodb_parser_support"
+      ]
+    },
+    "mysql": {
+      "roots": [
+        "project/src/parsers/compatibility/mysql",
+        "project/src/udr/sbu_mysql_parser_support"
+      ]
+    },
+    "neo4j": {
+      "roots": [
+        "project/src/parsers/compatibility/neo4j",
+        "project/src/udr/sbu_neo4j_parser_support"
+      ]
+    },
+    "opensearch": {
+      "roots": [
+        "project/src/parsers/compatibility/opensearch",
+        "project/src/udr/sbu_opensearch_parser_support"
+      ]
+    },
+    "opensearch_sql_ppl": {
+      "roots": [
+        "project/src/parsers/compatibility/opensearch_sql_ppl",
+        "project/src/udr/sbu_opensearch_sql_ppl_parser_support"
+      ]
+    },
+    "postgresql": {
+      "roots": [
+        "project/src/parsers/compatibility/postgresql",
+        "project/src/udr/sbu_postgresql_parser_support"
+      ]
+    },
+    "redis": {
+      "roots": [
+        "project/src/parsers/compatibility/redis",
+        "project/src/udr/sbu_redis_parser_support"
+      ]
+    },
+    "sbsql": {
+      "roots": [
+        "project/src/parsers/sbsql_worker",
+        "project/src/parsers/native/v3",
+        "project/src/parsers/shared/sbsql_v3_api_mapping",
+        "project/src/parsers/shared/sbsql_v3_ast",
+        "project/src/parsers/shared/sbsql_v3_binding",
+        "project/src/parsers/shared/sbsql_v3_sblr",
+        "project/src/udr/sbu_sbsql_parser_support"
+      ],
+      "namespace_stems": [
+        "sbsql",
+        "native_v3",
+        "native_v3_package",
+        "sbsql_v3_api_mapping",
+        "sbsql_v3_ast",
+        "sbsql_v3_binding",
+        "sbsql_v3_sblr"
+      ],
+      "target_prefixes": [
+        "sbl_sbsql_",
+        "sbp_sbsql",
+        "sbu_sbsql_",
+        "sbup_sbsql",
+        "sb_sbsql_v3_",
+        "sb_native_v3_",
+        "sbp_native"
+      ]
+    },
+    "sqlite": {
+      "roots": [
+        "project/src/parsers/compatibility/sqlite",
+        "project/src/udr/sbu_sqlite_parser_support"
+      ]
+    },
+    "tidb": {
+      "roots": [
+        "project/src/parsers/compatibility/tidb",
+        "project/src/udr/sbu_tidb_parser_support"
+      ]
+    },
+    "tikv": {
+      "roots": [
+        "project/src/parsers/compatibility/tikv",
+        "project/src/udr/sbu_tikv_parser_support"
+      ]
+    },
+    "vitess": {
+      "roots": [
+        "project/src/parsers/compatibility/vitess",
+        "project/src/udr/sbu_vitess_parser_support"
+      ]
+    },
+    "xtdb": {
+      "roots": [
+        "project/src/parsers/compatibility/xtdb",
+        "project/src/udr/sbu_xtdb_parser_support"
+      ]
+    },
+    "yugabytedb": {
+      "roots": [
+        "project/src/parsers/compatibility/yugabytedb",
+        "project/src/udr/sbu_yugabytedb_parser_support"
+      ]
+    }
+  }
+}

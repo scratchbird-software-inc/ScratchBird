@@ -353,6 +353,124 @@ EngineCreateSequenceResult EngineCreateSequence(const EngineCreateSequenceReques
 EngineCreateViewResult EngineCreateView(const EngineCreateViewRequest& request) {
   const std::string object_kind =
       request.target_object.object_kind.empty() ? "view" : request.target_object.object_kind;
+  if (IsEngineGlobalAggregateViewCreateRequest(request)) {
+    const auto prepared = PrepareEngineGlobalAggregateViewCreate(request);
+    if (!prepared.ok) {
+      return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+          request.context, "ddl.create_view", prepared.diagnostic);
+    }
+    EngineCreateViewRequest effective = request;
+    effective.operation_id.clear();
+    effective.target_object.uuid = prepared.descriptor.view_uuid;
+    effective.target_object.object_kind = "view";
+    effective.related_objects.clear();
+    effective.descriptors.clear();
+    effective.columns.clear();
+    effective.constraints.clear();
+    effective.indexes.clear();
+    effective.rows.clear();
+    effective.assignments.clear();
+    effective.projection.canonical_projection_envelopes.clear();
+    effective.option_envelopes = prepared.canonical_persisted_options;
+    auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
+        effective, "ddl.create_view", "view", true, "created");
+    if (result.ok) {
+      AddApiBehaviorEvidence(&result,
+                             "global_aggregate_view_marker",
+                             kEngineGlobalAggregateViewMarkerV1);
+      AddApiBehaviorEvidence(
+          &result,
+          "global_aggregate_view_descriptor_uuid",
+          prepared.descriptor.view_descriptor_uuid.canonical);
+      AddApiBehaviorEvidence(
+          &result,
+          "global_aggregate_view_descriptor_generation",
+          std::to_string(
+              prepared.descriptor.view_descriptor_generation));
+      AddApiBehaviorEvidence(
+          &result,
+          "global_aggregate_view_create_or_alter_resolution",
+          prepared.altered_existing ? "alter" : "create");
+      AddApiBehaviorEvidence(&result,
+                             "global_aggregate_view_parser_sql",
+                             "false");
+    }
+    return result;
+  }
+  if (IsEngineRelationProjectionViewCreateRequest(request)) {
+    const auto prepared =
+        PrepareEngineRelationProjectionViewCreate(request);
+    if (!prepared.ok) {
+      return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+          request.context, "ddl.create_view", prepared.diagnostic);
+    }
+    EngineCreateViewRequest effective = request;
+    effective.operation_id.clear();
+    effective.target_object.uuid = prepared.descriptor.view_uuid;
+    effective.target_object.object_kind = "view";
+    effective.related_objects.clear();
+    effective.descriptors.clear();
+    effective.columns.clear();
+    effective.constraints.clear();
+    effective.indexes.clear();
+    effective.rows.clear();
+    effective.assignments.clear();
+    effective.projection.canonical_projection_envelopes.clear();
+    effective.option_envelopes = prepared.canonical_persisted_options;
+    auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
+        effective, "ddl.create_view", "view", true, "created");
+    if (result.ok) {
+      AddApiBehaviorEvidence(&result,
+                             "relation_projection_view_marker",
+                             prepared.descriptor.marker);
+      AddApiBehaviorEvidence(
+          &result,
+          "relation_projection_view_descriptor_uuid",
+          prepared.descriptor.view_descriptor_uuid.canonical);
+      AddApiBehaviorEvidence(
+          &result,
+          "relation_projection_view_descriptor_generation",
+          std::to_string(
+              prepared.descriptor.view_descriptor_generation));
+      AddApiBehaviorEvidence(
+          &result,
+          "relation_projection_view_source_resource_epoch",
+          std::to_string(prepared.descriptor.source_resource_epoch));
+      AddApiBehaviorEvidence(&result,
+                             "relation_projection_view_output_count",
+                             std::to_string(
+                                 prepared.descriptor.outputs.size()));
+      AddApiBehaviorEvidence(&result,
+                             "relation_projection_view_parser_sql",
+                             "false");
+      AddApiBehaviorEvidence(&result,
+                             "relation_projection_view_row_storage",
+                             "none_mga_source_scan_only");
+    }
+    return result;
+  }
+  if (IsRelationDescriptorProjectionViewCreateRequest(request)) {
+    const auto admitted =
+        ValidateRelationDescriptorProjectionViewCreate(request);
+    if (admitted.error) {
+      return MakeApiBehaviorDiagnostic<EngineCreateViewResult>(
+          request.context, "ddl.create_view", admitted);
+    }
+    EngineCreateViewRequest effective = request;
+    effective.option_envelopes =
+        CanonicalRelationDescriptorProjectionViewOptions(request);
+    auto result = PersistedCreateWithNameRegistry<EngineCreateViewResult>(
+        effective, "ddl.create_view", object_kind, true, "created");
+    if (result.ok) {
+      AddApiBehaviorEvidence(&result,
+                             "catalog_projection_marker",
+                             kRelationDescriptorProjectionMarkerV1);
+      AddApiBehaviorEvidence(&result,
+                             "catalog_projection_parser_sql",
+                             "false");
+    }
+    return result;
+  }
   return PersistedCreateWithNameRegistry<EngineCreateViewResult>(
       request, "ddl.create_view", object_kind, true, "created");
 }
@@ -434,32 +552,224 @@ EngineCreateConstraintResult EngineCreateConstraint(const EngineCreateConstraint
   return result;
 }
 
+bool CreateOrAlterProcedureRouteRequested(const EngineApiRequest& request) {
+  return SecurityOptionValue(request, "create_or_alter:") == "true" ||
+         SecurityOptionValue(request, "procedure_create_mode:") ==
+             "create_or_alter" ||
+         SecurityOptionValue(request, "executable_descriptor_kind:") ==
+             "create_or_alter_procedure";
+}
+
+template <typename TResult>
+TResult ExecutableCreateLifecycleFailure(const EngineRequestContext& context,
+                                         const std::string& operation_id,
+                                         const EngineApiResult& lifecycle) {
+  return MakeApiBehaviorDiagnostic<TResult>(
+      context,
+      operation_id,
+      MakeInvalidRequestDiagnostic(
+          operation_id,
+          lifecycle.diagnostics.empty()
+              ? "executable_lifecycle_create_failed"
+              : lifecycle.diagnostics.front().code));
+}
+
+template <typename TResult>
+TResult AdoptCreateOrAlterLifecycleResult(
+    const EngineRequestContext& context,
+    const std::string& operation_id,
+    const std::string& object_kind,
+    const EngineCreateExecutableObjectResult& lifecycle) {
+  if (!lifecycle.ok) {
+    return ExecutableCreateLifecycleFailure<TResult>(
+        context, operation_id, lifecycle);
+  }
+  TResult result;
+  static_cast<EngineApiResult&>(result) =
+      static_cast<const EngineApiResult&>(lifecycle);
+  result.operation_id = operation_id;
+  // FillObjectResult supplies a lifecycle projection identifier in this
+  // field. CREATE OR ALTER resolved to ALTER did not append a new DDL catalog
+  // row, so do not expose that inherited projection as a create result.
+  result.catalog_row_uuid.canonical.clear();
+  result.primary_object.uuid.canonical =
+      lifecycle.bound_object_identity.object_uuid.canonical;
+  result.primary_object.object_kind = object_kind;
+  AddApiBehaviorEvidence(
+      &result, "executable_lifecycle", result.primary_object.uuid.canonical);
+  AddApiBehaviorEvidence(&result,
+                         "executable_generation",
+                         std::to_string(lifecycle.executable_generation));
+  AddApiBehaviorEvidence(&result,
+                         "create_or_alter_catalog_mutation",
+                         "no_create_or_name_append_on_alter");
+  return result;
+}
+
 template <typename TResult, typename TRequest>
 TResult PersistedExecutableCreateWithLifecycle(const TRequest& request,
                                                const std::string& operation_id,
                                                const std::string& object_kind) {
+  TRequest effective = request;
+  const bool create_or_alter =
+      object_kind == "procedure" &&
+      CreateOrAlterProcedureRouteRequested(effective);
+  if (create_or_alter) {
+    const auto exact_mga =
+        ValidateExecutableObjectExactMgaSelector(effective.context);
+    if (exact_mga.error) {
+      return MakeApiBehaviorDiagnostic<TResult>(effective.context,
+                                                operation_id,
+                                                exact_mga);
+    }
+    const auto lifecycle_state =
+        LoadExecutableObjectLifecycleState(effective.context);
+    if (!lifecycle_state.ok) {
+      return MakeApiBehaviorDiagnostic<TResult>(effective.context,
+                                                operation_id,
+                                                lifecycle_state.diagnostic);
+    }
+
+    const auto find_visible_procedure = [&](const std::string& object_uuid) {
+      return std::find_if(
+          lifecycle_state.state.objects.begin(),
+          lifecycle_state.state.objects.end(),
+          [&](const auto& object) {
+            return object.object_uuid == object_uuid &&
+                   object.object_kind == "procedure";
+          });
+    };
+
+    bool alter_existing = false;
+    bool resolved_existing_by_name = false;
+    if (!effective.target_object.uuid.canonical.empty()) {
+      const auto existing =
+          find_visible_procedure(effective.target_object.uuid.canonical);
+      if (existing == lifecycle_state.state.objects.end()) {
+        return MakeApiBehaviorDiagnostic<TResult>(
+            effective.context,
+            operation_id,
+            MakeInvalidRequestDiagnostic(
+                operation_id,
+                "create_or_alter_uuid_not_engine_resolved"));
+      }
+      alter_existing = true;
+    } else {
+      const auto resolved = ResolveNameRegistryPrivate(effective, "procedure");
+      if (resolved.ok) {
+        if (resolved.matches.size() != 1) {
+          return MakeApiBehaviorDiagnostic<TResult>(
+              effective.context,
+              operation_id,
+              MakeInvalidRequestDiagnostic(
+                  operation_id,
+                  "create_or_alter_name_resolution_ambiguous"));
+        }
+        const auto existing =
+            find_visible_procedure(resolved.matches.front().object_uuid);
+        if (existing == lifecycle_state.state.objects.end()) {
+          return MakeApiBehaviorDiagnostic<TResult>(
+              effective.context,
+              operation_id,
+              MakeInvalidRequestDiagnostic(
+                  operation_id,
+                  "create_or_alter_catalog_lifecycle_mismatch"));
+        }
+        effective.target_object.uuid.canonical = existing->object_uuid;
+        alter_existing = true;
+        resolved_existing_by_name = true;
+      } else if (resolved.diagnostic.code != "CATALOG.NAME.NOT_FOUND") {
+        return MakeApiBehaviorDiagnostic<TResult>(effective.context,
+                                                  operation_id,
+                                                  resolved.diagnostic);
+      }
+    }
+
+    if (alter_existing) {
+      EngineCreateExecutableObjectRequest executable_request;
+      static_cast<EngineApiRequest&>(executable_request) = effective;
+      executable_request.target_object.object_kind = object_kind;
+      executable_request.target_schema = effective.target_schema;
+      executable_request.localized_names = effective.localized_names;
+      const auto lifecycle =
+          EngineCreateExecutableObject(executable_request);
+      auto result = AdoptCreateOrAlterLifecycleResult<TResult>(effective.context,
+                                                               operation_id,
+                                                               object_kind,
+                                                               lifecycle);
+      if (result.ok) {
+        AddApiBehaviorEvidence(
+            &result,
+            "create_or_alter_binding",
+            resolved_existing_by_name ? "engine_name_schema"
+                                      : "engine_published_uuid");
+      }
+      return result;
+    }
+
+    // The create half owns identity allocation. A parser may reuse an
+    // engine-published UUID for ALTER, but cannot invent a procedure UUID.
+    effective.target_object.uuid.canonical = GenerateCrudEngineUuid("object");
+    if (effective.target_object.uuid.canonical.empty()) {
+      return MakeApiBehaviorDiagnostic<TResult>(
+          effective.context,
+          operation_id,
+          MakeInvalidRequestDiagnostic(
+              operation_id,
+              "create_or_alter_identity_allocation_failed"));
+    }
+    effective.target_object.object_kind = object_kind;
+
+    EngineCreateExecutableObjectRequest preflight_request;
+    static_cast<EngineApiRequest&>(preflight_request) = effective;
+    preflight_request.target_object.object_kind = object_kind;
+    preflight_request.target_schema = effective.target_schema;
+    preflight_request.localized_names = effective.localized_names;
+    preflight_request.create_or_alter_identity_engine_allocated = true;
+    const auto preflight =
+        PreflightCreateExecutableObject(preflight_request);
+    if (preflight.error) {
+      return MakeApiBehaviorDiagnostic<TResult>(effective.context,
+                                                operation_id,
+                                                preflight);
+    }
+  }
+
   auto result = PersistedCreateWithNameRegistry<TResult>(
-      request, operation_id, object_kind, true, "created");
+      effective, operation_id, object_kind, true, "created");
   if (!result.ok) { return result; }
 
   EngineCreateExecutableObjectRequest executable_request;
-  static_cast<EngineApiRequest&>(executable_request) = request;
+  static_cast<EngineApiRequest&>(executable_request) = effective;
   executable_request.target_object.uuid.canonical = result.primary_object.uuid.canonical;
   executable_request.target_object.object_kind = object_kind;
-  executable_request.target_schema = request.target_schema;
-  executable_request.localized_names = request.localized_names;
+  executable_request.target_schema = effective.target_schema;
+  executable_request.localized_names = effective.localized_names;
+  executable_request.create_or_alter_identity_engine_allocated =
+      create_or_alter;
   const auto lifecycle = EngineCreateExecutableObject(executable_request);
   if (!lifecycle.ok) {
-    return MakeApiBehaviorDiagnostic<TResult>(
-        request.context,
-        operation_id,
-        MakeInvalidRequestDiagnostic(operation_id,
-                                     lifecycle.diagnostics.empty()
-                                         ? "executable_lifecycle_create_failed"
-                                         : lifecycle.diagnostics.front().code));
+    return ExecutableCreateLifecycleFailure<TResult>(
+        effective.context, operation_id, lifecycle);
   }
   AddApiBehaviorEvidence(&result, "executable_lifecycle", lifecycle.bound_object_identity.object_uuid.canonical);
   AddApiBehaviorEvidence(&result, "executable_generation", std::to_string(lifecycle.executable_generation));
+  for (const auto& evidence : lifecycle.evidence) {
+    if (evidence.evidence_kind == "create_or_alter_resolution" ||
+        evidence.evidence_kind == "create_or_alter_authority") {
+      AddApiBehaviorEvidence(&result,
+                             evidence.evidence_kind,
+                             evidence.evidence_id);
+    }
+  }
+  if (create_or_alter) {
+    AddApiBehaviorEvidence(&result,
+                           "create_or_alter_binding",
+                           "engine_allocated_uuid");
+    AddApiBehaviorEvidence(&result,
+                           "create_or_alter_preflight",
+                           "validated_before_catalog_persistence");
+  }
   return result;
 }
 

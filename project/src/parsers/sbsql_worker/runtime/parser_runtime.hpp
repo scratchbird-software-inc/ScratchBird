@@ -15,6 +15,7 @@
 namespace scratchbird::parser::sbsql {
 
 ParserConfig ConfigFromArgs(int argc, char** argv, bool force_probe);
+std::string SbsqlPackageIdentityJson();
 std::string SbsqlParserLifecycleMappingReportJson();
 int RunParserWorker(ParserConfig config);
 

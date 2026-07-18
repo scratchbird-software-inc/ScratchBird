@@ -10,9 +10,7 @@
 
 #include <cstdint>
 #include <map>
-#include <optional>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include "listener_diagnostics.hpp"
@@ -42,14 +40,6 @@ enum class DbbtKeySource {
   kTestBuiltin,
 };
 
-struct ReferenceProtocolProfile {
-  std::string family;
-  std::string default_parser_package;
-  std::string default_wire_protocol;
-  std::uint16_t default_port;
-  bool management_surface_allowed{false};
-};
-
 struct ListenerConfig {
   ListenerMode mode{ListenerMode::kForeground};
   ParserSpawnStrategy spawn_strategy{ParserSpawnStrategy::kWarmPool};
@@ -63,7 +53,9 @@ struct ListenerConfig {
   std::uint64_t lifecycle_generation{1};
   std::string controller_type{"direct"};
   std::string controller_uuid;
-  std::string protocol_family{"sbsql"};
+  // Endpoint identity and routing inputs are supplied by the controller.  The
+  // generic listener must not infer them from a compiled protocol registry.
+  std::string protocol_family;
   std::string parser_package;
   std::string parser_package_uuid;
   std::string dialect_profile_uuid;
@@ -71,8 +63,8 @@ struct ListenerConfig {
   std::string parser_executable;
   std::string database_selector;
   std::string server_endpoint;
-  std::string bind_address{"127.0.0.1"};
-  std::uint16_t port{3092};
+  std::string bind_address;
+  std::uint16_t port{0};
   std::string control_dir{"/tmp/scratchbird/listener/control"};
   std::string runtime_dir{"/tmp/scratchbird/listener/runtime"};
   std::string metrics_namespace{"sys.metrics.listener"};
@@ -117,8 +109,6 @@ struct ConfigResult {
   bool ok{true};
 };
 
-const std::vector<ReferenceProtocolProfile>& ReferenceProtocolProfiles();
-std::optional<ReferenceProtocolProfile> FindReferenceProtocolProfile(std::string_view family);
 ConfigResult LoadListenerConfigFromArgs(int argc, char** argv);
 ConfigResult LoadListenerConfigFile(const std::string& path, ListenerConfig base = {});
 std::string ListenerModeName(ListenerMode mode);

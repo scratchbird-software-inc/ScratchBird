@@ -35,6 +35,52 @@ struct MgaRelationStoreState {
   std::uint64_t max_index_event_sequence = 0;
 };
 
+// One prevalidated, single-record metadata/catalog mutation.  The `sealed`
+// state is generated only by the neutral engine append path; callers cannot
+// provide or persist a partially assembled constraint mutation.
+struct MgaConstraintMutationBatch {
+  std::string format_version{"neutral_fk_mutation_batch_v1"};
+  std::string batch_uuid;
+  std::string batch_hash;
+  std::uint32_t mutation_count{0};
+  std::string database_uuid;
+  std::string constraint_uuid;
+  std::string owner_table_uuid;
+  std::string child_schema_uuid;
+  std::string child_relation_descriptor_uuid;
+  std::uint64_t child_relation_descriptor_generation{0};
+  std::string child_column_uuid;
+  std::string parent_table_uuid;
+  std::string parent_schema_uuid;
+  std::string parent_relation_descriptor_uuid;
+  std::uint64_t parent_relation_descriptor_generation{0};
+  std::string parent_column_uuid;
+  std::string parent_candidate_key_constraint_uuid;
+  std::string key_descriptor_uuid;
+  std::string support_uuid;
+  std::string support_family;
+  std::string support_policy;
+  std::string match_policy;
+  std::string on_update_action;
+  std::string on_delete_action;
+  std::string enforcement_timing;
+  // Generation of this constraint-metadata stream only.  The immutable MGA
+  // relation storage descriptor generation is an exact base binding and is
+  // not advanced by the bounded D1 constraint bridge.
+  std::uint64_t constraint_metadata_generation{0};
+  std::uint64_t base_table_event_sequence{0};
+  std::uint64_t parent_base_table_event_sequence{0};
+  std::string constraint_name;
+  std::string constraint_kind;
+  std::string canonical_constraint_envelope;
+  CrudTableRecord updated_table;
+};
+
+std::string ComputeMgaConstraintMutationBatchHash(
+    const MgaConstraintMutationBatch& batch,
+    std::uint64_t creator_local_transaction_id,
+    std::uint64_t metadata_event_sequence);
+
 struct MgaRelationStoreResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
@@ -48,6 +94,12 @@ struct MgaRelationStoreResult {
   bool scoped_physical_segments_used = false;
   bool scoped_physical_segments_fallback = false;
   std::vector<EngineEvidenceReference> evidence;
+};
+
+struct MgaRelationStorageDescriptorLoadResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  MgaRelationStorageDescriptor descriptor;
 };
 
 struct MgaRelationIndexOnlyProofEligibilityResult {
@@ -469,6 +521,12 @@ MgaRelationStatisticsResult EstimateMgaCatalogStatistics(const EngineRequestCont
 MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
     const EngineRequestContext& context);
 
+// Loads an already-persisted descriptor for a relation visible to the exact
+// active MGA transaction. This path never synthesizes or persists a descriptor.
+MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
+    const EngineRequestContext& context,
+    const std::string& relation_uuid);
+
 EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContext& context,
                                                        const CrudTableRecord& table,
                                                        const std::vector<CrudIndexRecord>& indexes,
@@ -482,6 +540,9 @@ EngineApiDiagnostic AppendMgaRowVersions(const EngineRequestContext& context,
                                           std::vector<std::uint64_t>* written_event_sequences);
 EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                            const CrudTableRecord& table);
+EngineApiDiagnostic AppendMgaConstraintMutationBatch(
+    const EngineRequestContext& context,
+    const MgaConstraintMutationBatch& batch);
 EngineApiDiagnostic AppendMgaIndexMetadata(const EngineRequestContext& context,
                                            const CrudIndexRecord& index);
 

@@ -1,0 +1,22 @@
+field_name,required,type,meaning
+case_id,yes,string,Stable original suite case identifier.
+family_id,yes,string,Reference parser family identifier.
+release_profile,yes,string,Reference release profile under test.
+tool_name,yes,string,Original tool or runner name.
+tool_version,yes,string,Original tool version or commit.
+suite_path,yes,string,Original suite path or acquired local suite identifier.
+input_digest,yes,sha256,Hash of the input or transformed input.
+input_kind,yes,string,sql protocol document graph kv line_protocol command or api_call.
+expected_digest,yes,sha256_or_not_applicable,Hash of expected output after permitted canonicalization.
+actual_digest,yes,sha256_or_not_applicable,Hash of actual output after permitted canonicalization.
+expected_summary,yes,string,Human-readable expected behavior.
+actual_summary,yes,string,Human-readable actual behavior.
+scratchbird_diagnostic,yes,string,Exact ScratchBird diagnostic or not_applicable.
+classification,yes,enum,run_failure mapped_failure workaround_failure explicit_refusal environment_only not_parser_relevant tool_error server_error parser_error support_udr_error security_error.
+owner,yes,string,Parser support UDR server engine harness docs or policy owner.
+fix_target,yes,string,Public source path private spec path or refusal document target.
+fix_commit,no,string,Commit that fixed the failure.
+rerun_status,yes,enum,not_rerun passed failed quarantined.
+evidence_path,yes,string,Build artifact or private evidence path.
+public_status_required,yes,boolean,Whether public parser docs must expose the case status.
+notes,no,string,Reviewer notes.

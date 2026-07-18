@@ -1,0 +1,13 @@
+security_id,status,case,actor,expected_result,proof_gate,authority_rule
+RPR-SEC-001,required,authorized sysarch registers parser package,sysarch,success,reference_parser_registration_authz_gate,server admission decides parser package registration
+RPR-SEC-002,required,non-admin attempts parser package registration,ordinary_user,refused exact diagnostic,reference_parser_registration_denial_gate,server security refuses unauthorized package registration
+RPR-SEC-003,required,authorized route launch for registered parser,sysarch,success,reference_parser_route_launch_gate,server policy admits registered parser route launch
+RPR-SEC-004,required,route launch for unregistered parser,sysarch,refused exact diagnostic,reference_parser_unregistered_route_gate,server policy refuses unregistered parser route launch
+RPR-SEC-005,required,original tool login with valid user and role,authorized_user,success,reference_original_tool_auth_success_gate,listener authentication binds to ScratchBird session authority
+RPR-SEC-006,required,original tool login with invalid credential,unknown_user,refused exact diagnostic,reference_original_tool_auth_denial_gate,listener authentication refuses before parser execution
+RPR-SEC-007,required,original tool attempts unauthorized object read,restricted_user,object invisible or refused exact diagnostic,reference_original_tool_visibility_denial_gate,engine visibility filters unauthorized UUIDs
+RPR-SEC-008,required,original tool attempts unauthorized DDL,restricted_user,refused exact diagnostic,reference_original_tool_ddl_denial_gate,engine authorization refuses unauthorized DDL
+RPR-SEC-009,required,parser emits SBLR UUID for another user role context,malicious_parser,refused exact diagnostic,reference_sblr_uuid_injection_denial_gate,server revalidates SBLR UUID against session authorization
+RPR-SEC-010,required,route revoked during session then reused,authorized_user,refused after revocation,reference_route_revocation_gate,policy epoch invalidates route reuse
+RPR-SEC-011,required,group role recursive grant visibility through original tool,authorized_group_member,success only for granted objects,reference_group_role_visibility_gate,recursive group grants resolve through server security only
+RPR-SEC-012,required,policy epoch changes invalidate prepared parser route,authorized_user,revalidate or refuse stale command,reference_policy_epoch_invalidation_gate,server admission rechecks epoch-bound prepared routes

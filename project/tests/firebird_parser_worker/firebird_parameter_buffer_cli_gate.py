@@ -84,7 +84,13 @@ def main() -> int:
         expect_ok(
             binary,
             "SPB",
-            "02_0b_6a_08_65_6d_70_6c_6f_79_65_65",
+            "02_02_1c_06_53_59_53_44_42_41",
+            ("isc_spb_user_name", "emulated_service_or_authority_diagnostic"),
+        ),
+        expect_ok(
+            binary,
+            "SPB_SERVICE_START",
+            "0b_6a_08_00_65_6d_70_6c_6f_79_65_65",
             ("isc_action_svc_db_stats", "isc_spb_dbname", "emulated_service_or_authority_diagnostic"),
         ),
         expect_ok(

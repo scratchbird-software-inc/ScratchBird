@@ -57,8 +57,12 @@ def main(argv: list[str]) -> int:
     require("database_lifecycle_listener" in cmake, "listener lifecycle label must be materialized")
     require("database_lifecycle_listener_conformance" in cmake, "aggregate listener lifecycle conformance test missing")
 
-    require('::setenv("SB_DATABASE_SELECTOR"' in pool, "listener must pass database selector to parser workers")
-    require('::setenv("SB_DATABASE_TOKEN"' in pool, "listener must pass parser-consumed database token to parser workers")
+    require('AppendEnvironment(&environment, "SB_DATABASE_SELECTOR"' in pool,
+            "closed parser environment must pass the database selector")
+    require('AppendEnvironment(&environment, "SB_DATABASE_TOKEN"' in pool,
+            "closed parser environment must pass the parser-consumed database token")
+    require("::execve(" in pool and "environment_block.pointers.data()" in pool,
+            "parser launch must use the explicit closed POSIX environment block")
     require("kQuarantined" in pool, "parser-pool failure quarantine state must be implemented")
     require("parser_pool_.Stop(true)" in runtime, "listener must support forced parser-pool stop")
     require('WriteLifecycleState("draining")' in runtime, "listener drain must publish lifecycle state")

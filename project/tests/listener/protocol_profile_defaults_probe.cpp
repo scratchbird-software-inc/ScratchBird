@@ -60,62 +60,80 @@ void SetDbbtEnvironment(const char* value) {
 } // namespace
 
 int main() {
-  auto sbsql = Load({"listener_profile_defaults_probe",
-                     "--validate-config",
-                     "--protocol-family=sbsql",
-                     "--database-selector=test.db",
-                     "--server-endpoint=unix:/tmp/sb"});
-  if (!Expect(sbsql.ok, "SBSQL listener profile defaults should validate")) {
+  auto explicit_endpoint = Load({"listener_explicit_config_probe",
+                                 "--validate-config",
+                                 "--protocol-family=Vendor.Future-Wire",
+                                 "--parser-package=vendor.future.package",
+                                 "--parser-executable=/opt/vendor/parser-worker-v7",
+                                 "--dialect=vendor.wire.v7",
+                                 "--database-selector=test.db",
+                                 "--server-endpoint=unix:/tmp/sb",
+                                 "--bind-address=192.0.2.44",
+                                 "--port=45678"});
+  if (!Expect(explicit_endpoint.ok,
+              "fully explicit opaque listener endpoint should validate")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(sbsql.config.parser_package == "sbp_sbsql",
-              "SBSQL default parser package mismatch")) {
+  if (!Expect(explicit_endpoint.config.protocol_family == "Vendor.Future-Wire",
+              "opaque protocol family was interpreted or normalized")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(sbsql.config.dialect == "sbsql.v3", "SBSQL default dialect mismatch")) {
+  if (!Expect(explicit_endpoint.config.parser_package == "vendor.future.package",
+              "explicit parser package was changed")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(sbsql.config.port == 3092, "SBSQL default port must be 3092")) {
+  if (!Expect(explicit_endpoint.config.parser_executable ==
+                  "/opt/vendor/parser-worker-v7",
+              "explicit parser executable was changed")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(explicit_endpoint.config.dialect == "vendor.wire.v7",
+              "explicit dialect was changed")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(explicit_endpoint.config.bind_address == "192.0.2.44",
+              "explicit bind address was changed")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(explicit_endpoint.config.port == 45678,
+              "explicit listener port was changed")) {
     return EXIT_FAILURE;
   }
 
-  auto native = Load({"listener_profile_defaults_probe",
-                      "--validate-config",
-                      "--protocol-family=native",
-                      "--database-selector=test.db",
-                      "--server-endpoint=unix:/tmp/sb"});
-  if (!Expect(native.ok, "Native SBWP listener profile defaults should validate")) {
+  auto missing_endpoint_identity = Load({"listener_explicit_config_probe",
+                                         "--validate-config",
+                                         "--database-selector=test.db",
+                                         "--server-endpoint=unix:/tmp/sb"});
+  if (!Expect(!missing_endpoint_identity.ok,
+              "listener endpoint identity must not come from compiled defaults")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(native.config.parser_package == "sbp_native",
-              "Native default parser package mismatch")) {
+  if (!Expect(HasDiagnostic(missing_endpoint_identity,
+                            "LISTENER.CONFIG.MISSING_PROTOCOL_FAMILY"),
+              "missing protocol family diagnostic mismatch") ||
+      !Expect(HasDiagnostic(missing_endpoint_identity,
+                            "LISTENER.CONFIG.MISSING_PARSER_EXECUTABLE"),
+              "missing parser executable diagnostic mismatch") ||
+      !Expect(HasDiagnostic(missing_endpoint_identity,
+                            "LISTENER.CONFIG.MISSING_BIND_ADDRESS"),
+              "missing bind address diagnostic mismatch") ||
+      !Expect(HasDiagnostic(missing_endpoint_identity,
+                            "LISTENER.CONFIG.MISSING_PORT"),
+              "missing port diagnostic mismatch")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(native.config.dialect == "sbwp.v1", "Native default dialect mismatch")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(native.config.port == 3092, "Native default port must be 3092")) {
-    return EXIT_FAILURE;
-  }
-
-  auto firebird = Load({"listener_profile_defaults_probe",
-                        "--validate-config",
-                        "--protocol-family=firebird",
-                        "--database-selector=test.db",
-                        "--server-endpoint=unix:/tmp/sb"});
-  if (!Expect(firebird.ok, "Firebird listener profile defaults should validate")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(firebird.config.parser_package == "sbp_firebird",
-              "Firebird default parser package mismatch")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(firebird.config.dialect == "firebird.wire.v13",
-              "Firebird default dialect mismatch")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(firebird.config.port == 3050,
-              "Firebird default port must remain 3050")) {
+  if (!Expect(missing_endpoint_identity.config.protocol_family.empty(),
+              "protocol family received a compiled default") ||
+      !Expect(missing_endpoint_identity.config.parser_package.empty(),
+              "parser package received a compiled default") ||
+      !Expect(missing_endpoint_identity.config.parser_executable.empty(),
+              "parser executable received a compiled default") ||
+      !Expect(missing_endpoint_identity.config.dialect.empty(),
+              "dialect received a compiled default") ||
+      !Expect(missing_endpoint_identity.config.bind_address.empty(),
+              "bind address received a compiled default") ||
+      !Expect(missing_endpoint_identity.config.port == 0,
+              "port received a compiled default")) {
     return EXIT_FAILURE;
   }
 
@@ -141,29 +159,14 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  auto explicit_package = Load({"listener_profile_defaults_probe",
-                                "--validate-config",
-                                "--protocol-family=firebird",
-                                "--parser-package=custom_firebird_parser",
-                                "--database-selector=test.db",
-                                "--server-endpoint=unix:/tmp/sb"});
-  if (!Expect(explicit_package.ok, "Explicit parser package config should validate")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(explicit_package.config.parser_package == "custom_firebird_parser",
-              "Explicit parser package was overwritten")) {
-    return EXIT_FAILURE;
-  }
-  if (!Expect(explicit_package.config.dialect == "firebird.wire.v13",
-              "Explicit package should still use Firebird dialect default")) {
-    return EXIT_FAILURE;
-  }
-
-  auto unknown_key = Load({"listener_profile_defaults_probe",
+  auto unknown_key = Load({"listener_explicit_config_probe",
                            "--validate-config",
-                           "--protocol-family=sbsql",
+                           "--protocol-family=vendor-wire",
+                           "--parser-executable=/opt/vendor/parser-worker",
                            "--database-selector=test.db",
                            "--server-endpoint=unix:/tmp/sb",
+                           "--bind-address=127.0.0.1",
+                           "--port=45001",
                            "--unknown-public-key=value"});
   if (!Expect(!unknown_key.ok, "Unknown listener configuration keys should fail closed") ||
       !Expect(HasDiagnostic(unknown_key, "LISTENER.CONFIG.UNKNOWN_KEY"),
@@ -171,7 +174,7 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  auto malformed_cli = Load({"listener_profile_defaults_probe",
+  auto malformed_cli = Load({"listener_explicit_config_probe",
                              "--validate-config",
                              "--protocol-family"});
   if (!Expect(!malformed_cli.ok, "Malformed listener CLI option should fail closed") ||
@@ -180,7 +183,7 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  auto positional_arg = Load({"listener_profile_defaults_probe", "positional"});
+  auto positional_arg = Load({"listener_explicit_config_probe", "positional"});
   if (!Expect(!positional_arg.ok, "Unknown listener positional argument should fail closed") ||
       !Expect(HasDiagnostic(positional_arg, "LISTENER.CLI.UNKNOWN_ARGUMENT"),
               "Unknown listener positional argument diagnostic mismatch")) {

@@ -30,6 +30,7 @@ add_library(sb_engine_sblr
   sblr_parser_authority_guards.cpp
   sblr_parser_projection.cpp
   sblr_prepared_template.cpp
+  sblr_procedural_block_runtime.cpp
   sblr_refusal.cpp
   sblr_resource_governance.cpp
   sblr_routine_runtime.cpp

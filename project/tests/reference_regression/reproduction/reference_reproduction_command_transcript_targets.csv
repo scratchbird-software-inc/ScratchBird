@@ -1,0 +1,8 @@
+target_id,status,target,command_shape,required_outputs,notes
+RPR-REPRO-001,required,public_preflight,python3 project/tests/reference_regression/acquire_reference_regression_assets.py --repo-root <repo> --check --strict-payload,dependency report and payload boundary report,No downloads required.
+RPR-REPRO-002,required,local_acquisition,python3 project/tests/reference_regression/acquire_reference_regression_assets.py --repo-root <repo> --download --check --strict-payload,local acquisition manifest checksums license notes,Acquired payloads remain untracked.
+RPR-REPRO-003,required,server_database_start,ctest --test-dir <build> -R reference_replay_runtime_smoke_<family>_conformance,server database listener parser control evidence,Public smoke proves lifecycle startup and cleanup.
+RPR-REPRO-004,required,single_family_replay,SB_REFERENCE_REPLAY_MODE=single-family ctest --test-dir <build> -L reference_family_replay_<family>,normalized results failure ledger support bundle,Family-focused reproduction.
+RPR-REPRO-005,required,all_family_release_replay,SB_REFERENCE_REPLAY_MODE=release-mandatory ctest --test-dir <build> -L reference_release_mandatory_replay,all-family proof bundle,Requires all local suites and tools.
+RPR-REPRO-006,required,example_database_rebuild,ctest --test-dir <build> -L reference_example_database,example database manifest checksums object counts restart proof,Produces release example proof.
+RPR-REPRO-007,required,public_status_generation,python3 project/tests/reference_regression/generate_compatibility_parser_docs.py --repo-root <repo> --check,public-safe status evidence,Does not emit private matrix content.

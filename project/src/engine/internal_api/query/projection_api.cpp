@@ -150,6 +150,7 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     EngineProjectionFunctionRequest function_request;
     function_request.context = request.context;
     function_request.function_id = expression.function_id;
+    std::vector<EngineEvidenceReference> argument_evidence;
     for (std::size_t arg_index = 0; arg_index < expression.arguments.size(); ++arg_index) {
       auto arg_result = EvaluateProjectionExpressionTree(request, expression.arguments[arg_index]);
       if (!arg_result.ok) return arg_result;
@@ -161,8 +162,17 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
       argument.encoded_value = arg_result.value.encoded_value;
       argument.is_null = arg_result.value.is_null;
       function_request.arguments.push_back(std::move(argument));
+      argument_evidence.insert(argument_evidence.end(),
+                               arg_result.evidence.begin(),
+                               arg_result.evidence.end());
     }
-    return request.function_evaluator(function_request);
+    auto out = request.function_evaluator(function_request);
+    if (out.ok) {
+      out.evidence.insert(out.evidence.end(),
+                          argument_evidence.begin(),
+                          argument_evidence.end());
+    }
+    return out;
   }
 
   if (expression.expression_kind == "operator" ||

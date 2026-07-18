@@ -9,6 +9,10 @@
 add_library(sbl_compatibility_parser_common STATIC
   compatibility_dialect.cpp
   compatibility_worker_session.cpp
+  grpc_unary_worker_session.cpp
+  http_worker_session.cpp
+  mywire_frame_codec.cpp
+  pgwire_frame_codec.cpp
 )
 
 target_compile_features(sbl_compatibility_parser_common PUBLIC cxx_std_23)

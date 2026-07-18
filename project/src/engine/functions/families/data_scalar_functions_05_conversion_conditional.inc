@@ -329,6 +329,48 @@
   }
 
   if (IdIs(id, {"data.scalar.extract", "data.scalar.date_part", "sb.temporal.date_part", "extract", "date_part"})) {
+    if (id == "sb.temporal.date_part" && request.arguments.size() == 3) {
+      if (IsSqlNull(request.arguments[0].value) ||
+          IsSqlNull(request.arguments[1].value) ||
+          IsSqlNull(request.arguments[2].value)) {
+        return MakeFunctionSuccess(
+            request, {MakeNullValue("numeric.fixed")});
+      }
+      if (LowerAscii(request.arguments[0].value.descriptor_id) != "text" ||
+          LowerAscii(request.arguments[2].value.descriptor_id) != "text") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_part field and operation_profile must use text carriers");
+      }
+      if (ValueAsText(request.arguments[2].value) !=
+          "firebird.ticks_100us.v1") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_part operation_profile is not registered");
+      }
+      const std::string field =
+          LowerAscii(TrimAscii(ValueAsText(request.arguments[0].value)));
+      if (field != "millisecond" && field != "milliseconds") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "firebird.ticks_100us.v1 date_part supports only MILLISECOND");
+      }
+      ProfileTemporal temporal;
+      if (!ParseFirebirdProfileTemporal(
+              request.arguments[1].value.descriptor_id,
+              ValueAsText(request.arguments[1].value), &temporal) ||
+          temporal.kind == ProfileTemporalKind::date) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_part MILLISECOND requires canonical TIME or TIMESTAMP");
+      }
+      const std::int64_t millisecond_ticks =
+          static_cast<std::int64_t>(temporal.fraction_ticks);
+      return MakeFunctionSuccess(
+          request,
+          {MakeEncodedNumericValue(
+              "numeric.fixed", FormatFirebirdTenths(millisecond_ticks))});
+    }
     if (request.arguments.size() != 2) return RefuseFunctionInvalidInput(request, "extract expects field and temporal value");
     if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
       return MakeFunctionSuccess(request, {MakeNullValue("int64")});
@@ -563,12 +605,29 @@
       return RefuseFunctionInvalidInput(request, "round expects numeric value and optional integer scale");
     }
     if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
-      return MakeFunctionSuccess(request, {MakeNullValue("real64")});
+      const std::string descriptor =
+          request.arguments[0].value.descriptor_id == "numeric.fixed"
+              ? "numeric.fixed"
+              : "real64";
+      return MakeFunctionSuccess(request, {MakeNullValue(descriptor)});
+    }
+    std::int64_t scale = 0;
+    if (!ValueAsInt64Strict(request.arguments[1].value, &scale)) {
+      return RefuseFunctionInvalidInput(request, "round optional scale form requires numeric value and int64 scale");
+    }
+    if (request.arguments[0].value.descriptor_id == "numeric.fixed") {
+      const auto rounded = RoundExactFixedDecimal(
+          ValueAsText(request.arguments[0].value), scale);
+      if (!rounded) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "round exact fixed input requires at most 18 digits and scale in range 0 to 18");
+      }
+      return MakeFunctionSuccess(
+          request, {MakeEncodedNumericValue("numeric.fixed", *rounded)});
     }
     double input = 0.0;
-    std::int64_t scale = 0;
-    if (!ValueAsReal64(request.arguments[0].value, &input) ||
-        !ValueAsInt64Strict(request.arguments[1].value, &scale)) {
+    if (!ValueAsReal64(request.arguments[0].value, &input)) {
       return RefuseFunctionInvalidInput(request, "round optional scale form requires numeric value and int64 scale");
     }
     if (scale < -308 || scale > 308) {
@@ -684,7 +743,14 @@
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("real64")});
     double input = 0.0;
     if (!ValueAsReal64(request.arguments[0].value, &input)) return RefuseFunctionInvalidInput(request, "cot requires a numeric value");
-    return MakeFunctionSuccess(request, {MakeReal64Value("real64", 1.0 / std::tan(input))});
+    if (input == 0.0) {
+      return RefuseFunctionNumericDomain(request, "cot input must be different from zero");
+    }
+    const double output = 1.0 / std::tan(input);
+    if (!std::isfinite(output)) {
+      return RefuseFunctionOverflow(request, "cot produced a non-finite result");
+    }
+    return MakeFunctionSuccess(request, {MakeReal64Value("real64", output)});
   }
   if (IdIs(id, {"data.scalar.sinh", "sb.fn.numeric.sinh", "sb.scalar.sinh", "sinh"})) return UnaryReal(request, std::sinh, "sinh");
   if (IdIs(id, {"data.scalar.cosh", "sb.fn.numeric.cosh", "sb.scalar.cosh", "cosh"})) return UnaryReal(request, std::cosh, "cosh");

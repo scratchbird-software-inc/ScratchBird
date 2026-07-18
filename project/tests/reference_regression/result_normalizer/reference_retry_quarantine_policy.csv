@@ -1,0 +1,8 @@
+policy_id,status,case_state,retry_limit,classification_after_limit,required_evidence,release_effect
+RPR-RETRY-001,required,tool_startup_failure,2,environment_error,tool logs process tree and dependency check,blocks selected family until resolved or approved environment-only
+RPR-RETRY-002,required,network_bind_failure,1,environment_error,port scan route logs and cleanup proof,blocks selected serial group
+RPR-RETRY-003,required,timeout_hang,1,quarantined,timeout log stack process snapshot and cleanup proof,blocks release until classified
+RPR-RETRY-004,required,nondeterministic_result,3,quarantined,three result artifacts canonicalization proof and owner assignment,blocks release until fixed or explicit refusal
+RPR-RETRY-005,required,known_original_suite_flake,3,quarantined,upstream issue or repeated evidence and reviewer approval,does not count as pass
+RPR-RETRY-006,required,scratchbird_crash,0,server_error,crash dump logs and reproducer,blocks release
+RPR-RETRY-007,required,parser_crash,0,parser_error,parser logs and reproducer,blocks parser lane

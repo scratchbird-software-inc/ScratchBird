@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_neo4j_parser_pipeline STATIC
   neo4j_dialect.cpp
+  neo4j_bolt_worker_session.cpp
 )
 
 target_compile_features(sbl_neo4j_parser_pipeline PUBLIC cxx_std_23)

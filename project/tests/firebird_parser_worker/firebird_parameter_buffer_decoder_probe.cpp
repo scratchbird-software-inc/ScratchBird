@@ -94,8 +94,9 @@ int main() {
   }
 
   const auto spb = DecodeFirebirdParameterBuffer(
-      "SPB", Bytes{2, 11, 106, 8, 'e', 'm', 'p', 'l', 'o', 'y', 'e', 'e',
-                   108, 1, 1});
+      "SPB_SERVICE_START",
+      Bytes{11, 106, 8, 0, 'e', 'm', 'p', 'l', 'o', 'y', 'e', 'e',
+            108, 1, 0, 0, 0});
   if (!ExpectOk(spb, "SPB", "isc_action_svc_db_stats")) return EXIT_FAILURE;
   if (!Expect(spb.service_action == "isc_action_svc_db_stats",
               "SPB service action mismatch")) {
@@ -109,13 +110,46 @@ int main() {
   }
 
   const auto spb_attach = DecodeFirebirdParameterBuffer(
-      "SPB", Bytes{2, 28, 6, 'S', 'Y', 'S', 'D', 'B', 'A',
+      "SPB", Bytes{2, 2, 28, 6, 'S', 'Y', 'S', 'D', 'B', 'A',
                    29, 9, 'm', 'a', 's', 't', 'e', 'r', 'k', 'e', 'y'});
   if (!ExpectOk(spb_attach, "SPB attach", "isc_spb_user_name")) {
     return EXIT_FAILURE;
   }
   if (!Expect(Contains(spb_attach.json, "secret_redacted"),
               "SPB password policy missing")) {
+    return EXIT_FAILURE;
+  }
+
+  const auto service_start_spb = DecodeFirebirdParameterBuffer(
+      "SPB_SERVICE_START",
+      Bytes{8, 106, 8, 0, 'e', 'm', 'p', 'l', 'o', 'y', 'e', 'e',
+            12, 37});
+  if (!ExpectOk(service_start_spb, "SPB service start", "isc_action_svc_properties")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(service_start_spb.service_action == "isc_action_svc_properties",
+              "SPB service start action mismatch")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(Contains(service_start_spb.json, "isc_spb_prp_write_mode") &&
+              Contains(service_start_spb.json,
+                       "\"runtime_policy\":\"emulated_service_or_authority_diagnostic\""),
+              "SPB service start descriptor content mismatch")) {
+    std::cerr << service_start_spb.json << '\n';
+    return EXIT_FAILURE;
+  }
+
+  const auto service_start_options_spb = DecodeFirebirdParameterBuffer(
+      "SPB_SERVICE_START",
+      Bytes{8, 106, 8, 0, 'e', 'm', 'p', 'l', 'o', 'y', 'e', 'e',
+            108, 0, 4, 0, 0});
+  if (!ExpectOk(service_start_options_spb,
+                "SPB service start options",
+                "isc_spb_options")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(service_start_options_spb.service_action == "isc_action_svc_properties",
+              "SPB service start options action mismatch")) {
     return EXIT_FAILURE;
   }
 

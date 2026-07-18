@@ -218,6 +218,46 @@ EngineApiDiagnostic ConstraintDiagnostic(const std::string& code,
       true);
 }
 
+EngineApiDiagnostic ForeignKeyViolationDiagnostic(
+    const EngineRequestContext& context,
+    const CrudTableRecord& owner_table,
+    const std::map<std::string, std::string>& descriptor_fields,
+    const std::string& child_column_name,
+    const std::string& key_value,
+    const std::string& violation_kind) {
+  EngineApiDiagnostic diagnostic = ConstraintDiagnostic(
+      "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION",
+      "constraint.foreign_key.violation",
+      context,
+      owner_table,
+      "foreign_key",
+      ConstraintUuid(descriptor_fields,
+                     owner_table,
+                     child_column_name,
+                     "foreign_key"),
+      violation_kind,
+      child_column_name);
+  // These are the complete redaction-safe presentation operands.  The
+  // listener and Firebird worker accept this exact code-specific shape and
+  // never parse diagnostic.detail or infer labels from SQL text.
+  std::string quoted_column = "\"";
+  for (const char ch : child_column_name) {
+    if (ch == '"') quoted_column.push_back('"');
+    quoted_column.push_back(ch);
+  }
+  quoted_column.push_back('"');
+  diagnostic.fields = {
+      {"violation_kind", violation_kind},
+      {"constraint_display_label",
+       FieldOrEmpty(descriptor_fields, {"constraint_name"})},
+      {"owner_relation_display_label", owner_table.default_name},
+      {"owner_schema_display_label", ""},
+      {"child_column_display_label", child_column_name},
+      {"key_display_text",
+       "(" + quoted_column + " = " + key_value + ")"}};
+  return diagnostic;
+}
+
 bool TimingRequiresDeferredStore(const std::map<std::string, std::string>& fields) {
   const std::string timing = LowerAscii(FieldOrEmpty(fields, {"enforcement_timing", "timing"}));
   if (timing == "deferred" || timing == "transaction_end" || timing == "initially_deferred") {
@@ -375,6 +415,8 @@ std::vector<std::string> KeyColumnsForIndex(const CrudIndexRecord& index) {
       const std::string rest = envelope.substr(5);
       const auto pos = rest.find(':');
       columns.push_back(pos == std::string::npos ? rest : rest.substr(0, pos));
+    } else if (StartsWith(envelope, "sum:")) {
+      columns.push_back(envelope);
     } else {
       columns.push_back(envelope);
     }
@@ -386,6 +428,35 @@ std::vector<std::string> KeyColumnsForIndex(const CrudIndexRecord& index) {
 bool IndexCoversColumn(const CrudIndexRecord& index, const std::string& column_name) {
   const auto columns = KeyColumnsForIndex(index);
   return columns.size() == 1 && columns.front() == column_name;
+}
+
+std::vector<std::string> RelationIndexKeyColumns(
+    const MgaRelationIndexStorageDescriptor& index) {
+  std::vector<std::string> columns;
+  for (const auto& envelope : index.key_envelopes) {
+    if (envelope.empty() || envelope == "unique" ||
+        envelope == "primary_key" || StartsWith(envelope, "include:") ||
+        StartsWith(envelope, "where_eq:") ||
+        StartsWith(envelope, "where_mod_eq:") ||
+        envelope == "where_true") {
+      continue;
+    }
+    if (StartsWith(envelope, "identity:")) {
+      columns.push_back(envelope.substr(9));
+    } else if (StartsWith(envelope, "desc:")) {
+      columns.push_back(envelope.substr(5));
+    } else if (StartsWith(envelope, "cast:")) {
+      const std::string rest = envelope.substr(5);
+      const auto pos = rest.find(':');
+      columns.push_back(pos == std::string::npos ? rest
+                                                : rest.substr(0, pos));
+    } else if (StartsWith(envelope, "sum:")) {
+      columns.push_back(envelope);
+    } else {
+      columns.push_back(envelope);
+    }
+  }
+  return columns;
 }
 
 std::optional<CrudIndexRecord> FindVisibleUniqueIndexForColumn(const CrudState& state,
@@ -674,6 +745,13 @@ std::optional<EngineApiDiagnostic> ValidateUniqueIndexNoDuplicate(
 struct ForeignKeyReference {
   std::string parent_table_uuid;
   std::string parent_column;
+  std::string parent_column_uuid;
+  std::string parent_candidate_key_constraint_uuid;
+  std::string key_descriptor_uuid;
+  std::string support_uuid;
+  std::string support_family;
+  std::string mutation_batch_uuid;
+  bool sealed = false;
 };
 
 std::optional<ForeignKeyReference> ParseForeignKeyReference(
@@ -681,6 +759,21 @@ std::optional<ForeignKeyReference> ParseForeignKeyReference(
   ForeignKeyReference reference;
   reference.parent_table_uuid = FieldOrEmpty(fields, {"referenced_table_uuid", "foreign_table_uuid", "foreign_table"});
   reference.parent_column = FieldOrEmpty(fields, {"referenced_column", "foreign_column", "parent_column"});
+  reference.parent_column_uuid =
+      FieldOrEmpty(fields, {"referenced_column_uuid"});
+  reference.parent_candidate_key_constraint_uuid = FieldOrEmpty(
+      fields, {"referenced_candidate_key_constraint_uuid"});
+  reference.key_descriptor_uuid = FieldOrEmpty(
+      fields, {"referenced_key_descriptor_uuid", "key_descriptor_uuid"});
+  reference.support_uuid = FieldOrEmpty(
+      fields, {"referenced_support_uuid", "support_uuid"});
+  reference.support_family =
+      LowerAscii(FieldOrEmpty(fields, {"support_family"}));
+  reference.mutation_batch_uuid = FieldOrEmpty(
+      fields, {"constraint_mutation_batch_uuid"});
+  reference.sealed =
+      LowerAscii(FieldOrEmpty(fields, {"constraint_mutation_batch_state"})) ==
+      "sealed";
   if (!reference.parent_table_uuid.empty() && !reference.parent_column.empty()) { return reference; }
   const std::string envelope = FieldOrEmpty(fields, {"foreign_key", "references", "fk"});
   if (envelope.empty()) { return std::nullopt; }
@@ -748,10 +841,140 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                                 "referenced_table_not_visible",
                                 column_name);
   }
-  const auto parent_index = FindVisibleUniqueIndexForColumn(state,
-                                                            parent->table_uuid,
-                                                            reference->parent_column,
-                                                            context.local_transaction_id);
+  std::optional<CrudIndexRecord> parent_index;
+  if (reference->sealed) {
+    if (reference->parent_column_uuid.empty() ||
+        reference->parent_candidate_key_constraint_uuid.empty() ||
+        reference->key_descriptor_uuid.empty() ||
+        reference->support_uuid.empty() ||
+        reference->support_family != "btree" ||
+        reference->mutation_batch_uuid.empty() ||
+        FieldOrEmpty(fields, {"constraint_uuid"}).empty() ||
+        FieldOrEmpty(fields, {"constraint_name"}).empty() ||
+        LowerAscii(FieldOrEmpty(fields, {"enforcement_timing"})) !=
+            "immediate" ||
+        LowerAscii(FieldOrEmpty(fields, {"on_update"})) != "no_action" ||
+        LowerAscii(FieldOrEmpty(fields, {"on_delete"})) != "no_action") {
+      return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
+                                  "constraint.descriptor.invalid",
+                                  context,
+                                  table,
+                                  "foreign_key",
+                                  constraint_uuid,
+                                  "sealed_foreign_key_descriptor_incomplete",
+                                  column_name);
+    }
+    const auto child_storage = LoadMgaRelationStorageDescriptor(
+        context, table.table_uuid);
+    const auto parent_storage = LoadMgaRelationStorageDescriptor(
+        context, parent->table_uuid);
+    if (!child_storage.ok || !parent_storage.ok) {
+      return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
+                                  "constraint.descriptor.invalid",
+                                  context,
+                                  table,
+                                  "foreign_key",
+                                  constraint_uuid,
+                                  "relation_descriptor_unavailable",
+                                  column_name);
+    }
+    const auto child_column = std::find_if(
+        child_storage.descriptor.columns.begin(),
+        child_storage.descriptor.columns.end(),
+        [&](const MgaRelationColumnStorageDescriptor& column) {
+          return column.column_uuid.canonical ==
+                     FieldOrEmpty(fields, {"child_column_uuid"}) &&
+                 column.canonical_name_key == column_name;
+        });
+    const auto parent_column = std::find_if(
+        parent_storage.descriptor.columns.begin(),
+        parent_storage.descriptor.columns.end(),
+        [&](const MgaRelationColumnStorageDescriptor& column) {
+          return column.column_uuid.canonical ==
+                     reference->parent_column_uuid &&
+                 column.canonical_name_key == reference->parent_column;
+        });
+    const auto parent_metadata_column = std::find_if(
+        parent->columns.begin(), parent->columns.end(),
+        [&](const auto& column) {
+          return column.first == reference->parent_column;
+        });
+    if (child_column == child_storage.descriptor.columns.end() ||
+        parent_column == parent_storage.descriptor.columns.end() ||
+        parent_metadata_column == parent->columns.end()) {
+      return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
+                                  "constraint.descriptor.invalid",
+                                  context,
+                                  table,
+                                  "foreign_key",
+                                  constraint_uuid,
+                                  "sealed_foreign_key_column_binding_changed",
+                                  column_name);
+    }
+    const auto parent_key_fields =
+        DescriptorFields(parent_metadata_column->second);
+    const std::string parent_candidate_key_class = LowerAscii(
+        FieldOrEmpty(parent_key_fields, {"candidate_key_class"}));
+    if (FieldOrEmpty(parent_key_fields,
+                     {"candidate_key_constraint_uuid"}) !=
+            reference->parent_candidate_key_constraint_uuid ||
+        FieldOrEmpty(parent_key_fields,
+                     {"candidate_key_descriptor_uuid"}) !=
+            reference->key_descriptor_uuid ||
+        FieldOrEmpty(parent_key_fields, {"support_uuid"}) !=
+            reference->support_uuid ||
+        LowerAscii(FieldOrEmpty(parent_key_fields, {"support_family"})) !=
+            reference->support_family ||
+        (parent_candidate_key_class != "primary_key" &&
+         parent_candidate_key_class != "unique")) {
+      return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
+                                  "constraint.descriptor.invalid",
+                                  context,
+                                  table,
+                                  "foreign_key",
+                                  constraint_uuid,
+                                  "referenced_candidate_key_binding_changed",
+                                  column_name);
+    }
+    std::size_t descriptor_support_count = 0;
+    for (const auto& index : parent_storage.descriptor.indexes) {
+      const auto key_columns = RelationIndexKeyColumns(index);
+      if (index.index_uuid.canonical == reference->support_uuid &&
+          index.unique && LowerAscii(index.family) == reference->support_family &&
+          key_columns.size() == 1 &&
+          key_columns.front() == reference->parent_column) {
+        ++descriptor_support_count;
+      }
+    }
+    if (descriptor_support_count != 1) {
+      return ConstraintDiagnostic("CLI.CONSTRAINT_DESCRIPTOR_INVALID",
+                                  "constraint.descriptor.invalid",
+                                  context,
+                                  table,
+                                  "foreign_key",
+                                  constraint_uuid,
+                                  "referenced_support_descriptor_binding_changed",
+                                  column_name);
+    }
+    std::vector<CrudIndexRecord> matches;
+    for (const auto& index : VisibleCrudIndexesForTable(
+             state, parent->table_uuid, context.local_transaction_id)) {
+      if (index.index_uuid == reference->support_uuid && index.unique &&
+          LowerAscii(index.family.empty()
+                         ? CrudIndexFamilyForProfile(index.profile)
+                         : index.family) == reference->support_family &&
+          IndexCoversColumn(index, reference->parent_column)) {
+        matches.push_back(index);
+      }
+    }
+    if (matches.size() == 1) parent_index = matches.front();
+  } else {
+    parent_index = FindVisibleUniqueIndexForColumn(
+        state,
+        parent->table_uuid,
+        reference->parent_column,
+        context.local_transaction_id);
+  }
   if (!parent_index) {
     return ConstraintDiagnostic("CLI.SUPPORT_STRUCTURE_UNAVAILABLE",
                                 "constraint.support_structure.unavailable",
@@ -786,17 +1009,12 @@ std::optional<EngineApiDiagnostic> ValidateForeignKeyReference(
                             evidence);
     return std::nullopt;
   }
-  return ConstraintDiagnostic("CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION",
-                              "constraint.foreign_key.violation",
-                              context,
-                              table,
-                              "foreign_key",
-                              constraint_uuid,
-                              "referenced_parent_key_missing",
-                              column_name,
-                              "key:" + parent_index->index_uuid,
-                              parent_index->index_uuid,
-                              "table_scan");
+  return ForeignKeyViolationDiagnostic(context,
+                                       table,
+                                       fields,
+                                       column_name,
+                                       value,
+                                       "parent_missing");
 }
 
 bool DescriptorHasExclusion(const std::map<std::string, std::string>& fields) {
@@ -913,14 +1131,12 @@ std::optional<EngineApiDiagnostic> ValidateChildReferencesForParentValue(
       const auto& child_values =
           CachedColumnValues(cache, state, child_table.table_uuid, child_column, context);
       if (child_values.count(parent_value) != 0) {
-        return ConstraintDiagnostic("CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION",
-                                    "constraint.foreign_key.violation",
-                                    context,
-                                    child_table,
-                                    "foreign_key",
-                                    ConstraintUuid(child_fields, child_table, child_column, "foreign_key"),
-                                    "referenced_parent_key_" + action_kind + "_restricted",
-                                    child_column);
+        return ForeignKeyViolationDiagnostic(context,
+                                             child_table,
+                                             child_fields,
+                                             child_column,
+                                             parent_value,
+                                             "references_present");
       }
     }
   }

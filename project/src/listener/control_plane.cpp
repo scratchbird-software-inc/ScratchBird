@@ -31,10 +31,13 @@
 namespace scratchbird::listener {
 namespace {
 
-constexpr std::size_t kHelloFixedSize = 38;
+constexpr std::size_t kProtocolFixedWidth = 64;
+constexpr std::size_t kHelloFixedHeaderSize = kProtocolFixedWidth + 4 + 8 + 4 + 4;
+constexpr std::size_t kHelloFixedSize = kHelloFixedHeaderSize + 2;
 constexpr std::size_t kHelloTextMax = 1024;
 constexpr std::size_t kHelloAckMinSize = 11;
-constexpr std::size_t kHandoffSocketSize = 193;
+constexpr std::size_t kHandoffSocketSize =
+    8 + kProtocolFixedWidth + 48 + 2 + 1 + 2 + 64 + 16 + 16 + 16 + 4;
 constexpr std::size_t kHandoffAckMinSize = 9;
 constexpr std::size_t kWindowsSocketHandoffHeaderSize = 12;
 constexpr std::size_t kWindowsSocketProtocolInfoMax = 4096;
@@ -643,7 +646,7 @@ std::optional<ListenerManagementEnvelope> BuildListenerManagementEnvelopeFromCom
 std::vector<std::uint8_t> EncodeHelloPayload(const ParserHelloPayload& hello) {
   std::vector<std::uint8_t> out;
   out.reserve(kHelloFixedSize + hello.profile_id.size() + hello.bundle_contract_id.size() + 4);
-  PutFixedString(&out, hello.protocol, 16);
+  PutFixedString(&out, hello.protocol, kProtocolFixedWidth);
   PutU32(&out, hello.pid);
   PutU64(&out, hello.worker_id);
   PutU32(&out, hello.dialect_protocol_version);
@@ -660,12 +663,12 @@ std::optional<ParserHelloPayload> DecodeHelloPayload(const std::vector<std::uint
     return std::nullopt;
   }
   ParserHelloPayload hello;
-  hello.protocol = ReadFixedString(payload, 0, 16);
-  hello.pid = ReadU32(payload, 16);
-  hello.worker_id = ReadU64(payload, 20);
-  hello.dialect_protocol_version = ReadU32(payload, 28);
-  hello.parser_api_major = ReadU32(payload, 32);
-  std::size_t off = 36;
+  hello.protocol = ReadFixedString(payload, 0, kProtocolFixedWidth);
+  hello.pid = ReadU32(payload, kProtocolFixedWidth);
+  hello.worker_id = ReadU64(payload, kProtocolFixedWidth + 4);
+  hello.dialect_protocol_version = ReadU32(payload, kProtocolFixedWidth + 12);
+  hello.parser_api_major = ReadU32(payload, kProtocolFixedWidth + 16);
+  std::size_t off = kHelloFixedHeaderSize;
   const auto profile_len = ReadU16(payload, off);
   off += 2;
   if (profile_len > kHelloTextMax || off + profile_len + 2 > payload.size()) {
@@ -718,7 +721,7 @@ std::vector<std::uint8_t> EncodeHandoffSocketPayload(const HandoffSocketPayload&
   out.reserve(kHandoffSocketSize + handoff.auth_provider_family.size() +
               handoff.auth_principal.size() + handoff.auth_token.size() + 6);
   PutU64(&out, handoff.connection_id);
-  PutFixedString(&out, handoff.protocol, 16);
+  PutFixedString(&out, handoff.protocol, kProtocolFixedWidth);
   PutFixedString(&out, handoff.client_addr, 48);
   PutU16(&out, handoff.client_port);
   out.push_back(handoff.tls_active ? 1 : 0);
@@ -745,15 +748,19 @@ std::optional<HandoffSocketPayload> DecodeHandoffSocketPayload(const std::vector
   }
   HandoffSocketPayload handoff;
   handoff.connection_id = ReadU64(payload, 0);
-  handoff.protocol = ReadFixedString(payload, 8, 16);
-  handoff.client_addr = ReadFixedString(payload, 24, 48);
-  handoff.client_port = ReadU16(payload, 72);
-  handoff.tls_active = payload[74] == 1;
-  std::copy(payload.begin() + 77, payload.begin() + 141, handoff.tls_state.begin());
-  handoff.db_uuid = ReadUuid(payload, 141);
-  handoff.dbbt_id = ReadUuid(payload, 157);
-  handoff.manager_session_id = ReadUuid(payload, 173);
-  handoff.listener_id = ReadU32(payload, 189);
+  handoff.protocol = ReadFixedString(payload, 8, kProtocolFixedWidth);
+  handoff.client_addr = ReadFixedString(payload, 8 + kProtocolFixedWidth, 48);
+  handoff.client_port = ReadU16(payload, 8 + kProtocolFixedWidth + 48);
+  handoff.tls_active = payload[8 + kProtocolFixedWidth + 48 + 2] == 1;
+  constexpr std::size_t tls_state_offset = 8 + kProtocolFixedWidth + 48 + 2 + 1 + 2;
+  std::copy(payload.begin() + tls_state_offset,
+            payload.begin() + tls_state_offset + 64,
+            handoff.tls_state.begin());
+  constexpr std::size_t db_uuid_offset = tls_state_offset + 64;
+  handoff.db_uuid = ReadUuid(payload, db_uuid_offset);
+  handoff.dbbt_id = ReadUuid(payload, db_uuid_offset + 16);
+  handoff.manager_session_id = ReadUuid(payload, db_uuid_offset + 32);
+  handoff.listener_id = ReadU32(payload, db_uuid_offset + 48);
   std::size_t off = kHandoffSocketSize;
   if (off == payload.size()) return handoff;
   auto read_text = [&](std::string* out) -> bool {

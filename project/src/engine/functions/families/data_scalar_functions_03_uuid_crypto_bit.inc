@@ -273,6 +273,92 @@ FunctionCallResult DispatchDataScalarFunction(const FunctionCallRequest& request
     return MakeFunctionSuccess(request, {MakeInt64Value("int64", static_cast<std::int64_t>(static_cast<unsigned char>(text[0])))});
   }
 
+  // Canonical octet conversion primitives. These are deliberately separate
+  // from the public chr/ascii functions above: their contract is an exact
+  // unsigned storage-octet conversion, independent of any parser dialect.
+  if (id == "data.scalar.octet_from_int64") {
+    if (request.arguments.size() != 1) {
+      return RefuseFunctionInvalidInput(
+          request, "octet_from_int64 expects exactly one integer argument");
+    }
+    if (IsSqlNull(request.arguments[0].value)) {
+      return MakeFunctionSuccess(request, {MakeNullValue("binary")});
+    }
+    std::int64_t octet = 0;
+    if (!ValueAsInt64Strict(request.arguments[0].value, &octet)) {
+      return RefuseFunctionInvalidInput(
+          request, "octet_from_int64 argument must be an exact int64 value");
+    }
+    if (octet < 0 || octet > 255) {
+      return RefuseFunctionInvalidInput(
+          request, "octet_from_int64 argument must be in range [0, 255]");
+    }
+    return MakeFunctionSuccess(
+        request,
+        {MakeBinaryValue(
+            "binary",
+            {static_cast<std::uint8_t>(static_cast<unsigned char>(octet))})});
+  }
+
+  if (id == "data.scalar.int64_from_first_octet") {
+    if (request.arguments.size() != 1) {
+      return RefuseFunctionInvalidInput(
+          request,
+          "int64_from_first_octet expects exactly one character, text, blob, "
+          "or binary argument");
+    }
+    const auto& value = request.arguments[0].value;
+    if (IsSqlNull(value)) {
+      return MakeFunctionSuccess(request, {MakeNullValue("int64")});
+    }
+
+    const std::string descriptor = LowerAscii(value.descriptor_id);
+    const std::size_t qualifier = descriptor.find_first_of(".:(");
+    const std::string descriptor_family = descriptor.substr(0, qualifier);
+    const bool text_descriptor =
+        descriptor_family == "text" || descriptor_family == "character" ||
+        descriptor_family == "char" || descriptor_family == "varchar" ||
+        descriptor_family == "string" || descriptor_family == "blob" ||
+        descriptor_family == "text_blob";
+    const bool binary_descriptor =
+        descriptor_family == "binary" || descriptor_family == "varbinary" ||
+        descriptor_family == "octets";
+    if (!text_descriptor && !binary_descriptor) {
+      return RefuseFunctionInvalidInput(
+          request,
+          "int64_from_first_octet requires a character, text, blob, or "
+          "binary descriptor");
+    }
+
+    const bool binary_payload =
+        value.payload_kind ==
+        scratchbird::engine::sblr::SblrValuePayloadKind::binary;
+    const std::string text_bytes = binary_payload ? std::string{} : ValueAsText(value);
+    const bool empty = binary_payload ? value.binary_value.empty() : text_bytes.empty();
+    const unsigned char first_octet =
+        empty ? 0
+              : binary_payload
+                    ? value.binary_value.front()
+                    : static_cast<unsigned char>(text_bytes.front());
+
+    const bool utf8_descriptor =
+        text_descriptor &&
+        (descriptor.find(".utf8") != std::string::npos ||
+         descriptor.find(":utf8") != std::string::npos ||
+         descriptor.find(".utf-8") != std::string::npos ||
+         descriptor.find(":utf-8") != std::string::npos);
+    if (!empty && utf8_descriptor && first_octet >= 0x80u) {
+      return RefuseFunctionInvalidInput(
+          request,
+          "int64_from_first_octet cannot represent a multi-octet first "
+          "character from a UTF8 descriptor");
+    }
+
+    const std::int64_t octet = static_cast<std::int64_t>(first_octet);
+    return MakeFunctionSuccess(
+        request, {MakeInt64Value("int64", octet)});
+  }
+
   if (IdIs(id, {"data.scalar.unicode", "sb.fn.string.unicode", "sb.scalar.unicode", "unicode"})) {
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "unicode expects exactly one text argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("int64")});

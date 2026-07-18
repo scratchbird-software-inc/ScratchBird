@@ -2566,6 +2566,85 @@
 
   if (IdIs(id, {"data.scalar.date_add", "sb.fn.temporal.date_add", "sb.temporal.date_add", "date_add",
                 "data.scalar.date_sub", "sb.fn.temporal.date_sub", "sb.temporal.date_sub", "date_sub"})) {
+    if (id == "sb.temporal.date_add" && request.arguments.size() == 4) {
+      if (IsSqlNull(request.arguments[0].value) ||
+          IsSqlNull(request.arguments[1].value) ||
+          IsSqlNull(request.arguments[2].value) ||
+          IsSqlNull(request.arguments[3].value)) {
+        const std::string descriptor =
+            request.arguments[0].value.descriptor_id.empty()
+                ? "timestamp"
+                : LowerAscii(request.arguments[0].value.descriptor_id);
+        return MakeFunctionSuccess(request, {MakeNullValue(descriptor)});
+      }
+      if (LowerAscii(request.arguments[2].value.descriptor_id) != "int64") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_add exact_amount must use the int64 carrier");
+      }
+      if (LowerAscii(request.arguments[1].value.descriptor_id) != "text" ||
+          LowerAscii(request.arguments[3].value.descriptor_id) != "text") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_add unit and operation_profile must use text carriers");
+      }
+      std::int64_t quantity = 0;
+      if (!ValueAsInt64Strict(request.arguments[2].value, &quantity)) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_add exact_amount must be an exact int64 value");
+      }
+
+      ProfileTemporal source;
+      if (!ParseFirebirdProfileTemporal(
+              request.arguments[0].value.descriptor_id,
+              ValueAsText(request.arguments[0].value), &source)) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_add requires a canonical DATE, TIME, or TIMESTAMP value");
+      }
+      const std::string unit =
+          LowerAscii(TrimAscii(ValueAsText(request.arguments[1].value)));
+      const std::string profile = ValueAsText(request.arguments[3].value);
+      ProfileTemporal result;
+      if (profile == "firebird.calendar_month.v1") {
+        if (unit != "month" && unit != "months") {
+          return RefuseFunctionInvalidInput(
+              request,
+              "firebird.calendar_month.v1 date_add supports only MONTH");
+        }
+        if (!AddFirebirdCalendarMonths(source, quantity, &result)) {
+          return RefuseFunctionOverflow(
+              request,
+              "firebird.calendar_month.v1 date_add exceeded the temporal range");
+        }
+      } else if (profile == "firebird.ticks_100us.v1") {
+        std::int64_t multiplier = 0;
+        if (!FirebirdProfileTickMultiplier(unit, source.kind, &multiplier)) {
+          return RefuseFunctionInvalidInput(
+              request,
+              "firebird.ticks_100us.v1 date_add unit is incompatible with the source descriptor");
+        }
+        std::int64_t delta_ticks = 0;
+        if (!CheckedMultiplyInt64(quantity, multiplier, &delta_ticks) ||
+            !AddFirebirdProfileTicks(source, delta_ticks, &result)) {
+          return RefuseFunctionOverflow(
+              request,
+              "firebird.ticks_100us.v1 date_add exceeded the exact tick or temporal range");
+        }
+      } else {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_add operation_profile is not registered");
+      }
+
+      const std::string descriptor =
+          LowerAscii(request.arguments[0].value.descriptor_id);
+      return MakeFunctionSuccess(
+          request,
+          {MakeTextValue(descriptor,
+                         FormatFirebirdProfileTemporal(result))});
+    }
     if (request.arguments.size() != 2) {
       return RefuseFunctionInvalidInput(request, "date_add/date_sub expects temporal value and interval");
     }
@@ -2594,6 +2673,62 @@
   }
 
   if (IdIs(id, {"data.scalar.date_diff", "sb.fn.temporal.date_diff", "sb.temporal.date_diff", "date_diff"})) {
+    if (id == "sb.temporal.date_diff" && request.arguments.size() == 4) {
+      if (IsSqlNull(request.arguments[0].value) ||
+          IsSqlNull(request.arguments[1].value) ||
+          IsSqlNull(request.arguments[2].value) ||
+          IsSqlNull(request.arguments[3].value)) {
+        return MakeFunctionSuccess(
+            request, {MakeNullValue("numeric.fixed")});
+      }
+      if (LowerAscii(request.arguments[0].value.descriptor_id) != "text" ||
+          LowerAscii(request.arguments[3].value.descriptor_id) != "text") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_diff part and operation_profile must use text carriers");
+      }
+      const std::string profile = ValueAsText(request.arguments[3].value);
+      if (profile != "firebird.ticks_100us.v1") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_diff operation_profile is not registered");
+      }
+      const std::string part =
+          LowerAscii(TrimAscii(ValueAsText(request.arguments[0].value)));
+      if (part != "millisecond" && part != "milliseconds") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "firebird.ticks_100us.v1 date_diff supports only MILLISECOND");
+      }
+      ProfileTemporal start;
+      ProfileTemporal finish;
+      if (!ParseFirebirdProfileTemporal(
+              request.arguments[1].value.descriptor_id,
+              ValueAsText(request.arguments[1].value), &start) ||
+          !ParseFirebirdProfileTemporal(
+              request.arguments[2].value.descriptor_id,
+              ValueAsText(request.arguments[2].value), &finish) ||
+          start.kind != finish.kind) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled date_diff requires matching canonical temporal descriptors");
+      }
+      std::int64_t start_ticks = 0;
+      std::int64_t finish_ticks = 0;
+      std::int64_t difference_ticks = 0;
+      if (!FirebirdProfileTemporalTicks(start, &start_ticks) ||
+          !FirebirdProfileTemporalTicks(finish, &finish_ticks) ||
+          !CheckedSubtractInt64(finish_ticks, start_ticks,
+                                &difference_ticks)) {
+        return RefuseFunctionOverflow(
+            request,
+            "firebird.ticks_100us.v1 date_diff exceeded the exact tick range");
+      }
+      return MakeFunctionSuccess(
+          request,
+          {MakeEncodedNumericValue(
+              "numeric.fixed", FormatFirebirdTenths(difference_ticks))});
+    }
     if (request.arguments.size() != 3) {
       return RefuseFunctionInvalidInput(request, "date_diff expects part, start, and end");
     }

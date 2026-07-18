@@ -9,7 +9,7 @@
 #include "tikv_dialect.hpp"
 
 #include "control_plane.hpp"
-#include "compatibility_worker_session.hpp"
+#include "tikv_grpc_worker_session.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -125,8 +125,7 @@ int RunListenerWorker() {
       response.payload = scratchbird::listener::EncodeHandoffAckPayload(handoff_ack);
       scratchbird::listener::SendControlFrame(control_fd, response);
       if (handoff_ack.accepted) {
-        const int rc = scratchbird::parser::compatibility::ServeTextWorkerSession(
-            handoff_fd, scratchbird::parser::tikv::Profile());
+        const int rc = scratchbird::parser::tikv::ServeTikvGrpcWorkerSession(handoff_fd);
         CloseFd(handoff_fd);
         return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
       }

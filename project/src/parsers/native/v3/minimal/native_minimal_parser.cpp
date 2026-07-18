@@ -88,12 +88,14 @@ ParseResult ParseMinimalIdentityShow(std::string_view command_text) {
 
   if (normalized == "SHOW VERSION") {
     return ParseResult{MakeShowIdentityAst(ShowIdentityKind::kVersion, trimmed,
-                                           "show.version", range)};
+                                           "show.version", "sbsql.identity_session",
+                                           range)};
   }
 
   if (normalized == "SHOW DATABASE") {
     return ParseResult{MakeShowIdentityAst(ShowIdentityKind::kDatabase, trimmed,
-                                           "show.database", range)};
+                                           "show.database", "sbsql.identity_session",
+                                           range)};
   }
 
   return Error("SBP_UNSUPPORTED_VERTICAL_SLICE_COMMAND",

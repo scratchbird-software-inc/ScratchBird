@@ -11,12 +11,19 @@
 // SB-SNTXN-POLICY-ANCHOR
 #include "transaction_inventory.hpp"
 
+#include <string>
+
 namespace scratchbird::transaction::mga {
 
 struct TransactionRuntimePolicy {
   u64 max_active_millis = 0;
   u64 max_idle_millis = 0;
   bool fail_closed_on_violation = true;
+  // Neutral transaction lock-admission policy.  Parser families lower their
+  // own syntax into these values; MGA remains the runtime authority.
+  std::string wait_mode;
+  u64 lock_timeout_millis = 0;
+  bool lock_timeout_present = false;
 };
 
 struct TransactionPolicyResult {

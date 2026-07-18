@@ -8,6 +8,7 @@
 
 #include "compatibility_dialect.hpp"
 
+#include <array>
 #include <cctype>
 #include <iomanip>
 #include <sstream>
@@ -328,530 +329,6 @@ bool IsCreateIndexKeywordSequence(const std::vector<Token>& tokens) {
   return false;
 }
 
-bool HasIndexSemanticDefaultsProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool HasConstraintSemanticDefaultsProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-std::string_view IdentifierNameResolutionProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1200-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1200-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1200-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view ScalarExpressionSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1400-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1400-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1400-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view DmlMutationSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1500-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1500-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1500-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view TransactionSessionSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1600-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1600-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1600-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view TemporarySessionObjectSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1700-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1700-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1700-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view DependencyBearingDdlSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1800-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1800-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1800-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view DdlTransactionBehaviorSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1900-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1900-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1900-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view ResourceTextSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1a00-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1a00-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1a00-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view StatisticsOptimizerSemanticProfileUuid(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1b00-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1b00-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1b00-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view LocksIsolationSemanticProfileUuid(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1c00-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1c00-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1c00-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view SystemCatalogDefaultsSemanticProfileUuid(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1d00-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1d00-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1d00-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view SessionSettingsDiagnosticsSemanticProfileUuid(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1e00-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1e00-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1e00-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view IndexDdlSurface(std::string_view upper) {
-  upper = TrimAsciiView(upper);
-  if (StartsWithCommand(upper, "CREATE")) {
-    return ContainsWord(upper, "UNIQUE") ? "create_unique_index"
-                                         : "create_index";
-  }
-  if (StartsWithCommand(upper, "ALTER TABLE")) {
-    return "alter_table_index";
-  }
-  if (StartsWithCommand(upper, "ALTER INDEX")) {
-    return "alter_index";
-  }
-  return "index_ddl";
-}
-
-std::string_view ReferenceProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-0000-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-0000-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-0000-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view IndexSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1000-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1000-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1000-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view ConstraintSemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1100-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1100-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1100-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view SequenceIdentitySemanticProfileUuid(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "019e13c0-1300-7000-8000-000000000302";
-  if (dialect_id == "mysql") return "019e13c0-1300-7000-8000-000000000303";
-  if (dialect_id == "postgresql") return "019e13c0-1300-7000-8000-000000000304";
-  return "00000000-0000-0000-0000-000000000000";
-}
-
-std::string_view IndexProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.index_optimizer_translation_profile";
-  if (dialect_id == "mysql") return "mysql.index_optimizer_translation_profile";
-  if (dialect_id == "postgresql") return "postgresql.index_optimizer_translation_profile";
-  return "unknown.index_optimizer_translation_profile";
-}
-
-std::string_view ConstraintProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.table_constraint_defaults_profile";
-  if (dialect_id == "mysql") return "mysql.table_constraint_defaults_profile";
-  if (dialect_id == "postgresql") return "postgresql.table_constraint_defaults_profile";
-  return "unknown.table_constraint_defaults_profile";
-}
-
-std::string_view SequenceIdentityProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.sequence_generator_identity_profile";
-  if (dialect_id == "mysql") return "mysql.auto_increment_identity_profile";
-  if (dialect_id == "postgresql") return "postgresql.sequence_serial_identity_profile";
-  return "unknown.sequence_identity_profile";
-}
-
-std::string_view IdentifierNameResolutionProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.identifier_name_resolution_profile";
-  if (dialect_id == "mysql") return "mysql.identifier_name_resolution_profile";
-  if (dialect_id == "postgresql") return "postgresql.identifier_name_resolution_profile";
-  return "unknown.identifier_name_resolution_profile";
-}
-
-std::string_view ScalarExpressionProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.scalar_expression_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.scalar_expression_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.scalar_expression_semantics_profile";
-  return "unknown.scalar_expression_semantics_profile";
-}
-
-std::string_view DmlMutationProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.dml_mutation_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.dml_mutation_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.dml_mutation_semantics_profile";
-  return "unknown.dml_mutation_semantics_profile";
-}
-
-std::string_view TransactionSessionProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.transaction_session_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.transaction_session_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.transaction_session_semantics_profile";
-  return "unknown.transaction_session_semantics_profile";
-}
-
-std::string_view TemporarySessionObjectProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.global_temporary_table_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.session_temporary_table_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.temporary_table_semantics_profile";
-  return "unknown.temporary_session_object_semantics_profile";
-}
-
-std::string_view DependencyBearingDdlProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.dependency_bearing_ddl_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.dependency_bearing_ddl_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.dependency_bearing_ddl_semantics_profile";
-  return "unknown.dependency_bearing_ddl_semantics_profile";
-}
-
-std::string_view DdlTransactionBehaviorProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.ddl_transaction_behavior_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.ddl_transaction_behavior_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.ddl_transaction_behavior_semantics_profile";
-  return "unknown.ddl_transaction_behavior_semantics_profile";
-}
-
-std::string_view ResourceTextProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird.resource_text_semantics_profile";
-  if (dialect_id == "mysql") return "mysql.resource_text_semantics_profile";
-  if (dialect_id == "postgresql") return "postgresql.resource_text_semantics_profile";
-  return "unknown.resource_text_semantics_profile";
-}
-
-std::string_view StatisticsOptimizerProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird.statistics_optimizer_metadata_semantics_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql.statistics_optimizer_metadata_semantics_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql.statistics_optimizer_metadata_semantics_profile";
-  }
-  return "unknown.statistics_optimizer_metadata_semantics_profile";
-}
-
-std::string_view LocksIsolationProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird.locks_isolation_syntax_semantics_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql.locks_isolation_syntax_semantics_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql.locks_isolation_syntax_semantics_profile";
-  }
-  return "unknown.locks_isolation_syntax_semantics_profile";
-}
-
-std::string_view SystemCatalogDefaultsProfileName(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird.system_catalog_defaults_semantics_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql.system_catalog_defaults_semantics_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql.system_catalog_defaults_semantics_profile";
-  }
-  return "unknown.system_catalog_defaults_semantics_profile";
-}
-
-std::string_view SessionSettingsDiagnosticsProfileName(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird.session_settings_diagnostics_semantics_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql.session_settings_diagnostics_semantics_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql.session_settings_diagnostics_semantics_profile";
-  }
-  return "unknown.session_settings_diagnostics_semantics_profile";
-}
-
-std::string_view DdlOperationKind(std::string_view upper) {
-  upper = TrimAsciiView(upper);
-  if (StartsWithCommand(upper, "CREATE OR REPLACE VIEW")) return "create_or_replace_view";
-  if (StartsWithCommand(upper, "CREATE MATERIALIZED VIEW")) return "create_materialized_view";
-  if (StartsWithCommand(upper, "CREATE VIEW")) return "create_view";
-  if (StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY TABLE") ||
-      StartsWithCommand(upper, "CREATE GLOBAL TEMP TABLE") ||
-      StartsWithCommand(upper, "CREATE LOCAL TEMPORARY TABLE") ||
-      StartsWithCommand(upper, "CREATE LOCAL TEMP TABLE") ||
-      StartsWithCommand(upper, "CREATE TEMPORARY TABLE") ||
-      StartsWithCommand(upper, "CREATE TEMP TABLE") ||
-      StartsWithCommand(upper, "CREATE TABLE")) {
-    return "create_table";
-  }
-  if (IsCreateIndexKeywordSequence(LexTokens(upper))) return "create_index";
-  if (StartsWithCommand(upper, "ALTER TABLE")) return "alter_table";
-  if (StartsWithCommand(upper, "ALTER INDEX")) return "alter_index";
-  if (StartsWithCommand(upper, "ALTER VIEW")) return "alter_view";
-  if (StartsWithCommand(upper, "DROP TABLE")) return "drop_table";
-  if (StartsWithCommand(upper, "DROP INDEX")) return "drop_index";
-  if (StartsWithCommand(upper, "DROP VIEW")) return "drop_view";
-  if (StartsWithCommand(upper, "TRUNCATE")) return "truncate";
-  if (StartsWithCommand(upper, "COMMENT")) return "comment";
-  if (StartsWithCommand(upper, "CREATE")) return "create";
-  if (StartsWithCommand(upper, "ALTER")) return "alter";
-  if (StartsWithCommand(upper, "DROP")) return "drop";
-  if (StartsWithCommand(upper, "RECREATE")) return "recreate";
-  return "ddl";
-}
-
-std::string_view DdlTransactionPolicy(std::string_view dialect_id,
-                                      std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_transactional_ddl_engine_mga_descriptor_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_implicit_commit_ddl_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "CONCURRENTLY")) {
-      return "postgresql_concurrent_ddl_nontransactional_policy_descriptor";
-    }
-    return "postgresql_transactional_ddl_descriptor_required";
-  }
-  return "unknown_ddl_transaction_policy";
-}
-
-std::string_view DdlAutocommitBoundary(std::string_view dialect_id,
-                                       std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "none_parser_does_not_commit_engine_transaction";
-  }
-  if (dialect_id == "mysql") {
-    return "implicit_commit_before_and_after_ddl_engine_policy";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "CONCURRENTLY")) {
-      return "concurrent_index_requires_top_level_engine_policy";
-    }
-    return "none_parser_does_not_commit_engine_transaction";
-  }
-  return "unknown_ddl_autocommit_boundary";
-}
-
-std::string_view DdlMetadataVisibilityEpoch(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "transaction_local_until_engine_commit_then_catalog_epoch";
-  }
-  if (dialect_id == "mysql") {
-    return "post_implicit_commit_catalog_epoch";
-  }
-  if (dialect_id == "postgresql") {
-    return "transaction_local_until_engine_commit_then_catalog_epoch";
-  }
-  return "unknown_metadata_visibility_epoch";
-}
-
-std::string_view DdlRollbackPolicy(std::string_view dialect_id,
-                                  std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "ddl_rollback_requires_engine_mga_transaction_rollback";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_ddl_not_rolled_back_by_user_transaction_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "CONCURRENTLY")) {
-      return "postgresql_concurrent_index_rollback_policy_engine_owned";
-    }
-    return "ddl_rollback_requires_engine_mga_transaction_rollback";
-  }
-  return "unknown_ddl_rollback_policy";
-}
-
-std::string_view DdlInvalidObjectStatePolicy(std::string_view dialect_id,
-                                            std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_metadata_invalid_state_catalog_descriptor_engine_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_atomic_ddl_dictionary_state_engine_authority";
-  }
-  if (dialect_id == "postgresql") {
-    if (DdlOperationKind(upper) == std::string_view("create_index")) {
-      return "postgresql_index_invalid_state_descriptor_engine_authority";
-    }
-    return "postgresql_catalog_invalid_state_descriptor_engine_authority";
-  }
-  return "unknown_invalid_object_state_policy";
-}
-
-std::string_view DdlDiagnosticMapRef(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird_ddl_transaction_behavior_diagnostic_map";
-  if (dialect_id == "mysql") return "mysql_ddl_transaction_behavior_diagnostic_map";
-  if (dialect_id == "postgresql") return "postgresql_ddl_transaction_behavior_diagnostic_map";
-  return "unknown_ddl_transaction_behavior_diagnostic_map";
-}
-
-std::string_view ResourceTextDiagnosticMapRef(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird_resource_text_semantics_diagnostic_map";
-  if (dialect_id == "mysql") return "mysql_resource_text_semantics_diagnostic_map";
-  if (dialect_id == "postgresql") return "postgresql_resource_text_semantics_diagnostic_map";
-  return "unknown_resource_text_semantics_diagnostic_map";
-}
-
-std::string_view StatisticsOptimizerDiagnosticMapRef(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_statistics_optimizer_semantics_diagnostic_map";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_statistics_optimizer_semantics_diagnostic_map";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_statistics_optimizer_semantics_diagnostic_map";
-  }
-  return "unknown_statistics_optimizer_semantics_diagnostic_map";
-}
-
-std::string_view LocksIsolationDiagnosticMapRef(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_locks_isolation_semantics_diagnostic_map";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_locks_isolation_semantics_diagnostic_map";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_locks_isolation_semantics_diagnostic_map";
-  }
-  return "unknown_locks_isolation_semantics_diagnostic_map";
-}
-
-std::string_view SystemCatalogNamespaceRootPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_mon_sec_information_schema_projected_from_engine_catalog_uuid_root";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_information_schema_mysql_performance_schema_sys_projected_from_connected_catalog_root";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_catalog_information_schema_projected_from_connected_database_catalog_root";
-  }
-  return "unknown_system_catalog_namespace_root_policy";
-}
-
-std::string_view SystemCatalogVisibilityProjectionPolicy(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_system_relations_visible_through_engine_privilege_filtered_projection";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_show_describe_information_schema_privilege_filtered_projection";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_catalog_information_schema_privilege_filtered_projection";
-  }
-  return "unknown_system_catalog_visibility_projection_policy";
-}
-
-std::string_view GeneratedCatalogNamePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_generated_rdb_names_projected_as_catalog_descriptors_not_parser_names";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_generated_constraint_index_names_projected_from_engine_dictionary_descriptors";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_generated_pg_class_pg_constraint_names_projected_from_engine_catalog_descriptors";
-  }
-  return "unknown_generated_catalog_name_policy";
-}
-
-std::string_view DependencyProjectionPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_dependencies_projected_from_engine_dependency_graph";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_information_schema_dependencies_projected_without_parser_dependency_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_depend_projection_from_engine_dependency_graph";
-  }
-  return "unknown_dependency_projection_policy";
-}
-
-std::string_view SourceVisibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_source_columns_redacted_or_projected_by_engine_source_retention_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_routine_trigger_view_source_redacted_or_projected_by_engine_source_policy";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_proc_pg_views_source_redacted_or_projected_by_engine_source_policy";
-  }
-  return "unknown_source_visibility_policy";
-}
-
-std::string_view HiddenSystemObjectPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_system_flag_hidden_objects_privilege_filtered_engine_projection";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_data_dictionary_hidden_objects_privilege_filtered_engine_projection";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_toast_temp_internal_objects_privilege_filtered_engine_projection";
-  }
-  return "unknown_hidden_system_object_policy";
-}
-
-std::string_view GrantPrivilegeProjectionPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_user_privileges_sec_projection_engine_security_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_grants_information_schema_projection_engine_security_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_acl_roles_information_schema_projection_engine_security_authority";
-  }
-  return "unknown_grant_privilege_projection_policy";
-}
-
-std::string_view SystemCatalogSblrOpcode(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "SBLR_COMPATIBILITY_FIREBIRD_CATALOG_PROJECT";
-  if (dialect_id == "mysql") return "SBLR_COMPATIBILITY_MYSQL_CATALOG_PROJECT";
-  if (dialect_id == "postgresql") {
-    return "SBLR_COMPATIBILITY_POSTGRESQL_CATALOG_PROJECT";
-  }
-  return "SBLR_COMPATIBILITY_UNKNOWN_CATALOG_PROJECT";
-}
-
 std::string NormalizeCompatibilitySblrOpcode(std::string_view opcode) {
   constexpr std::string_view kCompatPrefix = "SBLR_COMPAT_";
   if (!StartsWith(opcode, kCompatPrefix)) {
@@ -862,2420 +339,6 @@ std::string NormalizeCompatibilitySblrOpcode(std::string_view opcode) {
   }
   return "SBLR_COMPATIBILITY_" +
          std::string(opcode.substr(kCompatPrefix.size()));
-}
-
-std::string_view SystemCatalogDiagnosticMapRef(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_system_catalog_defaults_semantics_diagnostic_map";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_system_catalog_defaults_semantics_diagnostic_map";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_system_catalog_defaults_semantics_diagnostic_map";
-  }
-  return "unknown_system_catalog_defaults_semantics_diagnostic_map";
-}
-
-std::string_view SessionSettingsDiagnosticsDiagnosticMapRef(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_session_settings_diagnostics_semantics_diagnostic_map";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_session_settings_diagnostics_semantics_diagnostic_map";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_session_settings_diagnostics_semantics_diagnostic_map";
-  }
-  return "unknown_session_settings_diagnostics_semantics_diagnostic_map";
-}
-
-std::string_view SessionSettingsDiagnosticsSurface(std::string_view dialect_id,
-                                                   std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET SQL DIALECT")) return "firebird_set_sql_dialect";
-    if (StartsWithCommand(upper, "SET NAMES")) return "firebird_set_names";
-    if (StartsWithCommand(upper, "SHOW SQL DIALECT")) return "firebird_show_sql_dialect";
-    if (StartsWithCommand(upper, "SHOW WARNINGS")) return "firebird_show_warnings";
-    return "firebird_session_settings_diagnostics";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SQL_MODE")) {
-      return "mysql_set_sql_mode";
-    }
-    if (StartsWithCommand(upper, "SHOW WARNINGS")) return "mysql_show_warnings";
-    if (StartsWithCommand(upper, "SHOW VARIABLES")) return "mysql_show_variables";
-    if (StartsWithCommand(upper, "USE")) return "mysql_use_database";
-    return "mysql_session_settings_diagnostics";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_set_search_path";
-    }
-    if (StartsWithCommand(upper, "SET") &&
-        ContainsWord(upper, "STATEMENT_TIMEOUT")) {
-      return "postgresql_set_statement_timeout";
-    }
-    if (StartsWithCommand(upper, "RESET") &&
-        ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_reset_search_path";
-    }
-    if (StartsWithCommand(upper, "DISCARD ALL")) return "postgresql_discard_all";
-    if (StartsWithCommand(upper, "SHOW") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_show_search_path";
-    }
-    return "postgresql_session_settings_diagnostics";
-  }
-  return "unknown_session_settings_diagnostics";
-}
-
-std::string_view CompatibilityModePolicy(std::string_view dialect_id,
-                                         std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET SQL DIALECT")) {
-      return "firebird_sql_dialect_session_descriptor_engine_applies";
-    }
-    if (StartsWithCommand(upper, "SET NAMES")) {
-      return "firebird_character_set_session_descriptor_engine_applies";
-    }
-    return "firebird_isql_show_session_descriptor_projection";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SQL_MODE")) {
-      return "mysql_sql_mode_compatibility_descriptor_engine_applies";
-    }
-    if (StartsWithCommand(upper, "USE")) {
-      return "mysql_default_schema_compatibility_descriptor_engine_applies";
-    }
-    return "mysql_show_compatibility_projection_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_search_path_compatibility_descriptor_engine_applies";
-    }
-    if (StartsWithCommand(upper, "SET") &&
-        ContainsWord(upper, "STATEMENT_TIMEOUT")) {
-      return "postgresql_guc_timeout_descriptor_engine_applies";
-    }
-    if (StartsWithCommand(upper, "RESET") || StartsWithCommand(upper, "DISCARD")) {
-      return "postgresql_guc_reset_compatibility_descriptor_engine_applies";
-    }
-    return "postgresql_show_guc_projection_descriptor";
-  }
-  return "unknown_compatibility_mode_policy";
-}
-
-std::string_view WarningPolicy(std::string_view dialect_id,
-                               std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_status_vector_warning_diagnostics_engine_rendered";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SHOW WARNINGS")) {
-      return "mysql_show_warnings_diagnostic_rows_engine_rendered";
-    }
-    return "mysql_warning_count_diagnostic_area_engine_rendered";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_warning_diagnostics_engine_rendered";
-  }
-  return "unknown_warning_policy";
-}
-
-std::string_view NoticePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_status_vector_notice_mapping_engine_rendered";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_notes_warnings_errors_diagnostic_area_engine_rendered";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_notice_warning_guc_diagnostics_engine_rendered";
-  }
-  return "unknown_notice_policy";
-}
-
-std::string_view CurrentSchemaPolicy(std::string_view dialect_id,
-                                     std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_current_schema_context_engine_session_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "USE")) {
-      return "mysql_use_database_sets_current_schema_engine_session_descriptor";
-    }
-    return "mysql_default_database_engine_session_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_current_schema_resolved_from_engine_search_path_descriptor";
-    }
-    return "postgresql_current_schema_guc_projection_engine_session_descriptor";
-  }
-  return "unknown_current_schema_policy";
-}
-
-std::string_view SearchPathPolicy(std::string_view dialect_id,
-                                  std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_no_search_path_single_attachment_schema_context";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_no_search_path_current_database_descriptor_only";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "RESET") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_reset_search_path_to_engine_default_descriptor";
-    }
-    if (StartsWithCommand(upper, "SHOW") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_show_search_path_engine_projection";
-    }
-    if (ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_search_path_list_descriptor_uuid_resolved_engine_applies";
-    }
-    return "postgresql_search_path_unchanged_engine_session_descriptor";
-  }
-  return "unknown_search_path_policy";
-}
-
-std::string_view DateTimeFormatPolicy(std::string_view dialect_id,
-                                      std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_date_time_format_stable_dialect_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SQL_MODE")) {
-      return "mysql_sql_mode_date_time_format_descriptor_engine_applies";
-    }
-    return "mysql_date_time_format_descriptor_engine_session_defaults";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_datestyle_intervalstyle_descriptor_engine_applies";
-  }
-  return "unknown_date_time_format_policy";
-}
-
-std::string_view TimeoutPolicy(std::string_view dialect_id,
-                               std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_no_statement_timeout_session_setting_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_timeout_settings_not_first_tranche_descriptor_only";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "STATEMENT_TIMEOUT")) {
-      return "postgresql_statement_timeout_engine_session_descriptor";
-    }
-    return "postgresql_timeout_settings_unchanged_engine_session_descriptor";
-  }
-  return "unknown_timeout_policy";
-}
-
-std::string_view ResetPolicy(std::string_view dialect_id,
-                             std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_session_setting_reset_not_requested";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_session_setting_reset_not_requested";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "DISCARD ALL")) {
-      return "postgresql_discard_all_requests_engine_session_reset_descriptor";
-    }
-    if (StartsWithCommand(upper, "RESET")) {
-      return "postgresql_reset_guc_requests_engine_session_reset_descriptor";
-    }
-    return "postgresql_session_setting_reset_not_requested";
-  }
-  return "unknown_reset_policy";
-}
-
-bool IsViewDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE VIEW") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE VIEW") ||
-         StartsWithCommand(upper, "ALTER VIEW") ||
-         StartsWithCommand(upper, "DROP VIEW");
-}
-
-bool IsMaterializedViewDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE MATERIALIZED VIEW") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE MATERIALIZED VIEW") ||
-         StartsWithCommand(upper, "ALTER MATERIALIZED VIEW") ||
-         StartsWithCommand(upper, "DROP MATERIALIZED VIEW") ||
-         StartsWithCommand(upper, "REFRESH MATERIALIZED VIEW");
-}
-
-bool IsTriggerDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE TRIGGER") ||
-         StartsWithCommand(upper, "CREATE OR ALTER TRIGGER") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE TRIGGER") ||
-         StartsWithCommand(upper, "ALTER TRIGGER") ||
-         StartsWithCommand(upper, "DROP TRIGGER") ||
-         StartsWithCommand(upper, "RECREATE TRIGGER");
-}
-
-bool IsRoutineDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE PROCEDURE") ||
-         StartsWithCommand(upper, "CREATE FUNCTION") ||
-         StartsWithCommand(upper, "CREATE OR ALTER PROCEDURE") ||
-         StartsWithCommand(upper, "CREATE OR ALTER FUNCTION") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE PROCEDURE") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE FUNCTION") ||
-         StartsWithCommand(upper, "ALTER PROCEDURE") ||
-         StartsWithCommand(upper, "ALTER FUNCTION") ||
-         StartsWithCommand(upper, "DROP PROCEDURE") ||
-         StartsWithCommand(upper, "DROP FUNCTION") ||
-         StartsWithCommand(upper, "RECREATE PROCEDURE") ||
-         StartsWithCommand(upper, "RECREATE FUNCTION");
-}
-
-bool IsPackageDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE PACKAGE") ||
-         StartsWithCommand(upper, "CREATE PACKAGE BODY") ||
-         StartsWithCommand(upper, "CREATE OR ALTER PACKAGE") ||
-         StartsWithCommand(upper, "CREATE OR ALTER PACKAGE BODY") ||
-         StartsWithCommand(upper, "ALTER PACKAGE") ||
-         StartsWithCommand(upper, "DROP PACKAGE") ||
-         StartsWithCommand(upper, "RECREATE PACKAGE") ||
-         StartsWithCommand(upper, "RECREATE PACKAGE BODY");
-}
-
-bool IsRuleDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE RULE") ||
-         StartsWithCommand(upper, "CREATE OR REPLACE RULE") ||
-         StartsWithCommand(upper, "DROP RULE");
-}
-
-bool IsEventDependencyDdl(std::string_view upper) {
-  return StartsWithCommand(upper, "CREATE EVENT") ||
-         StartsWithCommand(upper, "ALTER EVENT") ||
-         StartsWithCommand(upper, "DROP EVENT");
-}
-
-std::string_view DependencyDdlSurface(std::string_view dialect_id,
-                                      std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "CREATE VIEW")) return "firebird_create_view";
-    if (StartsWithCommand(upper, "ALTER VIEW")) return "firebird_alter_view";
-    if (StartsWithCommand(upper, "DROP VIEW")) return "firebird_drop_view";
-    if (IsTriggerDependencyDdl(upper)) return "firebird_trigger_ddl";
-    if (IsPackageDependencyDdl(upper)) return "firebird_package_or_package_body_ddl";
-    if (IsRoutineDependencyDdl(upper)) return "firebird_procedure_function_ddl";
-    return "firebird_dependency_bearing_ddl";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "CREATE OR REPLACE VIEW")) {
-      return "mysql_create_or_replace_view";
-    }
-    if (StartsWithCommand(upper, "CREATE VIEW")) return "mysql_create_view";
-    if (StartsWithCommand(upper, "ALTER VIEW")) return "mysql_alter_view";
-    if (StartsWithCommand(upper, "DROP VIEW")) return "mysql_drop_view";
-    if (IsTriggerDependencyDdl(upper)) return "mysql_trigger_ddl";
-    if (IsEventDependencyDdl(upper)) return "mysql_event_scheduler_ddl";
-    if (IsRoutineDependencyDdl(upper)) return "mysql_procedure_function_ddl";
-    return "mysql_dependency_bearing_ddl";
-  }
-  if (dialect_id == "postgresql") {
-    if (IsMaterializedViewDependencyDdl(upper)) return "postgresql_materialized_view_ddl";
-    if (StartsWithCommand(upper, "CREATE OR REPLACE VIEW")) {
-      return "postgresql_create_or_replace_view";
-    }
-    if (StartsWithCommand(upper, "CREATE VIEW")) return "postgresql_create_view";
-    if (StartsWithCommand(upper, "ALTER VIEW")) return "postgresql_alter_view";
-    if (StartsWithCommand(upper, "DROP VIEW")) return "postgresql_drop_view";
-    if (IsRuleDependencyDdl(upper)) return "postgresql_rule_rewrite_ddl";
-    if (IsTriggerDependencyDdl(upper)) return "postgresql_trigger_ddl";
-    if (IsRoutineDependencyDdl(upper)) return "postgresql_procedure_function_ddl";
-    return "postgresql_dependency_bearing_ddl";
-  }
-  return "unknown_dependency_bearing_ddl_surface";
-}
-
-std::string_view DependencyBindingPolicy(std::string_view dialect_id,
-                                         std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (IsPackageDependencyDdl(upper)) {
-      return "firebird_package_dependency_binding_uuid_catalog_descriptors";
-    }
-    if (IsTriggerDependencyDdl(upper)) {
-      return "firebird_trigger_relation_event_dependency_binding_uuid_descriptors";
-    }
-    return "firebird_rdb_dependency_binding_uuid_catalog_descriptors";
-  }
-  if (dialect_id == "mysql") {
-    if (IsEventDependencyDdl(upper)) {
-      return "mysql_event_scheduler_dependency_binding_uuid_descriptors";
-    }
-    if (IsTriggerDependencyDdl(upper)) {
-      return "mysql_trigger_table_dependency_binding_uuid_descriptors";
-    }
-    return "mysql_routine_view_dependency_binding_uuid_descriptors";
-  }
-  if (dialect_id == "postgresql") {
-    if (IsRuleDependencyDdl(upper)) {
-      return "postgresql_rewrite_rule_dependency_binding_uuid_descriptors";
-    }
-    if (IsMaterializedViewDependencyDdl(upper)) {
-      return "postgresql_materialized_view_dependency_binding_uuid_descriptors";
-    }
-    return "postgresql_pg_depend_dependency_binding_uuid_descriptors";
-  }
-  return "unknown_dependency_binding_policy";
-}
-
-std::string_view DependencyInvalidationPolicy(std::string_view dialect_id,
-                                              std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_metadata_dependency_invalidation_engine_catalog_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_metadata_dependency_invalidation_engine_catalog_authority";
-  }
-  if (dialect_id == "postgresql") {
-    if (IsMaterializedViewDependencyDdl(upper)) {
-      return "postgresql_materialized_view_refresh_dependency_invalidation_engine_catalog_authority";
-    }
-    return "postgresql_pg_depend_invalidation_engine_catalog_authority";
-  }
-  return "unknown_dependency_invalidation_policy";
-}
-
-std::string_view DependencyExecutionBodyPolicy(std::string_view dialect_id,
-                                               std::string_view upper) {
-  const bool body_surface = IsRoutineDependencyDdl(upper) ||
-                            IsTriggerDependencyDdl(upper) ||
-                            IsPackageDependencyDdl(upper) ||
-                            IsEventDependencyDdl(upper) ||
-                            IsRuleDependencyDdl(upper);
-  if (dialect_id == "firebird") {
-    return body_surface
-               ? "firebird_psql_body_stored_as_catalog_reference_and_lowered_to_sblr_uuid"
-               : "firebird_view_query_dependency_descriptor_no_parser_execution";
-  }
-  if (dialect_id == "mysql") {
-    return body_surface
-               ? "mysql_routine_trigger_event_body_routes_to_trusted_udr_lowering"
-               : "mysql_view_definition_descriptor_no_parser_execution";
-  }
-  if (dialect_id == "postgresql") {
-    return body_surface
-               ? "postgresql_routine_trigger_rule_body_routes_to_trusted_udr_lowering"
-               : "postgresql_view_query_dependency_descriptor_no_parser_execution";
-  }
-  return "unknown_dependency_execution_body_policy";
-}
-
-std::string_view DependencyCatalogStoragePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_catalog_projection_stores_uuid_dependency_descriptors";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_information_schema_catalog_projection_stores_uuid_dependency_descriptors";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_catalog_projection_stores_uuid_dependency_descriptors";
-  }
-  return "unknown_dependency_catalog_storage_policy";
-}
-
-bool IsCreateTemporaryTableStatement(std::string_view dialect_id,
-                                     std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY TABLE");
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "CREATE TEMPORARY TABLE");
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "CREATE TEMP TABLE") ||
-           StartsWithCommand(upper, "CREATE TEMPORARY TABLE") ||
-           StartsWithCommand(upper, "CREATE LOCAL TEMP TABLE") ||
-           StartsWithCommand(upper, "CREATE LOCAL TEMPORARY TABLE") ||
-           StartsWithCommand(upper, "CREATE GLOBAL TEMP TABLE") ||
-           StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY TABLE");
-  }
-  return false;
-}
-
-bool IsDropTemporaryTableStatement(std::string_view dialect_id,
-                                   std::string_view upper) {
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "DROP TEMPORARY TABLE");
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "DROP TABLE") &&
-           (Contains(upper, "PG_TEMP.") || Contains(upper, "TEMP"));
-  }
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "DROP TABLE") &&
-           (Contains(upper, "TEMP") || Contains(upper, "GTT"));
-  }
-  return false;
-}
-
-bool IsAlterTemporaryTableStatement(std::string_view dialect_id,
-                                    std::string_view upper) {
-  if (!(StartsWithCommand(upper, "ALTER TABLE") ||
-        StartsWithCommand(upper, "ALTER GLOBAL TEMPORARY TABLE") ||
-        StartsWithCommand(upper, "ALTER LOCAL TEMPORARY TABLE") ||
-        StartsWithCommand(upper, "ALTER TEMPORARY TABLE") ||
-        StartsWithCommand(upper, "ALTER TEMP TABLE"))) {
-    return false;
-  }
-  if (dialect_id == "firebird" || dialect_id == "postgresql" ||
-      dialect_id == "mysql") {
-    return Contains(upper, "TEMP") || Contains(upper, "GTT") ||
-           Contains(upper, "PG_TEMP.");
-  }
-  return false;
-}
-
-std::string_view TemporaryObjectSurface(std::string_view dialect_id,
-                                        std::string_view upper) {
-  const bool delete_rows = Contains(upper, "ON COMMIT DELETE ROWS");
-  const bool preserve_rows = Contains(upper, "ON COMMIT PRESERVE ROWS");
-  const bool drop_rows = Contains(upper, "ON COMMIT DROP");
-  if (dialect_id == "firebird") {
-    if (IsCreateTemporaryTableStatement(dialect_id, upper)) {
-      if (delete_rows) {
-        return "firebird_create_global_temporary_table_on_commit_delete_rows";
-      }
-      if (preserve_rows) {
-        return "firebird_create_global_temporary_table_on_commit_preserve_rows";
-      }
-      return "firebird_create_global_temporary_table_default_preserve_rows";
-    }
-    if (IsAlterTemporaryTableStatement(dialect_id, upper)) {
-      return "firebird_alter_table_catalog_temp_resolution";
-    }
-    if (IsDropTemporaryTableStatement(dialect_id, upper)) {
-      return "firebird_drop_table_catalog_temp_resolution";
-    }
-    return "firebird_temporary_session_object";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "CREATE TEMPORARY TABLE")) {
-      return "mysql_create_temporary_table_name_shadowing";
-    }
-    if (StartsWithCommand(upper, "DROP TEMPORARY TABLE")) {
-      return "mysql_drop_temporary_table_session_object";
-    }
-    if (IsDropTemporaryTableStatement(dialect_id, upper)) {
-      return "mysql_drop_table_catalog_temp_resolution";
-    }
-    return "mysql_temporary_session_object";
-  }
-  if (dialect_id == "postgresql") {
-    if (IsCreateTemporaryTableStatement(dialect_id, upper)) {
-      if (drop_rows) return "postgresql_create_temp_table_on_commit_drop";
-      if (delete_rows) return "postgresql_create_temp_table_on_commit_delete_rows";
-      if (preserve_rows) return "postgresql_create_temp_table_on_commit_preserve_rows";
-      if (StartsWithCommand(upper, "CREATE LOCAL TEMP") ||
-          StartsWithCommand(upper, "CREATE LOCAL TEMPORARY")) {
-        return "postgresql_create_local_temp_table_default_preserve_rows";
-      }
-      if (StartsWithCommand(upper, "CREATE GLOBAL TEMP") ||
-          StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY")) {
-        return "postgresql_create_global_temp_table_compatibility_keyword";
-      }
-      return "postgresql_create_temp_table_default_preserve_rows";
-    }
-    if (IsDropTemporaryTableStatement(dialect_id, upper)) {
-      return "postgresql_drop_table_pg_temp_resolution";
-    }
-    if (IsAlterTemporaryTableStatement(dialect_id, upper)) {
-      return "postgresql_alter_table_pg_temp_resolution";
-    }
-    return "postgresql_temporary_session_object";
-  }
-  return "unknown_temporary_session_object_surface";
-}
-
-std::string_view TemporaryObjectKindPolicy(std::string_view dialect_id,
-                                           std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_global_temporary_table_metadata_persistent_rows_session_or_transaction_scoped";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_session_temporary_table_private_name_shadowing_regular_table";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "CREATE GLOBAL TEMP") ||
-        StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY")) {
-      return "postgresql_global_temp_keyword_accepted_as_local_temp_semantics";
-    }
-    if (StartsWithCommand(upper, "CREATE LOCAL TEMP") ||
-        StartsWithCommand(upper, "CREATE LOCAL TEMPORARY")) {
-      return "postgresql_local_temp_schema_session_private";
-    }
-    return "postgresql_temp_schema_session_private_table_object";
-  }
-  return "unknown_temporary_object_kind_policy";
-}
-
-std::string_view OnCommitPolicy(std::string_view dialect_id,
-                                std::string_view upper) {
-  if (Contains(upper, "ON COMMIT DELETE ROWS")) {
-    if (dialect_id == "firebird") {
-      return "firebird_on_commit_delete_rows_engine_transaction_end_cleanup";
-    }
-    if (dialect_id == "postgresql") {
-      return "postgresql_on_commit_delete_rows_engine_transaction_end_cleanup";
-    }
-  }
-  if (Contains(upper, "ON COMMIT PRESERVE ROWS")) {
-    if (dialect_id == "firebird") {
-      return "firebird_on_commit_preserve_rows_engine_session_lifetime";
-    }
-    if (dialect_id == "postgresql") {
-      return "postgresql_on_commit_preserve_rows_engine_session_lifetime";
-    }
-  }
-  if (Contains(upper, "ON COMMIT DROP")) {
-    if (dialect_id == "postgresql") {
-      return "postgresql_on_commit_drop_engine_transaction_end_catalog_cleanup";
-    }
-  }
-  if (dialect_id == "firebird") {
-    return "firebird_default_on_commit_preserve_rows_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_no_on_commit_clause_table_lifetime_session_end";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_default_on_commit_preserve_rows_descriptor";
-  }
-  return "unknown_on_commit_policy";
-}
-
-std::string_view OnCommitDeleteRowsPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_delete_rows_supported_engine_mga_transaction_boundary";
-  }
-  if (dialect_id == "mysql") return "mysql_delete_rows_not_supported";
-  if (dialect_id == "postgresql") {
-    return "postgresql_delete_rows_supported_engine_mga_transaction_boundary";
-  }
-  return "unknown_delete_rows_policy";
-}
-
-std::string_view OnCommitPreserveRowsPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_preserve_rows_supported_engine_session_lifetime";
-  }
-  if (dialect_id == "mysql") return "mysql_preserve_rows_is_session_lifetime_default";
-  if (dialect_id == "postgresql") {
-    return "postgresql_preserve_rows_supported_engine_session_lifetime";
-  }
-  return "unknown_preserve_rows_policy";
-}
-
-std::string_view OnCommitDropPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird_on_commit_drop_not_supported";
-  if (dialect_id == "mysql") return "mysql_on_commit_drop_not_supported";
-  if (dialect_id == "postgresql") {
-    return "postgresql_on_commit_drop_supported_engine_session_catalog_cleanup";
-  }
-  return "unknown_on_commit_drop_policy";
-}
-
-std::string_view SessionVisibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_gtt_data_is_attachment_private_metadata_global_catalog_visible";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_temporary_table_session_private_name_shadowing_visible_to_connection";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_temp_schema_session_private_search_path_visible";
-  }
-  return "unknown_session_visibility_policy";
-}
-
-std::string_view CatalogVisibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_persistent_catalog_descriptor_marks_global_temporary_table";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_temporary_table_not_persistent_information_schema_object";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_catalog_pg_class_pg_namespace_temp_schema_descriptor";
-  }
-  return "unknown_catalog_visibility_policy";
-}
-
-std::string_view TemporaryObjectLifetimePolicy(std::string_view dialect_id,
-                                               std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (Contains(upper, "ON COMMIT DELETE ROWS")) {
-      return "firebird_rows_cleared_at_engine_mga_transaction_end_metadata_survives";
-    }
-    return "firebird_rows_survive_until_engine_attachment_end_metadata_survives";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_temp_table_dropped_at_engine_session_end_or_explicit_drop";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "ON COMMIT DROP")) {
-      return "postgresql_temp_table_dropped_at_engine_mga_transaction_end";
-    }
-    if (Contains(upper, "ON COMMIT DELETE ROWS")) {
-      return "postgresql_temp_rows_deleted_at_engine_mga_transaction_end";
-    }
-    return "postgresql_temp_table_lives_until_engine_session_end_or_explicit_drop";
-  }
-  return "unknown_temporary_object_lifetime_policy";
-}
-
-std::string_view SchemaRootSandboxPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_compatibility_schema_root_uuid_required_no_cross_root_temp_access";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_connected_database_root_uuid_required_temp_shadowing_root_local";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_connected_database_schema_root_uuid_required_pg_temp_root_local";
-  }
-  return "unknown_schema_root_sandbox_policy";
-}
-
-std::string_view DmlMutationSurface(std::string_view dialect_id,
-                                    std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "UPDATE OR INSERT")) {
-      const bool matching = ContainsWord(upper, "MATCHING");
-      if (matching && ContainsWord(upper, "RETURNING")) {
-        return "firebird_update_or_insert_matching_returning";
-      }
-      if (matching) return "firebird_update_or_insert_matching";
-      return ContainsWord(upper, "RETURNING")
-                 ? "firebird_update_or_insert_primary_key_returning"
-                 : "firebird_update_or_insert_primary_key";
-    }
-    if (StartsWithCommand(upper, "MERGE")) {
-      return ContainsWord(upper, "RETURNING") ? "firebird_merge_returning"
-                                              : "firebird_merge";
-    }
-    if (Contains(upper, " WHERE CURRENT OF ")) {
-      if (StartsWithCommand(upper, "UPDATE")) return "firebird_update_current_of";
-      if (StartsWithCommand(upper, "DELETE")) return "firebird_delete_current_of";
-    }
-    if (StartsWithCommand(upper, "INSERT")) {
-      return ContainsWord(upper, "RETURNING") ? "firebird_insert_returning"
-                                              : "firebird_insert";
-    }
-    if (StartsWithCommand(upper, "UPDATE")) {
-      return ContainsWord(upper, "RETURNING") ? "firebird_update_returning"
-                                              : "firebird_update";
-    }
-    if (StartsWithCommand(upper, "DELETE")) {
-      return ContainsWord(upper, "RETURNING") ? "firebird_delete_returning"
-                                              : "firebird_delete";
-    }
-    return "firebird_dml_mutation";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "REPLACE")) return "mysql_replace";
-    if (StartsWithCommand(upper, "INSERT") &&
-        Contains(upper, " ON DUPLICATE KEY UPDATE")) {
-      return "mysql_insert_on_duplicate_key_update";
-    }
-    if (StartsWithCommand(upper, "INSERT")) return "mysql_insert";
-    if (StartsWithCommand(upper, "UPDATE")) return "mysql_update";
-    if (StartsWithCommand(upper, "DELETE")) return "mysql_delete";
-    return "mysql_dml_mutation";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "INSERT") && Contains(upper, " ON CONFLICT ")) {
-      if (Contains(upper, " DO UPDATE")) return "postgresql_insert_on_conflict_do_update";
-      if (Contains(upper, " DO NOTHING")) return "postgresql_insert_on_conflict_do_nothing";
-      return "postgresql_insert_on_conflict";
-    }
-    if (StartsWithCommand(upper, "MERGE")) {
-      return ContainsWord(upper, "RETURNING") ? "postgresql_merge_returning"
-                                              : "postgresql_merge";
-    }
-    if (Contains(upper, " WHERE CURRENT OF ")) {
-      if (StartsWithCommand(upper, "UPDATE")) return "postgresql_update_current_of";
-      if (StartsWithCommand(upper, "DELETE")) return "postgresql_delete_current_of";
-    }
-    if (StartsWithCommand(upper, "INSERT")) {
-      return ContainsWord(upper, "RETURNING") ? "postgresql_insert_returning"
-                                              : "postgresql_insert";
-    }
-    if (StartsWithCommand(upper, "UPDATE")) {
-      return ContainsWord(upper, "RETURNING") ? "postgresql_update_returning"
-                                              : "postgresql_update";
-    }
-    if (StartsWithCommand(upper, "DELETE")) {
-      return ContainsWord(upper, "RETURNING") ? "postgresql_delete_returning"
-                                              : "postgresql_delete";
-    }
-    return "postgresql_dml_mutation";
-  }
-  return "unknown_dml_mutation_surface";
-}
-
-bool IsRollbackToSavepoint(std::string_view upper) {
-  return StartsWithCommand(upper, "ROLLBACK TO SAVEPOINT") ||
-         StartsWithCommand(upper, "ROLLBACK TO") ||
-         StartsWithCommand(upper, "ROLLBACK WORK TO SAVEPOINT") ||
-         StartsWithCommand(upper, "ROLLBACK WORK TO") ||
-         StartsWithCommand(upper, "ROLLBACK TRANSACTION TO SAVEPOINT") ||
-         StartsWithCommand(upper, "ROLLBACK TRANSACTION TO");
-}
-
-bool IsSetTransactionIsolation(std::string_view upper) {
-  return (StartsWithCommand(upper, "SET") &&
-          (Contains(upper, " TRANSACTION ISOLATION ") ||
-           Contains(upper, " TRANSACTION_ISOLATION"))) ||
-         Contains(upper, " ISOLATION LEVEL ");
-}
-
-std::string_view TransactionSessionSurface(std::string_view dialect_id,
-                                           std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET TRANSACTION")) {
-      if (Contains(upper, "READ ONLY") &&
-          (ContainsWord(upper, "WAIT") || Contains(upper, "NO WAIT")) &&
-          (ContainsWord(upper, "SNAPSHOT") ||
-           Contains(upper, "READ COMMITTED") ||
-           Contains(upper, "TABLE STABILITY"))) {
-        return "firebird_set_transaction_read_only_wait_isolation";
-      }
-      if (Contains(upper, "READ ONLY")) {
-        return "firebird_set_transaction_read_only";
-      }
-      if (Contains(upper, "READ WRITE")) {
-        return "firebird_set_transaction_read_write";
-      }
-      return "firebird_set_transaction";
-    }
-    if (StartsWithCommand(upper, "COMMIT")) {
-      return ContainsWord(upper, "RETAIN") || ContainsWord(upper, "RETAINING")
-                 ? "firebird_commit_retaining"
-                 : "firebird_commit";
-    }
-    if (IsRollbackToSavepoint(upper)) return "firebird_rollback_to_savepoint";
-    if (StartsWithCommand(upper, "ROLLBACK")) {
-      return ContainsWord(upper, "RETAIN") || ContainsWord(upper, "RETAINING")
-                 ? "firebird_rollback_retaining"
-                 : "firebird_rollback";
-    }
-    if (StartsWithCommand(upper, "RELEASE SAVEPOINT")) {
-      return "firebird_release_savepoint";
-    }
-    if (StartsWithCommand(upper, "SAVEPOINT")) return "firebird_savepoint";
-    return "firebird_transaction_session";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "START TRANSACTION")) {
-      if (Contains(upper, "READ ONLY")) return "mysql_start_transaction_read_only";
-      if (Contains(upper, "READ WRITE")) return "mysql_start_transaction_read_write";
-      return "mysql_start_transaction";
-    }
-    if (StartsWithCommand(upper, "BEGIN")) return "mysql_begin";
-    if (StartsWithCommand(upper, "COMMIT")) return "mysql_commit";
-    if (IsRollbackToSavepoint(upper)) return "mysql_rollback_to_savepoint";
-    if (StartsWithCommand(upper, "ROLLBACK")) return "mysql_rollback";
-    if (StartsWithCommand(upper, "RELEASE SAVEPOINT")) return "mysql_release_savepoint";
-    if (StartsWithCommand(upper, "SAVEPOINT")) return "mysql_savepoint";
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "AUTOCOMMIT")) {
-      return "mysql_set_autocommit";
-    }
-    if (StartsWithCommand(upper, "SET") && Contains(upper, " TRANSACTION ISOLATION ")) {
-      return "mysql_set_session_transaction_isolation";
-    }
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SQL_MODE")) {
-      return "mysql_set_sql_mode";
-    }
-    return "mysql_transaction_session";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "BEGIN")) return "postgresql_begin";
-    if (StartsWithCommand(upper, "START TRANSACTION")) return "postgresql_start_transaction";
-    if (StartsWithCommand(upper, "COMMIT")) return "postgresql_commit";
-    if (IsRollbackToSavepoint(upper)) return "postgresql_rollback_to_savepoint";
-    if (StartsWithCommand(upper, "ROLLBACK")) return "postgresql_rollback";
-    if (StartsWithCommand(upper, "RELEASE SAVEPOINT")) {
-      return "postgresql_release_savepoint";
-    }
-    if (StartsWithCommand(upper, "SAVEPOINT")) return "postgresql_savepoint";
-    if (StartsWithCommand(upper, "SET TRANSACTION")) {
-      if (ContainsWord(upper, "SERIALIZABLE") &&
-          Contains(upper, "READ ONLY") && ContainsWord(upper, "DEFERRABLE")) {
-        return "postgresql_set_transaction_serializable_read_only_deferrable";
-      }
-      return "postgresql_set_transaction";
-    }
-    if (StartsWithCommand(upper, "SET LOCAL") &&
-        ContainsWord(upper, "TRANSACTION_ISOLATION")) {
-      return "postgresql_set_local_transaction_isolation";
-    }
-    if (StartsWithCommand(upper, "SET SESSION") &&
-        ContainsWord(upper, "TRANSACTION_ISOLATION")) {
-      return "postgresql_set_session_transaction_isolation";
-    }
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "STATEMENT_TIMEOUT")) {
-      return "postgresql_set_statement_timeout";
-    }
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_set_search_path";
-    }
-    return "postgresql_transaction_session";
-  }
-  return "unknown_transaction_session_surface";
-}
-
-std::string_view TransactionSessionFamilyLinkage(std::string_view dialect_id,
-                                                 std::string_view upper) {
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SET") &&
-        (ContainsWord(upper, "AUTOCOMMIT") || ContainsWord(upper, "SQL_MODE"))) {
-      return "session";
-    }
-    if (StartsWithCommand(upper, "SET") && Contains(upper, " TRANSACTION ISOLATION ")) {
-      return "session";
-    }
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "SET LOCAL") ||
-        StartsWithCommand(upper, "SET SESSION") ||
-        (StartsWithCommand(upper, "SET") &&
-         (ContainsWord(upper, "STATEMENT_TIMEOUT") ||
-          ContainsWord(upper, "SEARCH_PATH")))) {
-      return "session";
-    }
-  }
-  return "transaction";
-}
-
-std::string_view BeginAutocommitPolicy(std::string_view dialect_id,
-                                       std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET TRANSACTION")) {
-      return "firebird_set_transaction_requests_engine_mga_transaction_handle";
-    }
-    return "firebird_existing_engine_transaction_required";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "SET") && ContainsWord(upper, "AUTOCOMMIT")) {
-      return "mysql_autocommit_session_descriptor_engine_transaction_profile";
-    }
-    if (StartsWithCommand(upper, "START TRANSACTION") ||
-        StartsWithCommand(upper, "BEGIN")) {
-      return "mysql_explicit_begin_requests_engine_mga_transaction_handle_autocommit_suspended";
-    }
-    return "mysql_existing_engine_transaction_or_session_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "BEGIN") ||
-        StartsWithCommand(upper, "START TRANSACTION")) {
-      return "postgresql_explicit_begin_requests_engine_mga_transaction_handle";
-    }
-    return "postgresql_existing_engine_transaction_or_session_descriptor";
-  }
-  return "unknown_begin_autocommit_policy";
-}
-
-std::string_view IsolationReadOnlyDeferrablePolicy(std::string_view dialect_id,
-                                                   std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET TRANSACTION")) {
-      return "firebird_set_transaction_access_isolation_wait_descriptor_engine_enforced";
-    }
-    return "firebird_transaction_control_does_not_change_isolation_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_transaction_access_mode_isolation_descriptor_engine_enforced";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_isolation_read_only_deferrable_descriptor_engine_enforced";
-  }
-  return "unknown_isolation_read_only_deferrable_policy";
-}
-
-std::string_view SessionVariableSqlModePolicy(std::string_view dialect_id,
-                                              std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_no_sql_mode_session_variable_transaction_surface";
-  }
-  if (dialect_id == "mysql") {
-    if (ContainsWord(upper, "SQL_MODE")) {
-      return "mysql_sql_mode_session_descriptor_uuid_profile_engine_applies";
-    }
-    if (ContainsWord(upper, "AUTOCOMMIT")) {
-      return "mysql_autocommit_session_descriptor_engine_applies";
-    }
-    return "mysql_session_transaction_descriptor_engine_applies";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "SEARCH_PATH")) {
-      return "postgresql_search_path_descriptor_uuid_profile_engine_applies";
-    }
-    if (ContainsWord(upper, "STATEMENT_TIMEOUT")) {
-      return "postgresql_statement_timeout_descriptor_engine_applies";
-    }
-    if (ContainsWord(upper, "TRANSACTION_ISOLATION")) {
-      return "postgresql_transaction_isolation_guc_descriptor_engine_applies";
-    }
-    return "postgresql_session_guc_descriptor_engine_applies";
-  }
-  return "unknown_session_variable_sql_mode_policy";
-}
-
-std::string_view UpsertMergeConflictPolicy(std::string_view dialect_id,
-                                           std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "UPDATE OR INSERT")) {
-      return ContainsWord(upper, "MATCHING")
-                 ? "firebird_update_or_insert_matching_descriptor_uuid_key_required"
-                 : "firebird_update_or_insert_primary_key_match_descriptor_required";
-    }
-    if (StartsWithCommand(upper, "MERGE")) {
-      return "firebird_merge_descriptor_source_target_uuid_binding_required";
-    }
-    return "firebird_no_upsert_merge_surface_observed";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "REPLACE")) {
-      return "mysql_replace_delete_insert_semantics_descriptor_engine_executes";
-    }
-    if (StartsWithCommand(upper, "INSERT") &&
-        Contains(upper, " ON DUPLICATE KEY UPDATE")) {
-      return "mysql_on_duplicate_key_update_descriptor_unique_probe_engine_authority";
-    }
-    return "mysql_no_upsert_surface_observed";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "INSERT") && Contains(upper, " ON CONFLICT ")) {
-      if (Contains(upper, " DO UPDATE")) {
-        return "postgresql_on_conflict_do_update_descriptor_inference_uuid_required";
-      }
-      if (Contains(upper, " DO NOTHING")) {
-        return "postgresql_on_conflict_do_nothing_descriptor_inference_uuid_required";
-      }
-      return "postgresql_on_conflict_descriptor_inference_uuid_required";
-    }
-    if (StartsWithCommand(upper, "MERGE")) {
-      return "postgresql_merge_descriptor_source_target_uuid_binding_required";
-    }
-    return "postgresql_no_conflict_or_merge_surface_observed";
-  }
-  return "unknown_upsert_merge_conflict_policy";
-}
-
-std::string_view ReturningOutputProjectionPolicy(std::string_view dialect_id,
-                                                 std::string_view upper) {
-  const bool returning = ContainsWord(upper, "RETURNING");
-  if (dialect_id == "firebird") {
-    return returning ? "firebird_returning_projection_descriptor_single_or_multirow_by_statement_kind"
-                     : "firebird_no_returning_projection_observed";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_no_native_dml_returning_projection_descriptor_rowcount_generated_keys_only";
-  }
-  if (dialect_id == "postgresql") {
-    return returning ? "postgresql_returning_projection_descriptor_result_relation_uuid_bound"
-                     : "postgresql_no_returning_projection_observed";
-  }
-  return "unknown_returning_output_projection_policy";
-}
-
-std::string_view CursorPositionedDmlPolicy(std::string_view dialect_id,
-                                           std::string_view upper) {
-  const bool current_of = Contains(upper, " WHERE CURRENT OF ");
-  if (dialect_id == "firebird") {
-    return current_of
-               ? "firebird_where_current_of_cursor_descriptor_engine_cursor_authority"
-               : "firebird_no_cursor_positioned_dml_observed";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_no_native_where_current_of_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return current_of
-               ? "postgresql_where_current_of_cursor_descriptor_engine_cursor_authority"
-               : "postgresql_no_cursor_positioned_dml_observed";
-  }
-  return "unknown_cursor_positioned_dml_policy";
-}
-
-std::string_view AffectedRowCountPolicy(std::string_view dialect_id,
-                                        std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "UPDATE OR INSERT")) {
-      return "firebird_row_count_update_or_insert_returning_descriptor_engine_reported";
-    }
-    return "firebird_row_count_descriptor_engine_reported_no_parser_finality";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "REPLACE")) {
-      return "mysql_replace_row_count_delete_plus_insert_descriptor_engine_reported";
-    }
-    if (Contains(upper, " ON DUPLICATE KEY UPDATE")) {
-      return "mysql_on_duplicate_key_affected_rows_client_found_rows_sensitive_descriptor";
-    }
-    return "mysql_affected_rows_descriptor_client_found_rows_profile_bound";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_command_tag_row_count_descriptor_engine_reported";
-  }
-  return "unknown_affected_row_count_policy";
-}
-
-std::string_view TriggerDefaultGeneratedColumnInteractionPolicy(
-    std::string_view dialect_id,
-    std::string_view upper) {
-  const bool default_present = ContainsWord(upper, "DEFAULT");
-  const bool generated_present = ContainsWord(upper, "GENERATED");
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "UPDATE OR INSERT")) {
-      return "firebird_update_or_insert_defaults_triggers_returning_descriptor_engine_order";
-    }
-    if (default_present || generated_present || ContainsWord(upper, "RETURNING")) {
-      return "firebird_defaults_triggers_generated_columns_descriptor_engine_order";
-    }
-    return "firebird_trigger_default_generated_column_descriptor_required";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "REPLACE")) {
-      return "mysql_replace_defaults_generated_columns_triggers_descriptor_engine_order";
-    }
-    if (Contains(upper, " ON DUPLICATE KEY UPDATE")) {
-      return "mysql_on_duplicate_defaults_generated_columns_triggers_descriptor_engine_order";
-    }
-    if (default_present || generated_present) {
-      return "mysql_defaults_generated_columns_trigger_descriptor_engine_order";
-    }
-    return "mysql_trigger_default_generated_column_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, " ON CONFLICT ")) {
-      return "postgresql_on_conflict_defaults_generated_columns_triggers_descriptor_engine_order";
-    }
-    if (default_present || generated_present || ContainsWord(upper, "RETURNING")) {
-      return "postgresql_defaults_generated_columns_triggers_returning_descriptor_engine_order";
-    }
-    return "postgresql_trigger_default_generated_column_descriptor_required";
-  }
-  return "unknown_trigger_default_generated_column_policy";
-}
-
-std::string_view QueryExpressionSurface(std::string_view upper) {
-  if (StartsWithCommand(upper, "WITH")) return "with_query_scalar_expression";
-  if (StartsWithCommand(upper, "SELECT")) return "select_scalar_expression";
-  return "query_scalar_expression";
-}
-
-std::string_view CastTypeCoercionProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_cast_domain_charset_decfloat_int128_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_cast_convert_type_coercion_sql_mode_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_cast_operator_type_resolution_descriptor";
-  }
-  return "unknown_cast_type_coercion_profile";
-}
-
-std::string_view NullThreeValuedLogicProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_boolean_unknown_three_valued_logic_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_three_valued_logic_null_safe_equality_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_three_valued_logic_is_distinct_from_descriptor";
-  }
-  return "unknown_null_three_valued_logic_profile";
-}
-
-std::string_view BooleanLiteralProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_boolean_true_false_unknown_literal_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_truthy_numeric_boolean_literal_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_strict_boolean_type_literal_profile";
-  }
-  return "unknown_boolean_literal_profile";
-}
-
-std::string_view StringComparisonCollationProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_charset_collation_descriptor_no_parser_collation_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_charset_collation_coercibility_descriptor_no_parser_collation_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_collation_operator_resolution_descriptor_no_parser_collation_authority";
-  }
-  return "unknown_string_comparison_collation_profile";
-}
-
-std::string_view TemporalLiteralCurrentTimestampDateArithmeticProfile(
-    std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_date_time_timestamp_dateadd_datediff_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_datetime_timestamp_current_timestamp_date_add_sql_mode_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_timestamp_timestamptz_interval_timezone_descriptor";
-  }
-  return "unknown_temporal_expression_profile";
-}
-
-std::string_view NumericDivisionRoundingOverflowProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_exact_numeric_decfloat_int128_division_rounding_overflow_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_division_rounding_overflow_sql_mode_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_numeric_division_rounding_overflow_descriptor";
-  }
-  return "unknown_numeric_division_rounding_overflow_profile";
-}
-
-std::string_view PatternMatchingProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_like_similar_to_containing_starting_with_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_like_regexp_rlike_collation_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_like_similar_to_regex_operator_descriptor";
-  }
-  return "unknown_pattern_matching_profile";
-}
-
-std::string_view ResourceTextSurface(std::string_view dialect_id,
-                                     std::string_view upper) {
-  const bool ddl_surface = StartsWithCommand(upper, "CREATE") ||
-                           StartsWithCommand(upper, "ALTER") ||
-                           StartsWithCommand(upper, "DROP") ||
-                           StartsWithCommand(upper, "RECREATE");
-  const bool dml_surface = StartsWithCommand(upper, "INSERT") ||
-                           StartsWithCommand(upper, "UPDATE") ||
-                           StartsWithCommand(upper, "DELETE") ||
-                           StartsWithCommand(upper, "MERGE") ||
-                           StartsWithCommand(upper, "REPLACE");
-  const bool pattern_surface = Contains(upper, " LIKE ") ||
-                               Contains(upper, " SIMILAR TO ") ||
-                               Contains(upper, " REGEXP ") ||
-                               Contains(upper, " RLIKE ") ||
-                               Contains(upper, " STARTING WITH ") ||
-                               Contains(upper, " CONTAINING ") ||
-                               Contains(upper, " ILIKE ") ||
-                               Contains(upper, " ~ ") ||
-                               Contains(upper, " ~* ") ||
-                               Contains(upper, " !~ ") ||
-                               Contains(upper, " !~* ");
-  const bool timezone_surface =
-      Contains(upper, "WITH TIME ZONE") || ContainsWord(upper, "TIMEZONE") ||
-      ContainsWord(upper, "TIMESTAMPTZ") || ContainsWord(upper, "DATETIME") ||
-      ContainsWord(upper, "TIMESTAMP");
-  const bool binary_surface = ContainsWord(upper, "BLOB") ||
-                              ContainsWord(upper, "BINARY") ||
-                              ContainsWord(upper, "VARBINARY") ||
-                              ContainsWord(upper, "BYTEA");
-  if (dialect_id == "firebird") {
-    if (ddl_surface) return "firebird_ddl_charset_collation_text_blob";
-    if (dml_surface) return "firebird_dml_text_resource_descriptor";
-    if (pattern_surface) return "firebird_query_like_similar_containing";
-    if (timezone_surface) return "firebird_query_temporal_timezone_resource";
-    if (binary_surface) return "firebird_binary_blob_text_resource";
-    return "firebird_query_resource_text_semantics";
-  }
-  if (dialect_id == "mysql") {
-    if (ddl_surface) return "mysql_ddl_charset_collation_text_binary";
-    if (dml_surface) return "mysql_dml_text_resource_descriptor";
-    if (pattern_surface) return "mysql_query_like_regexp_rlike";
-    if (timezone_surface) return "mysql_query_datetime_timestamp_resource";
-    if (binary_surface) return "mysql_binary_text_resource";
-    return "mysql_query_resource_text_semantics";
-  }
-  if (dialect_id == "postgresql") {
-    if (ddl_surface) return "postgresql_ddl_text_collation_bytea";
-    if (dml_surface) return "postgresql_dml_text_resource_descriptor";
-    if (pattern_surface) return "postgresql_query_like_similar_regex_collation";
-    if (timezone_surface) return "postgresql_query_timestamptz_timezone_resource";
-    if (binary_surface) return "postgresql_bytea_text_resource";
-    return "postgresql_query_resource_text_semantics";
-  }
-  return "unknown_resource_text_surface";
-}
-
-std::string_view CharsetPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_character_set_descriptor_uuid_required_engine_applies";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_character_set_descriptor_uuid_required_engine_applies";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_database_encoding_descriptor_uuid_required_engine_applies";
-  }
-  return "unknown_charset_policy";
-}
-
-std::string_view TimezonePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_session_timezone_descriptor_engine_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_session_time_zone_descriptor_engine_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_time_zone_guc_descriptor_engine_authority";
-  }
-  return "unknown_timezone_policy";
-}
-
-std::string_view CalendarPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_temporal_calendar_descriptor_engine_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_temporal_calendar_sql_mode_descriptor_engine_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_datestyle_intervalstyle_calendar_descriptor_engine_authority";
-  }
-  return "unknown_calendar_policy";
-}
-
-std::string_view ComparisonPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_text_comparison_charset_collation_descriptor_engine_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_text_comparison_charset_collation_coercibility_descriptor_engine_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_text_comparison_collation_operator_descriptor_engine_authority";
-  }
-  return "unknown_comparison_policy";
-}
-
-std::string_view BinaryTextPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_blob_sub_type_binary_text_descriptor_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_binary_varbinary_blob_text_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_bytea_text_cast_descriptor_required";
-  }
-  return "unknown_binary_text_policy";
-}
-
-std::string_view ResourceEpochPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_resource_text_descriptor_epoch_engine_mga_catalog_bound";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_resource_text_descriptor_epoch_engine_catalog_bound";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_resource_text_descriptor_epoch_engine_mga_catalog_bound";
-  }
-  return "unknown_resource_epoch_policy";
-}
-
-std::string_view TextIndexCompatibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_text_index_charset_collation_compatibility_engine_validated";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_text_index_prefix_charset_collation_compatibility_engine_validated";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_text_index_operator_class_collation_compatibility_engine_validated";
-  }
-  return "unknown_text_index_compatibility_policy";
-}
-
-std::string_view StatisticsOptimizerSurface(std::string_view dialect_id,
-                                            std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET STATISTICS INDEX")) {
-      return "firebird_set_statistics_index_selectivity_descriptor";
-    }
-    if (Contains(upper, "RDB$INDICES") ||
-        Contains(upper, "RDB$INDEX_SEGMENTS")) {
-      return "firebird_statistics_catalog_projection_descriptor";
-    }
-    return "firebird_statistics_optimizer_metadata_surface";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "EXPLAIN")) {
-      return "mysql_explain_plan_catalog_projection_descriptor";
-    }
-    if (StartsWithCommand(upper, "ANALYZE TABLE")) {
-      return "mysql_analyze_table_statistics_update_refused_descriptor";
-    }
-    if (StartsWithCommand(upper, "OPTIMIZE TABLE")) {
-      return "mysql_optimize_table_statistics_rebuild_refused_descriptor";
-    }
-    return "mysql_statistics_optimizer_metadata_surface";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "EXPLAIN")) {
-      return "postgresql_explain_plan_catalog_projection_descriptor";
-    }
-    if (StartsWithCommand(upper, "ANALYZE")) {
-      return "postgresql_analyze_statistics_update_refused_descriptor";
-    }
-    if (StartsWithCommand(upper, "VACUUM")) {
-      return "postgresql_vacuum_analyze_statistics_refused_descriptor";
-    }
-    if (StartsWithCommand(upper, "REINDEX")) {
-      return "postgresql_reindex_statistics_dependency_refused_descriptor";
-    }
-    if (StartsWithCommand(upper, "CREATE STATISTICS")) {
-      return "postgresql_create_statistics_catalog_descriptor";
-    }
-    if (StartsWithCommand(upper, "DROP STATISTICS")) {
-      return "postgresql_drop_statistics_catalog_descriptor";
-    }
-    return "postgresql_statistics_optimizer_metadata_surface";
-  }
-  return "unknown_statistics_optimizer_metadata_surface";
-}
-
-std::string_view StatisticsCommandPolicy(std::string_view dialect_id,
-                                         std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET STATISTICS INDEX")) {
-      return "firebird_set_statistics_index_descriptor_only_engine_recomputes_selectivity";
-    }
-    return "firebird_statistics_metadata_catalog_descriptor_only";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "ANALYZE TABLE") ||
-        StartsWithCommand(upper, "OPTIMIZE TABLE")) {
-      return "mysql_statistics_maintenance_command_refused_no_reference_execution";
-    }
-    return "mysql_optimizer_metadata_catalog_projection_only";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "ANALYZE") ||
-        StartsWithCommand(upper, "VACUUM") ||
-        StartsWithCommand(upper, "REINDEX")) {
-      return "postgresql_statistics_maintenance_command_refused_no_compatibility_execution";
-    }
-    return "postgresql_optimizer_metadata_catalog_projection_only";
-  }
-  return "unknown_statistics_command_policy";
-}
-
-std::string_view HistogramPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_index_selectivity_descriptor_engine_statistics_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_histogram_descriptor_engine_statistics_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_statistic_histogram_descriptor_engine_statistics_authority";
-  }
-  return "unknown_histogram_policy";
-}
-
-std::string_view SelectivityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_index_statistics_selectivity_descriptor_engine_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_index_cardinality_selectivity_descriptor_engine_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_ndistinct_mcv_selectivity_descriptor_engine_authority";
-  }
-  return "unknown_selectivity_policy";
-}
-
-std::string_view StaleStatisticsPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_stale_statistics_recompute_requires_engine_statistics_epoch";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_persistent_statistics_staleness_descriptor_engine_epoch";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_autovacuum_analyze_staleness_descriptor_engine_epoch";
-  }
-  return "unknown_stale_statistics_policy";
-}
-
-std::string_view StatisticsIndexEligibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_index_selectivity_eligibility_engine_index_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_visible_index_optimizer_eligibility_engine_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_index_valid_ready_predicate_eligibility_engine_descriptor";
-  }
-  return "unknown_index_eligibility_policy";
-}
-
-std::string_view PlanInvalidationPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_plan_invalidation_engine_metadata_statistics_epoch";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_plan_invalidation_engine_dictionary_statistics_epoch";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_plan_cache_invalidation_engine_catalog_statistics_epoch";
-  }
-  return "unknown_plan_invalidation_policy";
-}
-
-std::string_view AnalyzeCommandPolicy(std::string_view dialect_id,
-                                      std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET STATISTICS INDEX")) {
-      return "firebird_set_statistics_index_maps_to_engine_statistics_descriptor_request";
-    }
-    return "firebird_no_analyze_command_descriptor_policy";
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "ANALYZE TABLE")
-               ? "mysql_analyze_table_refused_descriptor_no_reference_execution"
-               : "mysql_analyze_table_policy_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "ANALYZE")
-               ? "postgresql_analyze_refused_descriptor_no_compatibility_execution"
-               : "postgresql_analyze_policy_descriptor_required";
-  }
-  return "unknown_analyze_command_policy";
-}
-
-std::string_view ExplainPlanPolicy(std::string_view dialect_id,
-                                   std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_plan_metadata_descriptor_only_no_parser_optimizer_authority";
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "EXPLAIN")
-               ? "mysql_explain_catalog_projection_descriptor_no_plan_authority"
-               : "mysql_explain_policy_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "EXPLAIN")
-               ? "postgresql_explain_catalog_projection_descriptor_no_plan_authority"
-               : "postgresql_explain_policy_descriptor_required";
-  }
-  return "unknown_explain_plan_policy";
-}
-
-std::string_view StatisticsCatalogProjectionPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_indices_statistics_catalog_projection_uuid_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_information_schema_statistics_projection_uuid_required";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_statistic_pg_stats_projection_uuid_required";
-  }
-  return "unknown_statistics_catalog_projection_policy";
-}
-
-bool IsRowLockQuery(std::string_view upper) {
-  if (!(StartsWithCommand(upper, "SELECT") || StartsWithCommand(upper, "WITH") ||
-        (StartsWith(upper, "(") && Contains(upper, "SELECT")))) {
-    return false;
-  }
-  return Contains(upper, " FOR UPDATE") || Contains(upper, " FOR SHARE") ||
-         Contains(upper, " LOCK IN SHARE MODE");
-}
-
-std::string_view LocksIsolationSurface(std::string_view dialect_id,
-                                       std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "SET TRANSACTION")) {
-      if (ContainsWord(upper, "NOWAIT")) {
-        return "firebird_set_transaction_nowait_isolation_descriptor";
-      }
-      if (ContainsWord(upper, "WAIT")) {
-        return "firebird_set_transaction_wait_isolation_descriptor";
-      }
-      return "firebird_set_transaction_isolation_descriptor";
-    }
-    if (Contains(upper, " FOR UPDATE")) {
-      return "firebird_select_for_update_row_lock_descriptor";
-    }
-    return "firebird_locks_isolation_syntax_surface";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(upper, "LOCK TABLES")) {
-      return "mysql_lock_tables_table_lock_descriptor";
-    }
-    if (StartsWithCommand(upper, "UNLOCK TABLES")) {
-      return "mysql_unlock_tables_engine_lock_release_descriptor";
-    }
-    if (Contains(upper, " FOR UPDATE")) {
-      return "mysql_select_for_update_row_lock_descriptor";
-    }
-    if (Contains(upper, " FOR SHARE") ||
-        Contains(upper, " LOCK IN SHARE MODE")) {
-      return "mysql_select_for_share_row_lock_descriptor";
-    }
-    if (StartsWithCommand(upper, "SET TRANSACTION") ||
-        StartsWithCommand(upper, "START TRANSACTION")) {
-      return "mysql_transaction_isolation_read_write_descriptor";
-    }
-    return "mysql_locks_isolation_syntax_surface";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "LOCK TABLE")) {
-      return ContainsWord(upper, "NOWAIT")
-                 ? "postgresql_lock_table_mode_nowait_descriptor"
-                 : "postgresql_lock_table_mode_descriptor";
-    }
-    if (Contains(upper, " FOR UPDATE")) {
-      return "postgresql_select_for_update_row_lock_descriptor";
-    }
-    if (Contains(upper, " FOR SHARE")) {
-      return "postgresql_select_for_share_row_lock_descriptor";
-    }
-    if (StartsWithCommand(upper, "SET TRANSACTION") ||
-        StartsWithCommand(upper, "BEGIN") ||
-        StartsWithCommand(upper, "START TRANSACTION")) {
-      return "postgresql_transaction_isolation_read_write_descriptor";
-    }
-    return "postgresql_locks_isolation_syntax_surface";
-  }
-  return "unknown_locks_isolation_syntax_surface";
-}
-
-std::string_view IsolationProfileUuidOrPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_tpb_isolation_descriptor_uuid_required_engine_mga_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_transaction_isolation_descriptor_uuid_required_engine_mga_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_transaction_isolation_descriptor_uuid_required_engine_mga_authority";
-  }
-  return "unknown_isolation_descriptor_policy";
-}
-
-std::string_view LockClausePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_for_update_wait_no_wait_descriptor_engine_lock_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_lock_tables_and_for_update_descriptor_engine_lock_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_lock_table_and_row_lock_descriptor_engine_lock_authority";
-  }
-  return "unknown_lock_clause_policy";
-}
-
-std::string_view NowaitPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_nowait_tpb_descriptor_engine_lock_wait_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_nowait_descriptor_engine_lock_wait_policy";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_nowait_descriptor_engine_lock_wait_policy";
-  }
-  return "unknown_nowait_policy";
-}
-
-std::string_view SkipLockedPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_skip_locked_not_supported_descriptor_refusal_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_skip_locked_descriptor_engine_row_lock_policy";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_skip_locked_descriptor_engine_row_lock_policy";
-  }
-  return "unknown_skip_locked_policy";
-}
-
-std::string_view AdvisoryLockPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_no_advisory_lock_surface_descriptor_refusal_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_get_lock_release_lock_advisory_descriptor_engine_policy";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_advisory_lock_descriptor_engine_policy";
-  }
-  return "unknown_advisory_lock_policy";
-}
-
-std::string_view TableLockPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_explicit_table_lock_not_supported_descriptor_refusal_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_lock_tables_descriptor_engine_lock_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_lock_table_mode_descriptor_engine_lock_authority";
-  }
-  return "unknown_table_lock_policy";
-}
-
-std::string_view RowLockPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_for_update_descriptor_engine_cursor_lock_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_for_update_for_share_descriptor_engine_row_lock_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_for_update_for_share_descriptor_engine_row_lock_authority";
-  }
-  return "unknown_row_lock_policy";
-}
-
-std::string_view ReadWritePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_read_only_read_write_tpb_descriptor_engine_intent_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_read_only_read_write_descriptor_engine_intent_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_read_only_read_write_descriptor_engine_intent_authority";
-  }
-  return "unknown_read_write_policy";
-}
-
-std::string_view DeadlockDiagnosticPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_deadlock_diagnostic_map_descriptor_engine_lock_manager_authority";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_deadlock_diagnostic_map_descriptor_engine_lock_manager_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_deadlock_diagnostic_map_descriptor_engine_lock_manager_authority";
-  }
-  return "unknown_deadlock_diagnostic_policy";
-}
-
-std::string_view ConditionalExpressionProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_coalesce_case_iif_nullif_decode_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_case_if_ifnull_nullif_coalesce_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_case_coalesce_nullif_descriptor";
-  }
-  return "unknown_conditional_expression_profile";
-}
-
-std::string_view ExpressionBuiltinProfile(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_expression_builtin_profile_iif_dateadd_decfloat_int128";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_expression_builtin_profile_if_ifnull_date_add_regexp";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_expression_operator_resolution_profile_is_distinct_from_similar_regex";
-  }
-  return "unknown_expression_builtin_profile";
-}
-
-bool HasCastOrCoercionSurface(std::string_view upper) {
-  return Contains(upper, "CAST(") || Contains(upper, "CONVERT(") ||
-         Contains(upper, "::");
-}
-
-bool HasNullLogicSurface(std::string_view upper) {
-  return ContainsWord(upper, "NULL") || Contains(upper, " IS DISTINCT FROM") ||
-         Contains(upper, " IS NOT DISTINCT FROM") || Contains(upper, "<=>");
-}
-
-bool HasBooleanLiteralSurface(std::string_view upper) {
-  return ContainsWord(upper, "TRUE") || ContainsWord(upper, "FALSE") ||
-         ContainsWord(upper, "UNKNOWN");
-}
-
-bool HasStringComparisonSurface(std::string_view upper) {
-  return ContainsWord(upper, "COLLATE") || Contains(upper, " LIKE ") ||
-         Contains(upper, " SIMILAR TO ") || Contains(upper, " REGEXP ") ||
-         Contains(upper, " RLIKE ") || Contains(upper, " STARTING WITH ") ||
-         Contains(upper, " CONTAINING ") || Contains(upper, " ILIKE ");
-}
-
-bool HasTemporalExpressionSurface(std::string_view upper) {
-  return ContainsWord(upper, "CURRENT_DATE") ||
-         ContainsWord(upper, "CURRENT_TIME") ||
-         ContainsWord(upper, "CURRENT_TIMESTAMP") ||
-         ContainsWord(upper, "LOCALTIMESTAMP") ||
-         ContainsWord(upper, "LOCALTIME") || Contains(upper, "DATEADD(") ||
-         Contains(upper, "DATEDIFF(") || Contains(upper, "DATE_ADD(") ||
-         Contains(upper, "DATE_SUB(") || Contains(upper, "TIMESTAMPDIFF(") ||
-         Contains(upper, "EXTRACT(") || Contains(upper, "DATE_PART(") ||
-         Contains(upper, "DATE_TRUNC(") || Contains(upper, "NOW(") ||
-         ContainsWord(upper, "INTERVAL") || Contains(upper, "TIMESTAMP '") ||
-         Contains(upper, "TIMESTAMPTZ '") || Contains(upper, "DATE '") ||
-         Contains(upper, "TIME '");
-}
-
-bool HasNumericExpressionSurface(std::string_view upper) {
-  return Contains(upper, "/") || Contains(upper, " DIV ") ||
-         Contains(upper, "ROUND(") || Contains(upper, "TRUNC(") ||
-         Contains(upper, "TRUNCATE(") || Contains(upper, "MOD(") ||
-         Contains(upper, "POWER(") || Contains(upper, "POW(") ||
-         Contains(upper, "SQRT(") || ContainsWord(upper, "DECFLOAT") ||
-         ContainsWord(upper, "INT128") || ContainsWord(upper, "NUMERIC") ||
-         ContainsWord(upper, "DECIMAL");
-}
-
-bool HasPatternMatchingSurface(std::string_view upper) {
-  return Contains(upper, " LIKE ") || Contains(upper, " SIMILAR TO ") ||
-         Contains(upper, " REGEXP ") || Contains(upper, " RLIKE ") ||
-         Contains(upper, " STARTING WITH ") || Contains(upper, " CONTAINING ") ||
-         Contains(upper, " ILIKE ") || Contains(upper, " ~ ") ||
-         Contains(upper, " ~* ") || Contains(upper, " !~ ") ||
-         Contains(upper, " !~* ");
-}
-
-bool HasFunctionCall(std::string_view upper, std::string_view name) {
-  return ContainsWord(upper, name) &&
-         Contains(upper, std::string(name) + "(");
-}
-
-bool HasConditionalExpressionSurface(std::string_view upper) {
-  return HasFunctionCall(upper, "COALESCE") ||
-         HasFunctionCall(upper, "NULLIF") ||
-         HasFunctionCall(upper, "IIF") ||
-         HasFunctionCall(upper, "IF") ||
-         HasFunctionCall(upper, "IFNULL") ||
-         HasFunctionCall(upper, "DECODE") ||
-         Contains(upper, "CASE ");
-}
-
-std::string_view UnquotedIdentifierPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") return "firebird_unquoted_identifiers_fold_to_uppercase";
-  if (dialect_id == "mysql") {
-    return "mysql_unquoted_identifiers_preserve_spelling_table_name_case_bound_by_lower_case_table_names";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_unquoted_identifiers_fold_to_lowercase";
-  }
-  return "unknown_unquoted_identifier_policy";
-}
-
-std::string_view QuotedIdentifierPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_double_quoted_identifiers_preserve_exact_case";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_quoted_identifiers_preserve_exact_case_backtick_default_ansi_quotes_profile_bound";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_double_quoted_identifiers_preserve_exact_case";
-  }
-  return "unknown_quoted_identifier_policy";
-}
-
-std::string_view SchemaRootResolutionPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_single_database_root_uuid_catalog_resolution_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_database_schema_root_uuid_resolution_required_no_filesystem_authority";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_database_schema_search_path_uuid_resolution_required";
-  }
-  return "unknown_schema_root_resolution_policy";
-}
-
-std::string_view GeneratedCatalogNameBehavior(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_rdb_generated_names_catalog_descriptor_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_engine_generated_names_descriptor_required_lower_case_table_names_bound";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_catalog_generated_names_descriptor_required";
-  }
-  return "unknown_generated_catalog_name_behavior";
-}
-
-std::string_view NamespaceCollisionBehavior(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_catalog_namespace_collision_resolved_by_uuid_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_schema_table_namespace_collision_resolved_by_uuid_descriptor_and_lctn_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_schema_namespace_collision_resolved_by_uuid_descriptor_and_search_path";
-  }
-  return "unknown_namespace_collision_behavior";
-}
-
-std::string_view ResultMetadataLabelPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_result_labels_follow_identifier_fold_alias_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_result_labels_preserve_alias_spelling_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_result_labels_follow_lowercase_fold_alias_descriptor";
-  }
-  return "unknown_result_metadata_label_policy";
-}
-
-std::string_view TableNameFilesystemCasePolicy(std::string_view dialect_id) {
-  if (dialect_id == "mysql") {
-    return "mysql_lower_case_table_names_filesystem_sensitive_bound_descriptor";
-  }
-  return "not_filesystem_sensitive_table_name_policy";
-}
-
-std::string_view IndexMethod(std::string_view dialect_id,
-                             std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (ContainsWord(upper, "DESC") || ContainsWord(upper, "DESCENDING")) {
-      return "firebird_btree_descending_index_profile";
-    }
-    return "firebird_btree_ascending_index_profile";
-  }
-  if (dialect_id == "mysql") {
-    if (ContainsWord(upper, "FULLTEXT")) return "mysql_fulltext_index_profile";
-    if (ContainsWord(upper, "SPATIAL")) return "mysql_spatial_index_profile";
-    if (Contains(upper, " USING HASH")) {
-      return "mysql_hash_index_method_requested_engine_validated";
-    }
-    return "mysql_innodb_btree_index_profile";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, " USING HASH")) return "postgresql_hash_access_method_explicit";
-    if (Contains(upper, " USING GIN")) return "postgresql_gin_access_method_explicit";
-    if (Contains(upper, " USING GIST")) return "postgresql_gist_access_method_explicit";
-    if (Contains(upper, " USING BRIN")) return "postgresql_brin_access_method_explicit";
-    if (Contains(upper, " USING SPGIST")) return "postgresql_spgist_access_method_explicit";
-    return "postgresql_btree_access_method_default";
-  }
-  return "unknown_index_method";
-}
-
-std::string_view UniqueNullPolicy(std::string_view dialect_id,
-                                  std::string_view upper) {
-  if (!ContainsWord(upper, "UNIQUE")) return "not_unique_index_not_applicable";
-  if (dialect_id == "firebird") {
-    return "firebird_unique_index_nulls_are_distinct_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_innodb_unique_index_allows_multiple_nulls_profile";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "NULLS NOT DISTINCT")) {
-      return "postgresql_unique_nulls_not_distinct_requested";
-    }
-    return "postgresql_unique_nulls_distinct_default";
-  }
-  return "unique_null_policy_unknown";
-}
-
-std::string_view NullOrdering(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_nulls_first_for_ascending_index_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_nulls_low_ascending_index_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_nulls_last_for_ascending_btree_default";
-  }
-  return "unknown_null_ordering";
-}
-
-std::string_view CollationPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_column_charset_collation_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_character_set_collation_weight_string_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_per_expression_collation_descriptor";
-  }
-  return "unknown_collation_policy";
-}
-
-std::string_view OperatorFamilyPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_builtin_comparison_no_named_operator_family";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_builtin_comparison_no_named_operator_family";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_default_operator_class_and_family_resolution";
-  }
-  return "unknown_operator_family_policy";
-}
-
-std::string_view PredicateOrExpressionPolicy(std::string_view dialect_id,
-                                             std::string_view upper) {
-  const bool expression = Contains(upper, "((") ||
-                          Contains(upper, "COMPUTED BY");
-  const bool predicate = ContainsWord(upper, "WHERE");
-  if (dialect_id == "firebird") {
-    return expression ? "firebird_computed_by_expression_index_descriptor"
-                      : "firebird_column_index_no_partial_predicate";
-  }
-  if (dialect_id == "mysql") {
-    return expression ? "mysql_functional_key_part_descriptor"
-                      : "mysql_column_index_no_partial_predicate";
-  }
-  if (dialect_id == "postgresql") {
-    if (expression && predicate) {
-      return "postgresql_expression_and_partial_predicate_descriptor";
-    }
-    if (expression) return "postgresql_expression_index_descriptor";
-    if (predicate) return "postgresql_partial_predicate_descriptor";
-    return "postgresql_column_index_no_predicate_descriptor";
-  }
-  return "unknown_predicate_or_expression_policy";
-}
-
-std::string_view ValidationState(std::string_view dialect_id,
-                                 std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (ContainsWord(upper, "INACTIVE")) return "firebird_index_inactive_requested";
-    return "firebird_index_active_default";
-  }
-  if (dialect_id == "mysql") {
-    if (ContainsWord(upper, "INVISIBLE")) return "mysql_index_invisible_requested";
-    return "mysql_index_visible_default";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(TrimAsciiView(upper), "ALTER INDEX")) {
-      return "postgresql_index_catalog_validity_preserved_by_alter";
-    }
-    return "postgresql_index_valid_after_build_default";
-  }
-  return "unknown_validation_state";
-}
-
-std::string_view BuildMode(std::string_view dialect_id,
-                           std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(TrimAsciiView(upper), "ALTER INDEX")) {
-      return "firebird_index_metadata_state_change_no_parser_build";
-    }
-    return "firebird_immediate_index_build_default";
-  }
-  if (dialect_id == "mysql") {
-    if (StartsWithCommand(TrimAsciiView(upper), "ALTER TABLE")) {
-      return "mysql_alter_index_visibility_or_metadata_route";
-    }
-    return "mysql_engine_selected_online_ddl_default";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "CONCURRENTLY")) {
-      return "postgresql_concurrent_index_build_requested";
-    }
-    if (StartsWithCommand(TrimAsciiView(upper), "ALTER INDEX")) {
-      return "postgresql_alter_index_metadata_route";
-    }
-    return "postgresql_nonconcurrent_index_build_default";
-  }
-  return "unknown_build_mode";
-}
-
-std::string_view StatisticsPolicyRef(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_index_selectivity_statistics_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_innodb_persistent_index_statistics_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_pg_statistic_and_pg_class_index_statistics_profile";
-  }
-  return "unknown_statistics_policy";
-}
-
-std::string_view PrimaryKeyBehavior(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_primary_key_not_null_unique_index_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_primary_key_not_null_unique_index_innodb_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_primary_key_not_null_unique_btree_descriptor";
-  }
-  return "unknown_primary_key_behavior";
-}
-
-std::string_view ConstraintUniqueNullPolicy(std::string_view dialect_id,
-                                            std::string_view upper) {
-  if (!ContainsWord(upper, "UNIQUE")) {
-    return "not_unique_constraint_not_applicable";
-  }
-  if (dialect_id == "firebird") {
-    return "firebird_unique_constraint_nulls_are_distinct_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_unique_constraint_allows_multiple_nulls_profile";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "NULLS NOT DISTINCT")) {
-      return "postgresql_unique_constraint_nulls_not_distinct_requested";
-    }
-    return "postgresql_unique_constraint_nulls_distinct_default";
-  }
-  return "unknown_unique_constraint_null_policy";
-}
-
-std::string_view ForeignKeyActionDefaults(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_foreign_key_default_no_action_update_no_action_delete_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_innodb_foreign_key_default_restrict_update_restrict_delete_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_foreign_key_default_no_action_update_no_action_delete_descriptor";
-  }
-  return "unknown_foreign_key_action_defaults";
-}
-
-std::string_view CheckTruthTableNullBehavior(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_check_constraint_false_fails_unknown_passes_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_check_constraint_false_fails_unknown_passes_profile";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_check_constraint_false_fails_unknown_passes_profile";
-  }
-  return "unknown_check_truth_table_null_behavior";
-}
-
-std::string_view DefaultExpressionPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_default_expression_descriptor_runtime_equivalence_verified";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_default_literal_or_parenthesized_expression_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_variable_free_default_expression_descriptor";
-  }
-  return "unknown_default_expression_policy";
-}
-
-std::string_view GeneratedIdentityAutoincrementPolicy(std::string_view dialect_id,
-                                                      std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (ContainsWord(upper, "GENERATED")) {
-      return "firebird_generated_identity_sequence_backed_descriptor";
-    }
-    return "firebird_no_implicit_autoincrement_default";
-  }
-  if (dialect_id == "mysql") {
-    if (ContainsWord(upper, "AUTO_INCREMENT")) {
-      return "mysql_auto_increment_column_attribute_descriptor";
-    }
-    return "mysql_no_implicit_autoincrement_default";
-  }
-  if (dialect_id == "postgresql") {
-    if (ContainsWord(upper, "GENERATED")) {
-      return "postgresql_sql_identity_sequence_backed_descriptor";
-    }
-    if (ContainsWord(upper, "SERIAL") || ContainsWord(upper, "BIGSERIAL") ||
-        ContainsWord(upper, "SMALLSERIAL")) {
-      return "postgresql_serial_pseudo_type_sequence_default_descriptor";
-    }
-    return "postgresql_no_implicit_autoincrement_default";
-  }
-  return "unknown_generated_identity_autoincrement_policy";
-}
-
-std::string_view SequenceIdentitySurface(std::string_view dialect_id,
-                                         std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (StartsWithCommand(upper, "CREATE GENERATOR")) return "firebird_create_generator";
-    if (StartsWithCommand(upper, "CREATE SEQUENCE")) return "firebird_create_sequence";
-    if (StartsWithCommand(upper, "ALTER SEQUENCE") ||
-        StartsWithCommand(upper, "ALTER GENERATOR")) {
-      return "firebird_alter_sequence_generator";
-    }
-    if (Contains(upper, "GEN_ID(") || Contains(upper, "NEXT VALUE FOR")) {
-      return "firebird_generator_value_expression";
-    }
-    if (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY")) {
-      return "firebird_identity_column_sequence_descriptor";
-    }
-    return "firebird_sequence_generator_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    if (Contains(upper, "LAST_INSERT_ID(")) {
-      return "mysql_last_insert_id_session_function";
-    }
-    if (ContainsWord(upper, "AUTO_INCREMENT")) {
-      return "mysql_auto_increment_column_or_table_option";
-    }
-    return "mysql_auto_increment_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    if (StartsWithCommand(upper, "CREATE SEQUENCE")) return "postgresql_create_sequence";
-    if (StartsWithCommand(upper, "ALTER SEQUENCE")) return "postgresql_alter_sequence";
-    if (Contains(upper, "NEXTVAL(") || Contains(upper, "CURRVAL(") ||
-        Contains(upper, "SETVAL(")) {
-      return "postgresql_sequence_function_expression";
-    }
-    if ((ContainsWord(upper, "SERIAL") || ContainsWord(upper, "BIGSERIAL") ||
-         ContainsWord(upper, "SMALLSERIAL")) &&
-        ContainsWord(upper, "IDENTITY")) {
-      return "postgresql_serial_and_identity_sequence_defaults";
-    }
-    if (ContainsWord(upper, "SERIAL") || ContainsWord(upper, "BIGSERIAL") ||
-        ContainsWord(upper, "SMALLSERIAL")) {
-      return "postgresql_serial_pseudo_type_sequence_default";
-    }
-    if (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY")) {
-      return "postgresql_sql_identity_sequence_default";
-    }
-    return "postgresql_sequence_descriptor";
-  }
-  return "unknown_sequence_identity_surface";
-}
-
-std::string_view SequenceObjectIdentityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_sequence_generator_uuid_required_no_source_name_binding";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_table_column_auto_increment_uuid_required_no_source_name_binding";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_sequence_and_owned_default_uuid_required_no_source_name_binding";
-  }
-  return "unknown_sequence_identity_uuid_policy";
-}
-
-std::string_view EngineCatalogSequenceDescriptorPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_engine_catalog_generator_sequence_descriptor_policy";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_engine_catalog_auto_increment_counter_descriptor_policy";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_engine_catalog_sequence_descriptor_policy";
-  }
-  return "unknown_engine_catalog_sequence_descriptor_policy";
-}
-
-std::string_view SequenceAllocationFinalityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_generator_nontransactional_allocation_descriptor_parser_not_allocator";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_auto_increment_lower_layer_allocation_descriptor_parser_not_allocator";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_sequence_allocation_descriptor_parser_not_allocator";
-  }
-  return "unknown_sequence_allocation_policy";
-}
-
-std::string_view LowerLayerAllocationPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_engine_sequence_catalog_allocates_values_outside_parser";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_storage_engine_auto_increment_allocator_policy_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_sequence_access_method_and_catalog_allocator_policy";
-  }
-  return "unknown_lower_layer_allocation_policy";
-}
-
-std::string_view SequenceValueFunctionProfile(std::string_view dialect_id,
-                                              std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (Contains(upper, "GEN_ID(") && Contains(upper, "NEXT VALUE FOR")) {
-      return "firebird_gen_id_and_next_value_for_descriptor";
-    }
-    if (Contains(upper, "GEN_ID(")) return "firebird_gen_id_descriptor";
-    if (Contains(upper, "NEXT VALUE FOR")) {
-      return "firebird_next_value_for_descriptor";
-    }
-    return "firebird_generator_function_not_observed";
-  }
-  if (dialect_id == "mysql") {
-    if (Contains(upper, "LAST_INSERT_ID(")) {
-      return "mysql_last_insert_id_session_visible_descriptor";
-    }
-    return "mysql_last_insert_id_not_observed";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "NEXTVAL(") && Contains(upper, "CURRVAL(") &&
-        Contains(upper, "SETVAL(")) {
-      return "postgresql_nextval_currval_setval_descriptor";
-    }
-    if (Contains(upper, "NEXTVAL(")) return "postgresql_nextval_descriptor";
-    if (Contains(upper, "CURRVAL(")) return "postgresql_currval_descriptor";
-    if (Contains(upper, "SETVAL(")) return "postgresql_setval_descriptor";
-    return "postgresql_sequence_function_not_observed";
-  }
-  return "unknown_sequence_value_function_profile";
-}
-
-std::string_view SequenceSessionVisibilityPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_generator_values_visible_immediately_no_parser_session_state";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_last_insert_id_connection_session_visible_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_currval_session_requires_prior_nextval_descriptor";
-  }
-  return "unknown_sequence_session_visibility_policy";
-}
-
-std::string_view SequenceBackedDefaultPolicy(std::string_view dialect_id,
-                                             std::string_view upper) {
-  if (dialect_id == "firebird") {
-    if (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY")) {
-      return "firebird_identity_column_backed_by_sequence_descriptor";
-    }
-    return "firebird_no_identity_default_observed";
-  }
-  if (dialect_id == "mysql") {
-    if (ContainsWord(upper, "AUTO_INCREMENT")) {
-      return "mysql_auto_increment_column_counter_default_descriptor";
-    }
-    return "mysql_no_auto_increment_default_observed";
-  }
-  if (dialect_id == "postgresql") {
-    if ((ContainsWord(upper, "SERIAL") || ContainsWord(upper, "BIGSERIAL") ||
-         ContainsWord(upper, "SMALLSERIAL")) &&
-        ContainsWord(upper, "IDENTITY")) {
-      return "postgresql_serial_and_identity_sequence_backed_defaults";
-    }
-    if (ContainsWord(upper, "SERIAL") || ContainsWord(upper, "BIGSERIAL") ||
-        ContainsWord(upper, "SMALLSERIAL")) {
-      return "postgresql_serial_pseudo_type_sequence_backed_default";
-    }
-    if (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY")) {
-      return "postgresql_identity_sequence_backed_default";
-    }
-    return "postgresql_no_sequence_default_observed";
-  }
-  return "unknown_sequence_backed_default_policy";
-}
-
-std::string_view RestartIncrementDescriptorPolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_restart_with_and_increment_by_descriptor";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_auto_increment_table_option_descriptor";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_start_restart_increment_min_max_cache_cycle_descriptor";
-  }
-  return "unknown_restart_increment_descriptor_policy";
-}
-
-std::string_view GeneratedConstraintNamePolicy(std::string_view dialect_id) {
-  if (dialect_id == "firebird") {
-    return "firebird_system_generated_constraint_names_rdb_descriptor_required";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_engine_generated_constraint_names_descriptor_required";
-  }
-  if (dialect_id == "postgresql") {
-    return "postgresql_catalog_generated_constraint_names_descriptor_required";
-  }
-  return "unknown_generated_constraint_name_policy";
-}
-
-std::string_view DeferrabilityPolicy(std::string_view dialect_id,
-                                     std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_constraints_not_deferrable_immediate_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_constraints_not_deferrable_immediate_profile";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "NOT DEFERRABLE")) {
-      return "postgresql_not_deferrable_initially_immediate_default_profile";
-    }
-    if (ContainsWord(upper, "DEFERRABLE")) {
-      return "postgresql_deferrability_requested_descriptor";
-    }
-    return "postgresql_not_deferrable_initially_immediate_default_profile";
-  }
-  return "unknown_deferrability_policy";
-}
-
-std::string_view EnforcementTiming(std::string_view dialect_id,
-                                   std::string_view upper) {
-  if (dialect_id == "firebird") {
-    return "firebird_immediate_constraint_validation_profile";
-  }
-  if (dialect_id == "mysql") {
-    return "mysql_innodb_immediate_constraint_validation_profile";
-  }
-  if (dialect_id == "postgresql") {
-    if (Contains(upper, "NOT DEFERRABLE")) {
-      return "postgresql_immediate_constraint_validation_default_profile";
-    }
-    if (ContainsWord(upper, "DEFERRABLE")) {
-      return "postgresql_constraint_timing_descriptor_requested_runtime_proven";
-    }
-    return "postgresql_immediate_constraint_validation_default_profile";
-  }
-  return "unknown_enforcement_timing";
 }
 
 struct ParserEvidence {
@@ -3634,132 +697,8 @@ bool SurfaceMentions(std::string_view upper_sql,
   return false;
 }
 
-bool IsEvidenceWordToken(const Token& token) {
-  return token.kind == "identifier_or_keyword";
-}
-
-std::string EvidenceTokenUpper(const Token& token) {
-  return ToUpperAscii(token.lexeme);
-}
-
-bool IsEvidenceSymbolToken(const Token& token, std::string_view symbol) {
-  return (token.kind == "symbol" || token.kind == "punctuation") &&
-         token.lexeme == symbol;
-}
-
-struct DatatypeFamilyProfile {
-  bool numeric{false};
-  bool exact_decimal{false};
-  bool floating{false};
-  bool text{false};
-  bool charset_collation_sensitive_text{false};
-  bool binary_blob{false};
-  bool temporal{false};
-  bool boolean{false};
-  bool json_document{false};
-  bool uuid{false};
-  bool array{false};
-  bool enum_set{false};
-  bool network{false};
-  bool geometric_spatial{false};
-  bool range_domain_composite{false};
-};
-
-bool DetectTokenFamily(std::string_view dialect_id,
-                       std::string_view upper,
-                       DatatypeFamilyProfile* profile) {
-  bool detected = false;
-  const auto mark_numeric = [&] {
-    profile->numeric = true;
-    detected = true;
-  };
-  const auto mark_exact_decimal = [&] {
-    profile->numeric = true;
-    profile->exact_decimal = true;
-    detected = true;
-  };
-  const auto mark_floating = [&] {
-    profile->numeric = true;
-    profile->floating = true;
-    detected = true;
-  };
-
-  if (upper == "TINYINT" || upper == "SMALLINT" ||
-      upper == "MEDIUMINT" || upper == "INT" ||
-      upper == "INTEGER" || upper == "BIGINT" ||
-      upper == "INT128" || upper == "SERIAL" ||
-      upper == "SMALLSERIAL" || upper == "BIGSERIAL" ||
-      upper == "MONEY") {
-    mark_numeric();
-  } else if (upper == "NUMERIC" || upper == "DECIMAL") {
-    mark_exact_decimal();
-  } else if (upper == "REAL" || upper == "FLOAT" ||
-             upper == "DOUBLE" || upper == "DECFLOAT") {
-    mark_floating();
-  } else if (upper == "CHAR" || upper == "VARCHAR" ||
-             upper == "CHARACTER" || upper == "NCHAR" ||
-             upper == "TEXT" || upper == "TINYTEXT" ||
-             upper == "MEDIUMTEXT" || upper == "LONGTEXT" ||
-             upper == "NAME") {
-    profile->text = true;
-    detected = true;
-  } else if (upper == "CHARSET" || upper == "COLLATE" ||
-             upper == "COLLATION") {
-    profile->charset_collation_sensitive_text = true;
-    detected = true;
-  } else if (upper == "BINARY" || upper == "VARBINARY" ||
-             upper == "BLOB" || upper == "TINYBLOB" ||
-             upper == "MEDIUMBLOB" || upper == "LONGBLOB" ||
-             upper == "BYTEA") {
-    profile->binary_blob = true;
-    detected = true;
-  } else if (upper == "DATE" || upper == "TIME" ||
-             upper == "TIMETZ" || upper == "TIMESTAMP" ||
-             upper == "TIMESTAMPTZ" || upper == "DATETIME" ||
-             upper == "YEAR" || upper == "INTERVAL") {
-    profile->temporal = true;
-    detected = true;
-  } else if (upper == "BOOL" || upper == "BOOLEAN") {
-    profile->boolean = true;
-    detected = true;
-  } else if (upper == "JSON" || upper == "JSONB" ||
-             upper == "JSONPATH") {
-    profile->json_document = true;
-    detected = true;
-  } else if (upper == "UUID") {
-    profile->uuid = true;
-    detected = true;
-  } else if (upper == "ARRAY") {
-    profile->array = true;
-    detected = true;
-  } else if (upper == "ENUM") {
-    profile->enum_set = true;
-    detected = true;
-  } else if (upper == "CIDR" || upper == "INET" ||
-             upper == "MACADDR" || upper == "MACADDR8") {
-    profile->network = true;
-    detected = true;
-  } else if (upper == "GEOMETRY" || upper == "POINT" ||
-             upper == "LINESTRING" || upper == "POLYGON" ||
-             upper == "LINE" || upper == "LSEG" ||
-             upper == "BOX" || upper == "PATH" ||
-             upper == "CIRCLE") {
-    profile->geometric_spatial = true;
-    detected = true;
-  } else if (upper == "DOMAIN" || upper == "COMPOSITE" ||
-             upper == "INT4RANGE" || upper == "INT8RANGE" ||
-             upper == "NUMRANGE" || upper == "DATERANGE" ||
-             upper == "TSRANGE" || upper == "TSTZRANGE" ||
-             upper == "INT4MULTIRANGE" || upper == "INT8MULTIRANGE" ||
-             upper == "NUMMULTIRANGE" || upper == "DATEMULTIRANGE" ||
-             upper == "TSMULTIRANGE" || upper == "TSTZMULTIRANGE") {
-    profile->range_domain_composite = true;
-    detected = true;
-  }
-  return detected;
-}
-
-std::size_t DetectedFamilyCount(const DatatypeFamilyProfile& profile) {
+std::size_t DetectedFamilyCount(
+    const DatatypeFamilySemanticDescriptor& profile) {
   return static_cast<std::size_t>(profile.numeric) +
          static_cast<std::size_t>(profile.exact_decimal) +
          static_cast<std::size_t>(profile.floating) +
@@ -3777,7 +716,8 @@ std::size_t DetectedFamilyCount(const DatatypeFamilyProfile& profile) {
          static_cast<std::size_t>(profile.range_domain_composite);
 }
 
-std::string DetectedFamilyList(const DatatypeFamilyProfile& profile) {
+std::string DetectedFamilyList(
+    const DatatypeFamilySemanticDescriptor& profile) {
   std::string families;
   const auto append = [&](bool present, std::string_view family) {
     if (!present) return;
@@ -3871,7 +811,10 @@ ParserEvidence BuildParserEvidence(std::string_view upper,
   evidence.datatype_reference_count =
       SurfaceMentions(upper, profile.datatype_surfaces) ? 1 : 0;
   evidence.datatype_profile_evidence_json =
-      DatatypeProfileEvidenceJson(profile.dialect_id, tokens);
+      profile.semantic_policy != nullptr &&
+              profile.semantic_policy->datatype_profile_evidence_json != nullptr
+          ? profile.semantic_policy->datatype_profile_evidence_json(tokens)
+          : std::string{};
   evidence.catalog_reference_count =
       SurfaceMentions(upper, profile.catalog_overlay_surfaces) ? 1 : 0;
   return evidence;
@@ -3916,93 +859,92 @@ std::string ParserEvidenceJson(const DialectProfile& profile,
   }
   if (evidence.index_semantic_defaults_evidence_required) {
     out << ",\"index_semantic_defaults_evidence\":"
-        << IndexSemanticDefaultsEvidenceJson(profile.dialect_id,
-                                             profile.release_profile,
-                                             evidence.index_semantic_defaults_upper_sql);
+        << profile.semantic_policy->index_semantic_defaults_evidence_json(
+               profile.release_profile,
+               evidence.index_semantic_defaults_upper_sql);
   }
   if (evidence.constraint_semantic_defaults_evidence_required) {
     out << ",\"constraint_semantic_defaults_evidence\":"
-        << ConstraintSemanticDefaultsEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->constraint_semantic_defaults_evidence_json(
+               profile.release_profile,
                evidence.constraint_semantic_defaults_upper_sql);
   }
   if (evidence.sequence_identity_semantic_evidence_required) {
     out << ",\"sequence_identity_semantic_evidence\":"
-        << SequenceIdentitySemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->sequence_identity_evidence_json(
+               profile.release_profile,
                evidence.sequence_identity_semantic_upper_sql);
   }
   if (evidence.identifier_name_resolution_evidence_required) {
     out << ",\"identifier_name_resolution_evidence\":"
-        << IdentifierNameResolutionEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->identifier_name_resolution_evidence_json(
+               profile.release_profile,
                evidence.identifier_name_resolution_upper_sql);
   }
   if (evidence.scalar_expression_semantic_evidence_required) {
     out << ",\"scalar_expression_semantic_evidence\":"
-        << ScalarExpressionSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->scalar_expression_semantic_evidence_json(
+               profile.release_profile,
                evidence.scalar_expression_semantic_upper_sql);
   }
   if (evidence.dml_mutation_semantic_evidence_required) {
     out << ",\"dml_mutation_semantic_evidence\":"
-        << DmlMutationSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->dml_mutation_semantic_evidence_json(
+               profile.release_profile,
                evidence.dml_mutation_semantic_upper_sql);
   }
   if (evidence.transaction_session_semantic_evidence_required) {
     out << ",\"transaction_session_semantic_evidence\":"
-        << TransactionSessionSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->transaction_session_evidence_json(
+               profile.release_profile,
                evidence.transaction_session_semantic_upper_sql);
   }
   if (evidence.temporary_session_object_semantic_evidence_required) {
     out << ",\"temporary_session_object_semantic_evidence\":"
-        << TemporarySessionObjectSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->temporary_session_object_evidence_json(
+               profile.release_profile,
                evidence.temporary_session_object_semantic_upper_sql);
   }
   if (evidence.dependency_bearing_ddl_semantic_evidence_required) {
     out << ",\"dependency_bearing_ddl_semantic_evidence\":"
-        << DependencyBearingDdlSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->dependency_bearing_ddl_evidence_json(
+               profile.release_profile,
                evidence.dependency_bearing_ddl_semantic_upper_sql);
   }
   if (evidence.ddl_transaction_behavior_semantic_evidence_required) {
     out << ",\"ddl_transaction_behavior_semantic_evidence\":"
-        << DdlTransactionBehaviorSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->ddl_transaction_behavior_evidence_json(
+               profile.release_profile,
                evidence.ddl_transaction_behavior_semantic_upper_sql);
   }
   if (evidence.resource_text_semantic_evidence_required) {
     out << ",\"resource_text_semantic_evidence\":"
-        << ResourceTextSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->resource_text_evidence_json(
+               profile.release_profile,
                evidence.resource_text_semantic_upper_sql);
   }
   if (evidence.statistics_optimizer_semantic_evidence_required) {
     out << ",\"statistics_optimizer_semantic_evidence\":"
-        << StatisticsOptimizerSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->statistics_optimizer_evidence_json(
+               profile.release_profile,
                evidence.statistics_optimizer_semantic_upper_sql);
   }
   if (evidence.locks_isolation_semantic_evidence_required) {
     out << ",\"locks_isolation_semantic_evidence\":"
-        << LocksIsolationSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->locks_isolation_evidence_json(
+               profile.release_profile,
                evidence.locks_isolation_semantic_upper_sql);
   }
   if (evidence.system_catalog_defaults_semantic_evidence_required) {
     out << ",\"system_catalog_defaults_semantic_evidence\":"
-        << SystemCatalogDefaultsSemanticEvidenceJson(
-               profile.dialect_id,
+        << profile.semantic_policy->system_catalog_defaults_evidence_json(
                evidence.system_catalog_defaults_semantic_operation_id,
                profile.catalog_overlay_surfaces);
   }
   if (evidence.session_settings_diagnostics_semantic_evidence_required) {
     out << ",\"session_settings_diagnostics_semantic_evidence\":"
-        << SessionSettingsDiagnosticsSemanticEvidenceJson(
-               profile.dialect_id, profile.release_profile,
+        << profile.semantic_policy->session_settings_diagnostics_evidence_json(
+               profile.release_profile,
                evidence.session_settings_diagnostics_semantic_upper_sql);
   }
   if (evidence.procedural_body_source_retention_required) {
@@ -4266,64 +1208,39 @@ std::string DatatypeDescriptorEvidenceJson(std::size_t datatype_reference_count)
   return out.str();
 }
 
-std::string DatatypeProfileEvidenceJson(std::string_view dialect_id,
-                                        std::span<const Token> active_tokens) {
-  if (dialect_id != "firebird" && dialect_id != "mysql" &&
-      dialect_id != "postgresql") {
-    return {};
-  }
-
-  DatatypeFamilyProfile profile;
-  for (std::size_t i = 0; i < active_tokens.size(); ++i) {
-    const auto& token = active_tokens[i];
-    if (dialect_id != "mysql" && IsEvidenceSymbolToken(token, "[")) {
-      profile.array = true;
-    }
-    if (!IsEvidenceWordToken(token)) continue;
-    const auto upper = EvidenceTokenUpper(token);
-    DetectTokenFamily(dialect_id, upper, &profile);
-
-    if (upper == "CHARACTER" && i + 1 < active_tokens.size() &&
-        IsEvidenceWordToken(active_tokens[i + 1]) &&
-        EvidenceTokenUpper(active_tokens[i + 1]) == "SET") {
-      profile.charset_collation_sensitive_text = true;
-    }
-    if (dialect_id == "mysql" && upper == "SET" &&
-        i + 1 < active_tokens.size() &&
-        IsEvidenceSymbolToken(active_tokens[i + 1], "(")) {
-      profile.enum_set = true;
-    }
-  }
-
-  const std::size_t detected_count = DetectedFamilyCount(profile);
+std::string RenderDatatypeProfileEvidenceJson(
+    std::string_view dialect_id,
+    const DatatypeFamilySemanticDescriptor& descriptor) {
+  const std::size_t detected_count = DetectedFamilyCount(descriptor);
   if (detected_count == 0) return {};
 
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_datatype_profile_family_detection.v1\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"descriptor_authority\":\"scratchbird_engine_catalog\","
-      << "\"numeric\":" << BoolJson(profile.numeric) << ','
-      << "\"exact_decimal\":" << BoolJson(profile.exact_decimal) << ','
-      << "\"floating\":" << BoolJson(profile.floating) << ','
-      << "\"text\":" << BoolJson(profile.text) << ','
+      << "\"numeric\":" << BoolJson(descriptor.numeric) << ','
+      << "\"exact_decimal\":" << BoolJson(descriptor.exact_decimal) << ','
+      << "\"floating\":" << BoolJson(descriptor.floating) << ','
+      << "\"text\":" << BoolJson(descriptor.text) << ','
       << "\"charset_collation_sensitive_text\":"
-      << BoolJson(profile.charset_collation_sensitive_text) << ','
-      << "\"binary_blob\":" << BoolJson(profile.binary_blob) << ','
-      << "\"temporal\":" << BoolJson(profile.temporal) << ','
-      << "\"boolean\":" << BoolJson(profile.boolean) << ','
-      << "\"json_document\":" << BoolJson(profile.json_document) << ','
-      << "\"uuid\":" << BoolJson(profile.uuid) << ','
-      << "\"array\":" << BoolJson(profile.array) << ','
-      << "\"enum_set\":" << BoolJson(profile.enum_set) << ','
-      << "\"network\":" << BoolJson(profile.network) << ','
+      << BoolJson(descriptor.charset_collation_sensitive_text) << ','
+      << "\"binary_blob\":" << BoolJson(descriptor.binary_blob) << ','
+      << "\"temporal\":" << BoolJson(descriptor.temporal) << ','
+      << "\"boolean\":" << BoolJson(descriptor.boolean) << ','
+      << "\"json_document\":" << BoolJson(descriptor.json_document) << ','
+      << "\"uuid\":" << BoolJson(descriptor.uuid) << ','
+      << "\"array\":" << BoolJson(descriptor.array) << ','
+      << "\"enum_set\":" << BoolJson(descriptor.enum_set) << ','
+      << "\"network\":" << BoolJson(descriptor.network) << ','
       << "\"geometric_spatial\":"
-      << BoolJson(profile.geometric_spatial) << ','
+      << BoolJson(descriptor.geometric_spatial) << ','
       << "\"range_domain_composite\":"
-      << BoolJson(profile.range_domain_composite) << ','
+      << BoolJson(descriptor.range_domain_composite) << ','
       << "\"detected_family_count\":" << detected_count << ','
       << "\"detected_families\":\""
-      << EscapeJson(DetectedFamilyList(profile)) << "\","
+      << EscapeJson(DetectedFamilyList(descriptor)) << "\","
       << "\"source_text_included\":false,"
       << "\"generic_text_fallback_allowed\":false,"
       << "\"parser_storage_authority\":false,"
@@ -4336,68 +1253,42 @@ std::string DatatypeProfileEvidenceJson(std::string_view dialect_id,
   return out.str();
 }
 
-bool IsIndexSemanticDefaultsStatement(std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (StartsWithCommand(upper, "ALTER INDEX")) return true;
-  if (StartsWithCommand(upper, "ALTER TABLE")) {
-    return Contains(upper, " ALTER INDEX ") ||
-           Contains(upper, " ADD INDEX ") ||
-           Contains(upper, " ADD UNIQUE INDEX ") ||
-           Contains(upper, " DROP INDEX ");
-  }
-  if (!StartsWithCommand(upper, "CREATE")) return false;
-  const auto rest = ConsumeLeadingCommand(upper, "CREATE");
-  return IsCreateIndexRest(rest);
-}
-
-std::string IndexSemanticDefaultsEvidenceJson(std::string_view dialect_id,
-                                              std::string_view release_profile,
-                                              std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool unique_requested = ContainsWord(upper, "UNIQUE");
-  const bool predicate_present = ContainsWord(upper, "WHERE");
-  const bool expression_key_present = Contains(upper, "((") ||
-                                      Contains(upper, "COMPUTED BY");
-  const bool concurrently_requested = ContainsWord(upper, "CONCURRENTLY");
-  const bool descending_requested = ContainsWord(upper, "DESC") ||
-                                    ContainsWord(upper, "DESCENDING");
-  const bool nulls_not_distinct_requested =
-      Contains(upper, "NULLS NOT DISTINCT");
-
+std::string RenderIndexSemanticDefaultsEvidenceJson(
+    std::string_view dialect_id,
+    std::string_view release_profile,
+    const IndexSemanticDefaultsDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_index_semantic_defaults_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << IndexSemanticProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\"" << descriptor.compatibility_profile_uuid
+      << "\","
+      << "\"semantic_profile_uuid\":\"" << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"index_profile\":\"" << IndexProfileName(dialect_id) << "\","
-      << "\"ddl_surface\":\"" << IndexDdlSurface(upper) << "\","
-      << "\"index_method\":\"" << IndexMethod(dialect_id, upper) << "\","
-      << "\"unique_requested\":" << BoolJson(unique_requested) << ','
-      << "\"unique_null_policy\":\""
-      << UniqueNullPolicy(dialect_id, upper) << "\","
-      << "\"null_ordering\":\"" << NullOrdering(dialect_id) << "\","
-      << "\"collation_policy\":\"" << CollationPolicy(dialect_id) << "\","
-      << "\"operator_family_policy\":\""
-      << OperatorFamilyPolicy(dialect_id) << "\","
-      << "\"predicate_or_expression_policy\":\""
-      << PredicateOrExpressionPolicy(dialect_id, upper) << "\","
-      << "\"predicate_present\":" << BoolJson(predicate_present) << ','
-      << "\"expression_key_present\":"
-      << BoolJson(expression_key_present) << ','
-      << "\"concurrently_requested\":"
-      << BoolJson(concurrently_requested) << ','
-      << "\"descending_requested\":"
-      << BoolJson(descending_requested) << ','
-      << "\"nulls_not_distinct_requested\":"
-      << BoolJson(nulls_not_distinct_requested) << ','
-      << "\"validation_state\":\"" << ValidationState(dialect_id, upper)
+      << "\"index_profile\":\"" << descriptor.index_profile << "\","
+      << "\"ddl_surface\":\"" << descriptor.ddl_surface << "\","
+      << "\"index_method\":\"" << descriptor.index_method << "\","
+      << "\"unique_requested\":" << BoolJson(descriptor.unique_requested) << ','
+      << "\"unique_null_policy\":\"" << descriptor.unique_null_policy << "\","
+      << "\"null_ordering\":\"" << descriptor.null_ordering << "\","
+      << "\"collation_policy\":\"" << descriptor.collation_policy << "\","
+      << "\"operator_family_policy\":\"" << descriptor.operator_family_policy
       << "\","
-      << "\"build_mode\":\"" << BuildMode(dialect_id, upper) << "\","
-      << "\"statistics_policy_ref\":\""
-      << StatisticsPolicyRef(dialect_id) << "\","
+      << "\"predicate_or_expression_policy\":\""
+      << descriptor.predicate_or_expression_policy << "\","
+      << "\"predicate_present\":" << BoolJson(descriptor.predicate_present) << ','
+      << "\"expression_key_present\":"
+      << BoolJson(descriptor.expression_key_present) << ','
+      << "\"concurrently_requested\":"
+      << BoolJson(descriptor.concurrently_requested) << ','
+      << "\"descending_requested\":"
+      << BoolJson(descriptor.descending_requested) << ','
+      << "\"nulls_not_distinct_requested\":"
+      << BoolJson(descriptor.nulls_not_distinct_requested) << ','
+      << "\"validation_state\":\"" << descriptor.validation_state << "\","
+      << "\"build_mode\":\"" << descriptor.build_mode << "\","
+      << "\"statistics_policy_ref\":\"" << descriptor.statistics_policy_ref
+      << "\","
       << "\"catalog_descriptor_required\":true,"
       << "\"generic_index_default_allowed\":false,"
       << "\"parser_storage_authority\":false,"
@@ -4409,95 +1300,50 @@ std::string IndexSemanticDefaultsEvidenceJson(std::string_view dialect_id,
   return out.str();
 }
 
-bool IsConstraintSemanticDefaultsStatement(std::string_view active_upper_sql) {
-  auto rest = ConsumeLeadingCommand(active_upper_sql, "CREATE");
-  if (rest.empty()) return false;
-  for (const auto keyword : {"GLOBAL", "LOCAL", "TEMPORARY", "TEMP",
-                             "UNLOGGED"}) {
-    if (StartsWithCommand(rest, keyword)) {
-      rest = TrimAsciiView(rest.substr(std::string_view(keyword).size()));
-    }
-  }
-  if (StartsWithCommand(rest, "IF")) {
-    rest = ConsumeLeadingCommand(rest, "IF");
-    rest = ConsumeLeadingCommand(rest, "NOT");
-    rest = ConsumeLeadingCommand(rest, "EXISTS");
-  }
-  if (!StartsWithCommand(rest, "TABLE")) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  return Contains(upper, "PRIMARY KEY") ||
-         ContainsWord(upper, "UNIQUE") ||
-         Contains(upper, "FOREIGN KEY") ||
-         ContainsWord(upper, "REFERENCES") ||
-         ContainsWord(upper, "CHECK") ||
-         ContainsWord(upper, "DEFAULT") ||
-         ContainsWord(upper, "GENERATED") ||
-         ContainsWord(upper, "AUTO_INCREMENT") ||
-         ContainsWord(upper, "SERIAL") ||
-         ContainsWord(upper, "BIGSERIAL") ||
-         ContainsWord(upper, "SMALLSERIAL");
-}
-
-std::string ConstraintSemanticDefaultsEvidenceJson(
+std::string RenderConstraintSemanticDefaultsEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool primary_key_present = Contains(upper, "PRIMARY KEY");
-  const bool unique_constraint_present = ContainsWord(upper, "UNIQUE");
-  const bool foreign_key_reference_present =
-      Contains(upper, "FOREIGN KEY") || ContainsWord(upper, "REFERENCES");
-  const bool check_constraint_present = ContainsWord(upper, "CHECK");
-  const bool default_clause_present = ContainsWord(upper, "DEFAULT");
-  const bool generated_identity_or_autoincrement_present =
-      ContainsWord(upper, "GENERATED") ||
-      ContainsWord(upper, "AUTO_INCREMENT") ||
-      ContainsWord(upper, "SERIAL") ||
-      ContainsWord(upper, "BIGSERIAL") ||
-      ContainsWord(upper, "SMALLSERIAL");
-  const bool explicit_constraint_names_present = ContainsWord(upper, "CONSTRAINT");
-
+    const ConstraintSemanticDefaultsDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_constraint_semantic_defaults_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << ConstraintSemanticProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
+      << "\"semantic_profile_uuid\":\"" << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"constraint_profile\":\"" << ConstraintProfileName(dialect_id) << "\","
+      << "\"constraint_profile\":\"" << descriptor.constraint_profile << "\","
       << "\"ddl_surface\":\"create_table\","
-      << "\"primary_key_present\":"
-      << BoolJson(primary_key_present) << ','
-      << "\"primary_key_behavior\":\"" << PrimaryKeyBehavior(dialect_id) << "\","
+      << "\"primary_key_present\":" << BoolJson(descriptor.primary_key_present)
+      << ','
+      << "\"primary_key_behavior\":\"" << descriptor.primary_key_behavior
+      << "\","
       << "\"unique_constraint_present\":"
-      << BoolJson(unique_constraint_present) << ','
-      << "\"unique_null_policy\":\""
-      << ConstraintUniqueNullPolicy(dialect_id, upper) << "\","
+      << BoolJson(descriptor.unique_constraint_present) << ','
+      << "\"unique_null_policy\":\"" << descriptor.unique_null_policy << "\","
       << "\"foreign_key_reference_present\":"
-      << BoolJson(foreign_key_reference_present) << ','
+      << BoolJson(descriptor.foreign_key_reference_present) << ','
       << "\"foreign_key_action_defaults\":\""
-      << ForeignKeyActionDefaults(dialect_id) << "\","
+      << descriptor.foreign_key_action_defaults << "\","
       << "\"check_constraint_present\":"
-      << BoolJson(check_constraint_present) << ','
+      << BoolJson(descriptor.check_constraint_present) << ','
       << "\"check_truth_table_null_behavior\":\""
-      << CheckTruthTableNullBehavior(dialect_id) << "\","
+      << descriptor.check_truth_table_null_behavior << "\","
       << "\"default_clause_present\":"
-      << BoolJson(default_clause_present) << ','
+      << BoolJson(descriptor.default_clause_present) << ','
       << "\"default_expression_policy\":\""
-      << DefaultExpressionPolicy(dialect_id) << "\","
+      << descriptor.default_expression_policy << "\","
       << "\"generated_identity_or_autoincrement_present\":"
-      << BoolJson(generated_identity_or_autoincrement_present) << ','
+      << BoolJson(descriptor.generated_identity_or_autoincrement_present) << ','
       << "\"generated_identity_autoincrement_policy\":\""
-      << GeneratedIdentityAutoincrementPolicy(dialect_id, upper) << "\","
+      << descriptor.generated_identity_autoincrement_policy << "\","
       << "\"explicit_constraint_names_present\":"
-      << BoolJson(explicit_constraint_names_present) << ','
-      << "\"generated_name_policy\":\""
-      << GeneratedConstraintNamePolicy(dialect_id) << "\","
-      << "\"deferrability_policy\":\"" << DeferrabilityPolicy(dialect_id, upper)
+      << BoolJson(descriptor.explicit_constraint_names_present) << ','
+      << "\"generated_name_policy\":\"" << descriptor.generated_name_policy
       << "\","
-      << "\"enforcement_timing\":\"" << EnforcementTiming(dialect_id, upper)
+      << "\"deferrability_policy\":\"" << descriptor.deferrability_policy
       << "\","
+      << "\"enforcement_timing\":\"" << descriptor.enforcement_timing << "\","
       << "\"catalog_descriptor_required\":true,"
       << "\"generic_constraint_default_allowed\":false,"
       << "\"parser_storage_authority\":false,"
@@ -4509,156 +1355,66 @@ std::string ConstraintSemanticDefaultsEvidenceJson(
   return out.str();
 }
 
-bool HasSequenceIdentitySemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsSequenceIdentitySemanticStatement(std::string_view dialect_id,
-                                         std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (!HasSequenceIdentitySemanticProfile(dialect_id)) return false;
-
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "CREATE SEQUENCE") ||
-           StartsWithCommand(upper, "CREATE GENERATOR") ||
-           StartsWithCommand(upper, "ALTER SEQUENCE") ||
-           StartsWithCommand(upper, "ALTER GENERATOR") ||
-           StartsWithCommand(upper, "DROP SEQUENCE") ||
-           StartsWithCommand(upper, "DROP GENERATOR") ||
-           Contains(upper, "GEN_ID(") ||
-           Contains(upper, "NEXT VALUE FOR") ||
-           (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY"));
-  }
-
-  if (dialect_id == "mysql") {
-    return ContainsWord(upper, "AUTO_INCREMENT") ||
-           Contains(upper, "LAST_INSERT_ID(");
-  }
-
-  if (dialect_id == "postgresql") {
-    auto rest = ConsumeLeadingCommand(upper, "CREATE");
-    if (!rest.empty()) {
-      for (const auto keyword : {"GLOBAL", "LOCAL", "TEMPORARY", "TEMP",
-                                 "UNLOGGED"}) {
-        if (StartsWithCommand(rest, keyword)) {
-          rest = TrimAsciiView(rest.substr(std::string_view(keyword).size()));
-        }
-      }
-      if (StartsWithCommand(rest, "SEQUENCE")) return true;
-    }
-    return StartsWithCommand(upper, "ALTER SEQUENCE") ||
-           StartsWithCommand(upper, "DROP SEQUENCE") ||
-           Contains(upper, "NEXTVAL(") ||
-           Contains(upper, "CURRVAL(") ||
-           Contains(upper, "SETVAL(") ||
-           ContainsWord(upper, "SERIAL") ||
-           ContainsWord(upper, "BIGSERIAL") ||
-           ContainsWord(upper, "SMALLSERIAL") ||
-           (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY"));
-  }
-
-  return false;
-}
-
-std::string SequenceIdentitySemanticEvidenceJson(
+std::string RenderSequenceIdentitySemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool create_sequence_or_generator_surface =
-      StartsWithCommand(upper, "CREATE SEQUENCE") ||
-      StartsWithCommand(upper, "CREATE GENERATOR");
-  const bool alter_sequence_surface =
-      StartsWithCommand(upper, "ALTER SEQUENCE") ||
-      StartsWithCommand(upper, "ALTER GENERATOR");
-  const bool auto_increment_surface = ContainsWord(upper, "AUTO_INCREMENT");
-  const bool last_insert_id_surface = Contains(upper, "LAST_INSERT_ID(");
-  const bool next_value_surface =
-      Contains(upper, "GEN_ID(") || Contains(upper, "NEXT VALUE FOR") ||
-      Contains(upper, "NEXTVAL(");
-  const bool currval_surface = Contains(upper, "CURRVAL(");
-  const bool setval_surface = Contains(upper, "SETVAL(");
-  const bool sequence_backed_default_present =
-      auto_increment_surface ||
-      ContainsWord(upper, "SERIAL") ||
-      ContainsWord(upper, "BIGSERIAL") ||
-      ContainsWord(upper, "SMALLSERIAL") ||
-      (ContainsWord(upper, "GENERATED") && ContainsWord(upper, "IDENTITY"));
-  const bool restart_descriptor_present =
-      ContainsWord(upper, "RESTART") || Contains(upper, "START WITH");
-  const bool increment_descriptor_present =
-      ContainsWord(upper, "INCREMENT") || auto_increment_surface;
-  const bool min_value_descriptor_present =
-      ContainsWord(upper, "MINVALUE") || Contains(upper, "NO MINVALUE");
-  const bool max_value_descriptor_present =
-      ContainsWord(upper, "MAXVALUE") || Contains(upper, "NO MAXVALUE");
-  const bool cycle_descriptor_present =
-      ContainsWord(upper, "CYCLE") || Contains(upper, "NO CYCLE");
-  const bool cache_descriptor_present =
-      ContainsWord(upper, "CACHE") || Contains(upper, "NO CACHE");
-  const bool session_visible_state_surface =
-      last_insert_id_surface || currval_surface || setval_surface;
-
+    const SequenceIdentitySemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_sequence_identity_semantic_descriptor_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << SequenceIdentitySemanticProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
+      << "\"semantic_profile_uuid\":\"" << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
       << "\"sequence_identity_profile\":\""
-      << SequenceIdentityProfileName(dialect_id) << "\","
+      << descriptor.sequence_identity_profile << "\","
       << "\"sequence_identity_surface\":\""
-      << SequenceIdentitySurface(dialect_id, upper) << "\","
+      << descriptor.sequence_identity_surface << "\","
       << "\"create_sequence_or_generator_surface\":"
-      << BoolJson(create_sequence_or_generator_surface) << ','
+      << BoolJson(descriptor.create_sequence_or_generator_surface) << ','
       << "\"alter_sequence_surface\":"
-      << BoolJson(alter_sequence_surface) << ','
+      << BoolJson(descriptor.alter_sequence_surface) << ','
       << "\"auto_increment_surface\":"
-      << BoolJson(auto_increment_surface) << ','
+      << BoolJson(descriptor.auto_increment_surface) << ','
       << "\"last_insert_id_surface\":"
-      << BoolJson(last_insert_id_surface) << ','
-      << "\"next_value_surface\":"
-      << BoolJson(next_value_surface) << ','
-      << "\"currval_surface\":"
-      << BoolJson(currval_surface) << ','
-      << "\"setval_surface\":"
-      << BoolJson(setval_surface) << ','
+      << BoolJson(descriptor.last_insert_id_surface) << ','
+      << "\"next_value_surface\":" << BoolJson(descriptor.next_value_surface)
+      << ','
+      << "\"currval_surface\":" << BoolJson(descriptor.currval_surface) << ','
+      << "\"setval_surface\":" << BoolJson(descriptor.setval_surface) << ','
       << "\"sequence_backed_default_present\":"
-      << BoolJson(sequence_backed_default_present) << ','
+      << BoolJson(descriptor.sequence_backed_default_present) << ','
       << "\"restart_descriptor_present\":"
-      << BoolJson(restart_descriptor_present) << ','
+      << BoolJson(descriptor.restart_descriptor_present) << ','
       << "\"increment_descriptor_present\":"
-      << BoolJson(increment_descriptor_present) << ','
+      << BoolJson(descriptor.increment_descriptor_present) << ','
       << "\"min_value_descriptor_present\":"
-      << BoolJson(min_value_descriptor_present) << ','
+      << BoolJson(descriptor.min_value_descriptor_present) << ','
       << "\"max_value_descriptor_present\":"
-      << BoolJson(max_value_descriptor_present) << ','
+      << BoolJson(descriptor.max_value_descriptor_present) << ','
       << "\"cycle_descriptor_present\":"
-      << BoolJson(cycle_descriptor_present) << ','
+      << BoolJson(descriptor.cycle_descriptor_present) << ','
       << "\"cache_descriptor_present\":"
-      << BoolJson(cache_descriptor_present) << ','
+      << BoolJson(descriptor.cache_descriptor_present) << ','
       << "\"session_visible_state_surface\":"
-      << BoolJson(session_visible_state_surface) << ','
-      << "\"object_identity_policy\":\""
-      << SequenceObjectIdentityPolicy(dialect_id) << "\","
-      << "\"uuid_required_object_identity\":true,"
+      << BoolJson(descriptor.session_visible_state_surface) << ','
+      << "\"object_identity_policy\":\"" << descriptor.object_identity_policy
+      << "\",\"uuid_required_object_identity\":true,"
       << "\"engine_catalog_sequence_descriptor_policy\":\""
-      << EngineCatalogSequenceDescriptorPolicy(dialect_id) << "\","
+      << descriptor.engine_catalog_sequence_descriptor_policy << "\","
       << "\"allocation_finality_policy\":\""
-      << SequenceAllocationFinalityPolicy(dialect_id) << "\","
+      << descriptor.allocation_finality_policy << "\","
       << "\"lower_layer_allocation_policy\":\""
-      << LowerLayerAllocationPolicy(dialect_id) << "\","
-      << "\"value_function_profile\":\""
-      << SequenceValueFunctionProfile(dialect_id, upper) << "\","
+      << descriptor.lower_layer_allocation_policy << "\","
+      << "\"value_function_profile\":\"" << descriptor.value_function_profile
+      << "\","
       << "\"session_visibility_policy\":\""
-      << SequenceSessionVisibilityPolicy(dialect_id) << "\","
+      << descriptor.session_visibility_policy << "\","
       << "\"sequence_backed_default_policy\":\""
-      << SequenceBackedDefaultPolicy(dialect_id, upper) << "\","
+      << descriptor.sequence_backed_default_policy << "\","
       << "\"restart_increment_descriptor_policy\":\""
-      << RestartIncrementDescriptorPolicy(dialect_id) << "\","
+      << descriptor.restart_increment_descriptor_policy << "\","
       << "\"engine_authority\":\"scratchbird\","
       << "\"catalog_descriptor_required\":true,"
       << "\"source_sql_text_included\":false,"
@@ -4676,56 +1432,45 @@ std::string SequenceIdentitySemanticEvidenceJson(
   return out.str();
 }
 
-bool HasIdentifierNameResolutionProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-std::string IdentifierNameResolutionEvidenceJson(
+std::string RenderIdentifierNameResolutionSemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool create_surface = StartsWithCommand(upper, "CREATE");
-  const bool alter_surface = StartsWithCommand(upper, "ALTER");
-  const bool drop_surface = StartsWithCommand(upper, "DROP");
-  const bool quoted_identifier_syntax_observed =
-      Contains(upper, "\"") || Contains(upper, "`");
-  const bool qualified_name_syntax_observed = Contains(upper, ".");
-
+    const IdentifierNameResolutionSemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_identifier_name_resolution_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"semantic_profile_uuid\":\""
-      << IdentifierNameResolutionProfileUuid(dialect_id) << "\","
+      << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
       << "\"name_resolution_profile\":\""
-      << IdentifierNameResolutionProfileName(dialect_id) << "\","
+      << descriptor.name_resolution_profile << "\","
       << "\"unquoted_identifier_policy\":\""
-      << UnquotedIdentifierPolicy(dialect_id) << "\","
+      << descriptor.unquoted_identifier_policy << "\","
       << "\"quoted_identifier_policy\":\""
-      << QuotedIdentifierPolicy(dialect_id) << "\","
+      << descriptor.quoted_identifier_policy << "\","
       << "\"schema_root_resolution_policy\":\""
-      << SchemaRootResolutionPolicy(dialect_id) << "\","
+      << descriptor.schema_root_resolution_policy << "\","
       << "\"generated_catalog_name_behavior\":\""
-      << GeneratedCatalogNameBehavior(dialect_id) << "\","
+      << descriptor.generated_catalog_name_behavior << "\","
       << "\"namespace_collision_behavior\":\""
-      << NamespaceCollisionBehavior(dialect_id) << "\","
+      << descriptor.namespace_collision_behavior << "\","
       << "\"result_metadata_label_policy\":\""
-      << ResultMetadataLabelPolicy(dialect_id) << "\","
+      << descriptor.result_metadata_label_policy << "\","
       << "\"table_name_filesystem_case_policy\":\""
-      << TableNameFilesystemCasePolicy(dialect_id) << "\","
+      << descriptor.table_name_filesystem_case_policy << "\","
       << "\"release_profile_variant_bound_to_base_compatibility\":"
-      << BoolJson(dialect_id == "mysql") << ','
-      << "\"create_surface\":" << BoolJson(create_surface) << ','
-      << "\"alter_surface\":" << BoolJson(alter_surface) << ','
-      << "\"drop_surface\":" << BoolJson(drop_surface) << ','
+      << BoolJson(descriptor.release_profile_variant_bound_to_base_compatibility)
+      << ','
+      << "\"create_surface\":" << BoolJson(descriptor.create_surface) << ','
+      << "\"alter_surface\":" << BoolJson(descriptor.alter_surface) << ','
+      << "\"drop_surface\":" << BoolJson(descriptor.drop_surface) << ','
       << "\"quoted_identifier_syntax_observed\":"
-      << BoolJson(quoted_identifier_syntax_observed) << ','
+      << BoolJson(descriptor.quoted_identifier_syntax_observed) << ','
       << "\"qualified_name_syntax_observed\":"
-      << BoolJson(qualified_name_syntax_observed) << ','
+      << BoolJson(descriptor.qualified_name_syntax_observed) << ','
       << "\"uuid_descriptor_resolution_required\":true,"
       << "\"catalog_descriptor_required\":true,"
       << "\"source_sql_text_included\":false,"
@@ -4743,113 +1488,70 @@ std::string IdentifierNameResolutionEvidenceJson(
   return out.str();
 }
 
-bool HasScalarExpressionSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsScalarExpressionSemanticStatement(std::string_view dialect_id,
-                                         std::string_view active_upper_sql) {
-  if (!HasScalarExpressionSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (!(StartsWithCommand(upper, "SELECT") || StartsWithCommand(upper, "WITH"))) {
-    return false;
-  }
-  return HasCastOrCoercionSurface(upper) ||
-         HasNullLogicSurface(upper) ||
-         HasBooleanLiteralSurface(upper) ||
-         HasStringComparisonSurface(upper) ||
-         HasTemporalExpressionSurface(upper) ||
-         HasNumericExpressionSurface(upper) ||
-         HasPatternMatchingSurface(upper) ||
-         HasConditionalExpressionSurface(upper);
-}
-
-std::string ScalarExpressionSemanticEvidenceJson(
+std::string RenderScalarExpressionSemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool cast_or_coercion_surface = HasCastOrCoercionSurface(upper);
-  const bool null_logic_surface = HasNullLogicSurface(upper);
-  const bool boolean_literal_surface = HasBooleanLiteralSurface(upper);
-  const bool string_comparison_surface = HasStringComparisonSurface(upper);
-  const bool temporal_expression_surface = HasTemporalExpressionSurface(upper);
-  const bool numeric_expression_surface = HasNumericExpressionSurface(upper);
-  const bool pattern_matching_surface = HasPatternMatchingSurface(upper);
-  const bool conditional_expression_surface =
-      HasConditionalExpressionSurface(upper);
-  const bool null_safe_equality_surface = Contains(upper, "<=>");
-  const bool is_distinct_from_surface =
-      Contains(upper, " IS DISTINCT FROM") ||
-      Contains(upper, " IS NOT DISTINCT FROM");
-  const bool regexp_surface = Contains(upper, " REGEXP ") ||
-                              Contains(upper, " RLIKE ") ||
-                              Contains(upper, " ~ ") ||
-                              Contains(upper, " ~* ") ||
-                              Contains(upper, " !~ ") ||
-                              Contains(upper, " !~* ");
-  const bool similar_to_surface = Contains(upper, " SIMILAR TO ");
-  const bool reference_conditional_function_surface =
-      HasFunctionCall(upper, "IIF") || HasFunctionCall(upper, "IF") ||
-      HasFunctionCall(upper, "IFNULL") || HasFunctionCall(upper, "DECODE");
-
+    const ScalarExpressionSemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_scalar_expression_semantic_descriptor_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"semantic_profile_uuid\":\""
-      << ScalarExpressionSemanticProfileUuid(dialect_id) << "\","
+      << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
       << "\"scalar_expression_profile\":\""
-      << ScalarExpressionProfileName(dialect_id) << "\","
-      << "\"query_expression_surface\":\"" << QueryExpressionSurface(upper)
+      << descriptor.scalar_expression_profile << "\","
+      << "\"query_expression_surface\":\""
+      << descriptor.query_expression_surface
       << "\","
       << "\"cast_type_coercion_profile\":\""
-      << CastTypeCoercionProfile(dialect_id) << "\","
+      << descriptor.cast_type_coercion_profile << "\","
       << "\"null_three_valued_logic_profile\":\""
-      << NullThreeValuedLogicProfile(dialect_id) << "\","
+      << descriptor.null_three_valued_logic_profile << "\","
       << "\"boolean_literal_profile\":\""
-      << BooleanLiteralProfile(dialect_id) << "\","
+      << descriptor.boolean_literal_profile << "\","
       << "\"string_comparison_collation_profile\":\""
-      << StringComparisonCollationProfile(dialect_id) << "\","
+      << descriptor.string_comparison_collation_profile << "\","
       << "\"temporal_literal_current_timestamp_date_arithmetic_profile\":\""
-      << TemporalLiteralCurrentTimestampDateArithmeticProfile(dialect_id)
+      << descriptor.temporal_literal_current_timestamp_date_arithmetic_profile
       << "\","
       << "\"numeric_division_rounding_overflow_profile\":\""
-      << NumericDivisionRoundingOverflowProfile(dialect_id) << "\","
+      << descriptor.numeric_division_rounding_overflow_profile << "\","
       << "\"pattern_matching_profile\":\""
-      << PatternMatchingProfile(dialect_id) << "\","
+      << descriptor.pattern_matching_profile << "\","
       << "\"conditional_expression_profile\":\""
-      << ConditionalExpressionProfile(dialect_id) << "\","
+      << descriptor.conditional_expression_profile << "\","
       << "\"expression_builtin_profile\":\""
-      << ExpressionBuiltinProfile(dialect_id) << "\","
+      << descriptor.expression_builtin_profile << "\","
       << "\"cast_or_coercion_surface\":"
-      << BoolJson(cast_or_coercion_surface) << ','
-      << "\"null_logic_surface\":" << BoolJson(null_logic_surface) << ','
+      << BoolJson(descriptor.cast_or_coercion_surface) << ','
+      << "\"null_logic_surface\":" << BoolJson(descriptor.null_logic_surface)
+      << ','
       << "\"boolean_literal_surface\":"
-      << BoolJson(boolean_literal_surface) << ','
+      << BoolJson(descriptor.boolean_literal_surface) << ','
       << "\"string_comparison_surface\":"
-      << BoolJson(string_comparison_surface) << ','
+      << BoolJson(descriptor.string_comparison_surface) << ','
       << "\"temporal_expression_surface\":"
-      << BoolJson(temporal_expression_surface) << ','
+      << BoolJson(descriptor.temporal_expression_surface) << ','
       << "\"numeric_expression_surface\":"
-      << BoolJson(numeric_expression_surface) << ','
+      << BoolJson(descriptor.numeric_expression_surface) << ','
       << "\"pattern_matching_surface\":"
-      << BoolJson(pattern_matching_surface) << ','
+      << BoolJson(descriptor.pattern_matching_surface) << ','
       << "\"conditional_expression_surface\":"
-      << BoolJson(conditional_expression_surface) << ','
+      << BoolJson(descriptor.conditional_expression_surface) << ','
       << "\"null_safe_equality_surface\":"
-      << BoolJson(null_safe_equality_surface) << ','
+      << BoolJson(descriptor.null_safe_equality_surface) << ','
       << "\"is_distinct_from_surface\":"
-      << BoolJson(is_distinct_from_surface) << ','
-      << "\"regexp_surface\":" << BoolJson(regexp_surface) << ','
-      << "\"similar_to_surface\":" << BoolJson(similar_to_surface) << ','
+      << BoolJson(descriptor.is_distinct_from_surface) << ','
+      << "\"regexp_surface\":" << BoolJson(descriptor.regexp_surface) << ','
+      << "\"similar_to_surface\":" << BoolJson(descriptor.similar_to_surface)
+      << ','
       << "\"compatibility_conditional_function_surface\":"
-      << BoolJson(reference_conditional_function_surface) << ','
+      << BoolJson(descriptor.compatibility_conditional_function_surface) << ','
       << "\"reference_conditional_function_surface\":"
-      << BoolJson(reference_conditional_function_surface) << ','
+      << BoolJson(descriptor.compatibility_conditional_function_surface) << ','
       << "\"uuid_required_semantic_profile\":true,"
       << "\"engine_authority\":\"scratchbird\","
       << "\"source_sql_text_included\":false,"
@@ -4870,115 +1572,58 @@ std::string ScalarExpressionSemanticEvidenceJson(
   return out.str();
 }
 
-bool HasDmlMutationSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsDmlMutationSemanticStatement(std::string_view dialect_id,
-                                    std::string_view active_upper_sql) {
-  if (!HasDmlMutationSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "UPDATE OR INSERT") ||
-           StartsWithCommand(upper, "MERGE") ||
-           StartsWithCommand(upper, "INSERT") ||
-           StartsWithCommand(upper, "UPDATE") ||
-           StartsWithCommand(upper, "DELETE");
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "INSERT") ||
-           StartsWithCommand(upper, "UPDATE") ||
-           StartsWithCommand(upper, "DELETE") ||
-           StartsWithCommand(upper, "REPLACE");
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "INSERT") ||
-           StartsWithCommand(upper, "UPDATE") ||
-           StartsWithCommand(upper, "DELETE") ||
-           StartsWithCommand(upper, "MERGE");
-  }
-  return false;
-}
-
-std::string DmlMutationSemanticEvidenceJson(
+std::string RenderDmlMutationSemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool insert_surface = StartsWithCommand(upper, "INSERT");
-  const bool update_surface =
-      StartsWithCommand(upper, "UPDATE") &&
-      !StartsWithCommand(upper, "UPDATE OR INSERT");
-  const bool delete_surface = StartsWithCommand(upper, "DELETE");
-  const bool update_or_insert_surface =
-      StartsWithCommand(upper, "UPDATE OR INSERT");
-  const bool replace_surface = StartsWithCommand(upper, "REPLACE");
-  const bool merge_surface = StartsWithCommand(upper, "MERGE");
-  const bool on_duplicate_key_update_surface =
-      Contains(upper, " ON DUPLICATE KEY UPDATE");
-  const bool on_conflict_surface = Contains(upper, " ON CONFLICT ");
-  const bool on_conflict_do_update_surface =
-      on_conflict_surface && Contains(upper, " DO UPDATE");
-  const bool on_conflict_do_nothing_surface =
-      on_conflict_surface && Contains(upper, " DO NOTHING");
-  const bool matching_surface = ContainsWord(upper, "MATCHING");
-  const bool returning_surface = ContainsWord(upper, "RETURNING");
-  const bool cursor_positioned_dml_surface =
-      Contains(upper, " WHERE CURRENT OF ");
-  const bool default_value_surface = ContainsWord(upper, "DEFAULT");
-  const bool generated_column_surface = ContainsWord(upper, "GENERATED");
-  const bool trigger_interaction_descriptor_required =
-      insert_surface || update_surface || delete_surface ||
-      update_or_insert_surface || replace_surface || merge_surface;
-
+    const DmlMutationSemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_dml_mutation_semantic_descriptor_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"semantic_profile_uuid\":\""
-      << DmlMutationSemanticProfileUuid(dialect_id) << "\","
+      << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"mutation_profile\":\"" << DmlMutationProfileName(dialect_id)
+      << "\"mutation_profile\":\"" << descriptor.mutation_profile
       << "\","
-      << "\"mutation_surface\":\""
-      << DmlMutationSurface(dialect_id, upper) << "\","
-      << "\"insert_surface\":" << BoolJson(insert_surface) << ','
-      << "\"update_surface\":" << BoolJson(update_surface) << ','
-      << "\"delete_surface\":" << BoolJson(delete_surface) << ','
+      << "\"mutation_surface\":\"" << descriptor.mutation_surface << "\","
+      << "\"insert_surface\":" << BoolJson(descriptor.insert_surface) << ','
+      << "\"update_surface\":" << BoolJson(descriptor.update_surface) << ','
+      << "\"delete_surface\":" << BoolJson(descriptor.delete_surface) << ','
       << "\"update_or_insert_surface\":"
-      << BoolJson(update_or_insert_surface) << ','
-      << "\"replace_surface\":" << BoolJson(replace_surface) << ','
-      << "\"merge_surface\":" << BoolJson(merge_surface) << ','
-      << "\"matching_surface\":" << BoolJson(matching_surface) << ','
+      << BoolJson(descriptor.update_or_insert_surface) << ','
+      << "\"replace_surface\":" << BoolJson(descriptor.replace_surface) << ','
+      << "\"merge_surface\":" << BoolJson(descriptor.merge_surface) << ','
+      << "\"matching_surface\":" << BoolJson(descriptor.matching_surface) << ','
       << "\"on_duplicate_key_update_surface\":"
-      << BoolJson(on_duplicate_key_update_surface) << ','
-      << "\"on_conflict_surface\":" << BoolJson(on_conflict_surface) << ','
+      << BoolJson(descriptor.on_duplicate_key_update_surface) << ','
+      << "\"on_conflict_surface\":" << BoolJson(descriptor.on_conflict_surface)
+      << ','
       << "\"on_conflict_do_update_surface\":"
-      << BoolJson(on_conflict_do_update_surface) << ','
+      << BoolJson(descriptor.on_conflict_do_update_surface) << ','
       << "\"on_conflict_do_nothing_surface\":"
-      << BoolJson(on_conflict_do_nothing_surface) << ','
+      << BoolJson(descriptor.on_conflict_do_nothing_surface) << ','
       << "\"upsert_merge_conflict_policy\":\""
-      << UpsertMergeConflictPolicy(dialect_id, upper) << "\","
+      << descriptor.upsert_merge_conflict_policy << "\","
       << "\"returning_output_projection_surface\":"
-      << BoolJson(returning_surface) << ','
+      << BoolJson(descriptor.returning_output_projection_surface) << ','
       << "\"returning_output_projection_policy\":\""
-      << ReturningOutputProjectionPolicy(dialect_id, upper) << "\","
+      << descriptor.returning_output_projection_policy << "\","
       << "\"cursor_positioned_dml_surface\":"
-      << BoolJson(cursor_positioned_dml_surface) << ','
+      << BoolJson(descriptor.cursor_positioned_dml_surface) << ','
       << "\"cursor_positioned_dml_policy\":\""
-      << CursorPositionedDmlPolicy(dialect_id, upper) << "\","
+      << descriptor.cursor_positioned_dml_policy << "\","
       << "\"affected_row_count_policy\":\""
-      << AffectedRowCountPolicy(dialect_id, upper) << "\","
-      << "\"default_value_surface\":" << BoolJson(default_value_surface) << ','
+      << descriptor.affected_row_count_policy << "\","
+      << "\"default_value_surface\":"
+      << BoolJson(descriptor.default_value_surface) << ','
       << "\"generated_column_surface\":"
-      << BoolJson(generated_column_surface) << ','
+      << BoolJson(descriptor.generated_column_surface) << ','
       << "\"trigger_interaction_descriptor_required\":"
-      << BoolJson(trigger_interaction_descriptor_required) << ','
+      << BoolJson(descriptor.trigger_interaction_descriptor_required) << ','
       << "\"trigger_default_generated_column_interaction_policy\":\""
-      << TriggerDefaultGeneratedColumnInteractionPolicy(dialect_id, upper)
-      << "\","
+      << descriptor.trigger_default_generated_column_interaction_policy << "\","
       << "\"uuid_required_semantic_profile\":true,"
       << "\"catalog_descriptor_required\":true,"
       << "\"sblr_operation_uuid_resolution_required\":true,"
@@ -5003,141 +1648,57 @@ std::string DmlMutationSemanticEvidenceJson(
   return out.str();
 }
 
-bool HasTransactionSessionSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsTransactionSessionSemanticStatement(std::string_view dialect_id,
-                                           std::string_view active_upper_sql) {
-  if (!HasTransactionSessionSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "SET TRANSACTION") ||
-           StartsWithCommand(upper, "COMMIT") ||
-           StartsWithCommand(upper, "ROLLBACK") ||
-           StartsWithCommand(upper, "SAVEPOINT") ||
-           StartsWithCommand(upper, "RELEASE SAVEPOINT");
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "START TRANSACTION") ||
-           StartsWithCommand(upper, "BEGIN") ||
-           StartsWithCommand(upper, "COMMIT") ||
-           StartsWithCommand(upper, "ROLLBACK") ||
-           StartsWithCommand(upper, "SAVEPOINT") ||
-           StartsWithCommand(upper, "RELEASE SAVEPOINT") ||
-           (StartsWithCommand(upper, "SET") &&
-            (ContainsWord(upper, "AUTOCOMMIT") ||
-             ContainsWord(upper, "SQL_MODE") ||
-             Contains(upper, " TRANSACTION ISOLATION ")));
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "BEGIN") ||
-           StartsWithCommand(upper, "START TRANSACTION") ||
-           StartsWithCommand(upper, "COMMIT") ||
-           StartsWithCommand(upper, "ROLLBACK") ||
-           StartsWithCommand(upper, "SAVEPOINT") ||
-           StartsWithCommand(upper, "RELEASE SAVEPOINT") ||
-           StartsWithCommand(upper, "SET TRANSACTION") ||
-           (StartsWithCommand(upper, "SET") &&
-            (ContainsWord(upper, "TRANSACTION_ISOLATION") ||
-             ContainsWord(upper, "STATEMENT_TIMEOUT") ||
-             ContainsWord(upper, "SEARCH_PATH")));
-  }
-  return false;
-}
-
-std::string TransactionSessionSemanticEvidenceJson(
+std::string RenderTransactionSessionSemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool begin_surface =
-      StartsWithCommand(upper, "BEGIN") ||
-      StartsWithCommand(upper, "START TRANSACTION") ||
-      (dialect_id == "firebird" && StartsWithCommand(upper, "SET TRANSACTION"));
-  const bool commit_surface = StartsWithCommand(upper, "COMMIT");
-  const bool rollback_to_savepoint_surface = IsRollbackToSavepoint(upper);
-  const bool rollback_surface =
-      StartsWithCommand(upper, "ROLLBACK") && !rollback_to_savepoint_surface;
-  const bool savepoint_surface = StartsWithCommand(upper, "SAVEPOINT");
-  const bool release_savepoint_surface =
-      StartsWithCommand(upper, "RELEASE SAVEPOINT");
-  const bool autocommit_surface =
-      StartsWithCommand(upper, "SET") && ContainsWord(upper, "AUTOCOMMIT");
-  const bool isolation_descriptor_surface =
-      IsSetTransactionIsolation(upper) ||
-      ContainsWord(upper, "SERIALIZABLE") ||
-      Contains(upper, "READ COMMITTED") ||
-      Contains(upper, "REPEATABLE READ") ||
-      Contains(upper, "READ UNCOMMITTED") ||
-      ContainsWord(upper, "SNAPSHOT") ||
-      Contains(upper, "TABLE STABILITY");
-  const bool read_only_surface = Contains(upper, "READ ONLY");
-  const bool read_write_surface = Contains(upper, "READ WRITE");
-  const bool wait_no_wait_surface =
-      dialect_id == "firebird" &&
-      (ContainsWord(upper, "WAIT") || Contains(upper, "NO WAIT"));
-  const bool deferrable_surface =
-      dialect_id == "postgresql" && ContainsWord(upper, "DEFERRABLE") &&
-      !Contains(upper, "NOT DEFERRABLE");
-  const bool session_variable_surface =
-      StartsWithCommand(upper, "SET") &&
-      (ContainsWord(upper, "AUTOCOMMIT") ||
-       ContainsWord(upper, "SQL_MODE") ||
-       ContainsWord(upper, "TRANSACTION_ISOLATION") ||
-       ContainsWord(upper, "STATEMENT_TIMEOUT") ||
-       ContainsWord(upper, "SEARCH_PATH"));
-  const bool sql_mode_surface = ContainsWord(upper, "SQL_MODE");
-  const bool statement_timeout_surface = ContainsWord(upper, "STATEMENT_TIMEOUT");
-  const bool search_path_surface = ContainsWord(upper, "SEARCH_PATH");
-
+    const TransactionSessionSemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_transaction_session_semantic_descriptor_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"semantic_profile_uuid\":\""
-      << TransactionSessionSemanticProfileUuid(dialect_id) << "\","
+      << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
       << "\"transaction_session_profile\":\""
-      << TransactionSessionProfileName(dialect_id) << "\","
+      << descriptor.transaction_session_profile << "\","
       << "\"transaction_session_surface\":\""
-      << TransactionSessionSurface(dialect_id, upper) << "\","
+      << descriptor.transaction_session_surface << "\","
       << "\"statement_family_linkage\":\""
-      << TransactionSessionFamilyLinkage(dialect_id, upper) << "\","
+      << descriptor.statement_family_linkage << "\","
       << "\"begin_autocommit_policy\":\""
-      << BeginAutocommitPolicy(dialect_id, upper) << "\","
+      << descriptor.begin_autocommit_policy << "\","
       << "\"commit_rollback_finality_policy\":\"engine_mga_authority\","
       << "\"transaction_identity_policy\":\"engine_mga_authority\","
       << "\"visibility_policy\":\"engine_mga_authority\","
       << "\"recovery_policy\":\"engine_mga_authority\","
       << "\"savepoint_policy\":\"transaction_local_engine_owned\","
       << "\"isolation_read_only_deferrable_descriptor_policy\":\""
-      << IsolationReadOnlyDeferrablePolicy(dialect_id, upper) << "\","
+      << descriptor.isolation_read_only_deferrable_descriptor_policy << "\","
       << "\"session_variable_sql_mode_descriptor_policy\":\""
-      << SessionVariableSqlModePolicy(dialect_id, upper) << "\","
-      << "\"begin_surface\":" << BoolJson(begin_surface) << ','
-      << "\"commit_surface\":" << BoolJson(commit_surface) << ','
-      << "\"rollback_surface\":" << BoolJson(rollback_surface) << ','
+      << descriptor.session_variable_sql_mode_descriptor_policy << "\","
+      << "\"begin_surface\":" << BoolJson(descriptor.begin_surface) << ','
+      << "\"commit_surface\":" << BoolJson(descriptor.commit_surface) << ','
+      << "\"rollback_surface\":" << BoolJson(descriptor.rollback_surface) << ','
       << "\"rollback_to_savepoint_surface\":"
-      << BoolJson(rollback_to_savepoint_surface) << ','
-      << "\"savepoint_surface\":" << BoolJson(savepoint_surface) << ','
+      << BoolJson(descriptor.rollback_to_savepoint_surface) << ','
+      << "\"savepoint_surface\":" << BoolJson(descriptor.savepoint_surface) << ','
       << "\"release_savepoint_surface\":"
-      << BoolJson(release_savepoint_surface) << ','
-      << "\"autocommit_surface\":" << BoolJson(autocommit_surface) << ','
+      << BoolJson(descriptor.release_savepoint_surface) << ','
+      << "\"autocommit_surface\":" << BoolJson(descriptor.autocommit_surface) << ','
       << "\"isolation_descriptor_surface\":"
-      << BoolJson(isolation_descriptor_surface) << ','
-      << "\"read_only_surface\":" << BoolJson(read_only_surface) << ','
-      << "\"read_write_surface\":" << BoolJson(read_write_surface) << ','
-      << "\"wait_no_wait_surface\":" << BoolJson(wait_no_wait_surface) << ','
-      << "\"deferrable_surface\":" << BoolJson(deferrable_surface) << ','
+      << BoolJson(descriptor.isolation_descriptor_surface) << ','
+      << "\"read_only_surface\":" << BoolJson(descriptor.read_only_surface) << ','
+      << "\"read_write_surface\":" << BoolJson(descriptor.read_write_surface) << ','
+      << "\"wait_no_wait_surface\":" << BoolJson(descriptor.wait_no_wait_surface) << ','
+      << "\"deferrable_surface\":" << BoolJson(descriptor.deferrable_surface) << ','
       << "\"session_variable_surface\":"
-      << BoolJson(session_variable_surface) << ','
-      << "\"sql_mode_surface\":" << BoolJson(sql_mode_surface) << ','
+      << BoolJson(descriptor.session_variable_surface) << ','
+      << "\"sql_mode_surface\":" << BoolJson(descriptor.sql_mode_surface) << ','
       << "\"statement_timeout_surface\":"
-      << BoolJson(statement_timeout_surface) << ','
-      << "\"search_path_surface\":" << BoolJson(search_path_surface) << ','
+      << BoolJson(descriptor.statement_timeout_surface) << ','
+      << "\"search_path_surface\":" << BoolJson(descriptor.search_path_surface) << ','
       << "\"uuid_required_semantic_profile\":true,"
       << "\"catalog_descriptor_required\":true,"
       << "\"sblr_operation_uuid_resolution_required\":true,"
@@ -5161,113 +1722,68 @@ std::string TransactionSessionSemanticEvidenceJson(
   return out.str();
 }
 
-bool HasTemporarySessionObjectSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsTemporarySessionObjectSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasTemporarySessionObjectSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  return IsCreateTemporaryTableStatement(dialect_id, upper) ||
-         IsDropTemporaryTableStatement(dialect_id, upper) ||
-         IsAlterTemporaryTableStatement(dialect_id, upper);
-}
-
-std::string TemporarySessionObjectSemanticEvidenceJson(
+std::string RenderTemporarySessionObjectSemanticEvidenceJson(
     std::string_view dialect_id,
     std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool create_surface = IsCreateTemporaryTableStatement(dialect_id, upper);
-  const bool alter_surface = IsAlterTemporaryTableStatement(dialect_id, upper);
-  const bool drop_surface = IsDropTemporaryTableStatement(dialect_id, upper);
-  const bool global_keyword_surface =
-      ContainsWord(upper, "GLOBAL") ||
-      StartsWithCommand(upper, "CREATE GLOBAL TEMP") ||
-      StartsWithCommand(upper, "CREATE GLOBAL TEMPORARY");
-  const bool local_keyword_surface =
-      ContainsWord(upper, "LOCAL") ||
-      StartsWithCommand(upper, "CREATE LOCAL TEMP") ||
-      StartsWithCommand(upper, "CREATE LOCAL TEMPORARY");
-  const bool temporary_keyword_surface =
-      ContainsWord(upper, "TEMP") || ContainsWord(upper, "TEMPORARY") ||
-      Contains(upper, "PG_TEMP.") || Contains(upper, "TEMP");
-  const bool table_object_surface =
-      ContainsWord(upper, "TABLE") || StartsWithCommand(upper, "DROP TABLE") ||
-      StartsWithCommand(upper, "ALTER TABLE");
-  const bool on_commit_delete_rows_surface =
-      Contains(upper, "ON COMMIT DELETE ROWS");
-  const bool on_commit_preserve_rows_surface =
-      Contains(upper, "ON COMMIT PRESERVE ROWS");
-  const bool on_commit_drop_surface = Contains(upper, "ON COMMIT DROP");
-  const bool name_shadowing_surface =
-      dialect_id == "mysql" ||
-      (dialect_id == "postgresql" && temporary_keyword_surface);
-
+    const TemporarySessionObjectSemanticDescriptor& descriptor) {
   std::ostringstream out;
   out << "{\"evidence_contract\":\"compatibility_temporary_session_object_semantic_descriptor_evidence.v1\","
       << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
+      << "\"compatibility_profile_uuid\":\""
+      << descriptor.compatibility_profile_uuid << "\","
       << "\"semantic_profile_uuid\":\""
-      << TemporarySessionObjectSemanticProfileUuid(dialect_id) << "\","
+      << descriptor.semantic_profile_uuid << "\","
       << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
       << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
       << "\"temporary_object_profile\":\""
-      << TemporarySessionObjectProfileName(dialect_id) << "\","
+      << descriptor.temporary_object_profile << "\","
       << "\"temporary_object_surface\":\""
-      << TemporaryObjectSurface(dialect_id, upper) << "\","
+      << descriptor.temporary_object_surface << "\","
       << "\"temporary_object_kind_policy\":\""
-      << TemporaryObjectKindPolicy(dialect_id, upper) << "\","
+      << descriptor.temporary_object_kind_policy << "\","
       << "\"global_local_temp_object_kind_policy\":\""
-      << TemporaryObjectKindPolicy(dialect_id, upper) << "\","
-      << "\"create_surface\":" << BoolJson(create_surface) << ','
-      << "\"alter_surface\":" << BoolJson(alter_surface) << ','
-      << "\"drop_surface\":" << BoolJson(drop_surface) << ','
+      << descriptor.temporary_object_kind_policy << "\","
+      << "\"create_surface\":" << BoolJson(descriptor.create_surface) << ','
+      << "\"alter_surface\":" << BoolJson(descriptor.alter_surface) << ','
+      << "\"drop_surface\":" << BoolJson(descriptor.drop_surface) << ','
       << "\"global_keyword_surface\":"
-      << BoolJson(global_keyword_surface) << ','
+      << BoolJson(descriptor.global_keyword_surface) << ','
       << "\"local_keyword_surface\":"
-      << BoolJson(local_keyword_surface) << ','
+      << BoolJson(descriptor.local_keyword_surface) << ','
       << "\"temporary_keyword_surface\":"
-      << BoolJson(temporary_keyword_surface) << ','
+      << BoolJson(descriptor.temporary_keyword_surface) << ','
       << "\"table_object_surface\":"
-      << BoolJson(table_object_surface) << ','
+      << BoolJson(descriptor.table_object_surface) << ','
       << "\"on_commit_delete_rows_surface\":"
-      << BoolJson(on_commit_delete_rows_surface) << ','
+      << BoolJson(descriptor.on_commit_delete_rows_surface) << ','
       << "\"on_commit_preserve_rows_surface\":"
-      << BoolJson(on_commit_preserve_rows_surface) << ','
+      << BoolJson(descriptor.on_commit_preserve_rows_surface) << ','
       << "\"on_commit_drop_surface\":"
-      << BoolJson(on_commit_drop_surface) << ','
+      << BoolJson(descriptor.on_commit_drop_surface) << ','
       << "\"on_commit_policy\":\""
-      << OnCommitPolicy(dialect_id, upper) << "\","
+      << descriptor.on_commit_policy << "\","
       << "\"on_commit_delete_rows_policy\":\""
-      << OnCommitDeleteRowsPolicy(dialect_id) << "\","
+      << descriptor.on_commit_delete_rows_policy << "\","
       << "\"on_commit_preserve_rows_policy\":\""
-      << OnCommitPreserveRowsPolicy(dialect_id) << "\","
+      << descriptor.on_commit_preserve_rows_policy << "\","
       << "\"on_commit_drop_policy\":\""
-      << OnCommitDropPolicy(dialect_id) << "\","
+      << descriptor.on_commit_drop_policy << "\","
       << "\"name_shadowing_surface\":"
-      << BoolJson(name_shadowing_surface) << ','
+      << BoolJson(descriptor.name_shadowing_surface) << ','
       << "\"name_shadowing_policy\":\""
-      << (dialect_id == "mysql"
-              ? "mysql_temporary_table_name_shadows_base_table_within_session"
-              : dialect_id == "postgresql"
-                    ? "postgresql_pg_temp_search_path_shadows_permanent_objects"
-                    : "firebird_no_session_name_shadowing_regular_schema_namespace")
+      << descriptor.name_shadowing_policy
       << "\","
       << "\"session_visibility_policy\":\""
-      << SessionVisibilityPolicy(dialect_id) << "\","
+      << descriptor.session_visibility_policy << "\","
       << "\"catalog_visibility_policy\":\""
-      << CatalogVisibilityPolicy(dialect_id) << "\","
+      << descriptor.catalog_visibility_policy << "\","
       << "\"transaction_interaction_policy\":\"engine_mga_authority\","
       << "\"session_interaction_policy\":\"engine_session_authority\","
       << "\"cleanup_lifetime_policy\":\"engine_session_catalog_authority\","
       << "\"temporary_object_lifetime_policy\":\""
-      << TemporaryObjectLifetimePolicy(dialect_id, upper) << "\","
+      << descriptor.temporary_object_lifetime_policy << "\","
       << "\"schema_root_sandbox_policy\":\""
-      << SchemaRootSandboxPolicy(dialect_id) << "\","
+      << descriptor.schema_root_sandbox_policy << "\","
       << "\"uuid_required_semantic_profile\":true,"
       << "\"catalog_descriptor_required\":true,"
       << "\"session_descriptor_required\":true,"
@@ -5288,986 +1804,6 @@ std::string TemporarySessionObjectSemanticEvidenceJson(
       << "\"compatibility_sql_executed\":false,"
       << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
       << "\"descriptor_exactness_status\":\"parser_temporary_session_object_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasDependencyBearingDdlSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsDependencyBearingDdlSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasDependencyBearingDdlSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (dialect_id == "firebird") {
-    return IsViewDependencyDdl(upper) ||
-           IsTriggerDependencyDdl(upper) ||
-           IsRoutineDependencyDdl(upper) ||
-           IsPackageDependencyDdl(upper);
-  }
-  if (dialect_id == "mysql") {
-    return IsViewDependencyDdl(upper) ||
-           IsTriggerDependencyDdl(upper) ||
-           IsRoutineDependencyDdl(upper) ||
-           IsEventDependencyDdl(upper);
-  }
-  if (dialect_id == "postgresql") {
-    return IsViewDependencyDdl(upper) ||
-           IsMaterializedViewDependencyDdl(upper) ||
-           IsTriggerDependencyDdl(upper) ||
-           IsRoutineDependencyDdl(upper) ||
-           IsRuleDependencyDdl(upper);
-  }
-  return false;
-}
-
-std::string DependencyBearingDdlSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool view_surface = IsViewDependencyDdl(upper);
-  const bool materialized_view_surface = IsMaterializedViewDependencyDdl(upper);
-  const bool trigger_surface = IsTriggerDependencyDdl(upper);
-  const bool routine_surface = IsRoutineDependencyDdl(upper);
-  const bool procedure_surface =
-      StartsWithCommand(upper, "CREATE PROCEDURE") ||
-      StartsWithCommand(upper, "CREATE OR ALTER PROCEDURE") ||
-      StartsWithCommand(upper, "CREATE OR REPLACE PROCEDURE") ||
-      StartsWithCommand(upper, "ALTER PROCEDURE") ||
-      StartsWithCommand(upper, "DROP PROCEDURE") ||
-      StartsWithCommand(upper, "RECREATE PROCEDURE");
-  const bool function_surface =
-      StartsWithCommand(upper, "CREATE FUNCTION") ||
-      StartsWithCommand(upper, "CREATE OR ALTER FUNCTION") ||
-      StartsWithCommand(upper, "CREATE OR REPLACE FUNCTION") ||
-      StartsWithCommand(upper, "ALTER FUNCTION") ||
-      StartsWithCommand(upper, "DROP FUNCTION") ||
-      StartsWithCommand(upper, "RECREATE FUNCTION");
-  const bool package_surface = IsPackageDependencyDdl(upper);
-  const bool rule_surface = IsRuleDependencyDdl(upper);
-  const bool event_surface = IsEventDependencyDdl(upper);
-  const bool executable_body_surface =
-      trigger_surface || routine_surface || package_surface ||
-      rule_surface || event_surface;
-  const bool query_dependency_surface =
-      view_surface || materialized_view_surface ||
-      executable_body_surface || ContainsWord(upper, "FROM") ||
-      ContainsWord(upper, "JOIN") || ContainsWord(upper, "ON") ||
-      ContainsWord(upper, "REFERENCES") || Contains(upper, "EXECUTE FUNCTION");
-  const bool drop_surface = StartsWithCommand(upper, "DROP");
-  const bool alter_surface = StartsWithCommand(upper, "ALTER");
-  const bool create_surface =
-      StartsWithCommand(upper, "CREATE") || StartsWithCommand(upper, "RECREATE");
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_dependency_bearing_ddl_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << DependencyBearingDdlSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"dependency_ddl_profile\":\""
-      << DependencyBearingDdlProfileName(dialect_id) << "\","
-      << "\"dependency_ddl_surface\":\""
-      << DependencyDdlSurface(dialect_id, upper) << "\","
-      << "\"view_surface\":" << BoolJson(view_surface) << ','
-      << "\"materialized_view_surface\":"
-      << BoolJson(materialized_view_surface) << ','
-      << "\"trigger_surface\":" << BoolJson(trigger_surface) << ','
-      << "\"routine_surface\":" << BoolJson(routine_surface) << ','
-      << "\"procedure_surface\":" << BoolJson(procedure_surface) << ','
-      << "\"function_surface\":" << BoolJson(function_surface) << ','
-      << "\"package_surface\":" << BoolJson(package_surface) << ','
-      << "\"rule_surface\":" << BoolJson(rule_surface) << ','
-      << "\"event_surface\":" << BoolJson(event_surface) << ','
-      << "\"executable_body_surface\":"
-      << BoolJson(executable_body_surface) << ','
-      << "\"query_dependency_surface\":"
-      << BoolJson(query_dependency_surface) << ','
-      << "\"create_surface\":" << BoolJson(create_surface) << ','
-      << "\"alter_surface\":" << BoolJson(alter_surface) << ','
-      << "\"drop_surface\":" << BoolJson(drop_surface) << ','
-      << "\"dependency_binding_policy\":\""
-      << DependencyBindingPolicy(dialect_id, upper) << "\","
-      << "\"invalidation_policy\":\""
-      << DependencyInvalidationPolicy(dialect_id, upper) << "\","
-      << "\"execution_body_policy\":\""
-      << DependencyExecutionBodyPolicy(dialect_id, upper) << "\","
-      << "\"catalog_storage_policy\":\""
-      << DependencyCatalogStoragePolicy(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\""
-      << SchemaRootSandboxPolicy(dialect_id) << "\","
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"dependency_graph_descriptor_required\":true,"
-      << "\"source_retention_reference_required\":"
-      << BoolJson(executable_body_surface) << ','
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"dependency_authority\":\"engine_catalog_uuid_dependency_graph\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_execution_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_dependency_finality_authority\":false,"
-      << "\"parser_invalidation_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"descriptor_exactness_status\":\"parser_dependency_bearing_ddl_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasDdlTransactionBehaviorSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsDdlTransactionBehaviorSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasDdlTransactionBehaviorSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  return StartsWithCommand(upper, "CREATE") ||
-         StartsWithCommand(upper, "ALTER") ||
-         StartsWithCommand(upper, "DROP") ||
-         StartsWithCommand(upper, "RECREATE") ||
-         StartsWithCommand(upper, "TRUNCATE") ||
-         StartsWithCommand(upper, "COMMENT");
-}
-
-std::string DdlTransactionBehaviorSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool create_surface =
-      StartsWithCommand(upper, "CREATE") || StartsWithCommand(upper, "RECREATE");
-  const bool alter_surface = StartsWithCommand(upper, "ALTER");
-  const bool drop_surface = StartsWithCommand(upper, "DROP");
-  const bool table_surface =
-      ContainsWord(upper, "TABLE") || StartsWithCommand(upper, "TRUNCATE");
-  const bool index_surface =
-      IsCreateIndexKeywordSequence(LexTokens(upper)) ||
-      StartsWithCommand(upper, "ALTER INDEX") ||
-      StartsWithCommand(upper, "DROP INDEX");
-  const bool view_surface =
-      IsViewDependencyDdl(upper) || IsMaterializedViewDependencyDdl(upper);
-  const bool implicit_commit_surface = dialect_id == "mysql";
-  const bool transactional_ddl_surface =
-      dialect_id == "firebird" ||
-      (dialect_id == "postgresql" && !ContainsWord(upper, "CONCURRENTLY"));
-  const bool nontransactional_ddl_surface =
-      dialect_id == "mysql" ||
-      (dialect_id == "postgresql" && ContainsWord(upper, "CONCURRENTLY"));
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_ddl_transaction_behavior_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << DdlTransactionBehaviorSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"ddl_transaction_behavior_profile\":\""
-      << DdlTransactionBehaviorProfileName(dialect_id) << "\","
-      << "\"statement_classification\":\"ddl\","
-      << "\"ddl_operation_kind\":\"" << DdlOperationKind(upper) << "\","
-      << "\"transaction_policy\":\""
-      << DdlTransactionPolicy(dialect_id, upper) << "\","
-      << "\"autocommit_boundary\":\""
-      << DdlAutocommitBoundary(dialect_id, upper) << "\","
-      << "\"metadata_visibility_epoch\":\""
-      << DdlMetadataVisibilityEpoch(dialect_id) << "\","
-      << "\"rollback_policy\":\"" << DdlRollbackPolicy(dialect_id, upper)
-      << "\","
-      << "\"invalid_object_state_policy\":\""
-      << DdlInvalidObjectStatePolicy(dialect_id, upper) << "\","
-      << "\"diagnostic_map_ref\":\"" << DdlDiagnosticMapRef(dialect_id)
-      << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"create_surface\":" << BoolJson(create_surface) << ','
-      << "\"alter_surface\":" << BoolJson(alter_surface) << ','
-      << "\"drop_surface\":" << BoolJson(drop_surface) << ','
-      << "\"table_surface\":" << BoolJson(table_surface) << ','
-      << "\"index_surface\":" << BoolJson(index_surface) << ','
-      << "\"view_surface\":" << BoolJson(view_surface) << ','
-      << "\"implicit_commit_surface\":"
-      << BoolJson(implicit_commit_surface) << ','
-      << "\"transactional_ddl_surface\":"
-      << BoolJson(transactional_ddl_surface) << ','
-      << "\"nontransactional_ddl_surface\":"
-      << BoolJson(nontransactional_ddl_surface) << ','
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"transaction_authority\":\"engine_mga_authority\","
-      << "\"metadata_visibility_authority\":\"engine_catalog_mga_epoch\","
-      << "\"rollback_authority\":\"engine_mga_authority\","
-      << "\"invalid_object_state_authority\":\"engine_catalog_uuid_descriptor\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_autocommit_authority\":false,"
-      << "\"parser_metadata_visibility_authority\":false,"
-      << "\"parser_rollback_authority\":false,"
-      << "\"parser_invalid_object_state_authority\":false,"
-      << "\"parser_recovery_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"descriptor_exactness_status\":\"parser_ddl_transaction_behavior_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasResourceTextSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsResourceTextSemanticStatement(std::string_view dialect_id,
-                                     std::string_view active_upper_sql) {
-  if (!HasResourceTextSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool ddl_surface = StartsWithCommand(upper, "CREATE") ||
-                           StartsWithCommand(upper, "ALTER") ||
-                           StartsWithCommand(upper, "DROP") ||
-                           StartsWithCommand(upper, "RECREATE");
-  const bool dml_surface = StartsWithCommand(upper, "INSERT") ||
-                           StartsWithCommand(upper, "UPDATE") ||
-                           StartsWithCommand(upper, "DELETE") ||
-                           StartsWithCommand(upper, "MERGE") ||
-                           StartsWithCommand(upper, "REPLACE");
-  const bool query_surface =
-      StartsWithCommand(upper, "SELECT") || StartsWithCommand(upper, "WITH");
-  const bool text_type_surface =
-      ContainsWord(upper, "CHAR") || ContainsWord(upper, "VARCHAR") ||
-      ContainsWord(upper, "NCHAR") || Contains(upper, "NATIONAL CHARACTER") ||
-      ContainsWord(upper, "TEXT") || ContainsWord(upper, "BLOB") ||
-      ContainsWord(upper, "BINARY") || ContainsWord(upper, "VARBINARY") ||
-      ContainsWord(upper, "BYTEA");
-  const bool charset_or_collation_surface =
-      Contains(upper, "CHARACTER SET") || ContainsWord(upper, "CHARSET") ||
-      ContainsWord(upper, "COLLATE") || ContainsWord(upper, "COLLATION");
-  const bool string_literal_surface = Contains(upper, "'");
-  const bool pattern_surface =
-      Contains(upper, " LIKE ") || Contains(upper, " SIMILAR TO ") ||
-      Contains(upper, " REGEXP ") || Contains(upper, " RLIKE ") ||
-      Contains(upper, " STARTING WITH ") || Contains(upper, " CONTAINING ") ||
-      Contains(upper, " ILIKE ") || Contains(upper, " ~ ") ||
-      Contains(upper, " ~* ") || Contains(upper, " !~ ") ||
-      Contains(upper, " !~* ");
-  const bool cast_to_text_surface =
-      (Contains(upper, "CAST(") || Contains(upper, "::")) &&
-      text_type_surface;
-  const bool temporal_surface =
-      ContainsWord(upper, "DATE") || ContainsWord(upper, "TIME") ||
-      ContainsWord(upper, "TIMESTAMP") || ContainsWord(upper, "DATETIME") ||
-      ContainsWord(upper, "TIMESTAMPTZ") || Contains(upper, "WITH TIME ZONE") ||
-      ContainsWord(upper, "TIMEZONE") || ContainsWord(upper, "CURRENT_DATE") ||
-      ContainsWord(upper, "CURRENT_TIME") ||
-      ContainsWord(upper, "CURRENT_TIMESTAMP");
-
-  if (ddl_surface) return text_type_surface || charset_or_collation_surface;
-  if (dml_surface || query_surface) {
-    return string_literal_surface || pattern_surface ||
-           charset_or_collation_surface || cast_to_text_surface ||
-           temporal_surface;
-  }
-  return false;
-}
-
-std::string ResourceTextSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool ddl_surface = StartsWithCommand(upper, "CREATE") ||
-                           StartsWithCommand(upper, "ALTER") ||
-                           StartsWithCommand(upper, "DROP") ||
-                           StartsWithCommand(upper, "RECREATE");
-  const bool dml_surface = StartsWithCommand(upper, "INSERT") ||
-                           StartsWithCommand(upper, "UPDATE") ||
-                           StartsWithCommand(upper, "DELETE") ||
-                           StartsWithCommand(upper, "MERGE") ||
-                           StartsWithCommand(upper, "REPLACE");
-  const bool query_surface =
-      StartsWithCommand(upper, "SELECT") || StartsWithCommand(upper, "WITH");
-  const bool charset_surface =
-      Contains(upper, "CHARACTER SET") || ContainsWord(upper, "CHARSET");
-  const bool collation_surface =
-      ContainsWord(upper, "COLLATE") || ContainsWord(upper, "COLLATION");
-  const bool timezone_surface =
-      Contains(upper, "WITH TIME ZONE") || ContainsWord(upper, "TIMEZONE") ||
-      ContainsWord(upper, "TIMESTAMPTZ") || ContainsWord(upper, "DATETIME") ||
-      ContainsWord(upper, "TIMESTAMP") ||
-      ContainsWord(upper, "CURRENT_TIMESTAMP");
-  const bool calendar_surface =
-      ContainsWord(upper, "DATE") || ContainsWord(upper, "TIME") ||
-      ContainsWord(upper, "TIMESTAMP") || ContainsWord(upper, "DATETIME") ||
-      ContainsWord(upper, "CURRENT_DATE") || ContainsWord(upper, "CURRENT_TIME");
-  const bool pattern_surface =
-      Contains(upper, " LIKE ") || Contains(upper, " SIMILAR TO ") ||
-      Contains(upper, " REGEXP ") || Contains(upper, " RLIKE ") ||
-      Contains(upper, " STARTING WITH ") || Contains(upper, " CONTAINING ") ||
-      Contains(upper, " ILIKE ") || Contains(upper, " ~ ") ||
-      Contains(upper, " ~* ") || Contains(upper, " !~ ") ||
-      Contains(upper, " !~* ");
-  const bool comparison_surface =
-      collation_surface || pattern_surface || Contains(upper, " = ") ||
-      Contains(upper, " <> ") || Contains(upper, " != ");
-  const bool binary_text_surface =
-      ContainsWord(upper, "BLOB") || ContainsWord(upper, "BINARY") ||
-      ContainsWord(upper, "VARBINARY") || ContainsWord(upper, "BYTEA");
-  const bool text_type_surface =
-      ContainsWord(upper, "CHAR") || ContainsWord(upper, "VARCHAR") ||
-      ContainsWord(upper, "NCHAR") || Contains(upper, "NATIONAL CHARACTER") ||
-      ContainsWord(upper, "TEXT") || binary_text_surface;
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_resource_text_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << ResourceTextSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"resource_text_profile\":\""
-      << ResourceTextProfileName(dialect_id) << "\","
-      << "\"resource_text_surface\":\""
-      << ResourceTextSurface(dialect_id, upper) << "\","
-      << "\"charset_policy\":\"" << CharsetPolicy(dialect_id) << "\","
-      << "\"collation_policy\":\"" << CollationPolicy(dialect_id) << "\","
-      << "\"timezone_policy\":\"" << TimezonePolicy(dialect_id) << "\","
-      << "\"calendar_policy\":\"" << CalendarPolicy(dialect_id) << "\","
-      << "\"comparison_policy\":\"" << ComparisonPolicy(dialect_id) << "\","
-      << "\"pattern_matching_policy\":\""
-      << PatternMatchingProfile(dialect_id) << "\","
-      << "\"binary_text_policy\":\"" << BinaryTextPolicy(dialect_id)
-      << "\","
-      << "\"resource_epoch_policy\":\"" << ResourceEpochPolicy(dialect_id)
-      << "\","
-      << "\"index_compatibility_policy\":\""
-      << TextIndexCompatibilityPolicy(dialect_id) << "\","
-      << "\"diagnostic_map_ref\":\""
-      << ResourceTextDiagnosticMapRef(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"charset_surface\":" << BoolJson(charset_surface) << ','
-      << "\"collation_surface\":" << BoolJson(collation_surface) << ','
-      << "\"timezone_surface\":" << BoolJson(timezone_surface) << ','
-      << "\"calendar_surface\":" << BoolJson(calendar_surface) << ','
-      << "\"comparison_surface\":" << BoolJson(comparison_surface) << ','
-      << "\"pattern_surface\":" << BoolJson(pattern_surface) << ','
-      << "\"binary_text_surface\":" << BoolJson(binary_text_surface) << ','
-      << "\"text_type_surface\":" << BoolJson(text_type_surface) << ','
-      << "\"ddl_surface\":" << BoolJson(ddl_surface) << ','
-      << "\"dml_surface\":" << BoolJson(dml_surface) << ','
-      << "\"query_surface\":" << BoolJson(query_surface) << ','
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"resource_descriptor_required\":true,"
-      << "\"text_type_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"resource_authority\":\"engine_resource_descriptor_authority\","
-      << "\"charset_authority\":\"engine_catalog_resource_descriptor\","
-      << "\"collation_authority\":\"engine_catalog_resource_descriptor\","
-      << "\"timezone_authority\":\"engine_session_resource_descriptor\","
-      << "\"calendar_authority\":\"engine_temporal_resource_descriptor\","
-      << "\"comparison_authority\":\"engine_expression_resource_descriptor\","
-      << "\"pattern_matching_authority\":\"engine_expression_resource_descriptor\","
-      << "\"binary_text_authority\":\"engine_datatype_resource_descriptor\","
-      << "\"index_compatibility_authority\":\"engine_index_resource_descriptor\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_charset_authority\":false,"
-      << "\"parser_collation_authority\":false,"
-      << "\"parser_timezone_authority\":false,"
-      << "\"parser_calendar_authority\":false,"
-      << "\"parser_comparison_authority\":false,"
-      << "\"parser_pattern_matching_authority\":false,"
-      << "\"parser_binary_text_authority\":false,"
-      << "\"parser_text_type_authority\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_resource_activation_authority\":false,"
-      << "\"parser_index_compatibility_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_runtime_semantic_equivalence_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"descriptor_exactness_status\":\"parser_resource_text_semantic_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasStatisticsOptimizerSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsStatisticsOptimizerSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasStatisticsOptimizerSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (StartsWithCommand(upper, "EXPLAIN")) return true;
-  if (StartsWithCommand(upper, "ANALYZE")) return true;
-  if (StartsWithCommand(upper, "OPTIMIZE TABLE")) return true;
-  if (StartsWithCommand(upper, "VACUUM")) return true;
-  if (StartsWithCommand(upper, "REINDEX")) return true;
-  if (StartsWithCommand(upper, "CREATE STATISTICS")) return true;
-  if (StartsWithCommand(upper, "DROP STATISTICS")) return true;
-  if (StartsWithCommand(upper, "SET STATISTICS INDEX")) return true;
-  if (Contains(upper, "RDB$INDICES") || Contains(upper, "RDB$INDEX_SEGMENTS")) {
-    return dialect_id == "firebird";
-  }
-  return false;
-}
-
-std::string StatisticsOptimizerSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool explain_surface = StartsWithCommand(upper, "EXPLAIN");
-  const bool analyze_surface = StartsWithCommand(upper, "ANALYZE") ||
-                               StartsWithCommand(upper, "SET STATISTICS INDEX");
-  const bool statistics_update_surface =
-      StartsWithCommand(upper, "ANALYZE") ||
-      StartsWithCommand(upper, "SET STATISTICS INDEX") ||
-      StartsWithCommand(upper, "OPTIMIZE TABLE") ||
-      StartsWithCommand(upper, "VACUUM");
-  const bool reindex_surface = StartsWithCommand(upper, "REINDEX");
-  const bool optimize_surface = StartsWithCommand(upper, "OPTIMIZE TABLE");
-  const bool create_statistics_surface =
-      StartsWithCommand(upper, "CREATE STATISTICS");
-  const bool drop_statistics_surface =
-      StartsWithCommand(upper, "DROP STATISTICS");
-  const bool index_statistics_surface =
-      StartsWithCommand(upper, "SET STATISTICS INDEX") ||
-      ContainsWord(upper, "INDEX") || Contains(upper, "RDB$INDICES") ||
-      Contains(upper, "RDB$INDEX_SEGMENTS");
-  const bool plan_query_surface =
-      explain_surface &&
-      (ContainsWord(upper, "SELECT") || ContainsWord(upper, "WITH") ||
-       ContainsWord(upper, "UPDATE") || ContainsWord(upper, "DELETE") ||
-       ContainsWord(upper, "INSERT"));
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_statistics_optimizer_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << StatisticsOptimizerSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"statistics_optimizer_profile\":\""
-      << StatisticsOptimizerProfileName(dialect_id) << "\","
-      << "\"statistics_optimizer_surface\":\""
-      << StatisticsOptimizerSurface(dialect_id, upper) << "\","
-      << "\"statistics_command_policy\":\""
-      << StatisticsCommandPolicy(dialect_id, upper) << "\","
-      << "\"histogram_policy\":\"" << HistogramPolicy(dialect_id) << "\","
-      << "\"selectivity_policy\":\"" << SelectivityPolicy(dialect_id)
-      << "\","
-      << "\"stale_statistics_policy\":\""
-      << StaleStatisticsPolicy(dialect_id) << "\","
-      << "\"index_eligibility_policy\":\""
-      << StatisticsIndexEligibilityPolicy(dialect_id) << "\","
-      << "\"plan_invalidation_policy\":\""
-      << PlanInvalidationPolicy(dialect_id) << "\","
-      << "\"analyze_command_policy\":\""
-      << AnalyzeCommandPolicy(dialect_id, upper) << "\","
-      << "\"explain_plan_policy\":\""
-      << ExplainPlanPolicy(dialect_id, upper) << "\","
-      << "\"catalog_projection_policy\":\""
-      << StatisticsCatalogProjectionPolicy(dialect_id) << "\","
-      << "\"diagnostic_map_ref\":\""
-      << StatisticsOptimizerDiagnosticMapRef(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"explain_surface\":" << BoolJson(explain_surface) << ','
-      << "\"analyze_surface\":" << BoolJson(analyze_surface) << ','
-      << "\"statistics_update_surface\":"
-      << BoolJson(statistics_update_surface) << ','
-      << "\"reindex_surface\":" << BoolJson(reindex_surface) << ','
-      << "\"optimize_surface\":" << BoolJson(optimize_surface) << ','
-      << "\"create_statistics_surface\":"
-      << BoolJson(create_statistics_surface) << ','
-      << "\"drop_statistics_surface\":"
-      << BoolJson(drop_statistics_surface) << ','
-      << "\"index_statistics_surface\":"
-      << BoolJson(index_statistics_surface) << ','
-      << "\"plan_query_surface\":" << BoolJson(plan_query_surface) << ','
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"statistics_descriptor_required\":true,"
-      << "\"optimizer_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"statistics_authority\":\"engine_statistics_descriptor_authority\","
-      << "\"optimizer_authority\":\"engine_optimizer_authority\","
-      << "\"histogram_authority\":\"engine_statistics_descriptor_authority\","
-      << "\"selectivity_authority\":\"engine_statistics_descriptor_authority\","
-      << "\"stale_statistics_authority\":\"engine_statistics_descriptor_epoch\","
-      << "\"index_eligibility_authority\":\"engine_index_descriptor_authority\","
-      << "\"plan_invalidation_authority\":\"engine_optimizer_catalog_epoch\","
-      << "\"catalog_projection_authority\":\"engine_catalog_uuid_projection\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_statistics_authority\":false,"
-      << "\"parser_optimizer_authority\":false,"
-      << "\"parser_histogram_authority\":false,"
-      << "\"parser_selectivity_authority\":false,"
-      << "\"parser_stale_statistics_authority\":false,"
-      << "\"parser_index_eligibility_authority\":false,"
-      << "\"parser_plan_invalidation_authority\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_execution_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_runtime_semantic_equivalence_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"descriptor_exactness_status\":\"parser_statistics_optimizer_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasLocksIsolationSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsLocksIsolationSemanticStatement(std::string_view dialect_id,
-                                       std::string_view active_upper_sql) {
-  if (!HasLocksIsolationSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (StartsWithCommand(upper, "SET TRANSACTION")) return true;
-  if (StartsWithCommand(upper, "START TRANSACTION")) return true;
-  if (dialect_id == "postgresql" && StartsWithCommand(upper, "BEGIN") &&
-      (ContainsWord(upper, "ISOLATION") || ContainsWord(upper, "READ") ||
-       ContainsWord(upper, "DEFERRABLE"))) {
-    return true;
-  }
-  if (dialect_id == "mysql" &&
-      (StartsWithCommand(upper, "LOCK TABLES") ||
-       StartsWithCommand(upper, "UNLOCK TABLES"))) {
-    return true;
-  }
-  if (dialect_id == "postgresql" && StartsWithCommand(upper, "LOCK TABLE")) {
-    return true;
-  }
-  return IsRowLockQuery(upper);
-}
-
-std::string LocksIsolationSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool isolation_surface =
-      StartsWithCommand(upper, "SET TRANSACTION") ||
-      StartsWithCommand(upper, "START TRANSACTION") ||
-      (dialect_id == "postgresql" && StartsWithCommand(upper, "BEGIN") &&
-       (ContainsWord(upper, "ISOLATION") || ContainsWord(upper, "READ") ||
-        ContainsWord(upper, "DEFERRABLE")));
-  const bool lock_table_surface =
-      StartsWithCommand(upper, "LOCK TABLES") ||
-      StartsWithCommand(upper, "UNLOCK TABLES") ||
-      StartsWithCommand(upper, "LOCK TABLE");
-  const bool for_update_surface = Contains(upper, " FOR UPDATE");
-  const bool for_share_surface =
-      Contains(upper, " FOR SHARE") || Contains(upper, " LOCK IN SHARE MODE");
-  const bool row_lock_surface =
-      IsRowLockQuery(upper) || for_update_surface || for_share_surface;
-  const bool nowait_surface = ContainsWord(upper, "NOWAIT") ||
-                              Contains(upper, " NO WAIT");
-  const bool skip_locked_surface = Contains(upper, " SKIP LOCKED");
-  const bool advisory_lock_surface =
-      Contains(upper, "GET_LOCK") || Contains(upper, "RELEASE_LOCK") ||
-      Contains(upper, "PG_ADVISORY_LOCK");
-  const bool read_only_surface = Contains(upper, " READ ONLY");
-  const bool read_write_surface = Contains(upper, " READ WRITE") ||
-                                  ContainsWord(upper, "WRITE");
-  const bool deadlock_diagnostic_surface =
-      ContainsWord(upper, "DEADLOCK") || Contains(upper, "INNODB_LOCK") ||
-      Contains(upper, "PG_LOCKS") || Contains(upper, "MON$LOCK");
-  const bool transaction_surface =
-      StartsWithCommand(upper, "SET TRANSACTION") ||
-      StartsWithCommand(upper, "START TRANSACTION") ||
-      StartsWithCommand(upper, "BEGIN");
-  const bool query_surface = StartsWithCommand(upper, "SELECT") ||
-                             StartsWithCommand(upper, "WITH") ||
-                             (StartsWith(upper, "(") && Contains(upper, "SELECT"));
-  const bool session_surface =
-      StartsWithCommand(upper, "SET SESSION") ||
-      StartsWithCommand(upper, "SET LOCAL");
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_locks_isolation_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << LocksIsolationSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"locks_isolation_profile\":\""
-      << LocksIsolationProfileName(dialect_id) << "\","
-      << "\"locks_isolation_surface\":\""
-      << LocksIsolationSurface(dialect_id, upper) << "\","
-      << "\"isolation_profile_uuid_or_policy\":\""
-      << IsolationProfileUuidOrPolicy(dialect_id) << "\","
-      << "\"lock_clause_policy\":\"" << LockClausePolicy(dialect_id) << "\","
-      << "\"nowait_policy\":\"" << NowaitPolicy(dialect_id) << "\","
-      << "\"skip_locked_policy\":\"" << SkipLockedPolicy(dialect_id) << "\","
-      << "\"advisory_lock_policy\":\"" << AdvisoryLockPolicy(dialect_id)
-      << "\","
-      << "\"table_lock_policy\":\"" << TableLockPolicy(dialect_id) << "\","
-      << "\"row_lock_policy\":\"" << RowLockPolicy(dialect_id) << "\","
-      << "\"read_write_policy\":\"" << ReadWritePolicy(dialect_id) << "\","
-      << "\"deadlock_diagnostic_policy\":\""
-      << DeadlockDiagnosticPolicy(dialect_id) << "\","
-      << "\"diagnostic_map_ref\":\""
-      << LocksIsolationDiagnosticMapRef(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"isolation_surface\":" << BoolJson(isolation_surface) << ','
-      << "\"lock_table_surface\":" << BoolJson(lock_table_surface) << ','
-      << "\"row_lock_surface\":" << BoolJson(row_lock_surface) << ','
-      << "\"for_update_surface\":" << BoolJson(for_update_surface) << ','
-      << "\"for_share_surface\":" << BoolJson(for_share_surface) << ','
-      << "\"nowait_surface\":" << BoolJson(nowait_surface) << ','
-      << "\"skip_locked_surface\":" << BoolJson(skip_locked_surface) << ','
-      << "\"advisory_lock_surface\":" << BoolJson(advisory_lock_surface)
-      << ','
-      << "\"read_only_surface\":" << BoolJson(read_only_surface) << ','
-      << "\"read_write_surface\":" << BoolJson(read_write_surface) << ','
-      << "\"deadlock_diagnostic_surface\":"
-      << BoolJson(deadlock_diagnostic_surface) << ','
-      << "\"transaction_surface\":" << BoolJson(transaction_surface) << ','
-      << "\"query_surface\":" << BoolJson(query_surface) << ','
-      << "\"session_surface\":" << BoolJson(session_surface) << ','
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"lock_descriptor_required\":true,"
-      << "\"isolation_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"lock_authority\":\"engine_lock_manager_authority\","
-      << "\"isolation_authority\":\"engine_mga_isolation_profile_authority\","
-      << "\"transaction_authority\":\"engine_mga_transaction_authority\","
-      << "\"deadlock_authority\":\"engine_lock_manager_diagnostic_authority\","
-      << "\"catalog_projection_authority\":\"engine_catalog_uuid_projection\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_lock_authority\":false,"
-      << "\"parser_isolation_authority\":false,"
-      << "\"parser_deadlock_authority\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_execution_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_visibility_authority\":false,"
-      << "\"parser_runtime_semantic_equivalence_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"descriptor_exactness_status\":\"parser_locks_isolation_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasSystemCatalogDefaultsSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsSystemCatalogDefaultsSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasSystemCatalogDefaultsSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (dialect_id == "firebird") {
-    return (StartsWithCommand(upper, "SELECT") ||
-            StartsWithCommand(upper, "WITH")) &&
-           (Contains(upper, "RDB$") || Contains(upper, "MON$") ||
-            Contains(upper, "SEC$") || Contains(upper, "INFORMATION_SCHEMA."));
-  }
-  if (dialect_id == "mysql") {
-    return StartsWithCommand(upper, "SHOW") ||
-           StartsWithCommand(upper, "DESCRIBE") ||
-           StartsWithCommand(upper, "DESC") ||
-           Contains(upper, "INFORMATION_SCHEMA.") ||
-           Contains(upper, "PERFORMANCE_SCHEMA.") ||
-           Contains(upper, "MYSQL.") || Contains(upper, "SYS.");
-  }
-  if (dialect_id == "postgresql") {
-    return StartsWithCommand(upper, "SHOW") ||
-           Contains(upper, "PG_CATALOG.") ||
-           Contains(upper, "INFORMATION_SCHEMA.") ||
-           Contains(upper, "PG_CLASS") || Contains(upper, "PG_NAMESPACE") ||
-           Contains(upper, "PG_ATTRIBUTE") || Contains(upper, "PG_TYPE") ||
-           Contains(upper, "PG_PROC") || Contains(upper, "PG_DEPEND") ||
-           Contains(upper, "PG_ROLES");
-  }
-  return false;
-}
-
-std::string SystemCatalogDefaultsSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view operation_id,
-    std::span<const SurfaceDescriptor> catalog_surfaces) {
-  std::ostringstream families;
-  families << '[';
-  for (std::size_t i = 0; i < catalog_surfaces.size(); ++i) {
-    if (i != 0) families << ',';
-    families << '"' << EscapeJson(catalog_surfaces[i].family) << '"';
-  }
-  families << ']';
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_system_catalog_defaults_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << SystemCatalogDefaultsSemanticProfileUuid(dialect_id) << "\","
-      << "\"catalog_overlay_profile_uuid\":\""
-      << SystemCatalogDefaultsSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"operation_id\":\"" << EscapeJson(operation_id) << "\","
-      << "\"system_catalog_defaults_profile\":\""
-      << SystemCatalogDefaultsProfileName(dialect_id) << "\","
-      << "\"system_catalog_namespace_root_policy\":\""
-      << SystemCatalogNamespaceRootPolicy(dialect_id) << "\","
-      << "\"catalog_visibility_projection_policy\":\""
-      << SystemCatalogVisibilityProjectionPolicy(dialect_id) << "\","
-      << "\"generated_default_catalog_name_policy\":\""
-      << GeneratedCatalogNamePolicy(dialect_id) << "\","
-      << "\"dependency_projection_policy\":\""
-      << DependencyProjectionPolicy(dialect_id) << "\","
-      << "\"source_visibility_policy\":\"" << SourceVisibilityPolicy(dialect_id)
-      << "\","
-      << "\"hidden_system_object_policy\":\""
-      << HiddenSystemObjectPolicy(dialect_id) << "\","
-      << "\"grant_privilege_projection_policy\":\""
-      << GrantPrivilegeProjectionPolicy(dialect_id) << "\","
-      << "\"catalog_surface_family_count\":" << catalog_surfaces.size() << ','
-      << "\"catalog_surface_families\":" << families.str() << ','
-      << "\"sblr_catalog_projection_opcode\":\""
-      << SystemCatalogSblrOpcode(dialect_id) << "\","
-      << "\"diagnostic_map_ref\":\""
-      << SystemCatalogDiagnosticMapRef(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"catalog_projection_descriptor_required\":true,"
-      << "\"dependency_descriptor_required\":true,"
-      << "\"security_descriptor_required\":true,"
-      << "\"source_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"catalog_authority\":\"engine_catalog_uuid_projection\","
-      << "\"storage_authority\":\"engine_storage_catalog_authority\","
-      << "\"dependency_authority\":\"engine_dependency_graph_authority\","
-      << "\"security_authority\":\"engine_security_policy_authority\","
-      << "\"source_authority\":\"engine_source_retention_policy_authority\","
-      << "\"visibility_authority\":\"engine_catalog_visibility_authority\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_dependency_authority\":false,"
-      << "\"parser_security_authority\":false,"
-      << "\"parser_source_authority\":false,"
-      << "\"parser_visibility_authority\":false,"
-      << "\"parser_execution_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_runtime_semantic_equivalence_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"readiness_status\":\"proof_verified\","
-      << "\"descriptor_exactness_status\":\"parser_system_catalog_defaults_descriptor_recorded_runtime_equivalence_verified\","
-      << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
-  return out.str();
-}
-
-bool HasSessionSettingsDiagnosticsSemanticProfile(std::string_view dialect_id) {
-  return dialect_id == "firebird" || dialect_id == "mysql" ||
-         dialect_id == "postgresql";
-}
-
-bool IsSessionSettingsDiagnosticsSemanticStatement(
-    std::string_view dialect_id,
-    std::string_view active_upper_sql) {
-  if (!HasSessionSettingsDiagnosticsSemanticProfile(dialect_id)) return false;
-  const auto upper = TrimAsciiView(active_upper_sql);
-  if (dialect_id == "firebird") {
-    return StartsWithCommand(upper, "SET SQL DIALECT") ||
-           StartsWithCommand(upper, "SET NAMES") ||
-           StartsWithCommand(upper, "SHOW SQL DIALECT") ||
-           StartsWithCommand(upper, "SHOW WARNINGS");
-  }
-  if (dialect_id == "mysql") {
-    return (StartsWithCommand(upper, "SET") && ContainsWord(upper, "SQL_MODE")) ||
-           StartsWithCommand(upper, "SHOW WARNINGS") ||
-           StartsWithCommand(upper, "SHOW VARIABLES") ||
-           StartsWithCommand(upper, "USE");
-  }
-  if (dialect_id == "postgresql") {
-    return (StartsWithCommand(upper, "SET") &&
-            (ContainsWord(upper, "SEARCH_PATH") ||
-             ContainsWord(upper, "STATEMENT_TIMEOUT"))) ||
-           (StartsWithCommand(upper, "RESET") &&
-            ContainsWord(upper, "SEARCH_PATH")) ||
-           StartsWithCommand(upper, "DISCARD ALL") ||
-           (StartsWithCommand(upper, "SHOW") &&
-            ContainsWord(upper, "SEARCH_PATH"));
-  }
-  return false;
-}
-
-std::string SessionSettingsDiagnosticsSemanticEvidenceJson(
-    std::string_view dialect_id,
-    std::string_view release_profile,
-    std::string_view active_upper_sql) {
-  const auto upper = TrimAsciiView(active_upper_sql);
-  const bool sql_mode_set =
-      dialect_id == "mysql" && StartsWithCommand(upper, "SET") &&
-      ContainsWord(upper, "SQL_MODE");
-  const bool warning_surface =
-      StartsWithCommand(upper, "SHOW WARNINGS") ||
-      (dialect_id == "mysql" && ContainsWord(upper, "SQL_MODE"));
-  const bool notice_surface =
-      dialect_id == "postgresql" &&
-      (ContainsWord(upper, "SEARCH_PATH") ||
-       ContainsWord(upper, "STATEMENT_TIMEOUT"));
-  const bool current_schema_surface =
-      (dialect_id == "mysql" && StartsWithCommand(upper, "USE")) ||
-      (dialect_id == "postgresql" && ContainsWord(upper, "SEARCH_PATH"));
-  const bool search_path_surface =
-      dialect_id == "postgresql" && ContainsWord(upper, "SEARCH_PATH");
-  const bool date_time_format_surface =
-      (dialect_id == "mysql" && sql_mode_set) ||
-      dialect_id == "postgresql";
-  const bool timeout_surface =
-      dialect_id == "postgresql" && ContainsWord(upper, "STATEMENT_TIMEOUT");
-  const bool reset_surface =
-      dialect_id == "postgresql" &&
-      (StartsWithCommand(upper, "RESET") ||
-       StartsWithCommand(upper, "DISCARD ALL"));
-  const bool diagnostic_projection_surface =
-      StartsWithCommand(upper, "SHOW");
-
-  std::ostringstream out;
-  out << "{\"evidence_contract\":\"compatibility_session_settings_diagnostics_semantic_descriptor_evidence.v1\","
-      << "\"descriptor_resolution\":\"uuid_required\","
-      << "\"compatibility_profile_uuid\":\"" << ReferenceProfileUuid(dialect_id) << "\","
-      << "\"session_semantic_profile_uuid\":\""
-      << SessionSettingsDiagnosticsSemanticProfileUuid(dialect_id) << "\","
-      << "\"semantic_profile_uuid\":\""
-      << SessionSettingsDiagnosticsSemanticProfileUuid(dialect_id) << "\","
-      << "\"dialect\":\"" << EscapeJson(dialect_id) << "\","
-      << "\"release_profile\":\"" << EscapeJson(release_profile) << "\","
-      << "\"session_settings_diagnostics_profile\":\""
-      << SessionSettingsDiagnosticsProfileName(dialect_id) << "\","
-      << "\"operation_surface\":\""
-      << SessionSettingsDiagnosticsSurface(dialect_id, upper) << "\","
-      << "\"sql_mode_set\":" << BoolJson(sql_mode_set) << ','
-      << "\"warning_surface\":" << BoolJson(warning_surface) << ','
-      << "\"notice_surface\":" << BoolJson(notice_surface) << ','
-      << "\"current_schema_surface\":"
-      << BoolJson(current_schema_surface) << ','
-      << "\"search_path_surface\":" << BoolJson(search_path_surface) << ','
-      << "\"date_time_format_surface\":"
-      << BoolJson(date_time_format_surface) << ','
-      << "\"timeout_surface\":" << BoolJson(timeout_surface) << ','
-      << "\"reset_surface\":" << BoolJson(reset_surface) << ','
-      << "\"diagnostic_projection_surface\":"
-      << BoolJson(diagnostic_projection_surface) << ','
-      << "\"compatibility_mode_policy\":\""
-      << CompatibilityModePolicy(dialect_id, upper) << "\","
-      << "\"warning_policy\":\"" << WarningPolicy(dialect_id, upper) << "\","
-      << "\"notice_policy\":\"" << NoticePolicy(dialect_id) << "\","
-      << "\"current_schema_policy\":\""
-      << CurrentSchemaPolicy(dialect_id, upper) << "\","
-      << "\"search_path_policy\":\"" << SearchPathPolicy(dialect_id, upper)
-      << "\","
-      << "\"date_time_format_policy\":\""
-      << DateTimeFormatPolicy(dialect_id, upper) << "\","
-      << "\"timeout_policy\":\"" << TimeoutPolicy(dialect_id, upper) << "\","
-      << "\"reset_policy\":\"" << ResetPolicy(dialect_id, upper) << "\","
-      << "\"diagnostic_map_ref\":\""
-      << SessionSettingsDiagnosticsDiagnosticMapRef(dialect_id) << "\","
-      << "\"sandbox_root_policy\":\"" << SchemaRootSandboxPolicy(dialect_id)
-      << "\","
-      << "\"uuid_required_semantic_profile\":true,"
-      << "\"session_descriptor_required\":true,"
-      << "\"diagnostic_descriptor_required\":true,"
-      << "\"catalog_descriptor_required\":true,"
-      << "\"sblr_operation_uuid_resolution_required\":true,"
-      << "\"engine_authority\":\"scratchbird\","
-      << "\"engine_session_authority\":\"scratchbird_engine_session_descriptor_authority\","
-      << "\"diagnostic_rendering_authority\":\"scratchbird_engine_diagnostic_rendering_authority\","
-      << "\"catalog_authority\":\"engine_catalog_uuid_projection\","
-      << "\"storage_authority\":\"engine_storage_authority\","
-      << "\"transaction_authority\":\"engine_mga_authority\","
-      << "\"finality_authority\":\"engine_mga_authority\","
-      << "\"source_sql_text_included\":false,"
-      << "\"literal_text_included\":false,"
-      << "\"object_name_text_included\":false,"
-      << "\"quoted_identifier_text_included\":false,"
-      << "\"sblr_embeds_source_identifiers\":false,"
-      << "\"parser_session_authority\":false,"
-      << "\"parser_diagnostic_authority\":false,"
-      << "\"parser_catalog_authority\":false,"
-      << "\"parser_storage_authority\":false,"
-      << "\"parser_execution_authority\":false,"
-      << "\"parser_transaction_authority\":false,"
-      << "\"parser_transaction_finality_authority\":false,"
-      << "\"parser_finality_authority\":false,"
-      << "\"parser_runtime_semantic_equivalence_authority\":false,"
-      << "\"compatibility_sql_executed\":false,"
-      << "\"runtime_semantic_equivalence\":\"reference_parser_semantic_equivalence_proven\","
-      << "\"readiness_status\":\"proof_verified\","
-      << "\"descriptor_exactness_status\":\"parser_session_settings_diagnostics_descriptor_recorded_runtime_equivalence_verified\","
       << "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
   return out.str();
 }
@@ -6476,80 +2012,6 @@ std::string ProceduralFunctionalEncodingEvidenceJson(
          "\"enterprise_readiness\":\"reference_parser_implementation_proven\"}";
 }
 
-ProceduralFunctionalEncodingSpanMetadata
-ProceduralFunctionalEncodingSpanMetadataFor(std::string_view dialect_id,
-                                            std::string_view active_upper_sql,
-                                            std::span<const Token> tokens) {
-  ProceduralFunctionalEncodingSpanMetadata metadata;
-  std::vector<std::size_t> semantic_token_indexes;
-  semantic_token_indexes.reserve(tokens.size());
-  for (std::size_t i = 0; i < tokens.size(); ++i) {
-    if (!IsNoiseToken(tokens[i])) semantic_token_indexes.push_back(i);
-  }
-  if (semantic_token_indexes.empty()) return metadata;
-
-  const auto token_upper = [&](std::size_t semantic_index) {
-    return TokenUpper(tokens[semantic_token_indexes[semantic_index]]);
-  };
-  const auto semantic_count = semantic_token_indexes.size();
-  std::size_t body_semantic_index = semantic_count;
-
-  for (std::size_t i = 0; i < semantic_count; ++i) {
-    if (token_upper(i) == "BEGIN") {
-      body_semantic_index = i;
-      break;
-    }
-  }
-
-  if (body_semantic_index == semantic_count) {
-    for (std::size_t i = 0; i + 1 < semantic_count; ++i) {
-      if (token_upper(i) == "AS") {
-        body_semantic_index = i + 1;
-        break;
-      }
-    }
-  }
-
-  if (body_semantic_index == semantic_count && dialect_id == "postgresql") {
-    for (std::size_t i = 0; i < semantic_count; ++i) {
-      const auto upper = token_upper(i);
-      if (upper == "EXECUTE" || upper == "CALL") {
-        body_semantic_index = i;
-        break;
-      }
-    }
-  }
-
-  if (body_semantic_index == semantic_count && dialect_id == "mysql" &&
-      ContainsWord(active_upper_sql, "FOR EACH ROW")) {
-    for (std::size_t i = 0; i < semantic_count; ++i) {
-      const auto upper = token_upper(i);
-      if (upper == "SET" || upper == "INSERT" || upper == "UPDATE" ||
-          upper == "DELETE" || upper == "SIGNAL") {
-        body_semantic_index = i;
-        break;
-      }
-    }
-  }
-
-  if (body_semantic_index == semantic_count && semantic_count > 1) {
-    body_semantic_index = semantic_count - 1;
-  }
-  if (body_semantic_index == 0 && semantic_count > 1) {
-    body_semantic_index = 1;
-  }
-
-  metadata.header_source_span_count = body_semantic_index;
-  metadata.body_source_span_count =
-      body_semantic_index < semantic_count ? semantic_count - body_semantic_index : 0;
-  if (metadata.header_source_span_count > 0 &&
-      metadata.body_source_span_count > 0) {
-    metadata.parser_bound_sblr_body_instruction_stream = true;
-    metadata.uuid_dependency_bindings_bound = true;
-  }
-  return metadata;
-}
-
 std::uint64_t Fnv1a64(std::string_view text) {
   std::uint64_t hash = 14695981039346656037ull;
   for (const char ch : text) {
@@ -6560,18 +2022,14 @@ std::uint64_t Fnv1a64(std::string_view text) {
 }
 
 ProceduralSourceRetentionMetadata ProceduralSourceRetentionMetadataFor(
-    std::string_view dialect_id,
     std::string_view normalized_sql,
-    std::string_view active_upper_sql,
-    std::span<const Token> tokens) {
+    std::span<const Token> tokens,
+    ProceduralFunctionalEncodingSpanMetadata span_metadata) {
   ProceduralSourceRetentionMetadata metadata;
   metadata.source_byte_length = normalized_sql.size();
   metadata.source_hash = Fnv1a64(normalized_sql);
   metadata.body_end_byte = normalized_sql.size();
 
-  const auto span_metadata =
-      ProceduralFunctionalEncodingSpanMetadataFor(
-          dialect_id, active_upper_sql, tokens);
   metadata.header_source_span_count =
       span_metadata.header_source_span_count;
   metadata.body_source_span_count = span_metadata.body_source_span_count;
@@ -6789,57 +2247,79 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
         parser_evidence.datatype_reference_count > 0;
     parser_evidence.index_semantic_defaults_evidence_required =
         pattern.statement_family == std::string_view("ddl") &&
-        HasIndexSemanticDefaultsProfile(profile.dialect_id) &&
-        IsIndexSemanticDefaultsStatement(active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_index_semantic_defaults_statement != nullptr &&
+        profile.semantic_policy->index_semantic_defaults_evidence_json != nullptr &&
+        profile.semantic_policy->is_index_semantic_defaults_statement(active_upper);
     if (parser_evidence.index_semantic_defaults_evidence_required) {
       parser_evidence.index_semantic_defaults_upper_sql = active_upper;
     }
     parser_evidence.constraint_semantic_defaults_evidence_required =
         pattern.statement_family == std::string_view("ddl") &&
-        HasConstraintSemanticDefaultsProfile(profile.dialect_id) &&
-        IsConstraintSemanticDefaultsStatement(active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_constraint_semantic_defaults_statement != nullptr &&
+        profile.semantic_policy->constraint_semantic_defaults_evidence_json != nullptr &&
+        profile.semantic_policy->is_constraint_semantic_defaults_statement(active_upper);
     if (parser_evidence.constraint_semantic_defaults_evidence_required) {
       parser_evidence.constraint_semantic_defaults_upper_sql = active_upper;
     }
     parser_evidence.sequence_identity_semantic_evidence_required =
-        HasSequenceIdentitySemanticProfile(profile.dialect_id) &&
-        IsSequenceIdentitySemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_sequence_identity_statement != nullptr &&
+        profile.semantic_policy->sequence_identity_evidence_json != nullptr &&
+        profile.semantic_policy->is_sequence_identity_statement(active_upper);
     if (parser_evidence.sequence_identity_semantic_evidence_required) {
       parser_evidence.sequence_identity_semantic_upper_sql = active_upper;
     }
     parser_evidence.identifier_name_resolution_evidence_required =
         pattern.statement_family == std::string_view("ddl") &&
-        HasIdentifierNameResolutionProfile(profile.dialect_id);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_identifier_name_resolution_statement !=
+            nullptr &&
+        profile.semantic_policy->identifier_name_resolution_evidence_json !=
+            nullptr &&
+        profile.semantic_policy->is_identifier_name_resolution_statement(
+            active_upper);
     if (parser_evidence.identifier_name_resolution_evidence_required) {
       parser_evidence.identifier_name_resolution_upper_sql = active_upper;
     }
     parser_evidence.scalar_expression_semantic_evidence_required =
         pattern.statement_family == std::string_view("query") &&
-        HasScalarExpressionSemanticProfile(profile.dialect_id) &&
-        IsScalarExpressionSemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_scalar_expression_semantic_statement !=
+            nullptr &&
+        profile.semantic_policy->scalar_expression_semantic_evidence_json !=
+            nullptr &&
+        profile.semantic_policy->is_scalar_expression_semantic_statement(
+            active_upper);
     if (parser_evidence.scalar_expression_semantic_evidence_required) {
       parser_evidence.scalar_expression_semantic_upper_sql = active_upper;
     }
     parser_evidence.dml_mutation_semantic_evidence_required =
         pattern.statement_family == std::string_view("dml") &&
-        HasDmlMutationSemanticProfile(profile.dialect_id) &&
-        IsDmlMutationSemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_dml_mutation_semantic_statement != nullptr &&
+        profile.semantic_policy->dml_mutation_semantic_evidence_json != nullptr &&
+        profile.semantic_policy->is_dml_mutation_semantic_statement(active_upper);
     if (parser_evidence.dml_mutation_semantic_evidence_required) {
       parser_evidence.dml_mutation_semantic_upper_sql = active_upper;
     }
     parser_evidence.transaction_session_semantic_evidence_required =
         (pattern.statement_family == std::string_view("transaction") ||
          pattern.statement_family == std::string_view("session")) &&
-        HasTransactionSessionSemanticProfile(profile.dialect_id) &&
-        IsTransactionSessionSemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_transaction_session_statement != nullptr &&
+        profile.semantic_policy->transaction_session_evidence_json != nullptr &&
+        profile.semantic_policy->is_transaction_session_statement(active_upper);
     if (parser_evidence.transaction_session_semantic_evidence_required) {
       parser_evidence.transaction_session_semantic_upper_sql = active_upper;
     }
     parser_evidence.temporary_session_object_semantic_evidence_required =
         pattern.statement_family == std::string_view("ddl") &&
-        HasTemporarySessionObjectSemanticProfile(profile.dialect_id) &&
-        IsTemporarySessionObjectSemanticStatement(profile.dialect_id,
-                                                 active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_temporary_session_object_statement != nullptr &&
+        profile.semantic_policy->temporary_session_object_evidence_json != nullptr &&
+        profile.semantic_policy->is_temporary_session_object_statement(active_upper);
     if (parser_evidence.temporary_session_object_semantic_evidence_required) {
       parser_evidence.temporary_session_object_semantic_upper_sql =
           active_upper;
@@ -6847,18 +2327,20 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
     parser_evidence.dependency_bearing_ddl_semantic_evidence_required =
         (pattern.statement_family == std::string_view("ddl") ||
          pattern.statement_family == std::string_view("routine")) &&
-        HasDependencyBearingDdlSemanticProfile(profile.dialect_id) &&
-        IsDependencyBearingDdlSemanticStatement(profile.dialect_id,
-                                               active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_dependency_bearing_ddl_statement != nullptr &&
+        profile.semantic_policy->dependency_bearing_ddl_evidence_json != nullptr &&
+        profile.semantic_policy->is_dependency_bearing_ddl_statement(active_upper);
     if (parser_evidence.dependency_bearing_ddl_semantic_evidence_required) {
       parser_evidence.dependency_bearing_ddl_semantic_upper_sql =
           active_upper;
     }
     parser_evidence.ddl_transaction_behavior_semantic_evidence_required =
         pattern.statement_family == std::string_view("ddl") &&
-        HasDdlTransactionBehaviorSemanticProfile(profile.dialect_id) &&
-        IsDdlTransactionBehaviorSemanticStatement(profile.dialect_id,
-                                                 active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_ddl_transaction_behavior_statement != nullptr &&
+        profile.semantic_policy->ddl_transaction_behavior_evidence_json != nullptr &&
+        profile.semantic_policy->is_ddl_transaction_behavior_statement(active_upper);
     if (parser_evidence.ddl_transaction_behavior_semantic_evidence_required) {
       parser_evidence.ddl_transaction_behavior_semantic_upper_sql =
           active_upper;
@@ -6867,36 +2349,43 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
         (pattern.statement_family == std::string_view("ddl") ||
          pattern.statement_family == std::string_view("dml") ||
          pattern.statement_family == std::string_view("query")) &&
-        HasResourceTextSemanticProfile(profile.dialect_id) &&
-        IsResourceTextSemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_resource_text_statement != nullptr &&
+        profile.semantic_policy->resource_text_evidence_json != nullptr &&
+        profile.semantic_policy->is_resource_text_statement(active_upper);
     if (parser_evidence.resource_text_semantic_evidence_required) {
       parser_evidence.resource_text_semantic_upper_sql = active_upper;
     }
     parser_evidence.statistics_optimizer_semantic_evidence_required =
-        HasStatisticsOptimizerSemanticProfile(profile.dialect_id) &&
-        IsStatisticsOptimizerSemanticStatement(profile.dialect_id,
-                                              active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_statistics_optimizer_statement != nullptr &&
+        profile.semantic_policy->statistics_optimizer_evidence_json != nullptr &&
+        profile.semantic_policy->is_statistics_optimizer_statement(active_upper);
     if (parser_evidence.statistics_optimizer_semantic_evidence_required) {
       parser_evidence.statistics_optimizer_semantic_upper_sql = active_upper;
     }
     parser_evidence.locks_isolation_semantic_evidence_required =
-        HasLocksIsolationSemanticProfile(profile.dialect_id) &&
-        IsLocksIsolationSemanticStatement(profile.dialect_id, active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_locks_isolation_statement != nullptr &&
+        profile.semantic_policy->locks_isolation_evidence_json != nullptr &&
+        profile.semantic_policy->is_locks_isolation_statement(active_upper);
     if (parser_evidence.locks_isolation_semantic_evidence_required) {
       parser_evidence.locks_isolation_semantic_upper_sql = active_upper;
     }
     parser_evidence.system_catalog_defaults_semantic_evidence_required =
-        HasSystemCatalogDefaultsSemanticProfile(profile.dialect_id) &&
-        IsSystemCatalogDefaultsSemanticStatement(profile.dialect_id,
-                                                active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_system_catalog_defaults_statement != nullptr &&
+        profile.semantic_policy->system_catalog_defaults_evidence_json != nullptr &&
+        profile.semantic_policy->is_system_catalog_defaults_statement(active_upper);
     if (parser_evidence.system_catalog_defaults_semantic_evidence_required) {
       parser_evidence.system_catalog_defaults_semantic_operation_id =
           pattern.mapping_key;
     }
     parser_evidence.session_settings_diagnostics_semantic_evidence_required =
-        HasSessionSettingsDiagnosticsSemanticProfile(profile.dialect_id) &&
-        IsSessionSettingsDiagnosticsSemanticStatement(profile.dialect_id,
-                                                     active_upper);
+        profile.semantic_policy != nullptr &&
+        profile.semantic_policy->is_session_settings_diagnostics_statement != nullptr &&
+        profile.semantic_policy->session_settings_diagnostics_evidence_json != nullptr &&
+        profile.semantic_policy->is_session_settings_diagnostics_statement(active_upper);
     if (parser_evidence.session_settings_diagnostics_semantic_evidence_required) {
       parser_evidence.session_settings_diagnostics_semantic_upper_sql =
           active_upper;
@@ -6906,12 +2395,17 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
                                                 pattern.operation_family,
                                                 active_upper);
     if (parser_evidence.procedural_body_source_retention_required) {
-      parser_evidence.procedural_span_metadata =
-          ProceduralFunctionalEncodingSpanMetadataFor(
-              profile.dialect_id, active_upper, tokens);
+      if (profile.semantic_policy != nullptr &&
+          profile.semantic_policy
+                  ->procedural_functional_encoding_span_metadata != nullptr) {
+        parser_evidence.procedural_span_metadata =
+            profile.semantic_policy
+                ->procedural_functional_encoding_span_metadata(active_upper,
+                                                               tokens);
+      }
       parser_evidence.procedural_source_retention_metadata =
           ProceduralSourceRetentionMetadataFor(
-              profile.dialect_id, normalized, active_upper, tokens);
+              normalized, tokens, parser_evidence.procedural_span_metadata);
     }
 
     ParseResult result;
@@ -6962,6 +2456,12 @@ ParseResult ParseStatement(std::string_view sql_text, const DialectProfile& prof
 }
 
 std::string PackageIdentityJson(const DialectProfile& profile) {
+  const std::string family_uuid =
+      "parser.compatibility." + std::string(profile.dialect_id);
+  const std::string pipeline_target =
+      "sbl_" + std::string(profile.dialect_id) + "_parser_pipeline";
+  const std::string support_target =
+      "sbu_" + std::string(profile.dialect_id) + "_parser_support";
   std::ostringstream out;
   out << "{\"dialect\":\"" << EscapeJson(profile.dialect_id)
       << "\",\"display_name\":\"" << EscapeJson(profile.display_name)
@@ -6974,6 +2474,41 @@ std::string PackageIdentityJson(const DialectProfile& profile) {
       << ",\"reference_storage_authority\":false"
       << ",\"reference_recovery_authority\":false"
       << ",\"standalone_dialect_package\":true"
+      << ",\"parser_family_uuid\":\"" << EscapeJson(family_uuid) << '"'
+      << ",\"standalone_package\":true"
+      << ",\"cross_parser_dependency_count\":0"
+      << ",\"same_family_library_set\":["
+      << "{\"target\":\"" << EscapeJson(profile.parser_package_name)
+      << "\",\"artifact\":\"bin/" << EscapeJson(profile.parser_package_name)
+      << "\",\"owner\":\"" << EscapeJson(family_uuid) << "\"},"
+      << "{\"target\":\"" << EscapeJson(pipeline_target)
+      << "\",\"artifact\":\"lib/lib" << EscapeJson(pipeline_target)
+      << "\",\"owner\":\"" << EscapeJson(family_uuid) << "\"},"
+      << "{\"target\":\"" << EscapeJson(support_target)
+      << "\",\"artifact\":\"lib/lib" << EscapeJson(support_target)
+      << "\",\"owner\":\"" << EscapeJson(family_uuid) << "\"}]"
+      << ",\"neutral_dependency_set\":["
+      << "{\"target\":\"sbl_compatibility_parser_common\",\"artifact\":\"lib/libsbl_compatibility_parser_common\",\"owner\":\"family_neutral\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sbl_listener_control_plane\",\"artifact\":\"lib/libsbl_listener_control_plane\",\"owner\":\"family_neutral\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sbl_manager_protocol\",\"artifact\":\"lib/libsbl_manager_protocol\",\"owner\":\"family_neutral\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sb_udr_runtime\",\"artifact\":\"lib/libsb_udr_runtime\",\"owner\":\"family_neutral\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sb_core_memory\",\"artifact\":\"lib/libsb_core_memory\",\"owner\":\"scratchbird_engine\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sb_core_metrics\",\"artifact\":\"lib/libsb_core_metrics\",\"owner\":\"scratchbird_engine\",\"version\":\"same-build\"},"
+      << "{\"target\":\"sb_core_platform\",\"artifact\":\"lib/libsb_core_platform\",\"owner\":\"scratchbird_engine\",\"version\":\"same-build\"},"
+      << "{\"target\":\"OpenSSL::Crypto\",\"artifact\":\"system/libcrypto\",\"owner\":\"system_neutral\",\"version\":\"resolved-at-build\"}]"
+      << ",\"parser_support_udr_family_uuid\":\"" << EscapeJson(family_uuid)
+      << '"'
+      << ",\"direct_sblr_lowering\":true"
+      << ",\"foreign_parser_fallback\":false"
+      << ",\"isolated_build_profile\":\"parser-family-isolated-release-v1\""
+      << ",\"isolated_package_profile\":\"parser-family-empty-prefix-v1\""
+      << ",\"dependency_closure_evidence\":{"
+      << "\"source\":\"parser_family_isolation_evidence.json#source_ownership_scan\","
+      << "\"build_graph\":\"parser_family_isolation_evidence.json#build_graph_ownership_scan\","
+      << "\"link\":\"parser_family_binary_isolation_evidence.json#project_target_link_command_scan\","
+      << "\"symbol\":\"parser_family_binary_isolation_evidence.json#binary_and_archive_symbol_scan\","
+      << "\"package\":\"parser_family_package_isolation_evidence.json#empty_prefix_package_closure\","
+      << "\"runtime\":\"parser_family_binary_isolation_evidence.json#staged_identity_probe_trace\"}"
       << ",\"surface_counts\":{"
       << "\"parser_surface_rows\":" << profile.parser_surface_rows << ','
       << "\"function_api_rows\":" << profile.function_api_rows << ','
@@ -7053,151 +2588,12 @@ std::string ConnectionSandboxReportJson(const DialectProfile& profile) {
 }
 
 std::string DialectVariantReportJson(const DialectProfile& profile) {
-  auto variants = [&profile]() -> std::vector<std::string_view> {
-    const auto dialect = profile.dialect_id;
-    if (dialect == "firebird") {
-      return {"firebird_sql_dialect_1_compat",
-              "firebird_sql_dialect_3",
-              "firebird_dsql",
-              "firebird_psql",
-              "firebird_services_api_logical"};
-    }
-    if (dialect == "postgresql") {
-      return {"postgresql_simple_query_sql",
-              "postgresql_extended_query_protocol",
-              "postgresql_plpgsql_udr_body",
-              "postgresql_sql_function_body",
-              "postgresql_jsonpath_expression",
-              "postgresql_copy_logical_stream",
-              "postgresql_logical_replication_protocol"};
-    }
-    if (dialect == "mysql") {
-      return {"mysql_text_protocol_sql",
-              "mysql_binary_prepared_protocol",
-              "mysql_stored_program_sql",
-              "mysql_load_data_local_stream",
-              "mysql_replication_binlog_stream"};
-    }
-    if (dialect == "mariadb") {
-      return {"mariadb_text_protocol_sql",
-              "mariadb_binary_prepared_protocol",
-              "mariadb_stored_program_sql",
-              "mariadb_sql_mode_mysql_compat",
-              "mariadb_sql_mode_oracle_reasonable_subset",
-              "mariadb_replication_binlog_stream"};
-    }
-    if (dialect == "sqlite") {
-      return {"sqlite_sql",
-              "sqlite_pragma",
-              "sqlite_virtual_table_module_surface",
-              "sqlite_loadable_extension_policy_surface"};
-    }
-    if (dialect == "duckdb") {
-      return {"duckdb_sql",
-              "duckdb_pragma",
-              "duckdb_copy_stream",
-              "duckdb_extension_policy_surface"};
-    }
-    if (dialect == "clickhouse") {
-      return {"clickhouse_sql",
-              "clickhouse_settings_clause",
-              "clickhouse_external_table_function_surface",
-              "clickhouse_dictionary_function_surface"};
-    }
-    if (dialect == "tidb") {
-      return {"tidb_mysql_compatible_sql",
-              "tidb_admin_sql",
-              "tidb_cdc_changefeed_surface"};
-    }
-    if (dialect == "vitess") {
-      return {"vitess_mysql_compatible_sql",
-              "vitess_vschema_surface",
-              "vitess_vreplication_surface"};
-    }
-    if (dialect == "cockroachdb") {
-      return {"cockroachdb_postgresql_wire_sql",
-              "cockroachdb_changefeed_surface",
-              "cockroachdb_zone_config_surface"};
-    }
-    if (dialect == "yugabytedb") {
-      return {"yugabytedb_postgresql_wire_sql",
-              "yugabytedb_yb_extension_surface",
-              "yugabytedb_cdc_surface"};
-    }
-    if (dialect == "cassandra") {
-      return {"cassandra_cql",
-              "cassandra_nodetool_policy_surface",
-              "cassandra_sstable_policy_surface"};
-    }
-    if (dialect == "mongodb") {
-      return {"mongodb_command_api",
-              "mongodb_query_document_language",
-              "mongodb_aggregation_pipeline",
-              "mongodb_change_stream_surface"};
-    }
-    if (dialect == "redis") {
-      return {"redis_resp_command_api",
-              "redis_lua_script_surface",
-              "redis_stream_surface",
-              "redis_replication_surface"};
-    }
-    if (dialect == "opensearch_sql_ppl") {
-      return {"opensearch_sql",
-              "opensearch_ppl",
-              "opensearch_sql_rest_endpoint"};
-    }
-    if (dialect == "opensearch") {
-      return {"opensearch_rest_json_dsl",
-              "opensearch_bulk_ndjson",
-              "opensearch_pit_scroll_surface"};
-    }
-    if (dialect == "neo4j") {
-      return {"neo4j_cypher",
-              "neo4j_bolt_statement_surface",
-              "neo4j_procedure_call_surface"};
-    }
-    if (dialect == "influxdb") {
-      return {"influxdb_flux",
-              "influxdb_influxql",
-              "influxdb_line_protocol_write_surface"};
-    }
-    if (dialect == "milvus") {
-      return {"milvus_grpc_json_command_surface",
-              "milvus_vector_search_surface",
-              "milvus_collection_admin_surface"};
-    }
-    if (dialect == "dolt") {
-      return {"dolt_mysql_compatible_sql",
-              "dolt_version_control_sql_functions",
-              "dolt_remote_sync_surface"};
-    }
-    if (dialect == "apache_ignite") {
-      return {"apache_ignite_sql",
-              "apache_ignite_scan_query_surface",
-              "apache_ignite_control_script_policy_surface"};
-    }
-    if (dialect == "tikv") {
-      return {"tikv_raw_kv_api",
-              "tikv_transactional_kv_api",
-              "tikv_import_sst_policy_surface"};
-    }
-    if (dialect == "foundationdb") {
-      return {"foundationdb_tuple_key_api",
-              "foundationdb_directory_layer_api",
-              "foundationdb_transactional_kv_api"};
-    }
-    if (dialect == "immudb") {
-      return {"immudb_sql",
-              "immudb_verified_kv_api",
-              "immudb_replication_surface"};
-    }
-    if (dialect == "xtdb") {
-      return {"xtdb_datalog_query",
-              "xtdb_sql",
-              "xtdb_transaction_function_surface"};
-    }
-    return {"primary_reference_language"};
-  }();
+  constexpr std::array<std::string_view, 1> kDefaultVariants{
+      "primary_reference_language"};
+  const std::span<const std::string_view> variants =
+      profile.dialect_variants.empty()
+          ? std::span<const std::string_view>(kDefaultVariants)
+          : profile.dialect_variants;
 
   std::ostringstream out;
   out << "{\"ok\":true"

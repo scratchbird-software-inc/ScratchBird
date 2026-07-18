@@ -1,0 +1,8 @@
+canon_id,status,output_area,allowed_normalization,forbidden_normalization,proof
+RPR-CANON-001,required,whitespace,normalize line endings and trailing spaces,changing tokens or values,canonicalization diff record
+RPR-CANON-002,required,row_order,sort only when query semantics do not define order,sorting ordered result sets,order policy record
+RPR-CANON-003,required,locale,normalize decimal and timestamp rendering only when locale is not semantic,changing collation comparison results,locale evidence
+RPR-CANON-004,required,nondeterministic_ids,map run-local generated ids to stable placeholders,changing persistent UUID identity,identity map evidence
+RPR-CANON-005,required,diagnostics,map reference diagnostic text to ScratchBird diagnostic code only through explicit mapping,collapsing distinct errors into one,diagnostic mapping evidence
+RPR-CANON-006,required,paths,redact local paths,redacting object names or database paths that are semantic,redaction evidence
+RPR-CANON-007,required,timing,exclude timing from semantic pass or fail unless suite asserts timing,using timing to hide timeout or hang,timeout evidence

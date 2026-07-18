@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_postgresql_parser_pipeline STATIC
   postgresql_dialect.cpp
+  postgresql_worker_session.cpp
 )
 
 target_compile_features(sbl_postgresql_parser_pipeline PUBLIC cxx_std_23)

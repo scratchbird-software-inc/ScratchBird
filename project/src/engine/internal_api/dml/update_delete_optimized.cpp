@@ -236,6 +236,59 @@ std::string UpdateOptionText(const EngineUpdateRowsRequest& request,
   return {};
 }
 
+bool UpdateMutationWindowActive(const EngineUpdateRowsRequest& request) {
+  return request.limit != 0 || request.offset != 0;
+}
+
+bool DeleteMutationWindowActive(const EngineDeleteRowsRequest& request) {
+  return request.limit != 0 || request.offset != 0;
+}
+
+EngineApiDiagnostic ValidateMutationRowWindow(std::string_view operation,
+                                              EngineApiU64 limit,
+                                              EngineApiU64 offset,
+                                              bool conflicts_with_batch_limit) {
+  if (offset != 0 && limit == 0) {
+    return MakeInvalidRequestDiagnostic(std::string(operation),
+                                        "mutation_row_window_offset_requires_limit");
+  }
+  if ((limit != 0 || offset != 0) && conflicts_with_batch_limit) {
+    return MakeInvalidRequestDiagnostic(
+        std::string(operation),
+        "mutation_row_window_conflicts_with_batch_limit");
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
+void NormalizeUpdatePredicateFromLoweredOptions(EngineUpdateRowsRequest* request) {
+  if (request == nullptr) { return; }
+  const std::string predicate_kind = UpdateOptionText(*request, "predicate_kind:");
+  const std::string predicate_column = UpdateOptionText(*request, "predicate_column:");
+  const std::string predicate_value = UpdateOptionText(*request, "predicate_value:");
+  const std::string predicate_value_type =
+      UpdateOptionText(*request, "predicate_value_type:");
+  if (!predicate_kind.empty()) {
+    request->update_predicate.predicate_kind = predicate_kind;
+  }
+  if (!predicate_column.empty()) {
+    request->update_predicate.canonical_predicate_envelope = predicate_column;
+  }
+  if (request->update_predicate.bound_values.empty() && !predicate_value.empty()) {
+    EngineTypedValue typed;
+    typed.descriptor.descriptor_kind = "scalar";
+    typed.descriptor.canonical_type_name =
+        predicate_value_type.empty() ? "text" : predicate_value_type;
+    typed.descriptor.encoded_descriptor =
+        "type=" + typed.descriptor.canonical_type_name;
+    typed.is_null = predicate_value == "<NULL>";
+    typed.encoded_value = typed.is_null ? std::string{} : predicate_value;
+    if (typed.is_null) {
+      typed.setState(EngineValueState::sql_null);
+    }
+    request->update_predicate.bound_values.push_back(std::move(typed));
+  }
+}
+
 std::vector<std::string> SplitText(const std::string& value, char delimiter) {
   std::vector<std::string> parts;
   std::string current;
@@ -555,6 +608,35 @@ std::string DeleteOptionValue(const EngineDeleteRowsRequest& request,
   return {};
 }
 
+void NormalizeDeletePredicateFromLoweredOptions(EngineDeleteRowsRequest* request) {
+  if (request == nullptr) { return; }
+  const std::string predicate_kind = DeleteOptionValue(*request, "predicate_kind:");
+  const std::string predicate_column = DeleteOptionValue(*request, "predicate_column:");
+  const std::string predicate_value = DeleteOptionValue(*request, "predicate_value:");
+  const std::string predicate_value_type =
+      DeleteOptionValue(*request, "predicate_value_type:");
+  if (!predicate_kind.empty()) {
+    request->delete_predicate.predicate_kind = predicate_kind;
+  }
+  if (!predicate_column.empty()) {
+    request->delete_predicate.canonical_predicate_envelope = predicate_column;
+  }
+  if (request->delete_predicate.bound_values.empty() && !predicate_value.empty()) {
+    EngineTypedValue typed;
+    typed.descriptor.descriptor_kind = "scalar";
+    typed.descriptor.canonical_type_name =
+        predicate_value_type.empty() ? "text" : predicate_value_type;
+    typed.descriptor.encoded_descriptor =
+        "type=" + typed.descriptor.canonical_type_name;
+    typed.is_null = predicate_value == "<NULL>";
+    typed.encoded_value = typed.is_null ? std::string{} : predicate_value;
+    if (typed.is_null) {
+      typed.setState(EngineValueState::sql_null);
+    }
+    request->delete_predicate.bound_values.push_back(std::move(typed));
+  }
+}
+
 std::string DeleteSurfaceVariant(const EngineDeleteRowsRequest& request) {
   std::string variant = request.delete_surface_variant;
   if (variant.empty()) {
@@ -576,11 +658,7 @@ EngineApiU64 DeleteBatchLimitRows(const EngineDeleteRowsRequest& request) {
   if (request.batch_limit_rows != 0) {
     return request.batch_limit_rows;
   }
-  EngineApiU64 limit = DeleteOptionU64(request, "batch_limit:", 0);
-  if (limit == 0) {
-    limit = DeleteOptionU64(request, "limit:", 0);
-  }
-  return limit;
+  return DeleteOptionU64(request, "batch_limit:", 0);
 }
 
 bool IsUpdateEqualityPredicate(const EnginePredicateEnvelope& predicate) {
@@ -595,13 +673,18 @@ bool IsUpdateRangePredicate(const EnginePredicateEnvelope& predicate) {
 }
 
 bool IsUpdateRowScanPredicate(const EnginePredicateEnvelope& predicate) {
-  return predicate.predicate_kind == "columns_all_not_null" ||
+  return predicate.predicate_kind == "always_false" ||
+         predicate.predicate_kind == "columns_all_null" ||
+         predicate.predicate_kind == "columns_all_not_null" ||
          predicate.predicate_kind == "column_equals_column_or_left_null" ||
          predicate.predicate_kind == "column_mod_equals" ||
          predicate.predicate_kind == "column_in_list" ||
          predicate.predicate_kind == "column_less_or_null" ||
+         predicate.predicate_kind == "column_less" ||
+         predicate.predicate_kind == "column_less_equal" ||
          predicate.predicate_kind == "column_greater" ||
-         predicate.predicate_kind == "column_greater_equal";
+         predicate.predicate_kind == "column_greater_equal" ||
+         predicate.predicate_kind == "column_not_equals";
 }
 
 std::string LowerAsciiCopy(std::string value) {
@@ -744,6 +827,12 @@ std::size_t FindCrudFieldValueIndex(
   for (std::size_t index = 0; index < values.size(); ++index) {
     if (values[index].first == field) { return index; }
   }
+  const std::string lowered_field = LowerAsciiCopy(field);
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (LowerAsciiCopy(values[index].first) == lowered_field) {
+      return index;
+    }
+  }
   return std::string::npos;
 }
 
@@ -811,8 +900,11 @@ PreparedUpdatePredicate PrepareUpdatePredicate(
     prepared.column_less_or_null_numeric = true;
     prepared.column_name = predicate.canonical_predicate_envelope;
   }
-  if ((predicate.predicate_kind == "column_greater" ||
-       predicate.predicate_kind == "column_greater_equal") &&
+  if ((predicate.predicate_kind == "column_less" ||
+       predicate.predicate_kind == "column_less_equal" ||
+       predicate.predicate_kind == "column_greater" ||
+       predicate.predicate_kind == "column_greater_equal" ||
+       predicate.predicate_kind == "column_not_equals") &&
       !predicate.canonical_predicate_envelope.empty() &&
       !predicate.bound_values.empty() &&
       TryParseFiniteDoubleNoThrow(predicate.bound_values.front().encoded_value,
@@ -862,9 +954,19 @@ bool CrudRowMatchesPreparedUpdatePredicate(
     if (value == nullptr || !TryParseFiniteDoubleNoThrow(*value, &parsed)) {
       return CrudRowMatchesPredicate(row, predicate);
     }
-    return prepared->compare_kind == "column_greater"
-               ? parsed > prepared->numeric_bound
-               : parsed >= prepared->numeric_bound;
+    if (prepared->compare_kind == "column_less") {
+      return parsed < prepared->numeric_bound;
+    }
+    if (prepared->compare_kind == "column_less_equal") {
+      return parsed <= prepared->numeric_bound;
+    }
+    if (prepared->compare_kind == "column_greater") {
+      return parsed > prepared->numeric_bound;
+    }
+    if (prepared->compare_kind == "column_greater_equal") {
+      return parsed >= prepared->numeric_bound;
+    }
+    return parsed != prepared->numeric_bound;
   }
   if (prepared->column_in_list_hash) {
     const auto* value = CachedCrudFieldValuePtr(row.values,
@@ -1227,6 +1329,14 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
   plan_request.current_stats_epoch =
       UpdateOptionU64(request, "odf031.current_stats_epoch=", 0);
 
+  if (UpdateMutationWindowActive(request)) {
+    plan_request.explicit_table_scan_fallback = true;
+    if (request.update_predicate.predicate_kind.empty()) {
+      plan_request.predicate_kind = "all_visible_rows";
+    }
+    return plan_request;
+  }
+
   if (request.update_predicate.predicate_kind.empty()) {
     plan_request.explicit_table_scan_fallback = true;
     plan_request.predicate_kind = "all_visible_rows";
@@ -1421,6 +1531,25 @@ bool IsIndexTargetAccess(DmlTargetAccessKind access_kind) {
          access_kind == DmlTargetAccessKind::range_index_lookup;
 }
 
+std::vector<CrudRowVersionRecord> ScanVisibleRowsMatchingPredicate(
+    const CrudState& state,
+    const std::string& table_uuid,
+    const EngineRequestContext& context,
+    const EnginePredicateEnvelope& predicate,
+    std::uint64_t limit) {
+  std::vector<CrudRowVersionRecord> rows;
+  for (const auto& row : VisibleCrudRowsForContext(state, table_uuid, context)) {
+    if (!CrudRowMatchesPredicate(row, predicate)) {
+      continue;
+    }
+    rows.push_back(row);
+    if (limit != 0 && rows.size() >= limit) {
+      break;
+    }
+  }
+  return rows;
+}
+
 void AddDmlSummaryFallbacksFromEvidence(
     const std::vector<EngineEvidenceReference>& evidence,
     std::string_view evidence_kind,
@@ -1542,6 +1671,20 @@ UpdateTargetCandidateStream BuildUpdateTargetCandidateStream(
                              indexed.evidence.end());
       if (indexed.index_used) {
         stream.rows = indexed.rows;
+        if (stream.rows.empty()) {
+          stream.rows = ScanVisibleRowsMatchingPredicate(state,
+                                                         table.table_uuid,
+                                                         request.context,
+                                                         request.update_predicate,
+                                                         0);
+          stream.evidence.push_back(
+              {"update_index_empty_visible_scan_fallback",
+               stream.rows.empty() ? "no_visible_match"
+                                   : "matched_visible_rows"});
+          stream.evidence.push_back(
+              {"update_index_empty_visible_scan_fallback_rows",
+               std::to_string(stream.rows.size())});
+        }
         stream.rows_ready = true;
         stream.evidence.push_back({"update_row_candidate_stream", "indexed_predicate"});
         stream.evidence.push_back({"index_lookup", indexed.index_evidence_id});
@@ -1697,6 +1840,14 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
       DeleteOptionU64(request, "odf032.observed_stats_epoch=", 0);
   plan_request.current_stats_epoch =
       DeleteOptionU64(request, "odf032.current_stats_epoch=", 0);
+
+  if (DeleteMutationWindowActive(request)) {
+    plan_request.explicit_table_scan_fallback = true;
+    if (request.delete_predicate.predicate_kind.empty()) {
+      plan_request.predicate_kind = "all_visible_rows";
+    }
+    return plan_request;
+  }
 
   if (request.delete_predicate.predicate_kind.empty()) {
     plan_request.explicit_table_scan_fallback = true;
@@ -1869,6 +2020,20 @@ DeleteTargetCandidateStream BuildDeleteTargetCandidateStream(
                              indexed.evidence.end());
       if (indexed.index_used) {
         stream.rows = indexed.rows;
+        if (stream.rows.empty()) {
+          stream.rows = ScanVisibleRowsMatchingPredicate(state,
+                                                         table.table_uuid,
+                                                         request.context,
+                                                         request.delete_predicate,
+                                                         0);
+          stream.evidence.push_back(
+              {"delete_index_empty_visible_scan_fallback",
+               stream.rows.empty() ? "no_visible_match"
+                                   : "matched_visible_rows"});
+          stream.evidence.push_back(
+              {"delete_index_empty_visible_scan_fallback_rows",
+               std::to_string(stream.rows.size())});
+        }
         stream.rows_ready = true;
         stream.evidence.push_back({"delete_row_candidate_stream", "indexed_predicate"});
         stream.evidence.push_back({"index_lookup", indexed.index_evidence_id});
@@ -2777,6 +2942,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (request.target_table.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_uuid_required"));
   }
+  const auto mutation_window_validation = ValidateMutationRowWindow(
+      "dml.update_rows", request.limit, request.offset, false);
+  if (mutation_window_validation.error) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        mutation_window_validation);
+  }
   auto update_phase_last = UpdateDeleteSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> update_phase_micros;
   update_phase_micros.reserve(24);
@@ -2805,22 +2978,24 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   const bool suppress_payload_rows =
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
-  const std::string source_uuid = UpdateOptionText(request, "source_uuid:");
+  EngineUpdateRowsRequest effective_request = request;
+  NormalizeUpdatePredicateFromLoweredOptions(&effective_request);
+  const std::string source_uuid = UpdateOptionText(effective_request, "source_uuid:");
   const bool needs_source_scope =
-      request.update_predicate.predicate_kind == "column_in_projection" &&
+      effective_request.update_predicate.predicate_kind == "column_in_projection" &&
       !source_uuid.empty();
   auto loaded = needs_source_scope
       ? LoadMgaRelationStoreRowsOnlyForMutationTargets(
-            request.context,
-            std::vector<std::string>{request.target_table.uuid.canonical,
+            effective_request.context,
+            std::vector<std::string>{effective_request.target_table.uuid.canonical,
                                      source_uuid})
       : LoadMgaRelationStoreRowsOnlyForMutationTarget(
-            request.context,
-            request.target_table.uuid.canonical);
+            effective_request.context,
+            effective_request.target_table.uuid.canonical);
   mark_update_phase("load_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
-  auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   mark_update_phase("build_state_and_find_table");
   if (!table) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -2839,9 +3014,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid.canonical);
-  EngineUpdateRowsRequest effective_request = request;
   const auto resolved_projection_predicate =
-      ResolveColumnInProjectionPredicate(request, state);
+      ResolveColumnInProjectionPredicate(effective_request, state);
   if (resolved_projection_predicate.attempted) {
     if (!resolved_projection_predicate.ok) {
       return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
@@ -2888,7 +3062,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       effective_request.target_table.uuid.canonical,
       effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
-  const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(request.context, *table, visible_indexes, &relation_descriptor);
+  const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(effective_request.context, *table, visible_indexes, &relation_descriptor);
   if (descriptor_ready.error) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", descriptor_ready);
   }
@@ -2897,7 +3071,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       ParseUpdateAssignmentPlan(effective_request, &invalid_assignment_plan);
   if (invalid_assignment_plan) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
-        request.context,
+        effective_request.context,
         "dml.update_rows",
         MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_plan_invalid"));
   }
@@ -2967,6 +3141,12 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
                          loaded.evidence.end());
+  result.evidence.push_back({"update_predicate_kind",
+                             effective_request.update_predicate.predicate_kind});
+  result.evidence.push_back({"update_predicate_column",
+                             effective_request.update_predicate.canonical_predicate_envelope});
+  result.evidence.push_back({"update_predicate_bound_count",
+                             std::to_string(effective_request.update_predicate.bound_values.size())});
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
   }
@@ -3016,7 +3196,25 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   }
   std::vector<CrudRowVersionRecord> materialized_rows;
   std::vector<const CrudRowVersionRecord*> row_refs;
-  if (candidate_stream.rows_ready) {
+  if (UpdateMutationWindowActive(effective_request)) {
+    materialized_rows = VisibleCrudRowsForContext(
+        state,
+        effective_request.target_table.uuid.canonical,
+        effective_request.context);
+    row_refs.reserve(materialized_rows.size());
+    for (const auto& row : materialized_rows) {
+      row_refs.push_back(&row);
+    }
+    result.evidence.push_back({"mutation_row_window", "true"});
+    result.evidence.push_back({"mutation_row_window_limit",
+                               std::to_string(effective_request.limit)});
+    result.evidence.push_back({"mutation_row_window_offset",
+                               std::to_string(effective_request.offset)});
+    result.evidence.push_back({"mutation_row_window_order",
+                               "mga_visible_row_uuid_ascending"});
+    result.evidence.push_back({"mutation_row_window_qualification",
+                               "predicate_then_offset_limit"});
+  } else if (candidate_stream.rows_ready) {
     row_refs.reserve(candidate_stream.rows.size());
     for (const auto& row : candidate_stream.rows) {
       row_refs.push_back(&row);
@@ -3072,6 +3270,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   staged_update_rows.reserve(row_refs.size());
   auto prepared_update_predicate =
       PrepareUpdatePredicate(effective_request.update_predicate);
+  EngineApiU64 mutation_window_qualified_rows_seen = 0;
+  EngineApiU64 mutation_window_skipped_rows = 0;
   for (const auto* row_ptr : row_refs) {
     if (row_ptr == nullptr) { continue; }
     const auto& row = *row_ptr;
@@ -3080,6 +3280,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
             effective_request.update_predicate,
             &prepared_update_predicate)) {
       continue;
+    }
+    if (UpdateMutationWindowActive(effective_request)) {
+      if (mutation_window_qualified_rows_seen < effective_request.offset) {
+        ++mutation_window_qualified_rows_seen;
+        ++mutation_window_skipped_rows;
+        continue;
+      }
+      ++mutation_window_qualified_rows_seen;
     }
     ++result.matched_count;
     ++batch_context.actual_match_count;
@@ -3096,15 +3304,16 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", applied);
       }
     } else {
+      std::size_t assignment_target_index = std::string::npos;
       for (const auto& [field, typed] : request.assignments) {
-        bool replaced = false;
-        for (auto& [existing_field, existing_value] : values) {
-          if (existing_field == field) {
-            existing_value = typed.is_null ? "<NULL>" : typed.encoded_value;
-            replaced = true;
-          }
+        std::string* existing_value =
+            CachedMutableCrudFieldValuePtr(&values, field, &assignment_target_index);
+        if (existing_value != nullptr) {
+          *existing_value = typed.is_null ? "<NULL>" : typed.encoded_value;
+        } else {
+          values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value});
+          assignment_target_index = values.size() - 1;
         }
-        if (!replaced) { values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value}); }
       }
     }
 
@@ -3266,6 +3475,19 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                   std::move(index_key_states),
                                   encoded_bytes,
                                   update_toast_required});
+    if (UpdateMutationWindowActive(effective_request) &&
+        static_cast<EngineApiU64>(staged_update_rows.size()) >=
+            effective_request.limit) {
+      break;
+    }
+  }
+  if (UpdateMutationWindowActive(effective_request)) {
+    result.evidence.push_back({"mutation_row_window_qualified_rows_seen",
+                               std::to_string(mutation_window_qualified_rows_seen)});
+    result.evidence.push_back({"mutation_row_window_skipped_rows",
+                               std::to_string(mutation_window_skipped_rows)});
+    result.evidence.push_back({"mutation_row_window_applied_rows",
+                               std::to_string(staged_update_rows.size())});
   }
   mark_update_phase("stage_update_rows");
 
@@ -3581,8 +3803,21 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                                      "unsupported_delete_surface_variant:" +
                                          delete_surface_variant));
   }
+  const EngineApiU64 declared_batch_limit_rows = DeleteBatchLimitRows(request);
+  const auto mutation_window_validation = ValidateMutationRowWindow(
+      "dml.delete_rows",
+      request.limit,
+      request.offset,
+      delete_surface_variant == "batch_delete" ||
+          declared_batch_limit_rows != 0);
+  if (mutation_window_validation.error) {
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        mutation_window_validation);
+  }
   const EngineApiU64 batch_limit_rows =
-      delete_surface_variant == "batch_delete" ? DeleteBatchLimitRows(request) : 0;
+      delete_surface_variant == "batch_delete" ? declared_batch_limit_rows : 0;
   if (delete_surface_variant == "batch_delete" && batch_limit_rows == 0) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
@@ -3602,12 +3837,14 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   const bool suppress_payload_rows =
       WriteResultPolicySuppressesPayloadRows(write_result_policy);
+  EngineDeleteRowsRequest effective_request = request;
+  NormalizeDeletePredicateFromLoweredOptions(&effective_request);
   auto loaded = LoadMgaRelationStoreStateForMutationTarget(
-      request.context,
-      request.target_table.uuid.canonical);
+      effective_request.context,
+      effective_request.target_table.uuid.canonical);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
-  const auto table = FindVisibleCrudTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  const auto table = FindVisibleCrudTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   if (!table) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
@@ -3621,19 +3858,19 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
         MakeInvalidRequestDiagnostic("dml.delete_rows",
                                      "temporary_table_requires_session_uuid"));
   }
-  if (CrudPredicateTouchesOpaqueColumn(*table, request.delete_predicate)) {
+  if (CrudPredicateTouchesOpaqueColumn(*table, effective_request.delete_predicate)) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
         "dml.delete_rows",
         UnsupportedCrudFeatureDiagnostic("dml.delete_rows", "opaque_column_comparison_denied"));
   }
   auto serializable_admission = dml::CheckSerializablePredicateMutation(
-      request.context,
+      effective_request.context,
       "dml.delete_rows",
-      request.target_table.uuid.canonical,
-      request.delete_predicate,
+      effective_request.target_table.uuid.canonical,
+      effective_request.delete_predicate,
       true,
-      request.option_envelopes);
+      effective_request.option_envelopes);
   if (!serializable_admission.ok) {
     auto failure = MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
@@ -3645,13 +3882,13 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     return failure;
   }
 
-  const auto visible_indexes = VisibleCrudIndexesForTable(state, request.target_table.uuid.canonical, request.context.local_transaction_id);
+  const auto visible_indexes = VisibleCrudIndexesForTable(state, effective_request.target_table.uuid.canonical, effective_request.context.local_transaction_id);
   MgaRelationStorageDescriptor relation_descriptor;
   const auto descriptor_ready = EnsureMgaRelationStorageDescriptor(request.context, *table, visible_indexes, &relation_descriptor);
   if (descriptor_ready.error) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", descriptor_ready);
   }
-  DeleteBatchContext batch_context = BuildDeleteBatchContext(request, state, *table, visible_indexes);
+  DeleteBatchContext batch_context = BuildDeleteBatchContext(effective_request, state, *table, visible_indexes);
   if (!batch_context.accepted) {
     RecordDeleteBatchMetric(batch_context,
                             "sb_dml_delete_batch_fallback_total",
@@ -3660,7 +3897,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                             batch_context.fallback_reason.empty() ? "delete_batch_refused" : batch_context.fallback_reason);
   }
 
-  auto result = MakeCrudSuccessResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows");
+  auto result = MakeCrudSuccessResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows");
   result.evidence.insert(result.evidence.end(),
                          loaded.evidence.begin(),
                          loaded.evidence.end());
@@ -3677,6 +3914,17 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   result.evidence.push_back({"audit_event", "data.dml_change"});
   result.evidence.push_back({"dml_result_shape", suppress_payload_rows ? "rs.dml.mutation.v1"
                                                                        : "rs.dml.returning.v1"});
+  if (DeleteMutationWindowActive(effective_request)) {
+    result.evidence.push_back({"mutation_row_window", "true"});
+    result.evidence.push_back({"mutation_row_window_limit",
+                               std::to_string(effective_request.limit)});
+    result.evidence.push_back({"mutation_row_window_offset",
+                               std::to_string(effective_request.offset)});
+    result.evidence.push_back({"mutation_row_window_order",
+                               "mga_visible_row_uuid_ascending"});
+    result.evidence.push_back({"mutation_row_window_qualification",
+                               "predicate_then_offset_limit"});
+  }
   if (delete_surface_variant == "batch_delete") {
     result.evidence.push_back({"delete_chunked_limit_applied", "true"});
     result.evidence.push_back({"delete_batch_limit_rows", std::to_string(batch_limit_rows)});
@@ -3701,8 +3949,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
       }
     }
   }
-  AddMutationOptimizerEvidence("delete", request.context.local_transaction_id != 0, true, &result.evidence);
-  auto candidate_stream = BuildDeleteTargetCandidateStream(request,
+  AddMutationOptimizerEvidence("delete", effective_request.context.local_transaction_id != 0, true, &result.evidence);
+  auto candidate_stream = BuildDeleteTargetCandidateStream(effective_request,
                                                            state,
                                                            *table,
                                                            visible_indexes);
@@ -3717,7 +3965,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                                      &result.dml_summary);
   if (candidate_stream.fail_closed) {
     auto failure = MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
-        request.context,
+        effective_request.context,
         "dml.delete_rows",
         candidate_stream.diagnostic);
     failure.evidence.insert(failure.evidence.end(),
@@ -3728,8 +3976,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   const auto rows = candidate_stream.rows_ready
                         ? candidate_stream.rows
                         : VisibleCrudRowsForContext(state,
-                                                    request.target_table.uuid.canonical,
-                                                    request.context);
+                                                    effective_request.target_table.uuid.canonical,
+                                                    effective_request.context);
   result.dml_summary.visible_rows_scanned = static_cast<EngineApiU64>(rows.size());
   std::vector<CrudRowVersionRecord> returning_rows;
   if (!suppress_payload_rows) {
@@ -3737,39 +3985,61 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   std::vector<StagedDeleteRow> staged_delete_rows;
   staged_delete_rows.reserve(rows.size());
+  EngineApiU64 mutation_window_qualified_rows_seen = 0;
+  EngineApiU64 mutation_window_skipped_rows = 0;
   for (const auto& row : rows) {
-    if (!CrudRowVersionVisibleToContext(state, row, request.context)) { continue; }
-    if (!CrudRowMatchesPredicate(row, request.delete_predicate)) { continue; }
+    if (!CrudRowVersionVisibleToContext(state, row, effective_request.context)) { continue; }
+    if (!CrudRowMatchesPredicate(row, effective_request.delete_predicate)) { continue; }
+    if (DeleteMutationWindowActive(effective_request)) {
+      if (mutation_window_qualified_rows_seen < effective_request.offset) {
+        ++mutation_window_qualified_rows_seen;
+        ++mutation_window_skipped_rows;
+        continue;
+      }
+      ++mutation_window_qualified_rows_seen;
+    }
     ++result.matched_count;
     ++batch_context.actual_match_count;
     AddDeleteTrace(&batch_context, "delete.row.match", "match", row.row_uuid);
 
     const auto memory_validation = ValidateDeleteBatchMemoryBudget(batch_context, static_cast<EngineApiU64>(EncodedValueBytes(row.values)));
     if (memory_validation.error) {
-      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", memory_validation);
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", memory_validation);
     }
-    const auto constraint_validation = ValidateImmediateDeleteConstraints(request.context, state, *table, row);
+    const auto constraint_validation = ValidateImmediateDeleteConstraints(effective_request.context, state, *table, row);
     if (constraint_validation.error) {
-      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", constraint_validation);
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", constraint_validation);
     }
 
     AddDeleteTrace(&batch_context, "delete.row.tombstone", "write", row.row_uuid);
     CrudRowVersionRecord row_record;
-    row_record.creator_tx = request.context.local_transaction_id;
-    row_record.table_uuid = request.target_table.uuid.canonical;
+    row_record.creator_tx = effective_request.context.local_transaction_id;
+    row_record.table_uuid = effective_request.target_table.uuid.canonical;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = GenerateCrudEngineUuid("row");
     row_record.temporary_session_uuid =
-        table->temporary ? request.context.session_uuid.canonical : "";
+        table->temporary ? effective_request.context.session_uuid.canonical : "";
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = true;
     row_record.values = row.values;
     staged_delete_rows.push_back({std::move(row_record), row});
-    if (batch_limit_rows != 0 &&
-        staged_delete_rows.size() >= static_cast<std::size_t>(batch_limit_rows)) {
+    if ((DeleteMutationWindowActive(effective_request) &&
+         static_cast<EngineApiU64>(staged_delete_rows.size()) >=
+             effective_request.limit) ||
+        (batch_limit_rows != 0 &&
+         static_cast<EngineApiU64>(staged_delete_rows.size()) >=
+             batch_limit_rows)) {
       break;
     }
+  }
+  if (DeleteMutationWindowActive(effective_request)) {
+    result.evidence.push_back({"mutation_row_window_qualified_rows_seen",
+                               std::to_string(mutation_window_qualified_rows_seen)});
+    result.evidence.push_back({"mutation_row_window_skipped_rows",
+                               std::to_string(mutation_window_skipped_rows)});
+    result.evidence.push_back({"mutation_row_window_applied_rows",
+                               std::to_string(staged_delete_rows.size())});
   }
 
   if (!staged_delete_rows.empty()) {
@@ -3780,15 +4050,15 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     }
     std::vector<std::uint64_t> written_event_sequences;
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
-        request.context,
+        effective_request.context,
         "dml.delete_rows",
-        request.target_table.uuid.canonical,
-        request.delete_predicate,
+        effective_request.target_table.uuid.canonical,
+        effective_request.delete_predicate,
         true,
-        request.option_envelopes);
+        effective_request.option_envelopes);
     if (!serializable_recorded.ok) {
       auto failure = MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
-          request.context,
+          effective_request.context,
           "dml.delete_rows",
           serializable_recorded.diagnostic);
       failure.evidence.insert(failure.evidence.end(),
@@ -3802,14 +4072,14 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     result.evidence.insert(result.evidence.end(),
                            serializable_recorded.evidence.begin(),
                            serializable_recorded.evidence.end());
-    MgaRelationHotAppendContext hot_append_context(request.context);
+    MgaRelationHotAppendContext hot_append_context(effective_request.context);
     const auto appended = hot_append_context.AppendRowVersions(&row_records, &written_event_sequences);
     if (appended.error) {
-      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", appended);
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", appended);
     }
     const auto rows_flushed = hot_append_context.FlushRowVersions();
     if (rows_flushed.error) {
-      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", rows_flushed);
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", rows_flushed);
     }
     const auto& append_counters = hot_append_context.counters();
     result.dml_summary.append_calls += append_counters.row_range_reservations;
@@ -3829,11 +4099,11 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
                            std::make_move_iterator(row_delta_entries.end()));
     }
     const auto delta_appended = AppendMgaSecondaryIndexDeltaLedgerEntries(
-        request.context,
+        effective_request.context,
         delta_entries,
         &result.evidence);
     if (delta_appended.error) {
-      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(request.context, "dml.delete_rows", delta_appended);
+      return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(effective_request.context, "dml.delete_rows", delta_appended);
     }
     if (!delta_entries.empty()) {
       ++result.dml_summary.append_calls;
@@ -3842,7 +4112,7 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
       const auto& row_record = row_records[index];
       if (!suppress_payload_rows) {
         CrudRowVersionRecord returning_row = staged_delete_rows[index].original_row;
-        returning_row.creator_tx = request.context.local_transaction_id;
+        returning_row.creator_tx = effective_request.context.local_transaction_id;
         returning_row.event_sequence = row_record.event_sequence;
         returning_row.sequence = row_record.sequence;
         returning_row.deleted = true;
@@ -3854,15 +4124,15 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
   }
   if (staged_delete_rows.empty()) {
     auto serializable_recorded = dml::RecordSerializablePredicateMutation(
-        request.context,
+        effective_request.context,
         "dml.delete_rows",
-        request.target_table.uuid.canonical,
-        request.delete_predicate,
+        effective_request.target_table.uuid.canonical,
+        effective_request.delete_predicate,
         true,
-        request.option_envelopes);
+        effective_request.option_envelopes);
     if (!serializable_recorded.ok) {
       auto failure = MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
-          request.context,
+          effective_request.context,
           "dml.delete_rows",
           serializable_recorded.diagnostic);
       failure.evidence.insert(failure.evidence.end(),
@@ -3891,14 +4161,14 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     trigger_delete_rows.push_back(staged.original_row);
   }
   const auto trigger_result =
-      dml_trigger_runtime::FireAfterDeleteTableTriggers(request.context,
+      dml_trigger_runtime::FireAfterDeleteTableTriggers(effective_request.context,
                                                         state,
-                                                        request.target_table.uuid.canonical,
+                                                        effective_request.target_table.uuid.canonical,
                                                         trigger_delete_rows,
-                                                        request.option_envelopes);
+                                                        effective_request.option_envelopes);
   if (!trigger_result.ok) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
-        request.context,
+        effective_request.context,
         "dml.delete_rows",
         trigger_result.diagnostic);
   }

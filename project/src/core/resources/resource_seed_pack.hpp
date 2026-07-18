@@ -66,7 +66,48 @@ struct ResourceSeedAlias {
   ResourceSeedFamily family = ResourceSeedFamily::unknown;
   std::string alias;
   std::string canonical_name;
+  std::string canonical_resource_uuid;
   std::string source_path;
+};
+
+// A database lifecycle assigns resource_uuid values before the seed image is
+// committed to that database's catalog.  The remaining fields are immutable
+// seed-pack authority and are retained across database reopen/reconstruction.
+struct ResourceSeedCharsetDescriptor {
+  std::string resource_uuid;
+  std::string canonical_name;
+  std::string description;
+  std::vector<std::string> aliases;
+  u32 min_bytes = 0;
+  u32 max_bytes = 0;
+  bool variable_width = false;
+  std::string encoding_type;
+  std::string iana_name;
+  std::vector<std::string> supported_by;
+  std::string default_collation_name;
+  std::string default_collation_uuid;
+  std::string source_path;
+  u64 resource_epoch = 0;
+  u64 family_epoch = 0;
+  std::string family_version;
+};
+
+struct ResourceSeedCollationDescriptor {
+  std::string resource_uuid;
+  std::string canonical_name;
+  std::string charset_name;
+  std::string charset_uuid;
+  bool default_for_charset = false;
+  std::string default_authority;
+  bool case_insensitive = false;
+  bool accent_insensitive = false;
+  std::string language;
+  std::string description;
+  std::vector<std::string> supported_by;
+  std::string source_path;
+  u64 resource_epoch = 0;
+  u64 family_epoch = 0;
+  std::string family_version;
 };
 
 struct ResourceSeedFamilyVersion {
@@ -150,6 +191,8 @@ struct ResourceSeedCatalogImage {
   std::vector<ResourceSeedIndexDependencyEvidence> index_dependencies;
   std::vector<ResourceSeedArtifact> artifacts;
   std::vector<ResourceSeedAlias> aliases;
+  std::vector<ResourceSeedCharsetDescriptor> charsets;
+  std::vector<ResourceSeedCollationDescriptor> collations;
 };
 
 struct ResourceSeedLifecycleEvaluationResult {
@@ -209,6 +252,12 @@ ResourceSeedLifecycleEvaluationResult EvaluateResourceSeedIndexDependency(
 ResourceSeedAliasResolutionResult ResolveResourceSeedAlias(const ResourceSeedCatalogImage& image,
                                                            ResourceSeedFamily family,
                                                            const std::string& alias);
+const ResourceSeedCharsetDescriptor* FindResourceSeedCharset(
+    const ResourceSeedCatalogImage& image,
+    const std::string& name_or_alias);
+const ResourceSeedCollationDescriptor* FindResourceSeedCollation(
+    const ResourceSeedCatalogImage& image,
+    const std::string& name);
 DiagnosticRecord MakeResourceSeedDiagnostic(Status status,
                                            std::string diagnostic_code,
                                            std::string message_key,

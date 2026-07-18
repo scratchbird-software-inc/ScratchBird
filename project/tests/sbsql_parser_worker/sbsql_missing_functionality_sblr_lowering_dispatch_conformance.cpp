@@ -107,7 +107,18 @@ bool ValidateRoute(const v3_sblr::CommandFamilySblrRoute& route) {
       route.operation_id,
       route.result_shape,
       context);
-  const auto lowered = lowering::LowerBoundStatementFamilyEvidence(bound_evidence);
+  const lowering::SblrRouteDescriptor lowering_route{
+      route.canonical_operation_family,
+      route.route_operation_family,
+      route.operation_id,
+      route.sblr_opcode,
+      route.result_shape,
+      route.diagnostic_shape,
+      route.payload_class,
+      route.requires_public_abi_dispatch,
+      route.contains_raw_sql_text};
+  const auto lowered = lowering::LowerBoundStatementFamilyEvidence(bound_evidence,
+                                                                    lowering_route);
   ok &= Require(lowered.ok(),
                 "bound statement family did not lower to a logical SBLR envelope");
   if (lowered.ok()) {

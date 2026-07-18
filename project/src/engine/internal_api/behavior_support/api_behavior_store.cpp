@@ -9,8 +9,10 @@
 #include "behavior_support/api_behavior_store.hpp"
 
 #include "local_transaction_store.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -67,21 +69,91 @@ std::string JoinOptions(const std::vector<std::string>& options) {
   return out;
 }
 
-bool MgaCreatorVisible(const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
-                       std::uint64_t creator_tx,
-                       std::uint64_t observer_tx) {
+std::string LowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return value;
+}
+
+bool MgaCreatorVisible(
+    const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
+    std::uint64_t creator_tx,
+    const EngineRequestContext& context) {
   if (creator_tx == 0) { return true; }
+  std::uint64_t transaction_snapshot_boundary =
+      context.snapshot_visible_through_local_transaction_id;
+  bool observer_identity_mismatch = false;
+  for (const auto& observer : inventory.entries) {
+    if (!observer.identity.local_id.valid() ||
+        observer.identity.local_id.value != context.local_transaction_id) {
+      continue;
+    }
+    if (!context.transaction_uuid.canonical.empty() &&
+        (!observer.identity.transaction_uuid.valid() ||
+         scratchbird::core::uuid::UuidToString(
+             observer.identity.transaction_uuid.value) !=
+             context.transaction_uuid.canonical)) {
+      observer_identity_mismatch = true;
+      break;
+    }
+    transaction_snapshot_boundary =
+        observer.begin_visible_through_local_transaction_id;
+    break;
+  }
+  if (observer_identity_mismatch) return false;
   for (const auto& entry : inventory.entries) {
     if (!entry.identity.local_id.valid() || entry.identity.local_id.value != creator_tx) { continue; }
     using scratchbird::transaction::mga::TransactionState;
-    if (entry.state == TransactionState::committed || entry.state == TransactionState::archived) {
-      return true;
+    if (creator_tx == context.local_transaction_id) {
+      if (!context.transaction_uuid.canonical.empty() &&
+          (!entry.identity.transaction_uuid.valid() ||
+           scratchbird::core::uuid::UuidToString(
+               entry.identity.transaction_uuid.value) !=
+               context.transaction_uuid.canonical)) {
+        return false;
+      }
+      return entry.state == TransactionState::active ||
+             entry.state == TransactionState::read_only_active ||
+             entry.state == TransactionState::preparing ||
+             entry.state == TransactionState::prepared;
     }
-    return creator_tx == observer_tx &&
-           (entry.state == TransactionState::active ||
-            entry.state == TransactionState::read_only_active ||
-            entry.state == TransactionState::preparing ||
-            entry.state == TransactionState::prepared);
+    if (entry.state != TransactionState::committed &&
+        entry.state != TransactionState::archived) {
+      return false;
+    }
+
+    if (context.statement_metadata_snapshot_engine_owned) {
+      const auto excluded = [creator_tx](const auto& values) {
+        return std::find(values.begin(), values.end(), creator_tx) !=
+               values.end();
+      };
+      if (excluded(
+              context
+                  .statement_metadata_snapshot_active_excluded_local_transaction_ids) ||
+          excluded(
+              context
+                  .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids)) {
+        return false;
+      }
+      return context
+                     .statement_metadata_snapshot_visible_through_local_transaction_id !=
+                 0 &&
+             creator_tx <=
+                 context
+                     .statement_metadata_snapshot_visible_through_local_transaction_id;
+    }
+
+    const std::string isolation = LowerAscii(
+        context.transaction_isolation_level.empty()
+            ? std::string("read_committed")
+            : context.transaction_isolation_level);
+    if ((isolation == "snapshot" || isolation == "repeatable_read" ||
+         isolation == "serializable")) {
+      return creator_tx <= transaction_snapshot_boundary;
+    }
+    return true;
   }
   return false;
 }
@@ -108,9 +180,20 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   std::ifstream in(ApiBehaviorEventPath(context), std::ios::binary);
   if (!in) { in.open(context.database_path, std::ios::binary); }
   if (!in) { result.ok = true; return result; }
-  const auto crud = LoadCrudState(context);
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!transaction_inventory.ok()) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        transaction_inventory.diagnostic.diagnostic_code.empty()
+            ? "SB-MGA-TXN-INV-LOAD-FAILED"
+            : transaction_inventory.diagnostic.diagnostic_code,
+        transaction_inventory.diagnostic.message_key.empty()
+            ? "mga.transaction_inventory.load_failed"
+            : transaction_inventory.diagnostic.message_key,
+        transaction_inventory.diagnostic.remediation_hint,
+        true);
+    return result;
+  }
   std::map<std::string, ApiBehaviorRecord> latest;
   std::string line;
   std::uint64_t sequence = 0;
@@ -132,17 +215,11 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
     record.payload = HexDecode(parts[7]);
     record.state = parts[8];
     record.deleted = ParseBool(parts[9]);
-    const bool crud_visible =
-        crud.ok && CrudCreatorVisible(crud.state,
-                                      record.creator_tx,
-                                      record.event_sequence,
-                                      context.local_transaction_id);
-    const bool mga_visible =
-        transaction_inventory.ok() &&
-        MgaCreatorVisible(transaction_inventory.inventory,
-                          record.creator_tx,
-                          context.local_transaction_id);
-    if (!crud_visible && !mga_visible) { continue; }
+    if (!MgaCreatorVisible(transaction_inventory.inventory,
+                           record.creator_tx,
+                           context)) {
+      continue;
+    }
     latest[record.object_uuid] = std::move(record);
   }
   for (const auto& [uuid, record] : latest) {

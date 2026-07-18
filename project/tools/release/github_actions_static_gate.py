@@ -367,7 +367,6 @@ def check_native_release_stage(
         ):
             fail(f"raw_proof_output_packaging_forbidden:{rel}:{job_name}:{platform}")
 
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[3])

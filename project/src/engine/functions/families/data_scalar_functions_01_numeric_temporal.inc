@@ -35,6 +35,21 @@ std::uint64_t Fnva64(const std::vector<std::uint8_t>& bytes) {
   return hash;
 }
 
+std::int64_t FirebirdWeakHash64(const std::vector<std::uint8_t>& bytes) {
+  std::uint64_t hash = 0;
+  for (const auto byte : bytes) {
+    hash = (hash << 4) + static_cast<std::uint64_t>(byte);
+    const std::uint64_t high_nibble = hash & 0xf000000000000000ull;
+    if (high_nibble != 0) hash ^= high_nibble >> 56;
+    hash &= ~high_nibble;
+  }
+
+  // The fold clears bits 60..63 on every iteration, so the result is always
+  // representable by the signed INT64 descriptor used by this explicit
+  // compatibility profile.
+  return static_cast<std::int64_t>(hash);
+}
+
 std::vector<std::uint8_t> RandomBytes(std::size_t byte_count) {
   std::vector<std::uint8_t> out(byte_count);
   std::random_device random;
@@ -195,6 +210,147 @@ bool ValueAsInt64Strict(const scratchbird::engine::sblr::SblrValue& value, std::
   } catch (...) {
     return false;
   }
+}
+
+std::optional<std::string> RoundExactFixedDecimal(
+    std::string_view encoded,
+    std::int64_t requested_scale) {
+  if (requested_scale < 0 || requested_scale > 18 || encoded.empty()) {
+    return std::nullopt;
+  }
+
+  std::size_t offset = 0;
+  if (encoded.front() == '+' || encoded.front() == '-') ++offset;
+  const std::size_t whole_begin = offset;
+  while (offset < encoded.size() &&
+         std::isdigit(static_cast<unsigned char>(encoded[offset])) != 0) {
+    ++offset;
+  }
+  if (offset == whole_begin) return std::nullopt;
+
+  std::size_t input_scale = 0;
+  if (offset < encoded.size() && encoded[offset] == '.') {
+    ++offset;
+    const std::size_t fraction_begin = offset;
+    while (offset < encoded.size() &&
+           std::isdigit(static_cast<unsigned char>(encoded[offset])) != 0) {
+      ++offset;
+    }
+    if (offset == fraction_begin) return std::nullopt;
+    input_scale = offset - fraction_begin;
+  }
+  if (offset != encoded.size() || input_scale > 18) return std::nullopt;
+
+  const std::size_t sign_digits =
+      encoded.front() == '+' || encoded.front() == '-' ? 1 : 0;
+  const std::size_t total_digits =
+      encoded.size() - sign_digits - (input_scale == 0 ? 0 : 1);
+  if (total_digits == 0 || total_digits > 18) return std::nullopt;
+
+  namespace dt = scratchbird::core::datatypes;
+  dt::DatatypeNumericOperationRequest numeric_request;
+  numeric_request.operation = dt::DatatypeNumericOperationKind::canonicalize;
+  numeric_request.type_id = dt::CanonicalTypeId::decimal;
+  numeric_request.left.type_id = dt::CanonicalTypeId::decimal;
+  numeric_request.left.encoded_value = std::string(encoded);
+  numeric_request.context.precision = 18;
+  numeric_request.context.scale = static_cast<std::uint32_t>(
+      std::min<std::int64_t>(requested_scale,
+                             static_cast<std::int64_t>(input_scale)));
+  // SQL ROUND uses magnitude half-up semantics: exact ties move away from
+  // zero.  The neutral numeric backend owns that arithmetic decision.
+  numeric_request.context.rounding = dt::DatatypeRoundingMode::half_up;
+  const auto numeric_result = dt::ApplyNumericOperation(numeric_request);
+  if (!numeric_result.ok() || numeric_result.value.is_null) {
+    return std::nullopt;
+  }
+
+  std::string rounded = numeric_result.value.encoded_value;
+  if (rounded.empty() || rounded.find_first_of("eE") != std::string::npos) {
+    return std::nullopt;
+  }
+  const auto decimal = rounded.find('.');
+  if (input_scale == 0) {
+    if (decimal != std::string::npos) rounded.erase(decimal);
+    return rounded;
+  }
+  if (decimal == std::string::npos) {
+    rounded.push_back('.');
+    rounded.append(input_scale, '0');
+    return rounded;
+  }
+  const std::size_t result_scale = rounded.size() - decimal - 1;
+  if (result_scale > input_scale) return std::nullopt;
+  rounded.append(input_scale - result_scale, '0');
+  return rounded;
+}
+
+struct ParsedDecimalTargetDescriptor {
+  std::uint32_t precision = 0;
+  std::uint32_t scale = 0;
+};
+
+bool ParseDecimalDescriptorComponent(std::string_view encoded,
+                                     std::uint32_t* out) {
+  if (out == nullptr) return false;
+  const std::string component = TrimAscii(std::string(encoded));
+  if (component.empty()) return false;
+  std::uint32_t value = 0;
+  for (const unsigned char ch : component) {
+    if (std::isdigit(ch) == 0) return false;
+    value = (value * 10) + static_cast<std::uint32_t>(ch - '0');
+    if (value > 38) return false;
+  }
+  *out = value;
+  return true;
+}
+
+std::optional<ParsedDecimalTargetDescriptor> ParseDecimalTargetDescriptor(
+    std::string_view encoded) {
+  constexpr std::string_view kPrefix = "decimal(";
+  if (encoded.size() <= kPrefix.size() + 1 ||
+      encoded.substr(0, kPrefix.size()) != kPrefix ||
+      encoded.back() != ')') {
+    return std::nullopt;
+  }
+  const std::string_view parameters =
+      encoded.substr(kPrefix.size(), encoded.size() - kPrefix.size() - 1);
+  const std::size_t comma = parameters.find(',');
+  if (comma == std::string_view::npos ||
+      parameters.find(',', comma + 1) != std::string_view::npos) {
+    return std::nullopt;
+  }
+
+  ParsedDecimalTargetDescriptor descriptor;
+  if (!ParseDecimalDescriptorComponent(parameters.substr(0, comma),
+                                       &descriptor.precision) ||
+      !ParseDecimalDescriptorComponent(parameters.substr(comma + 1),
+                                       &descriptor.scale) ||
+      descriptor.precision == 0 || descriptor.scale > descriptor.precision) {
+    return std::nullopt;
+  }
+  return descriptor;
+}
+
+bool ParseDecimalRoundingProfile(
+    std::string_view encoded,
+    scratchbird::core::datatypes::DatatypeRoundingMode* out) {
+  if (out == nullptr) return false;
+  const std::string profile =
+      LowerAscii(TrimAscii(std::string(encoded)));
+  if (profile == "half_even") {
+    *out = scratchbird::core::datatypes::DatatypeRoundingMode::half_even;
+    return true;
+  }
+  if (profile == "half_up") {
+    *out = scratchbird::core::datatypes::DatatypeRoundingMode::half_up;
+    return true;
+  }
+  if (profile == "truncate") {
+    *out = scratchbird::core::datatypes::DatatypeRoundingMode::truncate;
+    return true;
+  }
+  return false;
 }
 
 bool ValueAsUint64Strict(const scratchbird::engine::sblr::SblrValue& value, std::uint64_t* out) {

@@ -42,6 +42,12 @@ inline std::string IparFaultDiagnosticCode(std::string_view point) {
   if (point == "commit_fence") {
     return "SB-IPAR-P7-06-COMMIT-FENCE-INJECTED";
   }
+  if (point == "rollback_fence") {
+    return "SB-IPAR-P7-06-ROLLBACK-FENCE-INJECTED";
+  }
+  if (point == "rollback_secondary") {
+    return "SB-IPAR-P7-06-ROLLBACK-SECONDARY-INJECTED";
+  }
   return "SB-IPAR-P7-06-FAULT-INJECTED";
 }
 

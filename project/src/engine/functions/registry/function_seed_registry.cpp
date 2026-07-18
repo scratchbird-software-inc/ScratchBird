@@ -1299,6 +1299,21 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.ascii", "019dffbb-f001-7026-8a00-000000000026", "data.scalar", "ascii",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
+    // Parser-neutral octet conversion primitives. Compatibility parsers bind
+    // their own surface spellings to these engine identities; the engine does
+    // not carry source-engine names or compatibility-parser dependencies.
+    {"data.scalar.octet_from_int64", "019f0000-0000-70c1-8a00-00000000a001",
+     "data.scalar", "octet_from_int64",
+     FunctionImplementationState::implemented_behavior,
+     FunctionPackageState::core},
+    {"data.scalar.int64_from_first_octet", "019f0000-0000-70c1-8a00-00000000a002",
+     "data.scalar", "int64_from_first_octet",
+     FunctionImplementationState::implemented_behavior,
+     FunctionPackageState::core},
+    {"data.scalar.hash64", "019f0000-0000-70c1-8a00-00000000a003",
+     "data.scalar", "hash64",
+     FunctionImplementationState::implemented_behavior,
+     FunctionPackageState::core},
     // SBSFC-011R-L text scalar native_future promotion. These execute via
     // engine-owned SBLR scalar dispatch, not parser-side constants.
     {"sb.scalar.initcap", "019dffbb-f000-79a1-a28b-638ae91177fb", "data.scalar", "initcap",
@@ -1952,10 +1967,9 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.atan2d", "019dffbb-f000-7674-b2ff-0df3baedf3ec", "data.scalar", "atan2d",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
-    // cot/cotd sub-stream 2026-05-11. cot = 1.0/std::tan(input) directly;
-    // cotd = 1.0/std::tan(input * pi/180) inside the degrees-mode block.
-    // No domain refusal — IEEE 754 infinity propagation at multiples of pi
-    // (cot) or 180 deg (cotd) is the documented behavior.
+    // cot/cotd sub-stream 2026-05-11. cot rejects signed or unsigned zero and
+    // requires a finite 1.0/std::tan(input) result; cotd remains in the
+    // degrees-mode block with its own compatibility-independent behavior.
     {"sb.scalar.cot", "019dffbb-f001-7039-8a00-000000000039", "data.scalar", "cot",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.cotd", "019dffbb-f001-703a-8a00-00000000003a", "data.scalar", "cotd",

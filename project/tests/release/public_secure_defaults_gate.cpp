@@ -187,14 +187,10 @@ void TestCompiledDefaults() {
           "PCR-123 daemon scope default drifted");
   Require(!defaults.embedded_direct_mode,
           "PCR-123 embedded direct mode default must be disabled");
-  Require(!defaults.listener_native_enabled,
-          "PCR-123 native listener default must be disabled");
-  Require(defaults.listener_native_bind_host == "127.0.0.1",
-          "PCR-123 native listener bind default is not loopback");
-  Require(defaults.listener_native_port == 3092,
-          "PCR-123 native listener port default is not 3092");
-  Require(defaults.listener_native_tls_required,
-          "PCR-123 native listener TLS default must be required");
+  Require(defaults.listener_profiles.empty(),
+          "PCR-123 listener profiles must be empty until explicitly configured");
+  Require(defaults.listener_executable_path.empty(),
+          "PCR-123 generic listener executable override must be empty by default");
   Require(defaults.log_level == "info",
           "PCR-123 log level default must not be debug");
   Require(defaults.log_file == "stderr",
@@ -271,9 +267,25 @@ std::string RelativePathServerConfig(std::string_view mode = "foreground") {
          "control_dir = runtime/control\n"
          "[server.database]\n"
          "default_path = data/default.sbdb\n"
-         "[server.listener.native]\n"
+         "[server.listener]\n"
          "executable_path = bin/SBgate\n"
+         "[server.listener.profile.native_sbsql_fixture]\n"
+         "enabled = false\n"
+         "protocol_family = sbsql\n"
+         "profile_id = fixture.native.sbsql.v1\n"
+         "parser_package = SBParser\n"
+         "parser_package_uuid = fixture-sbsql-parser-package-v1\n"
+         "dialect_profile_uuid = sbsql.v3\n"
+         "bundle_contract_id = sbp_sbsql@1\n"
+         "parser_api_major = 1\n"
          "parser_executable_path = bin/SBParser\n"
+         "bind_address = 127.0.0.1\n"
+         "port = 3092\n"
+         "database_selector = server_database_default\n"
+         "sbps_endpoint = runtime/control/sb_server.sbps.sock\n"
+         "tls_required = true\n"
+         "tls_cert_file = certs/native.crt\n"
+         "tls_key_file = certs/native.key\n"
          "[server.memory]\n"
          "enable_platform_memory_probe = false\n";
 }
@@ -308,12 +320,17 @@ void TestInstalledServerConfigResolutionAndCwdSafety(
   Require(loaded.config.database_default_path ==
               install_root / "data" / "default.sbdb",
           "PCR-123 server database path did not resolve from install root");
-  Require(loaded.config.listener_native_executable_path ==
-              install_root / "bin" / "SBgate",
+  Require(loaded.config.listener_executable_path == install_root / "bin" / "SBgate",
           "PCR-123 shared listener path did not resolve from install root");
-  Require(loaded.config.listener_native_parser_executable_path ==
-              install_root / "bin" / "SBParser",
+  Require(loaded.config.listener_profiles.size() == 1,
+          "PCR-123 installed generic listener profile did not load");
+  const auto& native_profile = loaded.config.listener_profiles.front();
+  Require(native_profile.parser_executable_path == install_root / "bin" / "SBParser",
           "PCR-123 standalone parser path did not resolve from install root");
+  Require(native_profile.port == 3092 &&
+              native_profile.protocol_family == "sbsql" &&
+              native_profile.tls_required,
+          "PCR-123 configured native SBSQL profile did not retain the secure 3092 route");
 
   const auto external_root = root / "server-external-config";
   const auto external_config = external_root / "SBsrv.conf";
@@ -479,9 +496,7 @@ void WriteEffectiveConfigProof(const std::filesystem::path& output_path,
       << "  \"allow_current_directory\": " << BoolText(loaded.config.allow_current_directory) << ",\n"
       << "  \"database_auto_create\": " << BoolText(loaded.config.database_auto_create) << ",\n"
       << "  \"database_open_mode\": \"" << JsonEscape(loaded.config.database_open_mode) << "\",\n"
-      << "  \"listener_native_enabled\": " << BoolText(loaded.config.listener_native_enabled) << ",\n"
-      << "  \"listener_native_bind_host\": \"" << JsonEscape(loaded.config.listener_native_bind_host) << "\",\n"
-      << "  \"listener_native_tls_required\": " << BoolText(loaded.config.listener_native_tls_required) << ",\n"
+      << "  \"listener_profile_count\": " << loaded.config.listener_profiles.size() << ",\n"
       << "  \"security_authority_mode\": \"" << JsonEscape(loaded.config.security_authority_mode) << "\",\n"
       << "  \"security_provider_family\": \"" << JsonEscape(loaded.config.security_provider_family) << "\",\n"
       << "  \"security_default_policy_installed\": " << BoolText(loaded.config.security_default_policy_installed) << ",\n"

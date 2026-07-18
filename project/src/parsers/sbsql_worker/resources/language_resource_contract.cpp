@@ -8,7 +8,7 @@
 
 #include "resources/language_resource_contract.hpp"
 
-#include "parser_ipc_common.hpp"
+#include "ipc/sbsql_ipc_common.hpp"
 
 #include <algorithm>
 #include <cstddef>

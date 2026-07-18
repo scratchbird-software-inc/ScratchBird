@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "registry_id": "positive_neutral_sharing_fixture",
+  "discovery": {
+    "compatibility_root": "project/src/parsers/compatibility",
+    "compatibility_exclusions": ["common"],
+    "udr_root": "project/src/udr",
+    "udr_glob": "sbu_*_parser_support"
+  },
+  "neutral_roots": [
+    "project/src/parsers/compatibility/common"
+  ],
+  "families": {
+    "alpha": {
+      "roots": [
+        "project/src/parsers/compatibility/alpha",
+        "project/src/udr/sbu_alpha_parser_support"
+      ]
+    },
+    "beta": {
+      "roots": [
+        "project/src/parsers/compatibility/beta",
+        "project/src/udr/sbu_beta_parser_support"
+      ]
+    }
+  }
+}

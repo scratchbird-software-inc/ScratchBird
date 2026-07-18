@@ -14,10 +14,9 @@
 #include <string_view>
 #include <vector>
 
-namespace scratchbird::parser::sbsql {
+#include "ipc/sbsql_ipc_common.hpp"
 
-struct Diagnostic;
-struct MessageVectorSet;
+namespace scratchbird::parser::sbsql {
 
 // SEARCH_KEY: SBSQL_LANGUAGE_RESOURCE_OPERATIONAL_EDGE_SAFETY
 

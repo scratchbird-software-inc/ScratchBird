@@ -21,6 +21,7 @@ int main() {
   const auto ast_node = ast::MakeShowIdentityAst(ast::ShowIdentityKind::kVersion,
                                                  "show version",
                                                  "sbsql.show.version",
+                                                 "sbsql.identity_session",
                                                  {0, 12});
   bound::BindingContext context;
   context.database_uuid = "018f0000-0000-7000-8000-000000000001";

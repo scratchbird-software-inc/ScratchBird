@@ -351,6 +351,11 @@ sys.catalog_readable.settings,catalog_readable,settings,setting_name;setting_val
 sys.catalog_readable.jobs,catalog_readable,jobs,job_path;job_name;job_kind;status;policy_name;metrics_summary;visibility_state,Jobs and maintenance tasks.
 sys.catalog_readable.remote_connections,catalog_readable,remote_connections,connection_path;connection_name;connection_kind;endpoint_display;credential_state;visibility_state,Credentials redacted.
 sys.catalog_readable.emulation_profiles,catalog_readable,emulation_profiles,profile_path;profile_name;reference_family;parser_binding;udr_binding;status;visibility_state,Reference/emulation profile metadata.
+emulated.firebird.rdb_roles,frontend_projection,firebird_catalog,RDB$ROLE_NAME;RDB$OWNER_NAME;RDB$DESCRIPTION;RDB$SYSTEM_FLAG;RDB$SECURITY_CLASS,Firebird-compatible RDB$ROLES projection over ScratchBird security roles with Firebird defaults.
+emulated.firebird.rdb_user_privileges,frontend_projection,firebird_catalog,RDB$USER;RDB$GRANTOR;RDB$PRIVILEGE;RDB$GRANT_OPTION;RDB$RELATION_NAME;RDB$FIELD_NAME;RDB$USER_TYPE;RDB$OBJECT_TYPE,Firebird-compatible RDB$USER_PRIVILEGES projection over visible ScratchBird grants.
+emulated.firebird.sec_users,frontend_projection,firebird_catalog,SEC$USER_NAME;SEC$PLUGIN;SEC$ACTIVE,Firebird-compatible SEC$USERS projection over visible ScratchBird users.
+emulated.firebird.sec_db_creators,frontend_projection,firebird_catalog,SEC$USER;SEC$USER_TYPE,Firebird-compatible SEC$DB_CREATORS projection.
+emulated.firebird.mon_attachments,frontend_projection,firebird_monitoring,MON$ATTACHMENT_ID;MON$USER;MON$REMOTE_PROTOCOL;MON$SERVER_PID,Firebird-compatible MON$ATTACHMENTS projection over the current ScratchBird session.
 sys.parser.dialects,frontend_projection,parser_profiles,dialect_name;base_dialect;compatibility_state;parser_family,Frontend-safe parser dialect inventory for drivers and management tools.
 sys.parser.language_elements,frontend_projection,parser_profiles,surface_id;canonical_name;element_kind;surface_kind;family;sblr_operation_family;support_state;release_status;predictive_state;keyword_text;keyword_class,Frontend-safe SBSQL language element manifest for drivers; predictive text; and conformance tests.
 sys.information.schemata,information_schema,driver_metadata,catalog_name;schema_name;schema_owner;sql_path,Standard-compatible schema metadata.
@@ -3354,6 +3359,74 @@ SysInformationProjectionResult BuildSysInformationProjection(
       }
       result.rows.push_back(std::move(row));
     }
+    return result;
+  }
+
+  if (canonical_view_path == "emulated.firebird.rdb_roles") {
+    for (const auto& object : catalog_objects) {
+      if (!ObjectVisible(object, context)) { continue; }
+      const bool role_object =
+          object.object_class == "role" || object.object_class == "security_role";
+      if (!role_object) { continue; }
+      bool found_name = false;
+      const std::string role_name =
+          ObjectDisplayName(resolver_names, context, object, &found_name);
+      if (!found_name) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "RDB$ROLE_NAME", role_name);
+      AddField(&row, "RDB$OWNER_NAME", "SYSDBA");
+      AddField(&row, "RDB$DESCRIPTION", "");
+      AddField(&row, "RDB$SYSTEM_FLAG", "0");
+      AddField(&row, "RDB$SECURITY_CLASS", "");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "emulated.firebird.sec_users") {
+    for (const auto& object : catalog_objects) {
+      if (!ObjectVisible(object, context)) { continue; }
+      const bool user_object =
+          object.object_class == "user" ||
+          object.object_class == "security_user" ||
+          object.object_class == "principal" ||
+          object.object_class == "security_principal";
+      if (!user_object) { continue; }
+      bool found_name = false;
+      const std::string user_name =
+          ObjectDisplayName(resolver_names, context, object, &found_name);
+      if (!found_name) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "SEC$USER_NAME", user_name);
+      AddField(&row, "SEC$PLUGIN", "Srp");
+      AddField(&row, "SEC$ACTIVE", "1");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "emulated.firebird.mon_attachments") {
+    SysInformationProjectionRow row;
+    AddField(&row, "MON$ATTACHMENT_ID", "1");
+    AddField(&row, "MON$USER", PrincipalDisplayName(context));
+    AddField(&row, "MON$REMOTE_PROTOCOL", "TCPv4");
+    AddField(&row, "MON$SERVER_PID", "1");
+    result.rows.push_back(std::move(row));
+    return result;
+  }
+
+  if (canonical_view_path == "emulated.firebird.rdb_user_privileges" ||
+      canonical_view_path == "emulated.firebird.sec_db_creators") {
     return result;
   }
 

@@ -7,11 +7,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "firebird_dialect.hpp"
+#include "firebird_execution_session.hpp"
 
 #include <cstdlib>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -100,7 +104,7 @@ bool ExpectParseCase(const ParseCase& test) {
                   Contains(result.parser_evidence_json,
                            "\"direct_cross_root_access\":\"unsupported_denied\"") &&
                   Contains(result.parser_evidence_json,
-                           "\"sbsql_global_tree_visibility_inherited\":false") &&
+                           "\"foreign_parser_tree_visibility_inherited\":false") &&
                   Contains(result.parser_evidence_json,
                            "\"catalog_projection_can_query_outside_sandbox\":true") &&
                   Contains(result.parser_evidence_json,
@@ -159,6 +163,401 @@ bool ExpectRejected(std::string_view sql, std::string_view diagnostic_code) {
     return false;
   }
   return true;
+}
+
+bool ExpectCompositeTableKeyEnvelope() {
+  scratchbird::parser::ipc::ParserClientConfig config;
+  scratchbird::parser::firebird::FirebirdExecutionSession session(config);
+  const auto result = session.RunStatement(
+      "CREATE TABLE T (A INTEGER NOT NULL, B INTEGER NOT NULL, "
+      "C INTEGER NOT NULL, D INTEGER NOT NULL, "
+      "CONSTRAINT PK_T PRIMARY KEY (A, B), "
+      "CONSTRAINT UQ_T UNIQUE (C, D))",
+      {}, false);
+  const auto& envelope = result.sblr_payload;
+  bool ok = true;
+  ok = Expect(result.accepted,
+              "Firebird composite table-key lowering was rejected") && ok;
+  ok = Expect(Contains(envelope, "\"table_index_count\":2"),
+              "Firebird composite table-key count missing") && ok;
+  ok = Expect(Contains(envelope, "\"table_index_0_key_count\":2") &&
+                  Contains(envelope, "\"table_index_0_key_0\":\"A\"") &&
+                  Contains(envelope, "\"table_index_0_key_1\":\"B\"") &&
+                  Contains(envelope,
+                           "\"table_index_0_constraint_kind\":\"primary_key\"") &&
+                  Contains(envelope,
+                           "\"table_index_0_constraint_name\":\"PK_T\""),
+              "Firebird ordered composite PRIMARY KEY fields missing") && ok;
+  ok = Expect(Contains(envelope, "\"table_index_1_key_count\":2") &&
+                  Contains(envelope, "\"table_index_1_key_0\":\"C\"") &&
+                  Contains(envelope, "\"table_index_1_key_1\":\"D\"") &&
+                  Contains(envelope,
+                           "\"table_index_1_constraint_kind\":\"unique\"") &&
+                  Contains(envelope,
+                           "\"table_index_1_constraint_name\":\"UQ_T\""),
+              "Firebird ordered composite UNIQUE fields missing") && ok;
+  ok = Expect(envelope.find("\"table_index_0_key_0\":\"A\"") <
+                      envelope.find("\"table_index_0_key_1\":\"B\"") &&
+                  envelope.find("\"table_index_1_key_0\":\"C\"") <
+                      envelope.find("\"table_index_1_key_1\":\"D\""),
+              "Firebird composite key column order was not retained") && ok;
+  ok = Expect(!Contains(envelope, ";primary_key=true") &&
+                  !Contains(envelope, ";unique=true"),
+              "Firebird table constraint leaked into per-column uniqueness") && ok;
+  ok = Expect(!Contains(envelope, "\"table_object_uuid\"") &&
+                  !Contains(envelope, "\"requested_index_uuid\"") &&
+                  !Contains(envelope, "\"table_index_0_index_uuid\"") &&
+                  !Contains(envelope, "\"table_index_0_constraint_uuid\"") &&
+                  !Contains(envelope, "\"table_index_0_index_name\"") &&
+                  !Contains(envelope, "\"table_index_1_index_name\""),
+              "Firebird composite table-key lowering invented engine identity or names") && ok;
+
+  const auto expect_lowering_refused = [&](std::string_view sql,
+                                           std::string_view label) {
+    const auto rejected = session.RunStatement(sql, {}, true);
+    const std::string diagnostics =
+        scratchbird::parser::ipc::MessageVectorToJson(rejected.messages);
+    return Expect(!rejected.accepted,
+                  std::string(label) + " was accepted") &&
+           Expect(rejected.sblr_payload.empty(),
+                  std::string(label) + " produced executable SBLR") &&
+           Expect(Contains(diagnostics, "FIREBIRD.SBLR.LOWERING_UNAVAILABLE"),
+                  std::string(label) + " did not fail closed in the lowerer") &&
+           Expect(!Contains(diagnostics, "FIREBIRD.SERVER.UNAVAILABLE"),
+                  std::string(label) + " reached the server route");
+  };
+
+  ok = expect_lowering_refused(
+           "CREATE TABLE T_DUP (A INTEGER, PRIMARY KEY (A, A))",
+           "duplicate composite key component") && ok;
+  ok = expect_lowering_refused(
+           "CREATE TABLE T_UNKNOWN (A INTEGER, UNIQUE (A, MISSING_COLUMN))",
+           "unknown composite key component") && ok;
+  ok = expect_lowering_refused(
+           "CREATE TABLE T_MULTI (A INTEGER, B INTEGER, "
+           "PRIMARY KEY (A), PRIMARY KEY (B))",
+           "multiple table primary keys") && ok;
+
+  std::string oversized_key = "CREATE TABLE T_KEY_BOUND (";
+  for (std::size_t i = 0; i < 65; ++i) {
+    if (i != 0) oversized_key += ", ";
+    oversized_key += "C" + std::to_string(i) + " INTEGER";
+  }
+  oversized_key += ", UNIQUE (";
+  for (std::size_t i = 0; i < 65; ++i) {
+    if (i != 0) oversized_key += ", ";
+    oversized_key += "C" + std::to_string(i);
+  }
+  oversized_key += "))";
+  ok = expect_lowering_refused(oversized_key,
+                               "oversized composite key") && ok;
+
+  std::string oversized_constraint_count =
+      "CREATE TABLE T_INDEX_BOUND (A INTEGER";
+  for (std::size_t i = 0; i < 65; ++i) {
+    oversized_constraint_count += ", UNIQUE (A)";
+  }
+  oversized_constraint_count += ")";
+  ok = expect_lowering_refused(oversized_constraint_count,
+                               "oversized table-key count") && ok;
+  return ok;
+}
+
+bool ExpectTextResourceCreateEnvelope() {
+  scratchbird::parser::ipc::ParserClientConfig config;
+  scratchbird::parser::firebird::FirebirdExecutionSession session(config);
+  const auto result = session.RunStatement(
+      "CREATE TABLE T_TEXT (ID INTEGER, FNAME VARCHAR(20) CHARACTER SET GBK)",
+      {}, false);
+  const auto& envelope = result.sblr_payload;
+  bool ok = true;
+  ok = Expect(result.accepted,
+              "Firebird CHARACTER SET table lowering was rejected") && ok;
+  ok = Expect(Contains(envelope,
+                       "type=VARCHAR(20);nullable=true;character_length=20"),
+              "Firebird character length was not lowered into the column descriptor") &&
+       ok;
+  ok = Expect(!Contains(envelope, "GBK") &&
+                  !Contains(envelope, "charset_uuid=") &&
+                  !Contains(envelope, "collation_uuid="),
+              "Firebird parse-only lowering leaked a resource name or invented an engine UUID") &&
+       ok;
+  return ok;
+}
+
+bool ExpectAsciiCharInsertEnvelope() {
+  constexpr std::string_view kOctetFromInt64ScalarHex =
+      "7363616c61722e6f637465745f66726f6d5f696e7436342e7631";
+  scratchbird::parser::ipc::ParserClientConfig config;
+  scratchbird::parser::firebird::FirebirdExecutionSession session(config);
+  const auto lowered = session.RunStatement(
+      "INSERT INTO TEST_NONE VALUES (ASCII_CHAR(1))", {}, false);
+  bool ok = true;
+  ok = Expect(lowered.accepted,
+              "Firebird literal ASCII_CHAR insert lowering was rejected") &&
+       ok;
+  ok = Expect(
+           Contains(lowered.sblr_payload,
+                    "\"operation_id\":\"dml.insert_rows\"") &&
+               Contains(lowered.sblr_payload,
+                        "\"insert_values_compact_format\":"
+                        "\"sblr.dml.insert.cells.hex.v1\"") &&
+               Contains(lowered.sblr_payload,
+                        "\"insert_values_compact_payload\":"
+                        "\"6330|" +
+                            std::string(kOctetFromInt64ScalarHex) +
+                            "|31|0\"") &&
+               Contains(lowered.sblr_payload,
+                        "\"target_object_uuid\":\"\"") &&
+               !Contains(lowered.sblr_payload, "ASCII_CHAR") &&
+               !Contains(lowered.sblr_payload,
+                         "sbsql.insert_values.cells.v1"),
+           "Firebird ASCII_CHAR literal did not bind to the neutral engine scalar packet") &&
+       ok;
+
+  const auto byte_255 = session.RunStatement(
+      "INSERT INTO TEST_NONE VALUES (ASCII_CHAR(255))", {}, false);
+  ok = Expect(
+           byte_255.accepted &&
+               Contains(byte_255.sblr_payload,
+                        "\"insert_values_compact_payload\":"
+                        "\"6330|" +
+                            std::string(kOctetFromInt64ScalarHex) +
+                            "|323535|0\""),
+           "Firebird ASCII_CHAR byte 255 was not bound for engine execution") &&
+       ok;
+
+  const auto sql_null = session.RunStatement(
+      "INSERT INTO TEST_NONE VALUES (ASCII_CHAR(NULL))", {}, false);
+  ok = Expect(
+           sql_null.accepted &&
+               Contains(sql_null.sblr_payload,
+                        "\"insert_values_compact_payload\":"
+                        "\"6330|" +
+                            std::string(kOctetFromInt64ScalarHex) +
+                            "||1\""),
+           "Firebird ASCII_CHAR(NULL) did not preserve SQL NULL for engine execution") &&
+       ok;
+
+  // Range validation belongs to the engine scalar evaluator.  The standalone
+  // Firebird parser must bind the literal without manufacturing its result.
+  const auto out_of_range = session.RunStatement(
+      "INSERT INTO TEST_NONE VALUES (ASCII_CHAR(256))", {}, false);
+  ok = Expect(
+           out_of_range.accepted &&
+               Contains(out_of_range.sblr_payload,
+                        "\"insert_values_compact_payload\":"
+                        "\"6330|" +
+                            std::string(kOctetFromInt64ScalarHex) +
+                            "|323536|0\""),
+           "Firebird ASCII_CHAR range checking leaked into parser lowering") &&
+       ok;
+
+  for (const auto sql : {
+           "INSERT INTO TEST_NONE VALUES (ASCII_CHAR(ID))"}) {
+    const auto rejected = session.RunStatement(sql, {}, true);
+    const std::string diagnostics =
+        scratchbird::parser::ipc::MessageVectorToJson(rejected.messages);
+    ok = Expect(!rejected.accepted && rejected.sblr_payload.empty() &&
+                    Contains(diagnostics,
+                             "FIREBIRD.SBLR.LOWERING_UNAVAILABLE") &&
+                    !Contains(diagnostics, "FIREBIRD.SERVER.UNAVAILABLE"),
+                "unsupported ASCII_CHAR shape did not fail closed before route access") &&
+         ok;
+  }
+  return ok;
+}
+
+bool ExpectPreparedDsqlPreflight() {
+  scratchbird::parser::ipc::ParserClientConfig config;
+  scratchbird::parser::firebird::FirebirdExecutionSession session(config);
+  const scratchbird::parser::ipc::ParserTransactionSelector selector{
+      41, "00000000-0000-0000-0000-000000000041"};
+  bool ok = true;
+
+  const auto parameterized = session.BindAndLowerForPrepare(
+      "INSERT INTO T (A) VALUES (?)", selector);
+  const std::string parameter_diagnostics =
+      scratchbird::parser::ipc::MessageVectorToJson(parameterized.messages);
+  ok = Expect(!parameterized.accepted &&
+                  parameterized.sblr_payload.empty() &&
+                  Contains(parameter_diagnostics,
+                           "FIREBIRD.DSQL.PARAMETER_PACKET_UNAVAILABLE"),
+              "Firebird prepared parameter preflight did not fail closed") &&
+       ok;
+
+  const auto recreate = session.BindAndLowerForPrepare(
+      "RECREATE TABLE T (A INTEGER)", selector);
+  const std::string recreate_diagnostics =
+      scratchbird::parser::ipc::MessageVectorToJson(recreate.messages);
+  ok = Expect(!recreate.accepted && recreate.sblr_payload.empty() &&
+                  Contains(recreate_diagnostics,
+                           "FIREBIRD.SERVER.UNAVAILABLE") &&
+                  !Contains(recreate_diagnostics,
+                            "FIREBIRD.DSQL.PREPARE_PRELUDE_UNSUPPORTED"),
+              "Firebird prepared RECREATE did not admit mutation-free CREATE lowering") &&
+       ok;
+
+  const auto transaction =
+      session.BindAndLowerForPrepare("COMMIT", selector);
+  const std::string transaction_diagnostics =
+      scratchbird::parser::ipc::MessageVectorToJson(transaction.messages);
+  ok = Expect(
+           !transaction.accepted && transaction.sblr_payload.empty() &&
+               Contains(
+                   transaction_diagnostics,
+                   "FIREBIRD.DSQL.PREPARED_TRANSACTION_CONTROL_UNSUPPORTED"),
+           "Firebird prepared transaction control bypassed the finality path") &&
+       ok;
+
+  const auto prepared_parameter = session.PrepareStatement(
+      "UPDATE T SET A = ?", selector);
+  const std::string prepared_parameter_diagnostics =
+      scratchbird::parser::ipc::MessageVectorToJson(
+          prepared_parameter.messages);
+  ok = Expect(!prepared_parameter.accepted &&
+                  prepared_parameter.prepared_statement_uuid.empty() &&
+                  Contains(prepared_parameter_diagnostics,
+                           "FIREBIRD.DSQL.PARAMETER_PACKET_UNAVAILABLE"),
+              "Firebird parameter refusal installed a prepared UUID") &&
+       ok;
+  return ok;
+}
+
+bool ExpectBetweenPredicateEnvelopes() {
+  scratchbird::parser::ipc::ParserClientConfig config;
+  scratchbird::parser::firebird::FirebirdExecutionSession session(config);
+  bool ok = true;
+
+  const auto counted = session.RunStatement(
+      "SELECT COUNT(*) AS CNT FROM TEST WHERE A BETWEEN 4 AND 7",
+      {}, false);
+  ok = Expect(counted.accepted,
+              "Firebird BETWEEN count lowering was rejected") &&
+       ok;
+  ok = Expect(
+           Contains(counted.sblr_payload,
+                    "\"operation_id\":\"dml.select_rows\"") &&
+               Contains(counted.sblr_payload,
+                        "\"result_projection\":\"count\"") &&
+               Contains(counted.sblr_payload,
+                        "\"actual_column_name\":\"CNT\"") &&
+               Contains(counted.sblr_payload,
+                        "\"predicate_kind\":\"column_range\"") &&
+               Contains(counted.sblr_payload,
+                        "\"predicate_column\":\"A\"") &&
+               Contains(counted.sblr_payload,
+                        "\"predicate_value\":\"4,7\"") &&
+               Contains(counted.sblr_payload,
+                        "\"predicate_value_type\":\"bigint,bigint\"") &&
+               Contains(counted.sblr_payload,
+                        "\"target_object_uuid\":\"\"") &&
+               !Contains(counted.sblr_payload,
+                         "SELECT COUNT"),
+           "Firebird BETWEEN count envelope lost its inclusive range bounds") &&
+       ok;
+
+  const auto deleted = session.RunStatement(
+      "DELETE FROM TEST WHERE A BETWEEN 4 AND 7", {}, false);
+  ok = Expect(deleted.accepted,
+              "Firebird BETWEEN delete lowering was rejected") &&
+       ok;
+  ok = Expect(
+           Contains(deleted.sblr_payload,
+                    "\"operation_id\":\"dml.delete_rows\"") &&
+               Contains(deleted.sblr_payload,
+                        "\"predicate_kind\":\"column_range\"") &&
+               Contains(deleted.sblr_payload,
+                        "\"predicate_column\":\"A\"") &&
+               Contains(deleted.sblr_payload,
+                        "\"predicate_value\":\"4,7\"") &&
+               Contains(deleted.sblr_payload,
+                        "\"predicate_value_type\":\"bigint,bigint\"") &&
+               !Contains(deleted.sblr_payload, "DELETE FROM"),
+           "Firebird BETWEEN delete envelope mismatch") &&
+       ok;
+
+  const auto quoted = session.RunStatement(
+      "SELECT COUNT(*) FROM TEST WHERE LABEL BETWEEN "
+      "'A AND B, it''s' AND 'Z, end'",
+      {}, false);
+  ok = Expect(quoted.accepted,
+              "Firebird quoted BETWEEN lowering was rejected") &&
+       ok;
+  ok = Expect(
+           Contains(quoted.sblr_payload,
+                    "\"predicate_kind\":\"column_range\"") &&
+               Contains(quoted.sblr_payload,
+                        "\"predicate_column\":\"LABEL\"") &&
+               Contains(quoted.sblr_payload,
+                        "\"predicate_value\":\"'A AND B, it''s','Z, end'\"") &&
+               Contains(quoted.sblr_payload,
+                        "\"predicate_value_type\":\"text,text\""),
+           "Firebird quoted BETWEEN bounds were split or escaped incorrectly") &&
+       ok;
+
+  for (const auto sql : {
+           "SELECT COUNT(*) FROM TEST WHERE A BETWEEN NULL AND 7",
+           "SELECT COUNT(*) FROM TEST WHERE A BETWEEN 4 AND NULL"}) {
+    const auto null_bound = session.RunStatement(sql, {}, false);
+    ok = Expect(
+             null_bound.accepted &&
+                 Contains(null_bound.sblr_payload,
+                          "\"predicate_kind\":\"always_false\"") &&
+                 !Contains(null_bound.sblr_payload, "\"predicate_value\":"),
+             "Firebird NULL BETWEEN bound did not lower to always_false") &&
+         ok;
+  }
+
+  const auto expect_lowering_refused = [&](std::string_view sql,
+                                           std::string_view label) {
+    const auto rejected = session.RunStatement(sql, {}, true);
+    const std::string diagnostics =
+        scratchbird::parser::ipc::MessageVectorToJson(rejected.messages);
+    return Expect(!rejected.accepted,
+                  std::string(label) + " was accepted") &&
+           Expect(rejected.sblr_payload.empty(),
+                  std::string(label) + " produced executable SBLR") &&
+           Expect(Contains(diagnostics, "FIREBIRD.SBLR.LOWERING_UNAVAILABLE"),
+                  std::string(label) + " did not fail closed in the lowerer") &&
+           Expect(!Contains(diagnostics, "FIREBIRD.SERVER.UNAVAILABLE"),
+                  std::string(label) + " reached the server route");
+  };
+
+  for (const auto& [sql, label] : {
+           std::pair<std::string_view, std::string_view>{
+               "SELECT COUNT(*) FROM TEST WHERE A BETWEEN ? AND 7",
+               "positional BETWEEN bound"},
+           {"SELECT COUNT(*) FROM TEST WHERE A BETWEEN :LOWER_BOUND AND 7",
+            "named BETWEEN bound"},
+           {"SELECT COUNT(*) FROM TEST WHERE A BETWEEN 1 + 1 AND 7",
+            "expression BETWEEN lower bound"},
+           {"SELECT COUNT(*) FROM TEST WHERE A BETWEEN 1 AND ABS(7)",
+            "expression BETWEEN upper bound"},
+           {"SELECT COUNT(*) FROM TEST WHERE A BETWEEN 1 AND 7 AND A = 5",
+            "compound BETWEEN predicate"}}) {
+    ok = expect_lowering_refused(sql, label) && ok;
+  }
+
+  const auto malformed = session.RunStatement(
+      "DELETE FROM TEST WHERE A BETWEEN 1 AND", {}, true);
+  const std::string malformed_diagnostics =
+      scratchbird::parser::ipc::MessageVectorToJson(malformed.messages);
+  ok = Expect(!malformed.accepted,
+              "missing BETWEEN upper bound was accepted") &&
+       Expect(malformed.sblr_payload.empty(),
+              "missing BETWEEN upper bound produced executable SBLR") &&
+       Expect(Contains(malformed_diagnostics,
+                       "FIREBIRD.SBLR.LOWERING_UNAVAILABLE") ||
+                  Contains(malformed_diagnostics,
+                           "FIREBIRD.PARSE.REJECTED"),
+              "missing BETWEEN upper bound did not fail closed") &&
+       Expect(!Contains(malformed_diagnostics,
+                        "FIREBIRD.SERVER.UNAVAILABLE"),
+              "missing BETWEEN upper bound reached the server route") &&
+       ok;
+
+  return ok;
 }
 
 bool ExpectGbakLogicalStream(std::string_view sql,
@@ -247,6 +646,59 @@ bool ExpectGbakLogicalStream(std::string_view sql,
   return true;
 }
 
+void PutProbeString(std::vector<std::uint8_t>* out,
+                    std::string_view value) {
+  out->push_back(static_cast<std::uint8_t>(value.size() & 0xffu));
+  out->push_back(static_cast<std::uint8_t>((value.size() >> 8u) & 0xffu));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+bool ExpectPreparedV2UnknownProjection() {
+  using scratchbird::parser::ipc::DecodePrepareResultPayloadV2ForTest;
+  using scratchbird::parser::ipc::MessageVectorSet;
+  using scratchbird::parser::ipc::ServerPrepareSblrResult;
+
+  std::vector<std::uint8_t> malformed_success;
+  PutProbeString(&malformed_success, "accepted");
+  ServerPrepareSblrResult malformed;
+  MessageVectorSet malformed_messages;
+  bool ok = Expect(
+      !DecodePrepareResultPayloadV2ForTest(
+          malformed_success, &malformed, &malformed_messages) &&
+          !malformed.accepted && malformed.outcome_unknown &&
+          malformed.caller_cleanup_required &&
+          malformed.prepared_statement_uuid.empty() &&
+          Contains(scratchbird::parser::ipc::MessageVectorToJson(
+                       malformed_messages),
+                   "PARSER_SERVER_IPC.OUTCOME_UNKNOWN"),
+      "Malformed accepted V2 prepare did not require typed caller cleanup");
+
+  std::vector<std::uint8_t> known_rejection;
+  PutProbeString(&known_rejection, "rejected");
+  known_rejection.resize(known_rejection.size() + 16, 0);
+  PutProbeString(&known_rejection, "sblr.prepare");
+  PutProbeString(&known_rejection, "known_not_applied");
+  ServerPrepareSblrResult rejected;
+  MessageVectorSet rejected_messages;
+  ok = Expect(
+           !DecodePrepareResultPayloadV2ForTest(
+               known_rejection, &rejected, &rejected_messages) &&
+               !rejected.accepted && !rejected.outcome_unknown &&
+               !rejected.caller_cleanup_required,
+           "Explicit V2 prepare rejection incorrectly quarantined the route") &&
+       ok;
+  ok = Expect(
+           !scratchbird::parser::ipc::V2RequestMayRetryAfterWriteForTest(4009),
+           "V2 prepare was incorrectly classified as replayable after write") &&
+       ok;
+  ok = Expect(
+           !scratchbird::parser::ipc::
+               SessionBoundRequestMayRetryAfterWriteForTest(4013),
+           "Session-bound prepared close was incorrectly classified as replayable after write") &&
+       ok;
+  return ok;
+}
+
 } // namespace
 
 int main() {
@@ -303,7 +755,7 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  const auto query = ParseStatement(" select 1 ");
+  const auto query = ParseStatement(" select 1 from customer ");
   if (!Expect(query.ok, "Firebird query parse failed")) return EXIT_FAILURE;
   if (!Expect(query.statement_family == "query", "Firebird query family mismatch")) {
     return EXIT_FAILURE;
@@ -316,8 +768,32 @@ int main() {
               "Firebird query did not produce SBLR envelope")) {
     return EXIT_FAILURE;
   }
-  if (!Expect(!Contains(query.sblr_envelope, "select 1"),
+  if (!Expect(!Contains(query.sblr_envelope, "select 1") &&
+                  !Contains(query.sblr_envelope, "customer"),
               "Firebird SBLR envelope leaked SQL text")) {
+    return EXIT_FAILURE;
+  }
+  const auto bare_singleton = ParseStatement("select 1");
+  if (!Expect(!bare_singleton.ok,
+              "Firebird bare SELECT singleton should fail without RDB$DATABASE")) {
+    return EXIT_FAILURE;
+  }
+  if (!Expect(Contains(bare_singleton.message_vector_json,
+                      "FIREBIRD.PARSE.INVALID_INPUT"),
+              "Firebird bare SELECT singleton diagnostic mismatch")) {
+    return EXIT_FAILURE;
+  }
+  if (!ExpectRejected("select * from (select rdb$relation_id from rdb$database) "
+                      "where sum(rdb$relation_id) = 0",
+                      "FIREBIRD.DSQL.AGGREGATE_WHERE")) {
+    return EXIT_FAILURE;
+  }
+  const auto aggregate_subquery = ParseStatement(
+      "select i.id from v_test1 i where i.x = "
+      "(select max(x.y) from v_test2 x)");
+  if (!Expect(aggregate_subquery.ok,
+              "Firebird aggregate scalar subquery in WHERE should parse")) {
+    std::cerr << aggregate_subquery.message_vector_json << '\n';
     return EXIT_FAILURE;
   }
   const auto redaction_query = ParseStatement(
@@ -334,27 +810,27 @@ int main() {
   }
 
   const ParseCase expression_cases[] = {
-      {"SELECT GEN_ID(customer_gen, 1)",
+      {"SELECT GEN_ID(customer_gen, 1) FROM RDB$DATABASE",
        "query", "firebird.expression.generator.gen_id"},
-      {"SELECT NEXT VALUE FOR customer_seq",
+      {"SELECT NEXT VALUE FOR customer_seq FROM RDB$DATABASE",
        "query", "firebird.expression.generator.next_value_for"},
       {"SELECT RDB$GET_CONTEXT('SYSTEM', 'DB_NAME') FROM RDB$DATABASE",
        "query", "firebird.expression.context.get"},
       {"SELECT RDB$SET_CONTEXT('USER_SESSION', 'k', 'v') FROM RDB$DATABASE",
        "query", "firebird.expression.context.set"},
-      {"SELECT CURRENT_CONNECTION",
+      {"SELECT CURRENT_CONNECTION FROM RDB$DATABASE",
        "query", "firebird.expression.context.variable"},
-      {"SELECT UUID_TO_CHAR(:id)",
+      {"SELECT UUID_TO_CHAR(:id) FROM RDB$DATABASE",
        "query", "firebird.expression.uuid.uuid_to_char"},
-      {"SELECT CHAR_TO_UUID(:id)",
+      {"SELECT CHAR_TO_UUID(:id) FROM RDB$DATABASE",
        "query", "firebird.expression.uuid.char_to_uuid"},
-      {"SELECT HASH('abc')",
+      {"SELECT HASH('abc') FROM RDB$DATABASE",
        "query", "firebird.expression.hash.hash"},
-      {"SELECT DATEADD(1 DAY TO CURRENT_DATE)",
+      {"SELECT DATEADD(1 DAY TO CURRENT_DATE) FROM RDB$DATABASE",
        "query", "firebird.expression.temporal"},
       {"SELECT COUNT(*) FROM customer",
        "query", "firebird.expression.aggregate_window"},
-      {"SELECT COALESCE(:name, 'n/a')",
+      {"SELECT COALESCE(:name, 'n/a') FROM RDB$DATABASE",
        "query", "firebird.expression.conditional"},
       {"SELECT UPPER(name) FROM customer",
        "query", "firebird.expression.string"},
@@ -390,15 +866,15 @@ int main() {
        "datatype", "firebird.datatype.domain.alter"},
       {"DROP DOMAIN positive_int",
        "datatype", "firebird.datatype.domain.drop"},
-      {"SELECT CAST('42' AS INTEGER)",
+      {"SELECT CAST('42' AS INTEGER) FROM RDB$DATABASE",
        "query", "firebird.datatype.cast"},
-      {"SELECT DATE '2026-05-08'",
+      {"SELECT DATE '2026-05-08' FROM RDB$DATABASE",
        "query", "firebird.datatype.temporal_literal"},
-      {"SELECT CAST(1 AS DECFLOAT(34))",
+      {"SELECT CAST(1 AS DECFLOAT(34)) FROM RDB$DATABASE",
        "query", "firebird.datatype.cast"},
-      {"SELECT TRUE",
+      {"SELECT TRUE FROM RDB$DATABASE",
        "query", "firebird.datatype.boolean_literal"},
-      {"SELECT CAST('x' AS VARCHAR(10) CHARACTER SET UTF8)",
+      {"SELECT CAST('x' AS VARCHAR(10) CHARACTER SET UTF8) FROM RDB$DATABASE",
        "query", "firebird.datatype.cast"},
   };
   for (const auto& test : datatype_cases) {
@@ -697,6 +1173,13 @@ int main() {
   for (const auto& test : transaction_cases) {
     if (!ExpectParseCase(test)) return EXIT_FAILURE;
   }
+
+  if (!ExpectCompositeTableKeyEnvelope()) return EXIT_FAILURE;
+  if (!ExpectTextResourceCreateEnvelope()) return EXIT_FAILURE;
+  if (!ExpectAsciiCharInsertEnvelope()) return EXIT_FAILURE;
+  if (!ExpectPreparedDsqlPreflight()) return EXIT_FAILURE;
+  if (!ExpectPreparedV2UnknownProjection()) return EXIT_FAILURE;
+  if (!ExpectBetweenPredicateEnvelopes()) return EXIT_FAILURE;
 
   if (!ExpectRejected("INSERT INTO customer(id) VALUES (",
                       "FIREBIRD.PARSE.INVALID_INPUT")) {

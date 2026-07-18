@@ -123,6 +123,12 @@ void Pad4(std::vector<std::uint8_t>* out) {
   }
 }
 
+void PutPaddedString(std::vector<std::uint8_t>* out,
+                     const std::string& value) {
+  out->insert(out->end(), value.begin(), value.end());
+  Pad4(out);
+}
+
 void PutTlv(std::vector<std::uint8_t>* out,
             const std::string& key,
             std::uint16_t type_code,
@@ -235,6 +241,8 @@ bool IsKnownMessageType(std::uint16_t message_type) {
     case 45:
     case 46:
     case 47:
+    case 48:
+    case 49:
     case 50:
     case 51:
     case 60:
@@ -260,8 +268,10 @@ bool IsKnownMessageType(std::uint16_t message_type) {
 }
 
 bool HasUnknownCapabilityBits(const std::array<std::uint8_t, 32>& capability_bitmap) {
-  constexpr std::uint8_t kKnownByte0 = 0x01;
-  if ((capability_bitmap[0] & static_cast<std::uint8_t>(~kKnownByte0)) != 0) return true;
+  if ((capability_bitmap[0] &
+       static_cast<std::uint8_t>(~kKnownCapabilityByte0)) != 0) {
+    return true;
+  }
   for (std::size_t i = 1; i < capability_bitmap.size(); ++i) {
     if (capability_bitmap[i] != 0) return true;
   }
@@ -500,10 +510,15 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
     const std::vector<ServerDiagnostic>& diagnostics,
     const std::array<std::uint8_t, 16>& request_uuid) {
   std::vector<std::uint8_t> records;
+  bool set_redacted = false;
   for (const auto& diagnostic : diagnostics) {
     std::vector<std::uint8_t> record(112, 0);
     PutAtU16(&record, 8, 1);
-    record[10] = 1;
+    record[10] = diagnostic.severity == ServerDiagnosticSeverity::kWarning
+                     ? 1
+                     : (diagnostic.severity == ServerDiagnosticSeverity::kInfo
+                            ? 2
+                            : 0);
     record[11] = diagnostic.severity == ServerDiagnosticSeverity::kWarning ? 1 :
                  diagnostic.severity == ServerDiagnosticSeverity::kInfo ? 0 : 2;
     const auto vector_uuid = MakeUuidV7Bytes();
@@ -518,18 +533,22 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
         public_fields.push_back(field);
       }
     }
+    const bool record_redacted =
+        public_fields.size() != diagnostic.fields.size();
+    set_redacted = set_redacted || record_redacted;
     PutAtU16(&record, 92, static_cast<std::uint16_t>(language.size()));
     PutAtU16(&record, 94, static_cast<std::uint16_t>(diagnostic.code.size()));
     PutAtU16(&record, 96, static_cast<std::uint16_t>(diagnostic.message_key.size()));
     PutAtU16(&record, 98, static_cast<std::uint16_t>(admin_detail_key.size()));
     PutAtU16(&record, 100, static_cast<std::uint16_t>(diagnostic.safe_message.size()));
     PutAtU16(&record, 102, static_cast<std::uint16_t>(public_fields.size()));
-    record[109] = 1;
-    record.insert(record.end(), language.begin(), language.end());
-    record.insert(record.end(), diagnostic.code.begin(), diagnostic.code.end());
-    record.insert(record.end(), diagnostic.message_key.begin(), diagnostic.message_key.end());
-    record.insert(record.end(), admin_detail_key.begin(), admin_detail_key.end());
-    record.insert(record.end(), diagnostic.safe_message.begin(), diagnostic.safe_message.end());
+    record[108] = diagnostic.retryable ? 1 : 0;
+    record[109] = record_redacted ? 1 : 0;
+    PutPaddedString(&record, language);
+    PutPaddedString(&record, diagnostic.code);
+    PutPaddedString(&record, diagnostic.message_key);
+    PutPaddedString(&record, admin_detail_key);
+    PutPaddedString(&record, diagnostic.safe_message);
     for (const auto& field : public_fields) {
       PutTlv(&record, field.key, 1, field.value);
     }
@@ -545,7 +564,7 @@ std::vector<std::uint8_t> EncodeMessageVectorSet(
   PutAtU32(&out, 0, kMessageVectorMagic);
   PutAtU16(&out, 4, 64);
   PutAtU16(&out, 6, 1);
-  PutAtU32(&out, 8, 1);
+  PutAtU32(&out, 8, set_redacted ? 1u : 0u);
   PutAtU32(&out, 12, static_cast<std::uint32_t>(diagnostics.size()));
   PutAtU32(&out, 16, static_cast<std::uint32_t>(64 + records.size()));
   const auto records_crc = records.empty() ? 0 : Crc32c(records.data(), records.size());
@@ -574,7 +593,10 @@ std::vector<std::string> DecodeMessageVectorDiagnosticCodes(const std::vector<st
     if (record_bytes < 112 || offset + record_bytes > payload.size()) break;
     const auto language_len = GetU16(payload, offset + 92);
     const auto code_len = GetU16(payload, offset + 94);
-    std::size_t code_offset = offset + 112 + language_len;
+    const auto padded = [](std::size_t length) {
+      return length + ((4u - (length % 4u)) % 4u);
+    };
+    std::size_t code_offset = offset + 112 + padded(language_len);
     if (code_offset + code_len <= offset + record_bytes) {
       codes.emplace_back(reinterpret_cast<const char*>(payload.data() + code_offset), code_len);
     }

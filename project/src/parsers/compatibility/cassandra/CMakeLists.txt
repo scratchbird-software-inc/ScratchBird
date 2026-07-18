@@ -29,7 +29,10 @@ target_link_libraries(sbl_cassandra_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_cassandra main.cpp)
+add_executable(sbp_cassandra
+  main.cpp
+  cassandra_worker_session.cpp
+)
 target_compile_features(sbp_cassandra PRIVATE cxx_std_23)
 target_link_libraries(sbp_cassandra PRIVATE
   sbl_cassandra_parser_pipeline

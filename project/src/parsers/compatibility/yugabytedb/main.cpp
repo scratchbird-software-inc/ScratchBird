@@ -7,9 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "yugabytedb_dialect.hpp"
+#include "yugabytedb_worker_session.hpp"
 
 #include "control_plane.hpp"
-#include "compatibility_worker_session.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -125,8 +125,8 @@ int RunListenerWorker() {
       response.payload = scratchbird::listener::EncodeHandoffAckPayload(handoff_ack);
       scratchbird::listener::SendControlFrame(control_fd, response);
       if (handoff_ack.accepted) {
-        const int rc = scratchbird::parser::compatibility::ServeTextWorkerSession(
-            handoff_fd, scratchbird::parser::yugabytedb::Profile());
+        const int rc =
+            scratchbird::parser::yugabytedb::ServeYugabytedbWorkerSession(handoff_fd);
         CloseFd(handoff_fd);
         return rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
       }

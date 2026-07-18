@@ -12,6 +12,7 @@
 
 #include "common/function_result_helpers.hpp"
 #include "api_types.hpp"
+#include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "sblr/sblr_domain_runtime.hpp"

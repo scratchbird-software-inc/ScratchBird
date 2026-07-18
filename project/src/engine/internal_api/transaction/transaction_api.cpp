@@ -124,7 +124,7 @@ TransactionInventoryGuardRegistry() {
   return registry;
 }
 
-std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuard(
+std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuardImpl(
     const std::string& database_path) {
   std::shared_ptr<std::recursive_mutex> mutex;
   {
@@ -275,6 +275,15 @@ EngineApiDiagnostic ValidateTransactionPolicy(const EngineBeginTransactionReques
       if (value == "read_write" || value == "read_only") { continue; }
       return MakeInvalidRequestDiagnostic("transaction.begin", "unsupported_transaction_read_mode");
     }
+    if (StartsWith(profile, "transaction_wait_mode:")) {
+      const std::string value = NormalizedOptionText(profile.substr(22));
+      if (value == "wait" || value == "no_wait") { continue; }
+      return MakeInvalidRequestDiagnostic("transaction.begin", "unsupported_transaction_wait_mode");
+    }
+    if (StartsWith(profile, "transaction_lock_timeout_ms:") &&
+        IsDigits(profile.substr(28))) {
+      continue;
+    }
     return MakeInvalidRequestDiagnostic("transaction.begin", "unsupported_transaction_policy_profile");
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -318,6 +327,20 @@ EngineApiDiagnostic ApplyTransactionPolicyProfile(const std::string& profile,
     }
     return MakeInvalidRequestDiagnostic(operation_id, "unsupported_transaction_read_mode");
   }
+  if (StartsWith(profile, "transaction_wait_mode:")) {
+    const std::string value = NormalizedOptionText(profile.substr(22));
+    if (value == "wait" || value == "no_wait") {
+      policy->wait_mode = value;
+      return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+    }
+    return MakeInvalidRequestDiagnostic(operation_id, "unsupported_transaction_wait_mode");
+  }
+  if (StartsWith(profile, "transaction_lock_timeout_ms:") &&
+      IsDigits(profile.substr(28))) {
+    policy->lock_timeout_millis = ParseU64(profile.substr(28));
+    policy->lock_timeout_present = true;
+    return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
   if (profile == "fail_closed:false") {
     return MakeInvalidRequestDiagnostic(operation_id, "transaction_policy_must_fail_closed");
   }
@@ -350,6 +373,15 @@ EngineApiDiagnostic BuildRuntimePolicy(const EngineProfileSet& profiles,
 std::optional<TransactionInventoryEntry> FindTransaction(const scratchbird::transaction::mga::LocalTransactionInventory& inventory,
                                                          LocalTransactionId local_id);
 
+struct ExactTransactionIdentityLookup {
+  std::optional<TransactionInventoryEntry> entry;
+  std::string refusal_reason;
+};
+
+ExactTransactionIdentityLookup FindExactTransactionIdentity(
+    const LocalTransactionInventory& inventory,
+    const EngineRequestContext& context);
+
 template <typename TResult>
 std::optional<TResult> EnforceRuntimePolicyForExistingTransaction(const EngineApiRequest& request,
                                                                  const std::string& operation_id,
@@ -360,17 +392,20 @@ std::optional<TResult> EnforceRuntimePolicyForExistingTransaction(const EngineAp
   if (profile_status.error) {
     return MakeTxnError<TResult>(request.context, operation_id, profile_status);
   }
-  const auto entry = FindTransaction(inventory, MakeLocalTransactionId(request.context.local_transaction_id));
-  if (!entry.has_value()) {
+  const auto exact_identity =
+      FindExactTransactionIdentity(inventory, request.context);
+  if (!exact_identity.entry.has_value()) {
     return MakeTxnError<TResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found"));
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     exact_identity.refusal_reason));
   }
-  const auto evaluated = EvaluateTransactionRuntimePolicy(*entry,
+  const auto evaluated = EvaluateTransactionRuntimePolicy(*exact_identity.entry,
                                                           policy,
                                                           CurrentUnixMillis(),
-                                                          entry->begin_unix_epoch_millis);
+                                                          exact_identity.entry
+                                                              ->begin_unix_epoch_millis);
   if (!evaluated.ok() && !allow_rollback_resolution) {
     return MakeTxnError<TResult>(
         request.context,
@@ -388,6 +423,142 @@ std::optional<TransactionInventoryEntry> FindTransaction(const scratchbird::tran
     if (entry.identity.local_id.value == local_id.value) { return entry; }
   }
   return std::nullopt;
+}
+
+ExactTransactionIdentityLookup FindExactTransactionIdentity(
+    const LocalTransactionInventory& inventory,
+    const EngineRequestContext& context) {
+  ExactTransactionIdentityLookup result;
+  if (context.transaction_uuid.canonical.empty()) {
+    result.refusal_reason = "transaction_uuid_required";
+    return result;
+  }
+  const auto parsed = ParseTypedUuid(
+      UuidKind::transaction, context.transaction_uuid.canonical);
+  if (!parsed.ok()) {
+    result.refusal_reason = "transaction_uuid_malformed";
+    return result;
+  }
+  result.entry = FindTransaction(
+      inventory, MakeLocalTransactionId(context.local_transaction_id));
+  if (!result.entry.has_value()) {
+    result.refusal_reason = "local_transaction_id_not_found";
+    return result;
+  }
+  if (result.entry->identity.transaction_uuid.value != parsed.value.value) {
+    result.entry.reset();
+    result.refusal_reason = "transaction_identity_mismatch";
+    return result;
+  }
+  return result;
+}
+
+void ClassifyCommitRefusalBeforeInventoryMutation(
+    EngineCommitTransactionResult* result,
+    const TransactionInventoryEntry* exact_entry = nullptr) {
+  if (result == nullptr) return;
+  result->commit_finality_state = "refused_before_inventory_commit";
+  result->engine_finality_known = true;
+  result->post_inventory_secondary_failure = false;
+  result->local_transaction_id = 0;
+  result->transaction_uuid.canonical.clear();
+  if (exact_entry != nullptr) {
+    result->local_transaction_id = exact_entry->identity.local_id.value;
+    result->transaction_uuid.canonical =
+        UuidToString(exact_entry->identity.transaction_uuid.value);
+  }
+  result->evidence.push_back(
+      {"mga_finality_state", "not_committed_by_engine_inventory"});
+  result->evidence.push_back({"engine_finality_known", "true"});
+  result->evidence.push_back(
+      {"post_inventory_secondary_failure", "false"});
+}
+
+void ClassifyRollbackRefusalBeforeInventoryMutation(
+    EngineRollbackTransactionResult* result,
+    const TransactionInventoryEntry* exact_entry = nullptr) {
+  if (result == nullptr) return;
+  result->rollback_finality_state = "refused_before_inventory_rollback";
+  result->engine_finality_known = true;
+  result->post_inventory_secondary_failure = false;
+  result->local_transaction_id = 0;
+  result->transaction_uuid.canonical.clear();
+  if (exact_entry != nullptr) {
+    result->local_transaction_id = exact_entry->identity.local_id.value;
+    result->transaction_uuid.canonical =
+        UuidToString(exact_entry->identity.transaction_uuid.value);
+  }
+  result->evidence.push_back(
+      {"mga_finality_state", "not_rolled_back_by_engine_inventory"});
+  result->evidence.push_back({"engine_finality_known", "true"});
+  result->evidence.push_back(
+      {"post_inventory_secondary_failure", "false"});
+}
+
+void ClassifyCommitInventoryPersistenceOutcomeUnknown(
+    EngineCommitTransactionResult* result,
+    const TransactionInventoryEntry& exact_entry) {
+  if (result == nullptr) return;
+  result->commit_finality_state =
+      "commit_inventory_persistence_outcome_unknown";
+  result->engine_finality_known = false;
+  result->post_inventory_secondary_failure = false;
+  result->local_transaction_id = exact_entry.identity.local_id.value;
+  result->transaction_uuid.canonical =
+      UuidToString(exact_entry.identity.transaction_uuid.value);
+  result->evidence.push_back(
+      {"mga_finality_state", "inventory_persistence_outcome_unknown"});
+  result->evidence.push_back({"engine_finality_known", "false"});
+  result->evidence.push_back(
+      {"post_inventory_secondary_failure", "false"});
+}
+
+void ClassifyRollbackInventoryPersistenceOutcomeUnknown(
+    EngineRollbackTransactionResult* result,
+    const TransactionInventoryEntry& exact_entry) {
+  if (result == nullptr) return;
+  result->rollback_finality_state =
+      "rollback_inventory_persistence_outcome_unknown";
+  result->engine_finality_known = false;
+  result->post_inventory_secondary_failure = false;
+  result->local_transaction_id = exact_entry.identity.local_id.value;
+  result->transaction_uuid.canonical =
+      UuidToString(exact_entry.identity.transaction_uuid.value);
+  result->evidence.push_back(
+      {"mga_finality_state", "inventory_persistence_outcome_unknown"});
+  result->evidence.push_back({"engine_finality_known", "false"});
+  result->evidence.push_back(
+      {"post_inventory_secondary_failure", "false"});
+}
+
+EngineCommitTransactionResult RefuseCommitBeforeInventoryMutation(
+    const EngineRequestContext& context,
+    const std::string& operation_id,
+    std::string reason) {
+  auto result = MakeTxnError<EngineCommitTransactionResult>(
+      context,
+      operation_id,
+      MakeInvalidRequestDiagnostic(operation_id, reason));
+  ClassifyCommitRefusalBeforeInventoryMutation(&result);
+  result.evidence.push_back(
+      {"composite_transaction_identity", "refused_before_inventory_mutation"});
+  result.evidence.push_back({"identity_refusal_reason", std::move(reason)});
+  return result;
+}
+
+EngineRollbackTransactionResult RefuseRollbackBeforeInventoryMutation(
+    const EngineRequestContext& context,
+    const std::string& operation_id,
+    std::string reason) {
+  auto result = MakeTxnError<EngineRollbackTransactionResult>(
+      context,
+      operation_id,
+      MakeInvalidRequestDiagnostic(operation_id, reason));
+  ClassifyRollbackRefusalBeforeInventoryMutation(&result);
+  result.evidence.push_back(
+      {"composite_transaction_identity", "refused_before_inventory_mutation"});
+  result.evidence.push_back({"identity_refusal_reason", std::move(reason)});
+  return result;
 }
 
 bool ContainsTransactionUuid(const LocalTransactionInventory& inventory, const TypedUuid& transaction_uuid) {
@@ -1024,6 +1195,11 @@ EngineApiDiagnostic ValidateBeginTransactionAdmission(const EngineBeginTransacti
 
 }  // namespace
 
+std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuard(
+    const std::string& database_path) {
+  return AcquireTransactionInventoryGuardImpl(database_path);
+}
+
 EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
     const EngineSetTransactionCharacteristicsRequest& request) {
   const std::string operation_id = "transaction.set_characteristics";
@@ -1139,6 +1315,18 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   if (begin_policy_status.error) {
     return MakeTxnError<EngineBeginTransactionResult>(request.context, operation_id, begin_policy_status);
   }
+  if (begin_policy.lock_timeout_present && begin_policy.wait_mode.empty()) {
+    begin_policy.wait_mode = "wait";
+  }
+  if (begin_policy.wait_mode == "no_wait" &&
+      begin_policy.lock_timeout_present &&
+      begin_policy.lock_timeout_millis != 0) {
+    return MakeTxnError<EngineBeginTransactionResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "transaction_wait_timeout_conflict"));
+  }
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
@@ -1241,6 +1429,14 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   }
   result.evidence.push_back({"max_active_millis", std::to_string(begin_policy.max_active_millis)});
   result.evidence.push_back({"max_idle_millis", std::to_string(begin_policy.max_idle_millis)});
+  if (!begin_policy.wait_mode.empty()) {
+    result.evidence.push_back({"transaction_wait_mode", begin_policy.wait_mode});
+  }
+  if (begin_policy.lock_timeout_present) {
+    result.evidence.push_back(
+        {"transaction_lock_timeout_ms",
+         std::to_string(begin_policy.lock_timeout_millis)});
+  }
   return result;
 }
 
@@ -1262,14 +1458,19 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   const auto path_status = ValidateDatabasePath(request.context, operation_id);
   mark_phase("validate_database_path");
   if (path_status.error) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
-        request.context, operation_id, path_status));
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
+        request.context, operation_id, path_status);
+    ClassifyCommitRefusalBeforeInventoryMutation(&result);
+    return trace_and_return(std::move(result));
   }
   if (request.context.local_transaction_id == 0) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required")));
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "local_transaction_id_required"));
+    ClassifyCommitRefusalBeforeInventoryMutation(&result);
+    return trace_and_return(std::move(result));
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
@@ -1277,27 +1478,40 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
   mark_phase("load_transaction_inventory");
   if (!loaded.ok()) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
         DiagnosticFromMGA(loaded.diagnostic,
                           "SB-MGA-TXN-INV-LOAD-FAILED",
-                          "mga.transaction_inventory.load_failed")));
+                          "mga.transaction_inventory.load_failed"));
+    ClassifyCommitRefusalBeforeInventoryMutation(&result);
+    return trace_and_return(std::move(result));
+  }
+  const auto exact_identity =
+      FindExactTransactionIdentity(loaded.inventory, request.context);
+  mark_phase("validate_composite_transaction_identity");
+  if (!exact_identity.entry.has_value()) {
+    return trace_and_return(RefuseCommitBeforeInventoryMutation(
+        request.context, operation_id, exact_identity.refusal_reason));
   }
   if (auto policy_error = EnforceRuntimePolicyForExistingTransaction<EngineCommitTransactionResult>(
           request, operation_id, loaded.inventory, false)) {
     mark_phase("enforce_existing_runtime_policy");
-    return trace_and_return(*policy_error);
+    ClassifyCommitRefusalBeforeInventoryMutation(
+        &*policy_error, &*exact_identity.entry);
+    return trace_and_return(std::move(*policy_error));
   }
   mark_phase("enforce_existing_runtime_policy");
-  const auto committing_entry = FindTransaction(loaded.inventory,
-                                                MakeLocalTransactionId(request.context.local_transaction_id));
+  const auto committing_entry = exact_identity.entry;
   mark_phase("find_current_transaction");
   if (!committing_entry.has_value()) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found")));
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "local_transaction_id_not_found"));
+    ClassifyCommitRefusalBeforeInventoryMutation(&result);
+    return trace_and_return(std::move(result));
   }
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
   std::uint64_t temporary_deleted_rows = 0;
@@ -1307,14 +1521,17 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
     mark_phase("validate_deferred_constraints");
     if (deferred_constraints.error) {
-      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
-          request.context, operation_id, deferred_constraints));
+      auto result = MakeTxnError<EngineCommitTransactionResult>(
+          request.context, operation_id, deferred_constraints);
+      ClassifyCommitRefusalBeforeInventoryMutation(
+          &result, &*committing_entry);
+      return trace_and_return(std::move(result));
     }
     durability_batch = EvaluateCommitDurabilityBatching(request, *committing_entry);
     mark_phase("evaluate_commit_durability_batching");
     if (durability_batch.requested && !durability_batch.result.ok &&
         (durability_batch.required || durability_batch.result.fail_closed)) {
-      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+      auto result = MakeTxnError<EngineCommitTransactionResult>(
           request.context,
           operation_id,
           MakeEngineApiDiagnostic(
@@ -1323,7 +1540,10 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                   : durability_batch.result.diagnostic_code,
               "transaction.commit.durability_batching_refused",
               durability_batch.result.fallback_reason,
-              true)));
+              true));
+      ClassifyCommitRefusalBeforeInventoryMutation(
+          &result, &*committing_entry);
+      return trace_and_return(std::move(result));
     }
     const auto temporary_cleanup = ApplyMgaTemporaryOnCommitActions(request.context,
                                                                    request.context.local_transaction_id,
@@ -1331,8 +1551,11 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                                                                    &temporary_reclaimed_large_values);
     mark_phase("temporary_on_commit_cleanup");
     if (temporary_cleanup.error) {
-      return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
-          request.context, operation_id, temporary_cleanup));
+      auto result = MakeTxnError<EngineCommitTransactionResult>(
+          request.context, operation_id, temporary_cleanup);
+      ClassifyCommitRefusalBeforeInventoryMutation(
+          &result, &*committing_entry);
+      return trace_and_return(std::move(result));
     }
   }
   if (IparFaultPointRequested(request.option_envelopes, "commit_fence")) {
@@ -1343,8 +1566,9 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
         IparFaultDiagnostic(operation_id,
                             "commit_fence",
                             "phase=before_inventory_commit"));
-    result.local_transaction_id = request.context.local_transaction_id;
-    result.transaction_uuid = request.context.transaction_uuid;
+    result.local_transaction_id = committing_entry->identity.local_id.value;
+    result.transaction_uuid.canonical =
+        UuidToString(committing_entry->identity.transaction_uuid.value);
     static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
     static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
     result.commit_finality_state = "refused_before_inventory_commit";
@@ -1361,22 +1585,28 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   const auto committed = CommitLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
   mark_phase("commit_local_transaction");
   if (!committed.ok()) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
         DiagnosticFromMGA(committed.diagnostic,
                           "SB-MGA-TXN-LIFE-COMMIT-FAILED",
-                          "mga.transaction_lifecycle.commit_failed")));
+                          "mga.transaction_lifecycle.commit_failed"));
+    ClassifyCommitRefusalBeforeInventoryMutation(
+        &result, &*committing_entry);
+    return trace_and_return(std::move(result));
   }
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory);
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
-    return trace_and_return(MakeTxnError<EngineCommitTransactionResult>(
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
         request.context,
         operation_id,
         DiagnosticFromMGA(persisted.diagnostic,
                           "SB-MGA-TXN-INV-PERSIST-FAILED",
-                          "mga.transaction_inventory.persist_failed")));
+                          "mga.transaction_inventory.persist_failed"));
+    ClassifyCommitInventoryPersistenceOutcomeUnknown(
+        &result, committed.entry);
+    return trace_and_return(std::move(result));
   }
   // DPC_DEFERRED_INDEX_WRITE_PATH
   const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
@@ -1865,54 +2095,169 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   const std::string operation_id = "transaction.rollback";
   const auto path_status = ValidateDatabasePath(request.context, operation_id);
   if (path_status.error) {
-    return MakeTxnError<EngineRollbackTransactionResult>(request.context, operation_id, path_status);
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
+        request.context, operation_id, path_status);
+    ClassifyRollbackRefusalBeforeInventoryMutation(&result);
+    return result;
   }
   if (request.context.local_transaction_id == 0) {
-    return MakeTxnError<EngineRollbackTransactionResult>(
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required"));
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "local_transaction_id_required"));
+    ClassifyRollbackRefusalBeforeInventoryMutation(&result);
+    return result;
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
   const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
   if (!loaded.ok()) {
-    return MakeTxnError<EngineRollbackTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(loaded.diagnostic, "SB-MGA-TXN-INV-LOAD-FAILED", "mga.transaction_inventory.load_failed"));
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed"));
+    ClassifyRollbackRefusalBeforeInventoryMutation(&result);
+    return result;
+  }
+  const auto exact_identity =
+      FindExactTransactionIdentity(loaded.inventory, request.context);
+  if (!exact_identity.entry.has_value()) {
+    return RefuseRollbackBeforeInventoryMutation(
+        request.context, operation_id, exact_identity.refusal_reason);
   }
   if (auto policy_error = EnforceRuntimePolicyForExistingTransaction<EngineRollbackTransactionResult>(
           request, operation_id, loaded.inventory, true)) {
-    return *policy_error;
+    ClassifyRollbackRefusalBeforeInventoryMutation(
+        &*policy_error, &*exact_identity.entry);
+    return std::move(*policy_error);
   }
-  const auto rollback_entry = FindTransaction(loaded.inventory,
-                                              MakeLocalTransactionId(request.context.local_transaction_id));
+  const auto rollback_entry = exact_identity.entry;
   if (!rollback_entry.has_value()) {
-    return MakeTxnError<EngineRollbackTransactionResult>(
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
         request.context,
         operation_id,
-        MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_not_found"));
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "local_transaction_id_not_found"));
+    ClassifyRollbackRefusalBeforeInventoryMutation(&result);
+    return result;
   }
   const bool read_only_rollback = rollback_entry->state == TransactionState::read_only_active;
+  if (IparFaultPointRequested(request.option_envelopes, "rollback_fence")) {
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
+        request.context,
+        operation_id,
+        IparFaultDiagnostic(operation_id,
+                            "rollback_fence",
+                            "phase=before_inventory_rollback"));
+    result.local_transaction_id = rollback_entry->identity.local_id.value;
+    result.transaction_uuid.canonical =
+        UuidToString(rollback_entry->identity.transaction_uuid.value);
+    static_cast<EngineApiResult&>(result).local_transaction_id =
+        result.local_transaction_id;
+    static_cast<EngineApiResult&>(result).transaction_uuid =
+        result.transaction_uuid;
+    result.rollback_finality_state = "refused_before_inventory_rollback";
+    result.engine_finality_known = true;
+    result.post_inventory_secondary_failure = false;
+    result.evidence.push_back(
+        {"mga_finality_state", "not_rolled_back_by_engine_inventory"});
+    result.evidence.push_back({"engine_finality_known", "true"});
+    result.evidence.push_back(
+        {"post_inventory_secondary_failure", "false"});
+    AppendIparFaultEvidence(&result.evidence,
+                            "rollback_fence",
+                            "transaction_remains_active_before_inventory_rollback");
+    return result;
+  }
   const auto rolled_back = RollbackLocalTransaction(loaded.inventory, MakeLocalTransactionId(request.context.local_transaction_id), CurrentUnixMillis());
   if (!rolled_back.ok()) {
-    return MakeTxnError<EngineRollbackTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(rolled_back.diagnostic, "SB-MGA-TXN-LIFE-ROLLBACK-FAILED", "mga.transaction_lifecycle.rollback_failed"));
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(rolled_back.diagnostic,
+                          "SB-MGA-TXN-LIFE-ROLLBACK-FAILED",
+                          "mga.transaction_lifecycle.rollback_failed"));
+    ClassifyRollbackRefusalBeforeInventoryMutation(
+        &result, &*rollback_entry);
+    return result;
   }
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, rolled_back.inventory);
   if (!persisted.ok()) {
-    return MakeTxnError<EngineRollbackTransactionResult>(request.context, operation_id,
-        DiagnosticFromMGA(persisted.diagnostic, "SB-MGA-TXN-INV-PERSIST-FAILED", "mga.transaction_inventory.persist_failed"));
+    auto result = MakeTxnError<EngineRollbackTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(persisted.diagnostic,
+                          "SB-MGA-TXN-INV-PERSIST-FAILED",
+                          "mga.transaction_inventory.persist_failed"));
+    ClassifyRollbackInventoryPersistenceOutcomeUnknown(
+        &result, rolled_back.entry);
+    return result;
   }
   // DPC_DEFERRED_INDEX_WRITE_PATH
   if (!read_only_rollback) {
+    if (IparFaultPointRequested(request.option_envelopes,
+                                "rollback_secondary")) {
+      auto result = MakeTxnError<EngineRollbackTransactionResult>(
+          request.context,
+          operation_id,
+          IparFaultDiagnostic(
+              operation_id,
+              "rollback_secondary",
+              "phase=after_inventory_rollback_before_secondary_cleanup"));
+      result.local_transaction_id =
+          rolled_back.entry.identity.local_id.value;
+      result.transaction_uuid.canonical = UuidToString(
+          rolled_back.entry.identity.transaction_uuid.value);
+      static_cast<EngineApiResult&>(result).local_transaction_id =
+          result.local_transaction_id;
+      static_cast<EngineApiResult&>(result).transaction_uuid =
+          result.transaction_uuid;
+      result.rollback_finality_state =
+          "rolled_back_post_inventory_secondary_failure";
+      result.engine_finality_known = true;
+      result.post_inventory_secondary_failure = true;
+      result.evidence.push_back(
+          {"mga_finality_state", "rolled_back_by_engine_inventory"});
+      result.evidence.push_back({"engine_finality_known", "true"});
+      result.evidence.push_back(
+          {"post_inventory_secondary_failure", "true"});
+      result.evidence.push_back({"parser_finality", "false"});
+      AppendIparFaultEvidence(
+          &result.evidence,
+          "rollback_secondary",
+          "rollback_finality_applied_secondary_cleanup_incomplete");
+      return result;
+    }
     const auto rolled_back_deltas = RollbackMgaSecondaryIndexDeltaLedgerTransaction(
         request.context,
         request.context.local_transaction_id);
     if (rolled_back_deltas.error) {
-      return MakeTxnError<EngineRollbackTransactionResult>(
+      auto result = MakeTxnError<EngineRollbackTransactionResult>(
           request.context,
           operation_id,
           rolled_back_deltas);
+      result.local_transaction_id =
+          rolled_back.entry.identity.local_id.value;
+      result.transaction_uuid.canonical = UuidToString(
+          rolled_back.entry.identity.transaction_uuid.value);
+      static_cast<EngineApiResult&>(result).local_transaction_id =
+          result.local_transaction_id;
+      static_cast<EngineApiResult&>(result).transaction_uuid =
+          result.transaction_uuid;
+      result.rollback_finality_state =
+          "rolled_back_post_inventory_secondary_failure";
+      result.engine_finality_known = true;
+      result.post_inventory_secondary_failure = true;
+      result.evidence.push_back(
+          {"mga_finality_state", "rolled_back_by_engine_inventory"});
+      result.evidence.push_back({"engine_finality_known", "true"});
+      result.evidence.push_back(
+          {"post_inventory_secondary_failure", "true"});
+      result.evidence.push_back({"parser_finality", "false"});
+      return result;
     }
   }
   auto result = MakeTxnOk<EngineRollbackTransactionResult>(request.context, operation_id);
@@ -1920,7 +2265,15 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   result.transaction_uuid.canonical = UuidToString(rolled_back.entry.identity.transaction_uuid.value);
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
+  result.rollback_finality_state = "rolled_back_by_engine_inventory";
+  result.engine_finality_known = true;
+  result.post_inventory_secondary_failure = false;
   result.evidence.push_back({"transaction_state", "rolled_back"});
+  result.evidence.push_back(
+      {"mga_finality_state", "rolled_back_by_engine_inventory"});
+  result.evidence.push_back({"engine_finality_known", "true"});
+  result.evidence.push_back(
+      {"post_inventory_secondary_failure", "false"});
   result.evidence.push_back({"transaction_read_only", read_only_rollback ? "true" : "false"});
   AppendIparTransactionBoundaryTelemetry(&result.evidence,
                                          "rollback",
@@ -2123,8 +2476,39 @@ EngineExecuteTransactionBlockResult EngineExecuteTransactionBlock(
               request, operation_id, loaded.inventory, false)) {
     return *policy_error;
   }
+  const auto exact_identity =
+      FindExactTransactionIdentity(loaded.inventory, request.context);
+  if (!exact_identity.entry.has_value() ||
+      (exact_identity.entry->state != TransactionState::active &&
+       exact_identity.entry->state != TransactionState::read_only_active)) {
+    return MakeTxnError<EngineExecuteTransactionBlockResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(
+            operation_id, "exact_active_transaction_identity_required"));
+  }
+  if (request.procedural_block_present &&
+      !request.procedural_block_valid) {
+    EngineApiDiagnostic diagnostic = request.procedural_block_diagnostic;
+    if (diagnostic.code.empty()) {
+      diagnostic = MakeInvalidRequestDiagnostic(
+          operation_id, "procedural_block_ir_invalid");
+    }
+    return MakeTxnError<EngineExecuteTransactionBlockResult>(
+        request.context, operation_id, std::move(diagnostic));
+  }
   auto result = MakeTxnOk<EngineExecuteTransactionBlockResult>(
       request.context, operation_id);
+  if (request.procedural_block_present) {
+    result.result_shape.result_kind = "sblr.procedural.block.rows.v1";
+    result.evidence.push_back(
+        {"procedural_ir_contract", request.procedural_block.contract});
+    result.evidence.push_back(
+        {"procedural_block_admission", "engine_mga_exact_transaction"});
+    result.evidence.push_back({"parser_executes_sql", "false"});
+    result.evidence.push_back({"parser_finality", "false"});
+    return result;
+  }
   const std::string surface_id = RequestOptionValue(request, "sbsfc077_surface_id:");
   const std::string block_kind = RequestOptionValue(request, "transaction_block_kind:").empty()
                                      ? "internal_procedure_block"

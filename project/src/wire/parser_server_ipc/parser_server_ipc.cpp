@@ -11,7 +11,7 @@
 #include <cstring>
 #include <sstream>
 
-namespace scratchbird::parser::sbsql {
+namespace scratchbird::parser::ipc {
 namespace {
 
 constexpr std::uint32_t kMagic = 0x53504943u; // SPIC
@@ -101,16 +101,16 @@ std::vector<std::uint8_t> EncodePacket(const ParserServerPacket& packet) {
 
 std::optional<ParserServerPacket> DecodePacket(const std::vector<std::uint8_t>& bytes, MessageVectorSet* messages) {
   if (bytes.size() < kHeaderSize) {
-    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.TRUNCATED", "ERROR", "parser IPC frame header is truncated", "sbp_sbsql.ipc"));
+    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.TRUNCATED", "ERROR", "parser IPC frame header is truncated", "parser_server_ipc.schema"));
     return std::nullopt;
   }
   if (ReadU32(bytes, 0) != kMagic) {
-    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.BAD_MAGIC", "ERROR", "parser IPC frame magic is invalid", "sbp_sbsql.ipc"));
+    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.BAD_MAGIC", "ERROR", "parser IPC frame magic is invalid", "parser_server_ipc.schema"));
     return std::nullopt;
   }
   const auto payload_len = ReadU32(bytes, 20);
   if (payload_len > kMaxPayload || bytes.size() != kHeaderSize + payload_len) {
-    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.LENGTH_INVALID", "ERROR", "parser IPC frame length is invalid", "sbp_sbsql.ipc"));
+    if (messages) messages->diagnostics.push_back(MakeDiagnostic("PARSER_IPC.FRAME.LENGTH_INVALID", "ERROR", "parser IPC frame length is invalid", "parser_server_ipc.schema"));
     return std::nullopt;
   }
   ParserServerPacket packet;
@@ -123,7 +123,7 @@ std::optional<ParserServerPacket> DecodePacket(const std::vector<std::uint8_t>& 
              << " is outside supported range "
              << kParserServerIpcProtocolMinSupported << ".."
              << kParserServerIpcProtocolMaxSupported;
-      messages->diagnostics.push_back(MakeDiagnostic(*refusal, "ERROR", reason.str(), "sbp_sbsql.ipc"));
+      messages->diagnostics.push_back(MakeDiagnostic(*refusal, "ERROR", reason.str(), "parser_server_ipc.schema"));
     }
     return std::nullopt;
   }
@@ -152,4 +152,4 @@ ParserHelloResult RefusedHelloResult(std::string code, std::string reason) {
   return result;
 }
 
-} // namespace scratchbird::parser::sbsql
+} // namespace scratchbird::parser::ipc

@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-namespace scratchbird::parser::sbsql {
+namespace scratchbird::parser::ipc {
 
 struct Field {
   std::string name;
@@ -46,4 +46,4 @@ bool LooksLikeCanonicalUuid(std::string_view value);
 bool IsPublicDiagnosticFieldAllowed(std::string_view name, std::string_view value);
 std::string MessageVectorToJson(const MessageVectorSet& messages);
 
-} // namespace scratchbird::parser::sbsql
+} // namespace scratchbird::parser::ipc

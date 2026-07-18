@@ -20,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -185,18 +186,9 @@ const std::set<std::string>& KnownKeys() {
       "server.database.create_page_size_bytes",
       "server.database.open_mode",
       "server.database.daemon_scope",
-      "server.listener.native.enabled",
-      "server.listener.native.bind_host",
-      "server.listener.native.port",
-      "server.listener.native.executable_path",
-      "server.listener.native.parser_executable_path",
-      "server.listener.native.control_dir",
-      "server.listener.native.runtime_dir",
-      "server.listener.native.tls_required",
-      "server.listener.native.tls_cert_file",
-      "server.listener.native.tls_key_file",
-      "server.listener.native.tls_ca_file",
-      "server.listener.native.ready_timeout_ms",
+      "server.listener.executable_path",
+      "server.listener.control_dir",
+      "server.listener.runtime_dir",
       "server.metrics.enabled",
       "server.metrics.flush_interval_ms",
       "server.memory.policy_name",
@@ -227,6 +219,63 @@ const std::set<std::string>& KnownKeys() {
       "server.parser.sbps_hello_timeout_ms",
   };
   return keys;
+}
+
+const std::set<std::string>& ListenerProfileFields() {
+  static const std::set<std::string> fields{
+      "enabled",
+      "protocol_family",
+      "profile_id",
+      "parser_package",
+      "parser_package_uuid",
+      "dialect_profile_uuid",
+      "bundle_contract_id",
+      "parser_api_major",
+      "parser_executable_path",
+      "bind_address",
+      "port",
+      "database_selector",
+      "sbps_endpoint",
+      "control_dir",
+      "runtime_dir",
+      "tls_required",
+      "tls_cert_file",
+      "tls_key_file",
+      "tls_ca_file",
+      "ready_timeout_ms",
+      "warm_pool_min",
+      "warm_pool_max",
+  };
+  return fields;
+}
+
+struct ListenerProfileKey {
+  std::string config_key;
+  std::string field;
+};
+
+std::optional<ListenerProfileKey> ParseListenerProfileKey(std::string_view key) {
+  constexpr std::string_view prefix = "server.listener.profile.";
+  if (!key.starts_with(prefix)) return std::nullopt;
+  const auto remainder = key.substr(prefix.size());
+  const auto separator = remainder.find('.');
+  if (separator == std::string_view::npos || separator == 0 ||
+      separator + 1 == remainder.size()) {
+    return std::nullopt;
+  }
+  const auto config_key = remainder.substr(0, separator);
+  for (const unsigned char ch : config_key) {
+    const bool valid = (ch >= 'a' && ch <= 'z') ||
+                       (ch >= '0' && ch <= '9') || ch == '_' || ch == '-';
+    if (!valid) return std::nullopt;
+  }
+  const std::string field(remainder.substr(separator + 1));
+  if (!ListenerProfileFields().contains(field)) return std::nullopt;
+  return ListenerProfileKey{std::string(config_key), field};
+}
+
+bool KnownConfigKey(std::string_view key) {
+  return KnownKeys().contains(std::string(key)) || ParseListenerProfileKey(key).has_value();
 }
 
 bool ParseBool(const std::string& value, bool* out) {
@@ -575,7 +624,7 @@ std::optional<ParsedConfig> ParseConfigFile(const std::filesystem::path& path,
       return std::nullopt;
     }
     const auto key = LowerAscii(section + "." + Trim(line.substr(0, eq)));
-    if (!KnownKeys().contains(key)) {
+    if (!KnownConfigKey(key)) {
       diagnostics->push_back(ConfigDiagnostic("CONFIG.KEY_UNKNOWN",
                                               "config.key_unknown",
                                               "The configuration file contains an unknown key.",
@@ -1062,6 +1111,19 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
     return ResolveServerConfigRelativePathImpl(value, config_path, context);
   };
 
+  auto listener_profile = [&](const std::string& config_key) -> ServerListenerProfileConfig& {
+    const auto found = std::find_if(
+        config->listener_profiles.begin(),
+        config->listener_profiles.end(),
+        [&](const ServerListenerProfileConfig& profile) {
+          return profile.config_key == config_key;
+        });
+    if (found != config->listener_profiles.end()) return *found;
+    config->listener_profiles.push_back(ServerListenerProfileConfig{});
+    config->listener_profiles.back().config_key = config_key;
+    return config->listener_profiles.back();
+  };
+
   for (const auto& [key, value] : parsed.values) {
     if (key == "config.format") {
       continue;
@@ -1177,30 +1239,78 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
       }
       config->database_daemon_scope = lower;
-    } else if (key == "server.listener.native.enabled") {
-      if (!ParseBool(value, &config->listener_native_enabled)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
-    } else if (key == "server.listener.native.bind_host") {
-      config->listener_native_bind_host = value;
-    } else if (key == "server.listener.native.port") {
-      if (!ParseUint64(value, &config->listener_native_port)) return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
-    } else if (key == "server.listener.native.executable_path") {
-      config->listener_native_executable_path = configured_path(value);
-    } else if (key == "server.listener.native.parser_executable_path") {
-      config->listener_native_parser_executable_path = configured_path(value);
-    } else if (key == "server.listener.native.control_dir") {
-      config->listener_native_control_dir = configured_path(value);
-    } else if (key == "server.listener.native.runtime_dir") {
-      config->listener_native_runtime_dir = configured_path(value);
-    } else if (key == "server.listener.native.tls_required") {
-      if (!ParseBool(value, &config->listener_native_tls_required)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
-    } else if (key == "server.listener.native.tls_cert_file") {
-      config->listener_native_tls_cert_file = configured_path(value);
-    } else if (key == "server.listener.native.tls_key_file") {
-      config->listener_native_tls_key_file = configured_path(value);
-    } else if (key == "server.listener.native.tls_ca_file") {
-      config->listener_native_tls_ca_file = configured_path(value);
-    } else if (key == "server.listener.native.ready_timeout_ms") {
-      if (!ParseDurationMs(value, &config->listener_native_ready_timeout_ms)) return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
+    } else if (key == "server.listener.executable_path") {
+      config->listener_executable_path = configured_path(value);
+    } else if (key == "server.listener.control_dir") {
+      config->listener_control_dir = configured_path(value);
+    } else if (key == "server.listener.runtime_dir") {
+      config->listener_runtime_dir = configured_path(value);
+    } else if (const auto profile_key = ParseListenerProfileKey(key); profile_key) {
+      auto& profile = listener_profile(profile_key->config_key);
+      const auto& field = profile_key->field;
+      if (field == "enabled") {
+        if (!ParseBool(value, &profile.enabled)) {
+          return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+        }
+      } else if (field == "protocol_family") {
+        profile.protocol_family = value;
+      } else if (field == "profile_id") {
+        profile.profile_id = value;
+      } else if (field == "parser_package") {
+        profile.parser_package = value;
+      } else if (field == "parser_package_uuid") {
+        profile.parser_package_uuid = value;
+      } else if (field == "dialect_profile_uuid") {
+        profile.dialect_profile_uuid = value;
+      } else if (field == "bundle_contract_id") {
+        profile.bundle_contract_id = value;
+      } else if (field == "parser_api_major") {
+        std::uint64_t parsed = 0;
+        if (!ParseUint64(value, &parsed) || parsed == 0 ||
+            parsed > std::numeric_limits<std::uint32_t>::max()) {
+          return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+        }
+        profile.parser_api_major = static_cast<std::uint32_t>(parsed);
+      } else if (field == "parser_executable_path") {
+        profile.parser_executable_path = configured_path(value);
+      } else if (field == "bind_address") {
+        profile.bind_address = value;
+      } else if (field == "port") {
+        if (!ParseUint64(value, &profile.port)) {
+          return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+        }
+      } else if (field == "database_selector") {
+        profile.database_selector = value;
+      } else if (field == "sbps_endpoint") {
+        profile.sbps_endpoint = configured_path(value);
+      } else if (field == "control_dir") {
+        profile.control_dir = configured_path(value);
+      } else if (field == "runtime_dir") {
+        profile.runtime_dir = configured_path(value);
+      } else if (field == "tls_required") {
+        if (!ParseBool(value, &profile.tls_required)) {
+          return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
+        }
+      } else if (field == "tls_cert_file") {
+        profile.tls_cert_file = configured_path(value);
+      } else if (field == "tls_key_file") {
+        profile.tls_key_file = configured_path(value);
+      } else if (field == "tls_ca_file") {
+        profile.tls_ca_file = configured_path(value);
+      } else if (field == "ready_timeout_ms") {
+        if (!ParseDurationMs(value, &profile.ready_timeout_ms)) {
+          return invalid("CONFIG.VALUE_INVALID_DURATION", key, value);
+        }
+      } else if (field == "warm_pool_min" || field == "warm_pool_max") {
+        std::uint64_t parsed = 0;
+        if (!ParseUint64(value, &parsed) || parsed == 0 ||
+            parsed > std::numeric_limits<std::uint32_t>::max()) {
+          return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
+        }
+        auto& target = field == "warm_pool_min" ? profile.warm_pool_min
+                                                  : profile.warm_pool_max;
+        target = static_cast<std::uint32_t>(parsed);
+      }
     } else if (key == "server.metrics.enabled") {
       if (!ParseBool(value, &config->metrics_enabled)) return invalid("CONFIG.VALUE_INVALID_BOOL", key, value);
     } else if (key == "server.metrics.flush_interval_ms") {
@@ -1313,6 +1423,11 @@ void ApplyCliOverrides(const ServerCliOptions& cli,
     config->database_open_mode = "restricted";
   }
   if (cli.create_if_missing) config->database_auto_create = true;
+  if (cli.no_listeners) {
+    for (auto& profile : config->listener_profiles) {
+      profile.enabled = false;
+    }
+  }
   if (cli.create_page_size_bytes != 0) {
     config->database_create_page_size_bytes = cli.create_page_size_bytes;
   }
@@ -1375,11 +1490,19 @@ void FinalizeDerivedPaths(ServerBootstrapConfig* config,
         context,
         config->allow_current_directory && config->mode != ServerMode::kService);
   }
-  if (config->listener_native_control_dir.empty()) {
-    config->listener_native_control_dir = config->control_dir / "listeners";
+  if (config->listener_control_dir.empty()) {
+    config->listener_control_dir = config->control_dir / "listeners";
   }
-  if (config->listener_native_runtime_dir.empty()) {
-    config->listener_native_runtime_dir = config->data_dir / "listeners";
+  if (config->listener_runtime_dir.empty()) {
+    config->listener_runtime_dir = config->data_dir / "listeners";
+  }
+  for (auto& profile : config->listener_profiles) {
+    if (profile.control_dir.empty()) {
+      profile.control_dir = config->listener_control_dir;
+    }
+    if (profile.runtime_dir.empty()) {
+      profile.runtime_dir = config->listener_runtime_dir;
+    }
   }
   if (config->mode == ServerMode::kService && config->log_file == "stderr") {
     config->log_file = "/var/log/scratchbird/sb_server.log";

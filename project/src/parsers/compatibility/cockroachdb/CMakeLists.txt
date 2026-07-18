@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_cockroachdb_parser_pipeline STATIC
   cockroachdb_dialect.cpp
+  cockroachdb_worker_session.cpp
 )
 
 target_compile_features(sbl_cockroachdb_parser_pipeline PUBLIC cxx_std_23)

@@ -41,7 +41,6 @@ target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC sbl_parser_server_ipc_sch
 
 set(SBSQL_PARSER_WORKER_CORE_SOURCES
   embedded/embedded_engine_client.cpp
-  ipc/sbps_client.cpp
   lifecycle/parser_lifecycle.cpp
   runtime/parser_runtime.cpp
   wire/sbsql_sbwp_wire.cpp
@@ -57,6 +56,7 @@ function(sbsql_configure_parser_worker_core target_name)
   )
   target_link_libraries(${target_name} PUBLIC
     sbl_sbsql_parser_pipeline
+    sbl_parser_server_ipc_client
     sbl_listener_control_plane
     sb_core_datatypes
     sb_core_uuid
@@ -74,6 +74,7 @@ function(sbsql_assert_standalone_parser_link_closure target_name)
   set(_visited "")
   set(_allowed_parser_targets
     sbl_parser_server_ipc_schema
+    sbl_parser_server_ipc_client
     sbl_sbsql_parser_pipeline
     sbl_sbsql_parser_worker_core
     sbp_sbsql

@@ -398,10 +398,15 @@ std::string EndpointRecordsJson(const ServerBootstrapConfig& config,
   std::ostringstream out;
   out << "[{\"endpoint_family\":\"parser_server_ipc\",\"transport\":\"af_unix\","
       << "\"endpoint\":\"" << JsonEscape(RedactedPathRecord(config.sbps_endpoint.string()))
-      << "\",\"enabled\":" << (config.sbps_enabled ? "true" : "false") << "},"
-      << "{\"endpoint_family\":\"listener_engine_endpoint\",\"transport\":\"af_unix\","
-      << "\"endpoint\":\"" << JsonEscape(RedactedPathRecord(listeners.engine_endpoint))
-      << "\",\"enabled\":true}]";
+      << "\",\"enabled\":" << (config.sbps_enabled ? "true" : "false") << "}";
+  for (const auto& profile : listeners.profiles) {
+    out << ",{\"endpoint_family\":\"listener_engine_endpoint\","
+        << "\"profile_name\":\"" << JsonEscape(profile.profile_name)
+        << "\",\"transport\":\"af_unix\",\"endpoint\":\""
+        << JsonEscape(RedactedPathRecord(profile.engine_endpoint))
+        << "\",\"enabled\":" << (profile.enabled ? "true" : "false") << "}";
+  }
+  out << ']';
   return out.str();
 }
 
@@ -413,8 +418,9 @@ std::string ListenerRecordsJson(const ServerListenerOrchestrator& listeners) {
     const auto& profile = listeners.profiles[i];
     out << "{\"listener_uuid\":\"" << JsonEscape(profile.listener_uuid)
         << "\",\"profile_name\":\"" << JsonEscape(profile.profile_name)
+        << "\",\"protocol_family\":\"" << JsonEscape(profile.protocol_family)
         << "\",\"state\":\"" << JsonEscape(profile.state)
-        << "\",\"bind_host\":\"" << JsonEscape(profile.bind_host)
+        << "\",\"bind_address\":\"" << JsonEscape(profile.bind_address)
         << "\",\"port\":" << profile.port
         << ",\"engine_endpoint\":\"" << JsonEscape(profile.engine_endpoint)
         << "\",\"parser_package_ref\":\"" << JsonEscape(profile.parser_package_ref)
@@ -676,7 +682,7 @@ ProcessAssociationRegistry BuildProcessAssociationRegistry(
         parser.association_generation = context.listener_orchestrator->generation;
         parser.heartbeat_generation = context.listener_orchestrator->generation;
         parser.policy_generation = registry.generation;
-        parser.state = profile.state == "failed" ? "listener_failed_fallback_available" : "associated";
+        parser.state = profile.state == "failed" ? "listener_failed" : "associated";
         parser.healthy = true;
         RegisterProcessAssociation(&registry, std::move(parser));
       }

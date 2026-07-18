@@ -8,7 +8,11 @@
 
 add_library(sb_server_engine_bridge INTERFACE)
 
-target_link_libraries(sb_server_engine_bridge INTERFACE
-  sb_engine_internal_api
+target_include_directories(sb_server_engine_bridge INTERFACE
+  ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
+target_link_libraries(sb_server_engine_bridge INTERFACE
+  sb_engine
+  sb_engine_internal_api
+)

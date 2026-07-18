@@ -127,7 +127,7 @@ NON_CLUSTER_DISPOSITIONS = {
 
 ENGINE_SBLR_MATRIX = "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml"
 SBSQL_COMPATIBILITY_BACKFILL_REGISTER = (
-    "public_execution_plan/final-sblr-sbsql-parser-remap-closure/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
+    "docs/compatibility-parsers/remap/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
 )
 EXTERNAL_REFERENCE_SKIP_CODE = 77
 

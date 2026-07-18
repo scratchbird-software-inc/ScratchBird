@@ -9,6 +9,7 @@
 #include "wire/sbsql_test_wire.hpp"
 #include "embedded/embedded_engine_client.hpp"
 #include "database_lifecycle.hpp"
+#include "wire/parser_server_ipc/parser_server_client.hpp"
 #include "datatype_wire_metadata.hpp"
 #include "sbps.hpp"
 #include "uuid.hpp"
@@ -98,6 +99,21 @@ void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   for (int shift = 0; shift < 64; shift += 8) {
     out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
   }
+}
+
+void PutSbpsString(std::vector<std::uint8_t>* out,
+                   std::string_view value) {
+  Require(value.size() < 0xffffu,
+          "test SBPS string exceeds the short-string fixture limit");
+  PutU16(out, static_cast<std::uint16_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+void PutSbpsTransactionSelector(std::vector<std::uint8_t>* out,
+                                std::uint64_t local_transaction_id,
+                                std::string_view transaction_uuid) {
+  PutU64(out, local_transaction_id);
+  PutSbpsString(out, transaction_uuid);
 }
 
 std::uint32_t ReadU32(const std::array<std::uint8_t, kHeaderSize>& bytes,
@@ -567,8 +583,16 @@ void CheckSbpsUnknownCapabilityBits() {
   Require(sbps::IsBuiltInTestHello(*decoded),
           "built-in SBPS hello was not accepted by the test profile gate");
 
+  auto transaction_routing_v2 = *decoded;
+  transaction_routing_v2.capability_bitmap[0] |=
+      sbps::kCapabilityTransactionRoutingV2;
+  Require(!sbps::HasUnknownCapabilityBits(
+              transaction_routing_v2.capability_bitmap) &&
+              sbps::IsBuiltInTestHello(transaction_routing_v2),
+          "SBPS transaction-routing V2 capability was not recognized");
+
   auto unknown_low = *decoded;
-  unknown_low.capability_bitmap[0] |= 0x02u;
+  unknown_low.capability_bitmap[0] |= 0x04u;
   Require(sbps::HasUnknownCapabilityBits(unknown_low.capability_bitmap),
           "SBPS low-byte unknown capability bit was not detected");
   Require(!sbps::IsBuiltInTestHello(unknown_low),
@@ -616,6 +640,117 @@ void CheckEmbeddedClientNeverCreatesMissingDatabase() {
           "embedded missing database refusal did not retain the exact diagnostic");
   std::error_code cleanup_error;
   std::filesystem::remove_all(std::filesystem::path(made), cleanup_error);
+}
+
+std::vector<std::uint8_t> V2ExecuteResultFixture(
+    std::string_view operation_id,
+    std::uint8_t transaction_flags,
+    std::uint8_t finality,
+    std::uint8_t replacement_reason) {
+  std::vector<std::uint8_t> payload;
+  PutSbpsString(&payload, "accepted");
+  payload.insert(payload.end(), 16, 0x11);
+  payload.insert(payload.end(), 16, 0);
+  PutU64(&payload, 0);
+  PutSbpsString(&payload, operation_id);
+  PutSbpsString(&payload, "");
+  PutSbpsString(&payload, "");
+  payload.push_back(transaction_flags);
+  payload.push_back(finality);
+  payload.push_back(replacement_reason);
+  if ((transaction_flags & (1u << 0)) != 0) {
+    PutSbpsTransactionSelector(
+        &payload, 41, "11111111-1111-7111-8111-111111111111");
+  }
+  if ((transaction_flags & (1u << 2)) != 0) {
+    PutSbpsTransactionSelector(
+        &payload, 41, "11111111-1111-7111-8111-111111111111");
+  }
+  if ((transaction_flags & (1u << 3)) != 0) {
+    PutSbpsTransactionSelector(
+        &payload, 42, "22222222-2222-7222-8222-222222222222");
+  }
+  PutSbpsString(&payload, "typed_fixture");
+  PutSbpsString(&payload, "");
+  return payload;
+}
+
+bool HasClientDiagnostic(
+    const scratchbird::parser::ipc::MessageVectorSet& messages,
+    std::string_view code) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+void CheckTransactionRoutingV2OutcomeCodec() {
+  namespace ipc = scratchbird::parser::ipc;
+  constexpr std::uint8_t kSelected = 1u << 0;
+  constexpr std::uint8_t kApplied = 1u << 1;
+  constexpr std::uint8_t kFinalized = 1u << 2;
+  constexpr std::uint8_t kReplacement = 1u << 3;
+  constexpr std::uint8_t kCatalogInvalidation = 1u << 4;
+
+  ipc::ServerExecutionResult decoded;
+  ipc::MessageVectorSet messages;
+  Require(ipc::DecodeExecuteResultPayloadV2ForTest(
+              V2ExecuteResultFixture("transaction.commit",
+                                     kSelected | kApplied | kFinalized |
+                                         kCatalogInvalidation,
+                                     1,
+                                     0),
+              &decoded,
+              &messages),
+          "coherent V2 known-applied commit outcome was rejected");
+  Require(decoded.finality_state ==
+                  ipc::ParserTransactionFinality::kKnownApplied &&
+              decoded.catalog_invalidation_applied &&
+              decoded.finalized_transaction_present &&
+              !decoded.transaction_state_present,
+          "coherent V2 outcome did not retain typed authority without a zero-snapshot legacy projection");
+
+  const auto expect_invalid = [&](std::string_view label,
+                                  std::vector<std::uint8_t> payload) {
+    ipc::ServerExecutionResult rejected;
+    ipc::MessageVectorSet rejected_messages;
+    Require(!ipc::DecodeExecuteResultPayloadV2ForTest(
+                payload, &rejected, &rejected_messages),
+            std::string(label) + " contradictory V2 outcome was accepted");
+    Require(HasClientDiagnostic(
+                rejected_messages,
+                "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID"),
+            std::string(label) + " did not produce the invariant diagnostic");
+  };
+  expect_invalid("applied-bit mismatch",
+                 V2ExecuteResultFixture(
+                     "transaction.commit", kSelected | kFinalized, 1, 0));
+  expect_invalid("known-applied missing finalized selector",
+                 V2ExecuteResultFixture(
+                     "transaction.commit", kSelected | kApplied, 1, 0));
+  expect_invalid("catalog invalidation on rollback",
+                 V2ExecuteResultFixture(
+                     "transaction.rollback",
+                     kSelected | kApplied | kFinalized |
+                         kCatalogInvalidation,
+                     1,
+                     0));
+  expect_invalid("replacement without reason",
+                 V2ExecuteResultFixture(
+                     "transaction.commit",
+                     kSelected | kApplied | kFinalized | kReplacement,
+                     1,
+                     0));
+  expect_invalid("unknown finality with finalized selector",
+                 V2ExecuteResultFixture(
+                     "transaction.rollback", kSelected | kFinalized, 3, 0));
+
+  Require(!ipc::V2RequestMayRetryAfterWriteForTest(4009) &&
+              !ipc::V2RequestMayRetryAfterWriteForTest(4011) &&
+              !ipc::V2RequestMayRetryAfterWriteForTest(7005),
+          "a transaction-routed V2 request remained replayable after write");
+  Require(ipc::V2RequestMayRetryAfterWriteForTest(4001),
+          "legacy V1 retry policy changed");
 }
 
 void CheckArrayBindPacketNegotiated() {
@@ -703,6 +838,7 @@ int main() {
   CheckPingPongEcho();
   CheckSbpsUnknownCapabilityBits();
   CheckEmbeddedClientNeverCreatesMissingDatabase();
+  CheckTransactionRoutingV2OutcomeCodec();
   CheckArrayBindPacketNegotiated();
   CheckScriptIngestQueryMetadata();
   CheckScriptIngestPartialQueryFrames();

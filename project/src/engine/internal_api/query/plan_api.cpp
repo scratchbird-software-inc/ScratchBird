@@ -942,6 +942,7 @@ plan::PhysicalAccessKind PlannedAccessKindForRequest(const EnginePlanOperationRe
   if (operation == "join" || operation == "inner_join" || operation == "equi_join" ||
       operation == "left_join" || operation == "left_outer_join" ||
       operation == "semi_join" || operation == "join_group_sum_assertion" ||
+      operation == "join_group_all_equality" ||
       operation == "join_window_max_assertion") {
     if (RequestOptionDisabled(request, "optimizer_join_costing:", "join_costing:")) {
       if (evidence != nullptr) {
@@ -2650,7 +2651,9 @@ EnginePlanOperationResult ExecuteFastCrudCount(
     result.evidence.push_back({"query_count_result_projection",
                                "count_assertion"});
   } else {
-    result.result_shape = CountScalarResultShape(count, "c0");
+    std::string result_column_name = OptionValue(request, "result_column_name:");
+    if (result_column_name.empty()) result_column_name = "c0";
+    result.result_shape = CountScalarResultShape(count, result_column_name);
   }
   result.plan_kind = operation;
   result.output_row_count = result.result_shape.rows.size();
@@ -3453,6 +3456,56 @@ EngineResultShape GenericGroupCountResultShape(const EngineQueryRelation& relati
   return shape;
 }
 
+EngineTypedValue DerivedConstantValueForRequest(
+    const EnginePlanOperationRequest& request) {
+  const std::string type = LowerAscii(OptionValue(request, "derived_constant_type:"));
+  const std::string value = OptionValue(request, "derived_constant_value:");
+  if (type == "integer" || type == "bigint" || type == "uint64") {
+    try {
+      return Int64Value(std::stoll(value));
+    } catch (...) {
+      return TextValue(value);
+    }
+  }
+  if (type == "boolean") {
+    return BoolValue(ParseBoolValue(value, false));
+  }
+  if (type == "numeric" || type == "real64" || type == "real128") {
+    return Real64Value(ParseReal64Value(value, 0.0));
+  }
+  return TextValue(value);
+}
+
+EngineResultShape DerivedGroupConstantProjectionResultShape(
+    const EnginePlanOperationRequest& request,
+    const EngineQueryRelation& relation,
+    std::size_t group_key_column,
+    std::string* error_detail) {
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  const EngineTypedValue constant = DerivedConstantValueForRequest(request);
+  shape.columns.push_back(constant.descriptor);
+
+  std::set<std::string> emitted_groups;
+  for (const auto& row : relation.rows) {
+    if (group_key_column >= row.fields.size()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_derived_group_key_column_out_of_range";
+      }
+      return {};
+    }
+    auto typed = NormalizeTypedValue(row.fields[group_key_column].second);
+    const std::string key = typed.is_null
+        ? "null:" + EqualityKeyDescriptorFamily(typed.descriptor.canonical_type_name)
+        : EqualityKeyForTypedValue(typed).value_or("value:" + typed.encoded_value);
+    if (!emitted_groups.insert(key).second) continue;
+    EngineRowValue out;
+    out.fields.push_back({"c0", constant});
+    shape.rows.push_back(std::move(out));
+  }
+  return shape;
+}
+
 EngineTypedValue JoinOutputValue(const EngineRowValue& row,
                                  std::size_t column,
                                  const EngineDescriptor& fallback_descriptor) {
@@ -3590,6 +3643,124 @@ EngineResultShape TypedInnerJoinResultShape(const EnginePlanOperationRequest& re
     for (const auto* right_row : found->second) {
       if (!emit_joined_row(left_row, *right_row)) return shape;
     }
+  }
+  return shape;
+}
+
+EngineResultShape TypedLeftJoinResultShape(const EnginePlanOperationRequest& request,
+                                           const EngineQueryRelation& left,
+                                           const EngineQueryRelation& right,
+                                           std::size_t left_key_column,
+                                           std::size_t right_key_column,
+                                           std::int64_t right_key_offset,
+                                           std::string* error_detail) {
+  const std::size_t left_width = RelationWidth(left);
+  const std::size_t right_width = RelationWidth(right);
+  const std::size_t offset =
+      ParseSizeValue(OptionValue(request, "offset:"), static_cast<std::size_t>(request.offset));
+  const std::size_t limit =
+      ParseSizeValue(OptionValue(request, "limit:"), static_cast<std::size_t>(request.limit));
+
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  for (std::size_t column = 0; column < left_width; ++column) {
+    shape.columns.push_back(DescriptorForRelationColumn(left, column));
+  }
+  for (std::size_t column = 0; column < right_width; ++column) {
+    shape.columns.push_back(DescriptorForRelationColumn(right, column));
+  }
+
+  std::unordered_map<std::string, std::vector<const EngineRowValue*>> right_rows_by_key;
+  right_rows_by_key.reserve(right.rows.size());
+  for (const auto& row : right.rows) {
+    const auto key = JoinKeyForRow(row, right_key_column, error_detail, right_key_offset);
+    if (error_detail != nullptr && !error_detail->empty()) return {};
+    if (key) right_rows_by_key[*key].push_back(&row);
+  }
+
+  std::size_t matched_index = 0;
+  const auto emit_joined_row = [&](const EngineRowValue& left_row,
+                                   const EngineRowValue* right_row) -> bool {
+    ++matched_index;
+    EngineRowValue out;
+    out.requested_row_uuid = left_row.requested_row_uuid;
+    std::size_t output_column = 0;
+    for (std::size_t column = 0; column < left_width; ++column, ++output_column) {
+      out.fields.push_back({"c" + std::to_string(output_column),
+                            JoinOutputValue(left_row, column, shape.columns[output_column])});
+    }
+    for (std::size_t column = 0; column < right_width; ++column, ++output_column) {
+      if (right_row == nullptr) {
+        out.fields.push_back({"c" + std::to_string(output_column),
+                              NullValue(shape.columns[output_column])});
+      } else {
+        out.fields.push_back({"c" + std::to_string(output_column),
+                              JoinOutputValue(*right_row, column, shape.columns[output_column])});
+      }
+    }
+    shape.rows.push_back(std::move(out));
+    return true;
+  };
+
+  for (const auto& left_row : left.rows) {
+    const auto key = JoinKeyForRow(left_row, left_key_column, error_detail);
+    if (error_detail != nullptr && !error_detail->empty()) return {};
+    if (!key) {
+      if (!emit_joined_row(left_row, nullptr)) return shape;
+      continue;
+    }
+    const auto found = right_rows_by_key.find(*key);
+    if (found == right_rows_by_key.end() || found->second.empty()) {
+      if (!emit_joined_row(left_row, nullptr)) return shape;
+      continue;
+    }
+    for (const auto* right_row : found->second) {
+      if (!emit_joined_row(left_row, right_row)) return shape;
+    }
+  }
+  std::string order_field = request.order_field;
+  if (order_field.empty()) order_field = OptionValue(request, "order_by:");
+  if (!order_field.empty() || request.order_column != 0 ||
+      !OptionValue(request, "order_column:").empty()) {
+    const std::size_t order_column =
+        !order_field.empty()
+            ? ColumnIndexForRelation(left, order_field, request.order_column)
+            : ParseSizeValue(OptionValue(request, "order_column:"), request.order_column);
+    const std::string order_key = "c" + std::to_string(order_column);
+    const bool ascending = ParseBoolValue(OptionValue(request, "order:"), request.ascending);
+    const auto row_field_value = [](const EngineRowValue& row,
+                                    const std::string& key) -> const EngineTypedValue* {
+      for (const auto& [field_name, value] : row.fields) {
+        if (field_name == key) return &value;
+      }
+      return nullptr;
+    };
+    std::stable_sort(shape.rows.begin(), shape.rows.end(), [&](const EngineRowValue& lhs,
+                                                               const EngineRowValue& rhs) {
+      const auto* lhs_value = row_field_value(lhs, order_key);
+      const auto* rhs_value = row_field_value(rhs, order_key);
+      if (lhs_value == nullptr || lhs_value->is_null) return false;
+      if (rhs_value == nullptr || rhs_value->is_null) return true;
+      std::int64_t lhs_int = 0;
+      std::int64_t rhs_int = 0;
+      if (TryParseI64Value(lhs_value->encoded_value, &lhs_int) &&
+          TryParseI64Value(rhs_value->encoded_value, &rhs_int)) {
+        return ascending ? lhs_int < rhs_int : lhs_int > rhs_int;
+      }
+      return ascending ? lhs_value->encoded_value < rhs_value->encoded_value
+                       : lhs_value->encoded_value > rhs_value->encoded_value;
+    });
+  }
+  if (offset != 0 || limit != 0) {
+    const std::size_t begin = std::min(offset, shape.rows.size());
+    const std::size_t end = limit == 0 ? shape.rows.size()
+                                       : std::min(shape.rows.size(), begin + limit);
+    std::vector<EngineRowValue> sliced;
+    sliced.reserve(end - begin);
+    for (std::size_t row = begin; row < end; ++row) {
+      sliced.push_back(std::move(shape.rows[row]));
+    }
+    shape.rows = std::move(sliced);
   }
   return shape;
 }
@@ -4129,6 +4300,70 @@ double TypedJoinGroupSumHavingTotal(const EngineQueryRelation& left,
     if (sum >= having_threshold) total += sum;
   }
   return total;
+}
+
+EngineResultShape TypedJoinGroupAllEqualityResultShape(
+    const EngineQueryRelation& left,
+    const EngineQueryRelation& right,
+    std::size_t left_key_column,
+    std::size_t right_key_column,
+    std::size_t left_group_column,
+    std::string* error_detail) {
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  if (left_group_column == std::numeric_limits<std::size_t>::max()) {
+    if (error_detail != nullptr) *error_detail = "query_plan_join_group_all_key_field_not_found";
+    return shape;
+  }
+  shape.columns.push_back(DescriptorForRelationColumn(left, left_group_column));
+
+  std::unordered_map<std::string, std::vector<const EngineRowValue*>> right_rows_by_key;
+  right_rows_by_key.reserve(right.rows.size());
+  for (const auto& row : right.rows) {
+    const auto key = JoinKeyForRow(row, right_key_column, error_detail);
+    if (error_detail != nullptr && !error_detail->empty()) return {};
+    if (key) right_rows_by_key[*key].push_back(&row);
+  }
+
+  std::set<std::string> joined_subquery_keys;
+  bool subquery_saw_null = false;
+  std::map<std::string, EngineTypedValue> group_values_by_key;
+  for (const auto& left_row : left.rows) {
+    const auto join_key = JoinKeyForRow(left_row, left_key_column, error_detail);
+    if (error_detail != nullptr && !error_detail->empty()) return {};
+    if (left_group_column >= left_row.fields.size()) {
+      if (error_detail != nullptr) {
+        *error_detail = "query_plan_join_group_all_key_column_out_of_range";
+      }
+      return {};
+    }
+    EngineTypedValue group_value = NormalizeTypedValue(left_row.fields[left_group_column].second);
+    const bool joined =
+        join_key && right_rows_by_key.find(*join_key) != right_rows_by_key.end();
+    if (group_value.is_null) {
+      if (joined) subquery_saw_null = true;
+      continue;
+    }
+    const auto group_key = EqualityKeyForTypedValue(group_value);
+    if (group_key) group_values_by_key.emplace(*group_key, group_value);
+    if (!joined) continue;
+    if (group_key) joined_subquery_keys.insert(*group_key);
+  }
+
+  if (subquery_saw_null) {
+    return shape;
+  }
+  for (const auto& [group_key, group_value] : group_values_by_key) {
+    const bool all_predicate_true =
+        joined_subquery_keys.empty() ||
+        (joined_subquery_keys.size() == 1 &&
+         *joined_subquery_keys.begin() == group_key);
+    if (!all_predicate_true) continue;
+    EngineRowValue out;
+    out.fields.push_back({"c0", group_value});
+    shape.rows.push_back(std::move(out));
+  }
+  return shape;
 }
 
 std::uint64_t TypedJoinWindowMaxRowNumber(const EngineQueryRelation& left,
@@ -5669,6 +5904,7 @@ plan::PhysicalAccessKind AccessKindForQueryOperation(const std::string& operatio
       operation == "grouping_sets_count" || operation == "rollup_count" ||
       operation == "cube_count" || operation == "grouping_sets_grand_total_assertion" ||
       operation == "semi_join" || operation == "join_group_sum_assertion" ||
+      operation == "join_group_all_equality" ||
       operation == "join_window_max_assertion") {
     return plan::PhysicalAccessKind::kJoinHash;
   }
@@ -5725,6 +5961,7 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
                               operation == "equi_join" || operation == "left_join" ||
                               operation == "left_outer_join" || operation == "semi_join" ||
                               operation == "join_group_sum_assertion" ||
+                              operation == "join_group_all_equality" ||
                               operation == "join_window_max_assertion";
   if (!join_operation && !request.target_object.uuid.canonical.empty()) {
     node.required_object_uuids.push_back(request.target_object.uuid.canonical);
@@ -5886,6 +6123,7 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
       operation == "grouping_sets_count" || operation == "rollup_count" ||
       operation == "cube_count" || operation == "grouping_sets_grand_total_assertion" ||
       operation == "semi_join" || operation == "join_group_sum_assertion" ||
+      operation == "join_group_all_equality" ||
       operation == "join_window_max_assertion") {
     const exec::Batch right = require(1);
     const std::size_t left_key_column =
@@ -6356,7 +6594,16 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         result.result_shape = CountAssertionResultShape(request, *count, &error_detail);
         result.evidence.push_back({"query_count_result_projection", "count_assertion"});
       } else {
-        result.result_shape = CountResultShape(request, relations->front(), &error_detail);
+        const std::string result_column_name = OptionValue(request, "result_column_name:");
+        if (!result_column_name.empty()) {
+          const auto count = CountRelationRows(request, relations->front(), &error_detail);
+          if (!count) {
+            return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+          }
+          result.result_shape = CountScalarResultShape(*count, result_column_name);
+        } else {
+          result.result_shape = CountResultShape(request, relations->front(), &error_detail);
+        }
       }
       if (!error_detail.empty()) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -6385,6 +6632,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         operation == "grouping_sets_count" || operation == "rollup_count" ||
         operation == "cube_count" || operation == "grouping_sets_grand_total_assertion" ||
         operation == "semi_join" || operation == "join_group_sum_assertion" ||
+        operation == "join_group_all_equality" ||
         operation == "join_window_max_assertion") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
       const std::string result_projection = LowerAscii(OptionValue(request, "result_projection:"));
@@ -6475,6 +6723,39 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         }
       }
       result.evidence.push_back({"query_join_algorithm", join_algorithm});
+      const bool join_group_all_equality = operation == "join_group_all_equality";
+      if (join_group_all_equality) {
+        if (result_projection != "rowset" && !result_projection.empty()) {
+          return QueryFailure<EnginePlanOperationResult>(
+              request.context,
+              "query_plan_join_group_all_current_route_requires_rowset_projection");
+        }
+        const std::string group_field = OptionValue(request, "group_key_field:");
+        const std::size_t group_column =
+            ColumnIndexForRelation((*relations)[0],
+                                   group_field,
+                                   std::numeric_limits<std::size_t>::max());
+        result.result_shape =
+            TypedJoinGroupAllEqualityResultShape((*relations)[0],
+                                                 (*relations)[1],
+                                                 left_key_column,
+                                                 right_key_column,
+                                                 group_column,
+                                                 &error_detail);
+        if (!error_detail.empty()) {
+          return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+        }
+        result.evidence.push_back({"query_join_kind", "inner_group_all_equality"});
+        result.evidence.push_back({"query_join_result_projection", "rowset"});
+        result.evidence.push_back({"query_join_group_key_field", group_field});
+        result.evidence.push_back({"query_join_all_predicate", "group_key_equals_all_join_projection"});
+        result.plan_kind = operation;
+        result.output_row_count = result.result_shape.rows.size();
+        AddApiBehaviorEvidence(&result, "query_execution", operation);
+        result.evidence.push_back({"query_relation_count", std::to_string(relations->size())});
+        result.evidence.push_back({"query_output_row_count", std::to_string(result.result_shape.rows.size())});
+        return result;
+      }
       const bool join_group_sum_assertion = operation == "join_group_sum_assertion";
       if (join_group_sum_assertion) {
         if (result_projection != "aggregate_assertion") {
@@ -6605,12 +6886,35 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       }
       const bool left_join_operation = operation == "left_join" || operation == "left_outer_join";
       if (left_join_operation) {
-        if (result_projection != "count_assertion" &&
+        if (result_projection != "rowset" &&
+            result_projection != "count_assertion" &&
             result_projection != "count" &&
             result_projection != "count_result") {
           return QueryFailure<EnginePlanOperationResult>(
               request.context,
               "query_plan_left_join_current_route_requires_count_assertion");
+        }
+        if (result_projection == "rowset") {
+          std::int64_t right_key_offset = 0;
+          (void)TryParseI64Value(OptionValue(request, "right_key_offset:"), &right_key_offset);
+          result.result_shape = TypedLeftJoinResultShape(request,
+                                                         (*relations)[0],
+                                                         (*relations)[1],
+                                                         left_key_column,
+                                                         right_key_column,
+                                                         right_key_offset,
+                                                         &error_detail);
+          if (!error_detail.empty()) {
+            return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+          }
+          result.evidence.push_back({"query_join_kind", "left_outer"});
+          result.evidence.push_back({"query_join_result_projection", "rowset"});
+          result.plan_kind = operation;
+          result.output_row_count = result.result_shape.rows.size();
+          AddApiBehaviorEvidence(&result, "query_execution", operation);
+          result.evidence.push_back({"query_relation_count", std::to_string(relations->size())});
+          result.evidence.push_back({"query_output_row_count", std::to_string(result.result_shape.rows.size())});
+          return result;
         }
         const std::string right_null_filter_field = OptionValue(request, "right_null_filter_field:");
         if (right_null_filter_field.empty() && result_projection == "count_assertion") {
@@ -6985,6 +7289,23 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       result.evidence.push_back({"query_aggregate_value_binding",
                                  request.aggregate_value_field.empty() ? "ordinal" : "descriptor_field"});
       const std::string aggregate_leaf = AggregateFunctionLeaf(aggregate_function);
+      const std::string result_projection = OptionValue(request, "result_projection:");
+      if (result_projection == "derived_constant") {
+        result.result_shape = DerivedGroupConstantProjectionResultShape(
+            request, relations->front(), group_key_column, &error_detail);
+        if (!error_detail.empty()) {
+          return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
+        }
+        result.plan_kind = operation;
+        result.output_row_count = result.result_shape.rows.size();
+        AddApiBehaviorEvidence(&result, "query_execution", operation);
+        result.evidence.push_back({"query_aggregate", "derived_group_constant_projection"});
+        result.evidence.push_back({"query_result_projection", "derived_constant"});
+        result.evidence.push_back({"query_relation_count", std::to_string(relations->size())});
+        result.evidence.push_back({"query_output_row_count",
+                                   std::to_string(result.result_shape.rows.size())});
+        return result;
+      }
       if (aggregate_leaf == "count") {
         result.result_shape = GenericGroupCountResultShape(relations->front(),
                                                            group_key_column,

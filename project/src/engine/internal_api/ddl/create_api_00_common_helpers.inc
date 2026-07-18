@@ -12,7 +12,10 @@
 
 #include "api_unsupported.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/global_aggregate_view.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
@@ -99,6 +102,240 @@ std::string DescriptorFieldLocal(const std::map<std::string, std::string>& field
     if (found != fields.end()) { return found->second; }
   }
   return {};
+}
+
+std::string SetDescriptorFieldLocal(std::string descriptor,
+                                    const std::string& field,
+                                    const std::string& value) {
+  std::vector<std::string> parts;
+  bool replaced = false;
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto delimiter = descriptor.find(';', offset);
+    const auto length = delimiter == std::string::npos
+                            ? descriptor.size() - offset
+                            : delimiter - offset;
+    const std::string part =
+        TrimAsciiLocal(descriptor.substr(offset, length));
+    if (!part.empty()) {
+      const auto equals = part.find('=');
+      const std::string key = LowerAsciiLocal(TrimAsciiLocal(
+          equals == std::string::npos ? part : part.substr(0, equals)));
+      if (key == LowerAsciiLocal(field)) {
+        if (!replaced) {
+          parts.push_back(field + "=" + value);
+          replaced = true;
+        }
+      } else {
+        parts.push_back(part);
+      }
+    }
+    if (delimiter == std::string::npos) break;
+    offset = delimiter + 1;
+  }
+  if (!replaced) parts.push_back(field + "=" + value);
+  std::string canonical;
+  for (const auto& part : parts) {
+    if (!canonical.empty()) canonical.push_back(';');
+    canonical += part;
+  }
+  return canonical;
+}
+
+std::string DescriptorTypeNameLocal(
+    const std::map<std::string, std::string>& fields,
+    const EngineColumnDefinition& column) {
+  std::string type = DescriptorFieldLocal(
+      fields, {"type", "canonical", "canonical_type", "descriptor"});
+  if (type.empty()) type = column.descriptor.canonical_type_name;
+  return LowerAsciiLocal(TrimAsciiLocal(std::move(type)));
+}
+
+std::string DescriptorBaseTypeLocal(const std::string& type_name) {
+  std::string base = type_name;
+  const auto open = base.find('(');
+  if (open != std::string::npos) base = base.substr(0, open);
+  base = TrimAsciiLocal(std::move(base));
+  std::string collapsed;
+  bool prior_space = false;
+  for (const char ch : base) {
+    const bool space = std::isspace(static_cast<unsigned char>(ch));
+    if (space) {
+      if (!collapsed.empty() && !prior_space) collapsed.push_back(' ');
+    } else {
+      collapsed.push_back(ch);
+    }
+    prior_space = space;
+  }
+  collapsed = TrimAsciiLocal(std::move(collapsed));
+  return collapsed;
+}
+
+bool DescriptorSupportsTextResourcesLocal(const std::string& type_name) {
+  const std::string collapsed = DescriptorBaseTypeLocal(type_name);
+  return collapsed == "char" || collapsed == "character" ||
+         collapsed == "varchar" || collapsed == "character varying" ||
+         collapsed == "nchar" || collapsed == "nvarchar" ||
+         collapsed == "national char" ||
+         collapsed == "national character" ||
+         collapsed == "national character varying" ||
+         collapsed == "text" || collapsed == "string" ||
+         collapsed == "clob";
+}
+
+bool DescriptorSupportsLargeObjectTextResourcesLocal(
+    const std::string& type_name) {
+  const std::string collapsed = DescriptorBaseTypeLocal(type_name);
+  return collapsed == "blob" || collapsed == "clob" ||
+         collapsed == "character large object";
+}
+
+bool ParsePositiveDescriptorU32Local(const std::string& value,
+                                     std::uint32_t* parsed) {
+  if (parsed == nullptr || value.empty()) return false;
+  try {
+    std::size_t consumed = 0;
+    const auto number = std::stoull(value, &consumed, 10);
+    if (consumed != value.size() || number == 0 ||
+        number > std::numeric_limits<std::uint32_t>::max()) {
+      return false;
+    }
+    *parsed = static_cast<std::uint32_t>(number);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+std::optional<std::uint32_t> CharacterLengthFromTypeLocal(
+    const std::string& type_name) {
+  const auto open = type_name.find('(');
+  if (open == std::string::npos) return std::nullopt;
+  const auto close = type_name.find(')', open + 1);
+  if (close == std::string::npos) return std::nullopt;
+  const auto comma = type_name.find(',', open + 1);
+  const auto end = comma != std::string::npos && comma < close ? comma : close;
+  const std::string value =
+      TrimAsciiLocal(type_name.substr(open + 1, end - open - 1));
+  std::uint32_t parsed = 0;
+  if (!ParsePositiveDescriptorU32Local(value, &parsed)) return std::nullopt;
+  return parsed;
+}
+
+EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
+    const EngineRequestContext& context,
+    const EngineColumnDefinition& column,
+    std::string* column_descriptor) {
+  if (column_descriptor == nullptr) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table", "column_descriptor_required");
+  }
+  const auto fields = DescriptorFieldsLocal(*column_descriptor);
+  const std::string charset_uuid =
+      DescriptorFieldLocal(fields, {"charset_uuid"});
+  std::string collation_uuid =
+      DescriptorFieldLocal(fields, {"collation_uuid"});
+  const std::string character_length_text =
+      DescriptorFieldLocal(fields, {"character_length", "char_length"});
+  const std::string text_resource_storage = LowerAsciiLocal(
+      DescriptorFieldLocal(fields, {"text_resource_storage"}));
+  const bool large_object_text_resource =
+      text_resource_storage == "large_object";
+  const bool has_resource_modifier =
+      !charset_uuid.empty() || !collation_uuid.empty();
+  const bool has_text_modifier =
+      has_resource_modifier || !character_length_text.empty() ||
+      !text_resource_storage.empty();
+  if (!has_text_modifier) {
+    return MakeEngineApiDiagnostic(
+        "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
+
+  if (!text_resource_storage.empty() && !large_object_text_resource) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table", "text_resource_storage_invalid");
+  }
+
+  const std::string type_name = DescriptorTypeNameLocal(fields, column);
+  if (large_object_text_resource
+          ? !DescriptorSupportsLargeObjectTextResourcesLocal(type_name)
+          : !DescriptorSupportsTextResourcesLocal(type_name)) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table", "text_resource_modifier_on_incompatible_type");
+  }
+
+  std::uint32_t character_length = 0;
+  const auto type_character_length = CharacterLengthFromTypeLocal(type_name);
+  if (!character_length_text.empty()) {
+    if (!ParsePositiveDescriptorU32Local(character_length_text,
+                                         &character_length)) {
+      return MakeInvalidRequestDiagnostic(
+          "ddl.create_table", "character_length_invalid");
+    }
+    if (type_character_length && *type_character_length != character_length) {
+      return MakeInvalidRequestDiagnostic(
+          "ddl.create_table", "character_length_type_mismatch");
+    }
+  } else if (type_character_length) {
+    character_length = *type_character_length;
+  }
+  if (large_object_text_resource && character_length != 0) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table",
+        "large_object_text_resource_forbids_character_length");
+  }
+  if (has_resource_modifier && character_length == 0 &&
+      !large_object_text_resource) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table",
+        "text_resource_descriptor_requires_character_length");
+  }
+  if (!collation_uuid.empty() && charset_uuid.empty()) {
+    return MakeInvalidRequestDiagnostic(
+        "ddl.create_table", "collation_uuid_requires_charset_uuid");
+  }
+
+  if (!charset_uuid.empty()) {
+    EngineUuid requested_charset;
+    requested_charset.canonical = charset_uuid;
+    const auto charset = LookupEngineResourceDescriptorByUuid(
+        context, requested_charset, "charset");
+    if (!charset.ok) return charset.diagnostic;
+
+    if (collation_uuid.empty()) {
+      collation_uuid =
+          charset.resource_descriptor.default_collation_uuid.canonical;
+      if (collation_uuid.empty()) {
+        return MakeInvalidRequestDiagnostic(
+            "ddl.create_table", "charset_default_collation_uuid_required");
+      }
+    }
+
+    EngineUuid requested_collation;
+    requested_collation.canonical = collation_uuid;
+    const auto collation = LookupEngineResourceDescriptorByUuid(
+        context, requested_collation, "collation");
+    if (!collation.ok) return collation.diagnostic;
+    if (collation.resource_descriptor.parent_resource_uuid.canonical !=
+        charset.resource_descriptor.resource_uuid.canonical) {
+      return MakeInvalidRequestDiagnostic(
+          "ddl.create_table", "collation_charset_relationship_mismatch");
+    }
+
+    *column_descriptor = SetDescriptorFieldLocal(
+        std::move(*column_descriptor), "charset_uuid",
+        charset.resource_descriptor.resource_uuid.canonical);
+    *column_descriptor = SetDescriptorFieldLocal(
+        std::move(*column_descriptor), "collation_uuid",
+        collation.resource_descriptor.resource_uuid.canonical);
+  }
+  if (character_length != 0) {
+    *column_descriptor = SetDescriptorFieldLocal(
+        std::move(*column_descriptor), "character_length",
+        std::to_string(character_length));
+  }
+  return MakeEngineApiDiagnostic(
+      "SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 std::vector<std::string> SplitQualifiedIdentifierLocal(const std::string& path) {
@@ -308,7 +545,8 @@ bool DescriptorBoolLocal(const std::map<std::string, std::string>& fields,
 }
 
 bool DirectIndexKeyEnvelope(const std::string& envelope) {
-  if (envelope.empty() || envelope == "unique" || envelope == "where_true" ||
+  if (envelope.empty() || envelope == "unique" || envelope == "primary_key" ||
+      envelope == "where_true" ||
       StartsWithLocal(envelope, "include:") || StartsWithLocal(envelope, "where_eq:") ||
       StartsWithLocal(envelope, "where_mod_eq:")) {
     return false;
@@ -328,6 +566,7 @@ bool SupportedExpressionEnvelope(const std::string& envelope) {
   return StartsWithLocal(envelope, "lower:") || StartsWithLocal(envelope, "upper:") ||
          StartsWithLocal(envelope, "length:") || StartsWithLocal(envelope, "identity:") ||
          StartsWithLocal(envelope, "cast:") || StartsWithLocal(envelope, "desc:") ||
+         StartsWithLocal(envelope, "sum:") ||
          (StartsWithLocal(envelope, "lower(") && envelope.back() == ')') ||
          (StartsWithLocal(envelope, "upper(") && envelope.back() == ')') ||
          (StartsWithLocal(envelope, "length(") && envelope.back() == ')') ||
@@ -381,7 +620,8 @@ scratchbird::core::index::IndexFamily CoreIndexFamilyForCreateIndex(
   for (const auto& key : index.key_envelopes) {
     if (StartsWithLocal(key, "lower:") || StartsWithLocal(key, "upper:") ||
         StartsWithLocal(key, "length:") || StartsWithLocal(key, "identity:") ||
-        StartsWithLocal(key, "cast:") || StartsWithLocal(key, "desc:")) {
+        StartsWithLocal(key, "cast:") || StartsWithLocal(key, "desc:") ||
+        StartsWithLocal(key, "sum:")) {
       has_expression_or_direction_key = true;
       break;
     }
@@ -603,7 +843,8 @@ bool DescriptorIsOpaqueRenderOnly(const std::string& descriptor) {
 }
 
 std::string ColumnNameFromIndexEnvelope(const std::string& envelope) {
-  if (envelope.empty() || envelope == "unique" || StartsWithLocal(envelope, "include:") ||
+  if (envelope.empty() || envelope == "unique" || envelope == "primary_key" ||
+      StartsWithLocal(envelope, "include:") ||
       StartsWithLocal(envelope, "where_eq:") || StartsWithLocal(envelope, "where_mod_eq:") ||
       envelope == "where_true") {
     return {};

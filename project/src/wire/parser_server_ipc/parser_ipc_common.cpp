@@ -12,7 +12,7 @@
 #include <cctype>
 #include <sstream>
 
-namespace scratchbird::parser::sbsql {
+namespace scratchbird::parser::ipc {
 
 bool MessageVectorSet::ok() const { return !has_errors(); }
 
@@ -146,4 +146,4 @@ std::string MessageVectorToJson(const MessageVectorSet& messages) {
   return out.str();
 }
 
-} // namespace scratchbird::parser::sbsql
+} // namespace scratchbird::parser::ipc

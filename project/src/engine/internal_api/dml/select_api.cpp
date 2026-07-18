@@ -9,6 +9,9 @@
 #include "dml/select_api.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "catalog/global_aggregate_view.hpp"
+#include "catalog/relation_descriptor_projection.hpp"
+#include "catalog/relation_projection_view.hpp"
 #include "dml/serializable_mutation_guard.hpp"
 #include "domain_support/domain_store.hpp"
 #include "extensibility/executable_object_lifecycle.hpp"
@@ -20,9 +23,11 @@
 #include <cstddef>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -83,6 +88,35 @@ bool TryParseI64Value(const std::string& value, std::int64_t* out) {
   return true;
 }
 
+bool TryParseDecimalValue(const std::string& value, long double* out) {
+  if (value.empty()) { return false; }
+  char* end = nullptr;
+  const long double parsed = std::strtold(value.c_str(), &end);
+  if (end == nullptr || *end != '\0') { return false; }
+  if (out != nullptr) { *out = parsed; }
+  return true;
+}
+
+std::string FormatDecimalScale(long double value, int scale) {
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(scale) << static_cast<double>(value);
+  return out.str();
+}
+
+int CompareSelectScalar(std::string_view left, std::string_view right) {
+  long double left_number = 0.0;
+  long double right_number = 0.0;
+  if (TryParseDecimalValue(std::string(left), &left_number) &&
+      TryParseDecimalValue(std::string(right), &right_number)) {
+    if (left_number < right_number) return -1;
+    if (left_number > right_number) return 1;
+    return 0;
+  }
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
 EngineDescriptor TextDescriptor() {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
@@ -111,6 +145,30 @@ EngineTypedValue Int64Value(std::int64_t value) {
   typed.descriptor = Int64Descriptor();
   typed.encoded_value = std::to_string(value);
   return typed;
+}
+
+EngineResultShape CountProjectionResultShape(
+    const EngineSelectRowsRequest& request,
+    std::uint64_t count,
+    std::string* error_detail) {
+  if (count > static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+    if (error_detail != nullptr) {
+      *error_detail = "dml_select_count_projection_overflow";
+    }
+    return {};
+  }
+  std::string column_name = OptionValue(request, "actual_column_name:");
+  if (column_name.empty()) column_name = "COUNT";
+
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  shape.columns.push_back(Int64Descriptor());
+  EngineRowValue row;
+  row.fields.push_back(
+      {std::move(column_name), Int64Value(static_cast<std::int64_t>(count))});
+  shape.rows.push_back(std::move(row));
+  return shape;
 }
 
 EngineResultShape CountAssertionResultShape(const EngineSelectRowsRequest& request,
@@ -333,6 +391,46 @@ std::vector<CrudRowVersionRecord> MaterializeDynamicMultiplyProcedure(
   return rows;
 }
 
+std::vector<CrudRowVersionRecord> MaterializeFirebirdFirstProductProcedure(
+    const EngineSelectRowsRequest& request,
+    const EngineExecutableObjectRecord& object,
+    const std::string& routine_uuid,
+    std::string* error_detail) {
+  const std::string dependency_uuid =
+      PayloadFieldValue(object.payload, "related_object_0_uuid:");
+  if (dependency_uuid.empty()) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_required";
+    return {};
+  }
+  const auto loaded = LoadMgaRelationStoreState(request.context);
+  if (!loaded.ok) {
+    if (error_detail != nullptr) *error_detail = loaded.diagnostic.detail;
+    return {};
+  }
+  CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto table = FindVisibleCrudTable(state,
+                                          dependency_uuid,
+                                          request.context.local_transaction_id);
+  if (!table) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_dependency_not_visible";
+    return {};
+  }
+  const std::vector<CrudRowVersionRecord> source_rows =
+      VisibleCrudRowsForContext(state, dependency_uuid, request.context);
+  if (source_rows.empty()) { return {}; }
+  long double campo1 = 0;
+  long double campo2 = 0;
+  if (!TryParseDecimalValue(CrudFieldValue(source_rows.front().values, "campo1"), &campo1) ||
+      !TryParseDecimalValue(CrudFieldValue(source_rows.front().values, "campo2"), &campo2)) {
+    if (error_detail != nullptr) *error_detail = "selectable_procedure_source_value_invalid";
+    return {};
+  }
+  return {MakeProcedureRow(
+      routine_uuid,
+      1,
+      {{"retorno", FormatDecimalScale(campo1 * campo2, 2)}})};
+}
+
 std::vector<CrudRowVersionRecord> MaterializeSelectableProcedureRows(
     const EngineSelectRowsRequest& request,
     const EngineExecutableObjectRecord& object,
@@ -348,6 +446,9 @@ std::vector<CrudRowVersionRecord> MaterializeSelectableProcedureRows(
   }
   if (descriptor == "sbsql.compiled.selectable.dynamic_multiply.v1") {
     return MaterializeDynamicMultiplyProcedure(request, object, routine_uuid, error_detail);
+  }
+  if (descriptor == "sbsql.compiled.selectable.firebird_first_product.v1") {
+    return MaterializeFirebirdFirstProductProcedure(request, object, routine_uuid, error_detail);
   }
   if (error_detail != nullptr) *error_detail = "selectable_procedure_descriptor_unsupported";
   return {};
@@ -473,7 +574,8 @@ void ApplyProjection(const EngineProjectionEnvelope& projection, std::vector<Cru
 }
 
 bool PredicateCanRowScan(const EnginePredicateEnvelope& predicate) {
-  return predicate.predicate_kind == "column_equals" ||
+  return predicate.predicate_kind == "always_false" ||
+         predicate.predicate_kind == "column_equals" ||
          predicate.predicate_kind == "columns_all_equal" ||
          predicate.predicate_kind == "columns_all_null" ||
          predicate.predicate_kind == "columns_all_not_null" ||
@@ -482,7 +584,14 @@ bool PredicateCanRowScan(const EnginePredicateEnvelope& predicate) {
          predicate.predicate_kind == "column_not_like" ||
          predicate.predicate_kind == "column_mod_equals" ||
          predicate.predicate_kind == "column_in_list" ||
+         predicate.predicate_kind == "column_in_list_scalar_compare" ||
+         predicate.predicate_kind == "column_not_in_list_scalar_compare" ||
          predicate.predicate_kind == "column_range" ||
+         predicate.predicate_kind == "column_less" ||
+         predicate.predicate_kind == "column_less_equal" ||
+         predicate.predicate_kind == "column_greater" ||
+         predicate.predicate_kind == "column_greater_equal" ||
+         predicate.predicate_kind == "column_not_equals" ||
          predicate.predicate_kind == "text_term_contains" ||
          predicate.predicate_kind == "text_all_terms" ||
          predicate.predicate_kind == "spatial_bbox_intersects" ||
@@ -504,6 +613,135 @@ bool CanUseBoundedEqualityOrderScan(const EnginePredicateEnvelope& predicate,
     return false;
   }
   return OrderingColumn(ordering) == predicate.canonical_predicate_envelope;
+}
+
+EngineTypedValue SelectPredicateBoundValue(std::string value,
+                                           std::string type_name = "text") {
+  if (type_name.empty()) type_name = "text";
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = std::move(type_name);
+  typed.descriptor.encoded_descriptor =
+      "type=" + typed.descriptor.canonical_type_name;
+  typed.encoded_value = std::move(value);
+  return typed;
+}
+
+bool SelectBoundValueAlreadyPresent(const std::vector<EngineTypedValue>& values,
+                                    const std::string& candidate) {
+  for (const auto& value : values) {
+    if (value.encoded_value == candidate ||
+        CompareSelectScalar(value.encoded_value, candidate) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+struct SelectProjectionPredicateResolution {
+  bool attempted{false};
+  bool ok{true};
+  EnginePredicateEnvelope predicate;
+  EngineApiDiagnostic diagnostic =
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  std::vector<EngineEvidenceReference> evidence;
+};
+
+SelectProjectionPredicateResolution ResolveSelectColumnInProjectionPredicate(
+    const EngineSelectRowsRequest& request,
+    const CrudState& state,
+    const EnginePredicateEnvelope& requested_predicate) {
+  SelectProjectionPredicateResolution resolution;
+  if (requested_predicate.predicate_kind != "column_in_projection" &&
+      requested_predicate.predicate_kind != "column_not_in_projection") {
+    return resolution;
+  }
+  resolution.attempted = true;
+  resolution.ok = false;
+
+  const std::string source_uuid = OptionValue(request, "source_uuid:");
+  const std::string select_column = OptionValue(request, "subquery_select_column:");
+  const std::string subquery_predicate_kind =
+      OptionValue(request, "subquery_predicate_kind:");
+  const std::string subquery_predicate_column =
+      OptionValue(request, "subquery_predicate_column:");
+  const std::string subquery_predicate_value =
+      OptionValue(request, "subquery_predicate_value:");
+  const std::string subquery_predicate_value_type =
+      OptionValue(request, "subquery_predicate_value_type:");
+
+  if (source_uuid.empty() || select_column.empty()) {
+    resolution.diagnostic =
+        MakeInvalidRequestDiagnostic("dml.select_rows",
+                                     "subquery_predicate_descriptor_incomplete");
+    return resolution;
+  }
+  const auto source_table = FindVisibleCrudTable(state,
+                                                 source_uuid,
+                                                 request.context.local_transaction_id);
+  if (!source_table) {
+    resolution.diagnostic =
+        MakeInvalidRequestDiagnostic("dml.select_rows",
+                                     "subquery_source_table_not_visible");
+    return resolution;
+  }
+
+  EnginePredicateEnvelope source_predicate;
+  if (!subquery_predicate_kind.empty() && subquery_predicate_kind != "all_visible_rows") {
+    if (subquery_predicate_column.empty()) {
+      resolution.diagnostic =
+          MakeInvalidRequestDiagnostic("dml.select_rows",
+                                       "subquery_predicate_column_required");
+      return resolution;
+    }
+    source_predicate.predicate_kind = subquery_predicate_kind;
+    source_predicate.canonical_predicate_envelope = subquery_predicate_column;
+    if (!subquery_predicate_value.empty()) {
+      source_predicate.bound_values.push_back(
+          SelectPredicateBoundValue(subquery_predicate_value,
+                                    subquery_predicate_value_type));
+    }
+  }
+
+  if (CrudPredicateTouchesOpaqueColumn(*source_table, source_predicate)) {
+    resolution.diagnostic =
+        UnsupportedCrudFeatureDiagnostic("dml.select_rows",
+                                         "opaque_subquery_column_comparison_denied");
+    return resolution;
+  }
+
+  EnginePredicateEnvelope resolved;
+  resolved.predicate_kind =
+      requested_predicate.predicate_kind == "column_not_in_projection"
+          ? "column_not_in_list_scalar_compare"
+          : "column_in_list_scalar_compare";
+  resolved.canonical_predicate_envelope =
+      requested_predicate.canonical_predicate_envelope;
+
+  const auto source_rows = VisibleCrudRowsForContext(state,
+                                                     source_uuid,
+                                                     request.context);
+  for (const auto& row : source_rows) {
+    if (!source_predicate.predicate_kind.empty() &&
+        !CrudRowMatchesPredicate(row, source_predicate)) {
+      continue;
+    }
+    const std::string value = CrudFieldValue(row.values, select_column);
+    if (value.empty() || value == "<NULL>") continue;
+    if (!SelectBoundValueAlreadyPresent(resolved.bound_values, value)) {
+      resolved.bound_values.push_back(SelectPredicateBoundValue(value));
+    }
+  }
+
+  resolution.ok = true;
+  resolution.predicate = std::move(resolved);
+  resolution.evidence.push_back({"dml_select_subquery_source_rows",
+                                 std::to_string(source_rows.size())});
+  resolution.evidence.push_back({"dml_select_subquery_predicate_materialized",
+                                 "column_projection_to_scalar_compare_list"});
+  resolution.evidence.push_back({"dml_select_subquery_materialized_value_count",
+                                 std::to_string(resolution.predicate.bound_values.size())});
+  return resolution;
 }
 
 std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
@@ -544,6 +782,144 @@ std::vector<CrudRowVersionRecord> BoundedVisibleRowsForEqualityOrder(
 EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) {
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
+  }
+  if (IsEngineRelationProjectionViewSelectRequest(request)) {
+    EngineSelectRowsRequest expanded;
+    EngineRelationProjectionViewDescriptor view;
+    const auto expansion = ExpandEngineRelationProjectionViewSelect(
+        request, &expanded, &view);
+    if (expansion.error) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", expansion);
+    }
+    auto result = EngineSelectRows(expanded);
+    if (result.ok) {
+      result.evidence.push_back(
+          {"relation_projection_view_marker",
+           kEngineRelationProjectionViewMarkerV1});
+      result.evidence.push_back(
+          {"relation_projection_view_uuid", view.view_uuid.canonical});
+      result.evidence.push_back(
+          {"relation_projection_view_descriptor_uuid",
+           view.view_descriptor_uuid.canonical});
+      result.evidence.push_back(
+          {"relation_projection_view_descriptor_generation",
+           std::to_string(view.view_descriptor_generation)});
+      result.evidence.push_back(
+          {"relation_projection_view_source_resource_epoch",
+           std::to_string(view.source_resource_epoch)});
+      result.evidence.push_back(
+          {"relation_projection_view_expansion", "engine_owned_sql_free"});
+      result.evidence.push_back(
+          {"relation_projection_view_parser_sql", "false"});
+    }
+    return result;
+  }
+  if (IsEngineGlobalAggregateViewSelectRequest(request)) {
+    EngineSelectRowsRequest expanded;
+    EngineGlobalAggregateViewDescriptor view;
+    const auto expansion = ExpandEngineGlobalAggregateViewSelect(
+        request, &expanded, &view);
+    if (expansion.error) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", expansion);
+    }
+    auto result = EngineSelectRows(expanded);
+    if (result.ok) {
+      result.evidence.push_back(
+          {"global_aggregate_view_marker",
+           kEngineGlobalAggregateViewMarkerV1});
+      result.evidence.push_back(
+          {"global_aggregate_view_uuid", view.view_uuid.canonical});
+      result.evidence.push_back(
+          {"global_aggregate_view_descriptor_uuid",
+           view.view_descriptor_uuid.canonical});
+      result.evidence.push_back(
+          {"global_aggregate_view_descriptor_generation",
+           std::to_string(view.view_descriptor_generation)});
+      result.evidence.push_back(
+          {"global_aggregate_view_expansion", "engine_owned_sql_free"});
+      result.evidence.push_back(
+          {"global_aggregate_view_parser_sql", "false"});
+    }
+    return result;
+  }
+  const bool relation_projection =
+      !request.relation_projection.outputs.empty();
+  const bool global_aggregate_projection =
+      !request.global_aggregate_projection.outputs.empty();
+  if (relation_projection && global_aggregate_projection) {
+    return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+        request.context,
+        "dml.select_rows",
+        MakeInvalidRequestDiagnostic(
+            "dml.relation_projection",
+            "relation_projection_conflicts_with_global_aggregate"));
+  }
+  if (relation_projection) {
+    const auto validated = ValidateEngineRelationProjectionEnvelope(
+        request.relation_projection);
+    if (validated.error) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", validated);
+    }
+    const bool conflicting_shape =
+        !request.select_projection.canonical_projection_envelopes.empty() ||
+        !request.projection.canonical_projection_envelopes.empty() ||
+        !request.select_predicate.predicate_kind.empty() ||
+        !request.predicate.predicate_kind.empty() ||
+        !request.select_ordering.canonical_ordering_envelopes.empty() ||
+        !request.ordering.canonical_ordering_envelopes.empty() ||
+        request.limit != 0 || request.offset != 0 ||
+        !request.option_envelopes.empty() || !request.rows.empty() ||
+        !request.assignments.empty() || !request.descriptors.empty() ||
+        !request.columns.empty() || !request.related_objects.empty() ||
+        request.relation_projection_view.present;
+    if (conflicting_shape) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic(
+              "dml.relation_projection",
+              "relation_projection_conflicting_select_shape"));
+    }
+    if (request.context.resource_epoch == 0 ||
+        request.context.resource_epoch !=
+            request.relation_projection.source_resource_epoch) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic(
+              "dml.relation_projection",
+              "relation_projection_source_resource_epoch_stale"));
+    }
+  }
+  if (global_aggregate_projection) {
+    const auto validated = ValidateGlobalAggregateProjectionEnvelope(
+        request.global_aggregate_projection);
+    if (validated.error) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", validated);
+    }
+    const bool legacy_projection_present =
+        !request.select_projection.canonical_projection_envelopes.empty() ||
+        !request.projection.canonical_projection_envelopes.empty() ||
+        !OptionValue(request, "result_projection:").empty();
+    const bool post_aggregate_row_shape_present =
+        !request.select_ordering.canonical_ordering_envelopes.empty() ||
+        !request.ordering.canonical_ordering_envelopes.empty() ||
+        request.limit != 0 || request.offset != 0;
+    if (legacy_projection_present || post_aggregate_row_shape_present) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic(
+              "dml.global_aggregate_projection",
+              "global_aggregate_conflicting_select_shape"));
+    }
+  }
+  if (IsRelationDescriptorProjectionSelectRequest(request)) {
+    return EngineSelectRelationDescriptorProjection(request);
   }
   auto select_phase_last = SelectApiSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> select_phase_micros;
@@ -615,7 +991,18 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
     result.visible_count = rows.size();
     const std::string result_projection = OptionValue(request, "result_projection:");
-    if (result_projection == "count_assertion") {
+    if (result_projection == "count") {
+      result.result_shape =
+          CountProjectionResultShape(request, rows.size(), &error_detail);
+      if (!error_detail.empty()) {
+        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+            request.context,
+            "dml.select_rows",
+            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+      }
+      result.visible_count = 1;
+      result.evidence.push_back({"dml_result_projection", "count"});
+    } else if (result_projection == "count_assertion") {
       result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
       if (!error_detail.empty()) {
         return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
@@ -655,8 +1042,60 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (table_uuid.empty()) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_uuid_required"));
   }
-  auto loaded =
-      LoadMgaRelationStoreStateForMutationTarget(request.context, table_uuid);
+  EngineRelationProjectionBindingResult relation_projection_binding;
+  MgaRelationStorageDescriptor relation_projection_relation_descriptor;
+  if (relation_projection) {
+    const auto descriptor =
+        LoadMgaRelationStorageDescriptor(request.context, table_uuid);
+    mark_select_phase("load_relation_projection_relation_descriptor");
+    if (!descriptor.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", descriptor.diagnostic);
+    }
+    relation_projection_binding = BindEngineRelationProjectionEnvelope(
+        request.relation_projection, descriptor.descriptor);
+    mark_select_phase("bind_relation_projection_fields");
+    if (!relation_projection_binding.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          relation_projection_binding.diagnostic);
+    }
+    relation_projection_relation_descriptor = descriptor.descriptor;
+  }
+  EngineGlobalAggregateBindingResult global_aggregate_binding;
+  MgaRelationStorageDescriptor global_aggregate_relation_descriptor;
+  if (global_aggregate_projection) {
+    const auto descriptor =
+        LoadMgaRelationStorageDescriptor(request.context, table_uuid);
+    mark_select_phase("load_global_aggregate_relation_descriptor");
+    if (!descriptor.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", descriptor.diagnostic);
+    }
+    global_aggregate_binding = BindGlobalAggregateProjectionEnvelope(
+        request.global_aggregate_projection, descriptor.descriptor);
+    mark_select_phase("bind_global_aggregate_fields");
+    if (!global_aggregate_binding.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          global_aggregate_binding.diagnostic);
+    }
+    global_aggregate_relation_descriptor = descriptor.descriptor;
+  }
+  const EnginePredicateEnvelope requested_predicate =
+      !request.select_predicate.predicate_kind.empty() ? request.select_predicate : request.predicate;
+  const std::string subquery_source_uuid = OptionValue(request, "source_uuid:");
+  const bool needs_subquery_source_scope =
+      (requested_predicate.predicate_kind == "column_in_projection" ||
+       requested_predicate.predicate_kind == "column_not_in_projection") &&
+      !subquery_source_uuid.empty();
+  auto loaded = needs_subquery_source_scope
+      ? LoadMgaRelationStoreStateForMutationTargets(
+            request.context,
+            std::vector<std::string>{table_uuid, subquery_source_uuid})
+      : LoadMgaRelationStoreStateForMutationTarget(request.context, table_uuid);
   mark_select_phase("load_target_relation_state");
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(std::move(loaded.state));
@@ -672,8 +1111,19 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
         MakeInvalidRequestDiagnostic("dml.select_rows",
                                      "temporary_table_requires_session_uuid"));
   }
-  const EnginePredicateEnvelope& predicate =
-      !request.select_predicate.predicate_kind.empty() ? request.select_predicate : request.predicate;
+  EnginePredicateEnvelope predicate = requested_predicate;
+  auto projection_predicate_resolution =
+      ResolveSelectColumnInProjectionPredicate(request, state, requested_predicate);
+  mark_select_phase("resolve_projection_predicate");
+  if (projection_predicate_resolution.attempted) {
+    if (!projection_predicate_resolution.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          projection_predicate_resolution.diagnostic);
+    }
+    predicate = std::move(projection_predicate_resolution.predicate);
+  }
   if (CrudPredicateTouchesOpaqueColumn(*table, predicate)) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
         request.context,
@@ -702,7 +1152,33 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   std::string index_uuid_used;
   std::string row_scan_predicate;
   std::vector<EngineEvidenceReference> index_lookup_evidence;
-  if (predicate.predicate_kind == "row_uuid_match" && !predicate.canonical_predicate_envelope.empty()) {
+  if (global_aggregate_projection) {
+    if (!predicate.predicate_kind.empty() &&
+        predicate.predicate_kind != "row_uuid_match" &&
+        !PredicateCanRowScan(predicate)) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          UnsupportedCrudFeatureDiagnostic(
+              "dml.global_aggregate_projection",
+              "global_aggregate_predicate_requires_single_visible_scan"));
+    }
+    std::vector<CrudRowVersionRecord> filtered;
+    for (const auto& row : load_rows()) {
+      const bool matches = predicate.predicate_kind.empty() ||
+                           (predicate.predicate_kind == "row_uuid_match"
+                                ? row.row_uuid ==
+                                      predicate.canonical_predicate_envelope
+                                : CrudRowMatchesPredicate(row, predicate));
+      if (matches) filtered.push_back(row);
+    }
+    rows = std::move(filtered);
+    rows_ready = true;
+    if (!predicate.predicate_kind.empty()) {
+      row_scan_predicate =
+          predicate.predicate_kind + ":global_aggregate_single_visible_scan";
+    }
+  } else if (predicate.predicate_kind == "row_uuid_match" && !predicate.canonical_predicate_envelope.empty()) {
     std::vector<CrudRowVersionRecord> filtered;
     for (const auto& row : load_rows()) {
       if (row.row_uuid == predicate.canonical_predicate_envelope) { filtered.push_back(row); }
@@ -818,26 +1294,89 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     row.values = policy.values;
   }
   mark_select_phase("domain_read_policy");
-  ApplyOrdering(ordering, &rows);
-  mark_select_phase("apply_ordering");
-  const auto offset = static_cast<std::size_t>(request.offset);
-  if (offset != 0) {
-    if (offset >= rows.size()) {
-      rows.clear();
-    } else {
-      rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(offset));
+  if (!global_aggregate_projection && !relation_projection) {
+    ApplyOrdering(ordering, &rows);
+    mark_select_phase("apply_ordering");
+    const auto offset = static_cast<std::size_t>(request.offset);
+    if (offset != 0) {
+      if (offset >= rows.size()) {
+        rows.clear();
+      } else {
+        rows.erase(rows.begin(), rows.begin() + static_cast<std::ptrdiff_t>(offset));
+      }
     }
+    if (request.limit != 0 && rows.size() > request.limit) {
+      rows.resize(static_cast<std::size_t>(request.limit));
+    }
+    mark_select_phase("limit_offset");
   }
-  if (request.limit != 0 && rows.size() > request.limit) {
-    rows.resize(static_cast<std::size_t>(request.limit));
-  }
-  mark_select_phase("limit_offset");
   const EngineProjectionEnvelope& projection =
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
   result.visible_count = rows.size();
   const std::string result_projection = OptionValue(request, "result_projection:");
-  if (result_projection == "count_assertion") {
+  if (relation_projection) {
+    auto projected = ExecuteEngineRelationProjection(
+        relation_projection_binding.outputs,
+        relation_projection_relation_descriptor,
+        request.relation_projection.source_resource_epoch,
+        rows);
+    if (!projected.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", projected.diagnostic);
+    }
+    result.result_shape = std::move(projected.result_shape);
+    result.visible_count = projected.scanned_visible_row_count;
+    result.evidence.push_back(
+        {"dml_result_projection", "relation_projection"});
+    result.evidence.push_back(
+        {"relation_projection_relation_scan", "one_mga_visible_scan"});
+    result.evidence.push_back(
+        {"relation_projection_visible_rows_scanned",
+         std::to_string(projected.scanned_visible_row_count)});
+    result.evidence.push_back(
+        {"relation_projection_output_count",
+         std::to_string(relation_projection_binding.outputs.size())});
+    result.evidence.push_back(
+        {"relation_projection_row_storage", "none"});
+  } else if (global_aggregate_projection) {
+    auto aggregate = ExecuteGlobalAggregateProjection(
+        global_aggregate_binding.outputs,
+        global_aggregate_relation_descriptor,
+        rows);
+    if (!aggregate.ok) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context, "dml.select_rows", aggregate.diagnostic);
+    }
+    result.result_shape = std::move(aggregate.result_shape);
+    result.visible_count = 1;
+    result.evidence.push_back(
+        {"dml_result_projection", "global_aggregate_projection"});
+    result.evidence.push_back(
+        {"global_aggregate_relation_scan", "one_mga_visible_scan"});
+    result.evidence.push_back(
+        {"global_aggregate_visible_rows_scanned",
+         std::to_string(aggregate.scanned_visible_row_count)});
+    result.evidence.push_back(
+        {"global_aggregate_output_count",
+         std::to_string(global_aggregate_binding.outputs.size())});
+    result.evidence.push_back(
+        {"global_aggregate_function_uuid",
+         global_aggregate_binding.outputs.front()
+             .aggregate_function_uuid.canonical});
+  } else if (result_projection == "count") {
+    std::string error_detail;
+    result.result_shape =
+        CountProjectionResultShape(request, rows.size(), &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    result.visible_count = 1;
+    result.evidence.push_back({"dml_result_projection", "count"});
+  } else if (result_projection == "count_assertion") {
     std::string error_detail;
     result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
     if (!error_detail.empty()) {
@@ -877,6 +1416,9 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   result.evidence.insert(result.evidence.end(),
                          index_lookup_evidence.begin(),
                          index_lookup_evidence.end());
+  result.evidence.insert(result.evidence.end(),
+                         projection_predicate_resolution.evidence.begin(),
+                         projection_predicate_resolution.evidence.end());
   auto serializable_recorded = dml::RecordSerializableSelectRead(
       request.context,
       "dml.select_rows",

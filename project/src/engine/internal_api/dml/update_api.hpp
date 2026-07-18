@@ -17,6 +17,8 @@ struct EngineUpdateRowsRequest : EngineApiRequest {
   EngineObjectReference target_table;
   EnginePredicateEnvelope update_predicate;
   std::vector<std::pair<std::string, EngineTypedValue>> assignments;
+  EngineApiU64 limit = 0;
+  EngineApiU64 offset = 0;
 };
 struct EngineUpdateRowsResult : EngineApiResult {
   EngineApiU64 matched_count = 0;

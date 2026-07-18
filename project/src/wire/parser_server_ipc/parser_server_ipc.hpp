@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace scratchbird::parser::sbsql {
+namespace scratchbird::parser::ipc {
 
 inline constexpr std::uint32_t kParserServerIpcProtocolCurrent = 1;
 inline constexpr std::uint32_t kParserServerIpcProtocolMinSupported = 1;
@@ -87,4 +87,4 @@ std::vector<std::uint8_t> EncodeParserHello(const ParserHello& hello);
 ParserHelloResult RefusedHelloResult(std::string code, std::string reason);
 std::string OpcodeName(ParserServerOpcode opcode);
 
-} // namespace scratchbird::parser::sbsql
+} // namespace scratchbird::parser::ipc

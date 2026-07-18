@@ -8,6 +8,7 @@
 
 #include "common/function_result_helpers.hpp"
 
+#include <cstddef>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -137,6 +138,34 @@ FunctionCallResult RefuseFunctionInvalidInput(const FunctionCallRequest& request
                                       scratchbird::engine::sblr::SblrStatusCode::execution_failed,
                                       "SB_DIAG_FUNCTION_INVALID_INPUT",
                                       std::move(detail));
+}
+
+FunctionCallResult RefuseFunctionConversionInput(
+    const FunctionCallRequest& request,
+    std::string conversion_input_text,
+    std::string detail) {
+  constexpr std::size_t kMaximumPublicConversionInputBytes = 1024;
+  if (conversion_input_text.empty() ||
+      conversion_input_text.size() > kMaximumPublicConversionInputBytes ||
+      conversion_input_text.find('\0') != std::string::npos) {
+    return RefuseFunctionInvalidInput(
+        request,
+        "conversion input cannot be represented in a bounded diagnostic field");
+  }
+
+  auto diagnostic = scratchbird::engine::sblr::MakeSblrRefusalDiagnostic(
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT", request.context.sblr_context,
+      std::move(detail));
+  diagnostic.fields.push_back(
+      {"conversion_input_text", std::move(conversion_input_text)});
+  diagnostic.fields.push_back({"function_id", request.context.function_id});
+  diagnostic.fields.push_back({"function_uuid", request.context.function_uuid});
+  diagnostic.fields.push_back({"package_name", request.context.package_name});
+  FunctionCallResult out;
+  out.result = scratchbird::engine::sblr::MakeSblrFailure(
+      scratchbird::engine::sblr::SblrStatusCode::execution_failed,
+      request.context.function_id, std::move(diagnostic));
+  return out;
 }
 
 FunctionCallResult RefuseFunctionOverflow(const FunctionCallRequest& request, std::string detail) {

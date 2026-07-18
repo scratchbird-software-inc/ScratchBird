@@ -10,6 +10,7 @@
 
 #include "auth/auth_relay.hpp"
 #include "cache/sblr_template_cache.hpp"
+#include "ipc/sbps_client.hpp"
 #include "metrics/parser_metrics.hpp"
 
 #include <cstdint>
@@ -21,14 +22,7 @@
 
 namespace scratchbird::parser::sbsql {
 
-struct AuthCredentialEnvelope;
 struct CstDocument;
-struct PublicNameResolutionResult;
-struct ServerCloseCursorResult;
-struct ServerExecutionResult;
-struct ServerFetchResult;
-struct ServerManagementResult;
-struct ServerPrepareSblrResult;
 class EmbeddedEngineClient;
 struct ServerManagementCommand {
   std::string operation_key;

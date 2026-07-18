@@ -338,15 +338,22 @@ bool ManagementAbiChecks(std::string_view label,
 bool FirebirdUdrChecks() {
   using namespace scratchbird::udr::firebird_parser_support;
   constexpr std::string_view trusted = "engine_context=trusted;resolver=uuid";
-  if (!ExpectOk(sbu_firebird_validate_syntax("select 1", "firebird"),
+  constexpr std::string_view valid_singleton = "select 1 from rdb$database";
+  if (!ExpectDiagnostic(sbu_firebird_validate_syntax("select 1", "firebird"),
+                        "FIREBIRD.PARSE.INVALID_INPUT",
+                        "firebird bare singleton validate")) {
+    return false;
+  }
+  if (!ExpectOk(sbu_firebird_validate_syntax(valid_singleton, "firebird"),
                 "firebird validate")) return false;
-  if (!ExpectDiagnostic(sbu_firebird_parse_to_sblr("select 1", ""),
+  if (!ExpectDiagnostic(sbu_firebird_parse_to_sblr(valid_singleton, ""),
                         "UDR.FIREBIRD.CONTEXT_MISSING",
                         "firebird missing context")) return false;
-  const auto parsed = sbu_firebird_parse_to_sblr("select 1", trusted);
+  const auto parsed = sbu_firebird_parse_to_sblr(valid_singleton, trusted);
   if (!ExpectOk(parsed, "firebird parse_to_sblr")) return false;
   if (!Expect(Contains(parsed.payload, "SBLRExecutionEnvelope.v3") &&
-                  !Contains(parsed.payload, "select 1"),
+                  !Contains(parsed.payload, "select 1") &&
+                  !Contains(parsed.payload, "rdb$database"),
               "firebird parse_to_sblr payload mismatch")) return false;
   const auto ddl_sblr = sbu_firebird_parse_to_sblr(
       "create table udr_fb_sentinel_type_table (udr_fb_col_int integer, udr_fb_col_v varchar(40), udr_fb_col_ts timestamp, udr_fb_col_blob blob)",

@@ -93,6 +93,7 @@ std::string ToString(ShowIdentityKind value);
 ShowIdentityAst MakeShowIdentityAst(ShowIdentityKind show_kind,
                                     std::string raw_command_form,
                                     std::string surface_key_candidate,
+                                    std::string command_family_candidate,
                                     SourceRange source_range);
 
 std::string SerializeToJson(const ShowIdentityAst& ast);

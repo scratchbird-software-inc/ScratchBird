@@ -754,22 +754,129 @@ std::size_t TextFieldCount(std::string_view encoded, std::string_view key) {
   return count;
 }
 
-std::optional<std::string> JsonStringField(std::string_view encoded, std::string_view key) {
-  const std::string needle = "\"" + std::string(key) + "\"";
-  const std::size_t key_pos = encoded.find(needle);
-  if (key_pos == std::string_view::npos) return std::nullopt;
-  const std::size_t colon = encoded.find(':', key_pos + needle.size());
-  if (colon == std::string_view::npos) return std::nullopt;
-  std::size_t quote = colon + 1;
-  while (quote < encoded.size() && std::isspace(static_cast<unsigned char>(encoded[quote]))) {
+bool JsonKeyTokenEquals(std::string_view encoded_key,
+                        std::string_view expected_key) {
+  std::size_t expected_offset = 0;
+  for (std::size_t offset = 0; offset < encoded_key.size(); ++offset) {
+    unsigned char decoded = static_cast<unsigned char>(encoded_key[offset]);
+    if (decoded == '\\') {
+      if (++offset >= encoded_key.size()) return false;
+      const char escape = encoded_key[offset];
+      switch (escape) {
+        case '"': decoded = '"'; break;
+        case '\\': decoded = '\\'; break;
+        case '/': decoded = '/'; break;
+        case 'b': decoded = '\b'; break;
+        case 'f': decoded = '\f'; break;
+        case 'n': decoded = '\n'; break;
+        case 'r': decoded = '\r'; break;
+        case 't': decoded = '\t'; break;
+        case 'u': {
+          if (offset + 4 >= encoded_key.size()) return false;
+          unsigned int codepoint = 0;
+          for (std::size_t digit = 0; digit < 4; ++digit) {
+            const unsigned char ch =
+                static_cast<unsigned char>(encoded_key[++offset]);
+            codepoint <<= 4;
+            if (ch >= '0' && ch <= '9') {
+              codepoint += ch - '0';
+            } else if (ch >= 'a' && ch <= 'f') {
+              codepoint += ch - 'a' + 10;
+            } else if (ch >= 'A' && ch <= 'F') {
+              codepoint += ch - 'A' + 10;
+            } else {
+              return false;
+            }
+          }
+          if (codepoint > 0x7f) return false;
+          decoded = static_cast<unsigned char>(codepoint);
+          break;
+        }
+        default: return false;
+      }
+    }
+    if (expected_offset >= expected_key.size() ||
+        decoded != static_cast<unsigned char>(expected_key[expected_offset])) {
+      return false;
+    }
+    ++expected_offset;
+  }
+  return expected_offset == expected_key.size();
+}
+
+struct JsonRootKeyScan {
+  std::size_t count = 0;
+  std::optional<std::size_t> first_value_offset;
+};
+
+JsonRootKeyScan ScanJsonRootKey(std::string_view encoded,
+                                std::string_view key) {
+  JsonRootKeyScan scan;
+  std::size_t object_depth = 0;
+  bool root_object_started = false;
+  for (std::size_t offset = 0; offset < encoded.size(); ++offset) {
+    const char ch = encoded[offset];
+    if (!root_object_started) {
+      if (std::isspace(static_cast<unsigned char>(ch))) continue;
+      if (ch != '{') return scan;
+      root_object_started = true;
+      object_depth = 1;
+      continue;
+    }
+    if (ch == '"') {
+      const std::size_t token_begin = offset + 1;
+      std::size_t token_end = token_begin;
+      for (; token_end < encoded.size(); ++token_end) {
+        if (encoded[token_end] == '\\') {
+          if (++token_end >= encoded.size()) return scan;
+          continue;
+        }
+        if (encoded[token_end] == '"') break;
+      }
+      if (token_end >= encoded.size()) return scan;
+      std::size_t colon = token_end + 1;
+      while (colon < encoded.size() &&
+             std::isspace(static_cast<unsigned char>(encoded[colon]))) {
+        ++colon;
+      }
+      if (object_depth == 1 && colon < encoded.size() &&
+          encoded[colon] == ':' &&
+          JsonKeyTokenEquals(
+              encoded.substr(token_begin, token_end - token_begin), key)) {
+        ++scan.count;
+        if (!scan.first_value_offset.has_value()) {
+          scan.first_value_offset = colon + 1;
+        }
+      }
+      offset = token_end;
+      continue;
+    }
+    if (ch == '{') {
+      ++object_depth;
+    } else if (ch == '}') {
+      if (object_depth == 0) return scan;
+      --object_depth;
+      if (object_depth == 0) return scan;
+    }
+  }
+  return scan;
+}
+
+std::optional<std::string> JsonStringField(std::string_view encoded,
+                                           std::string_view key) {
+  const auto scan = ScanJsonRootKey(encoded, key);
+  if (!scan.first_value_offset.has_value()) return std::nullopt;
+  std::size_t quote = *scan.first_value_offset;
+  while (quote < encoded.size() &&
+         std::isspace(static_cast<unsigned char>(encoded[quote]))) {
     ++quote;
   }
   if (quote >= encoded.size() || encoded[quote] != '"') return std::nullopt;
   ++quote;
   std::string out;
   bool escaped = false;
-  for (std::size_t i = quote; i < encoded.size(); ++i) {
-    const char ch = encoded[i];
+  for (std::size_t offset = quote; offset < encoded.size(); ++offset) {
+    const char ch = encoded[offset];
     if (!escaped && ch == '"') return out;
     if (!escaped && ch == '\\') {
       escaped = true;
@@ -781,21 +888,9 @@ std::optional<std::string> JsonStringField(std::string_view encoded, std::string
   return std::nullopt;
 }
 
-std::size_t JsonKeyCount(std::string_view encoded, std::string_view key) {
-  const std::string needle = "\"" + std::string(key) + "\"";
-  std::size_t count = 0;
-  std::size_t start = 0;
-  while (start < encoded.size()) {
-    const std::size_t key_pos = encoded.find(needle, start);
-    if (key_pos == std::string_view::npos) break;
-    std::size_t colon = key_pos + needle.size();
-    while (colon < encoded.size() && std::isspace(static_cast<unsigned char>(encoded[colon]))) {
-      ++colon;
-    }
-    if (colon < encoded.size() && encoded[colon] == ':') ++count;
-    start = key_pos + needle.size();
-  }
-  return count;
+std::size_t JsonRootKeyCount(std::string_view encoded,
+                             std::string_view key) {
+  return ScanJsonRootKey(encoded, key).count;
 }
 
 std::optional<std::string> DuplicateTextField(std::string_view encoded) {
@@ -823,7 +918,7 @@ std::optional<std::string> DuplicateJsonField(std::string_view encoded) {
                                      "source_payload_embedded",
                                      "source_text",
                                      "sql_text"}) {
-    if (JsonKeyCount(encoded, key) > 1) return std::string(key);
+    if (JsonRootKeyCount(encoded, key) > 1) return std::string(key);
   }
   return std::nullopt;
 }

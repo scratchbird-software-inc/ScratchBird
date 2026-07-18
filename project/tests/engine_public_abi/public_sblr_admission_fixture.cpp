@@ -9,6 +9,7 @@
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr/lowering.hpp"
 #include "scratchbird/engine/sblr/raising.hpp"
+#include "diagnostic_fields.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -89,6 +90,27 @@ bool has_diagnostic(sb_engine_result_t result, std::string_view code) {
   return false;
 }
 
+bool has_zero_reserved_diagnostic_slots(sb_engine_result_t result,
+                                        std::string_view code) {
+  sb_engine_diagnostic_set_view_t diagnostics{};
+  if (sb_engine_result_diagnostics(result, &diagnostics) !=
+      SB_ENGINE_STATUS_OK) {
+    return false;
+  }
+  for (std::uint64_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+    const auto& diagnostic = diagnostics.diagnostics[i];
+    const std::string_view symbolic(
+        diagnostic.symbolic_code.data == nullptr
+            ? ""
+            : diagnostic.symbolic_code.data,
+        static_cast<std::size_t>(diagnostic.symbolic_code.size_bytes));
+    if (symbolic == code) {
+      return diagnostic.reserved0 == 0 && diagnostic.reserved1 == 0;
+    }
+  }
+  return false;
+}
+
 std::string payload_text(sb_engine_result_t result) {
   sb_engine_string_view_t view{};
   if (sb_engine_result_payload(result, &view) != SB_ENGINE_STATUS_OK || view.data == nullptr) {
@@ -129,7 +151,9 @@ void print_result_diagnostics(std::string_view label,
 sb_engine_status_t dispatch(Harness& harness,
                             const std::vector<std::uint8_t>& envelope,
                             sb_engine_result_t* result,
-                            std::uint64_t transaction_ref = 0) {
+                            std::uint64_t transaction_ref = 0,
+                            std::uint64_t reserved0 = 0,
+                            std::uint64_t reserved1 = 0) {
   sb_engine_request_context_v1_t context{};
   context.struct_size = sizeof(context);
   context.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -145,6 +169,8 @@ sb_engine_status_t dispatch(Harness& harness,
   params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
   params.envelope_bytes = envelope.data();
   params.envelope_size_bytes = envelope.size();
+  params.reserved0 = reserved0;
+  params.reserved1 = reserved1;
   return sb_engine_dispatch_sblr(harness.session, nullptr, &context, &params, result);
 }
 
@@ -273,6 +299,97 @@ int main() {
   if (dispatch(harness, relational, &result) != SB_ENGINE_STATUS_UNSUPPORTED || result == nullptr ||
       !has_diagnostic(result, "SBLR.EXECUTION.ADMISSION_ONLY")) {
     return 4;
+  }
+  (void)sb_engine_result_release(result);
+
+  // A structured neutral conversion diagnostic must survive the public C ABI
+  // without callers parsing safe-detail prose. Firebird presentation consumes
+  // this exact code/field pair after the generic server transport.
+  const std::string invalid_temporal_operation =
+      "operation_id=query.evaluate_projection\n"
+      "opcode=SBLR_QUERY_EVALUATE_PROJECTION\n"
+      "result_shape=engine.api.result.v1\n"
+      "diagnostic_shape=engine.diagnostic.v1\n"
+      "trace_key=firebird-cast-conversion-public-abi\n"
+      "contains_sql_text=false\n"
+      "parser_resolved_names_to_uuids=true\n"
+      "requires_security_context=true\n"
+      "requires_transaction_context=true\n"
+      "requires_cluster_authority=false\n"
+      "operand=text\tprojection_count\t1\n"
+      "operand=text\tprojection_0_name\tc0\n"
+      "operand=text\tprojection_0_expr_kind\tfunction\n"
+      "operand=text\tprojection_0_type\tdate\n"
+      "operand=text\tprojection_0_value\t\n"
+      "operand=text\tprojection_0_is_null\tfalse\n"
+      "operand=text\tprojection_0_function_id\tdata.scalar.cast\n"
+      "operand=text\tprojection_0_function_arg_count\t3\n"
+      "operand=text\tprojection_0_arg_0_expr_kind\tliteral\n"
+      "operand=text\tprojection_0_arg_0_type\tcharacter.none\n"
+      "operand=text\tprojection_0_arg_0_value\t29.2.2002\n"
+      "operand=text\tprojection_0_arg_0_is_null\tfalse\n"
+      "operand=text\tprojection_0_arg_1_expr_kind\tliteral\n"
+      "operand=text\tprojection_0_arg_1_type\ttext\n"
+      "operand=text\tprojection_0_arg_1_value\tdate\n"
+      "operand=text\tprojection_0_arg_1_is_null\tfalse\n"
+      "operand=text\tprojection_0_arg_2_expr_kind\tliteral\n"
+      "operand=text\tprojection_0_arg_2_type\ttext\n"
+      "operand=text\tprojection_0_arg_2_value\tfirebird.temporal_cast.v1\n"
+      "operand=text\tprojection_0_arg_2_is_null\tfalse\n";
+  const auto invalid_temporal = operation_envelope(
+      invalid_temporal_operation,
+      scratchbird::engine::SblrOperationFamily::relational_query);
+  result = nullptr;
+  if (dispatch(harness, invalid_temporal, &result, 73) !=
+          SB_ENGINE_STATUS_INVALID_ARGUMENT ||
+      result == nullptr ||
+      !has_diagnostic(result, "SB_DIAG_FUNCTION_CONVERSION_INPUT") ||
+      !has_zero_reserved_diagnostic_slots(
+          result, "SB_DIAG_FUNCTION_CONVERSION_INPUT")) {
+    print_result_diagnostics("conversion_input_public_abi",
+                             SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                             result);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return 128;
+  }
+  std::vector<scratchbird::server_engine_bridge::EngineDiagnosticField>
+      private_conversion_fields;
+  if (!scratchbird::server_engine_bridge::CopyEngineDiagnosticFields(
+          result, 0, &private_conversion_fields) ||
+      private_conversion_fields.size() != 1 ||
+      private_conversion_fields.front().key != "conversion_input_text" ||
+      private_conversion_fields.front().value != "29.2.2002") {
+    (void)sb_engine_result_release(result);
+    return 129;
+  }
+  sb_engine_result_class_t conversion_result_class = SB_ENGINE_RESULT_NONE;
+  if (sb_engine_result_class(result, &conversion_result_class) !=
+          SB_ENGINE_STATUS_OK ||
+      conversion_result_class != SB_ENGINE_RESULT_DIAGNOSTIC_ONLY) {
+    (void)sb_engine_result_release(result);
+    return 130;
+  }
+  (void)sb_engine_result_release(result);
+
+  // The private server-engine prepared-metadata bridge must never weaken the
+  // frozen public ABI rule that both dispatch reserved fields are zero.
+  result = nullptr;
+  if (dispatch(harness, relational, &result, 0, 1, 0) !=
+          SB_ENGINE_STATUS_INVALID_ARGUMENT ||
+      result == nullptr ||
+      !has_diagnostic(result, "ENGINE.ABI.RESERVED_FIELD_INVALID")) {
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return 126;
+  }
+  (void)sb_engine_result_release(result);
+
+  result = nullptr;
+  if (dispatch(harness, relational, &result, 0, 0, 1) !=
+          SB_ENGINE_STATUS_INVALID_ARGUMENT ||
+      result == nullptr ||
+      !has_diagnostic(result, "ENGINE.ABI.RESERVED_FIELD_INVALID")) {
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return 127;
   }
   (void)sb_engine_result_release(result);
 

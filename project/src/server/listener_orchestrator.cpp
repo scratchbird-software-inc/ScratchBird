@@ -63,9 +63,10 @@ std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
 }
 
-std::string DefaultListenerUuid(std::uint64_t generation) {
+std::string DefaultListenerUuid(const std::string& profile_key,
+                                std::uint64_t generation) {
   std::ostringstream out;
-  out << "server-native-listener-" << generation;
+  out << "server-listener-" << profile_key << '-' << generation;
   return out.str();
 }
 
@@ -83,8 +84,8 @@ ServerListenerProfileRuntime* FindTarget(ServerListenerOrchestrator* orchestrato
   return &*found;
 }
 
-bool ValidBindHost(const std::string& host) {
-  return host == "127.0.0.1" || host == "localhost" || host == "::1";
+bool ValidManagedBindAddress(const std::string& address) {
+  return address == "127.0.0.1" || address == "localhost" || address == "::1";
 }
 
 bool RawListenerCommandAllowed(std::string_view command) {
@@ -133,24 +134,13 @@ std::string Sanitize(std::string value) {
 std::string ListenerManagementSocketPath(const ServerListenerProfileRuntime& profile) {
   const auto endpoint_hash = StableHash(profile.engine_endpoint + "|" +
                                         profile.database_selector + "|" +
-                                        std::string("native"));
-  const auto stem = Sanitize(std::string("native_") + endpoint_hash);
+                                        profile.protocol_family);
+  const auto stem = Sanitize(
+      "l" + StableHash(profile.listener_uuid).substr(0, 6) +
+      "p" + StableHash(profile.profile_id).substr(0, 6) +
+      "e" + endpoint_hash.substr(0, 6) +
+      "g" + std::to_string(profile.lifecycle_generation));
   return (std::filesystem::path(profile.control_dir) / (stem + ".management.sock")).string();
-}
-
-std::string ListenerControlDir(const ServerBootstrapConfig& config) {
-  return config.listener_native_control_dir.string();
-}
-
-std::string ListenerRuntimeDir(const ServerBootstrapConfig& config) {
-  return config.listener_native_runtime_dir.string();
-}
-
-std::string DatabaseSelector(const ServerBootstrapConfig& config) {
-  if (!config.database_default_path.empty()) {
-    return std::string("server_database_path:") + config.database_default_path.string();
-  }
-  return "server_database_default";
 }
 
 std::string SiblingExecutable(const std::string& name) {
@@ -166,21 +156,16 @@ std::string SiblingExecutable(const std::string& name) {
 }
 
 std::string ListenerExecutablePath(const ServerBootstrapConfig& config) {
-  if (!config.listener_native_executable_path.empty()) {
-    return config.listener_native_executable_path.string();
+  if (!config.listener_executable_path.empty()) {
+    return config.listener_executable_path.string();
   }
   return SiblingExecutable("SBgate");
 }
 
-std::string ParserExecutablePath(const ServerBootstrapConfig& config) {
-  if (!config.listener_native_parser_executable_path.empty()) {
-    return config.listener_native_parser_executable_path.string();
-  }
-  return SiblingExecutable("SBParser");
-}
-
-std::string ProfileUuid(std::uint64_t generation) {
-  return "server-native-listener-profile-" + std::to_string(generation);
+std::string ProfileUuid(const ServerListenerProfileRuntime& profile,
+                        std::uint64_t generation) {
+  return "server-listener-profile-" + StableHash(profile.profile_id) + "-" +
+         std::to_string(generation);
 }
 
 #ifdef _WIN32
@@ -502,6 +487,7 @@ ServerListenerOperationResult SendManagementCommand(ServerListenerProfileRuntime
 ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profile,
                                              const ServerBootstrapConfig& config,
                                              const ServerLifecycleArtifacts& artifacts) {
+  (void)config;
   ServerListenerOperationResult result;
   result.target_uuid = profile->listener_uuid;
   result.state_before = profile->state;
@@ -564,30 +550,33 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
 
   const auto port_arg = "--port=" + std::to_string(profile->port);
   const auto listener_uuid_arg = "--listener-uuid=" + profile->listener_uuid;
-  const auto listener_profile_uuid_arg = "--listener-profile-uuid=" + ProfileUuid(artifacts.generation);
+  const auto listener_profile_uuid_arg =
+      "--listener-profile-uuid=" + ProfileUuid(*profile, artifacts.generation);
   const auto lifecycle_arg = "--lifecycle-generation=" + std::to_string(artifacts.generation);
   const std::string controller_arg = "--controller-uuid=sb_server";
   const auto server_arg = "--server-endpoint=" + profile->engine_endpoint;
-  const auto database_arg = "--database-selector=" + DatabaseSelector(config);
+  const auto database_arg = "--database-selector=" + profile->database_selector;
   const auto parser_arg = "--parser-executable=" + profile->parser_executable_path;
   const auto control_arg = "--control-dir=" + profile->control_dir;
   const auto runtime_arg = "--runtime-dir=" + profile->runtime_dir;
-  const auto bind_arg = "--bind-address=" + profile->bind_host;
-  const std::string ready_min_arg = "--warm-pool-min=2";
-  const std::string ready_max_arg = "--warm-pool-max=8";
+  const auto bind_arg = "--bind-address=" + profile->bind_address;
+  const auto ready_min_arg = "--warm-pool-min=" + std::to_string(profile->warm_pool_min);
+  const auto ready_max_arg = "--warm-pool-max=" + std::to_string(profile->warm_pool_max);
   std::vector<std::string> args{
       profile->listener_executable_path,
       "--managed",
-      "--protocol-family=sbsql",
-      "--listener-profile=native",
+      "--protocol-family=" + profile->protocol_family,
+      "--listener-profile=" + profile->profile_id,
       listener_uuid_arg,
       listener_profile_uuid_arg,
       lifecycle_arg,
       "--controller-type=server",
       controller_arg,
-      "--parser-package=SBParser",
-      "--dialect-profile-uuid=sbsql.v3",
-      "--bundle-contract-id=sbp_sbsql@1",
+      "--parser-package=" + profile->parser_package_ref,
+      "--parser-package-uuid=" + profile->parser_package_uuid,
+      "--dialect-profile-uuid=" + profile->dialect_profile_uuid,
+      "--bundle-contract-id=" + profile->bundle_contract_id,
+      "--parser-api-major=" + std::to_string(profile->parser_api_major),
       server_arg,
       database_arg,
       parser_arg,
@@ -850,78 +839,126 @@ ServerListenerOrchestrator BuildListenerOrchestrator(const ServerBootstrapConfig
                                                      const ServerLifecycleArtifacts& artifacts) {
   ServerListenerOrchestrator orchestrator;
   orchestrator.generation = artifacts.generation == 0 ? 1 : artifacts.generation;
-  orchestrator.engine_endpoint = config.sbps_endpoint.string();
+  const auto listener_executable = ListenerExecutablePath(config);
 
-  ServerListenerProfileRuntime profile;
-  profile.listener_uuid = DefaultListenerUuid(orchestrator.generation);
-  profile.profile_name = "native";
-  profile.bind_host = config.listener_native_bind_host;
-  profile.port = config.listener_native_port;
-  profile.enabled = config.listener_native_enabled;
-  profile.listener_executable_path = ListenerExecutablePath(config);
-  profile.parser_executable_path = ParserExecutablePath(config);
-  profile.control_dir = ListenerControlDir(config);
-  profile.runtime_dir = ListenerRuntimeDir(config);
-  profile.tls_required = config.listener_native_tls_required;
-  profile.tls_cert_file = config.listener_native_tls_cert_file.string();
-  profile.tls_key_file = config.listener_native_tls_key_file.string();
-  profile.tls_ca_file = config.listener_native_tls_ca_file.string();
-  profile.ready_timeout_ms = config.listener_native_ready_timeout_ms;
-  profile.engine_endpoint = orchestrator.engine_endpoint;
-  profile.database_selector = DatabaseSelector(config);
-  profile.management_socket_path = ListenerManagementSocketPath(profile);
-  profile.state = config.listener_native_enabled ? "stopped" : "disabled";
+  for (const auto& configured : config.listener_profiles) {
+    ServerListenerProfileRuntime profile;
+    profile.listener_uuid =
+        DefaultListenerUuid(configured.config_key, orchestrator.generation);
+    profile.profile_name = configured.config_key;
+    profile.protocol_family = configured.protocol_family;
+    profile.profile_id = configured.profile_id;
+    profile.bind_address = configured.bind_address;
+    profile.port = configured.port;
+    profile.enabled = configured.enabled;
+    profile.parser_package_ref = configured.parser_package;
+    profile.parser_package_uuid = configured.parser_package_uuid;
+    profile.dialect_profile_uuid = configured.dialect_profile_uuid;
+    profile.bundle_contract_id = configured.bundle_contract_id;
+    profile.parser_api_major = configured.parser_api_major;
+    profile.listener_executable_path = listener_executable;
+    profile.parser_executable_path = configured.parser_executable_path.string();
+    profile.control_dir = configured.control_dir.string();
+    profile.runtime_dir = configured.runtime_dir.string();
+    profile.tls_required = configured.tls_required;
+    profile.tls_cert_file = configured.tls_cert_file.string();
+    profile.tls_key_file = configured.tls_key_file.string();
+    profile.tls_ca_file = configured.tls_ca_file.string();
+    profile.ready_timeout_ms = configured.ready_timeout_ms;
+    profile.lifecycle_generation = orchestrator.generation;
+    profile.warm_pool_min = configured.warm_pool_min;
+    profile.warm_pool_max = configured.warm_pool_max;
+    profile.engine_endpoint = configured.sbps_endpoint.string();
+    profile.database_selector = configured.database_selector;
+    profile.state = profile.enabled ? "stopped" : "disabled";
 
-  if (!ValidBindHost(profile.bind_host)) {
-    profile.state = "failed";
-    profile.diagnostic_code = "LISTENER.BIND_POLICY_INVALID";
-    orchestrator.diagnostics.push_back(ListenerDiagnostic(
-        "LISTENER.BIND_POLICY_INVALID",
-        "The listener bind host is not permitted by standalone server policy.",
-        {{"listener_uuid", profile.listener_uuid}, {"bind_host", profile.bind_host}}));
+    auto fail_profile = [&](std::string code,
+                            std::string message,
+                            std::vector<ServerDiagnosticField> fields = {}) {
+      profile.state = "failed";
+      if (profile.diagnostic_code.empty()) profile.diagnostic_code = code;
+      fields.push_back({"listener_uuid", profile.listener_uuid});
+      fields.push_back({"profile_key", profile.profile_name});
+      orchestrator.diagnostics.push_back(
+          ListenerDiagnostic(std::move(code), std::move(message), std::move(fields)));
+    };
+
+    if (profile.profile_name.empty() || profile.protocol_family.empty() ||
+        profile.profile_id.empty() || profile.parser_package_ref.empty() ||
+        profile.parser_package_uuid.empty() || profile.dialect_profile_uuid.empty() ||
+        profile.bundle_contract_id.empty() || profile.parser_executable_path.empty()) {
+      fail_profile(
+          "LISTENER.START_INPUT_INVALID",
+          "The listener profile is missing its exact opaque parser launch descriptor.");
+    }
+    if (profile.parser_api_major == 0) {
+      fail_profile(
+          "LISTENER.PARSER_API_MAJOR_REQUIRED",
+          "The listener profile requires an explicit nonzero parser API major version.");
+    }
+    if (profile.listener_executable_path.empty()) {
+      fail_profile("LISTENER.START_INPUT_INVALID",
+                   "The generic SBgate executable path is empty.");
+    }
+    if (profile.bind_address.empty() ||
+        !ValidManagedBindAddress(profile.bind_address)) {
+      fail_profile(
+          "LISTENER.BIND_POLICY_INVALID",
+          "A server-managed listener requires an explicit loopback bind address.",
+          {{"bind_address", profile.bind_address}});
+    }
+    if (profile.port == 0 || profile.port > 65535) {
+      fail_profile(
+          "LISTENER.PORT_INVALID",
+          "The listener profile requires an explicit TCP port in the valid range.",
+          {{"port", std::to_string(profile.port)}});
+    }
+    if (profile.database_selector.empty()) {
+      fail_profile("LISTENER.DATABASE_SELECTOR_INVALID",
+                   "The listener profile has no explicit database selector.");
+    }
+    if (profile.engine_endpoint.empty()) {
+      fail_profile("LISTENER.ENGINE_ENDPOINT_INVALID",
+                   "The listener profile has no explicit parser-server SBPS endpoint.");
+    }
+    if (profile.control_dir.empty() || profile.runtime_dir.empty()) {
+      fail_profile("LISTENER.RUNTIME_PATH_INVALID",
+                   "The listener profile control and runtime paths are required.");
+    }
+    if (profile.warm_pool_min == 0 || profile.warm_pool_max == 0 ||
+        profile.warm_pool_min > profile.warm_pool_max) {
+      fail_profile(
+          "LISTENER.POOL_POLICY_INVALID",
+          "The listener profile parser pool range is invalid.",
+          {{"warm_pool_min", std::to_string(profile.warm_pool_min)},
+           {"warm_pool_max", std::to_string(profile.warm_pool_max)}});
+    }
+    if (profile.tls_required &&
+        (profile.tls_cert_file.empty() || profile.tls_key_file.empty())) {
+      fail_profile(
+          "LISTENER.TLS_POLICY_FAILED",
+          "A TLS-required listener profile needs certificate and key paths.");
+    }
+    profile.management_socket_path = ListenerManagementSocketPath(profile);
+    orchestrator.profiles.push_back(std::move(profile));
   }
-  if (profile.port == 0 || profile.port > 65535) {
-    profile.state = "failed";
-    profile.diagnostic_code = "LISTENER.BIND_POLICY_INVALID";
-    orchestrator.diagnostics.push_back(ListenerDiagnostic(
-        "LISTENER.BIND_POLICY_INVALID",
-        "The listener bind port is outside the permitted TCP port range.",
-        {{"listener_uuid", profile.listener_uuid}, {"port", std::to_string(profile.port)}}));
-  }
-  if (profile.engine_endpoint.empty()) {
-    profile.state = "failed";
-    profile.diagnostic_code = "LISTENER.ENGINE_ENDPOINT_INVALID";
-    orchestrator.diagnostics.push_back(ListenerDiagnostic(
-        "LISTENER.ENGINE_ENDPOINT_INVALID",
-        "The listener profile has no parser-server engine endpoint to publish.",
-        {{"listener_uuid", profile.listener_uuid}}));
-  }
-  if (profile.enabled && profile.tls_required &&
-      (profile.tls_cert_file.empty() || profile.tls_key_file.empty())) {
-    profile.state = "failed";
-    profile.diagnostic_code = "LISTENER.TLS_POLICY_FAILED";
-    orchestrator.diagnostics.push_back(ListenerDiagnostic(
-        "LISTENER.TLS_POLICY_FAILED",
-        "The native SBWP listener requires tls_cert_file and tls_key_file when TLS is required.",
-        {{"listener_uuid", profile.listener_uuid}}));
-  }
-  orchestrator.profiles.push_back(std::move(profile));
   return orchestrator;
 }
 
 std::string ListenerOrchestratorStatusJson(const ServerListenerOrchestrator& orchestrator) {
   std::ostringstream out;
   out << "{\"listener_orchestrator\":{\"generation\":" << orchestrator.generation
-      << ",\"engine_endpoint\":\"" << JsonEscape(orchestrator.engine_endpoint)
-      << "\",\"diagnostic_count\":" << orchestrator.diagnostics.size()
+      << ",\"diagnostic_count\":" << orchestrator.diagnostics.size()
       << ",\"listeners\":[";
   for (std::size_t i = 0; i < orchestrator.profiles.size(); ++i) {
     if (i != 0) out << ',';
     const auto& profile = orchestrator.profiles[i];
     out << "{\"listener_uuid\":\"" << JsonEscape(profile.listener_uuid)
         << "\",\"profile_name\":\"" << JsonEscape(profile.profile_name)
+        << "\",\"protocol_family\":\"" << JsonEscape(profile.protocol_family)
+        << "\",\"profile_id\":\"" << JsonEscape(profile.profile_id)
         << "\",\"state\":\"" << JsonEscape(profile.state)
-        << "\",\"bind_host\":\"" << JsonEscape(profile.bind_host)
+        << "\",\"bind_address\":\"" << JsonEscape(profile.bind_address)
         << "\",\"port\":" << profile.port
         << ",\"enabled\":" << (profile.enabled ? "true" : "false")
         << ",\"parser_package_ref\":\"" << JsonEscape(profile.parser_package_ref)

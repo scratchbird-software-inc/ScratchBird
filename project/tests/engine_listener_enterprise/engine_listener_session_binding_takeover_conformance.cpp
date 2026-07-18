@@ -9,6 +9,7 @@
 #include "control_plane.hpp"
 #include "session_registry.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -79,6 +80,7 @@ scratchbird::server::ServerSessionControlAuthority Authority(std::uint64_t seque
 scratchbird::server::ServerSessionRecord ActiveSession() {
   scratchbird::server::ServerSessionRecord session;
   session.connection_uuid = Uuid(0x10);
+  session.server_channel_uuid = Uuid(0x11);
   session.session_uuid = Uuid(0x20);
   session.auth_context_uuid = Uuid(0x30);
   session.principal_uuid = Uuid(0x40);
@@ -90,6 +92,29 @@ scratchbird::server::ServerSessionRecord ActiveSession() {
   session.local_transaction_id = 77;
   session.transaction_uuid = scratchbird::server::UuidBytesToText(Uuid(0x60));
   return session;
+}
+
+scratchbird::server::ServerSessionRecord BoundSession() {
+  auto session = ActiveSession();
+  session.session_binding_present = true;
+  session.attachment_id = session.connection_uuid;
+  session.catalog_session_id = session.session_uuid;
+  session.protocol_session_id = Uuid(0x70);
+  session.transaction_routing_v2_negotiated = true;
+  session.prepared_metadata_transfer_v1_negotiated = true;
+  session.relation_descriptor_projection_v3_negotiated = true;
+  return session;
+}
+
+scratchbird::server::ServerSessionTakeoverRequest ConnectionTakeoverRequest(
+    const scratchbird::server::ServerSessionRecord& session,
+    const std::array<std::uint8_t, 16>& destination_connection_uuid) {
+  scratchbird::server::ServerSessionTakeoverRequest request;
+  request.mask = scratchbird::server::kServerTakeoverClaimAttachmentId |
+                 scratchbird::server::kServerTakeoverClaimCatalogSessionId;
+  request.attachment_id = destination_connection_uuid;
+  request.catalog_session_id = session.session_uuid;
+  return request;
 }
 
 void ProveControlPlaneCodecCompatibility() {
@@ -189,6 +214,39 @@ void ProveBindingTakeoverAndClear() {
       scratchbird::listener::EncodeTakeoverRequestPayload(takeover), nullptr);
   Require(decoded_takeover.has_value(), "TAKEOVER_REQUEST must decode before server application");
 
+  const auto destination_channel_uuid = Uuid(0xf0);
+  registry.physical_channel_by_connection_uuid.insert_or_assign(
+      scratchbird::server::UuidBytesToText(takeover.attachment_id),
+      destination_channel_uuid);
+  std::array<std::uint8_t, 32> destination_capabilities{};
+  destination_capabilities[0] =
+      scratchbird::server::sbps::kCapabilityTransactionRoutingV2 |
+      scratchbird::server::sbps::kCapabilityPreparedMetadataTransferV1 |
+      scratchbird::server::sbps::kCapabilityRelationDescriptorProjectionV3;
+  registry.negotiated_capabilities_by_connection_uuid.insert_or_assign(
+      scratchbird::server::UuidBytesToText(takeover.attachment_id),
+      destination_capabilities);
+
+  const auto ordinary_prepared_uuid = Uuid(0x01);
+  scratchbird::server::ServerPreparedStatementRecord ordinary_prepared;
+  ordinary_prepared.prepared_statement_uuid = ordinary_prepared_uuid;
+  ordinary_prepared.session_uuid = session.session_uuid;
+  ordinary_prepared.encoded_sblr_envelope = "ordinary-prepared-envelope";
+  registry.prepared_by_uuid.insert_or_assign(
+      scratchbird::server::UuidBytesToText(ordinary_prepared_uuid),
+      ordinary_prepared);
+
+  const auto transferable_prepared_uuid = Uuid(0x02);
+  scratchbird::server::ServerPreparedStatementRecord transferable_prepared;
+  transferable_prepared.prepared_statement_uuid = transferable_prepared_uuid;
+  transferable_prepared.session_uuid = session.session_uuid;
+  transferable_prepared.encoded_sblr_envelope =
+      "transferable-prepared-envelope";
+  transferable_prepared.prepared_metadata_transferable = true;
+  registry.prepared_by_uuid.insert_or_assign(
+      scratchbird::server::UuidBytesToText(transferable_prepared_uuid),
+      transferable_prepared);
+
   auto probe = scratchbird::server::EvaluateServerSessionTakeoverProbe(
       registry, ToServerRequest(*decoded_takeover), Authority(20));
   Require(probe.accepted && probe.takeover_allowed,
@@ -206,10 +264,29 @@ void ProveBindingTakeoverAndClear() {
   const auto& taken = registry.sessions_by_uuid.at(session_key);
   Require(taken.connection_uuid == takeover.attachment_id,
           "TAKEOVER_REQUEST must move attachment ownership");
+  Require(taken.server_channel_uuid == destination_channel_uuid,
+          "TAKEOVER_REQUEST did not bind the destination physical channel");
+  Require(taken.transaction_routing_v2_negotiated &&
+              taken.prepared_metadata_transfer_v1_negotiated &&
+              taken.relation_descriptor_projection_v3_negotiated,
+          "TAKEOVER_REQUEST did not derive destination channel capabilities");
   Require(taken.protocol_session_id == takeover.protocol_session_id,
           "TAKEOVER_REQUEST must move protocol session ownership");
   Require(taken.takeover_generation == 1 && taken.takeover_control_sequence == 20,
           "TAKEOVER_REQUEST must publish generation and replay sequence");
+  const auto& ordinary_after_takeover = registry.prepared_by_uuid.at(
+      scratchbird::server::UuidBytesToText(ordinary_prepared_uuid));
+  Require(!ordinary_after_takeover.closed &&
+              ordinary_after_takeover.encoded_sblr_envelope ==
+                  "ordinary-prepared-envelope",
+          "physical channel takeover retired an ordinary prepared statement");
+  const auto& transferable_after_takeover = registry.prepared_by_uuid.at(
+      scratchbird::server::UuidBytesToText(transferable_prepared_uuid));
+  Require(transferable_after_takeover.closed &&
+              !transferable_after_takeover.prepared_metadata_transferable &&
+              transferable_after_takeover.prepared_metadata_binding == nullptr &&
+              transferable_after_takeover.encoded_sblr_envelope.empty(),
+          "physical channel takeover inherited a transferable prepared binding");
 
   auto takeover_replay = scratchbird::server::ApplyServerSessionTakeoverRequest(
       &registry, ToServerRequest(*decoded_takeover), Authority(20));
@@ -248,11 +325,74 @@ void ProveBindingTakeoverAndClear() {
           "replayed SESSION_BINDING_CLEAR must be refused");
 }
 
+void ProveTakeoverRejectsUnadmittedPhysicalChannel() {
+  scratchbird::server::ServerSessionRegistry registry;
+  const auto session = BoundSession();
+  const auto session_key =
+      scratchbird::server::UuidBytesToText(session.session_uuid);
+  registry.sessions_by_uuid.insert_or_assign(session_key, session);
+
+  const auto destination_connection_uuid = Uuid(0xc1);
+  const auto request =
+      ConnectionTakeoverRequest(session, destination_connection_uuid);
+  const auto probe = scratchbird::server::EvaluateServerSessionTakeoverProbe(
+      registry, request, Authority(40));
+  Require(probe.accepted && !probe.takeover_allowed &&
+              probe.diagnostic_code ==
+                  "SERVER.SESSION_TAKEOVER.PHYSICAL_CHANNEL_REQUIRED",
+          "TAKEOVER_PROBE admitted an unregistered destination channel");
+
+  const auto rejected = scratchbird::server::ApplyServerSessionTakeoverRequest(
+      &registry, request, Authority(40));
+  Require(!rejected.accepted &&
+              rejected.diagnostic_code ==
+                  "SERVER.SESSION_TAKEOVER.PHYSICAL_CHANNEL_REQUIRED",
+          "TAKEOVER_REQUEST admitted an unregistered destination channel");
+  const auto& unchanged = registry.sessions_by_uuid.at(session_key);
+  Require(unchanged.connection_uuid == session.connection_uuid &&
+              unchanged.server_channel_uuid == session.server_channel_uuid &&
+              unchanged.transaction_routing_v2_negotiated &&
+              unchanged.prepared_metadata_transfer_v1_negotiated &&
+              unchanged.relation_descriptor_projection_v3_negotiated &&
+              unchanged.takeover_generation == 0,
+          "rejected physical-channel takeover mutated session authority");
+}
+
+void ProveMissingCapabilityRecordClearsInheritedAuthority() {
+  scratchbird::server::ServerSessionRegistry registry;
+  const auto session = BoundSession();
+  const auto session_key =
+      scratchbird::server::UuidBytesToText(session.session_uuid);
+  registry.sessions_by_uuid.insert_or_assign(session_key, session);
+
+  const auto destination_connection_uuid = Uuid(0xc2);
+  const auto destination_channel_uuid = Uuid(0xc3);
+  registry.physical_channel_by_connection_uuid.insert_or_assign(
+      scratchbird::server::UuidBytesToText(destination_connection_uuid),
+      destination_channel_uuid);
+  const auto request =
+      ConnectionTakeoverRequest(session, destination_connection_uuid);
+  const auto applied = scratchbird::server::ApplyServerSessionTakeoverRequest(
+      &registry, request, Authority(50));
+  Require(applied.accepted && applied.mutated && applied.takeover_allowed,
+          "TAKEOVER_REQUEST refused an admitted legacy-only destination channel");
+  const auto& rebound = registry.sessions_by_uuid.at(session_key);
+  Require(rebound.connection_uuid == destination_connection_uuid &&
+              rebound.server_channel_uuid == destination_channel_uuid,
+          "legacy-only takeover did not update physical channel identity");
+  Require(!rebound.transaction_routing_v2_negotiated &&
+              !rebound.prepared_metadata_transfer_v1_negotiated &&
+              !rebound.relation_descriptor_projection_v3_negotiated,
+          "takeover inherited capabilities without a destination negotiation record");
+}
+
 }  // namespace
 
 int main() {
   ProveControlPlaneCodecCompatibility();
   ProveBindingTakeoverAndClear();
+  ProveTakeoverRejectsUnadmittedPhysicalChannel();
+  ProveMissingCapabilityRecordClearsInheritedAuthority();
   std::cout << "engine_listener_session_binding_takeover_conformance=passed\n";
   return EXIT_SUCCESS;
 }

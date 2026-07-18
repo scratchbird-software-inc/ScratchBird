@@ -51,7 +51,7 @@ EXPECTED_COUNTS = {
 }
 
 EXTERNAL_REFERENCE_SKIP_CODE = 77
-PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
+PARSER_REMAP_ROOT = "docs/compatibility-parsers/remap"
 
 UPSTREAM_CSVS = {
     "inventory_noncluster_handoff_rows":
@@ -120,7 +120,7 @@ def actual_udr_dirs(repo_root: pathlib.Path) -> set[str]:
 
 
 def tracker_has_no_pending(repo_root: pathlib.Path, execution_plan: str) -> None:
-    rows = read_csv(repo_root, f"{execution_plan}/TRACKER.csv")
+    rows = read_csv(repo_root, f"{execution_plan}/COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv")
     pending = [row["slice_id"] for row in rows if row["status"] == "pending"]
     require(not pending, f"pending upstream tracker rows in {execution_plan}: {pending}")
 
@@ -128,7 +128,7 @@ def tracker_has_no_pending(repo_root: pathlib.Path, execution_plan: str) -> None
 def require_fpr_tracker_state(repo_root: pathlib.Path) -> None:
     rows = read_csv(
         repo_root,
-        f"{PARSER_REMAP_ROOT}/TRACKER.csv",
+        f"{PARSER_REMAP_ROOT}/COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv",
     )
     by_id = {row["slice_id"]: row for row in rows}
     require(

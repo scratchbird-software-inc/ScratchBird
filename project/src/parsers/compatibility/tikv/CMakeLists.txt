@@ -29,7 +29,10 @@ target_link_libraries(sbl_tikv_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_tikv main.cpp)
+add_executable(sbp_tikv
+  main.cpp
+  tikv_grpc_worker_session.cpp
+)
 target_compile_features(sbp_tikv PRIVATE cxx_std_23)
 target_link_libraries(sbp_tikv PRIVATE
   sbl_tikv_parser_pipeline

@@ -114,7 +114,6 @@ void RunScenario(const std::filesystem::path& listener,
 
   const pid_t pid = ::fork();
   if (pid == 0) {
-    ::setenv("SB_PARSER_DUMMY_BEHAVIOR", behavior.c_str(), 1);
     int out = ::creat(stdout_path.c_str(), 0600);
     int err = ::creat(stderr_path.c_str(), 0600);
     if (out >= 0) {
@@ -129,11 +128,13 @@ void RunScenario(const std::filesystem::path& listener,
     const std::string parser_arg = "--parser-executable=" + parser.string();
     const std::string control_arg = "--control-dir=" + control_dir.string();
     const std::string runtime_arg = "--runtime-dir=" + runtime_dir.string();
+    const std::string profile_arg =
+        "--listener-profile=fixture.parser-dummy.behavior." + behavior;
     ::execl(listener.c_str(),
             listener.c_str(),
             "--foreground",
             "--protocol-family=sbsql",
-            "--listener-profile=default",
+            profile_arg.c_str(),
             "--bundle-contract-id=bundle.default@1",
             "--database-selector=dev_bootstrap_path:/tmp/sb_listener_fault.sbdb",
             "--server-endpoint=unix:/tmp/sb_listener_fault.sbps.sock",

@@ -10,6 +10,19 @@
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 }
 
+std::vector<std::string> InlineIndexKeyColumns(
+    const CrudIndexRecord& index) {
+  std::vector<std::string> columns;
+  for (const auto& envelope : index.key_envelopes) {
+    const std::string column_name = ColumnNameFromIndexEnvelope(envelope);
+    if (!column_name.empty()) { columns.push_back(column_name); }
+  }
+  if (columns.empty() && !index.column_name.empty()) {
+    columns.push_back(index.column_name);
+  }
+  return columns;
+}
+
 bool IndexTouchesOpaqueColumn(const EngineIndexDefinition& definition,
                               const std::vector<std::pair<std::string, std::string>>& columns) {
   for (const auto& envelope : definition.key_envelopes) {
@@ -61,6 +74,12 @@ CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
   for (const auto& envelope : definition.key_envelopes) {
     if (envelope == "unique") {
       index.unique = true;
+    } else if (envelope == "primary_key") {
+      index.unique = true;
+      // Retain the constraint-class directive for catalog evidence and
+      // diagnostics. CrudIndexKeyColumns is authoritative for excluding it
+      // from the ordered physical key.
+      index.key_envelopes.push_back(envelope);
     } else if (StartsWithLocal(envelope, "include:")) {
       index.include_columns.push_back(envelope.substr(8));
     } else if (StartsWithLocal(envelope, "where_eq:")) {

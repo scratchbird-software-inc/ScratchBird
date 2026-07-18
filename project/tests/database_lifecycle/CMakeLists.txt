@@ -161,6 +161,91 @@ if(NOT SB_BUILD_DRIVER_GATES)
   endforeach()
 endif()
 
+if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr AND
+   TARGET sb_storage_database)
+  add_executable(database_lifecycle_sblr_procedural_block_v1_conformance
+    sblr_procedural_block_v1_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_sblr_procedural_block_v1_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_sblr_procedural_block_v1_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_sblr_procedural_block_v1_conformance
+    COMMAND database_lifecycle_sblr_procedural_block_v1_conformance
+  )
+  set_tests_properties(database_lifecycle_sblr_procedural_block_v1_conformance PROPERTIES
+    LABELS "database_lifecycle_sblr_procedural_block_v1_conformance;sblr_procedural_block_v1;transaction_execute_block;zero_yield;engine_context_runtime;database_lifecycle;mga_transaction_regression;standalone_parser_authority"
+  )
+
+  add_executable(database_lifecycle_sblr_composite_key_authority_gate
+    sblr_composite_key_authority_gate.cpp
+  )
+  target_compile_features(database_lifecycle_sblr_composite_key_authority_gate
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_sblr_composite_key_authority_gate
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_sblr_composite_key_authority_gate
+    COMMAND database_lifecycle_sblr_composite_key_authority_gate
+  )
+  set_tests_properties(database_lifecycle_sblr_composite_key_authority_gate PROPERTIES
+    LABELS "database_lifecycle_sblr_composite_key_authority_gate;SBLR_COMPOSITE_KEY_AUTHORITY;composite_primary_key;composite_unique_key;engine_uuid_authority;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(
+    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    firebird_foreign_key_descriptor_closure_conformance.cpp
+  )
+  target_compile_features(
+    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(
+    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+  add_test(
+    NAME database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    COMMAND database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+  )
+  set_tests_properties(
+    database_lifecycle_firebird_foreign_key_descriptor_closure_conformance
+    PROPERTIES
+      LABELS "database_lifecycle;firebird_foreign_key_d1;engine_uuid_authority;mga_transaction_regression;standalone_parser_authority"
+  )
+endif()
+
 add_custom_target(database_lifecycle_examples_smoke_scripts_gate_check
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_EXAMPLES_SMOKE_GATE}"
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -651,6 +736,98 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(dpc_query_crud_relation_materialization_gate PROPERTIES
     LABELS "dpc_query_crud_relation_materialization_gate;DPC-065;DPC_QUERY_CRUD_RELATION_MATERIALIZATION;database_lifecycle_optimizer;mga_transaction_regression"
   )
+
+  add_executable(database_lifecycle_sblr_compact_insert_scalar_conformance
+    sblr_compact_insert_scalar_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_sblr_compact_insert_scalar_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_sblr_compact_insert_scalar_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+  )
+
+  add_test(
+    NAME database_lifecycle_sblr_compact_insert_scalar_conformance
+    COMMAND database_lifecycle_sblr_compact_insert_scalar_conformance
+  )
+  set_tests_properties(database_lifecycle_sblr_compact_insert_scalar_conformance PROPERTIES
+    LABELS "database_lifecycle_sblr_compact_insert_scalar_conformance;sblr_compact_insert;scalar_runtime;binary_safe;mga_transaction_regression;database_lifecycle"
+  )
+
+  add_executable(database_lifecycle_sblr_scalar_octet_projection_conformance
+    sblr_scalar_octet_projection_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_sblr_scalar_octet_projection_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_sblr_scalar_octet_projection_conformance
+    PRIVATE
+      sb_engine_internal_api
+      sb_engine_sblr
+  )
+
+  add_test(
+    NAME database_lifecycle_sblr_scalar_octet_projection_conformance
+    COMMAND database_lifecycle_sblr_scalar_octet_projection_conformance
+  )
+  set_tests_properties(database_lifecycle_sblr_scalar_octet_projection_conformance PROPERTIES
+    LABELS "database_lifecycle_sblr_scalar_octet_projection_conformance;sblr_scalar_projection;scalar_runtime;binary_safe;mga_transaction_regression;standalone_parser_authority;database_lifecycle"
+  )
+
+  add_executable(database_lifecycle_global_count_aggregate_projection_conformance
+    global_count_aggregate_projection_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_global_count_aggregate_projection_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_global_count_aggregate_projection_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+  )
+
+  add_test(
+    NAME database_lifecycle_global_count_aggregate_projection_conformance
+    COMMAND database_lifecycle_global_count_aggregate_projection_conformance
+  )
+  set_tests_properties(database_lifecycle_global_count_aggregate_projection_conformance PROPERTIES
+    LABELS "database_lifecycle_global_count_aggregate_projection_conformance;global_aggregate_projection;global_avg_aggregate_projection;count_star;count_non_null;count_distinct;avg;avg_distinct;nullable_aggregate;one_mga_visible_scan;descriptor_uuid_binding;snapshot_visibility;rollback_visibility;mga_transaction_regression;database_lifecycle"
+  )
+
+  add_executable(database_lifecycle_relation_projection_view_conformance
+    relation_projection_view_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_relation_projection_view_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(database_lifecycle_relation_projection_view_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_storage_database
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_relation_projection_view_conformance
+    COMMAND database_lifecycle_relation_projection_view_conformance
+  )
+  set_tests_properties(database_lifecycle_relation_projection_view_conformance PROPERTIES
+    LABELS "database_lifecycle_relation_projection_view_conformance;relation_projection_view;durable_view_descriptor;one_mga_visible_scan;snapshot_visibility;rollback_visibility;descriptor_uuid_binding;mga_transaction_regression;standalone_parser_authority;database_lifecycle"
+  )
 endif()
 
 add_executable(database_lifecycle_existing_reconciliation_conformance
@@ -766,6 +943,54 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   )
   set_tests_properties(database_lifecycle_fault_injection_conformance PROPERTIES
     LABELS "database_lifecycle_fault_injection;DBLC_P17_HARDENED;database_lifecycle;mga_transaction_regression"
+  )
+endif()
+
+if(TARGET sb_server_core AND TARGET sbl_firebird_parser_pipeline)
+  add_executable(
+    database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+    firebird_foreign_key_diagnostic_boundary_conformance.cpp
+  )
+  target_compile_features(
+    database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(
+    database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+    PRIVATE sb_server_core sbl_firebird_parser_pipeline
+  )
+  add_test(
+    NAME database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+    COMMAND database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+  )
+  set_tests_properties(
+    database_lifecycle_firebird_foreign_key_diagnostic_boundary_conformance
+    PROPERTIES
+      LABELS "database_lifecycle;firebird_foreign_key_d1;firebird_parser_worker_ipc_conformance;firebird_status_vector_diagnostic_conformance;standalone_parser_authority"
+  )
+
+  add_executable(
+    database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+    firebird_conversion_diagnostic_sbps_boundary_conformance.cpp
+  )
+  target_compile_features(
+    database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+    PRIVATE cxx_std_23
+  )
+  target_link_libraries(
+    database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+    PRIVATE
+      sb_server_core
+      sbl_firebird_parser_pipeline
+  )
+  add_test(
+    NAME database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+    COMMAND database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+  )
+  set_tests_properties(
+    database_lifecycle_firebird_conversion_diagnostic_sbps_boundary_conformance
+    PROPERTIES
+      LABELS "database_lifecycle;firebird_parser_worker_ipc_conformance;firebird_status_vector_diagnostic_conformance;standalone_parser_authority"
   )
 endif()
 
@@ -2199,6 +2424,31 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "database_lifecycle_executable_object_conformance;database_lifecycle_executable_object;database_lifecycle;database_lifecycle_security;database_lifecycle_catalog;mga_transaction_regression"
   )
 
+  add_executable(database_lifecycle_routine_delete_column_range_vertical_slice
+    routine_delete_column_range_vertical_slice.cpp
+  )
+  target_compile_features(database_lifecycle_routine_delete_column_range_vertical_slice PRIVATE cxx_std_23)
+  target_link_libraries(database_lifecycle_routine_delete_column_range_vertical_slice
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_engine_bridge
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_routine_delete_column_range_vertical_slice
+    COMMAND database_lifecycle_routine_delete_column_range_vertical_slice
+  )
+  set_tests_properties(database_lifecycle_routine_delete_column_range_vertical_slice PROPERTIES
+    LABELS "database_lifecycle_routine_delete_column_range_vertical_slice;routine_create_or_alter_exact_mga;routine_uuid_bound_delete_column_range;routine_result_shape;database_lifecycle;database_lifecycle_executable_object;database_lifecycle_catalog;mga_transaction_regression;standalone_parser_authority"
+  )
+
   add_executable(database_lifecycle_security_principal_conformance
     security_principal_conformance.cpp
   )
@@ -3514,7 +3764,8 @@ if(TARGET sb_transaction_mga)
   endif()
 endif()
 
-if(TARGET sb_core_resources AND TARGET sb_storage_database AND TARGET sb_transaction_mga)
+if(TARGET sb_core_resources AND TARGET sb_storage_database AND
+   TARGET sb_transaction_mga AND TARGET sb_engine_internal_api)
   add_executable(database_lifecycle_resource_seed_conformance
     resource_seed_conformance.cpp
   )
@@ -3528,6 +3779,7 @@ if(TARGET sb_core_resources AND TARGET sb_storage_database AND TARGET sb_transac
       sb_core_platform
       sb_core_resources
       sb_core_uuid
+      sb_engine_internal_api
       sb_storage_database
       sb_storage_disk
       sb_storage_page
@@ -3540,6 +3792,32 @@ if(TARGET sb_core_resources AND TARGET sb_storage_database AND TARGET sb_transac
   )
   set_tests_properties(database_lifecycle_resource_seed_conformance PROPERTIES
     LABELS "database_lifecycle_resource_seed_conformance;database_lifecycle_resource_seed;database_lifecycle;database_lifecycle_storage;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_relation_descriptor_projection_conformance
+    relation_descriptor_projection_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_relation_descriptor_projection_conformance PRIVATE cxx_std_23)
+  target_compile_definitions(database_lifecycle_relation_descriptor_projection_conformance PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  target_link_libraries(database_lifecycle_relation_descriptor_projection_conformance
+    PRIVATE
+      sb_core_memory
+      sb_core_platform
+      sb_core_resources
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_storage_database
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_relation_descriptor_projection_conformance
+    COMMAND database_lifecycle_relation_descriptor_projection_conformance
+  )
+  set_tests_properties(database_lifecycle_relation_descriptor_projection_conformance PROPERTIES
+    LABELS "database_lifecycle_relation_descriptor_projection_conformance;engine_catalog_projection;relation_descriptor_v3;exact_mga_metadata_visibility;database_lifecycle;database_lifecycle_catalog;mga_transaction_regression;standalone_parser_authority"
   )
 endif()
 
@@ -5159,6 +5437,36 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
   set_tests_properties(database_lifecycle_session_request_cursor_conformance PROPERTIES
     LABELS "database_lifecycle_session_request_cursor_conformance;database_lifecycle;database_lifecycle_session_request_cursor;database_lifecycle_server_route;database_lifecycle_ipc;database_lifecycle_parser;database_lifecycle_security;routing_reconnect_finality_gate;mga_transaction_regression"
   )
+
+  if(TARGET sbl_parser_server_ipc_client)
+    add_executable(parser_server_neutral_transaction_routing_conformance
+      parser_server_neutral_transaction_routing_conformance.cpp
+    )
+    target_compile_features(parser_server_neutral_transaction_routing_conformance PRIVATE cxx_std_23)
+    target_compile_definitions(parser_server_neutral_transaction_routing_conformance PRIVATE
+      SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+    )
+    target_link_libraries(parser_server_neutral_transaction_routing_conformance
+      PRIVATE
+        sb_core_platform
+        sb_core_resources
+        sb_core_uuid
+        sb_engine_internal_api
+        sb_server_core
+        sb_storage_database
+        sb_storage_disk
+        sb_storage_page
+        sb_transaction_mga
+        sbl_parser_server_ipc_client
+    )
+    add_test(
+      NAME parser_server_neutral_transaction_routing_conformance
+      COMMAND parser_server_neutral_transaction_routing_conformance
+    )
+    set_tests_properties(parser_server_neutral_transaction_routing_conformance PROPERTIES
+      LABELS "parser_server_neutral_transaction_routing_conformance;database_lifecycle;parser_server_ipc;mga_transaction_regression;standalone_parser_authority"
+    )
+  endif()
 
   add_executable(database_lifecycle_bounded_stress_resource_leak_conformance
     bounded_stress_resource_leak_conformance.cpp

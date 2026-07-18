@@ -16,6 +16,7 @@
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -2531,7 +2532,8 @@ std::uint64_t ScanNextMetadataEventSequence(const EngineRequestContext& context)
   for (const auto& line : ReadLines(MetadataStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() >= 4 && fields[0] == kRowStoreMagic &&
-        (fields[1] == "TABLE_METADATA" || fields[1] == "INDEX_METADATA")) {
+        (fields[1] == "TABLE_METADATA" || fields[1] == "INDEX_METADATA" ||
+         fields[1] == "CONSTRAINT_MUTATION_BATCH")) {
       max_sequence = std::max(max_sequence, ParseU64(fields[3]));
     }
   }
@@ -2552,6 +2554,208 @@ std::uint64_t ChecksumText(const std::string& value) {
     checksum *= 1099511628211ull;
   }
   return checksum;
+}
+
+void AppendCanonicalBatchField(std::string* out,
+                               std::string_view key,
+                               std::string_view value) {
+  if (out == nullptr) return;
+  out->append(std::to_string(key.size()));
+  out->push_back(':');
+  out->append(key);
+  out->append(std::to_string(value.size()));
+  out->push_back(':');
+  out->append(value);
+}
+
+std::string CanonicalConstraintMutationBatchPayload(
+    const MgaConstraintMutationBatch& batch,
+    std::uint64_t creator_local_transaction_id,
+    std::uint64_t metadata_event_sequence) {
+  std::string payload;
+  auto field = [&](std::string_view key, std::string_view value) {
+    AppendCanonicalBatchField(&payload, key, value);
+  };
+  field("format_version", batch.format_version);
+  field("seal_state", "sealed");
+  field("creator_local_transaction_id",
+        std::to_string(creator_local_transaction_id));
+  // MGA savepoint rollback and metadata ordering both depend on this value;
+  // bind it into the seal so a batch cannot be replayed at another event.
+  field("metadata_event_sequence", std::to_string(metadata_event_sequence));
+  field("batch_uuid", batch.batch_uuid);
+  field("mutation_count", std::to_string(batch.mutation_count));
+  field("database_uuid", batch.database_uuid);
+  field("constraint_uuid", batch.constraint_uuid);
+  field("owner_table_uuid", batch.owner_table_uuid);
+  field("child_schema_uuid", batch.child_schema_uuid);
+  field("child_relation_descriptor_uuid",
+        batch.child_relation_descriptor_uuid);
+  field("child_relation_descriptor_generation",
+        std::to_string(batch.child_relation_descriptor_generation));
+  field("child_column_uuid", batch.child_column_uuid);
+  field("parent_table_uuid", batch.parent_table_uuid);
+  field("parent_schema_uuid", batch.parent_schema_uuid);
+  field("parent_relation_descriptor_uuid",
+        batch.parent_relation_descriptor_uuid);
+  field("parent_relation_descriptor_generation",
+        std::to_string(batch.parent_relation_descriptor_generation));
+  field("parent_column_uuid", batch.parent_column_uuid);
+  field("parent_candidate_key_constraint_uuid",
+        batch.parent_candidate_key_constraint_uuid);
+  field("key_descriptor_uuid", batch.key_descriptor_uuid);
+  field("support_uuid", batch.support_uuid);
+  field("support_family", batch.support_family);
+  field("support_policy", batch.support_policy);
+  field("match_policy", batch.match_policy);
+  field("on_update_action", batch.on_update_action);
+  field("on_delete_action", batch.on_delete_action);
+  field("enforcement_timing", batch.enforcement_timing);
+  field("constraint_metadata_generation",
+        std::to_string(batch.constraint_metadata_generation));
+  field("base_table_event_sequence",
+        std::to_string(batch.base_table_event_sequence));
+  field("parent_base_table_event_sequence",
+        std::to_string(batch.parent_base_table_event_sequence));
+  field("constraint_name", batch.constraint_name);
+  field("constraint_kind", batch.constraint_kind);
+  field("canonical_constraint_envelope",
+        batch.canonical_constraint_envelope);
+  field("updated_table_uuid", batch.updated_table.table_uuid);
+  field("updated_table_default_name", batch.updated_table.default_name);
+  field("updated_table_columns", EncodeCrudPairs(batch.updated_table.columns));
+  field("updated_table_temporary",
+        batch.updated_table.temporary ? "true" : "false");
+  field("updated_table_temporary_scope", batch.updated_table.temporary_scope);
+  field("updated_table_temporary_session_uuid",
+        batch.updated_table.temporary_session_uuid);
+  field("updated_table_on_commit_action", batch.updated_table.on_commit_action);
+  return payload;
+}
+
+std::string ConstraintMutationBatchSha256(
+    const MgaConstraintMutationBatch& batch,
+    std::uint64_t creator_local_transaction_id,
+    std::uint64_t metadata_event_sequence) {
+  const std::string payload = CanonicalConstraintMutationBatchPayload(
+      batch, creator_local_transaction_id, metadata_event_sequence);
+  const auto* bytes = reinterpret_cast<
+      const scratchbird::core::platform::byte*>(payload.data());
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      bytes, payload.size());
+  if (!digest.ok() ||
+      digest.digest_bytes != scratchbird::core::hash::kSha256DigestBytes) {
+    return {};
+  }
+  return "sha256:" + scratchbird::core::hash::HexLower(digest.digest);
+}
+
+bool ValidConstraintBatchUuid(
+    std::string_view value,
+    scratchbird::core::platform::UuidKind kind) {
+  if (value.empty()) return false;
+  return scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+             kind, std::string(value))
+      .ok();
+}
+
+namespace constraint_batch_field {
+inline constexpr std::size_t kMagic = 0;
+inline constexpr std::size_t kRecordKind = 1;
+inline constexpr std::size_t kCreatorTx = 2;
+inline constexpr std::size_t kEventSequence = 3;
+inline constexpr std::size_t kFormatVersion = 4;
+inline constexpr std::size_t kBatchUuid = 5;
+inline constexpr std::size_t kSealState = 6;
+inline constexpr std::size_t kBatchHash = 7;
+inline constexpr std::size_t kMutationCount = 8;
+inline constexpr std::size_t kDatabaseUuid = 9;
+inline constexpr std::size_t kConstraintUuid = 10;
+inline constexpr std::size_t kOwnerTableUuid = 11;
+inline constexpr std::size_t kChildSchemaUuid = 12;
+inline constexpr std::size_t kChildDescriptorUuid = 13;
+inline constexpr std::size_t kChildDescriptorGeneration = 14;
+inline constexpr std::size_t kChildColumnUuid = 15;
+inline constexpr std::size_t kParentTableUuid = 16;
+inline constexpr std::size_t kParentSchemaUuid = 17;
+inline constexpr std::size_t kParentDescriptorUuid = 18;
+inline constexpr std::size_t kParentDescriptorGeneration = 19;
+inline constexpr std::size_t kParentColumnUuid = 20;
+inline constexpr std::size_t kParentCandidateConstraintUuid = 21;
+inline constexpr std::size_t kReferencedKeyDescriptorUuid = 22;
+inline constexpr std::size_t kSupportUuid = 23;
+inline constexpr std::size_t kSupportFamily = 24;
+inline constexpr std::size_t kSupportPolicy = 25;
+inline constexpr std::size_t kMatchPolicy = 26;
+inline constexpr std::size_t kOnUpdate = 27;
+inline constexpr std::size_t kOnDelete = 28;
+inline constexpr std::size_t kEnforcementTiming = 29;
+inline constexpr std::size_t kConstraintMetadataGeneration = 30;
+inline constexpr std::size_t kBaseTableEventSequence = 31;
+inline constexpr std::size_t kParentBaseTableEventSequence = 32;
+inline constexpr std::size_t kConstraintName = 33;
+inline constexpr std::size_t kConstraintKind = 34;
+inline constexpr std::size_t kCanonicalEnvelope = 35;
+inline constexpr std::size_t kTableUuid = 36;
+inline constexpr std::size_t kTableDefaultName = 37;
+inline constexpr std::size_t kTableColumns = 38;
+inline constexpr std::size_t kTableTemporary = 39;
+inline constexpr std::size_t kTableTemporaryScope = 40;
+inline constexpr std::size_t kTableTemporarySessionUuid = 41;
+inline constexpr std::size_t kTableOnCommitAction = 42;
+inline constexpr std::size_t kFieldCount = 43;
+}  // namespace constraint_batch_field
+
+std::vector<std::string> ConstraintMutationBatchLineFields(
+    const MgaConstraintMutationBatch& batch,
+    std::uint64_t creator_tx,
+    std::uint64_t event_sequence) {
+  const CrudTableRecord& table = batch.updated_table;
+  std::vector<std::string> fields{
+      kRowStoreMagic,
+      "CONSTRAINT_MUTATION_BATCH",
+      std::to_string(creator_tx),
+      std::to_string(event_sequence),
+      batch.format_version,
+      batch.batch_uuid,
+      "sealed",
+      batch.batch_hash,
+      std::to_string(batch.mutation_count),
+      batch.database_uuid,
+      batch.constraint_uuid,
+      batch.owner_table_uuid,
+      batch.child_schema_uuid,
+      batch.child_relation_descriptor_uuid,
+      std::to_string(batch.child_relation_descriptor_generation),
+      batch.child_column_uuid,
+      batch.parent_table_uuid,
+      batch.parent_schema_uuid,
+      batch.parent_relation_descriptor_uuid,
+      std::to_string(batch.parent_relation_descriptor_generation),
+      batch.parent_column_uuid,
+      batch.parent_candidate_key_constraint_uuid,
+      batch.key_descriptor_uuid,
+      batch.support_uuid,
+      batch.support_family,
+      batch.support_policy,
+      batch.match_policy,
+      batch.on_update_action,
+      batch.on_delete_action,
+      batch.enforcement_timing,
+      std::to_string(batch.constraint_metadata_generation),
+      std::to_string(batch.base_table_event_sequence),
+      std::to_string(batch.parent_base_table_event_sequence),
+      EncodeCrudText(batch.constraint_name),
+      batch.constraint_kind,
+      EncodeCrudText(batch.canonical_constraint_envelope),
+      table.table_uuid,
+      EncodeCrudText(table.default_name),
+      EncodeCrudPairs(table.columns),
+      table.temporary ? "1" : "0",
+      table.temporary_scope,
+      table.temporary_session_uuid,
+      table.on_commit_action};
+  return fields;
 }
 
 idx::SecondaryIndexDeltaLedgerLimits DefaultSecondaryIndexDeltaLedgerLimits() {
@@ -3844,7 +4048,8 @@ ScopedRelationFileIdentity ExistingFileIdentity(const std::string& path) {
 }
 
 std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDescriptorFieldsByRelation(
-    const EngineRequestContext& context) {
+    const EngineRequestContext& context,
+    std::string_view required_relation_uuid = {}) {
   const std::string path = DescriptorStorePath(context);
   const auto identity = ExistingFileIdentity(path);
   const std::uintmax_t file_size = identity.ok ? identity.file_size : 0;
@@ -3855,10 +4060,20 @@ std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDesc
     const auto cached = DescriptorFieldsCache().find(path);
     if (cached != DescriptorFieldsCache().end() &&
         cached->second.file_size == file_size &&
-        cached->second.file_mtime_ticks == file_mtime_ticks) {
+        cached->second.file_mtime_ticks == file_mtime_ticks &&
+        (required_relation_uuid.empty() ||
+         cached->second.descriptors.contains(
+             std::string(required_relation_uuid)))) {
       return cached->second.descriptors;
     }
   }
+  // Exact relation authority must not be refused solely by a negative cache
+  // entry.  The descriptor store is append-published and can be populated by
+  // another engine facade linked into the same server process; those facades
+  // do not share this translation unit's in-memory cache.  When the caller
+  // names an exact required relation and the matching cache entry omits it,
+  // re-read the durable store even if its coarse file identity is unchanged.
+  // A genuine durable miss remains fail-closed in the caller.
   std::map<std::string, std::vector<std::pair<std::string, std::string>>> descriptors;
   for (const auto& line : ReadLines(path)) {
     const auto fields = SplitTabs(line);
@@ -4158,6 +4373,150 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       decoded.max_event_sequence =
           std::max(decoded.max_event_sequence, ParseU64(fields[3]));
       decoded.tables.push_back(std::move(table));
+    } else if (fields[1] == "CONSTRAINT_MUTATION_BATCH") {
+      // The constraint metadata and its table-column projection are sealed in
+      // this one physical record.  The immutable relation-storage descriptor
+      // UUID/generation remains the exact base binding and is not updated by
+      // this bounded D1 bridge.
+      namespace cbf = constraint_batch_field;
+      if (fields.size() != cbf::kFieldCount ||
+          fields[cbf::kMagic] != kRowStoreMagic ||
+          fields[cbf::kRecordKind] != "CONSTRAINT_MUTATION_BATCH" ||
+          ParseU64(fields[cbf::kCreatorTx]) == 0 ||
+          ParseU64(fields[cbf::kEventSequence]) == 0 ||
+          fields[cbf::kFormatVersion] != "neutral_fk_mutation_batch_v1" ||
+          fields[cbf::kSealState] != "sealed" ||
+          fields[cbf::kBatchHash].size() != 71 ||
+          !fields[cbf::kBatchHash].starts_with("sha256:") ||
+          fields[cbf::kMutationCount] != "1" ||
+          !ValidConstraintBatchUuid(fields[cbf::kDatabaseUuid],
+                                    scratchbird::core::platform::UuidKind::database) ||
+          !ValidConstraintBatchUuid(fields[cbf::kBatchUuid],
+                                    scratchbird::core::platform::UuidKind::row) ||
+          !ValidConstraintBatchUuid(fields[cbf::kConstraintUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kOwnerTableUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kChildSchemaUuid],
+                                    scratchbird::core::platform::UuidKind::schema) ||
+          !ValidConstraintBatchUuid(fields[cbf::kChildDescriptorUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          ParseU64(fields[cbf::kChildDescriptorGeneration]) == 0 ||
+          !ValidConstraintBatchUuid(fields[cbf::kChildColumnUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kParentTableUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kParentSchemaUuid],
+                                    scratchbird::core::platform::UuidKind::schema) ||
+          !ValidConstraintBatchUuid(fields[cbf::kParentDescriptorUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          ParseU64(fields[cbf::kParentDescriptorGeneration]) == 0 ||
+          !ValidConstraintBatchUuid(fields[cbf::kParentColumnUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kParentCandidateConstraintUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kReferencedKeyDescriptorUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          !ValidConstraintBatchUuid(fields[cbf::kSupportUuid],
+                                    scratchbird::core::platform::UuidKind::object) ||
+          fields[cbf::kSupportFamily] != "btree" ||
+          fields[cbf::kSupportPolicy] != "required_exact_unique_index" ||
+          fields[cbf::kMatchPolicy] != "simple" ||
+          fields[cbf::kOnUpdate] != "no_action" ||
+          fields[cbf::kOnDelete] != "no_action" ||
+          fields[cbf::kEnforcementTiming] != "immediate" ||
+          ParseU64(fields[cbf::kConstraintMetadataGeneration]) != 1 ||
+          ParseU64(fields[cbf::kBaseTableEventSequence]) == 0 ||
+          ParseU64(fields[cbf::kParentBaseTableEventSequence]) == 0 ||
+          fields[cbf::kConstraintKind] != "foreign_key" ||
+          fields[cbf::kTableUuid] != fields[cbf::kOwnerTableUuid] ||
+          fields[cbf::kDatabaseUuid] != context.database_uuid.canonical) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata", "constraint_mutation_batch_invalid");
+      }
+      MgaConstraintMutationBatch batch;
+      batch.format_version = fields[cbf::kFormatVersion];
+      batch.batch_uuid = fields[cbf::kBatchUuid];
+      batch.batch_hash = fields[cbf::kBatchHash];
+      batch.mutation_count = static_cast<std::uint32_t>(
+          ParseU64(fields[cbf::kMutationCount]));
+      batch.database_uuid = fields[cbf::kDatabaseUuid];
+      batch.constraint_uuid = fields[cbf::kConstraintUuid];
+      batch.owner_table_uuid = fields[cbf::kOwnerTableUuid];
+      batch.child_schema_uuid = fields[cbf::kChildSchemaUuid];
+      batch.child_relation_descriptor_uuid = fields[cbf::kChildDescriptorUuid];
+      batch.child_relation_descriptor_generation =
+          ParseU64(fields[cbf::kChildDescriptorGeneration]);
+      batch.child_column_uuid = fields[cbf::kChildColumnUuid];
+      batch.parent_table_uuid = fields[cbf::kParentTableUuid];
+      batch.parent_schema_uuid = fields[cbf::kParentSchemaUuid];
+      batch.parent_relation_descriptor_uuid = fields[cbf::kParentDescriptorUuid];
+      batch.parent_relation_descriptor_generation =
+          ParseU64(fields[cbf::kParentDescriptorGeneration]);
+      batch.parent_column_uuid = fields[cbf::kParentColumnUuid];
+      batch.parent_candidate_key_constraint_uuid =
+          fields[cbf::kParentCandidateConstraintUuid];
+      batch.key_descriptor_uuid = fields[cbf::kReferencedKeyDescriptorUuid];
+      batch.support_uuid = fields[cbf::kSupportUuid];
+      batch.support_family = fields[cbf::kSupportFamily];
+      batch.support_policy = fields[cbf::kSupportPolicy];
+      batch.match_policy = fields[cbf::kMatchPolicy];
+      batch.on_update_action = fields[cbf::kOnUpdate];
+      batch.on_delete_action = fields[cbf::kOnDelete];
+      batch.enforcement_timing = fields[cbf::kEnforcementTiming];
+      batch.constraint_metadata_generation =
+          ParseU64(fields[cbf::kConstraintMetadataGeneration]);
+      batch.base_table_event_sequence =
+          ParseU64(fields[cbf::kBaseTableEventSequence]);
+      batch.parent_base_table_event_sequence =
+          ParseU64(fields[cbf::kParentBaseTableEventSequence]);
+      batch.constraint_name = DecodeCrudTextLocal(fields[cbf::kConstraintName]);
+      batch.constraint_kind = fields[cbf::kConstraintKind];
+      batch.canonical_constraint_envelope =
+          DecodeCrudTextLocal(fields[cbf::kCanonicalEnvelope]);
+      CrudTableRecord table;
+      table.creator_tx = ParseU64(fields[cbf::kCreatorTx]);
+      table.event_sequence = ParseU64(fields[cbf::kEventSequence]);
+      table.table_uuid = fields[cbf::kTableUuid];
+      table.default_name = DecodeCrudTextLocal(fields[cbf::kTableDefaultName]);
+      table.columns = DecodeCrudPairs(fields[cbf::kTableColumns]);
+      table.temporary = fields[cbf::kTableTemporary] == "1";
+      table.temporary_scope = fields[cbf::kTableTemporaryScope];
+      table.temporary_session_uuid = fields[cbf::kTableTemporarySessionUuid];
+      table.on_commit_action = fields[cbf::kTableOnCommitAction];
+      if (table.temporary || !table.temporary_scope.empty() ||
+          !table.temporary_session_uuid.empty() ||
+          !table.on_commit_action.empty()) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "temporary_constraint_mutation_batch_unsupported");
+      }
+      batch.updated_table = table;
+      const auto canonical_fields = ConstraintMutationBatchLineFields(
+          batch, table.creator_tx, table.event_sequence);
+      if (canonical_fields != fields) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "constraint_mutation_batch_noncanonical_encoding");
+      }
+      const std::string expected_hash =
+          ComputeMgaConstraintMutationBatchHash(
+              batch, table.creator_tx, table.event_sequence);
+      if (expected_hash.empty() ||
+          !scratchbird::core::hash::ConstantTimeEqual(expected_hash,
+                                                       batch.batch_hash)) {
+        return MakeInvalidRequestDiagnostic(
+            "mga.relation_metadata",
+            "constraint_mutation_batch_hash_mismatch");
+      }
+      if (MetadataEventRolledBackBySavepoint(savepoints,
+                                             table.creator_tx,
+                                             table.event_sequence)) {
+        continue;
+      }
+      decoded.max_event_sequence =
+          std::max(decoded.max_event_sequence, table.event_sequence);
+      decoded.tables.push_back(std::move(table));
     } else if (fields[1] == "INDEX_METADATA") {
       if (fields.size() < 17) {
         return MakeInvalidRequestDiagnostic("mga.relation_metadata", "index_metadata_invalid");
@@ -4266,6 +4625,31 @@ std::map<std::string, std::string> RelationDescriptorFields(
     }
   }
   flush(current);
+  return fields;
+}
+
+std::optional<std::map<std::string, std::string>>
+StrictRelationDescriptorFields(const std::string& descriptor) {
+  std::map<std::string, std::string> fields;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const std::size_t end = descriptor.find(';', start);
+    std::string part = RelationDescriptorTrimAscii(descriptor.substr(
+        start, end == std::string::npos ? std::string::npos : end - start));
+    const auto equals = part.find('=');
+    if (part.empty() || equals == std::string::npos || equals == 0) {
+      return std::nullopt;
+    }
+    const std::string key = RelationDescriptorLowerAscii(
+        RelationDescriptorTrimAscii(part.substr(0, equals)));
+    if (key.empty() || fields.find(key) != fields.end()) {
+      return std::nullopt;
+    }
+    fields.emplace(
+        key, RelationDescriptorTrimAscii(part.substr(equals + 1)));
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
   return fields;
 }
 
@@ -4406,6 +4790,17 @@ void AddRelationLoadEvidence(MgaRelationStoreResult* result,
 }
 
 }  // namespace
+
+std::string ComputeMgaConstraintMutationBatchHash(
+    const MgaConstraintMutationBatch& batch,
+    std::uint64_t creator_local_transaction_id,
+    std::uint64_t metadata_event_sequence) {
+  if (creator_local_transaction_id == 0 || metadata_event_sequence == 0) {
+    return {};
+  }
+  return ConstraintMutationBatchSha256(
+      batch, creator_local_transaction_id, metadata_event_sequence);
+}
 
 MgaMetadataWorkPresenceResult HasVisibleMgaDeferredConstraintMetadata(
     const EngineRequestContext& context) {
@@ -5559,7 +5954,8 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
                                                        const CrudTableRecord& table,
                                                        const std::vector<CrudIndexRecord>& indexes,
                                                        MgaRelationStorageDescriptor* descriptor) {
-  const auto persisted = LoadDescriptorFieldsByRelation(context);
+  const auto persisted =
+      LoadDescriptorFieldsByRelation(context, table.table_uuid);
   const auto existing = persisted.find(table.table_uuid);
   const auto fields = existing == persisted.end()
                           ? BuildPersistedMgaRelationDescriptorFields(context, table, indexes)
@@ -5574,6 +5970,110 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
   }
   if (descriptor != nullptr) { *descriptor = std::move(built); }
   return OkDiagnostic();
+}
+
+MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
+    const EngineRequestContext& context,
+    const std::string& relation_uuid) {
+  MgaRelationStorageDescriptorLoadResult result;
+  if (context.database_path.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load", "database_path_required");
+    return result;
+  }
+  if (relation_uuid.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load", "relation_uuid_required");
+    return result;
+  }
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load",
+        "exact_active_transaction_identity_required");
+    return result;
+  }
+
+  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::transaction,
+      context.transaction_uuid.canonical);
+  if (!parsed_transaction.ok()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load", "transaction_uuid_invalid");
+    return result;
+  }
+  const auto inventory =
+      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  if (!inventory.ok()) {
+    result.diagnostic = MakeEngineApiDiagnostic(
+        inventory.diagnostic.diagnostic_code.empty()
+            ? "SB-MGA-TXN-INV-LOAD-FAILED"
+            : inventory.diagnostic.diagnostic_code,
+        inventory.diagnostic.message_key.empty()
+            ? "mga.transaction_inventory.load_failed"
+            : inventory.diagnostic.message_key,
+        inventory.diagnostic.remediation_hint,
+        true);
+    return result;
+  }
+  const auto exact_transaction = LookupLocalTransaction(
+      inventory.inventory,
+      MakeLocalTransactionId(context.local_transaction_id));
+  if (!exact_transaction.ok() ||
+      exact_transaction.entry.identity.transaction_uuid.value !=
+          parsed_transaction.value.value ||
+      (exact_transaction.entry.state != TransactionState::active &&
+       exact_transaction.entry.state != TransactionState::read_only_active)) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load",
+        "exact_active_transaction_identity_required");
+    return result;
+  }
+
+  CrudState metadata;
+  const auto loaded = LoadMgaMetadata(&metadata, context);
+  if (loaded.error) {
+    result.diagnostic = loaded;
+    return result;
+  }
+  for (const auto& entry : inventory.inventory.entries) {
+    if (!entry.identity.local_id.valid()) { continue; }
+    metadata.transactions[entry.identity.local_id.value] =
+        MgaTransactionStateName(entry.state);
+    metadata.max_transaction_id = std::max(
+        metadata.max_transaction_id, entry.identity.local_id.value);
+  }
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  const auto table = FindVisibleCrudTable(
+      metadata, relation_uuid, context.local_transaction_id);
+  if (!table) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load", "relation_not_visible");
+    return result;
+  }
+
+  const auto persisted =
+      LoadDescriptorFieldsByRelation(context, relation_uuid);
+  const auto fields = persisted.find(relation_uuid);
+  if (fields == persisted.end()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic(
+        "mga.relation_descriptor.load", "persisted_descriptor_required");
+    return result;
+  }
+  const auto indexes = VisibleCrudIndexesForTable(
+      metadata, relation_uuid, context.local_transaction_id);
+  result.descriptor = BuildMgaRelationStorageDescriptorFromCrudMetadata(
+      context, *table, indexes, fields->second);
+  const auto validated =
+      ValidateMgaRelationStorageDescriptor(result.descriptor);
+  if (validated.error) {
+    result.diagnostic = validated;
+    return result;
+  }
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  return result;
 }
 
 EngineApiDiagnostic AppendMgaRowVersion(const EngineRequestContext& context,
@@ -7001,6 +7501,514 @@ EngineApiDiagnostic AppendMgaTableMetadata(const EngineRequestContext& context,
                                      writable.on_commit_action});
   if (!AppendLine(MetadataStorePath(context), line)) {
     return MakeInvalidRequestDiagnostic("mga.relation_metadata", "table_metadata_append_failed");
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic AppendMgaConstraintMutationBatch(
+    const EngineRequestContext& context,
+    const MgaConstraintMutationBatch& batch) {
+  constexpr const char* kOperation = "mga.constraint_mutation_batch";
+  if (context.database_path.empty()) {
+    return MakeInvalidRequestDiagnostic(kOperation, "database_path_required");
+  }
+  const auto authority = ValidateMgaMutatingTransactionAuthority(
+      context, kOperation);
+  if (authority.error) return authority;
+  if (batch.format_version != "neutral_fk_mutation_batch_v1" ||
+      // The caller supplies the complete semantics, never the seal.  The
+      // engine reserves the MGA event and hashes the final record below.
+      !ValidConstraintBatchUuid(
+          batch.batch_uuid,
+          scratchbird::core::platform::UuidKind::row) ||
+      !batch.batch_hash.empty() || batch.mutation_count != 1 ||
+      !ValidConstraintBatchUuid(
+          batch.database_uuid,
+          scratchbird::core::platform::UuidKind::database) ||
+      !ValidConstraintBatchUuid(
+          batch.constraint_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      batch.database_uuid != context.database_uuid.canonical ||
+      !ValidConstraintBatchUuid(
+          batch.owner_table_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.child_schema_uuid,
+          scratchbird::core::platform::UuidKind::schema) ||
+      !ValidConstraintBatchUuid(
+          batch.child_relation_descriptor_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      batch.child_relation_descriptor_generation == 0 ||
+      !ValidConstraintBatchUuid(
+          batch.child_column_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.parent_table_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.parent_schema_uuid,
+          scratchbird::core::platform::UuidKind::schema) ||
+      !ValidConstraintBatchUuid(
+          batch.parent_relation_descriptor_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      batch.parent_relation_descriptor_generation == 0 ||
+      !ValidConstraintBatchUuid(
+          batch.parent_column_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.parent_candidate_key_constraint_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.key_descriptor_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      !ValidConstraintBatchUuid(
+          batch.support_uuid,
+          scratchbird::core::platform::UuidKind::object) ||
+      batch.support_family != "btree" ||
+      batch.support_policy != "required_exact_unique_index" ||
+      batch.match_policy != "simple" ||
+      batch.on_update_action != "no_action" ||
+      batch.on_delete_action != "no_action" ||
+      batch.enforcement_timing != "immediate" ||
+      batch.constraint_metadata_generation == 0 ||
+      batch.base_table_event_sequence == 0 ||
+      batch.parent_base_table_event_sequence == 0 ||
+      batch.constraint_kind != "foreign_key" ||
+      batch.canonical_constraint_envelope.empty() ||
+      batch.updated_table.table_uuid != batch.owner_table_uuid) {
+    return MakeInvalidRequestDiagnostic(kOperation,
+                                        "complete_prevalidated_batch_required");
+  }
+  if (batch.updated_table.temporary ||
+      !batch.updated_table.temporary_scope.empty() ||
+      !batch.updated_table.temporary_session_uuid.empty() ||
+      !batch.updated_table.on_commit_action.empty()) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "temporary_constraint_mutation_batch_unsupported");
+  }
+  const auto current = LoadMgaRelationStoreState(context);
+  if (!current.ok) return current.diagnostic;
+  const CrudState current_state = BuildCrudCompatibilityStateFromMga(
+      current.state);
+  const auto current_owner = FindVisibleCrudTable(
+      current_state, batch.owner_table_uuid, context.local_transaction_id);
+  if (!current_owner ||
+      current_owner->event_sequence != batch.base_table_event_sequence) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "owner_metadata_event_changed_before_append");
+  }
+  const auto current_parent = FindVisibleCrudTable(
+      current_state, batch.parent_table_uuid, context.local_transaction_id);
+  if (!current_parent ||
+      current_parent->event_sequence !=
+          batch.parent_base_table_event_sequence) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "parent_metadata_event_changed_before_append");
+  }
+  const CrudTableRecord& updated = batch.updated_table;
+  if (updated.table_uuid != current_owner->table_uuid ||
+      updated.default_name != current_owner->default_name ||
+      updated.temporary != current_owner->temporary ||
+      updated.temporary_scope != current_owner->temporary_scope ||
+      updated.temporary_session_uuid !=
+          current_owner->temporary_session_uuid ||
+      updated.on_commit_action != current_owner->on_commit_action ||
+      updated.columns.size() != current_owner->columns.size()) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_table_projection_changed");
+  }
+  std::size_t changed_column_count = 0;
+  const std::pair<std::string, std::string>* old_changed_column = nullptr;
+  const std::pair<std::string, std::string>* new_changed_column = nullptr;
+  for (std::size_t index = 0; index < updated.columns.size(); ++index) {
+    const auto& old_column = current_owner->columns[index];
+    const auto& new_column = updated.columns[index];
+    if (old_column.first != new_column.first) {
+      return MakeInvalidRequestDiagnostic(
+          kOperation, "constraint_batch_column_order_or_name_changed");
+    }
+    if (old_column.second == new_column.second) continue;
+    ++changed_column_count;
+    old_changed_column = &old_column;
+    new_changed_column = &new_column;
+  }
+  if (changed_column_count != batch.mutation_count ||
+      changed_column_count != 1 || old_changed_column == nullptr ||
+      new_changed_column == nullptr) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_mutation_count_mismatch");
+  }
+  const auto old_fields =
+      StrictRelationDescriptorFields(old_changed_column->second);
+  const auto new_fields =
+      StrictRelationDescriptorFields(new_changed_column->second);
+  const auto envelope_fields = StrictRelationDescriptorFields(
+      batch.canonical_constraint_envelope);
+  if (!old_fields || !new_fields || !envelope_fields) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_descriptor_encoding_invalid");
+  }
+  const std::set<std::string> fk_projection_fields = {
+      "foreign_key",
+      "constraint_uuid",
+      "constraint_name",
+      "constraint_class",
+      "owner_object_uuid",
+      "owner_object_name",
+      "child_column_uuid",
+      "referenced_table_uuid",
+      "referenced_table_name",
+      "referenced_column_uuid",
+      "referenced_column",
+      "key_descriptor_uuid",
+      "referenced_key_descriptor_uuid",
+      "referenced_candidate_key_constraint_uuid",
+      "support_uuid",
+      "referenced_support_uuid",
+      "support_family",
+      "on_update",
+      "on_delete",
+      "referential_action",
+      "enforcement_timing",
+      "deferrable",
+      "constraint_mutation_batch_uuid",
+      "constraint_mutation_batch_state"};
+  for (const auto& [key, value] : *old_fields) {
+    const auto found = new_fields->find(key);
+    if (fk_projection_fields.find(key) != fk_projection_fields.end() ||
+        found == new_fields->end() || found->second != value) {
+      return MakeInvalidRequestDiagnostic(
+          kOperation, "constraint_batch_changed_base_column_descriptor");
+    }
+  }
+  for (const auto& [key, value] : *new_fields) {
+    (void)value;
+    if (old_fields->find(key) == old_fields->end() &&
+        fk_projection_fields.find(key) == fk_projection_fields.end()) {
+      return MakeInvalidRequestDiagnostic(
+          kOperation, "constraint_batch_added_unrelated_column_field");
+    }
+  }
+  auto require_field = [&](const std::map<std::string, std::string>& fields,
+                           const char* key,
+                           const std::string& expected) {
+    const auto found = fields.find(key);
+    return found != fields.end() && found->second == expected;
+  };
+  if (!require_field(*new_fields, "foreign_key", "true") ||
+      !require_field(*new_fields, "constraint_uuid", batch.constraint_uuid) ||
+      !require_field(*new_fields, "constraint_name", batch.constraint_name) ||
+      !require_field(*new_fields, "constraint_class", "foreign_key") ||
+      !require_field(*new_fields, "owner_object_uuid",
+                     batch.owner_table_uuid) ||
+      !require_field(*new_fields, "owner_object_name",
+                     current_owner->default_name) ||
+      !require_field(*new_fields, "child_column_uuid",
+                     batch.child_column_uuid) ||
+      !require_field(*new_fields, "referenced_table_uuid",
+                     batch.parent_table_uuid) ||
+      !require_field(*new_fields, "referenced_table_name",
+                     current_parent->default_name) ||
+      !require_field(*new_fields, "referenced_column_uuid",
+                     batch.parent_column_uuid) ||
+      !require_field(*new_fields, "key_descriptor_uuid",
+                     batch.key_descriptor_uuid) ||
+      !require_field(*new_fields, "referenced_key_descriptor_uuid",
+                     batch.key_descriptor_uuid) ||
+      !require_field(*new_fields,
+                     "referenced_candidate_key_constraint_uuid",
+                     batch.parent_candidate_key_constraint_uuid) ||
+      !require_field(*new_fields, "support_uuid", batch.support_uuid) ||
+      !require_field(*new_fields, "referenced_support_uuid",
+                     batch.support_uuid) ||
+      !require_field(*new_fields, "support_family",
+                     batch.support_family) ||
+      !require_field(*new_fields, "on_update", batch.on_update_action) ||
+      !require_field(*new_fields, "on_delete", batch.on_delete_action) ||
+      !require_field(*new_fields, "referential_action", "no_action") ||
+      !require_field(*new_fields, "enforcement_timing",
+                     batch.enforcement_timing) ||
+      !require_field(*new_fields, "deferrable", "false") ||
+      !require_field(*new_fields, "constraint_mutation_batch_uuid",
+                     batch.batch_uuid) ||
+      !require_field(*new_fields, "constraint_mutation_batch_state",
+                     "sealed")) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_column_projection_incoherent");
+  }
+  const std::set<std::string> final_envelope_fields = {
+      "descriptor_version",
+      "child_table_uuid",
+      "child_column_uuid",
+      "child_relation_descriptor_uuid",
+      "child_relation_descriptor_generation",
+      "parent_table_uuid",
+      "parent_column_uuid",
+      "parent_relation_descriptor_uuid",
+      "parent_relation_descriptor_generation",
+      "referenced_table_uuid",
+      "referenced_column_uuid",
+      "referenced_column",
+      "child_column",
+      "constraint_name_quoted",
+      "on_update",
+      "on_delete",
+      "referential_action",
+      "enforcement_timing",
+      "deferrable",
+      "constraint_uuid",
+      "constraint_name",
+      "owner_object_uuid",
+      "key_descriptor_uuid",
+      "referenced_candidate_key_constraint_uuid",
+      "support_uuid",
+      "support_family",
+      "constraint_mutation_batch_uuid",
+      "constraint_mutation_batch_state"};
+  std::set<std::string> actual_envelope_fields;
+  for (const auto& [key, value] : *envelope_fields) {
+    (void)value;
+    actual_envelope_fields.insert(key);
+  }
+  if (actual_envelope_fields != final_envelope_fields ||
+      !require_field(*envelope_fields, "descriptor_version",
+                     "neutral_fk_single_column_v1") ||
+      !require_field(*envelope_fields, "child_table_uuid",
+                     batch.owner_table_uuid) ||
+      !require_field(*envelope_fields, "child_column_uuid",
+                     batch.child_column_uuid) ||
+      !require_field(*envelope_fields, "child_relation_descriptor_uuid",
+                     batch.child_relation_descriptor_uuid) ||
+      !require_field(*envelope_fields,
+                     "child_relation_descriptor_generation",
+                     std::to_string(
+                         batch.child_relation_descriptor_generation)) ||
+      !require_field(*envelope_fields, "parent_table_uuid",
+                     batch.parent_table_uuid) ||
+      !require_field(*envelope_fields, "parent_column_uuid",
+                     batch.parent_column_uuid) ||
+      !require_field(*envelope_fields, "parent_relation_descriptor_uuid",
+                     batch.parent_relation_descriptor_uuid) ||
+      !require_field(*envelope_fields,
+                     "parent_relation_descriptor_generation",
+                     std::to_string(
+                         batch.parent_relation_descriptor_generation)) ||
+      !require_field(*envelope_fields, "referenced_table_uuid",
+                     batch.parent_table_uuid) ||
+      !require_field(*envelope_fields, "referenced_column_uuid",
+                     batch.parent_column_uuid) ||
+      !require_field(*envelope_fields, "constraint_uuid",
+                     batch.constraint_uuid) ||
+      !require_field(*envelope_fields, "constraint_name",
+                     batch.constraint_name) ||
+      !require_field(*envelope_fields, "owner_object_uuid",
+                     batch.owner_table_uuid) ||
+      !require_field(*envelope_fields, "key_descriptor_uuid",
+                     batch.key_descriptor_uuid) ||
+      !require_field(*envelope_fields,
+                     "referenced_candidate_key_constraint_uuid",
+                     batch.parent_candidate_key_constraint_uuid) ||
+      !require_field(*envelope_fields, "support_uuid", batch.support_uuid) ||
+      !require_field(*envelope_fields, "support_family",
+                     batch.support_family) ||
+      !require_field(*envelope_fields, "on_update",
+                     batch.on_update_action) ||
+      !require_field(*envelope_fields, "on_delete",
+                     batch.on_delete_action) ||
+      !require_field(*envelope_fields, "referential_action", "no_action") ||
+      !require_field(*envelope_fields, "enforcement_timing",
+                     batch.enforcement_timing) ||
+      !require_field(*envelope_fields, "deferrable", "false") ||
+      !require_field(*envelope_fields, "constraint_mutation_batch_uuid",
+                     batch.batch_uuid) ||
+      !require_field(*envelope_fields, "constraint_mutation_batch_state",
+                     "sealed") ||
+      !require_field(*new_fields, "referenced_column",
+                     RelationDescriptorFieldOrEmpty(
+                         *envelope_fields, {"referenced_column"}))) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_canonical_envelope_incoherent");
+  }
+  const auto child_storage = LoadMgaRelationStorageDescriptor(
+      context, batch.owner_table_uuid);
+  const auto parent_storage = LoadMgaRelationStorageDescriptor(
+      context, batch.parent_table_uuid);
+  if (!child_storage.ok) return child_storage.diagnostic;
+  if (!parent_storage.ok) return parent_storage.diagnostic;
+  const auto& child_relation = child_storage.descriptor;
+  const auto& parent_relation = parent_storage.descriptor;
+  if (child_relation.database_uuid.canonical != batch.database_uuid ||
+      child_relation.relation_uuid.canonical != batch.owner_table_uuid ||
+      child_relation.schema_uuid.canonical != batch.child_schema_uuid ||
+      child_relation.descriptor_uuid.canonical !=
+          batch.child_relation_descriptor_uuid ||
+      child_relation.descriptor_generation !=
+          batch.child_relation_descriptor_generation ||
+      parent_relation.database_uuid.canonical != batch.database_uuid ||
+      parent_relation.relation_uuid.canonical != batch.parent_table_uuid ||
+      parent_relation.schema_uuid.canonical != batch.parent_schema_uuid ||
+      parent_relation.descriptor_uuid.canonical !=
+          batch.parent_relation_descriptor_uuid ||
+      parent_relation.descriptor_generation !=
+          batch.parent_relation_descriptor_generation) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_relation_descriptor_binding_changed");
+  }
+  const auto child_column = std::find_if(
+      child_relation.columns.begin(), child_relation.columns.end(),
+      [&](const MgaRelationColumnStorageDescriptor& column) {
+        return column.column_uuid.canonical == batch.child_column_uuid;
+      });
+  const auto parent_column = std::find_if(
+      parent_relation.columns.begin(), parent_relation.columns.end(),
+      [&](const MgaRelationColumnStorageDescriptor& column) {
+        return column.column_uuid.canonical == batch.parent_column_uuid;
+      });
+  const std::string quoted = RelationDescriptorFieldOrEmpty(
+      *envelope_fields, {"constraint_name_quoted"});
+  if (child_column == child_relation.columns.end() ||
+      parent_column == parent_relation.columns.end() ||
+      child_column->canonical_name_key != new_changed_column->first ||
+      !require_field(*envelope_fields, "child_column",
+                     child_column->canonical_name_key) ||
+      !require_field(*envelope_fields, "referenced_column",
+                     parent_column->canonical_name_key) ||
+      !require_field(*new_fields, "referenced_column",
+                     parent_column->canonical_name_key) ||
+      (quoted != "true" && quoted != "false")) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "constraint_batch_column_descriptor_binding_changed");
+  }
+  const auto parent_metadata_column = std::find_if(
+      current_parent->columns.begin(), current_parent->columns.end(),
+      [&](const auto& column) {
+        return column.first == parent_column->canonical_name_key;
+      });
+  if (parent_metadata_column == current_parent->columns.end()) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "parent_candidate_key_column_not_visible");
+  }
+  const auto parent_key_fields =
+      StrictRelationDescriptorFields(parent_metadata_column->second);
+  if (!parent_key_fields ||
+      !require_field(*parent_key_fields,
+                     "candidate_key_constraint_uuid",
+                     batch.parent_candidate_key_constraint_uuid) ||
+      !require_field(*parent_key_fields,
+                     "candidate_key_descriptor_uuid",
+                     batch.key_descriptor_uuid) ||
+      !require_field(*parent_key_fields, "support_uuid",
+                     batch.support_uuid) ||
+      !require_field(*parent_key_fields, "support_family", "btree") ||
+      (RelationDescriptorFieldOrEmpty(
+           *parent_key_fields, {"candidate_key_class"}) != "primary_key" &&
+       RelationDescriptorFieldOrEmpty(
+           *parent_key_fields, {"candidate_key_class"}) != "unique")) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "parent_candidate_key_projection_changed");
+  }
+  const auto descriptor_support = std::find_if(
+      parent_relation.indexes.begin(), parent_relation.indexes.end(),
+      [&](const MgaRelationIndexStorageDescriptor& index) {
+        return index.index_uuid.canonical == batch.support_uuid &&
+               index.unique && index.family == "btree";
+      });
+  auto key_columns = [](const CrudIndexRecord& index) {
+    std::vector<std::string> columns;
+    for (const std::string& envelope : index.key_envelopes) {
+      if (envelope.empty() || envelope == "unique" ||
+          envelope == "primary_key" || envelope.starts_with("include:") ||
+          envelope.starts_with("where_eq:") ||
+          envelope.starts_with("where_mod_eq:") ||
+          envelope == "where_true") {
+        continue;
+      }
+      if (envelope.starts_with("identity:")) {
+        columns.push_back(envelope.substr(9));
+      } else if (envelope.starts_with("desc:")) {
+        columns.push_back(envelope.substr(5));
+      } else if (envelope.starts_with("cast:")) {
+        const std::string rest = envelope.substr(5);
+        const auto separator = rest.find(':');
+        columns.push_back(separator == std::string::npos
+                              ? rest
+                              : rest.substr(0, separator));
+      } else {
+        columns.push_back(envelope);
+      }
+    }
+    if (columns.empty() && !index.column_name.empty()) {
+      columns.push_back(index.column_name);
+    }
+    return columns;
+  };
+  std::size_t exact_support_count = 0;
+  for (const auto& index : VisibleCrudIndexesForTable(
+           current_state,
+           current_parent->table_uuid,
+           context.local_transaction_id)) {
+    const auto columns = key_columns(index);
+    const std::string visible_support_family =
+        index.family.empty() ? CrudIndexFamilyForProfile(index.profile)
+                             : index.family;
+    if (index.index_uuid == batch.support_uuid && index.unique &&
+        visible_support_family == batch.support_family &&
+        columns.size() == 1 &&
+        columns.front() == parent_column->canonical_name_key) {
+      ++exact_support_count;
+    }
+  }
+  if (descriptor_support == parent_relation.indexes.end() ||
+      exact_support_count != 1) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "parent_candidate_key_exact_support_changed");
+  }
+  // D1 admits one immediate single-column FK per child table.  Enforce that
+  // bounded generation model in the storage authority as well as the DDL
+  // adapter so generation 1 can never silently duplicate.
+  if (batch.constraint_metadata_generation != 1) {
+    return MakeInvalidRequestDiagnostic(
+        kOperation, "bounded_d1_constraint_generation_must_be_one");
+  }
+  for (const auto& [column_name, descriptor] : current_owner->columns) {
+    (void)column_name;
+    if (descriptor.find("constraint_mutation_batch_state=sealed") !=
+        std::string::npos) {
+      return MakeInvalidRequestDiagnostic(
+          kOperation, "bounded_d1_prior_constraint_batch_unsupported");
+    }
+  }
+  const auto reservation = ReserveEventSequenceRange(
+      context,
+      "relation_metadata",
+      MetadataStorePath(context),
+      1,
+      [&context]() { return ScanNextMetadataEventSequence(context); });
+  if (!reservation.ok) return reservation.diagnostic;
+
+  CrudTableRecord table = batch.updated_table;
+  table.creator_tx = context.local_transaction_id;
+  table.event_sequence = reservation.first;
+  MgaConstraintMutationBatch sealed_batch = batch;
+  sealed_batch.updated_table = table;
+  sealed_batch.batch_hash = ComputeMgaConstraintMutationBatchHash(
+      sealed_batch, table.creator_tx, table.event_sequence);
+  if (sealed_batch.batch_hash.empty()) {
+    return MakeInvalidRequestDiagnostic(kOperation,
+                                        "batch_hash_generation_failed");
+  }
+  // `sealed` is emitted here, after all required catalog and relation fields
+  // have passed validation, and is never copied from an SBLR operand.
+  const auto line_fields = ConstraintMutationBatchLineFields(
+      sealed_batch, table.creator_tx, table.event_sequence);
+  if (line_fields.size() != constraint_batch_field::kFieldCount) {
+    return MakeInvalidRequestDiagnostic(kOperation,
+                                        "batch_codec_field_count_invalid");
+  }
+  const std::string line = JoinLine(line_fields);
+  if (!AppendLine(MetadataStorePath(context), line)) {
+    return MakeInvalidRequestDiagnostic(kOperation,
+                                        "sealed_batch_append_failed");
   }
   return OkDiagnostic();
 }

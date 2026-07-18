@@ -15,7 +15,8 @@
 #include <utility>
 #include <vector>
 
-#include "parser_ipc_common.hpp"
+#include "ipc/sbsql_ipc_common.hpp"
+#include "parser_client_types.hpp"
 
 namespace scratchbird::parser::sbsql {
 
@@ -58,7 +59,7 @@ struct ParserResourceBudget {
   std::uint64_t max_parser_cache_entries{10000};
 };
 
-struct ParserConfig {
+struct ParserConfig : ipc::ParserClientConfig {
   bool listener_worker{false};
   bool probe_mode{false};
   bool allow_probe_auth{false};
@@ -67,8 +68,6 @@ struct ParserConfig {
   std::uint64_t worker_numeric_id{1};
   std::string parser_uuid;
   std::string listener_uuid;
-  std::string database_token;
-  std::string server_endpoint;
   bool embedded_engine_direct{false};
   // Programmatic fixture-only escape hatch. Production clients never set it.
   // It permits opening an already-created minimal test database without a
@@ -79,8 +78,6 @@ struct ParserConfig {
   bool embedded_auth_bypass_sysarch{false};
   bool embedded_database_ownership_prelocked{false};
   std::string embedded_database_path;
-  std::string dialect{"sbsql"};
-  std::string profile_id{"default"};
   std::string bundle_contract_id{"sbp_sbsql@1"};
   std::string build_id{"dev"};
   bool tls_required{false};
@@ -92,47 +89,30 @@ struct ParserConfig {
   std::string manager_auth_token;
   std::uint32_t parser_api_major{kSbsqlWorkerParserApiCurrentMajor};
   std::uint32_t protocol_version{kSbsqlWorkerProtocolCurrentVersion};
-  std::uint32_t registry_version{kSbsqlWorkerRegistryCurrentVersion};
   std::uint32_t metrics_schema_version{1};
   ParserResourceBudget resource_budget;
+
+  ParserConfig() {
+    dialect = "sbsql";
+    profile_id = "default";
+    default_language_profile = "sbsql.builtin.recovery.en";
+    input_syntax_profile = "sbsql.syntax.standard";
+    common_resource_hash = "builtin.common.sbsql.v1";
+    resource_compatibility_identity = "sbsql.resource.compat.v1";
+    resource_version_identity = "sbsql.resource-pack.v1";
+    dialect_profile_uuid = "sbsql_v3";
+    registry_version = kSbsqlWorkerRegistryCurrentVersion;
+  }
 };
 
-struct SessionContext {
-  bool authenticated{false};
-  std::string session_uuid;
-  std::string connection_uuid;
-  std::string database_uuid;
-  std::string authenticated_user_uuid;
-  std::string principal_claim;
-  std::string auth_provider_family;
-  std::vector<std::string> effective_role_uuids;
-  std::vector<std::string> effective_group_uuids;
-  std::string default_language{"en"};
-  std::string language_profile{"sbsql.builtin.recovery.en"};
-  std::string language_tag{"en"};
-  std::string input_syntax_profile{"sbsql.syntax.standard"};
-  std::string input_language_fallback_tag;
-  std::string common_resource_hash{"builtin.common.sbsql.v1"};
-  std::string dialect_profile_uuid;
-  std::string policy_profile_uuid{"default"};
-  std::string resource_compatibility_identity{"sbsql.resource.compat.v1"};
-  std::string resource_version_identity{"sbsql.resource-pack.v1"};
-  std::uint64_t language_resource_epoch{0};
-  std::uint64_t localized_name_epoch{0};
-  std::uint64_t message_resource_epoch{0};
-  std::uint64_t udr_epoch{0};
-  std::vector<std::string> search_path;
-  std::string transaction_context;
-  std::uint64_t local_transaction_id{0};
-  std::uint64_t snapshot_visible_through_local_transaction_id{0};
-  std::string transaction_uuid;
-  std::string transaction_timestamp;
-  std::uint64_t security_policy_epoch{0};
-  std::uint64_t grant_epoch{0};
-  std::uint64_t catalog_epoch{0};
-  std::uint64_t descriptor_epoch{0};
-  std::string result_rendering_policy{"default"};
-  std::string metric_redaction_policy{"default"};
+struct SessionContext : ipc::ParserSessionContext {
+  SessionContext() {
+    language_profile = "sbsql.builtin.recovery.en";
+    input_syntax_profile = "sbsql.syntax.standard";
+    common_resource_hash = "builtin.common.sbsql.v1";
+    resource_compatibility_identity = "sbsql.resource.compat.v1";
+    resource_version_identity = "sbsql.resource-pack.v1";
+  }
 };
 
 struct PipelineResult {

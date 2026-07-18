@@ -1,0 +1,9 @@
+variance_id,status,dimension,required_capture,impact
+RPR-VAR-001,required,host_os,os name version kernel architecture,Replay evidence is tied to platform.
+RPR-VAR-002,required,shell,shell path version and mode,Original tool wrappers can behave differently by shell.
+RPR-VAR-003,required,filesystem,case sensitivity path length temp path and disk type,Regression tools may depend on path behavior.
+RPR-VAR-004,required,tls,library provider version certificate mode and cipher policy,Original tools may negotiate differently.
+RPR-VAR-005,required,locale,LANG LC_ALL timezone and collation settings,Expected output can vary by locale and timezone.
+RPR-VAR-006,required,toolchain,compiler interpreter runtime versions,Original tool suites can vary by runtime.
+RPR-VAR-007,required,network,loopback address port namespace firewall and proxy state,Route proof depends on network envelope.
+RPR-VAR-008,required,resource_limits,cpu memory disk process file descriptor limits,Timeout and performance findings depend on limits.

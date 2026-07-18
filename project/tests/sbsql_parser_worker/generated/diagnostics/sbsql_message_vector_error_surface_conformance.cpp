@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "diagnostics.hpp"
-#include "parser_ipc_common.hpp"
+#include "ipc/sbsql_ipc_common.hpp"
 #include "rendering/rendering.hpp"
 #include "sbps.hpp"
 #include "scratchbird/engine/engine.h"
@@ -323,14 +323,22 @@ bool ValidateSbpsPayload(const scratchbird::server::ServerDiagnostic& diagnostic
   const auto safe_len = U16(payload, record_offset + 100);
   const auto field_count = U16(payload, record_offset + 102);
   std::size_t cursor = record_offset + 112;
-  const auto language = BytesString(payload, cursor, language_len);
-  cursor += language_len;
-  const auto code = BytesString(payload, cursor, code_len);
-  cursor += code_len;
-  const auto message_key = BytesString(payload, cursor, key_len);
-  cursor += key_len + admin_key_len;
-  const auto safe_message = BytesString(payload, cursor, safe_len);
-  cursor += safe_len;
+  const auto read_padded = [&](std::uint16_t length) {
+    const auto value = BytesString(payload, cursor, length);
+    cursor += length;
+    while (((cursor - record_offset) % 4u) != 0u) {
+      harness->Require(cursor < record_offset + record_bytes &&
+                           payload[cursor] == 0,
+                       "SBMV variable-field padding is invalid");
+      ++cursor;
+    }
+    return value;
+  };
+  const auto language = read_padded(language_len);
+  const auto code = read_padded(code_len);
+  const auto message_key = read_padded(key_len);
+  (void)read_padded(admin_key_len);
+  const auto safe_message = read_padded(safe_len);
 
   harness->Require(language == "en", "SBMV language is not en");
   harness->Require(code == diagnostic.code, "SBMV record code mismatch");

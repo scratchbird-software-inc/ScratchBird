@@ -170,7 +170,6 @@ int main(int argc, char** argv) {
 
   const pid_t pid = ::fork();
   if (pid == 0) {
-    ::setenv("SB_PARSER_DUMMY_BEHAVIOR", "slow_read", 1);
     int out = ::creat(stdout_path.c_str(), 0600);
     int err = ::creat(stderr_path.c_str(), 0600);
     if (out >= 0) {
@@ -189,7 +188,7 @@ int main(int argc, char** argv) {
             listener.c_str(),
             "--foreground",
             "--protocol-family=sbsql",
-            "--listener-profile=default",
+            "--listener-profile=fixture.parser-dummy.behavior.slow_read",
             "--bundle-contract-id=bundle.default@1",
             "--database-selector=dev_bootstrap_path:/tmp/sb_listener_manager_drain.sbdb",
             "--server-endpoint=unix:/tmp/sb_listener_manager_drain.sbps.sock",

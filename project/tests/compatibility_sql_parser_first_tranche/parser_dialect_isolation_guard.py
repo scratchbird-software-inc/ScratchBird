@@ -49,7 +49,7 @@ DIALECTS = (
     "xtdb",
 )
 EXTERNAL_REFERENCE_SKIP_CODE = 77
-PARSER_REMAP_ROOT = "public_execution_plan/final-sblr-sbsql-parser-remap-closure"
+PARSER_REMAP_ROOT = "docs/compatibility-parsers/remap"
 
 DISTINCTIVE_PROBES = {
     "firebird": "RECREATE TABLE fb_iso_t (id INTEGER)",
@@ -116,8 +116,8 @@ SOURCE_SUFFIXES = (".cpp", ".hpp")
 MATRIX_REL = (
     f"{PARSER_REMAP_ROOT}/DIALECT_ISOLATION_GUARD_MATRIX.csv"
 )
-TRACKER_REL = f"{PARSER_REMAP_ROOT}/TRACKER.csv"
-GATES_REL = f"{PARSER_REMAP_ROOT}/ACCEPTANCE_GATES.csv"
+TRACKER_REL = f"{PARSER_REMAP_ROOT}/COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv"
+GATES_REL = f"{PARSER_REMAP_ROOT}/COMPATIBILITY_PARSER_REMAP_GATE_STATUS.csv"
 MANIFEST_REL = "project/src/parsers/compatibility/CompatibilityProfileManifest.csv"
 
 EXPECTED_MATRIX_COUNTS = {

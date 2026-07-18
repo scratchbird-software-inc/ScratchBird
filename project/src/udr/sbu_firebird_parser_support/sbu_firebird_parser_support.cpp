@@ -183,7 +183,7 @@ std::string ManagementInventoryJson(std::string_view render_policy) {
       << "\"reference_family\":\"firebird\","
       << "\"management_abi_version\":\"1.0\","
       << "\"routine_count\":" << std::size(kManagementOperations) << ','
-      << "\"native_sbsql_excluded\":true,"
+      << "\"native_canonical_sblr_excluded\":true,"
       << "\"parser_authority\":false,"
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"scratchbird_engine\","
@@ -555,7 +555,7 @@ std::string FirebirdBridgeCapabilitiesJson(std::string_view render_policy) {
       << "\"raw_secret_material_allowed\":false,"
       << "\"secret_refs_required\":true,"
       << "\"cluster_public_implementation\":false,"
-      << "\"native_sbsql_excluded\":true,"
+      << "\"native_canonical_sblr_excluded\":true,"
       << "\"firebird_only\":true,"
       << "\"logical_backup_restore\":\"remote_stream_only\","
       << "\"physical_page_copy_backup_restore\":\"denied\","
@@ -649,7 +649,7 @@ UdrResult FirebirdBridgeDispatch(std::string_view request_packet,
        PacketValue(request_packet, "service_action") == "repair" ||
        PacketValue(request_packet, "service_action") == "validate_pages")) {
     return BridgeDiagnostic("UDR.BRIDGE.UNSUPPORTED",
-                            "Firebird repair, verify, and low-level maintenance remain SBsql-only.",
+                            "Firebird repair, verify, and low-level maintenance remain engine-internal administrative operations.",
                             {{"provider", "sbu_firebird_parser_support"},
                              {"operation", operation}});
   }
@@ -1259,8 +1259,8 @@ UdrResult sbu_firebird_management_package_request(std::string_view operation_nam
           "\"package_policy_can_only_tighten_engine_decision\":true,"
           "\"parser_authority\":false,"
           "\"parser_selected_package_authority\":false,"
-          "\"sbsql_management_route\":false,"
-          "\"native_sbsql_excluded\":true,"
+          "\"canonical_sblr_management_route\":false,"
+          "\"native_canonical_sblr_excluded\":true,"
           "\"mga_transaction_authority\":\"scratchbird_engine\","
           "\"requires_mga_transaction\":" +
               BoolJson(ManagementOperationMutates(operation_name)) + ","

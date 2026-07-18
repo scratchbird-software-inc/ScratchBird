@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_mariadb_parser_pipeline STATIC
   mariadb_dialect.cpp
+  mariadb_worker_session.cpp
 )
 
 target_compile_features(sbl_mariadb_parser_pipeline PUBLIC cxx_std_23)

@@ -66,7 +66,7 @@ resources/charsets/mappings/windows-1256.map.json,fnv1a64:d1d73ed9ec3c62c2,20789
 resources/charsets/mappings/windows-1257.map.json,fnv1a64:0dfd4443903f843a,19829
 resources/charsets/mappings/windows-1258.map.json,fnv1a64:d7d3a69601eba40b,20069
 resources/charsets/README.md,fnv1a64:bb71ac11f53e6d39,3903
-resources/collations/collations.json,fnv1a64:ce80d8b68ce6e59d,66320
+resources/collations/collations.json,fnv1a64:ec6be77b1578c9ed,67550
 resources/collations/locales/locales_manifest.json,fnv1a64:02a74ab4feea3fe8,64
 resources/collations/tailorings/firebird/firebird_appendix_h_collations.txt,fnv1a64:c81de2598324ab57,196
 resources/collations/tailorings/firebird/source_version.txt,fnv1a64:1708f8d07f3f2ef5,93

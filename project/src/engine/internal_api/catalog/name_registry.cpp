@@ -101,6 +101,10 @@ std::string NameRegistryLoadCacheKey(const EngineRequestContext& context,
       << "|security=" << context.security_epoch
       << "|resource=" << context.resource_epoch
       << "|name_resolution=" << context.name_resolution_epoch
+      << "|identifier_profile=" << context.identifier_profile_uuid
+      << "|language=" << context.language_context.language_tag
+      << "|default_language="
+      << context.language_context.default_language_tag
       << "|api=" << NameRegistryFileFingerprint(context.database_path + ".sb.api_events")
       << "|crud=" << NameRegistryFileFingerprint(context.database_path + ".sb.crud_events")
       << "|mga_meta=" << NameRegistryFileFingerprint(context.database_path + ".sb.mga_relation_metadata")

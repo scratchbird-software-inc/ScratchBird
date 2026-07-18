@@ -198,6 +198,18 @@ std::string ExpressionKeyForValues(const std::string& expression,
   if (StartsWith(expression, "length:")) { return std::to_string(CrudFieldValue(values, expression.substr(7)).size()); }
   if (StartsWith(expression, "identity:")) { return CrudFieldValue(values, expression.substr(9)); }
   if (StartsWith(expression, "desc:")) { return CrudFieldValue(values, expression.substr(5)); }
+  if (StartsWith(expression, "sum:")) {
+    const std::string rest = expression.substr(4);
+    const auto pos = rest.find(':');
+    if (pos == std::string::npos) return {};
+    try {
+      const auto left = std::stoll(CrudFieldValue(values, rest.substr(0, pos)));
+      const auto right = std::stoll(CrudFieldValue(values, rest.substr(pos + 1)));
+      return std::to_string(left + right);
+    } catch (...) {
+      return {};
+    }
+  }
   if (StartsWith(expression, "cast:")) {
     const std::string rest = expression.substr(5);
     const auto pos = rest.find(':');
@@ -219,6 +231,7 @@ std::string ExpressionKeyForValues(const std::string& expression,
 bool ExpressionEnvelopeSupported(const std::string& expression) {
   return StartsWith(expression, "lower:") || StartsWith(expression, "upper:") || StartsWith(expression, "length:") ||
          StartsWith(expression, "identity:") || StartsWith(expression, "cast:") || StartsWith(expression, "desc:") ||
+         StartsWith(expression, "sum:") ||
          !ExtractFunctionArgument(expression, "lower").empty() ||
          !ExtractFunctionArgument(expression, "upper").empty() || !ExtractFunctionArgument(expression, "length").empty() ||
          (!expression.empty() && expression.find(':') == std::string::npos &&

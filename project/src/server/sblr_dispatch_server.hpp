@@ -16,6 +16,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::server {
@@ -36,6 +37,14 @@ struct ServerIparProjectionSourceFactory {
   ServerIparProjectionSources (*build)(void* context) = nullptr;
 };
 
+// Deterministic seam for the family-neutral engine-diagnostic public-field
+// registry. Production public-ABI dispatch uses the same registry before SBPS
+// message-vector encoding.
+std::vector<ServerDiagnosticField>
+RegisteredEngineDiagnosticFieldsForTest(
+    std::string_view diagnostic_code,
+    const std::vector<ServerDiagnosticField>& candidates);
+
 std::vector<std::uint8_t> EncodePrepareSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::string& encoded_sblr_envelope);
@@ -45,6 +54,12 @@ std::vector<std::uint8_t> EncodeExecuteSblrPayloadForTest(
     const std::string& encoded_sblr_envelope,
     bool cursor_requested = false,
     const std::vector<std::uint8_t>& data_packet = {});
+// Runs the same family-neutral JSON/text-to-operation-envelope translation used
+// by HandleExecuteSblr for ddl.create_view, without requiring a live session.
+// Tests use this seam to prove malformed cardinalities are bounded and remain
+// fail-closed before engine mutation.
+std::string EncodeCreateViewPublicAbiEnvelopeForTest(
+    std::string_view encoded_sblr_envelope);
 std::vector<std::uint8_t> EncodeFetchPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& cursor_uuid,
@@ -54,6 +69,9 @@ std::vector<std::uint8_t> EncodeFetchPayloadForTest(
 std::vector<std::uint8_t> EncodeCloseCursorPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& cursor_uuid);
+std::vector<std::uint8_t> EncodeClosePreparedSblrPayloadForTest(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid);
 std::vector<std::uint8_t> EncodeCancelCursorPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& cursor_uuid);
@@ -96,13 +114,25 @@ std::string EncodeEventChannelNotifySblrForTest(const std::string& channel_uuid,
 SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request);
+SessionOperationResult RejectPrepareSblrBeforeEngine(
+    const sbps::Frame& request,
+    std::string diagnostic_code,
+    std::string detail);
 SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request,
                                          const ServerIparProjectionSourceFactory* ipar_source_factory = nullptr);
+SessionOperationResult RejectExecuteSblrBeforeEngine(
+    const sbps::Frame& request,
+    std::string diagnostic_code,
+    std::string detail,
+    std::vector<ServerDiagnosticField> diagnostic_fields = {});
 SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                    const sbps::Frame& request);
 SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                                          const sbps::Frame& request);
+SessionOperationResult HandleClosePreparedSblr(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request);
 
 }  // namespace scratchbird::server

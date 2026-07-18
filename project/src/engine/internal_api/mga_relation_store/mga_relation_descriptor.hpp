@@ -30,7 +30,9 @@ struct MgaRelationColumnStorageDescriptor {
   bool generated = false;
   bool identity_column = false;
   std::string storage_class = "inline_row_value";
+  std::string charset_uuid;
   std::string collation_uuid;
+  std::uint32_t character_length = 0;
   std::uint64_t max_inline_bytes = 4096;
   std::string overflow_policy = "mga_large_value_locator";
 };

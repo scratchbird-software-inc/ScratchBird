@@ -64,6 +64,12 @@ bool PredicateEnvelopeTouchesColumn(const EnginePredicateEnvelope& predicate, co
   if (envelope.rfind("identity:", 0) == 0 && envelope.substr(9) == column_name) {
     return true;
   }
+  if (envelope.rfind("sum:", 0) == 0) {
+    const auto body = envelope.substr(4);
+    const auto colon = body.find(':');
+    return colon != std::string::npos &&
+           (body.substr(0, colon) == column_name || body.substr(colon + 1) == column_name);
+  }
   const auto open = envelope.find('(');
   const auto close = envelope.size() > open ? envelope.rfind(')') : std::string::npos;
   if (open != std::string::npos && close != std::string::npos && close > open + 1) {

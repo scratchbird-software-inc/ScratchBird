@@ -8,9 +8,11 @@
 
 #include "parser_pool.hpp"
 
+#include <array>
 #include <chrono>
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
@@ -31,7 +33,6 @@
 #include <afunix.h>
 #else
 #include <csignal>
-#include <cstdlib>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -46,6 +47,162 @@ namespace scratchbird::listener {
 namespace {
 
 constexpr std::size_t kParserPoolFaultHistoryMax = 64;
+
+// The listener transports an opaque, family-neutral bootstrap credential
+// envelope to whichever standalone parser package its profile selected.  It
+// must not interpret compatibility authentication rules or translate family aliases.
+constexpr char kParserAuthPasswordEnvironment[] =
+    "SB_COMPATIBILITY_AUTH_PASSWORD";
+constexpr char kParserAuthVerifierEnvironment[] =
+    "SB_COMPATIBILITY_AUTH_VERIFIER";
+constexpr char kParserAuthPrincipalUuidEnvironment[] =
+    "SB_COMPATIBILITY_AUTH_PRINCIPAL_UUID";
+
+struct ParserCredentialHandoff {
+  std::string password;
+  std::string verifier;
+  std::string principal_uuid;
+};
+
+using ParserEnvironment =
+    std::vector<std::pair<std::string, std::string>>;
+
+// A parser worker is an untrusted, independently packaged process.  Inherit
+// only the small runtime baseline needed to locate shared libraries, temporary
+// storage, and locale data.  In particular, HOME, shell startup state,
+// test-harness controls, compatibility aliases, cloud credentials, and arbitrary SB_*
+// variables are deliberately absent.
+constexpr std::array<const char*, 18> kInheritedRuntimeEnvironment = {
+    "PATH",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_COLLATE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_PAPER",
+    "LC_MEASUREMENT",
+};
+
+std::string ReadEnvironmentValue(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && *value != '\0' ? std::string(value) : std::string{};
+}
+
+void AppendEnvironment(ParserEnvironment* environment,
+                       std::string name,
+                       std::string value) {
+  if (environment == nullptr || name.empty()) return;
+  environment->emplace_back(std::move(name), std::move(value));
+}
+
+void AppendInheritedRuntimeEnvironment(ParserEnvironment* environment) {
+  for (const char* name : kInheritedRuntimeEnvironment) {
+    const std::string value = ReadEnvironmentValue(name);
+    if (!value.empty()) AppendEnvironment(environment, name, value);
+  }
+}
+
+ParserEnvironment BuildParserEnvironment(
+    const ListenerConfig& config,
+    const ParserWorker& worker,
+    std::string control_name,
+    std::string control_value,
+    std::string control_transport,
+    const ParserCredentialHandoff& credentials) {
+  ParserEnvironment environment;
+  environment.reserve(kInheritedRuntimeEnvironment.size() + 32);
+  AppendInheritedRuntimeEnvironment(&environment);
+
+  AppendEnvironment(&environment, "SB_LISTENER_PREAUTH", "1");
+  AppendEnvironment(&environment, std::move(control_name),
+                    std::move(control_value));
+  if (!control_transport.empty()) {
+    AppendEnvironment(&environment, "SB_LISTENER_CONTROL_TRANSPORT",
+                      std::move(control_transport));
+  }
+  AppendEnvironment(&environment, "SB_SERVER_ENDPOINT", config.server_endpoint);
+  AppendEnvironment(&environment, "SB_DATABASE_SELECTOR",
+                    config.database_selector);
+  AppendEnvironment(&environment, "SB_DATABASE_TOKEN", config.database_selector);
+  AppendEnvironment(&environment, "SB_PROTOCOL_FAMILY", config.protocol_family);
+  AppendEnvironment(&environment, "SB_PARSER_PACKAGE", config.parser_package);
+  AppendEnvironment(&environment, "SB_PARSER_PACKAGE_UUID",
+                    config.parser_package_uuid);
+  AppendEnvironment(&environment, "SB_PARSER_WORKER_ID", worker.worker_id);
+  AppendEnvironment(&environment, "SB_PARSER_WORKER_NUMERIC_ID",
+                    std::to_string(worker.numeric_worker_id));
+  AppendEnvironment(&environment, "SB_PARSER_PROFILE_ID",
+                    config.listener_profile);
+  AppendEnvironment(&environment, "SB_LISTENER_PROFILE_UUID",
+                    config.listener_profile_uuid);
+  AppendEnvironment(&environment, "SB_DIALECT_PROFILE_UUID",
+                    config.dialect_profile_uuid);
+  AppendEnvironment(&environment, "SB_PARSER_BUNDLE_CONTRACT_ID",
+                    config.bundle_contract_id);
+  AppendEnvironment(&environment, "SB_PARSER_API_MAJOR",
+                    std::to_string(config.parser_api_major));
+  AppendEnvironment(&environment, "SB_PARSER_API_MINOR",
+                    std::to_string(config.parser_api_minor));
+  AppendEnvironment(&environment, "SB_LISTENER_UUID", config.listener_uuid);
+  AppendEnvironment(&environment, "SB_LISTENER_LIFECYCLE_GENERATION",
+                    std::to_string(config.lifecycle_generation));
+  AppendEnvironment(&environment, "SB_LISTENER_CONTROLLER_TYPE",
+                    config.controller_type);
+  AppendEnvironment(&environment, "SB_LISTENER_CONTROLLER_UUID",
+                    config.controller_uuid);
+  AppendEnvironment(&environment, "SB_LISTENER_RUNTIME_DIR", config.runtime_dir);
+  AppendEnvironment(&environment, "SB_TLS_REQUIRED",
+                    config.tls_required ? "1" : "0");
+  AppendEnvironment(&environment, "SB_TLS_CERT_FILE", config.tls_cert_file);
+  AppendEnvironment(&environment, "SB_TLS_KEY_FILE", config.tls_key_file);
+  AppendEnvironment(&environment, "SB_TLS_CA_FILE", config.tls_ca_file);
+
+  if (!credentials.password.empty()) {
+    AppendEnvironment(&environment, kParserAuthPasswordEnvironment,
+                      credentials.password);
+  }
+  if (!credentials.verifier.empty()) {
+    AppendEnvironment(&environment, kParserAuthVerifierEnvironment,
+                      credentials.verifier);
+  }
+  if (!credentials.principal_uuid.empty()) {
+    AppendEnvironment(&environment, kParserAuthPrincipalUuidEnvironment,
+                      credentials.principal_uuid);
+  }
+  return environment;
+}
+
+#ifndef _WIN32
+struct PosixEnvironmentBlock {
+  std::vector<std::string> storage;
+  std::vector<char*> pointers;
+};
+
+PosixEnvironmentBlock BuildPosixEnvironmentBlock(
+    const ParserEnvironment& environment) {
+  PosixEnvironmentBlock block;
+  block.storage.reserve(environment.size());
+  for (const auto& [name, value] : environment) {
+    block.storage.push_back(name + "=" + value);
+  }
+  block.pointers.reserve(block.storage.size() + 1);
+  for (std::string& entry : block.storage) {
+    block.pointers.push_back(entry.data());
+  }
+  block.pointers.push_back(nullptr);
+  return block;
+}
+#endif
 
 #ifdef _WIN32
 bool EnsureWinsockInitialized() {
@@ -141,27 +298,24 @@ std::string UpperEnvKey(std::string value) {
 
 std::vector<char> BuildWindowsEnvironmentBlock(
     const std::vector<std::pair<std::string, std::string>>& overrides) {
+  // Windows workers use the same closed environment contract as POSIX.  A
+  // few process-loader variables are required by CreateProcess and DLL
+  // discovery; no ambient environment block is copied wholesale.
+  static constexpr std::array<const char*, 4> kWindowsRuntimeEnvironment = {
+      "SystemRoot", "WINDIR", "ComSpec", "PATHEXT"};
   std::map<std::string, std::string> override_map;
+  for (const char* name : kWindowsRuntimeEnvironment) {
+    const std::string value = ReadEnvironmentValue(name);
+    if (!value.empty()) {
+      override_map.emplace(UpperEnvKey(name), std::string(name) + "=" + value);
+    }
+  }
   for (const auto& entry : overrides) {
-    override_map.emplace(UpperEnvKey(entry.first), entry.first + "=" + entry.second);
+    override_map.insert_or_assign(UpperEnvKey(entry.first),
+                                  entry.first + "=" + entry.second);
   }
 
   std::vector<std::string> entries;
-  LPCH current = ::GetEnvironmentStringsA();
-  if (current != nullptr) {
-    for (LPCH it = current; *it != '\0'; it += std::strlen(it) + 1) {
-      const std::string row(it);
-      const auto eq = row.find('=');
-      if (eq == std::string::npos || eq == 0) {
-        entries.push_back(row);
-        continue;
-      }
-      if (override_map.find(UpperEnvKey(row.substr(0, eq))) == override_map.end()) {
-        entries.push_back(row);
-      }
-    }
-    ::FreeEnvironmentStringsA(current);
-  }
   for (const auto& entry : override_map) {
     entries.push_back(entry.second);
   }
@@ -238,7 +392,7 @@ proto::MessageVectorSet ErrorSet(std::string code,
 }
 
 std::string WorkerProtocolForConfig(const ListenerConfig& config) {
-  return config.protocol_family.empty() ? "sbsql" : config.protocol_family;
+  return config.protocol_family;
 }
 
 #ifndef _WIN32
@@ -261,7 +415,15 @@ bool SetCloseOnExec(int fd) {
 
 } // namespace
 
-ParserPool::ParserPool(ListenerConfig config, ListenerMetrics* metrics) : config_(std::move(config)), metrics_(metrics) {}
+ParserPool::ParserPool(ListenerConfig config, ListenerMetrics* metrics)
+    : config_(std::move(config)),
+      metrics_(metrics),
+      parser_auth_password_(
+          ReadEnvironmentValue(kParserAuthPasswordEnvironment)),
+      parser_auth_verifier_(
+          ReadEnvironmentValue(kParserAuthVerifierEnvironment)),
+      parser_auth_principal_uuid_(
+          ReadEnvironmentValue(kParserAuthPrincipalUuidEnvironment)) {}
 
 proto::MessageVectorSet ParserPool::Start() {
   std::lock_guard lock(mutex_);
@@ -970,6 +1132,23 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
     if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
     return false;
   }
+  if (config_.protocol_family.empty() || config_.database_selector.empty() ||
+      config_.server_endpoint.empty() || config_.listener_profile.empty() ||
+      config_.bundle_contract_id.empty() || config_.parser_api_major == 0) {
+    worker->state = ParserWorkerState::kQuarantined;
+    worker->last_diagnostic =
+        "required parser child configuration is incomplete";
+    RecordFaultLocked(worker, "spawn_configuration_refused",
+                      worker->last_diagnostic);
+    if (metrics_) {
+      metrics_->Increment(
+          "sys.metrics.listener.parser_pool.worker_spawn_failed_total");
+    }
+    return false;
+  }
+  const ParserCredentialHandoff credential_handoff = {
+      parser_auth_password_, parser_auth_verifier_,
+      parser_auth_principal_uuid_};
 #ifdef _WIN32
   if (!EnsureWinsockInitialized()) {
     worker->state = ParserWorkerState::kQuarantined;
@@ -998,26 +1177,9 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
     return false;
   }
 
-  const std::string numeric_worker_id = std::to_string(worker->numeric_worker_id);
-  const std::vector<std::pair<std::string, std::string>> environment = {
-      {"SB_LISTENER_PREAUTH", "1"},
-      {"SB_LISTENER_CONTROL_SOCKET", worker->control_socket_path},
-      {"SB_LISTENER_CONTROL_TRANSPORT", "windows-afunix-v1"},
-      {"SB_SERVER_ENDPOINT", config_.server_endpoint},
-      {"SB_DATABASE_SELECTOR", config_.database_selector},
-      {"SB_DATABASE_TOKEN", config_.database_selector},
-      {"SB_PROTOCOL_FAMILY", config_.protocol_family},
-      {"SB_PARSER_PACKAGE", config_.parser_package},
-      {"SB_PARSER_WORKER_ID", worker->worker_id},
-      {"SB_PARSER_WORKER_NUMERIC_ID", numeric_worker_id},
-      {"SB_PARSER_PROFILE_ID", config_.listener_profile},
-      {"SB_PARSER_BUNDLE_CONTRACT_ID", config_.bundle_contract_id},
-      {"SB_PARSER_API_MAJOR", std::to_string(config_.parser_api_major)},
-      {"SB_TLS_REQUIRED", config_.tls_required ? "1" : "0"},
-      {"SB_TLS_CERT_FILE", config_.tls_cert_file},
-      {"SB_TLS_KEY_FILE", config_.tls_key_file},
-      {"SB_TLS_CA_FILE", config_.tls_ca_file},
-  };
+  auto environment = BuildParserEnvironment(
+      config_, *worker, "SB_LISTENER_CONTROL_SOCKET",
+      worker->control_socket_path, "windows-afunix-v1", credential_handoff);
   auto env_block = BuildWindowsEnvironmentBlock(environment);
   std::string command_line = BuildWindowsParserCommandLine(config_.parser_executable);
   STARTUPINFOA startup{};
@@ -1081,29 +1243,20 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
     if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
     return false;
   }
+  const auto parser_environment = BuildParserEnvironment(
+      config_, *worker, "SB_LISTENER_CONTROL_FD", std::to_string(sockets[1]),
+      "posix-socketpair-v1", credential_handoff);
+  auto environment_block = BuildPosixEnvironmentBlock(parser_environment);
+  char* parser_argv[] = {
+      const_cast<char*>(config_.parser_executable.c_str()),
+      const_cast<char*>("--listener-worker"), nullptr};
   worker->state = ParserWorkerState::kStarting;
   pid_t pid = ::fork();
   if (pid == 0) {
     ::close(sockets[0]);
-    const std::string control_fd = std::to_string(sockets[1]);
-    const std::string numeric_worker_id = std::to_string(worker->numeric_worker_id);
-    ::setenv("SB_LISTENER_PREAUTH", "1", 1);
-    ::setenv("SB_LISTENER_CONTROL_FD", control_fd.c_str(), 1);
-    ::setenv("SB_SERVER_ENDPOINT", config_.server_endpoint.c_str(), 1);
-    ::setenv("SB_DATABASE_SELECTOR", config_.database_selector.c_str(), 1);
-    ::setenv("SB_DATABASE_TOKEN", config_.database_selector.c_str(), 1);
-    ::setenv("SB_PROTOCOL_FAMILY", config_.protocol_family.c_str(), 1);
-    ::setenv("SB_PARSER_PACKAGE", config_.parser_package.c_str(), 1);
-    ::setenv("SB_PARSER_WORKER_ID", worker->worker_id.c_str(), 1);
-    ::setenv("SB_PARSER_WORKER_NUMERIC_ID", numeric_worker_id.c_str(), 1);
-    ::setenv("SB_PARSER_PROFILE_ID", config_.listener_profile.c_str(), 1);
-    ::setenv("SB_PARSER_BUNDLE_CONTRACT_ID", config_.bundle_contract_id.c_str(), 1);
-    ::setenv("SB_PARSER_API_MAJOR", std::to_string(config_.parser_api_major).c_str(), 1);
-    ::setenv("SB_TLS_REQUIRED", config_.tls_required ? "1" : "0", 1);
-    ::setenv("SB_TLS_CERT_FILE", config_.tls_cert_file.c_str(), 1);
-    ::setenv("SB_TLS_KEY_FILE", config_.tls_key_file.c_str(), 1);
-    ::setenv("SB_TLS_CA_FILE", config_.tls_ca_file.c_str(), 1);
-    ::execl(config_.parser_executable.c_str(), config_.parser_executable.c_str(), "--listener-worker", nullptr);
+    ::execve(config_.parser_executable.c_str(),
+             parser_argv,
+             environment_block.pointers.data());
     _exit(127);
   }
   ::close(sockets[1]);

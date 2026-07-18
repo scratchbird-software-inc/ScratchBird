@@ -125,6 +125,7 @@ project/tests/reference_regression/reference_release_acquisition/**
 !project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv
 !project/tests/reference_regression/reference_release_acquisition/**/regression/SOURCE_POINTERS.md
 project/tests/reference_regression/reference_release_acquisition/**/regression/*_ACQUISITION_MANIFEST.csv
+project/tests/reference_regression/reference_release_acquisition/**/regression/tools/
 
 !project/tests/reference_regression/reference_catalog_seeds/
 !project/tests/reference_regression/reference_catalog_seeds/**

@@ -10,8 +10,12 @@
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
+#include "extensibility/executable_object_lifecycle.hpp"
 #include "local_transaction_store.hpp"
 #include "sblr_dispatch.hpp"
+#include "server_engine_bridge/diagnostic_fields.hpp"
+#include "server_engine_bridge/prepared_metadata_binding.hpp"
+#include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 
@@ -31,6 +35,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -38,14 +43,22 @@ constexpr std::uint64_t kEngineMagic = 0x5342454e47494e45ull;
 constexpr std::uint64_t kSessionMagic = 0x534245534553534eull;
 constexpr std::uint64_t kTransactionMagic = 0x53425452414e5343ull;
 constexpr std::uint64_t kResultMagic = 0x534245524553554cull;
+constexpr std::uint64_t kPreparedMetadataBindingMagic =
+    0x5342504d45544131ull;
 
 constexpr const char* kBuildId = "scratchbird-engine-abi-v1";
+
+struct DiagnosticFieldStorage {
+  std::string key;
+  std::string value;
+};
 
 struct DiagnosticStorage {
   sb_engine_diagnostic_view_t view{};
   std::string code;
   std::string message;
   std::string detail;
+  std::vector<DiagnosticFieldStorage> fields;
 };
 
 struct sb_engine_result_s {
@@ -82,6 +95,9 @@ struct sb_engine_session_s {
   sb_engine_handle_t engine = nullptr;
   bool closed = false;
   std::uint64_t session_id = 0;
+  sb_engine_uuid_t effective_user_uuid{};
+  sb_engine_uuid_t public_session_uuid{};
+  sb_engine_trust_mode_t trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
   std::uint32_t active_transactions = 0;
   std::uint32_t open_streams = 0;
 };
@@ -93,7 +109,65 @@ struct sb_engine_transaction_s {
   bool closed = false;
 };
 
+namespace scratchbird::server_engine_bridge {
+
+struct PreparedMetadataBindingOpaque {
+  std::uint64_t magic = kPreparedMetadataBindingMagic;
+  mutable std::mutex mutex;
+  bool released = false;
+  bool invalidated = false;
+  std::string invalidation_detail;
+  sb_engine_handle_t engine = nullptr;
+  sb_engine_session_t session = nullptr;
+  std::string database_path;
+  std::string database_uuid;
+  sb_engine_uuid_t effective_user_uuid{};
+  sb_engine_uuid_t session_uuid{};
+  sb_engine_uuid_t parser_package_uuid{};
+  sb_engine_uuid_t dialect_profile_uuid{};
+  sb_engine_trust_mode_t trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+  std::uint32_t context_flags = 0;
+  std::uint64_t rights_set_ref = 0;
+  std::uint64_t capability_set_ref = 0;
+  std::uint64_t source_artifact_set_ref = 0;
+  std::vector<std::uint8_t> encoded_sblr_envelope;
+  std::string metadata_snapshot_uuid;
+  std::uint64_t metadata_visible_through_local_transaction_id = 0;
+  std::vector<std::uint64_t> active_excluded_local_transaction_ids;
+  std::vector<std::uint64_t> in_doubt_excluded_local_transaction_ids;
+  std::string target_object_uuid;
+  std::uint64_t target_executable_generation = 0;
+  std::uint64_t target_metadata_epoch = 0;
+  std::uint64_t target_creator_local_transaction_id = 0;
+};
+
+}  // namespace scratchbird::server_engine_bridge
+
 namespace {
+
+using scratchbird::server_engine_bridge::PreparedMetadataBindingHandle;
+using scratchbird::server_engine_bridge::PreparedMetadataBindingDispatchTestHook;
+
+std::mutex g_prepared_metadata_binding_registry_mutex;
+std::unordered_set<PreparedMetadataBindingHandle>
+    g_prepared_metadata_bindings;
+std::atomic<std::uint64_t> g_prepared_metadata_snapshot_ordinal{1};
+std::mutex g_prepared_metadata_dispatch_test_hook_mutex;
+PreparedMetadataBindingDispatchTestHook
+    g_prepared_metadata_dispatch_test_hook = nullptr;
+void* g_prepared_metadata_dispatch_test_hook_context = nullptr;
+
+void invoke_prepared_metadata_dispatch_test_hook(std::string_view phase) {
+  PreparedMetadataBindingDispatchTestHook hook = nullptr;
+  void* context = nullptr;
+  {
+    std::lock_guard<std::mutex> guard(
+        g_prepared_metadata_dispatch_test_hook_mutex);
+    hook = g_prepared_metadata_dispatch_test_hook;
+    context = g_prepared_metadata_dispatch_test_hook_context;
+  }
+  if (hook != nullptr) { hook(phase, context); }
+}
 
 bool valid_abi(std::uint32_t abi_version) {
   return abi_version == SB_ENGINE_ABI_VERSION_PACKED;
@@ -192,6 +266,168 @@ std::string uuid_to_canonical(const sb_engine_uuid_t& uuid) {
   return out;
 }
 
+bool same_uuid(const sb_engine_uuid_t& left, const sb_engine_uuid_t& right) {
+  return std::memcmp(left.bytes, right.bytes, sizeof(left.bytes)) == 0;
+}
+
+bool active_metadata_snapshot_exclusion(
+    scratchbird::transaction::mga::TransactionState state) {
+  using scratchbird::transaction::mga::TransactionState;
+  return state == TransactionState::created ||
+         state == TransactionState::active ||
+         state == TransactionState::read_only_active ||
+         state == TransactionState::preparing ||
+         state == TransactionState::rolling_back;
+}
+
+bool in_doubt_metadata_snapshot_exclusion(
+    scratchbird::transaction::mga::TransactionState state) {
+  using scratchbird::transaction::mga::TransactionState;
+  return state == TransactionState::prepared ||
+         state == TransactionState::committing ||
+         state == TransactionState::limbo ||
+         state == TransactionState::recovering ||
+         state == TransactionState::failed_terminal;
+}
+
+std::string new_prepared_metadata_snapshot_uuid() {
+  const auto now_millis = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  const auto ordinal =
+      g_prepared_metadata_snapshot_ordinal.fetch_add(1,
+                                                     std::memory_order_relaxed);
+  const auto generated =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(
+          scratchbird::core::platform::UuidKind::object,
+          now_millis + ordinal);
+  return generated.ok()
+             ? scratchbird::core::uuid::UuidToString(generated.value.value)
+             : std::string{};
+}
+
+std::string operation_operand_value(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& envelope,
+    std::string_view name) {
+  for (const auto& operand : envelope.operands) {
+    if (operand.name == name) return operand.value;
+  }
+  return {};
+}
+
+bool has_engine_only_prepared_metadata_operand(
+    const scratchbird::engine::sblr::SblrOperationEnvelope& envelope) {
+  for (const auto& operand : envelope.operands) {
+    if (operand.name.starts_with("engine.prepared_metadata.")) return true;
+  }
+  return false;
+}
+
+struct PreparedMetadataBindingSnapshot {
+  std::string metadata_snapshot_uuid;
+  std::uint64_t metadata_visible_through_local_transaction_id = 0;
+  std::vector<std::uint64_t> active_excluded_local_transaction_ids;
+  std::vector<std::uint64_t> in_doubt_excluded_local_transaction_ids;
+  std::string target_object_uuid;
+  std::uint64_t target_executable_generation = 0;
+  std::uint64_t target_metadata_epoch = 0;
+};
+
+bool copy_prepared_metadata_binding_for_dispatch(
+    PreparedMetadataBindingHandle binding,
+    sb_engine_session_t session,
+    const sb_engine_request_context_v1_t& context,
+    const sb_engine_sblr_dispatch_params_v1_t& params,
+    PreparedMetadataBindingSnapshot* snapshot,
+    std::string* detail) {
+  if (snapshot == nullptr || detail == nullptr || binding == nullptr) {
+    if (detail != nullptr) *detail = "binding_or_output_missing";
+    return false;
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_prepared_metadata_binding_registry_mutex);
+  if (g_prepared_metadata_bindings.count(binding) == 0) {
+    *detail = "binding_not_live";
+    return false;
+  }
+  std::lock_guard<std::mutex> binding_guard(binding->mutex);
+  if (binding->released || binding->magic != kPreparedMetadataBindingMagic) {
+    *detail = "binding_released";
+    return false;
+  }
+  if (binding->invalidated) {
+    *detail = "binding_invalidated:" + binding->invalidation_detail;
+    return false;
+  }
+  if (binding->session != session || binding->engine != session->engine) {
+    *detail = "binding_session_or_engine_mismatch";
+    return false;
+  }
+  if (binding->database_path != session->engine->database_path ||
+      binding->database_uuid != session->engine->database_uuid) {
+    *detail = "binding_database_mismatch";
+    return false;
+  }
+  if (!same_uuid(binding->effective_user_uuid, context.effective_user_uuid) ||
+      !same_uuid(binding->session_uuid, context.session_uuid) ||
+      !same_uuid(binding->parser_package_uuid, context.parser_package_uuid) ||
+      !same_uuid(binding->dialect_profile_uuid, context.dialect_profile_uuid) ||
+      binding->trust_mode != context.trust_mode ||
+      binding->context_flags != context.flags ||
+      binding->rights_set_ref != context.rights_set_ref ||
+      binding->capability_set_ref != context.capability_set_ref ||
+      binding->source_artifact_set_ref != context.source_artifact_set_ref) {
+    *detail = "binding_security_context_mismatch";
+    return false;
+  }
+  if (params.envelope_size_bytes != binding->encoded_sblr_envelope.size() ||
+      params.envelope_bytes == nullptr ||
+      !std::equal(binding->encoded_sblr_envelope.begin(),
+                  binding->encoded_sblr_envelope.end(),
+                  params.envelope_bytes)) {
+    *detail = "binding_sblr_envelope_mismatch";
+    return false;
+  }
+  snapshot->metadata_snapshot_uuid = binding->metadata_snapshot_uuid;
+  snapshot->metadata_visible_through_local_transaction_id =
+      binding->metadata_visible_through_local_transaction_id;
+  snapshot->active_excluded_local_transaction_ids =
+      binding->active_excluded_local_transaction_ids;
+  snapshot->in_doubt_excluded_local_transaction_ids =
+      binding->in_doubt_excluded_local_transaction_ids;
+  snapshot->target_object_uuid = binding->target_object_uuid;
+  snapshot->target_executable_generation =
+      binding->target_executable_generation;
+  snapshot->target_metadata_epoch = binding->target_metadata_epoch;
+  return true;
+}
+
+void release_prepared_metadata_bindings_for_session(
+    sb_engine_session_t session) {
+  std::vector<PreparedMetadataBindingHandle> released;
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_prepared_metadata_binding_registry_mutex);
+    for (auto it = g_prepared_metadata_bindings.begin();
+         it != g_prepared_metadata_bindings.end();) {
+      auto* binding = *it;
+      if (binding->session != session) {
+        ++it;
+        continue;
+      }
+      {
+        std::lock_guard<std::mutex> binding_guard(binding->mutex);
+        binding->released = true;
+        binding->magic = 0;
+      }
+      released.push_back(binding);
+      it = g_prepared_metadata_bindings.erase(it);
+    }
+  }
+  for (auto* binding : released) delete binding;
+}
+
 bool looks_like_sblr_operation_envelope(const scratchbird::engine::SblrExecutionEnvelope& envelope) {
   if (envelope.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope ||
       envelope.canonical_bytes.empty()) {
@@ -242,7 +478,8 @@ scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
   internal.transaction_uuid.canonical = {};
   internal.statement_uuid.canonical = {};
   internal.local_transaction_id = context.transaction_ref;
-  internal.snapshot_visible_through_local_transaction_id = context.transaction_ref;
+  internal.snapshot_visible_through_local_transaction_id =
+      context.transaction_ref;
   internal.statement_timestamp = current_utc_timestamp_text();
   internal.current_timestamp = internal.statement_timestamp;
   internal.current_monotonic_ns = current_monotonic_ns_text();
@@ -259,6 +496,8 @@ scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
         internal.transaction_uuid.canonical =
             scratchbird::core::uuid::UuidToString(
                 lookup.entry.identity.transaction_uuid.value);
+        internal.snapshot_visible_through_local_transaction_id =
+            lookup.entry.begin_visible_through_local_transaction_id;
       }
     }
   }
@@ -295,6 +534,145 @@ scratchbird::engine::internal_api::EngineRequestContext make_internal_context(
     authorization.evidence_tags.push_back("public_abi_rights_set_ref");
   }
   return internal;
+}
+
+enum class PreparedMetadataCurrentVersionStatus {
+  ok,
+  binding_invalid,
+  stale,
+  unavailable,
+};
+
+void invalidate_prepared_metadata_binding_if_snapshot_matches(
+    PreparedMetadataBindingHandle binding,
+    std::string_view expected_metadata_snapshot_uuid,
+    std::string detail) {
+  std::lock_guard<std::mutex> registry_guard(
+      g_prepared_metadata_binding_registry_mutex);
+  const auto found = g_prepared_metadata_bindings.find(binding);
+  if (found == g_prepared_metadata_bindings.end()) { return; }
+  auto* live_binding = *found;
+  std::lock_guard<std::mutex> binding_guard(live_binding->mutex);
+  if (live_binding->released ||
+      live_binding->magic != kPreparedMetadataBindingMagic ||
+      live_binding->metadata_snapshot_uuid !=
+          expected_metadata_snapshot_uuid) {
+    return;
+  }
+  live_binding->invalidated = true;
+  live_binding->invalidation_detail = std::move(detail);
+}
+
+PreparedMetadataCurrentVersionStatus
+revalidate_prepared_metadata_binding_current_version(
+    PreparedMetadataBindingHandle binding,
+    sb_engine_session_t session,
+    const sb_engine_request_context_v1_t& context,
+    const sb_engine_sblr_dispatch_params_v1_t& params,
+    PreparedMetadataBindingSnapshot* pinned,
+    std::string* detail) {
+  if (pinned == nullptr || detail == nullptr) {
+    return PreparedMetadataCurrentVersionStatus::binding_invalid;
+  }
+  if (!copy_prepared_metadata_binding_for_dispatch(
+          binding, session, context, params, pinned, detail)) {
+    return detail->starts_with("binding_invalidated:")
+               ? PreparedMetadataCurrentVersionStatus::stale
+               : PreparedMetadataCurrentVersionStatus::binding_invalid;
+  }
+
+  const auto inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          session->engine->database_path);
+  if (!inventory.ok()) {
+    *detail = "current_transaction_inventory_unavailable:" +
+              inventory.diagnostic.diagnostic_code;
+    return PreparedMetadataCurrentVersionStatus::unavailable;
+  }
+  const std::uint64_t high_water =
+      inventory.inventory.next_local_transaction_id == 0
+          ? 0
+          : inventory.inventory.next_local_transaction_id - 1;
+  std::vector<std::uint64_t> active_excluded;
+  std::vector<std::uint64_t> in_doubt_excluded;
+  for (const auto& entry : inventory.inventory.entries) {
+    if (!entry.identity.local_id.valid() ||
+        entry.identity.local_id.value > high_water) {
+      continue;
+    }
+    if (active_metadata_snapshot_exclusion(entry.state)) {
+      active_excluded.push_back(entry.identity.local_id.value);
+    } else if (in_doubt_metadata_snapshot_exclusion(entry.state)) {
+      in_doubt_excluded.push_back(entry.identity.local_id.value);
+    }
+  }
+  std::sort(active_excluded.begin(), active_excluded.end());
+  std::sort(in_doubt_excluded.begin(), in_doubt_excluded.end());
+
+  const std::string current_snapshot_uuid =
+      new_prepared_metadata_snapshot_uuid();
+  if (current_snapshot_uuid.empty()) {
+    *detail = "current_metadata_snapshot_uuid_unavailable";
+    return PreparedMetadataCurrentVersionStatus::unavailable;
+  }
+  auto current_context = make_internal_context(session->engine, context);
+  current_context.statement_metadata_snapshot_engine_owned = true;
+  current_context.statement_metadata_snapshot_uuid.canonical =
+      current_snapshot_uuid;
+  current_context
+      .statement_metadata_snapshot_visible_through_local_transaction_id =
+      high_water;
+  current_context
+      .statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      std::move(active_excluded);
+  current_context
+      .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      std::move(in_doubt_excluded);
+  const auto lifecycle =
+      scratchbird::engine::internal_api::LoadExecutableObjectLifecycleState(
+          current_context);
+  if (!lifecycle.ok) {
+    *detail = "current_metadata_lifecycle_unavailable:" +
+              lifecycle.diagnostic.code + ":" +
+              lifecycle.diagnostic.detail;
+    return PreparedMetadataCurrentVersionStatus::unavailable;
+  }
+
+  const scratchbird::engine::internal_api::EngineExecutableObjectRecord*
+      current_object = nullptr;
+  for (const auto& object : lifecycle.state.objects) {
+    if (object.object_uuid == pinned->target_object_uuid) {
+      current_object = &object;
+      break;
+    }
+  }
+  const bool exact_live_version =
+      current_object != nullptr &&
+      current_object->object_kind == "procedure" &&
+      current_object->lifecycle_state == "active" &&
+      !current_object->deleted && !current_object->invalidated &&
+      current_object->executable_generation ==
+          pinned->target_executable_generation &&
+      current_object->metadata_epoch == pinned->target_metadata_epoch;
+  if (!exact_live_version) {
+    *detail = current_object == nullptr
+                  ? "target_not_live:" + pinned->target_object_uuid
+                  : "pinned:" + pinned->target_object_uuid + ":" +
+                        std::to_string(pinned->target_executable_generation) +
+                        ":" + std::to_string(pinned->target_metadata_epoch) +
+                        ":current:" + current_object->object_uuid + ":" +
+                        std::to_string(current_object->executable_generation) +
+                        ":" + std::to_string(current_object->metadata_epoch) +
+                        ":" + current_object->lifecycle_state;
+    // Release may retire and delete the opaque handle while current metadata
+    // is being loaded. Match the immutable snapshot UUID under the registry
+    // and binding locks so a recycled address can never invalidate a newer
+    // binding (ABA-safe stale publication).
+    invalidate_prepared_metadata_binding_if_snapshot_matches(
+        binding, pinned->metadata_snapshot_uuid, *detail);
+    return PreparedMetadataCurrentVersionStatus::stale;
+  }
+  return PreparedMetadataCurrentVersionStatus::ok;
 }
 
 std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResult& api_result,
@@ -894,7 +1272,29 @@ std::string first_dispatch_diagnostic_detail(const scratchbird::engine::sblr::Sb
   return result.api_result.operation_id;
 }
 
+std::vector<std::pair<std::string, std::string>> first_dispatch_diagnostic_fields(
+    const scratchbird::engine::sblr::SblrDispatchResult& result) {
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    if (diagnostic.code.empty() || diagnostic.code == "SB_ENGINE_API_OK") {
+      continue;
+    }
+    std::vector<std::pair<std::string, std::string>> fields;
+    fields.reserve(diagnostic.fields.size());
+    for (const auto& field : diagnostic.fields) {
+      fields.emplace_back(field.key, field.value);
+    }
+    return fields;
+  }
+  return {};
+}
+
 sb_engine_status_t operation_envelope_failure_status(const scratchbird::engine::sblr::SblrDispatchResult& result) {
+  if (dispatch_has_diagnostic(
+          result,
+          scratchbird::engine::internal_api::
+              kExecutableObjectDiagnosticPreparedMetadataVersionMismatch)) {
+    return SB_ENGINE_STATUS_CONFLICT;
+  }
   if (dispatch_has_diagnostic(result, "SB_SBLR_DISPATCH_CLUSTER_AUTHORITY_UNAVAILABLE") ||
       dispatch_has_diagnostic(result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED")) {
     return SB_ENGINE_STATUS_CAPABILITY_DISABLED;
@@ -941,12 +1341,15 @@ sb_engine_status_t fail_result(sb_engine_status_t status,
                                std::uint32_t numeric_code,
                                std::string code,
                                std::string message,
-                               std::string detail);
+                               std::string detail = {},
+                               std::vector<std::pair<std::string, std::string>> fields = {});
 
 sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                const sb_engine_request_context_v1_t& context,
                                                const scratchbird::engine::SblrExecutionEnvelope& envelope,
                                                const sb_engine_sblr_dispatch_params_v1_t& params,
+                                               const PreparedMetadataBindingSnapshot*
+                                                   prepared_metadata,
                                                sb_engine_result_t* out_result) {
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view encoded(data, envelope.canonical_bytes.size());
@@ -958,9 +1361,70 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     phase_micros.push_back({std::move(phase), EngineAbiElapsedMicros(phase_last, now)});
     phase_last = now;
   };
-  const auto api_context = make_internal_context(session->engine, context);
+  const auto decoded_operation =
+      scratchbird::engine::sblr::DecodeSblrEnvelope(encoded);
+  if (decoded_operation.ok &&
+      has_engine_only_prepared_metadata_operand(decoded_operation.envelope)) {
+    return fail_result(
+        SB_ENGINE_STATUS_SECURITY_DENIED,
+        out_result,
+        4013,
+        "SBLR.PREPARED_METADATA.ENGINE_OPTION_FORBIDDEN",
+        "sblr.prepared_metadata.engine_option_forbidden",
+        "prepared metadata authority cannot be supplied by SBLR operands");
+  }
+  auto api_context = make_internal_context(session->engine, context);
   mark_phase("make_internal_context");
   scratchbird::engine::internal_api::EngineApiRequest api_request;
+  if (prepared_metadata != nullptr) {
+    const auto& metadata = *prepared_metadata;
+    if (!decoded_operation.ok ||
+        decoded_operation.envelope.operation_id !=
+            "routine.procedure_invoke" ||
+        operation_operand_value(decoded_operation.envelope,
+                                "target_object_uuid") !=
+            metadata.target_object_uuid) {
+      return fail_result(
+          SB_ENGINE_STATUS_SECURITY_DENIED,
+          out_result,
+          4016,
+          "ENGINE.PREPARED_METADATA_BINDING.TARGET_MISMATCH",
+          "engine.prepared_metadata_binding.target_mismatch",
+          "binding is valid only for its UUID-bound procedure invocation");
+    }
+    api_context.statement_metadata_snapshot_engine_owned = true;
+    api_context.statement_metadata_snapshot_uuid.canonical =
+        metadata.metadata_snapshot_uuid;
+    api_context
+        .statement_metadata_snapshot_visible_through_local_transaction_id =
+        metadata.metadata_visible_through_local_transaction_id;
+    api_context
+        .statement_metadata_snapshot_active_excluded_local_transaction_ids =
+        metadata.active_excluded_local_transaction_ids;
+    api_context
+        .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+        metadata.in_doubt_excluded_local_transaction_ids;
+    api_context.prepared_metadata_required_object_uuid.canonical =
+        metadata.target_object_uuid;
+    api_context.prepared_metadata_required_executable_generation =
+        metadata.target_executable_generation;
+    api_context.prepared_metadata_required_metadata_epoch =
+        metadata.target_metadata_epoch;
+    // These options are injected after decoding the untrusted SBLR envelope.
+    // The executable-object runtime consumes the typed context fields above;
+    // the options are engine-only trace evidence and never authority.
+    api_request.option_envelopes.push_back(
+        "engine.prepared_metadata.binding_consumed:true");
+    api_request.option_envelopes.push_back(
+        "engine.prepared_metadata.required_object_uuid:" +
+        metadata.target_object_uuid);
+    api_request.option_envelopes.push_back(
+        "engine.prepared_metadata.required_executable_generation:" +
+        std::to_string(metadata.target_executable_generation));
+    api_request.option_envelopes.push_back(
+        "engine.prepared_metadata.required_metadata_epoch:" +
+        std::to_string(metadata.target_metadata_epoch));
+  }
   if (params.data_packet_size_bytes != 0) {
     if (!text_line_field_equals(encoded, "operation_id", "dml.execute_native_bulk_ingest")) {
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
@@ -982,11 +1446,16 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     }
     api_request = std::move(packet.request);
   }
-  const auto dispatch_result =
+  auto dispatch_result =
       scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded,
                                                                 api_context,
                                                                 std::move(api_request));
   mark_phase("decode_and_dispatch_operation");
+  if (prepared_metadata != nullptr) {
+    dispatch_result.api_result.evidence.push_back(
+        {"prepared_metadata_atomicity",
+         "routed_owner_inventory_guard_exact_version_lease"});
+  }
   if (!dispatch_result.accepted || !dispatch_result.api_result.ok) {
     const sb_engine_status_t status = operation_envelope_failure_status(dispatch_result);
     WriteEngineAbiPhaseTrace("operation_envelope",
@@ -998,7 +1467,8 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                        4010,
                        operation_envelope_failure_code(dispatch_result),
                        "sblr.operation_envelope.rejected",
-                       first_dispatch_diagnostic_detail(dispatch_result));
+                       first_dispatch_diagnostic_detail(dispatch_result),
+                       first_dispatch_diagnostic_fields(dispatch_result));
   }
 
   auto* result = make_result(SB_ENGINE_RESULT_ROW_BATCH, dispatch_result.api_result.operation_id);
@@ -1016,6 +1486,11 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
       !summary_only_import &&
       !summary_only_native_bulk &&
       dispatch_result.api_result.operation_id.rfind("dml.", 0) == 0;
+  // Command completion is independent of result-row presentation.  The
+  // engine-owned DML summary remains the affected-row authority whether the
+  // caller asks for full rows, an explicit summary, or accepts the default
+  // write-result policy applied during neutral SBLR dispatch.
+  result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
   result->result_kind = dispatch_result.api_result.result_shape.result_kind;
   if (summary_only_import) {
     result->rows_produced = api_evidence_u64(
@@ -1046,7 +1521,6 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
         "accepted_rows:uint64:not_null;inserted_rows:uint64:not_null;"
         "rejected_rows:uint64:not_null"};
   } else if (summary_only_dml_write) {
-    result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
     result->rows_produced = 0;
     if (result->result_kind.empty()) {
       result->result_kind = "dml_write_summary";
@@ -1144,7 +1618,8 @@ void add_diagnostic(sb_engine_result_t result,
                     sb_engine_diagnostic_severity_t severity,
                     std::string code,
                     std::string message,
-                    std::string detail = {}) {
+                    std::string detail = {},
+                    std::vector<std::pair<std::string, std::string>> fields = {}) {
   if (result == nullptr) {
     return;
   }
@@ -1156,6 +1631,13 @@ void add_diagnostic(sb_engine_result_t result,
   storage.code = std::move(code);
   storage.message = std::move(message);
   storage.detail = std::move(detail);
+  storage.fields.reserve(fields.size());
+  for (auto& field : fields) {
+    DiagnosticFieldStorage field_storage;
+    field_storage.key = std::move(field.first);
+    field_storage.value = std::move(field.second);
+    storage.fields.push_back(std::move(field_storage));
+  }
   result->diagnostics.push_back(std::move(storage));
 }
 
@@ -1169,6 +1651,8 @@ void finalize_diagnostics(sb_engine_result_t result) {
     set_view(diagnostic.view.symbolic_code, diagnostic.code);
     set_view(diagnostic.view.message_key, diagnostic.message);
     set_view(diagnostic.view.safe_detail, diagnostic.detail);
+    diagnostic.view.reserved0 = 0;
+    diagnostic.view.reserved1 = 0;
     result->diagnostic_views.push_back(diagnostic.view);
   }
 }
@@ -1178,10 +1662,17 @@ sb_engine_status_t fail_result(sb_engine_status_t status,
                                std::uint32_t numeric_code,
                                std::string code,
                                std::string message,
-                               std::string detail = {}) {
+                               std::string detail,
+                               std::vector<std::pair<std::string, std::string>> fields) {
   if (out_result != nullptr) {
     auto* result = make_result(SB_ENGINE_RESULT_DIAGNOSTIC_ONLY);
-    add_diagnostic(result, numeric_code, SB_ENGINE_DIAGNOSTIC_ERROR, std::move(code), std::move(message), std::move(detail));
+    add_diagnostic(result,
+                   numeric_code,
+                   SB_ENGINE_DIAGNOSTIC_ERROR,
+                   std::move(code),
+                   std::move(message),
+                   std::move(detail),
+                   std::move(fields));
     finalize_diagnostics(result);
     *out_result = result;
   }
@@ -1331,6 +1822,9 @@ sb_engine_status_t sb_engine_session_begin(sb_engine_handle_t engine,
   auto* session = new sb_engine_session_s();
   session->engine = engine;
   session->session_id = engine->next_session_id.fetch_add(1, std::memory_order_relaxed);
+  session->effective_user_uuid = params->effective_user_uuid;
+  session->public_session_uuid = params->session_uuid;
+  session->trust_mode = params->trust_mode;
   *out_session = session;
   return SB_ENGINE_STATUS_OK;
 }
@@ -1359,6 +1853,7 @@ sb_engine_status_t sb_engine_session_end(sb_engine_session_t session,
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 3002, "ENGINE.RESULT.STREAM_ACTIVE",
                          "engine.result.stream_active");
     }
+    release_prepared_metadata_bindings_for_session(session);
     session->closed = true;
     session->magic = 0;
   }
@@ -1431,6 +1926,549 @@ sb_engine_status_t sb_engine_transaction_rollback(sb_engine_transaction_t transa
   return sb_engine_transaction_commit(transaction, params, out_result);
 }
 
+}  // extern "C"
+
+namespace scratchbird::server_engine_bridge {
+
+bool CopyEngineDiagnosticFields(
+    sb_engine_result_t result,
+    std::size_t diagnostic_index,
+    std::vector<EngineDiagnosticField>* fields) {
+  if (fields == nullptr) return false;
+  fields->clear();
+  if (!valid_result(result) || diagnostic_index >= result->diagnostics.size()) {
+    return false;
+  }
+  const auto& diagnostic = result->diagnostics[diagnostic_index];
+  fields->reserve(diagnostic.fields.size());
+  for (const auto& field : diagnostic.fields) {
+    fields->push_back({field.key, field.value});
+  }
+  return true;
+}
+
+void SetPreparedMetadataBindingDispatchTestHookForTesting(
+    PreparedMetadataBindingDispatchTestHook hook,
+    void* context) {
+  std::lock_guard<std::mutex> guard(
+      g_prepared_metadata_dispatch_test_hook_mutex);
+  g_prepared_metadata_dispatch_test_hook = hook;
+  g_prepared_metadata_dispatch_test_hook_context = context;
+}
+
+sb_engine_status_t CreatePreparedMetadataBinding(
+    sb_engine_session_t session,
+    const sb_engine_request_context_v1_t* prepare_context,
+    std::string_view sealed_prepare_transaction_uuid,
+    const sb_engine_sblr_dispatch_params_v1_t* invoke_params,
+    PreparedMetadataBindingHandle* out_binding,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_binding == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                       out_result,
+                       1003,
+                       "ENGINE.ABI.OUTPUT_POINTER_INVALID",
+                       "engine.abi.output_pointer_invalid");
+  }
+  *out_binding = nullptr;
+  if (!valid_session(session)) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE,
+                       out_result,
+                       1007,
+                       "ENGINE.ABI.INVALID_HANDLE",
+                       "engine.abi.invalid_handle");
+  }
+  if (prepare_context == nullptr || invoke_params == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                       out_result,
+                       1004,
+                       "ENGINE.ABI.PARAMETER_NULL",
+                       "engine.abi.parameter_null");
+  }
+  auto status = check_struct(prepare_context->struct_size,
+                             prepare_context->abi_version,
+                             sizeof(sb_engine_request_context_v1_t),
+                             out_result);
+  if (status != SB_ENGINE_STATUS_OK) return status;
+  status = check_struct(invoke_params->struct_size,
+                        invoke_params->abi_version,
+                        sizeof(sb_engine_sblr_dispatch_params_v1_t),
+                        out_result);
+  if (status != SB_ENGINE_STATUS_OK) return status;
+  if (!nonzero_uuid(prepare_context->effective_user_uuid) ||
+      !nonzero_uuid(prepare_context->session_uuid) ||
+      prepare_context->rights_set_ref == 0) {
+    return fail_result(
+        SB_ENGINE_STATUS_SECURITY_DENIED,
+        out_result,
+        2001,
+        "SECURITY.IDENTITY.MISSING",
+        "security.identity.missing",
+        "prepared metadata binding requires principal, session, and rights context");
+  }
+  if (!same_uuid(prepare_context->effective_user_uuid,
+                 session->effective_user_uuid) ||
+      !same_uuid(prepare_context->session_uuid,
+                 session->public_session_uuid) ||
+      prepare_context->trust_mode != session->trust_mode) {
+    return fail_result(
+        SB_ENGINE_STATUS_SECURITY_DENIED,
+        out_result,
+        4028,
+        "ENGINE.PREPARED_METADATA_BINDING.SESSION_IDENTITY_MISMATCH",
+        "engine.prepared_metadata_binding.session_identity_mismatch",
+        "prepare identity must match the engine session identity");
+  }
+  if (prepare_context->transaction_ref == 0) {
+    return fail_result(
+        SB_ENGINE_STATUS_TRANSACTION_REQUIRED,
+        out_result,
+        3003,
+        "ENGINE.PREPARED_METADATA_BINDING.TRANSACTION_REQUIRED",
+        "engine.prepared_metadata_binding.transaction_required",
+        "prepare_context.transaction_ref");
+  }
+  if (invoke_params->reserved0 != 0 || invoke_params->reserved1 != 0 ||
+      invoke_params->data_packet_size_bytes != 0 ||
+      invoke_params->data_packet_bytes != nullptr ||
+      invoke_params->envelope_size_bytes == 0 ||
+      invoke_params->envelope_bytes == nullptr) {
+    return fail_result(
+        SB_ENGINE_STATUS_INVALID_ARGUMENT,
+        out_result,
+        4017,
+        "ENGINE.PREPARED_METADATA_BINDING.PARAMS_INVALID",
+        "engine.prepared_metadata_binding.params_invalid",
+        "binding create admits one envelope without data or reserved handles");
+  }
+
+  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
+      invoke_params->envelope_bytes, invoke_params->envelope_size_bytes);
+  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok ||
+      decoded.envelope.payload_kind !=
+          scratchbird::engine::SblrPayloadKind::operation_envelope ||
+      !looks_like_sblr_operation_envelope(decoded.envelope)) {
+    return fail_result(
+        SB_ENGINE_STATUS_INVALID_ARGUMENT,
+        out_result,
+        4018,
+        "ENGINE.PREPARED_METADATA_BINDING.SBLR_INVALID",
+        "engine.prepared_metadata_binding.sblr_invalid",
+        decoded.diagnostic_code.empty()
+            ? "operation_envelope_required"
+            : std::string(decoded.diagnostic_code));
+  }
+  const auto* canonical_data = reinterpret_cast<const char*>(
+      decoded.envelope.canonical_bytes.data());
+  const std::string_view canonical(
+      canonical_data, decoded.envelope.canonical_bytes.size());
+  const auto operation =
+      scratchbird::engine::sblr::DecodeSblrEnvelope(canonical);
+  if (!operation.ok ||
+      operation.envelope.operation_id != "routine.procedure_invoke" ||
+      operation.envelope.contains_sql_text ||
+      !operation.envelope.parser_resolved_names_to_uuids ||
+      !operation.envelope.requires_security_context ||
+      !operation.envelope.requires_transaction_context ||
+      has_engine_only_prepared_metadata_operand(operation.envelope)) {
+    return fail_result(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        out_result,
+        4019,
+        "ENGINE.PREPARED_METADATA_BINDING.ROUTINE_INVOKE_REQUIRED",
+        "engine.prepared_metadata_binding.routine_invoke_required",
+        "only engine-validated UUID-bound procedure invocation is supported");
+  }
+  const std::string target_object_uuid =
+      operation_operand_value(operation.envelope, "target_object_uuid");
+  const std::string target_object_kind =
+      operation_operand_value(operation.envelope, "target_object_kind");
+  if (target_object_uuid.empty() || target_object_kind != "procedure" ||
+      !scratchbird::core::uuid::ParseUuid(target_object_uuid).ok()) {
+    return fail_result(
+        SB_ENGINE_STATUS_INVALID_ARGUMENT,
+        out_result,
+        4020,
+        "ENGINE.PREPARED_METADATA_BINDING.UUID_TARGET_REQUIRED",
+        "engine.prepared_metadata_binding.uuid_target_required",
+        target_object_uuid.empty() ? "target_object_uuid"
+                                   : target_object_uuid);
+  }
+
+  const auto inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          session->engine->database_path);
+  if (!inventory.ok()) {
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4021,
+        "ENGINE.PREPARED_METADATA_BINDING.INVENTORY_UNAVAILABLE",
+        "engine.prepared_metadata_binding.inventory_unavailable",
+        inventory.diagnostic.diagnostic_code);
+  }
+  const auto prepare_transaction =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          inventory.inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              prepare_context->transaction_ref));
+  using scratchbird::transaction::mga::TransactionState;
+  if (!prepare_transaction.ok() ||
+      (prepare_transaction.entry.state != TransactionState::active &&
+       prepare_transaction.entry.state != TransactionState::read_only_active &&
+       prepare_transaction.entry.state != TransactionState::preparing &&
+       prepare_transaction.entry.state != TransactionState::prepared)) {
+    return fail_result(
+        SB_ENGINE_STATUS_TRANSACTION_REQUIRED,
+        out_result,
+        4022,
+        "ENGINE.PREPARED_METADATA_BINDING.TRANSACTION_NOT_ACTIVE",
+        "engine.prepared_metadata_binding.transaction_not_active",
+        std::to_string(prepare_context->transaction_ref));
+  }
+  if (sealed_prepare_transaction_uuid.empty() ||
+      !prepare_transaction.entry.identity.transaction_uuid.valid() ||
+      scratchbird::core::uuid::UuidToString(
+          prepare_transaction.entry.identity.transaction_uuid.value) !=
+          sealed_prepare_transaction_uuid) {
+    return fail_result(
+        SB_ENGINE_STATUS_CONFLICT,
+        out_result,
+        4032,
+        "ENGINE.PREPARED_METADATA_BINDING.EXACT_MGA_SELECTOR_MISMATCH",
+        "engine.prepared_metadata_binding.exact_mga_selector_mismatch",
+        "prepare local transaction ID and sealed UUID do not match");
+  }
+
+  const std::uint64_t high_water =
+      inventory.inventory.next_local_transaction_id == 0
+          ? 0
+          : inventory.inventory.next_local_transaction_id - 1;
+  std::vector<std::uint64_t> active_excluded;
+  std::vector<std::uint64_t> in_doubt_excluded;
+  for (const auto& entry : inventory.inventory.entries) {
+    if (!entry.identity.local_id.valid() ||
+        entry.identity.local_id.value > high_water) {
+      continue;
+    }
+    if (active_metadata_snapshot_exclusion(entry.state)) {
+      active_excluded.push_back(entry.identity.local_id.value);
+    } else if (in_doubt_metadata_snapshot_exclusion(entry.state)) {
+      in_doubt_excluded.push_back(entry.identity.local_id.value);
+    }
+  }
+  std::sort(active_excluded.begin(), active_excluded.end());
+  std::sort(in_doubt_excluded.begin(), in_doubt_excluded.end());
+
+  const std::string metadata_snapshot_uuid =
+      new_prepared_metadata_snapshot_uuid();
+  if (metadata_snapshot_uuid.empty()) {
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4023,
+        "ENGINE.PREPARED_METADATA_BINDING.SNAPSHOT_ID_UNAVAILABLE",
+        "engine.prepared_metadata_binding.snapshot_id_unavailable");
+  }
+  auto metadata_context =
+      make_internal_context(session->engine, *prepare_context);
+  metadata_context.statement_metadata_snapshot_engine_owned = true;
+  metadata_context.statement_metadata_snapshot_uuid.canonical =
+      metadata_snapshot_uuid;
+  metadata_context
+      .statement_metadata_snapshot_visible_through_local_transaction_id =
+      high_water;
+  metadata_context
+      .statement_metadata_snapshot_active_excluded_local_transaction_ids =
+      active_excluded;
+  metadata_context
+      .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
+      in_doubt_excluded;
+  const auto lifecycle =
+      scratchbird::engine::internal_api::LoadExecutableObjectLifecycleState(
+          metadata_context);
+  if (!lifecycle.ok) {
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4024,
+        lifecycle.diagnostic.code,
+        lifecycle.diagnostic.message_key,
+        lifecycle.diagnostic.detail);
+  }
+  const scratchbird::engine::internal_api::EngineExecutableObjectRecord*
+      pinned_object = nullptr;
+  for (const auto& object : lifecycle.state.objects) {
+    if (object.object_uuid == target_object_uuid) {
+      pinned_object = &object;
+      break;
+    }
+  }
+  if (pinned_object == nullptr) {
+    return fail_result(
+        SB_ENGINE_STATUS_NOT_FOUND,
+        out_result,
+        4025,
+        "ENGINE.PREPARED_METADATA_BINDING.OBJECT_NOT_VISIBLE",
+        "engine.prepared_metadata_binding.object_not_visible",
+        target_object_uuid);
+  }
+  const auto creator =
+      scratchbird::transaction::mga::LookupLocalTransaction(
+          inventory.inventory,
+          scratchbird::transaction::mga::MakeLocalTransactionId(
+              pinned_object->creator_tx));
+  if (!creator.ok() ||
+      (creator.entry.state != TransactionState::committed &&
+       creator.entry.state != TransactionState::archived)) {
+    return fail_result(
+        SB_ENGINE_STATUS_CONFLICT,
+        out_result,
+        4026,
+        "ENGINE.PREPARED_METADATA_BINDING.OBJECT_NOT_COMMITTED",
+        "engine.prepared_metadata_binding.object_not_committed",
+        target_object_uuid);
+  }
+  if (pinned_object->object_kind != "procedure" ||
+      pinned_object->lifecycle_state != "active" ||
+      pinned_object->deleted || pinned_object->invalidated ||
+      pinned_object->executor_kind == "metadata_only" ||
+      pinned_object->executable_generation == 0 ||
+      pinned_object->metadata_epoch == 0) {
+    return fail_result(
+        SB_ENGINE_STATUS_CONFLICT,
+        out_result,
+        4027,
+        "ENGINE.PREPARED_METADATA_BINDING.OBJECT_NOT_EXECUTABLE",
+        "engine.prepared_metadata_binding.object_not_executable",
+        target_object_uuid);
+  }
+
+  auto* binding = new PreparedMetadataBindingOpaque();
+  binding->engine = session->engine;
+  binding->session = session;
+  binding->database_path = session->engine->database_path;
+  binding->database_uuid = session->engine->database_uuid;
+  binding->effective_user_uuid = prepare_context->effective_user_uuid;
+  binding->session_uuid = prepare_context->session_uuid;
+  binding->parser_package_uuid = prepare_context->parser_package_uuid;
+  binding->dialect_profile_uuid = prepare_context->dialect_profile_uuid;
+  binding->trust_mode = prepare_context->trust_mode;
+  binding->context_flags = prepare_context->flags;
+  binding->rights_set_ref = prepare_context->rights_set_ref;
+  binding->capability_set_ref = prepare_context->capability_set_ref;
+  binding->source_artifact_set_ref =
+      prepare_context->source_artifact_set_ref;
+  binding->encoded_sblr_envelope.assign(
+      invoke_params->envelope_bytes,
+      invoke_params->envelope_bytes + invoke_params->envelope_size_bytes);
+  binding->metadata_snapshot_uuid = metadata_snapshot_uuid;
+  binding->metadata_visible_through_local_transaction_id = high_water;
+  binding->active_excluded_local_transaction_ids =
+      std::move(active_excluded);
+  binding->in_doubt_excluded_local_transaction_ids =
+      std::move(in_doubt_excluded);
+  binding->target_object_uuid = target_object_uuid;
+  binding->target_executable_generation =
+      pinned_object->executable_generation;
+  binding->target_metadata_epoch = pinned_object->metadata_epoch;
+  binding->target_creator_local_transaction_id = pinned_object->creator_tx;
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_prepared_metadata_binding_registry_mutex);
+    g_prepared_metadata_bindings.insert(binding);
+  }
+  *out_binding = binding;
+
+  if (out_result != nullptr) {
+    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
+                               "sblr.prepared_metadata_binding.create");
+    result->payload =
+        "metadata_snapshot_uuid=" + metadata_snapshot_uuid + "\n" +
+        "target_object_uuid=" + target_object_uuid + "\n" +
+        "executable_generation=" +
+        std::to_string(binding->target_executable_generation) + "\n" +
+        "metadata_epoch=" +
+        std::to_string(binding->target_metadata_epoch) + "\n";
+    finalize_diagnostics(result);
+    *out_result = result;
+  }
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t ReleasePreparedMetadataBinding(
+    PreparedMetadataBindingHandle binding) {
+  if (binding == nullptr) return SB_ENGINE_STATUS_OK;
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_prepared_metadata_binding_registry_mutex);
+    const auto found = g_prepared_metadata_bindings.find(binding);
+    if (found == g_prepared_metadata_bindings.end()) {
+      return SB_ENGINE_STATUS_INVALID_HANDLE;
+    }
+    {
+      std::lock_guard<std::mutex> binding_guard(binding->mutex);
+      if (binding->released ||
+          binding->magic != kPreparedMetadataBindingMagic) {
+        return SB_ENGINE_STATUS_ALREADY_RELEASED;
+      }
+      binding->released = true;
+      binding->magic = 0;
+    }
+    g_prepared_metadata_bindings.erase(found);
+  }
+  delete binding;
+  return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t DispatchWithPreparedMetadataBinding(
+    sb_engine_session_t session,
+    sb_engine_transaction_t transaction,
+    const sb_engine_request_context_v1_t* context,
+    const sb_engine_sblr_dispatch_params_v1_t* params,
+    PreparedMetadataBindingHandle binding,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_result == nullptr) { return SB_ENGINE_STATUS_INVALID_ARGUMENT; }
+  if (!valid_session(session) || binding == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE,
+                       out_result,
+                       1007,
+                       "ENGINE.ABI.INVALID_HANDLE",
+                       "engine.abi.invalid_handle");
+  }
+  if (transaction != nullptr &&
+      (!valid_transaction(transaction) || transaction->session != session)) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE,
+                       out_result,
+                       1007,
+                       "ENGINE.ABI.INVALID_HANDLE",
+                       "engine.abi.invalid_handle");
+  }
+  if (context == nullptr || params == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                       out_result,
+                       1004,
+                       "ENGINE.ABI.PARAMETER_NULL",
+                       "engine.abi.parameter_null");
+  }
+  auto status = check_struct(context->struct_size,
+                             context->abi_version,
+                             sizeof(sb_engine_request_context_v1_t),
+                             out_result);
+  if (status != SB_ENGINE_STATUS_OK) { return status; }
+  status = check_struct(params->struct_size,
+                        params->abi_version,
+                        sizeof(sb_engine_sblr_dispatch_params_v1_t),
+                        out_result);
+  if (status != SB_ENGINE_STATUS_OK) { return status; }
+  if (params->reserved0 != 0 || params->reserved1 != 0) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                       out_result,
+                       4014,
+                       "ENGINE.ABI.RESERVED_FIELD_INVALID",
+                       "engine.abi.reserved_field_invalid",
+                       "sblr_dispatch_params.reserved0_or_reserved1");
+  }
+  if (!nonzero_uuid(context->effective_user_uuid) ||
+      !nonzero_uuid(context->session_uuid)) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED,
+                       out_result,
+                       2001,
+                       "SECURITY.IDENTITY.MISSING",
+                       "security.identity.missing");
+  }
+  if (params->envelope_size_bytes == 0 || params->envelope_bytes == nullptr) {
+    return fail_result(
+        SB_ENGINE_STATUS_INVALID_ARGUMENT,
+        out_result,
+        4001,
+        "SBLR.ENVELOPE.INVALID",
+        "sblr.envelope.invalid",
+        "prepared metadata dispatch requires one operation envelope");
+  }
+  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
+      params->envelope_bytes, params->envelope_size_bytes);
+  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok) {
+    return fail_result(
+        decoded.status ==
+                scratchbird::engine::SblrCodecStatus::version_unsupported
+            ? SB_ENGINE_STATUS_UNSUPPORTED
+            : SB_ENGINE_STATUS_INVALID_ARGUMENT,
+        out_result,
+        4001,
+        std::string(decoded.diagnostic_code),
+        std::string(decoded.message_key));
+  }
+  if (!looks_like_sblr_operation_envelope(decoded.envelope)) {
+    return fail_result(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        out_result,
+        4029,
+        "ENGINE.PREPARED_METADATA_BINDING.OPERATION_ENVELOPE_REQUIRED",
+        "engine.prepared_metadata_binding.operation_envelope_required");
+  }
+  // PreparedMetadataBinding is a private routed-server bridge, not a public or
+  // embedded ABI handle. The server's database-owner lock excludes another
+  // mutating process; this engine-internal guard orders same-process durable
+  // transaction publication. Keep it through dispatch so the exact version
+  // revalidated below is the immutable version acquired and executed.
+  const auto inventory_guard =
+      scratchbird::engine::internal_api::AcquireTransactionInventoryGuard(
+          session->engine->database_path);
+  PreparedMetadataBindingSnapshot prepared_metadata;
+  std::string revalidation_detail;
+  const auto revalidation =
+      revalidate_prepared_metadata_binding_current_version(
+          binding,
+          session,
+          *context,
+          *params,
+          &prepared_metadata,
+          &revalidation_detail);
+  if (revalidation != PreparedMetadataCurrentVersionStatus::ok) {
+    if (revalidation == PreparedMetadataCurrentVersionStatus::stale) {
+      return fail_result(
+          SB_ENGINE_STATUS_CONFLICT,
+          out_result,
+          4030,
+          "ENGINE.PREPARED_METADATA_BINDING.STALE",
+          "engine.prepared_metadata_binding.stale",
+          revalidation_detail);
+    }
+    if (revalidation == PreparedMetadataCurrentVersionStatus::unavailable) {
+      return fail_result(
+          SB_ENGINE_STATUS_INTERNAL_ERROR,
+          out_result,
+          4031,
+          "ENGINE.PREPARED_METADATA_BINDING.REVALIDATION_UNAVAILABLE",
+          "engine.prepared_metadata_binding.revalidation_unavailable",
+          revalidation_detail);
+    }
+    return fail_result(
+        SB_ENGINE_STATUS_SECURITY_DENIED,
+        out_result,
+        4015,
+        "ENGINE.PREPARED_METADATA_BINDING.CONTEXT_MISMATCH",
+        "engine.prepared_metadata_binding.context_mismatch",
+        revalidation_detail);
+  }
+  invoke_prepared_metadata_dispatch_test_hook(
+      "exact_version_acquired_under_inventory_guard");
+  return dispatch_operation_envelope(
+      session,
+      *context,
+      decoded.envelope,
+      *params,
+      &prepared_metadata,
+      out_result);
+}
+
+}  // namespace scratchbird::server_engine_bridge
+
+extern "C" {
+
 sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
                                            sb_engine_transaction_t transaction,
                                            const sb_engine_request_context_v1_t* context,
@@ -1459,6 +2497,14 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
   status = check_struct(params->struct_size, params->abi_version, sizeof(sb_engine_sblr_dispatch_params_v1_t), out_result);
   if (status != SB_ENGINE_STATUS_OK) {
     return status;
+  }
+  if (params->reserved0 != 0 || params->reserved1 != 0) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
+                       out_result,
+                       4014,
+                       "ENGINE.ABI.RESERVED_FIELD_INVALID",
+                       "engine.abi.reserved_field_invalid",
+                       "sblr_dispatch_params.reserved0_or_reserved1");
   }
   if (!nonzero_uuid(context->effective_user_uuid) || !nonzero_uuid(context->session_uuid)) {
     return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 2001, "SECURITY.IDENTITY.MISSING",
@@ -1511,7 +2557,8 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4001, code, key);
   }
   if (looks_like_sblr_operation_envelope(decoded.envelope)) {
-    const auto status = dispatch_operation_envelope(session, *context, decoded.envelope, *params, out_result);
+    const auto status = dispatch_operation_envelope(
+        session, *context, decoded.envelope, *params, nullptr, out_result);
     mark_phase("dispatch_operation_envelope");
     WriteEngineAbiPhaseTrace("dispatch_sblr",
                              "operation_envelope",

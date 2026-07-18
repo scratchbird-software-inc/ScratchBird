@@ -80,6 +80,23 @@ EXPECTED_TOP_LEVEL_REFERENCE_ROOTS = (
     "yugabytedb",
 )
 
+SHARED_REFERENCE_TEST_ROOTS = {
+    "__pycache__",
+    "example_database",
+    "failure_ledger",
+    "fixtures",
+    "native_tool_runner",
+    "opensearch",
+    "platform",
+    "policy",
+    "reference_catalog_seeds",
+    "reference_release_acquisition",
+    "reproduction",
+    "result_normalizer",
+    "scratchbird",
+    "security",
+}
+
 EVIDENCE_FILES = {
     "reference_regression_inventory": "upstream_manifest.csv",
     "native_tool_replay": "native_tool_harness/native_tool_harness_manifest.csv",
@@ -193,7 +210,7 @@ def validate(repo: pathlib.Path) -> None:
     present = {
         path.name
         for path in (repo / REFERENCE_ROOT).iterdir()
-        if path.is_dir() and path.name not in {"__pycache__", "fixtures", "reference_catalog_seeds", "reference_release_acquisition", "scratchbird", "opensearch"}
+        if path.is_dir() and path.name not in SHARED_REFERENCE_TEST_ROOTS
     }
     expected = set(EXPECTED_TOP_LEVEL_REFERENCE_ROOTS)
     missing = sorted(expected - present)

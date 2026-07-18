@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_xtdb_parser_pipeline STATIC
   xtdb_dialect.cpp
+  xtdb_worker_session.cpp
 )
 
 target_compile_features(sbl_xtdb_parser_pipeline PUBLIC cxx_std_23)

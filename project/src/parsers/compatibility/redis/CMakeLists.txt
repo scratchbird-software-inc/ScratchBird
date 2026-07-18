@@ -29,7 +29,10 @@ target_link_libraries(sbl_redis_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_redis main.cpp)
+add_executable(sbp_redis
+  main.cpp
+  redis_worker_session.cpp
+)
 target_compile_features(sbp_redis PRIVATE cxx_std_23)
 target_link_libraries(sbp_redis PRIVATE
   sbl_redis_parser_pipeline

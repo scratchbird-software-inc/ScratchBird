@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_vitess_parser_pipeline STATIC
   vitess_dialect.cpp
+  vitess_worker_session.cpp
 )
 
 target_compile_features(sbl_vitess_parser_pipeline PUBLIC cxx_std_23)

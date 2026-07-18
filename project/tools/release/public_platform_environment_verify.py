@@ -75,7 +75,7 @@ PLATFORM_REQUIREMENTS: dict[str, dict[str, Any]] = {
             "mingw-w64-ucrt-x86_64-proj",
             "mingw-w64-ucrt-x86_64-gtest",
             "odbc32",
-            "LLVM 23+",
+            "LLVM 23+, or LLVM 22 on GitHub-hosted MSYS2 UCRT64 proof runners",
             "engine_listener_enterprise",
         ),
     },

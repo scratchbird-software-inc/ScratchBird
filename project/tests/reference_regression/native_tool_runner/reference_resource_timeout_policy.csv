@@ -1,0 +1,11 @@
+policy_id,status,scope,default_value,required_evidence,notes
+RPR-RES-001,required,standard_suite_timeout,30m,start stop timestamps exit status,Small and medium native tool suites.
+RPR-RES-002,required,long_suite_timeout,4h,start stop timestamps exit status,Large Java Go Rust pytest or integration suites.
+RPR-RES-003,required,case_timeout,5m,case timeout record,Individual case guard unless suite metadata overrides.
+RPR-RES-004,required,max_log_bytes_per_case,20MiB,log truncation marker and full private path if retained,Public artifacts stay bounded.
+RPR-RES-005,required,max_result_artifact_bytes_per_family,2GiB,artifact manifest and retention policy,Large evidence remains private or build artifact only.
+RPR-RES-006,required,disk_floor_before_run,20GiB,preflight disk check,Run refuses early if insufficient disk space.
+RPR-RES-007,required,memory_floor_before_run,4GiB,preflight memory check,Family-specific suites may raise the floor.
+RPR-RES-008,required,hung_suite_classification,environment_error,timeout transcript process tree and cleanup proof,Hung does not count as parser pass or refusal.
+RPR-RES-009,required,log_retention,30d_private_or_build_artifact,evidence manifest,Retention may be shorter for public GitHub artifacts.
+RPR-RES-010,required,process_cleanup,required,post-run process and port scan,No stale original tool parser listener or server process after run.

@@ -363,6 +363,8 @@ std::vector<std::string> ConflictIndexColumns(const CrudIndexRecord& index) {
       const std::string rest = envelope.substr(5);
       const auto pos = rest.find(':');
       columns.push_back(pos == std::string::npos ? rest : rest.substr(0, pos));
+    } else if (StartsWith(envelope, "sum:")) {
+      columns.push_back(envelope);
     } else {
       columns.push_back(envelope);
     }

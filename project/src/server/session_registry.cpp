@@ -33,6 +33,7 @@
 namespace scratchbird::server {
 
 namespace engine_api = scratchbird::engine::internal_api;
+namespace engine_bridge = scratchbird::server_engine_bridge;
 
 namespace {
 
@@ -924,15 +925,39 @@ engine_api::EngineRequestContext EngineContextForSession(const ServerSessionReco
   return context;
 }
 
-void ApplyBeginTransactionResultToSession(
+bool ApplyBeginTransactionResultToSession(
     const engine_api::EngineBeginTransactionResult& result,
     ServerSessionRecord* session) {
-  if (session == nullptr) return;
-  session->local_transaction_id = result.local_transaction_id;
-  session->snapshot_visible_through_local_transaction_id =
+  if (session == nullptr ||
+      !IsCompleteEngineTransactionIdentity(
+          result.local_transaction_id, result.transaction_uuid.canonical) ||
+      session->local_transaction_id != 0 ||
+      session->default_local_transaction_id != 0 ||
+      !session->transaction_uuid.empty() ||
+      !session->transactions_by_local_id.empty()) {
+    return false;
+  }
+  ServerTransactionState transaction;
+  transaction.local_transaction_id = result.local_transaction_id;
+  transaction.snapshot_visible_through_local_transaction_id =
       result.snapshot_visible_through_local_transaction_id;
-  session->transaction_uuid = result.transaction_uuid.canonical;
-  session->transaction_timestamp = EngineEvidenceValue(result, "transaction_timestamp");
+  transaction.transaction_uuid = result.transaction_uuid.canonical;
+  transaction.transaction_timestamp =
+      EngineEvidenceValue(result, "transaction_timestamp");
+  transaction.isolation_level = session->default_transaction_isolation_level;
+  transaction.read_only =
+      session->attach_mode == "read_only" || session->default_transaction_read_only;
+  transaction.begin_ordinal = session->next_transaction_begin_ordinal++;
+  const auto published = session->transactions_by_local_id.emplace(
+      transaction.local_transaction_id, transaction);
+  if (!published.second) return false;
+  session->local_transaction_id = transaction.local_transaction_id;
+  session->snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  session->transaction_uuid = transaction.transaction_uuid;
+  session->transaction_timestamp = transaction.transaction_timestamp;
+  session->default_local_transaction_id = transaction.local_transaction_id;
+  return true;
 }
 
 bool StartAlwaysActiveTransactionForSession(ServerSessionRecord* session,
@@ -943,6 +968,20 @@ bool StartAlwaysActiveTransactionForSession(ServerSessionRecord* session,
   if (session == nullptr) {
     if (diagnostic_code != nullptr) *diagnostic_code = "PARSER_SERVER_IPC.SESSION_REQUIRED";
     if (diagnostic_detail != nullptr) *diagnostic_detail = "session_required";
+    return false;
+  }
+  if (session->local_transaction_id != 0 ||
+      session->default_local_transaction_id != 0 ||
+      !session->transaction_uuid.empty() ||
+      !session->transactions_by_local_id.empty()) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          "PARSER_SERVER_IPC.INITIAL_TRANSACTION_ALREADY_PRESENT";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          "initial_transaction_must_start_from_empty_session_state";
+    }
     return false;
   }
   engine_api::EngineBeginTransactionRequest begin;
@@ -960,19 +999,58 @@ bool StartAlwaysActiveTransactionForSession(ServerSessionRecord* session,
   begin.transaction_policy_profile.encoded_profiles.push_back(
       std::string("transaction_read_mode:") + (begin.context.read_only_mode ? "read_only" : "read_write"));
   const auto begun = engine_api::EngineBeginTransaction(begin);
-  if (!begun.ok || begun.local_transaction_id == 0) {
+  if (!begun.ok ||
+      !IsCompleteEngineTransactionIdentity(
+          begun.local_transaction_id, begun.transaction_uuid.canonical)) {
     if (diagnostic_code != nullptr) {
-      *diagnostic_code = EngineDiagnosticCode(begun.diagnostics,
-                                              "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED");
+      *diagnostic_code = begun.ok
+          ? "PARSER_SERVER_IPC.TRANSACTION_BEGIN_IDENTITY_INVALID"
+          : EngineDiagnosticCode(
+                begun.diagnostics,
+                "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED");
     }
     if (diagnostic_detail != nullptr) {
-      *diagnostic_detail = EngineDiagnosticDetail(begun.diagnostics,
-                                                  "transaction_begin_failed");
+      *diagnostic_detail = begun.ok
+          ? "engine_begin_returned_incomplete_composite_identity"
+          : EngineDiagnosticDetail(begun.diagnostics,
+                                   "transaction_begin_failed");
     }
     return false;
   }
-  ApplyBeginTransactionResultToSession(begun, session);
+  if (!ApplyBeginTransactionResultToSession(begun, session)) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          "PARSER_SERVER_IPC.TRANSACTION_BEGIN_PUBLICATION_FAILED";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          "initial_transaction_composite_identity_publication_failed";
+    }
+    return false;
+  }
   return true;
+}
+
+bool RollbackUnpublishedInitialTransaction(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  if (!IsCompleteEngineTransactionIdentity(
+          session.local_transaction_id, session.transaction_uuid)) {
+    return false;
+  }
+  engine_api::EngineRollbackTransactionRequest rollback;
+  rollback.context = EngineContextForSession(session, engine_state, request);
+  const auto result = engine_api::EngineRollbackTransaction(rollback);
+  const bool applied =
+      result.engine_finality_known &&
+      (result.rollback_finality_state ==
+           "rolled_back_by_engine_inventory" ||
+       result.rollback_finality_state ==
+           "rolled_back_post_inventory_secondary_failure");
+  return applied &&
+         result.local_transaction_id == session.local_transaction_id &&
+         result.transaction_uuid.canonical == session.transaction_uuid;
 }
 
 std::optional<AuthHandoffPayload> DecodeAuthPayload(const std::vector<std::uint8_t>& payload) {
@@ -1447,6 +1525,78 @@ bool TakeoverClaimsMatch(const ServerSessionRecord& session,
   }
   if (detail != nullptr) *detail = "takeover_claims_match";
   return true;
+}
+
+struct TakeoverPhysicalChannelProjection {
+  bool connection_changes = false;
+  bool physical_channel_admitted = true;
+  std::array<std::uint8_t, 16> server_channel_uuid{};
+  bool transaction_routing_v2_negotiated = false;
+  bool prepared_metadata_transfer_v1_negotiated = false;
+  bool relation_descriptor_projection_v3_negotiated = false;
+};
+
+TakeoverPhysicalChannelProjection ProjectTakeoverPhysicalChannel(
+    const ServerSessionRegistry& registry,
+    const ServerSessionRecord& session,
+    const ServerSessionTakeoverRequest& request) {
+  TakeoverPhysicalChannelProjection projection;
+  projection.connection_changes =
+      (request.mask & kServerTakeoverClaimAttachmentId) != 0 &&
+      !IsZeroUuidBytes(request.attachment_id) &&
+      request.attachment_id != session.connection_uuid;
+  if (!projection.connection_changes) { return projection; }
+
+  const std::string connection_key = UuidBytesToText(request.attachment_id);
+  const auto physical =
+      registry.physical_channel_by_connection_uuid.find(connection_key);
+  if (physical == registry.physical_channel_by_connection_uuid.end() ||
+      IsZeroUuidBytes(physical->second)) {
+    projection.physical_channel_admitted = false;
+    return projection;
+  }
+  projection.server_channel_uuid = physical->second;
+
+  // A physical channel without a capability record is admitted only with the
+  // baseline/legacy surface. Never inherit capability bits from the source
+  // connection or from the session being taken over.
+  const auto negotiated =
+      registry.negotiated_capabilities_by_connection_uuid.find(connection_key);
+  if (negotiated ==
+      registry.negotiated_capabilities_by_connection_uuid.end()) {
+    return projection;
+  }
+  projection.transaction_routing_v2_negotiated =
+      (negotiated->second[0] & sbps::kCapabilityTransactionRoutingV2) != 0;
+  projection.prepared_metadata_transfer_v1_negotiated =
+      (negotiated->second[0] &
+       sbps::kCapabilityPreparedMetadataTransferV1) != 0;
+  projection.relation_descriptor_projection_v3_negotiated =
+      (negotiated->second[0] &
+       sbps::kCapabilityRelationDescriptorProjectionV3) != 0;
+  return projection;
+}
+
+void RetireTransferablePreparedBindingsForPhysicalChannelChange(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid) {
+  if (registry == nullptr || IsZeroUuidBytes(session_uuid)) { return; }
+  std::vector<std::array<std::uint8_t, 16>> prepared_to_retire;
+  for (const auto& [_, prepared] : registry->prepared_by_uuid) {
+    if (prepared.session_uuid != session_uuid ||
+        (!prepared.prepared_metadata_transferable &&
+         prepared.prepared_metadata_binding == nullptr)) {
+      continue;
+    }
+    prepared_to_retire.push_back(prepared.prepared_statement_uuid);
+  }
+  for (const auto& prepared_uuid : prepared_to_retire) {
+    (void)CloseServerPreparedStatement(
+        registry,
+        session_uuid,
+        prepared_uuid,
+        "prepared_metadata_binding_retired_by_physical_channel_takeover");
+  }
 }
 
 }  // namespace
@@ -2086,6 +2236,17 @@ std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid) {
   return out;
 }
 
+bool IsCompleteEngineTransactionIdentity(
+    std::uint64_t local_transaction_id,
+    std::string_view transaction_uuid) {
+  if (local_transaction_id == 0 || transaction_uuid.size() != 36) {
+    return false;
+  }
+  const auto parsed = TextToUuid(transaction_uuid);
+  if (IsZeroUuidBytes(parsed)) return false;
+  return UuidBytesToText(parsed) == LowerAscii(std::string(transaction_uuid));
+}
+
 std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& principal,
                                                           bool credential_valid,
                                                           bool mfa_required,
@@ -2151,7 +2312,8 @@ ServerRequestRecord RegisterServerRequestLifecycle(ServerSessionRegistry* regist
                                                    const sbps::Frame& request,
                                                    const ServerSessionRecord& session,
                                                    std::string request_kind,
-                                                   std::string operation_id) {
+                                                   std::string operation_id,
+                                                   const ServerTransactionState* transaction) {
   ServerRequestRecord record;
   record.request_uuid = sbps::IsZeroUuid(request.header.request_uuid)
                             ? sbps::MakeUuidV7Bytes()
@@ -2166,6 +2328,13 @@ ServerRequestRecord RegisterServerRequestLifecycle(ServerSessionRegistry* regist
   record.local_transaction_id_at_start = session.local_transaction_id;
   record.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
+  record.transaction_uuid_at_start = session.transaction_uuid;
+  if (transaction != nullptr) {
+    record.local_transaction_id_at_start = transaction->local_transaction_id;
+    record.snapshot_visible_through_local_transaction_id =
+        transaction->snapshot_visible_through_local_transaction_id;
+    record.transaction_uuid_at_start = transaction->transaction_uuid;
+  }
   record.authorization_proven = true;
   if (registry != nullptr) {
     registry->requests_by_uuid[UuidBytesToText(record.request_uuid)] = record;
@@ -2363,6 +2532,137 @@ void CloseSessionObjectHandlesForSession(
   }
 }
 
+bool ReleaseAndClearServerCursorResources(
+    ServerSessionRegistry* registry,
+    ServerCursorRecord* cursor) {
+  if (cursor == nullptr) return false;
+  const bool released_engine_result = cursor->engine_result != nullptr;
+  if (cursor->engine_result != nullptr) {
+    (void)sb_engine_result_release(cursor->engine_result);
+    cursor->engine_result = nullptr;
+  }
+  cursor->row_packet.clear();
+  cursor->bulk_stream_kind.clear();
+  cursor->bulk_reject_records.clear();
+  cursor->multi_result_kind.clear();
+  cursor->warning_stream_kind.clear();
+  cursor->bulk_total_rows = 0;
+  cursor->bulk_rejected_rows = 0;
+  cursor->multi_result_count = 0;
+  cursor->warning_count = 0;
+  cursor->partial_result_rows = 0;
+  cursor->finality_after_fetches = 0;
+  cursor->total_row_count = 0;
+  cursor->next_row_index = 0;
+  cursor->fetch_count = 0;
+
+  if (registry != nullptr && !sbps::IsZeroUuid(cursor->cursor_uuid)) {
+    for (auto& [_, request] : registry->requests_by_uuid) {
+      if (request.cursor_uuid != cursor->cursor_uuid ||
+          !request.engine_result_retained) {
+        continue;
+      }
+      request.engine_result_retained = false;
+      UpsertRequestFinality(registry, request);
+    }
+  }
+  return released_engine_result;
+}
+
+ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
+    std::string detail) {
+  ServerPreparedStatementCloseSummary summary;
+  if (registry == nullptr || sbps::IsZeroUuid(session_uuid) ||
+      sbps::IsZeroUuid(prepared_statement_uuid)) {
+    return summary;
+  }
+
+  const std::string prepared_key = UuidBytesToText(prepared_statement_uuid);
+  const auto prepared_it = registry->prepared_by_uuid.find(prepared_key);
+  if (prepared_it == registry->prepared_by_uuid.end() ||
+      prepared_it->second.session_uuid != session_uuid) {
+    // Ownership failures deliberately collapse to not-found so one session
+    // cannot probe prepared identities belonging to another session.
+    return summary;
+  }
+
+  auto& prepared = prepared_it->second;
+  summary.found = true;
+  summary.already_closed = prepared.closed;
+  prepared.closed = true;
+  if (prepared.prepared_metadata_binding != nullptr) {
+    (void)engine_bridge::ReleasePreparedMetadataBinding(
+        prepared.prepared_metadata_binding);
+  }
+  prepared.prepared_metadata_binding = nullptr;
+  prepared.prepared_metadata_transferable = false;
+  // Preserve the opaque identity, owner, operation, and immutable prepare
+  // selector as tombstone evidence.  The executable envelope and derived
+  // execution context are no longer needed once the resource is retired.
+  prepared.encoded_sblr_envelope.clear();
+  registry->prepared_execution_contexts_by_uuid.erase(prepared_key);
+
+  if (detail.empty()) detail = "prepared_statement_closed";
+  for (auto& [_, cursor] : registry->cursors_by_uuid) {
+    if (cursor.session_uuid != session_uuid ||
+        cursor.prepared_statement_uuid != prepared_statement_uuid) {
+      continue;
+    }
+    const bool cursor_was_closed = cursor.closed;
+    if (ReleaseAndClearServerCursorResources(registry, &cursor)) {
+      ++summary.engine_results_released;
+    }
+    if (!cursor_was_closed) {
+      ++summary.cursors_closed;
+      cursor.finality_state = "prepared_statement_closed";
+      cursor.finality_reason = detail;
+    }
+    cursor.closed = true;
+    cursor.exhausted = true;
+    if (!cursor_was_closed) {
+      MarkServerRequestClosedByCursor(registry,
+                                      cursor.cursor_uuid,
+                                      ServerRequestLifecycleState::kCompleted,
+                                      detail);
+    }
+  }
+
+  if (prepared.session_object_handle_id != 0 &&
+      prepared.session_object_handle_generation != 0) {
+    bool shared_by_live_prepared = false;
+    for (const auto& [other_key, other] : registry->prepared_by_uuid) {
+      if (other_key == prepared_key || other.closed ||
+          other.session_uuid != session_uuid) {
+        continue;
+      }
+      if (other.session_object_handle_id ==
+              prepared.session_object_handle_id &&
+          other.session_object_handle_generation ==
+              prepared.session_object_handle_generation) {
+        shared_by_live_prepared = true;
+        break;
+      }
+    }
+    if (!shared_by_live_prepared) {
+      const auto handle_it = registry->object_handles_by_key.find(
+          SessionObjectHandleKey(session_uuid,
+                                 prepared.session_object_handle_id));
+      if (handle_it != registry->object_handles_by_key.end() &&
+          !handle_it->second.closed &&
+          handle_it->second.generation ==
+              prepared.session_object_handle_generation) {
+        handle_it->second.closed = true;
+        ++handle_it->second.generation;
+        summary.session_object_handle_revoked = true;
+      }
+    }
+  }
+  return summary;
+}
+
 void CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -2374,6 +2674,16 @@ void CloseServerPublicAbiSessionForSession(
     return;
   }
   auto& context = it->second;
+  for (auto& [_, prepared] : registry->prepared_by_uuid) {
+    if (prepared.session_uuid != session_uuid ||
+        prepared.prepared_metadata_binding == nullptr) {
+      continue;
+    }
+    (void)engine_bridge::ReleasePreparedMetadataBinding(
+        prepared.prepared_metadata_binding);
+    prepared.prepared_metadata_binding = nullptr;
+    prepared.prepared_metadata_transferable = false;
+  }
   if (context.engine_session != nullptr) {
     sb_engine_session_end_params_v1_t end_params{};
     end_params.struct_size = sizeof(end_params);
@@ -2755,10 +3065,7 @@ ServerRequestLifecycleResult CancelServerRequestLifecycle(
     auto cursor_it = registry->cursors_by_uuid.find(UuidBytesToText(request.cursor_uuid));
     if (cursor_it != registry->cursors_by_uuid.end()) {
       auto& cursor = cursor_it->second;
-      if (cursor.engine_result != nullptr) {
-        (void)sb_engine_result_release(cursor.engine_result);
-        cursor.engine_result = nullptr;
-      }
+      (void)ReleaseAndClearServerCursorResources(registry, &cursor);
       cursor.finality_state = any_unknown_outcome ? "cancelled_unknown_outcome" : "cancelled";
       cursor.finality_reason = any_unknown_outcome
                                    ? "cancel_requested_outcome_unknown_preserved"
@@ -2790,8 +3097,13 @@ void MarkServerRequestTimedOutByCursor(ServerSessionRegistry* registry,
   if (registry == nullptr) return;
   for (auto& [_, request] : registry->requests_by_uuid) {
     if (request.cursor_uuid != cursor_uuid) continue;
+    request.engine_result_retained = false;
     if (TerminalRequestState(request.state) &&
         request.state != ServerRequestLifecycleState::kCompleted) {
+      // Resource release is deterministic even when an earlier transaction
+      // outcome remains unknown. Preserve that finality state, but do not
+      // leave a stale retained-result claim behind.
+      UpsertRequestFinality(registry, request);
       continue;
     }
     const bool transaction_outcome_risk =
@@ -2816,8 +3128,13 @@ void MarkServerRequestClosedByCursor(ServerSessionRegistry* registry,
   if (registry == nullptr) return;
   for (auto& [_, request] : registry->requests_by_uuid) {
     if (request.cursor_uuid != cursor_uuid) continue;
+    request.engine_result_retained = false;
     if (TerminalRequestState(request.state) &&
         request.state != ServerRequestLifecycleState::kCompleted) {
+      // Cursor resource retirement is deterministic even when an earlier
+      // transaction outcome remains unknown. Preserve that terminal state,
+      // but never leave a stale retained-result claim behind.
+      UpsertRequestFinality(registry, request);
       continue;
     }
     request.state = state;
@@ -3011,6 +3328,30 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   session.connection_uuid = sbps::IsZeroUuid(request.header.connection_uuid)
                                 ? decoded->connection_uuid
                                 : request.header.connection_uuid;
+  const auto physical_channel =
+      registry->physical_channel_by_connection_uuid.find(
+          UuidBytesToText(session.connection_uuid));
+  if (physical_channel !=
+      registry->physical_channel_by_connection_uuid.end()) {
+    session.server_channel_uuid = physical_channel->second;
+  }
+  const auto negotiated =
+      registry->negotiated_capabilities_by_connection_uuid.find(
+          UuidBytesToText(session.connection_uuid));
+  session.transaction_routing_v2_negotiated =
+      negotiated !=
+          registry->negotiated_capabilities_by_connection_uuid.end() &&
+      (negotiated->second[0] & sbps::kCapabilityTransactionRoutingV2) != 0;
+  session.prepared_metadata_transfer_v1_negotiated =
+      negotiated !=
+          registry->negotiated_capabilities_by_connection_uuid.end() &&
+      (negotiated->second[0] &
+       sbps::kCapabilityPreparedMetadataTransferV1) != 0;
+  session.relation_descriptor_projection_v3_negotiated =
+      negotiated !=
+          registry->negotiated_capabilities_by_connection_uuid.end() &&
+      (negotiated->second[0] &
+       sbps::kCapabilityRelationDescriptorProjectionV3) != 0;
   session.auth_context_uuid =
       TextToUuid(auth_result.connection_security_context.connection_uuid.canonical);
   session.session_uuid = session.auth_context_uuid;
@@ -3111,6 +3452,74 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
                    "rejected",
                    "auth_context_unknown");
     return result;
+  }
+  const bool exact_connection_binding =
+      !sbps::IsZeroUuid(request.header.connection_uuid) &&
+      !sbps::IsZeroUuid(decoded->connection_uuid) &&
+      request.header.connection_uuid == decoded->connection_uuid &&
+      !sbps::IsZeroUuid(found->second.connection_uuid) &&
+      found->second.connection_uuid == request.header.connection_uuid;
+  bool exact_physical_channel = true;
+  if (!sbps::IsZeroUuid(found->second.server_channel_uuid)) {
+    const auto owner =
+        registry->physical_channel_by_connection_uuid.find(
+            UuidBytesToText(request.header.connection_uuid));
+    exact_physical_channel =
+        owner != registry->physical_channel_by_connection_uuid.end() &&
+        owner->second == found->second.server_channel_uuid;
+  }
+  if (!exact_connection_binding || !exact_physical_channel) {
+    result.diagnostics.push_back(AuthDiagnostic(
+        "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+        "Attach connection, payload, authentication context, and physical channel binding did not match.",
+        "attach_channel_binding_mismatch"));
+    AddAttachAdmissionDenied(&result.diagnostics,
+                             "attach_database",
+                             "attach_channel_binding_mismatch");
+    result.payload = EncodeAttachResultPayload(
+        "rejected", nullptr, "attach_channel_binding_mismatch");
+    result.frame_flags =
+        sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    RecordFinality(registry,
+                   request,
+                   found->second.session_uuid,
+                   decoded->auth_context_uuid,
+                   "attach_database",
+                   "rejected",
+                   "attach_channel_binding_mismatch");
+    return result;
+  }
+  if (!sbps::IsZeroUuid(found->second.server_channel_uuid)) {
+    const bool sibling_session_on_channel = std::any_of(
+        registry->sessions_by_uuid.begin(),
+        registry->sessions_by_uuid.end(),
+        [&](const auto& entry) {
+          return entry.second.server_channel_uuid ==
+                 found->second.server_channel_uuid;
+        });
+    if (sibling_session_on_channel) {
+      result.diagnostics.push_back(AuthDiagnostic(
+          "PARSER_SERVER_IPC.PHYSICAL_CHANNEL_SESSION_LIMIT",
+          "A physical parser channel may own exactly one attached session.",
+          "physical_channel_already_has_session"));
+      AddAttachAdmissionDenied(&result.diagnostics,
+                               "attach_database",
+                               "physical_channel_already_has_session");
+      result.payload = EncodeAttachResultPayload(
+          "rejected", nullptr, "physical_channel_already_has_session");
+      result.frame_flags =
+          sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+      registry->channel_state = ServerChannelState::kFailed;
+      RecordFinality(registry,
+                     request,
+                     found->second.session_uuid,
+                     decoded->auth_context_uuid,
+                     "attach_database",
+                     "rejected",
+                     "physical_channel_already_has_session");
+      return result;
+    }
   }
   if (registry->sessions_by_uuid.find(UuidBytesToText(found->second.session_uuid)) !=
       registry->sessions_by_uuid.end()) {
@@ -3366,7 +3775,35 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
                    detail);
     return result;
   }
-  registry->sessions_by_uuid[UuidBytesToText(session.session_uuid)] = session;
+  const auto published_session = registry->sessions_by_uuid.emplace(
+      UuidBytesToText(session.session_uuid), session);
+  if (!published_session.second) {
+    const bool cleanup_applied = RollbackUnpublishedInitialTransaction(
+        session, engine_state, request);
+    if (!cleanup_applied) {
+      session.detached_recovery_quarantined = true;
+      found->second = session;
+    }
+    const std::string detail = cleanup_applied
+                                   ? "session_publication_failed_cleanup_applied"
+                                   : "session_publication_failed_cleanup_unresolved";
+    result.diagnostics.push_back(AuthDiagnostic(
+        "PARSER_SERVER_IPC.SESSION_PUBLICATION_FAILED",
+        "Database attach could not publish the engine-issued session and transaction identity.",
+        detail));
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, detail);
+    result.frame_flags =
+        sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    RecordFinality(registry,
+                   request,
+                   session.session_uuid,
+                   session.auth_context_uuid,
+                   "attach_database",
+                   cleanup_applied ? "rejected" : "outcome_unknown",
+                   detail);
+    return result;
+  }
   registry->channel_state = ServerChannelState::kReady;
   result.accepted = true;
   result.session_uuid = session.session_uuid;
@@ -3475,8 +3912,34 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
     return result;
   }
 
-  registry->sessions_by_uuid[UuidBytesToText(session.session_uuid)] = session;
-  registry->auth_contexts_by_uuid[AuthContextKey(session.auth_context_uuid)] = session;
+  const auto session_key = UuidBytesToText(session.session_uuid);
+  const auto published_session =
+      registry->sessions_by_uuid.emplace(session_key, session);
+  const auto published_auth = registry->auth_contexts_by_uuid.emplace(
+      AuthContextKey(session.auth_context_uuid), session);
+  if (!published_session.second || !published_auth.second) {
+    if (published_session.second) {
+      registry->sessions_by_uuid.erase(session_key);
+    }
+    if (published_auth.second) {
+      registry->auth_contexts_by_uuid.erase(
+          AuthContextKey(session.auth_context_uuid));
+    }
+    const bool cleanup_applied = RollbackUnpublishedInitialTransaction(
+        session, engine_state, attach_frame);
+    const std::string detail = cleanup_applied
+                                   ? "embedded_session_publication_failed_cleanup_applied"
+                                   : "embedded_session_publication_failed_cleanup_unresolved";
+    result.diagnostics.push_back(AuthDiagnostic(
+        "PARSER_SERVER_IPC.SESSION_PUBLICATION_FAILED",
+        "Embedded attach could not publish the engine-issued session and transaction identity.",
+        detail));
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, detail);
+    result.frame_flags =
+        sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    return result;
+  }
   registry->channel_state = ServerChannelState::kReady;
   result.accepted = true;
   result.session_uuid = session.session_uuid;
@@ -3485,16 +3948,54 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
   return result;
 }
 
+ServerTransactionState* AdoptAndFindExactActiveDefaultTransaction(
+    ServerSessionRecord* session) {
+  if (session == nullptr) return nullptr;
+  if (session->transactions_by_local_id.empty()) {
+    if (!IsCompleteEngineTransactionIdentity(
+            session->local_transaction_id, session->transaction_uuid)) {
+      return nullptr;
+    }
+    ServerTransactionState legacy;
+    legacy.local_transaction_id = session->local_transaction_id;
+    legacy.snapshot_visible_through_local_transaction_id =
+        session->snapshot_visible_through_local_transaction_id;
+    legacy.transaction_uuid = session->transaction_uuid;
+    legacy.transaction_timestamp = session->transaction_timestamp;
+    legacy.isolation_level = session->default_transaction_isolation_level;
+    legacy.read_only = session->default_transaction_read_only ||
+                       session->attach_mode == "read_only";
+    legacy.begin_ordinal = session->next_transaction_begin_ordinal++;
+    const auto inserted = session->transactions_by_local_id.emplace(
+        legacy.local_transaction_id, std::move(legacy));
+    if (!inserted.second) return nullptr;
+    session->default_local_transaction_id = inserted.first->first;
+  }
+  if (session->default_local_transaction_id == 0) return nullptr;
+  const auto found = session->transactions_by_local_id.find(
+      session->default_local_transaction_id);
+  if (found == session->transactions_by_local_id.end() ||
+      found->second.lifecycle_state !=
+          ServerTransactionLifecycleState::kActive ||
+      session->local_transaction_id != found->second.local_transaction_id ||
+      session->transaction_uuid != found->second.transaction_uuid ||
+      session->snapshot_visible_through_local_transaction_id !=
+          found->second.snapshot_visible_through_local_transaction_id) {
+    return nullptr;
+  }
+  return &found->second;
+}
+
 SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
                                               const sbps::Frame& request) {
-  registry->channel_state = ServerChannelState::kDraining;
   SessionOperationResult result;
   result.response_message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
   result.response_schema_id = kSchemaDisconnectResultTestV1;
-  std::array<std::uint8_t, 16> session_uuid = request.header.session_uuid;
-  if (sbps::IsZeroUuid(session_uuid) && request.payload.size() >= 16) {
-    session_uuid = GetUuid(request.payload, 0);
-  }
+  const std::array<std::uint8_t, 16> payload_session_uuid =
+      request.payload.size() >= 16 ? GetUuid(request.payload, 0)
+                                   : std::array<std::uint8_t, 16>{};
+  const std::array<std::uint8_t, 16> session_uuid =
+      request.header.session_uuid;
   std::string disconnect_reason = "parser_disconnect_notice";
   if (request.payload.size() > 16) {
     std::size_t offset = 16;
@@ -3503,25 +4004,158 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
   }
   const auto key = UuidBytesToText(session_uuid);
   const auto session_found = registry->sessions_by_uuid.find(key);
+  const bool exact_binding =
+      !sbps::IsZeroUuid(request.header.connection_uuid) &&
+      !sbps::IsZeroUuid(session_uuid) &&
+      !sbps::IsZeroUuid(payload_session_uuid) &&
+      session_uuid == payload_session_uuid &&
+      session_found != registry->sessions_by_uuid.end() &&
+      session_found->second.session_uuid == session_uuid &&
+      !sbps::IsZeroUuid(session_found->second.connection_uuid) &&
+      session_found->second.connection_uuid == request.header.connection_uuid;
+  if (!exact_binding) {
+    result.diagnostics.push_back(AuthDiagnostic(
+        "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+        "Disconnect requires exact nonzero connection, header, payload, and session binding.",
+        "disconnect_binding_mismatch"));
+    std::vector<std::uint8_t> out;
+    PutString(&out, "binding_mismatch");
+    PutUuid(&out, session_uuid);
+    PutString(&out, "disconnect_binding_mismatch");
+    result.payload = std::move(out);
+    result.session_uuid = session_uuid;
+    result.frame_flags =
+        sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    result.accepted = false;
+    return result;
+  }
   std::array<std::uint8_t, 16> auth_context_uuid{};
+  std::array<std::uint8_t, 16> connection_uuid{};
   std::uint64_t active_local_transaction_id = 0;
   std::uint64_t rolled_back_local_transaction_id = 0;
+  std::uint64_t rolled_back_transaction_count = 0;
+  std::uint64_t unresolved_transaction_count = 0;
   std::uint64_t temporary_rows_deleted = 0;
   std::uint64_t temporary_large_values_reclaimed = 0;
   std::uint64_t temporary_private_metadata_retired = 0;
   std::string temporary_cleanup_state = "not_run";
+  struct DisconnectTransactionOutcome {
+    ServerTransactionState transaction;
+    std::string finality;
+    std::string engine_detail;
+    bool secondary_failure = false;
+  };
+  std::vector<DisconnectTransactionOutcome> rolled_back_transactions;
+  std::vector<DisconnectTransactionOutcome> retained_transactions;
   if (session_found != registry->sessions_by_uuid.end()) {
     auth_context_uuid = session_found->second.auth_context_uuid;
-    active_local_transaction_id = session_found->second.local_transaction_id;
-    if (active_local_transaction_id != 0 && disconnect_reason != "parser_killed") {
+    connection_uuid = session_found->second.connection_uuid;
+    auto& session = session_found->second;
+    std::unique_lock<std::mutex> transaction_lock;
+    if (session.transaction_mutex != nullptr) {
+      transaction_lock = std::unique_lock<std::mutex>(*session.transaction_mutex);
+    }
+    if (session.transactions_by_local_id.empty() &&
+        session.local_transaction_id != 0) {
+      ServerTransactionState legacy;
+      legacy.local_transaction_id = session.local_transaction_id;
+      legacy.snapshot_visible_through_local_transaction_id =
+          session.snapshot_visible_through_local_transaction_id;
+      legacy.transaction_uuid = session.transaction_uuid;
+      legacy.transaction_timestamp = session.transaction_timestamp;
+      session.transactions_by_local_id.emplace(legacy.local_transaction_id,
+                                               std::move(legacy));
+    }
+    for (auto it = session.transactions_by_local_id.begin();
+         it != session.transactions_by_local_id.end();) {
+      const auto transaction = it->second;
+      if (disconnect_reason == "parser_killed" ||
+          transaction.lifecycle_state ==
+              ServerTransactionLifecycleState::kFinalityUnknown) {
+        it->second.lifecycle_state =
+            ServerTransactionLifecycleState::kFinalityUnknown;
+        active_local_transaction_id = transaction.local_transaction_id;
+        ++unresolved_transaction_count;
+        retained_transactions.push_back(
+            {it->second, "unknown", "preexisting_finality_unknown", false});
+        ++it;
+        continue;
+      }
+      ServerSessionRecord transaction_session = session;
+      transaction_session.local_transaction_id = transaction.local_transaction_id;
+      transaction_session.snapshot_visible_through_local_transaction_id =
+          transaction.snapshot_visible_through_local_transaction_id;
+      transaction_session.transaction_uuid = transaction.transaction_uuid;
+      transaction_session.transaction_timestamp = transaction.transaction_timestamp;
       engine_api::EngineRollbackTransactionRequest rollback;
-      rollback.context = EngineContextForSession(session_found->second,
+      rollback.context = EngineContextForSession(transaction_session,
                                                  HostedEngineState{},
                                                  request);
       const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
-      if (rolled_back.ok) {
-        rolled_back_local_transaction_id = active_local_transaction_id;
-        active_local_transaction_id = 0;
+      const bool finality_applied =
+          rolled_back.engine_finality_known &&
+          (rolled_back.rollback_finality_state ==
+               "rolled_back_by_engine_inventory" ||
+           rolled_back.rollback_finality_state ==
+               "rolled_back_post_inventory_secondary_failure");
+      if (finality_applied) {
+        rolled_back_local_transaction_id = transaction.local_transaction_id;
+        ++rolled_back_transaction_count;
+        rolled_back_transactions.push_back(
+            {transaction,
+             "known_applied",
+             rolled_back.rollback_finality_state,
+             rolled_back.post_inventory_secondary_failure});
+        it = session.transactions_by_local_id.erase(it);
+      } else {
+        const bool known_not_applied =
+            rolled_back.engine_finality_known;
+        if (!known_not_applied) {
+          it->second.lifecycle_state =
+              ServerTransactionLifecycleState::kFinalityUnknown;
+        }
+        active_local_transaction_id = transaction.local_transaction_id;
+        ++unresolved_transaction_count;
+        retained_transactions.push_back(
+            {it->second,
+             known_not_applied ? "known_not_applied" : "unknown",
+             rolled_back.rollback_finality_state,
+             false});
+        ++it;
+      }
+    }
+    for (const auto& unpublished :
+         session.quarantined_unpublished_transactions) {
+      active_local_transaction_id = unpublished.local_transaction_id;
+      ++unresolved_transaction_count;
+      retained_transactions.push_back(
+          {unpublished,
+           "unknown",
+           "unpublished_identity_alias_not_safely_addressable",
+           false});
+    }
+    session.detached_recovery_quarantined =
+        !retained_transactions.empty();
+    if (session.detached_recovery_quarantined) {
+      const auto retained = session.transactions_by_local_id.begin();
+      if (retained != session.transactions_by_local_id.end()) {
+        session.default_local_transaction_id = retained->first;
+        session.local_transaction_id =
+            retained->second.local_transaction_id;
+        session.snapshot_visible_through_local_transaction_id =
+            retained->second
+                .snapshot_visible_through_local_transaction_id;
+        session.transaction_uuid = retained->second.transaction_uuid;
+        session.transaction_timestamp =
+            retained->second.transaction_timestamp;
+      } else {
+        // Unpublished quarantine evidence is intentionally never projected
+        // into the active/default scalar compatibility fields.
+        session.default_local_transaction_id = 0;
+        session.local_transaction_id = 0;
+        session.snapshot_visible_through_local_transaction_id = 0;
+        session.transaction_uuid.clear();
+        session.transaction_timestamp.clear();
       }
     }
     if (active_local_transaction_id == 0) {
@@ -3548,7 +4182,9 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       temporary_cleanup_state = "skipped_active_transaction_outcome_unknown";
     }
   }
-  const auto erased = registry->sessions_by_uuid.erase(key);
+  const bool retained_for_recovery = unresolved_transaction_count != 0;
+  const std::uint64_t erased =
+      retained_for_recovery ? 0 : registry->sessions_by_uuid.erase(key);
   std::uint64_t auth_contexts_removed = 0;
   if (erased != 0) {
     auth_contexts_removed += registry->auth_contexts_by_uuid.erase(AuthContextKey(auth_context_uuid));
@@ -3561,25 +4197,36 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         ++it;
       }
     }
-  }
-  std::uint64_t prepared_tombstoned = 0;
-  for (auto& [_, prepared] : registry->prepared_by_uuid) {
-    if (prepared.session_uuid == session_uuid) {
-      if (!prepared.closed) ++prepared_tombstoned;
-      prepared.closed = true;
+    if (!sbps::IsZeroUuid(connection_uuid)) {
+      const auto connection_key = UuidBytesToText(connection_uuid);
+      registry->physical_channel_by_connection_uuid.erase(connection_key);
+      registry->negotiated_capabilities_by_connection_uuid.erase(
+          connection_key);
     }
   }
-  CloseSessionObjectHandlesForSession(registry, session_uuid, disconnect_reason);
+  std::uint64_t prepared_tombstoned = 0;
   std::uint64_t cursors_tombstoned = 0;
   std::uint64_t engine_results_released = 0;
+  std::vector<std::array<std::uint8_t, 16>> prepared_to_close;
+  for (const auto& [_, prepared] : registry->prepared_by_uuid) {
+    if (prepared.session_uuid == session_uuid) {
+      if (!prepared.closed) ++prepared_tombstoned;
+      prepared_to_close.push_back(prepared.prepared_statement_uuid);
+    }
+  }
+  for (const auto& prepared_uuid : prepared_to_close) {
+    const auto closed = CloseServerPreparedStatement(
+        registry, session_uuid, prepared_uuid, disconnect_reason);
+    cursors_tombstoned += closed.cursors_closed;
+    engine_results_released += closed.engine_results_released;
+  }
+  CloseSessionObjectHandlesForSession(registry, session_uuid, disconnect_reason);
   std::uint64_t public_abi_contexts_closed = 0;
   std::uint64_t request_finality_records_updated = 0;
   for (auto& [_, cursor] : registry->cursors_by_uuid) {
     if (cursor.session_uuid == session_uuid) {
       const bool had_engine_result = cursor.engine_result != nullptr;
-      if (cursor.engine_result != nullptr) {
-        (void)sb_engine_result_release(cursor.engine_result);
-        cursor.engine_result = nullptr;
+      if (ReleaseAndClearServerCursorResources(registry, &cursor)) {
         ++engine_results_released;
       }
       if (!cursor.closed) ++cursors_tombstoned;
@@ -3641,6 +4288,62 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
                                                   temporary_private_metadata_retired,
                                                   temporary_cleanup_state,
                                                   active_local_transaction_id);
+  for (const auto& outcome : rolled_back_transactions) {
+    const auto& transaction = outcome.transaction;
+    result.diagnostics.push_back(DetachCleanupDiagnostic(
+        outcome.secondary_failure
+            ? "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK_SECONDARY_FAILURE"
+            : "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK",
+        outcome.secondary_failure ? ServerDiagnosticSeverity::kWarning
+                                  : ServerDiagnosticSeverity::kInfo,
+        outcome.secondary_failure
+            ? "Engine inventory applied rollback finality, but a secondary cleanup failed after finality."
+            : "Orderly parser disconnect rolled back an exact MGA transaction before detaching.",
+        {{"local_transaction_id",
+          std::to_string(transaction.local_transaction_id)},
+         {"transaction_uuid", transaction.transaction_uuid},
+         {"snapshot_visible_through_local_transaction_id",
+          std::to_string(
+              transaction
+                  .snapshot_visible_through_local_transaction_id)},
+         {"finality", outcome.finality},
+         {"engine_finality_detail", outcome.engine_detail},
+         {"post_inventory_secondary_failure",
+          outcome.secondary_failure ? "true" : "false"},
+         {"mga_finality_authority", "engine"}}));
+  }
+  for (const auto& outcome : retained_transactions) {
+    const auto& transaction = outcome.transaction;
+    const bool finality_unknown = outcome.finality == "unknown";
+    result.diagnostics.push_back(DetachCleanupDiagnostic(
+        finality_unknown
+            ? "ENGINE.DBLC_TRANSACTION_OUTCOME_UNKNOWN"
+            : "ENGINE.DBLC_TRANSACTION_KNOWN_NOT_APPLIED",
+        ServerDiagnosticSeverity::kWarning,
+        finality_unknown
+            ? "Disconnect retained an exact MGA selector in recovery quarantine because engine finality is unknown."
+            : "Disconnect retained an exact active MGA selector because the engine conclusively did not apply rollback.",
+        {{"local_transaction_id",
+          std::to_string(transaction.local_transaction_id)},
+         {"transaction_uuid", transaction.transaction_uuid},
+         {"snapshot_visible_through_local_transaction_id",
+          std::to_string(
+              transaction
+                  .snapshot_visible_through_local_transaction_id)},
+         {"finality", outcome.finality},
+         {"engine_finality_detail", outcome.engine_detail},
+         {"mga_finality_authority", "engine"}}));
+  }
+  if (retained_for_recovery) {
+    result.diagnostics.push_back(DetachCleanupDiagnostic(
+        "ENGINE.DBLC_DETACH_RECOVERY_QUARANTINED",
+        ServerDiagnosticSeverity::kWarning,
+        "The session remains quarantined until engine-owned transaction finality is recovered.",
+        {{"session_uuid", key},
+         {"unresolved_transaction_count",
+          std::to_string(unresolved_transaction_count)},
+         {"session_erased", "false"}}));
+  }
   if (erased != 0) {
     result.diagnostics.push_back(DetachCleanupDiagnostic(
         "ENGINE.DBLC_DETACH_CLEANUP_COMPLETE",
@@ -3663,9 +4366,11 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       result.diagnostics.push_back(DetachCleanupDiagnostic(
           "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK",
           ServerDiagnosticSeverity::kInfo,
-          "Orderly parser disconnect rolled back the active MGA transaction before detaching the session.",
+          "Orderly parser disconnect rolled back the session's active MGA transactions before detaching.",
           {{"detail", cleanup_detail},
            {"local_transaction_id", std::to_string(rolled_back_local_transaction_id)},
+           {"rolled_back_transaction_count",
+            std::to_string(rolled_back_transaction_count)},
            {"mga_finality_authority", "engine"}}));
     }
     if (active_local_transaction_id != 0) {
@@ -3675,24 +4380,36 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
           "Parser disconnect detached the session but did not commit or roll back the active MGA transaction.",
           {{"detail", cleanup_detail},
            {"local_transaction_id", std::to_string(active_local_transaction_id)},
+           {"unresolved_transaction_count",
+            std::to_string(unresolved_transaction_count)},
            {"mga_finality_authority", "engine"}}));
     }
   }
   std::vector<std::uint8_t> out;
-  PutString(&out, erased == 0 ? "session_not_found" : "detached");
+  const std::string disconnect_outcome =
+      retained_for_recovery ? "recovery_quarantined"
+                            : (erased == 0 ? "session_not_found"
+                                           : "detached");
+  PutString(&out, disconnect_outcome);
   PutUuid(&out, session_uuid);
   PutString(&out, cleanup_detail);
   result.payload = std::move(out);
   result.session_uuid = session_uuid;
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
-  result.accepted = erased != 0;
-  registry->channel_state = erased == 0 ? ServerChannelState::kFailed : ServerChannelState::kDetached;
+  result.accepted = erased != 0 || retained_for_recovery;
+  // Recovery quarantine is session-scoped.  It must not drain cursors or
+  // requests owned by unrelated physical channels in this registry.
+  registry->channel_state =
+      retained_for_recovery || !registry->sessions_by_uuid.empty()
+          ? ServerChannelState::kReady
+          : (erased == 0 ? ServerChannelState::kFailed
+                         : ServerChannelState::kDetached);
   RecordFinality(registry,
                  request,
                  session_uuid,
                  auth_context_uuid,
                  "disconnect_notice",
-                 erased == 0 ? "session_not_found" : "detached",
+                 disconnect_outcome,
                  cleanup_detail);
   return result;
 }
@@ -3862,6 +4579,8 @@ ServerSessionBindingControlResult EvaluateServerSessionTakeoverProbe(
   }
   std::string detail;
   const bool claims_match = TakeoverClaimsMatch(session_it->second, request, &detail);
+  const auto physical_projection = ProjectTakeoverPhysicalChannel(
+      registry, session_it->second, request);
   ServerSessionBindingControlResult result;
   result.accepted = true;
   result.target_session_uuid = session_it->first;
@@ -3873,9 +4592,15 @@ ServerSessionBindingControlResult EvaluateServerSessionTakeoverProbe(
   if (session_it->second.local_transaction_id != 0) {
     result.probe_flags |= kServerTakeoverProbeActiveTransaction;
   }
-  if (claims_match) {
+  if (claims_match &&
+      (!physical_projection.connection_changes ||
+       physical_projection.physical_channel_admitted)) {
     result.probe_flags |= kServerTakeoverProbeTakeoverWouldPass;
     result.takeover_allowed = true;
+  } else if (claims_match) {
+    result.detail = "takeover_physical_channel_not_admitted";
+    result.diagnostic_code =
+        "SERVER.SESSION_TAKEOVER.PHYSICAL_CHANNEL_REQUIRED";
   } else {
     result.diagnostic_code = "SERVER.SESSION_TAKEOVER.CLAIM_MISMATCH";
   }
@@ -3921,8 +4646,32 @@ ServerSessionBindingControlResult ApplyServerSessionTakeoverRequest(
                                   {{"session_uuid", session_it->first}});
   }
 
+  const auto physical_projection =
+      ProjectTakeoverPhysicalChannel(*registry, session, request);
+  if (physical_projection.connection_changes &&
+      !physical_projection.physical_channel_admitted) {
+    return SessionControlRejected(
+        "SERVER.SESSION_TAKEOVER.PHYSICAL_CHANNEL_REQUIRED",
+        "takeover_physical_channel_not_admitted",
+        "TAKEOVER_REQUEST destination is not an admitted physical parser channel.",
+        {{"session_uuid", session_it->first},
+         {"destination_connection_uuid",
+          UuidBytesToText(request.attachment_id)}});
+  }
+
   if ((request.mask & kServerTakeoverClaimAttachmentId) &&
       !IsZeroUuidBytes(request.attachment_id)) {
+    if (physical_projection.connection_changes) {
+      RetireTransferablePreparedBindingsForPhysicalChannelChange(
+          registry, session.session_uuid);
+      session.server_channel_uuid = physical_projection.server_channel_uuid;
+      session.transaction_routing_v2_negotiated =
+          physical_projection.transaction_routing_v2_negotiated;
+      session.prepared_metadata_transfer_v1_negotiated =
+          physical_projection.prepared_metadata_transfer_v1_negotiated;
+      session.relation_descriptor_projection_v3_negotiated =
+          physical_projection.relation_descriptor_projection_v3_negotiated;
+    }
     session.attachment_id = request.attachment_id;
     session.connection_uuid = request.attachment_id;
   }

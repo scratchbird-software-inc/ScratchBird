@@ -42,7 +42,6 @@ public-release preset records that exception with `SB_LLVM_MIN_MAJOR=22`.
 Windows GitHub-hosted proof workflows use the current MSYS2 UCRT64 LLVM 22
 package and pass the same bounded exception explicitly; other Windows release
 proofs retain the common LLVM 23 floor.
-
 LLVM is mandatory at runtime as well as at build time. Release binaries do not
 embed a Linux or Windows build-machine path: Linux loads the versioned LLVM
 SONAME supplied by `libllvm23`/`llvm-libs >= 23`, while the Windows bundle

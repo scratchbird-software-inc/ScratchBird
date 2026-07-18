@@ -28,6 +28,8 @@
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "scratchbird/engine/sblr/lowering.hpp"
+#include "diagnostic_fields.hpp"
+#include "prepared_metadata_binding.hpp"
 #include "../engine/sblr/sblr_opcode_registry.hpp"
 
 #include <algorithm>
@@ -52,6 +54,7 @@ namespace {
 
 namespace agents = scratchbird::core::agents;
 namespace engine_api = scratchbird::engine::internal_api;
+namespace engine_bridge = scratchbird::server_engine_bridge;
 
 constexpr std::uint32_t kSchemaPrepareSblrTestV1 = 4001;
 constexpr std::uint32_t kSchemaPrepareResultTestV1 = 4002;
@@ -61,6 +64,12 @@ constexpr std::uint32_t kSchemaFetchTestV1 = 4005;
 constexpr std::uint32_t kSchemaFetchResultTestV1 = 4006;
 constexpr std::uint32_t kSchemaCloseCursorTestV1 = 4007;
 constexpr std::uint32_t kSchemaCloseCursorResultTestV1 = 4008;
+constexpr std::uint32_t kSchemaPrepareSblrTestV2 = 4009;
+constexpr std::uint32_t kSchemaPrepareResultTestV2 = 4010;
+constexpr std::uint32_t kSchemaExecuteSblrTestV2 = 4011;
+constexpr std::uint32_t kSchemaExecuteResultTestV2 = 4012;
+constexpr std::uint32_t kSchemaClosePreparedSblrTestV1 = 4013;
+constexpr std::uint32_t kSchemaClosePreparedSblrResultTestV1 = 4014;
 constexpr std::uint32_t kCursorCloseFlagCancel = 1u << 0;
 constexpr std::uint16_t kLongStringSentinel = 0xffff;
 
@@ -826,6 +835,15 @@ struct PreparePayload {
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_generation = 0;
   std::string encoded_sblr_envelope;
+  bool transaction_routed = false;
+  std::uint64_t local_transaction_id = 0;
+  std::string transaction_uuid;
+};
+
+enum class ExecuteTransactionRoute : std::uint8_t {
+  kLegacyDefault = 0,
+  kSelected = 1,
+  kBeginAdditional = 2,
 };
 
 struct ExecutePayload {
@@ -834,6 +852,11 @@ struct ExecutePayload {
   bool cursor_requested = false;
   std::string encoded_sblr_envelope;
   std::vector<std::uint8_t> data_packet;
+  bool transaction_routed = false;
+  ExecuteTransactionRoute transaction_route =
+      ExecuteTransactionRoute::kLegacyDefault;
+  std::uint64_t local_transaction_id = 0;
+  std::string transaction_uuid;
 };
 
 struct CursorPayload {
@@ -844,7 +867,14 @@ struct CursorPayload {
   std::uint32_t fetch_flags = 0;
 };
 
-std::optional<PreparePayload> DecodePreparePayload(const std::vector<std::uint8_t>& payload) {
+struct ClosePreparedSblrPayload {
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::array<std::uint8_t, 16> prepared_statement_uuid{};
+};
+
+std::optional<PreparePayload> DecodePreparePayload(
+    const std::vector<std::uint8_t>& payload,
+    std::uint32_t schema_id) {
   if (payload.size() < 16 + 16 + 8 + 8 + 8) return std::nullopt;
   std::size_t offset = 0;
   PreparePayload out;
@@ -853,20 +883,63 @@ std::optional<PreparePayload> DecodePreparePayload(const std::vector<std::uint8_
   out.catalog_generation = GetU64(payload, offset); offset += 8;
   out.security_epoch = GetU64(payload, offset); offset += 8;
   out.policy_generation = GetU64(payload, offset); offset += 8;
+  if (schema_id == kSchemaPrepareSblrTestV2) {
+    if (offset + 8 > payload.size()) return std::nullopt;
+    out.transaction_routed = true;
+    out.local_transaction_id = GetU64(payload, offset);
+    offset += 8;
+    if (!ReadString(payload, &offset, &out.transaction_uuid)) return std::nullopt;
+    if (out.local_transaction_id == 0 || out.transaction_uuid.empty()) {
+      return std::nullopt;
+    }
+  } else if (schema_id != kSchemaPrepareSblrTestV1) {
+    return std::nullopt;
+  }
   if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
+  if (offset != payload.size()) return std::nullopt;
   return out;
 }
 
-std::optional<ExecutePayload> DecodeExecutePayload(const std::vector<std::uint8_t>& payload) {
+std::optional<ExecutePayload> DecodeExecutePayload(
+    const std::vector<std::uint8_t>& payload,
+    std::uint32_t schema_id) {
   if (payload.size() < 16 + 16 + 1) return std::nullopt;
   std::size_t offset = 0;
   ExecutePayload out;
   out.session_uuid = GetUuid(payload, offset); offset += 16;
   out.prepared_statement_uuid = GetUuid(payload, offset); offset += 16;
   out.cursor_requested = payload[offset++] != 0;
-  if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
-  if (offset < payload.size() && !ReadBytes(payload, &offset, &out.data_packet)) {
+  if (schema_id == kSchemaExecuteSblrTestV2) {
+    if (offset + 1 + 8 > payload.size()) return std::nullopt;
+    out.transaction_routed = true;
+    const auto route = payload[offset++];
+    if (route > static_cast<std::uint8_t>(
+                    ExecuteTransactionRoute::kBeginAdditional)) {
+      return std::nullopt;
+    }
+    out.transaction_route = static_cast<ExecuteTransactionRoute>(route);
+    out.local_transaction_id = GetU64(payload, offset);
+    offset += 8;
+    if (!ReadString(payload, &offset, &out.transaction_uuid)) return std::nullopt;
+    const bool selector_present =
+        out.local_transaction_id != 0 && !out.transaction_uuid.empty();
+    const bool selector_partially_present =
+        out.local_transaction_id != 0 || !out.transaction_uuid.empty();
+    if ((out.transaction_route == ExecuteTransactionRoute::kSelected &&
+         !selector_present) ||
+        (out.transaction_route != ExecuteTransactionRoute::kSelected &&
+         selector_partially_present)) {
+      return std::nullopt;
+    }
+  } else if (schema_id != kSchemaExecuteSblrTestV1) {
     return std::nullopt;
+  }
+  if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
+  if (schema_id == kSchemaExecuteSblrTestV2) {
+    if (!ReadBytes(payload, &offset, &out.data_packet)) return std::nullopt;
+  } else if (offset < payload.size() &&
+             !ReadBytes(payload, &offset, &out.data_packet)) {
+      return std::nullopt;
   }
   if (offset != payload.size()) return std::nullopt;
   return out;
@@ -887,6 +960,19 @@ std::optional<CursorPayload> DecodeCursorPayload(const std::vector<std::uint8_t>
     out.fetch_flags = GetU32(payload, 48);
   }
   if (out.max_rows == 0) out.max_rows = 1;
+  return out;
+}
+
+std::optional<ClosePreparedSblrPayload> DecodeClosePreparedSblrPayload(
+    const std::vector<std::uint8_t>& payload) {
+  if (payload.size() != 32) return std::nullopt;
+  ClosePreparedSblrPayload out;
+  out.session_uuid = GetUuid(payload, 0);
+  out.prepared_statement_uuid = GetUuid(payload, 16);
+  if (sbps::IsZeroUuid(out.session_uuid) ||
+      sbps::IsZeroUuid(out.prepared_statement_uuid)) {
+    return std::nullopt;
+  }
   return out;
 }
 
@@ -920,6 +1006,67 @@ std::vector<std::uint8_t> EncodeExecuteResult(const std::string& outcome,
   return out;
 }
 
+void PutTransactionSelector(std::vector<std::uint8_t>* out,
+                            const ServerTransactionState& transaction) {
+  PutU64(out, transaction.local_transaction_id);
+  PutString(out, transaction.transaction_uuid);
+}
+
+std::vector<std::uint8_t> EncodeExecuteResultV2(
+    const std::string& outcome,
+    const std::array<std::uint8_t, 16>& server_request_uuid,
+    const std::array<std::uint8_t, 16>& cursor_uuid,
+    std::uint64_t row_count,
+    const std::string& operation_id,
+    const std::string& row_packet,
+    const std::string& detail,
+    const ServerTransactionResponseState& transaction_state,
+    const std::vector<ServerDiagnostic>& diagnostics = {}) {
+  auto out = EncodeExecuteResult(outcome,
+                                 server_request_uuid,
+                                 cursor_uuid,
+                                 row_count,
+                                 operation_id,
+                                 row_packet,
+                                 detail);
+  std::uint8_t flags = 0;
+  if (transaction_state.selected_present) flags |= 1u << 0;
+  if (transaction_state.finality ==
+      ServerTransactionResponseState::Finality::kKnownApplied) {
+    flags |= 1u << 1;
+  }
+  if (transaction_state.finalized_present) flags |= 1u << 2;
+  if (transaction_state.replacement_present) flags |= 1u << 3;
+  if (transaction_state.catalog_invalidation_applied) flags |= 1u << 4;
+  PutU8(&out, flags);
+  PutU8(&out, static_cast<std::uint8_t>(transaction_state.finality));
+  PutU8(&out,
+        static_cast<std::uint8_t>(transaction_state.replacement_reason));
+  if (transaction_state.selected_present) {
+    PutTransactionSelector(&out, transaction_state.selected);
+  }
+  if (transaction_state.finalized_present) {
+    PutTransactionSelector(&out, transaction_state.finalized);
+  }
+  if (transaction_state.replacement_present) {
+    PutTransactionSelector(&out, transaction_state.replacement);
+  }
+  PutString(&out, transaction_state.outcome_detail);
+  PutString(&out, transaction_state.diagnostic_code);
+  // V2 execution rejection is a typed application outcome, so the frame
+  // cannot be replaced with the generic error-frame schema without losing
+  // transaction selector/finality authority.  Carry the ordinary SBPS
+  // message-vector payload as a length-delimited trailer instead.  Reusing
+  // that codec also applies the single public diagnostic-field registry at
+  // the same server boundary as every other diagnostic frame.
+  if (!diagnostics.empty()) {
+    PutBytes(&out,
+             sbps::EncodeMessageVectorSet(diagnostics,
+                                          server_request_uuid));
+  }
+  return out;
+}
+
 std::vector<std::uint8_t> EncodeFetchResult(const std::array<std::uint8_t, 16>& cursor_uuid,
                                             std::uint64_t row_count,
                                             const std::string& row_packet,
@@ -944,6 +1091,17 @@ std::vector<std::uint8_t> EncodeCloseCursorResult(const std::string& outcome,
   return out;
 }
 
+std::vector<std::uint8_t> EncodeClosePreparedSblrResult(
+    const std::string& outcome,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
+    const std::string& detail) {
+  std::vector<std::uint8_t> out;
+  PutString(&out, outcome);
+  PutUuid(&out, prepared_statement_uuid);
+  PutString(&out, detail);
+  return out;
+}
+
 std::optional<ServerSessionRecord> FindSession(const ServerSessionRegistry& registry,
                                                const std::array<std::uint8_t, 16>& session_uuid) {
   const auto found = registry.sessions_by_uuid.find(UuidBytesToText(session_uuid));
@@ -956,6 +1114,30 @@ ServerSessionRecord* FindMutableSession(ServerSessionRegistry* registry,
   if (registry == nullptr) return nullptr;
   const auto found = registry->sessions_by_uuid.find(UuidBytesToText(session_uuid));
   return found == registry->sessions_by_uuid.end() ? nullptr : &found->second;
+}
+
+bool ExactV2FrameBinding(const sbps::Frame& request,
+                         const std::array<std::uint8_t, 16>& payload_session_uuid,
+                         const ServerSessionRecord& session) {
+  return !sbps::IsZeroUuid(request.header.connection_uuid) &&
+         !sbps::IsZeroUuid(request.header.session_uuid) &&
+         !sbps::IsZeroUuid(payload_session_uuid) &&
+         !sbps::IsZeroUuid(session.connection_uuid) &&
+         request.header.connection_uuid == session.connection_uuid &&
+         request.header.session_uuid == payload_session_uuid &&
+         session.session_uuid == payload_session_uuid;
+}
+
+bool DefaultTransactionFinalityUnknown(const ServerSessionRecord& session) {
+  const std::uint64_t default_id =
+      session.default_local_transaction_id != 0
+          ? session.default_local_transaction_id
+          : session.local_transaction_id;
+  if (default_id == 0) return false;
+  const auto found = session.transactions_by_local_id.find(default_id);
+  return found != session.transactions_by_local_id.end() &&
+         found->second.lifecycle_state ==
+             ServerTransactionLifecycleState::kFinalityUnknown;
 }
 
 ServerPreparedStatementRecord* FindPreparedByName(ServerSessionRegistry* registry,
@@ -1351,6 +1533,24 @@ std::string PreparedAuthorityProofPayload(const ServerPreparedStatementRecord& p
   AppendPreparedAuthorityProofField(&out,
                                     "session_object_handle_generation",
                                     prepared.session_object_handle_generation);
+  AppendPreparedAuthorityProofField(&out,
+                                    "prepare_local_transaction_id",
+                                    prepared.prepare_local_transaction_id);
+  AppendPreparedAuthorityProofField(&out,
+                                    "prepare_transaction_uuid",
+                                    prepared.prepare_transaction_uuid);
+  AppendPreparedAuthorityProofField(
+      &out,
+      "prepare_snapshot_visible_through_local_transaction_id",
+      prepared.prepare_snapshot_visible_through_local_transaction_id);
+  AppendPreparedAuthorityProofField(
+      &out,
+      "prepared_metadata_transferable",
+      prepared.prepared_metadata_transferable ? "true" : "false");
+  AppendPreparedAuthorityProofField(
+      &out,
+      "prepared_metadata_binding_present",
+      prepared.prepared_metadata_binding != nullptr ? "true" : "false");
   AppendPreparedAuthorityProofField(&out, "catalog_generation", session.catalog_generation);
   AppendPreparedAuthorityProofField(&out, "security_epoch", session.security_epoch);
   AppendPreparedAuthorityProofField(&out, "descriptor_epoch", session.descriptor_epoch);
@@ -1436,6 +1636,10 @@ std::string PreparedStatementAuthorityMismatchReason(
   if (prepared.principal_uuid != session.principal_uuid ||
       prepared.effective_user_uuid != session.effective_user_uuid) {
     return "prepared_statement_cross_user";
+  }
+  if (prepared.prepared_metadata_transferable !=
+      (prepared.prepared_metadata_binding != nullptr)) {
+    return "prepared_statement_metadata_binding_stale";
   }
   if (prepared.catalog_generation != session.catalog_generation) {
     return "prepared_statement_catalog_epoch_stale";
@@ -1576,6 +1780,7 @@ std::string PreparedStatementRefusalDetail(std::string_view mismatch) {
       mismatch == "prepared_statement_dependency_stale" ||
       mismatch == "prepared_statement_execution_context_missing" ||
       mismatch == "prepared_statement_execution_context_stale" ||
+      mismatch == "prepared_statement_metadata_binding_stale" ||
       mismatch == "prepared_statement_language_context_stale" ||
       mismatch.starts_with("prepared_statement_object_handle_")) {
     return "prepared_statement_epoch_stale";
@@ -2340,6 +2545,39 @@ SessionOperationResult FailureWithDiagnostics(
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
   result.diagnostics = std::move(diagnostics);
   result.payload = EncodePrepareResult("rejected", {}, "sblr.dispatch", std::move(detail));
+  return result;
+}
+
+SessionOperationResult V2TransactionOutcome(
+    bool accepted,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    std::string operation_id,
+    std::string row_packet,
+    std::string detail,
+    ServerTransactionResponseState transaction_state,
+    std::vector<ServerDiagnostic> diagnostics = {}) {
+  SessionOperationResult result;
+  result.accepted = accepted;
+  result.response_message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult);
+  result.response_schema_id = kSchemaExecuteResultTestV2;
+  // A known/unknown finality outcome is an application result, not a transport
+  // decoding error.  Keeping the V2 payload intact lets clients make the
+  // no-retry decision from typed finality state.
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = session_uuid;
+  result.payload = EncodeExecuteResultV2(accepted ? "accepted" : "rejected",
+                                         request_uuid,
+                                         {},
+                                         0,
+                                         operation_id,
+                                         row_packet,
+                                         detail,
+                                         transaction_state,
+                                         diagnostics);
+  result.transaction_state = std::move(transaction_state);
+  result.diagnostics = std::move(diagnostics);
   return result;
 }
 
@@ -3280,7 +3518,10 @@ void AppendDmlInsertValueOperands(const ServerSessionRecord& session,
   const bool explicit_column_list =
       JsonBoolField(encoded, "insert_values_column_list_present", false) ||
       TextBoolField(encoded, "insert_values_column_list_present", false);
-  if (compact_format == "sbsql.insert_values.cells.v1" && !compact_payload.empty()) {
+  const bool supported_compact_format =
+      compact_format == "sblr.dml.insert.cells.hex.v1" ||
+      compact_format == "sbsql.insert_values.cells.v1";
+  if (supported_compact_format && !compact_payload.empty()) {
     AppendOperationOperand(operation_envelope,
                            "insert_values_row_count",
                            std::to_string(row_count));
@@ -3315,7 +3556,7 @@ void AppendDmlInsertValueOperands(const ServerSessionRecord& session,
     return;
   }
   auto insert_cells =
-      compact_format == "sbsql.insert_values.cells.v1" && !compact_payload.empty()
+      supported_compact_format && !compact_payload.empty()
           ? ExtractCompactInsertValueOperandCells(compact_payload,
                                                   row_count,
                                                   column_count)
@@ -4011,6 +4252,7 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
 
 bool OperationNeedsTransactionContext(std::string_view operation_id) {
   return operation_id.starts_with("dml.") ||
+         operation_id.starts_with("routine.") ||
          operation_id == "bridge.begin" ||
          operation_id == "bridge.commit" ||
          operation_id == "bridge.rollback" ||
@@ -4150,26 +4392,96 @@ std::string JoinUuidList(const std::vector<std::array<std::uint8_t, 16>>& values
   return out;
 }
 
-void ApplyBeginTransactionResultToSession(
-    const engine_api::EngineBeginTransactionResult& result,
-    ServerSessionRecord* session) {
+void ClearLegacyDefaultTransactionProjection(ServerSessionRecord* session) {
   if (session == nullptr) return;
-  session->local_transaction_id = result.local_transaction_id;
-  session->snapshot_visible_through_local_transaction_id =
-      result.snapshot_visible_through_local_transaction_id;
-  session->transaction_uuid = result.transaction_uuid.canonical;
-  session->transaction_timestamp = EngineEvidenceValue(result, "transaction_timestamp");
+  session->default_local_transaction_id = 0;
+  session->local_transaction_id = 0;
+  session->snapshot_visible_through_local_transaction_id = 0;
+  session->transaction_uuid.clear();
+  session->transaction_timestamp.clear();
 }
 
-void ApplyAutocommitBoundaryResultToSession(
+bool PublishLegacyDefaultReplacement(ServerSessionRecord* session,
+                                     std::uint64_t finalized_local_transaction_id,
+                                     ServerTransactionState replacement) {
+  if (session == nullptr ||
+      !IsCompleteEngineTransactionIdentity(
+          replacement.local_transaction_id,
+          replacement.transaction_uuid)) {
+    return false;
+  }
+  bool identity_alias = session->transactions_by_local_id.contains(
+      replacement.local_transaction_id);
+  for (const auto& [local_id, existing] :
+       session->transactions_by_local_id) {
+    (void)local_id;
+    if (existing.transaction_uuid == replacement.transaction_uuid) {
+      identity_alias = true;
+      break;
+    }
+  }
+  if (identity_alias) {
+    session->transactions_by_local_id.erase(finalized_local_transaction_id);
+    ClearLegacyDefaultTransactionProjection(session);
+    return false;
+  }
+  replacement.begin_ordinal = session->next_transaction_begin_ordinal++;
+  const auto inserted = session->transactions_by_local_id.emplace(
+      replacement.local_transaction_id, replacement);
+  if (!inserted.second) {
+    session->transactions_by_local_id.erase(finalized_local_transaction_id);
+    ClearLegacyDefaultTransactionProjection(session);
+    return false;
+  }
+  session->transactions_by_local_id.erase(finalized_local_transaction_id);
+  session->default_local_transaction_id = replacement.local_transaction_id;
+  session->local_transaction_id = replacement.local_transaction_id;
+  session->snapshot_visible_through_local_transaction_id =
+      replacement.snapshot_visible_through_local_transaction_id;
+  session->transaction_uuid = replacement.transaction_uuid;
+  session->transaction_timestamp = replacement.transaction_timestamp;
+  return true;
+}
+
+bool ApplyBeginTransactionResultToSession(
+    const engine_api::EngineBeginTransactionResult& result,
+    ServerSessionRecord* session) {
+  if (session == nullptr) return false;
+  ServerTransactionState replacement;
+  replacement.local_transaction_id = result.local_transaction_id;
+  replacement.snapshot_visible_through_local_transaction_id =
+      result.snapshot_visible_through_local_transaction_id;
+  replacement.transaction_uuid = result.transaction_uuid.canonical;
+  replacement.transaction_timestamp =
+      EngineEvidenceValue(result, "transaction_timestamp");
+  replacement.isolation_level = session->default_transaction_isolation_level;
+  replacement.read_only = session->attach_mode == "read_only" ||
+                          session->default_transaction_read_only;
+  return PublishLegacyDefaultReplacement(
+      session, session->default_local_transaction_id, std::move(replacement));
+}
+
+bool ApplyAutocommitBoundaryResultToSession(
     const engine_api::EngineAutocommitBoundaryResult& result,
     ServerSessionRecord* session) {
-  if (session == nullptr || result.replacement_local_transaction_id == 0) return;
-  session->local_transaction_id = result.replacement_local_transaction_id;
-  session->snapshot_visible_through_local_transaction_id =
+  if (session == nullptr ||
+      !IsCompleteEngineTransactionIdentity(
+          result.replacement_local_transaction_id,
+          result.replacement_transaction_uuid.canonical)) {
+    return false;
+  }
+  ServerTransactionState replacement;
+  replacement.local_transaction_id = result.replacement_local_transaction_id;
+  replacement.snapshot_visible_through_local_transaction_id =
       result.replacement_snapshot_visible_through_local_transaction_id;
-  session->transaction_uuid = result.replacement_transaction_uuid.canonical;
-  session->transaction_timestamp = result.replacement_transaction_timestamp;
+  replacement.transaction_uuid = result.replacement_transaction_uuid.canonical;
+  replacement.transaction_timestamp = result.replacement_transaction_timestamp;
+  replacement.isolation_level = result.replacement_isolation_level.empty()
+                                    ? session->default_transaction_isolation_level
+                                    : result.replacement_isolation_level;
+  replacement.read_only = result.replacement_read_only;
+  return PublishLegacyDefaultReplacement(
+      session, session->default_local_transaction_id, std::move(replacement));
 }
 
 engine_api::EngineRequestContext ReplacementTransactionContext(
@@ -4225,6 +4537,85 @@ engine_api::EngineRequestContext ActiveTransactionContext(
   return context;
 }
 
+ServerTransactionState TransactionStateFromBeginResult(
+    const engine_api::EngineBeginTransactionResult& result,
+    const ServerSessionRecord& session);
+
+bool TransactionIdentityAliasesSession(
+    const ServerSessionRecord& session,
+    const ServerTransactionState& transaction,
+    bool* local_id_alias = nullptr) {
+  const bool id_alias = session.transactions_by_local_id.contains(
+      transaction.local_transaction_id);
+  if (local_id_alias != nullptr) *local_id_alias = id_alias;
+  if (id_alias) return true;
+  return std::any_of(
+      session.transactions_by_local_id.begin(),
+      session.transactions_by_local_id.end(),
+      [&](const auto& entry) {
+        return entry.second.transaction_uuid == transaction.transaction_uuid;
+      });
+}
+
+void QuarantineUnpublishedTransaction(
+    ServerSessionRecord* session,
+    ServerTransactionState transaction) {
+  if (session == nullptr || transaction.local_transaction_id == 0 ||
+      transaction.transaction_uuid.empty()) {
+    return;
+  }
+  const bool already_retained = std::any_of(
+      session->quarantined_unpublished_transactions.begin(),
+      session->quarantined_unpublished_transactions.end(),
+      [&](const ServerTransactionState& existing) {
+        return existing.local_transaction_id ==
+                   transaction.local_transaction_id &&
+               existing.transaction_uuid == transaction.transaction_uuid;
+      });
+  if (!already_retained) {
+    transaction.lifecycle_state =
+        ServerTransactionLifecycleState::kFinalityUnknown;
+    session->quarantined_unpublished_transactions.push_back(
+        std::move(transaction));
+  }
+  session->detached_recovery_quarantined = true;
+}
+
+bool RollbackUnpublishedTransaction(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    const ServerTransactionState& transaction,
+    std::string* rollback_detail = nullptr) {
+  const auto* database = HostedDatabaseForSession(engine_state, session);
+  if (database == nullptr || transaction.local_transaction_id == 0 ||
+      transaction.transaction_uuid.empty()) {
+    if (rollback_detail != nullptr) {
+      *rollback_detail = "unpublished_transaction_cleanup_context_unavailable";
+    }
+    return false;
+  }
+  ServerSessionRecord transaction_session = session;
+  transaction_session.local_transaction_id = transaction.local_transaction_id;
+  transaction_session.snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  transaction_session.transaction_uuid = transaction.transaction_uuid;
+  transaction_session.transaction_timestamp = transaction.transaction_timestamp;
+  engine_api::EngineRollbackTransactionRequest rollback;
+  rollback.context = ActiveTransactionContext(transaction_session,
+                                              *database,
+                                              request_uuid);
+  const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+  if (rollback_detail != nullptr) {
+    *rollback_detail = rolled_back.rollback_finality_state;
+  }
+  return rolled_back.engine_finality_known &&
+         (rolled_back.rollback_finality_state ==
+              "rolled_back_by_engine_inventory" ||
+          rolled_back.rollback_finality_state ==
+              "rolled_back_post_inventory_secondary_failure");
+}
+
 bool BeginReplacementTransactionForSession(ServerSessionRecord* session,
                                            const HostedEngineState& engine_state,
                                            const std::array<std::uint8_t, 16>& request_uuid,
@@ -4250,7 +4641,10 @@ bool BeginReplacementTransactionForSession(ServerSessionRecord* session,
   begin.transaction_policy_profile.encoded_profiles.push_back(
       std::string("transaction_read_mode:") + (begin.context.read_only_mode ? "read_only" : "read_write"));
   const auto replacement = engine_api::EngineBeginTransaction(begin);
-  if (!replacement.ok || replacement.local_transaction_id == 0) {
+  if (!replacement.ok ||
+      !IsCompleteEngineTransactionIdentity(
+          replacement.local_transaction_id,
+          replacement.transaction_uuid.canonical)) {
     if (diagnostic_code != nullptr) {
       *diagnostic_code = replacement.diagnostics.empty() || replacement.diagnostics.front().code.empty()
                              ? "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED"
@@ -4263,8 +4657,212 @@ bool BeginReplacementTransactionForSession(ServerSessionRecord* session,
     }
     return false;
   }
-  ApplyBeginTransactionResultToSession(replacement, session);
+  const auto replacement_state =
+      TransactionStateFromBeginResult(replacement, *session);
+  bool local_id_alias = false;
+  if (TransactionIdentityAliasesSession(*session,
+                                        replacement_state,
+                                        &local_id_alias)) {
+    std::string cleanup_detail = "cleanup_not_safe_for_local_id_alias";
+    const bool cleanup_applied =
+        !local_id_alias &&
+        RollbackUnpublishedTransaction(*session,
+                                       engine_state,
+                                       request_uuid,
+                                       replacement_state,
+                                       &cleanup_detail);
+    if (!cleanup_applied) {
+      QuarantineUnpublishedTransaction(session, replacement_state);
+    } else {
+      session->detached_recovery_quarantined = true;
+    }
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = cleanup_applied
+                               ? "replacement_identity_alias_cleanup_applied"
+                               : "replacement_identity_alias_cleanup_unresolved:" +
+                                     cleanup_detail;
+    }
+    return false;
+  }
+  if (!ApplyBeginTransactionResultToSession(replacement, session)) {
+    std::string cleanup_detail;
+    const bool cleanup_applied = RollbackUnpublishedTransaction(
+        *session,
+        engine_state,
+        request_uuid,
+        replacement_state,
+        &cleanup_detail);
+    if (!cleanup_applied) {
+      QuarantineUnpublishedTransaction(session, replacement_state);
+    } else {
+      session->detached_recovery_quarantined = true;
+    }
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = cleanup_applied
+                               ? "replacement_publication_failed_cleanup_applied"
+                               : "replacement_publication_failed_cleanup_unresolved:" +
+                                     cleanup_detail;
+    }
+    return false;
+  }
   return true;
+}
+
+ServerTransactionState TransactionStateFromBeginResult(
+    const engine_api::EngineBeginTransactionResult& result,
+    const ServerSessionRecord& session) {
+  ServerTransactionState transaction;
+  transaction.local_transaction_id = result.local_transaction_id;
+  transaction.snapshot_visible_through_local_transaction_id =
+      result.snapshot_visible_through_local_transaction_id;
+  transaction.transaction_uuid = result.transaction_uuid.canonical;
+  transaction.transaction_timestamp =
+      EngineEvidenceValue(result, "transaction_timestamp");
+  transaction.isolation_level = session.default_transaction_isolation_level;
+  transaction.read_only = session.attach_mode == "read_only" ||
+                          session.default_transaction_read_only;
+  return transaction;
+}
+
+bool BeginIndependentTransactionForSession(
+    const ServerSessionRecord& session,
+    const HostedEngineState& engine_state,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    const ServerTransactionState* policy_source,
+    ServerTransactionState* transaction,
+    std::string* diagnostic_code,
+    std::string* diagnostic_detail) {
+  const auto* database = HostedDatabaseForSession(engine_state, session);
+  if (database == nullptr) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code = "PARSER_SERVER_IPC.TRANSACTION_DATABASE_UNAVAILABLE";
+    }
+    if (diagnostic_detail != nullptr) *diagnostic_detail = "database_unavailable";
+    return false;
+  }
+  engine_api::EngineBeginTransactionRequest begin;
+  begin.context = ReplacementTransactionContext(session, *database, request_uuid);
+  begin.isolation_level =
+      policy_source != nullptr && !policy_source->isolation_level.empty()
+          ? policy_source->isolation_level
+          : session.default_transaction_isolation_level;
+  const bool read_only =
+      session.attach_mode == "read_only" ||
+      (policy_source != nullptr ? policy_source->read_only
+                                : session.default_transaction_read_only);
+  begin.context.read_only_mode = read_only;
+  begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      std::string("transaction_read_only:") +
+      (begin.context.read_only_mode ? "true" : "false"));
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      std::string("transaction_read_mode:") +
+      (begin.context.read_only_mode ? "read_only" : "read_write"));
+  if (policy_source != nullptr && !policy_source->wait_mode.empty()) {
+    begin.transaction_policy_profile.encoded_profiles.push_back(
+        "transaction_wait_mode:" + policy_source->wait_mode);
+  }
+  if (policy_source != nullptr && policy_source->lock_timeout_present) {
+    begin.transaction_policy_profile.encoded_profiles.push_back(
+        "transaction_lock_timeout_ms:" +
+        std::to_string(policy_source->lock_timeout_ms));
+  }
+  const auto begun = engine_api::EngineBeginTransaction(begin);
+  if (!begun.ok ||
+      !IsCompleteEngineTransactionIdentity(
+          begun.local_transaction_id, begun.transaction_uuid.canonical)) {
+    if (diagnostic_code != nullptr) {
+      *diagnostic_code =
+          begun.diagnostics.empty() || begun.diagnostics.front().code.empty()
+              ? "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED"
+              : begun.diagnostics.front().code;
+    }
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail =
+          begun.diagnostics.empty() || begun.diagnostics.front().detail.empty()
+              ? "replacement_transaction_begin_failed"
+              : begun.diagnostics.front().detail;
+    }
+    return false;
+  }
+  if (transaction != nullptr) {
+    *transaction = TransactionStateFromBeginResult(begun, session);
+    transaction->isolation_level = begin.isolation_level;
+    transaction->read_only = begin.context.read_only_mode;
+    if (policy_source != nullptr) {
+      transaction->wait_mode = policy_source->wait_mode;
+      transaction->lock_timeout_ms = policy_source->lock_timeout_ms;
+      transaction->lock_timeout_present =
+          policy_source->lock_timeout_present;
+    }
+  }
+  return true;
+}
+
+void ProjectDefaultTransactionToLegacyFields(ServerSessionRecord* session) {
+  if (session == nullptr) return;
+  auto found =
+      session->transactions_by_local_id.find(session->default_local_transaction_id);
+  if (found == session->transactions_by_local_id.end() ||
+      found->second.lifecycle_state != ServerTransactionLifecycleState::kActive) {
+    found = std::find_if(
+        session->transactions_by_local_id.begin(),
+        session->transactions_by_local_id.end(),
+        [](const auto& entry) {
+          return entry.second.lifecycle_state ==
+                 ServerTransactionLifecycleState::kActive;
+        });
+    session->default_local_transaction_id =
+        found == session->transactions_by_local_id.end() ? 0
+                                                         : found->first;
+  }
+  if (found == session->transactions_by_local_id.end()) {
+    session->local_transaction_id = 0;
+    session->snapshot_visible_through_local_transaction_id = 0;
+    session->transaction_uuid.clear();
+    session->transaction_timestamp.clear();
+    return;
+  }
+  session->local_transaction_id = found->second.local_transaction_id;
+  session->snapshot_visible_through_local_transaction_id =
+      found->second.snapshot_visible_through_local_transaction_id;
+  session->transaction_uuid = found->second.transaction_uuid;
+  session->transaction_timestamp = found->second.transaction_timestamp;
+}
+
+std::optional<ServerTransactionState> TransactionStateFromResultPayload(
+    std::string_view payload,
+    const ServerSessionRecord& session) {
+  const auto local_id = TextLineU64(payload, "local_transaction_id");
+  const std::string transaction_uuid =
+      TextLineValue(payload, "transaction_uuid").value_or("");
+  if (!local_id || *local_id == 0 || transaction_uuid.empty()) {
+    return std::nullopt;
+  }
+  ServerTransactionState transaction;
+  transaction.local_transaction_id = *local_id;
+  transaction.snapshot_visible_through_local_transaction_id =
+      EvidenceU64(payload, "snapshot_visible_through_local_transaction_id")
+          .value_or(TextLineU64(
+                        payload,
+                        "snapshot_visible_through_local_transaction_id")
+                        .value_or(0));
+  transaction.transaction_uuid = transaction_uuid;
+  transaction.transaction_timestamp =
+      EvidenceText(payload, "transaction_timestamp")
+          .value_or(TextLineValue(payload, "transaction_timestamp").value_or(""));
+  transaction.isolation_level = session.default_transaction_isolation_level;
+  transaction.read_only = session.attach_mode == "read_only" ||
+                          session.default_transaction_read_only;
+  return transaction;
 }
 
 struct AutocommitBoundaryResult {
@@ -4317,7 +4915,13 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
            : "read_write"));
   const auto finalized = engine_api::EngineAutocommitBoundary(boundary);
   if (!finalized.ok) {
-    ApplyAutocommitBoundaryResultToSession(finalized, session);
+    if (finalized.replacement_local_transaction_id != 0 &&
+        !ApplyAutocommitBoundaryResultToSession(finalized, session)) {
+      result.diagnostic_code =
+          "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+      result.diagnostic_detail = "autocommit_replacement_identity_alias";
+      return result;
+    }
     result.diagnostic_code =
         finalized.diagnostics.empty() || finalized.diagnostics.front().code.empty()
             ? "PARSER_SERVER_IPC.AUTOCOMMIT_FINALITY_FAILED"
@@ -4329,7 +4933,12 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
             : finalized.diagnostics.front().detail;
     return result;
   }
-  ApplyAutocommitBoundaryResultToSession(finalized, session);
+  if (!ApplyAutocommitBoundaryResultToSession(finalized, session)) {
+    result.diagnostic_code =
+        "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+    result.diagnostic_detail = "autocommit_replacement_identity_alias";
+    return result;
+  }
 
   result.ok = true;
   result.evidence += statement_succeeded
@@ -4380,6 +4989,50 @@ std::string SessionTransactionStatePayload(std::string_view operation_id,
   return out.str();
 }
 
+std::string ExplicitTransactionStatePayload(
+    std::string_view operation_id,
+    const ServerTransactionState& transaction,
+    std::string_view state) {
+  std::ostringstream out;
+  out << "operation_id=" << operation_id << "\n"
+      << "result_kind=transaction.state.v2\n"
+      << "row_count=0\n"
+      << "transaction_state=" << state << "\n"
+      << "local_transaction_id=" << transaction.local_transaction_id << "\n"
+      << "snapshot_visible_through_local_transaction_id="
+      << transaction.snapshot_visible_through_local_transaction_id << "\n"
+      << "transaction_uuid=" << transaction.transaction_uuid << "\n";
+  if (!transaction.transaction_timestamp.empty()) {
+    out << "transaction_timestamp=" << transaction.transaction_timestamp << "\n";
+  }
+  return out.str();
+}
+
+void CloseCursorsOwnedByTransaction(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const ServerTransactionState& transaction,
+    std::string_view reason) {
+  if (registry == nullptr) return;
+  for (auto& [_, cursor] : registry->cursors_by_uuid) {
+    if (cursor.session_uuid != session_uuid || cursor.closed ||
+        cursor.owning_local_transaction_id != transaction.local_transaction_id ||
+        cursor.owning_transaction_uuid != transaction.transaction_uuid ||
+        cursor.holdable_after_commit) {
+      continue;
+    }
+    (void)ReleaseAndClearServerCursorResources(registry, &cursor);
+    cursor.closed = true;
+    cursor.exhausted = true;
+    cursor.finality_state = "closed_by_transaction_finality";
+    cursor.finality_reason = std::string(reason);
+    MarkServerRequestClosedByCursor(registry,
+                                    cursor.cursor_uuid,
+                                    ServerRequestLifecycleState::kCompleted,
+                                    cursor.finality_reason);
+  }
+}
+
 void AppendReplacementTransactionState(std::string* payload,
                                        const ServerSessionRecord& session) {
   if (payload == nullptr) return;
@@ -4395,6 +5048,29 @@ void AppendReplacementTransactionState(std::string* payload,
   }
   *payload += "evidence=always_active_transaction_replacement:" +
               std::to_string(session.local_transaction_id) + "\n";
+}
+
+void AppendReplacementTransactionState(
+    std::string* payload,
+    const ServerTransactionState& transaction) {
+  if (payload == nullptr) return;
+  if (!payload->empty() && payload->back() != '\n') payload->push_back('\n');
+  *payload += "replacement_local_transaction_id=" +
+              std::to_string(transaction.local_transaction_id) + "\n";
+  *payload += "replacement_snapshot_visible_through_local_transaction_id=" +
+              std::to_string(
+                  transaction.snapshot_visible_through_local_transaction_id) +
+              "\n";
+  if (!transaction.transaction_uuid.empty()) {
+    *payload += "replacement_transaction_uuid=" +
+                transaction.transaction_uuid + "\n";
+  }
+  if (!transaction.transaction_timestamp.empty()) {
+    *payload += "replacement_transaction_timestamp=" +
+                transaction.transaction_timestamp + "\n";
+  }
+  *payload += "evidence=transaction_replacement:" +
+              std::to_string(transaction.local_transaction_id) + "\n";
 }
 
 void AppendTransactionPressureRestartEvidence(std::string* payload,
@@ -4629,6 +5305,13 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
   operation_envelope += "trace_key=sbsql.parser.full_route.transaction\n";
   operation_envelope += "contains_sql_text=false\n";
   operation_envelope += "parser_resolved_names_to_uuids=true\n";
+  const std::string parser_identifier_profile =
+      EncodedTextField(encoded, "identifier_profile_uuid");
+  if (!parser_identifier_profile.empty()) {
+    AppendOperationOperand(&operation_envelope,
+                           "identifier_profile_uuid",
+                           parser_identifier_profile);
+  }
   operation_envelope += "requires_security_context=true\n";
   operation_envelope += OperationNeedsTransactionContext(dispatch_operation_id)
                             ? "requires_transaction_context=true\n"
@@ -4775,7 +5458,12 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "header_policy", "estimated_row_count", "order_by", "order_direction", "order_nulls",
         "limit", "offset",
         "batch_on_column", "batch_limit", "series_name",
-        "result_projection", "aggregate_function", "aggregate_source_column",
+        "result_projection", "projection_count",
+        "projection_0", "projection_1", "projection_2", "projection_3",
+        "projection_4", "projection_5", "projection_6", "projection_7",
+        "projection_8", "projection_9", "projection_10", "projection_11",
+        "projection_12", "projection_13", "projection_14", "projection_15",
+        "aggregate_function", "aggregate_source_column",
         "assertion_id", "actual_source_column", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
         "predicate_kind", "predicate_column", "predicate_value",
@@ -4806,6 +5494,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "insert_select_projection_4", "insert_select_projection_5",
         "insert_select_projection_6", "insert_select_projection_7",
         "insert_select_projection_8", "insert_select_projection_9",
+        "insert_default_values_row_count",
         "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
         "native_bulk_ingest_enabled", "native_bulk_ingest",
         "result_payload_policy", "resume_policy", "reject_target_uuid", "reject_target_kind",
@@ -4887,6 +5576,64 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\t";
       operation_envelope += EscapeOperationOperandField(value);
       operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id == "transaction.execute_block") {
+    // This is a deliberately finite neutral SBLR contract bridge. Parser-owned
+    // dialect syntax and presentation metadata must not enter the engine, and
+    // a generic procedural_* prefix copy would silently expand server
+    // admission whenever a parser invents a new field. Keep the v1 execution
+    // operands and the forbidden source-payload markers explicit so valid
+    // blocks reach the engine while partial/source-bearing blocks remain
+    // present and are rejected by the engine decoder instead of falling back
+    // to the legacy contract-absent behavior-row route.
+    constexpr std::string_view kProceduralBlockV1Fields[] = {
+        "procedural_ir_contract",
+        "procedural_block_kind",
+        "procedural_input_count",
+        "procedural_local_count",
+        "procedural_output_count",
+        "procedural_slot_count",
+        "procedural_instruction_count",
+        "procedural_yield_count",
+        "procedural_slot_0_id",
+        "procedural_slot_0_kind",
+        "procedural_slot_0_type",
+        "procedural_slot_0_nullable",
+        "procedural_slot_0_character_length",
+        "procedural_slot_1_id",
+        "procedural_slot_1_kind",
+        "procedural_slot_1_type",
+        "procedural_slot_1_nullable",
+        "procedural_slot_1_character_length",
+        "procedural_instruction_0_kind",
+        "procedural_instruction_0_target_slot",
+        "procedural_instruction_0_expression_kind",
+        "procedural_instruction_0_source_kind",
+        "procedural_instruction_0_source_id",
+        "procedural_instruction_0_source_cast_type",
+        "procedural_instruction_0_start_kind",
+        "procedural_instruction_0_start_value",
+        "procedural_instruction_0_length_kind",
+        "sql",
+        "source_sql",
+        "raw_sql",
+        "parser_ast",
+        "parser_plan",
+        "sql_text",
+        "source_sql_text",
+        "raw_sql_text",
+        "parser_sql_text"};
+    for (const auto field : kProceduralBlockV1Fields) {
+      const auto json_value = JsonTextField(encoded, field);
+      if (json_value.has_value()) {
+        AppendOperationOperand(&operation_envelope, field, *json_value);
+        continue;
+      }
+      const auto text_value = TextLineValue(encoded, field);
+      if (text_value.has_value()) {
+        AppendOperationOperand(&operation_envelope, field, *text_value);
+      }
     }
   }
   if (dispatch_operation_id.starts_with("lifecycle.")) {
@@ -5782,13 +6529,39 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     const std::string projection_count_text = JsonPrimitiveField(encoded, "view_projection_count").value_or(
         JsonTextField(encoded, "view_projection_count").value_or(
             TextLineValue(encoded, "view_projection_count").value_or("0")));
-    const std::uint64_t projection_count = ParseU64Text(projection_count_text);
-    for (std::uint64_t projection = 0; projection < projection_count; ++projection) {
-      const std::string field = "view_projection_" + std::to_string(projection);
-      const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
-      if (value.empty()) continue;
-      AppendOperationOperand(&operation_envelope, field, value);
+    std::optional<std::uint64_t> bounded_projection_count;
+    if (!projection_count_text.empty() &&
+        (projection_count_text.size() == 1 ||
+         projection_count_text.front() != '0')) {
+      std::uint64_t parsed_count = 0;
+      bool canonical = true;
+      for (const unsigned char ch : projection_count_text) {
+        if (!std::isdigit(ch) || parsed_count > (16u - (ch - '0')) / 10u) {
+          canonical = false;
+          break;
+        }
+        parsed_count = parsed_count * 10u +
+                       static_cast<std::uint64_t>(ch - '0');
+      }
+      if (canonical && parsed_count <= 16u) {
+        bounded_projection_count = parsed_count;
+      }
+    }
+    // The original count operand remains in the neutral envelope.  Invalid,
+    // noncanonical, or oversized counts deliberately omit projection operands
+    // so the typed operation decoder rejects the request without truncation or
+    // an attacker-controlled loop.
+    if (bounded_projection_count) {
+      for (std::uint64_t projection = 0;
+           projection < *bounded_projection_count;
+           ++projection) {
+        const std::string field =
+            "view_projection_" + std::to_string(projection);
+        const auto value = JsonTextField(encoded, field).value_or(
+            TextLineValue(encoded, field).value_or(""));
+        if (value.empty()) continue;
+        AppendOperationOperand(&operation_envelope, field, value);
+      }
     }
   }
   if (dispatch_operation_id == "ddl.create_function" ||
@@ -5811,7 +6584,8 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "routine_parameter_0_mode", "routine_parameter_0_descriptor_kind",
         "routine_return_descriptor_present", "routine_return_count",
         "body_compilation_included", "executable_descriptor_kind",
-        "executor", "internal_procedure_id", "side_effect_class",
+        "executor", "sblr_hash", "sblr_provenance",
+        "internal_procedure_id", "side_effect_class",
         "compiled_body_provenance", "compiled_body_descriptor",
         "trigger_timing", "trigger_event", "trigger_scope",
         "trigger_target_table_uuid", "trigger_target_table_name",
@@ -5861,7 +6635,13 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
     std::string object_uuid = JsonTextField(encoded, object_uuid_field).value_or(
         TextLineValue(encoded, object_uuid_field).value_or(""));
-    if (object_uuid.empty()) {
+    const std::string executable_descriptor_kind =
+        JsonTextField(encoded, "executable_descriptor_kind").value_or(
+            TextLineValue(encoded, "executable_descriptor_kind").value_or(""));
+    const bool engine_allocates_create_or_alter_identity =
+        object_kind == "procedure" &&
+        executable_descriptor_kind == "create_or_alter_procedure";
+    if (object_uuid.empty() && !engine_allocates_create_or_alter_identity) {
       object_uuid = engine_api::GenerateCrudEngineUuid("object");
     }
     if (!object_uuid.empty()) {
@@ -6546,7 +7326,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind",
         "aggregate_function", "aggregate_value_field",
         "count_all", "count_distinct", "count_distinct_include_null", "limit", "offset",
-        "result_projection", "assertion_id", "actual_column_name",
+        "result_projection", "result_column_name", "assertion_id", "actual_column_name",
         "expected_column_name", "expected_count", "expected_value",
         "count_compare_op", "count_compare_value",
         "predicate_kind", "predicate_column", "predicate_value",
@@ -6616,14 +7396,31 @@ void ApplyTransactionResultToSession(std::string_view operation_id,
                                      ServerSessionRecord* session) {
   if (session == nullptr) return;
   if (operation_id == "transaction.begin") {
-    if (const auto local_id = TextLineU64(payload, "local_transaction_id")) {
-      session->local_transaction_id = *local_id;
+    if (const auto transaction =
+            TransactionStateFromResultPayload(payload, *session)) {
+      bool uuid_alias = false;
+      for (const auto& [local_id, existing] :
+           session->transactions_by_local_id) {
+        if (local_id != transaction->local_transaction_id &&
+            existing.transaction_uuid == transaction->transaction_uuid) {
+          uuid_alias = true;
+          break;
+        }
+      }
+      if (uuid_alias) {
+        ClearLegacyDefaultTransactionProjection(session);
+        return;
+      }
+      auto published = *transaction;
+      published.begin_ordinal = session->next_transaction_begin_ordinal++;
+      session->transactions_by_local_id.insert_or_assign(
+          published.local_transaction_id, published);
+      session->default_local_transaction_id = published.local_transaction_id;
+      session->local_transaction_id = published.local_transaction_id;
       session->snapshot_visible_through_local_transaction_id =
-          EvidenceU64(payload, "snapshot_visible_through_local_transaction_id").value_or(
-              TextLineU64(payload, "snapshot_visible_through_local_transaction_id").value_or(0));
-      session->transaction_uuid = TextLineValue(payload, "transaction_uuid").value_or("");
-      session->transaction_timestamp = EvidenceText(payload, "transaction_timestamp").value_or(
-          TextLineValue(payload, "transaction_timestamp").value_or(""));
+          published.snapshot_visible_through_local_transaction_id;
+      session->transaction_uuid = published.transaction_uuid;
+      session->transaction_timestamp = published.transaction_timestamp;
     }
     return;
   }
@@ -6644,13 +7441,23 @@ void ApplyTransactionResultToSession(std::string_view operation_id,
   }
   if (operation_id == "transaction.commit" || operation_id == "transaction.rollback") {
     if (const auto replacement_id = TextLineU64(payload, "replacement_local_transaction_id")) {
-      session->local_transaction_id = *replacement_id;
-      session->snapshot_visible_through_local_transaction_id =
-          TextLineU64(payload, "replacement_snapshot_visible_through_local_transaction_id").value_or(0);
-      session->transaction_uuid =
+      const auto found = session->transactions_by_local_id.find(*replacement_id);
+      const std::string replacement_uuid =
           TextLineValue(payload, "replacement_transaction_uuid").value_or("");
-      session->transaction_timestamp =
-          TextLineValue(payload, "replacement_transaction_timestamp").value_or("");
+      if (found == session->transactions_by_local_id.end() ||
+          found->second.lifecycle_state !=
+              ServerTransactionLifecycleState::kActive ||
+          (!replacement_uuid.empty() &&
+           found->second.transaction_uuid != replacement_uuid)) {
+        ClearLegacyDefaultTransactionProjection(session);
+        return;
+      }
+      session->default_local_transaction_id = found->first;
+      session->local_transaction_id = found->second.local_transaction_id;
+      session->snapshot_visible_through_local_transaction_id =
+          found->second.snapshot_visible_through_local_transaction_id;
+      session->transaction_uuid = found->second.transaction_uuid;
+      session->transaction_timestamp = found->second.transaction_timestamp;
     }
   }
 }
@@ -6675,16 +7482,159 @@ std::string FirstEngineDiagnosticDetail(sb_engine_result_t result) {
   return StringViewToString(diagnostics.diagnostics[0].safe_detail);
 }
 
+bool IsWellFormedUtf8(std::string_view text) {
+  std::size_t offset = 0;
+  while (offset < text.size()) {
+    const auto first = static_cast<unsigned char>(text[offset]);
+    if (first <= 0x7fu) {
+      ++offset;
+      continue;
+    }
+    std::size_t count = 0;
+    unsigned char second_min = 0x80u;
+    unsigned char second_max = 0xbfu;
+    if (first >= 0xc2u && first <= 0xdfu) {
+      count = 2;
+    } else if (first >= 0xe0u && first <= 0xefu) {
+      count = 3;
+      if (first == 0xe0u) second_min = 0xa0u;
+      if (first == 0xedu) second_max = 0x9fu;
+    } else if (first >= 0xf0u && first <= 0xf4u) {
+      count = 4;
+      if (first == 0xf0u) second_min = 0x90u;
+      if (first == 0xf4u) second_max = 0x8fu;
+    } else {
+      return false;
+    }
+    if (offset + count > text.size()) return false;
+    const auto second = static_cast<unsigned char>(text[offset + 1]);
+    if (second < second_min || second > second_max) return false;
+    for (std::size_t index = 2; index < count; ++index) {
+      const auto continuation =
+          static_cast<unsigned char>(text[offset + index]);
+      if (continuation < 0x80u || continuation > 0xbfu) return false;
+    }
+    offset += count;
+  }
+  return true;
+}
+
+std::vector<ServerDiagnosticField> RegisteredEngineDiagnosticFields(
+    std::string_view diagnostic_code,
+    const std::vector<ServerDiagnosticField>& candidates) {
+  constexpr std::string_view kConversionDiagnostic =
+      "SB_DIAG_FUNCTION_CONVERSION_INPUT";
+  constexpr std::string_view kConversionField = "conversion_input_text";
+  constexpr std::size_t kMaximumConversionInputBytes = 1024;
+  constexpr std::string_view kForeignKeyDiagnostic =
+      "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION";
+  if (diagnostic_code == kForeignKeyDiagnostic) {
+    constexpr std::array<std::string_view, 6> kKeys = {
+        "violation_kind",
+        "constraint_display_label",
+        "owner_relation_display_label",
+        "owner_schema_display_label",
+        "child_column_display_label",
+        "key_display_text"};
+    constexpr std::array<std::size_t, 6> kMaximumBytes = {
+        32, 255, 255, 255, 255, 1024};
+    if (candidates.size() != kKeys.size()) return {};
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+      const auto& candidate = candidates[index];
+      if (candidate.key != kKeys[index] ||
+          candidate.value.size() > kMaximumBytes[index] ||
+          candidate.value.find('\0') != std::string::npos ||
+          !IsWellFormedUtf8(candidate.value)) {
+        return {};
+      }
+      for (const unsigned char ch : candidate.value) {
+        if (ch < 0x20u || ch == 0x7fu) return {};
+      }
+      if (index != 3 && candidate.value.empty()) return {};
+    }
+    const std::string& violation = candidates.front().value;
+    if (violation != "parent_missing" &&
+        violation != "references_present") {
+      return {};
+    }
+    return candidates;
+  }
+  if (diagnostic_code != kConversionDiagnostic || candidates.size() != 1) {
+    return {};
+  }
+  const auto& candidate = candidates.front();
+  if (candidate.key != kConversionField || candidate.value.empty() ||
+      candidate.value.size() > kMaximumConversionInputBytes ||
+      candidate.value.find('\0') != std::string::npos ||
+      !IsWellFormedUtf8(candidate.value)) {
+    return {};
+  }
+  return {candidate};
+}
+
+std::vector<ServerDiagnosticField> FirstRegisteredEngineDiagnosticFields(
+    sb_engine_result_t result,
+    std::string_view diagnostic_code) {
+  std::vector<scratchbird::server_engine_bridge::EngineDiagnosticField>
+      engine_fields;
+  if (!scratchbird::server_engine_bridge::CopyEngineDiagnosticFields(
+          result, 0, &engine_fields)) {
+    return {};
+  }
+  std::vector<ServerDiagnosticField> candidates;
+  candidates.reserve(engine_fields.size());
+  for (auto& field : engine_fields) {
+    candidates.push_back({std::move(field.key), std::move(field.value)});
+  }
+  return RegisteredEngineDiagnosticFields(diagnostic_code, candidates);
+}
+
 struct PublicAbiDispatchResult {
   bool attempted = false;
   bool ok = false;
   std::uint64_t row_count = 0;
   std::uint64_t affected_rows = 0;
+  bool affected_rows_present = false;
   std::string payload;
   std::string diagnostic_code;
   std::string diagnostic_detail;
+  std::vector<ServerDiagnosticField> diagnostic_fields;
   sb_engine_result_t result_handle = nullptr;
 };
+
+ServerDiagnostic PublicAbiFailureDiagnostic(
+    const PublicAbiDispatchResult& result,
+    std::string message,
+    std::string detail) {
+  auto diagnostic = SblrServerDiagnostic(
+      result.diagnostic_code.empty()
+          ? "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"
+          : result.diagnostic_code,
+      std::move(message),
+      std::move(detail));
+  if (diagnostic.code == "SB_DIAG_FUNCTION_CONVERSION_INPUT" ||
+      diagnostic.code == "CLI.CONSTRAINT_FOREIGN_KEY_VIOLATION") {
+    // These registered diagnostics have exact public shapes: either all
+    // validated code-specific fields or no public fields when validation
+    // failed.  Never retain the generic `detail` field as a presentation
+    // input for either adapter.
+    diagnostic.fields = result.diagnostic_fields;
+  } else {
+    diagnostic.fields.insert(diagnostic.fields.end(),
+                             result.diagnostic_fields.begin(),
+                             result.diagnostic_fields.end());
+  }
+  return diagnostic;
+}
+
+bool IsDmlMutationCompletionOperation(std::string_view operation_id) {
+  return operation_id == "dml.insert_rows" ||
+         operation_id == "dml.update_rows" ||
+         operation_id == "dml.delete_rows" ||
+         operation_id == "dml.merge_rows" ||
+         operation_id == "dml.execute_import_rows" ||
+         operation_id == "dml.execute_native_bulk_ingest";
+}
 
 std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
                               std::size_t row_index) {
@@ -6860,13 +7810,200 @@ PublicAbiDispatchResult DispatchServerLiveIparCatalogProjection(
   return dispatch_result;
 }
 
+ServerPublicAbiSessionContext* EnsureServerPublicAbiSession(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string* diagnostic_detail) {
+  if (registry == nullptr) {
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = "session_registry_missing";
+    }
+    return nullptr;
+  }
+
+  const std::string session_key = UuidBytesToText(session.session_uuid);
+  auto cached_it =
+      registry->public_abi_sessions_by_session_uuid.find(session_key);
+  if (cached_it != registry->public_abi_sessions_by_session_uuid.end()) {
+    const auto& cached = cached_it->second;
+    const bool cache_matches =
+        cached.engine != nullptr && cached.engine_session != nullptr &&
+        cached.database_path == session.database_path &&
+        cached.session_uuid == session.session_uuid &&
+        cached.effective_user_uuid == session.effective_user_uuid &&
+        cached.embedded_in_process == session.embedded_in_process;
+    if (!cache_matches) {
+      CloseServerPublicAbiSessionForSession(
+          registry,
+          session.session_uuid,
+          "public_abi_context_authority_changed");
+      cached_it = registry->public_abi_sessions_by_session_uuid.end();
+    }
+  }
+
+  if (cached_it == registry->public_abi_sessions_by_session_uuid.end()) {
+    sb_engine_open_params_v1_t open_params{};
+    open_params.struct_size = sizeof(open_params);
+    open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open_params.database_path_utf8 = session.database_path.data();
+    open_params.database_path_size =
+        static_cast<std::uint64_t>(session.database_path.size());
+    open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    sb_engine_handle_t engine = nullptr;
+    const auto open_status =
+        sb_engine_open(&open_params, &engine, nullptr);
+    if (open_status != SB_ENGINE_STATUS_OK || engine == nullptr) {
+      if (diagnostic_detail != nullptr) {
+        *diagnostic_detail = "engine_open_failed";
+      }
+      return nullptr;
+    }
+
+    sb_engine_session_params_v1_t session_params{};
+    session_params.struct_size = sizeof(session_params);
+    session_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::memcpy(session_params.effective_user_uuid.bytes,
+                session.effective_user_uuid.data(),
+                16);
+    std::memcpy(session_params.session_uuid.bytes,
+                session.session_uuid.data(),
+                16);
+    session_params.trust_mode =
+        session.embedded_in_process ? SB_ENGINE_TRUST_EMBEDDED_TRUSTED
+                                    : SB_ENGINE_TRUST_SERVER_ISOLATED;
+    session_params.default_language_utf8 = "en";
+    session_params.default_language_size = 2;
+    sb_engine_session_t engine_session = nullptr;
+    const auto session_status = sb_engine_session_begin(
+        engine, &session_params, &engine_session, nullptr);
+    if (session_status != SB_ENGINE_STATUS_OK || engine_session == nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      if (diagnostic_detail != nullptr) {
+        *diagnostic_detail = "engine_session_begin_failed";
+      }
+      return nullptr;
+    }
+
+    ServerPublicAbiSessionContext cached_context;
+    cached_context.engine = engine;
+    cached_context.engine_session = engine_session;
+    cached_context.database_path = session.database_path;
+    cached_context.session_uuid = session.session_uuid;
+    cached_context.effective_user_uuid = session.effective_user_uuid;
+    cached_context.embedded_in_process = session.embedded_in_process;
+    cached_it = registry->public_abi_sessions_by_session_uuid
+                    .emplace(session_key, std::move(cached_context))
+                    .first;
+  }
+
+  return &cached_it->second;
+}
+
+struct PreparedMetadataBindingCreateResult {
+  engine_bridge::PreparedMetadataBindingHandle binding = nullptr;
+  std::string diagnostic_code;
+  std::string diagnostic_detail;
+
+  bool ok() const { return binding != nullptr && diagnostic_code.empty(); }
+};
+
+PreparedMetadataBindingCreateResult CreatePreparedMetadataBinding(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& prepare_session,
+    std::string_view operation_id,
+    std::string_view operation_family,
+    const std::string& encoded) {
+  PreparedMetadataBindingCreateResult result;
+  std::string ensure_detail;
+  auto* cached =
+      EnsureServerPublicAbiSession(registry, prepare_session, &ensure_detail);
+  if (cached == nullptr || cached->engine_session == nullptr) {
+    result.diagnostic_code =
+        "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED";
+    result.diagnostic_detail = ensure_detail.empty()
+                                   ? "engine_session_missing"
+                                   : std::move(ensure_detail);
+    return result;
+  }
+
+  const std::string public_abi_envelope = PublicAbiEnvelopeForDispatch(
+      prepare_session, encoded, operation_id, operation_family);
+  if (public_abi_envelope.empty()) {
+    result.diagnostic_code =
+        "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED";
+    result.diagnostic_detail = "prepared_metadata_envelope_missing";
+    return result;
+  }
+
+  sb_engine_request_context_v1_t context{};
+  context.struct_size = sizeof(context);
+  context.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+  context.trust_mode = prepare_session.embedded_in_process
+                           ? SB_ENGINE_TRUST_EMBEDDED_TRUSTED
+                           : SB_ENGINE_TRUST_SERVER_ISOLATED;
+  std::memcpy(context.effective_user_uuid.bytes,
+              prepare_session.effective_user_uuid.data(),
+              16);
+  std::memcpy(context.session_uuid.bytes,
+              prepare_session.session_uuid.data(),
+              16);
+  context.rights_set_ref = 1;
+  context.capability_set_ref = 1;
+  context.transaction_ref = prepare_session.local_transaction_id;
+
+  sb_engine_sblr_dispatch_params_v1_t dispatch{};
+  dispatch.struct_size = sizeof(dispatch);
+  dispatch.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+  dispatch.envelope_bytes = reinterpret_cast<const std::uint8_t*>(
+      public_abi_envelope.data());
+  dispatch.envelope_size_bytes =
+      static_cast<std::uint64_t>(public_abi_envelope.size());
+
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::CreatePreparedMetadataBinding(
+      cached->engine_session,
+      &context,
+      prepare_session.transaction_uuid,
+      &dispatch,
+      &result.binding,
+      &engine_result);
+  if (status != SB_ENGINE_STATUS_OK || result.binding == nullptr) {
+    if (result.binding != nullptr) {
+      (void)engine_bridge::ReleasePreparedMetadataBinding(result.binding);
+      result.binding = nullptr;
+    }
+    result.diagnostic_code =
+        engine_result == nullptr
+            ? "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED"
+            : FirstEngineDiagnosticCode(engine_result);
+    if (result.diagnostic_code.empty()) {
+      result.diagnostic_code =
+          "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED";
+    }
+    result.diagnostic_detail =
+        engine_result == nullptr
+            ? "engine_prepared_metadata_bind_rejected"
+            : FirstEngineDiagnosticDetail(engine_result);
+    if (result.diagnostic_detail.empty()) {
+      result.diagnostic_detail =
+          "engine_prepared_metadata_bind_rejected";
+    }
+  }
+  if (engine_result != nullptr) {
+    (void)sb_engine_result_release(engine_result);
+  }
+  return result;
+}
+
 PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry,
                                                  const ServerSessionRecord& session,
                                                  std::string_view operation_id,
                                                  std::string_view operation_family,
                                                  const std::string& encoded,
                                                  const std::vector<std::uint8_t>& data_packet,
-                                                 bool retain_result_handle) {
+                                                 bool retain_result_handle,
+                                                 engine_bridge::PreparedMetadataBindingHandle
+                                                     prepared_metadata_binding = nullptr) {
   PublicAbiDispatchResult dispatch_result;
   dispatch_result.attempted = true;
   const auto phase_start = ServerSteadyClock::now();
@@ -6882,9 +8019,15 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
       PublicAbiEnvelopeForDispatch(session, encoded, operation_id, operation_family);
   mark_phase("public_abi_envelope");
 
-  if (registry == nullptr) {
-    dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
-    dispatch_result.diagnostic_detail = "session_registry_missing";
+  std::string ensure_detail;
+  auto* cached_context_ptr =
+      EnsureServerPublicAbiSession(registry, session, &ensure_detail);
+  mark_phase("public_abi_session_ensure");
+  if (cached_context_ptr == nullptr) {
+    dispatch_result.diagnostic_code =
+        "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
+    dispatch_result.diagnostic_detail =
+        ensure_detail.empty() ? "engine_session_missing" : ensure_detail;
     WriteServerPhaseTrace("SCRATCHBIRD_PUBLIC_ABI_DISPATCH_TRACE_FILE",
                           "public_abi_dispatch",
                           operation_id,
@@ -6892,91 +8035,8 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
                           phase_micros);
     return dispatch_result;
   }
-  const std::string session_key = UuidBytesToText(session.session_uuid);
-  auto cached_it = registry->public_abi_sessions_by_session_uuid.find(session_key);
-  if (cached_it != registry->public_abi_sessions_by_session_uuid.end()) {
-    const auto& cached = cached_it->second;
-    const bool cache_matches =
-        cached.engine != nullptr &&
-        cached.engine_session != nullptr &&
-        cached.database_path == session.database_path &&
-        cached.session_uuid == session.session_uuid &&
-        cached.effective_user_uuid == session.effective_user_uuid &&
-        cached.embedded_in_process == session.embedded_in_process;
-    if (!cache_matches) {
-      CloseServerPublicAbiSessionForSession(registry,
-                                            session.session_uuid,
-                                            "public_abi_context_authority_changed");
-      cached_it = registry->public_abi_sessions_by_session_uuid.end();
-    }
-  }
-  mark_phase("public_abi_cache_lookup");
-  if (cached_it == registry->public_abi_sessions_by_session_uuid.end()) {
-    sb_engine_open_params_v1_t open_params{};
-    open_params.struct_size = sizeof(open_params);
-    open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    open_params.database_path_utf8 = session.database_path.data();
-    open_params.database_path_size =
-        static_cast<std::uint64_t>(session.database_path.size());
-    open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    sb_engine_handle_t engine = nullptr;
-    const auto open_status = sb_engine_open(&open_params, &engine, nullptr);
-    mark_phase("engine_open_miss");
-    if (open_status != SB_ENGINE_STATUS_OK || engine == nullptr) {
-      dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
-      dispatch_result.diagnostic_detail = "engine_open_failed";
-      WriteServerPhaseTrace("SCRATCHBIRD_PUBLIC_ABI_DISPATCH_TRACE_FILE",
-                            "public_abi_dispatch",
-                            operation_id,
-                            encoded.size(),
-                            phase_micros);
-      return dispatch_result;
-    }
-    sb_engine_session_params_v1_t session_params{};
-    session_params.struct_size = sizeof(session_params);
-    session_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    std::memcpy(session_params.effective_user_uuid.bytes,
-                session.effective_user_uuid.data(),
-                16);
-    std::memcpy(session_params.session_uuid.bytes,
-                session.session_uuid.data(),
-                16);
-    session_params.trust_mode = session.embedded_in_process
-                                    ? SB_ENGINE_TRUST_EMBEDDED_TRUSTED
-                                    : SB_ENGINE_TRUST_SERVER_ISOLATED;
-    session_params.default_language_utf8 = "en";
-    session_params.default_language_size = 2;
-    sb_engine_session_t engine_session = nullptr;
-    const auto session_status =
-        sb_engine_session_begin(engine, &session_params, &engine_session, nullptr);
-    mark_phase("engine_session_begin_miss");
-    if (session_status != SB_ENGINE_STATUS_OK || engine_session == nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      dispatch_result.diagnostic_code = "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
-      dispatch_result.diagnostic_detail = "engine_session_begin_failed";
-      WriteServerPhaseTrace("SCRATCHBIRD_PUBLIC_ABI_DISPATCH_TRACE_FILE",
-                            "public_abi_dispatch",
-                            operation_id,
-                            encoded.size(),
-                            phase_micros);
-      return dispatch_result;
-    }
-    ServerPublicAbiSessionContext cached_context;
-    cached_context.engine = engine;
-    cached_context.engine_session = engine_session;
-    cached_context.database_path = session.database_path;
-    cached_context.session_uuid = session.session_uuid;
-    cached_context.effective_user_uuid = session.effective_user_uuid;
-    cached_context.embedded_in_process = session.embedded_in_process;
-    cached_it =
-        registry->public_abi_sessions_by_session_uuid
-            .emplace(session_key, std::move(cached_context))
-            .first;
-  } else {
-    mark_phase("engine_context_reuse");
-  }
 
-  auto& cached_context = cached_it->second;
+  auto& cached_context = *cached_context_ptr;
   ++cached_context.reuse_count;
   if (cached_context.engine_session != nullptr) {
     sb_engine_request_context_v1_t context{};
@@ -6998,11 +8058,20 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
     dispatch.data_packet_bytes = data_packet.empty() ? nullptr : data_packet.data();
     dispatch.data_packet_size_bytes = static_cast<std::uint64_t>(data_packet.size());
     sb_engine_result_t abi_result = nullptr;
-    const auto status = sb_engine_dispatch_sblr(cached_context.engine_session,
-                                                nullptr,
-                                                &context,
-                                                &dispatch,
-                                                &abi_result);
+    const auto status =
+        prepared_metadata_binding == nullptr
+            ? sb_engine_dispatch_sblr(cached_context.engine_session,
+                                      nullptr,
+                                      &context,
+                                      &dispatch,
+                                      &abi_result)
+            : engine_bridge::DispatchWithPreparedMetadataBinding(
+                  cached_context.engine_session,
+                  nullptr,
+                  &context,
+                  &dispatch,
+                  prepared_metadata_binding,
+                  &abi_result);
     mark_phase("engine_dispatch_sblr");
     dispatch_result.ok = status == SB_ENGINE_STATUS_OK;
     if (abi_result != nullptr) {
@@ -7014,6 +8083,8 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
       sb_engine_command_completion_view_v1_t completion{};
       if (sb_engine_result_completion(abi_result, &completion) == SB_ENGINE_STATUS_OK) {
         dispatch_result.affected_rows = completion.affected_rows;
+        dispatch_result.affected_rows_present =
+            IsDmlMutationCompletionOperation(operation_id);
       }
       mark_phase("result_completion");
       if (!dispatch_result.ok || !retain_result_handle) {
@@ -7026,6 +8097,9 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
       if (!dispatch_result.ok) {
         dispatch_result.diagnostic_code = FirstEngineDiagnosticCode(abi_result);
         dispatch_result.diagnostic_detail = FirstEngineDiagnosticDetail(abi_result);
+        dispatch_result.diagnostic_fields =
+            FirstRegisteredEngineDiagnosticFields(
+                abi_result, dispatch_result.diagnostic_code);
       }
       mark_phase("result_diagnostics");
       if (dispatch_result.ok && retain_result_handle) {
@@ -7049,14 +8123,6 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
                         encoded.size(),
                         phase_micros);
   return dispatch_result;
-}
-
-void ReleaseCursorEngineResult(ServerCursorRecord* cursor) {
-  if (cursor == nullptr || cursor->engine_result == nullptr) {
-    return;
-  }
-  (void)sb_engine_result_release(cursor->engine_result);
-  cursor->engine_result = nullptr;
 }
 
 struct EngineCursorBatch {
@@ -7180,14 +8246,15 @@ std::string StreamFinalityPacket(const ServerCursorRecord& cursor,
   return out.str();
 }
 
-void MarkCursorFinality(ServerCursorRecord* cursor,
+void MarkCursorFinality(ServerSessionRegistry* registry,
+                        ServerCursorRecord* cursor,
                         std::string state,
                         std::string reason) {
   if (cursor == nullptr) return;
   cursor->finality_state = std::move(state);
   cursor->finality_reason = std::move(reason);
   cursor->exhausted = true;
-  ReleaseCursorEngineResult(cursor);
+  (void)ReleaseAndClearServerCursorResources(registry, cursor);
 }
 
 SessionOperationResult AcceptedFetchFinality(const std::array<std::uint8_t, 16>& session_uuid,
@@ -7205,6 +8272,21 @@ SessionOperationResult AcceptedFetchFinality(const std::array<std::uint8_t, 16>&
 }
 
 }  // namespace
+
+std::vector<ServerDiagnosticField>
+RegisteredEngineDiagnosticFieldsForTest(
+    std::string_view diagnostic_code,
+    const std::vector<ServerDiagnosticField>& candidates) {
+  return RegisteredEngineDiagnosticFields(diagnostic_code, candidates);
+}
+
+std::string EncodeCreateViewPublicAbiEnvelopeForTest(
+    std::string_view encoded_sblr_envelope) {
+  ServerSessionRecord session;
+  return PublicAbiEnvelopeForDispatch(
+      session, encoded_sblr_envelope, "ddl.create_view",
+      "sblr.catalog.mutation.v3");
+}
 
 std::vector<std::uint8_t> EncodePrepareSblrPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -7258,6 +8340,15 @@ std::vector<std::uint8_t> EncodeCloseCursorPayloadForTest(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& cursor_uuid) {
   return EncodeFetchPayloadForTest(session_uuid, cursor_uuid);
+}
+
+std::vector<std::uint8_t> EncodeClosePreparedSblrPayloadForTest(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, session_uuid);
+  PutUuid(&out, prepared_statement_uuid);
+  return out;
 }
 
 std::vector<std::uint8_t> EncodeCancelCursorPayloadForTest(
@@ -7329,21 +8420,107 @@ std::string EncodeEventChannelNotifySblrForTest(const std::string& channel_uuid,
 SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                          const HostedEngineState&,
                                          const sbps::Frame& request) {
-  auto decoded = DecodePreparePayload(request.payload);
-  auto session = decoded ? FindSession(*registry, decoded->session_uuid) : std::nullopt;
+  auto decoded = DecodePreparePayload(request.payload,
+                                      request.header.payload_schema_id);
+  const bool v2 = request.header.payload_schema_id == kSchemaPrepareSblrTestV2;
+  const std::uint32_t response_schema =
+      v2 ? kSchemaPrepareResultTestV2 : kSchemaPrepareResultTestV1;
+  auto* session = decoded ? FindMutableSession(registry, decoded->session_uuid)
+                          : nullptr;
   if (!decoded || !session) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
-                   kSchemaPrepareResultTestV1,
+                   response_schema,
                    request.header.session_uuid,
                    "PARSER_SERVER_IPC.PREPARE_INVALID",
                    "The SBLR prepare payload is invalid.",
                    "prepare_invalid");
   }
+  if (session->detached_recovery_quarantined) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.SESSION_RECOVERY_QUARANTINED",
+                   "Prepare is blocked while detached transaction finality awaits engine recovery.",
+                   "session_recovery_quarantined");
+  }
+  if (!ExactV2FrameBinding(request, decoded->session_uuid, *session)) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+                   response_schema,
+                   request.header.session_uuid,
+                   "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                   "Prepare requires exact connection, header, payload, and session binding.",
+                   "prepare_binding_mismatch");
+  }
+  if (v2 && !session->transaction_routing_v2_negotiated) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+        response_schema,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.TRANSACTION_ROUTING_V2_NOT_NEGOTIATED",
+        "Transaction-routed prepare was not negotiated for this server session.",
+        "transaction_routing_v2_not_negotiated");
+  }
+  std::unique_lock<std::mutex> transaction_lock;
+  if (session->transaction_mutex != nullptr) {
+    transaction_lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
+  }
+  if (!v2 && DefaultTransactionFinalityUnknown(*session)) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+        response_schema,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_FINALITY_UNKNOWN",
+        "Legacy prepare is blocked while default transaction finality is unknown.",
+        "default_transaction_finality_unknown");
+  }
+  const ServerTransactionState* prepare_transaction = nullptr;
+  if (v2) {
+    const auto found =
+        session->transactions_by_local_id.find(decoded->local_transaction_id);
+    if (found == session->transactions_by_local_id.end() ||
+        found->second.lifecycle_state != ServerTransactionLifecycleState::kActive ||
+        found->second.transaction_uuid != decoded->transaction_uuid) {
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+                     response_schema,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_MISMATCH",
+                     "Prepare requires an active transaction owned by this session.",
+                     "transaction_selector_mismatch");
+    }
+    prepare_transaction = &found->second;
+  } else {
+    prepare_transaction =
+        AdoptAndFindExactActiveDefaultTransaction(session);
+    if (prepare_transaction == nullptr) {
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+          response_schema,
+          decoded->session_uuid,
+          "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE",
+          "Legacy prepare requires one exact active default transaction.",
+          "default_transaction_not_active");
+    }
+  }
+  ServerSessionRecord prepare_session = *session;
+  if (prepare_transaction != nullptr) {
+    prepare_session.local_transaction_id =
+        prepare_transaction->local_transaction_id;
+    prepare_session.snapshot_visible_through_local_transaction_id =
+        prepare_transaction->snapshot_visible_through_local_transaction_id;
+    prepare_session.transaction_uuid = prepare_transaction->transaction_uuid;
+    prepare_session.transaction_timestamp =
+        prepare_transaction->transaction_timestamp;
+    prepare_session.default_transaction_isolation_level =
+        prepare_transaction->isolation_level;
+    prepare_session.default_transaction_read_only =
+        prepare_transaction->read_only;
+  }
   auto request_record = RegisterServerRequestLifecycle(registry,
                                                        request,
                                                        *session,
                                                        "prepare_sblr",
-                                                       "sblr.prepare.pending");
+                                                       "sblr.prepare.pending",
+                                                       prepare_transaction);
   const auto admission = AdmitServerSblrEnvelope(
       ServerSblrAdmissionRequest{decoded->encoded_sblr_envelope, false});
   if (!admission.admitted) {
@@ -7355,7 +8532,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
                                        : admission.diagnostics.front().code);
     return FailureWithDiagnostics(
         static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
-        kSchemaPrepareResultTestV1,
+        response_schema,
         decoded->session_uuid,
         admission.diagnostics,
         admission.diagnostics.empty() ? "sblr_admission_rejected"
@@ -7367,28 +8544,68 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   ServerPreparedStatementRecord prepared;
   prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
   prepared.client_statement_uuid = decoded->client_statement_uuid;
-  CapturePreparedAuthorityContext(&prepared, *session);
+  CapturePreparedAuthorityContext(&prepared, prepare_session);
   prepared.encoded_sblr_envelope = decoded->encoded_sblr_envelope;
   prepared.operation_family = admission.operation_family;
   prepared.operation_id = admission.operation_id;
   prepared.requires_public_abi_dispatch = admission.requires_public_abi_dispatch;
   prepared.row_count_hint = admission.row_count_hint;
-  prepared.catalog_generation = session->catalog_generation;
-  prepared.security_epoch = session->security_epoch;
-  prepared.descriptor_epoch = session->descriptor_epoch;
-  prepared.grant_epoch = session->grant_epoch;
-  prepared.policy_generation = session->policy_generation;
-  prepared.role_set_hash = session->role_set_hash;
-  prepared.group_set_hash = session->group_set_hash;
-  prepared.search_path_hash = session->search_path_hash;
-  CapturePreparedLanguageContext(&prepared, *session);
+  prepared.catalog_generation = prepare_session.catalog_generation;
+  prepared.security_epoch = prepare_session.security_epoch;
+  prepared.descriptor_epoch = prepare_session.descriptor_epoch;
+  prepared.grant_epoch = prepare_session.grant_epoch;
+  prepared.policy_generation = prepare_session.policy_generation;
+  prepared.role_set_hash = prepare_session.role_set_hash;
+  prepared.group_set_hash = prepare_session.group_set_hash;
+  prepared.search_path_hash = prepare_session.search_path_hash;
+  if (prepare_transaction != nullptr) {
+    prepared.prepare_local_transaction_id =
+        prepare_transaction->local_transaction_id;
+    prepared.prepare_transaction_uuid = prepare_transaction->transaction_uuid;
+    prepared.prepare_snapshot_visible_through_local_transaction_id =
+        prepare_transaction->snapshot_visible_through_local_transaction_id;
+  }
+  CapturePreparedLanguageContext(&prepared, prepare_session);
+  const bool bind_transferable_metadata =
+      v2 && session->prepared_metadata_transfer_v1_negotiated &&
+      prepared.operation_id == "routine.procedure_invoke";
+  if (bind_transferable_metadata) {
+    auto binding = CreatePreparedMetadataBinding(
+        registry,
+        prepare_session,
+        prepared.operation_id,
+        prepared.operation_family,
+        prepared.encoded_sblr_envelope);
+    if (!binding.ok()) {
+      CompleteServerRequestLifecycle(
+          registry,
+          request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed,
+          binding.diagnostic_detail.empty()
+              ? "prepared_metadata_binding_rejected"
+              : binding.diagnostic_detail);
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+          response_schema,
+          decoded->session_uuid,
+          binding.diagnostic_code.empty()
+              ? "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED"
+              : binding.diagnostic_code,
+          "The engine could not create an immutable prepared metadata binding.",
+          binding.diagnostic_detail.empty()
+              ? "prepared_metadata_binding_rejected"
+              : binding.diagnostic_detail);
+    }
+    prepared.prepared_metadata_binding = binding.binding;
+    prepared.prepared_metadata_transferable = true;
+  }
   BindPreparedSessionObjectHandle(registry,
                                   &prepared,
-                                  *session,
+                                  prepare_session,
                                   prepared.encoded_sblr_envelope,
                                   prepared.operation_id);
-  SealPreparedAuthorityProof(&prepared, *session);
-  StorePreparedExecutionContext(registry, prepared, *session);
+  SealPreparedAuthorityProof(&prepared, prepare_session);
+  StorePreparedExecutionContext(registry, prepared, prepare_session);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
@@ -7401,17 +8618,18 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   SessionOperationResult result;
   result.accepted = true;
   result.response_message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult);
-  result.response_schema_id = kSchemaPrepareResultTestV1;
+  result.response_schema_id = response_schema;
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = decoded->session_uuid;
   result.payload = EncodePrepareResult("accepted", prepared.prepared_statement_uuid, prepared.operation_id);
   return result;
 }
 
-SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
-                                         const HostedEngineState& engine_state,
-                                         const sbps::Frame& request,
-                                         const ServerIparProjectionSourceFactory* ipar_source_factory) {
+SessionOperationResult HandleExecuteSblrImpl(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request,
+    const ServerIparProjectionSourceFactory* ipar_source_factory) {
   auto execute_phase_last = ServerSteadyClock::now();
   std::vector<std::pair<std::string, std::uint64_t>> execute_phase_micros;
   execute_phase_micros.reserve(24);
@@ -7421,11 +8639,15 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
         {std::move(phase), ServerElapsedMicros(execute_phase_last, now)});
     execute_phase_last = now;
   };
-  auto decoded = DecodeExecutePayload(request.payload);
+  const bool v2 = request.header.payload_schema_id == kSchemaExecuteSblrTestV2;
+  const std::uint32_t response_schema =
+      v2 ? kSchemaExecuteResultTestV2 : kSchemaExecuteResultTestV1;
+  auto decoded = DecodeExecutePayload(request.payload,
+                                      request.header.payload_schema_id);
   mark_execute_phase("decode_execute_payload");
   if (!decoded) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                   kSchemaExecuteResultTestV1,
+                   response_schema,
                    request.header.session_uuid,
                    "PARSER_SERVER_IPC.EXECUTE_INVALID",
                    "The SBLR execute payload is invalid.",
@@ -7435,23 +8657,155 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   mark_execute_phase("find_session");
   if (session == nullptr) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                   kSchemaExecuteResultTestV1,
+                   response_schema,
                    decoded->session_uuid,
                    "PARSER_SERVER_IPC.SESSION_REQUIRED",
                    "Execute requires a bound session.",
                    "session_required");
   }
+  if (session->detached_recovery_quarantined) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.SESSION_RECOVERY_QUARANTINED",
+                   "Execution is blocked while detached transaction finality awaits engine recovery.",
+                   "session_recovery_quarantined");
+  }
+  if (!ExactV2FrameBinding(request, decoded->session_uuid, *session)) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   request.header.session_uuid,
+                   "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                   "Execution requires exact connection, header, payload, and session binding.",
+                   "execute_binding_mismatch");
+  }
+  if (v2 && !session->transaction_routing_v2_negotiated) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+        response_schema,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.TRANSACTION_ROUTING_V2_NOT_NEGOTIATED",
+        "Transaction-routed execution was not negotiated for this server session.",
+        "transaction_routing_v2_not_negotiated");
+  }
+  std::unique_lock<std::mutex> transaction_lock;
+  if (session->transaction_mutex != nullptr) {
+    transaction_lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
+  }
+  if (session->transactions_by_local_id.empty() &&
+      session->local_transaction_id != 0) {
+    (void)AdoptAndFindExactActiveDefaultTransaction(session);
+  }
+  if (!v2 && DefaultTransactionFinalityUnknown(*session)) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+        response_schema,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_FINALITY_UNKNOWN",
+        "Legacy execution is blocked while default transaction finality is unknown.",
+        "default_transaction_finality_unknown");
+  }
+  std::optional<ServerTransactionState> selected_transaction;
+  if (decoded->transaction_route == ExecuteTransactionRoute::kSelected) {
+    const auto found =
+        session->transactions_by_local_id.find(decoded->local_transaction_id);
+    if (found == session->transactions_by_local_id.end() ||
+        found->second.lifecycle_state != ServerTransactionLifecycleState::kActive ||
+        found->second.transaction_uuid != decoded->transaction_uuid) {
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     response_schema,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_MISMATCH",
+                     "Execution requires an active transaction owned by this session.",
+                     "transaction_selector_mismatch");
+    }
+    selected_transaction = found->second;
+  } else if (decoded->transaction_route ==
+                 ExecuteTransactionRoute::kLegacyDefault ||
+             !decoded->transaction_routed) {
+    const auto* active_default =
+        AdoptAndFindExactActiveDefaultTransaction(session);
+    if (active_default == nullptr) {
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema,
+          decoded->session_uuid,
+          "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE",
+          "Legacy execution requires one exact active default transaction.",
+          "default_transaction_not_active");
+    }
+    selected_transaction = *active_default;
+  }
+  ServerSessionRecord dispatch_session = *session;
+  if (selected_transaction.has_value()) {
+    dispatch_session.local_transaction_id =
+        selected_transaction->local_transaction_id;
+    dispatch_session.snapshot_visible_through_local_transaction_id =
+        selected_transaction->snapshot_visible_through_local_transaction_id;
+    dispatch_session.transaction_uuid = selected_transaction->transaction_uuid;
+    dispatch_session.transaction_timestamp =
+        selected_transaction->transaction_timestamp;
+    dispatch_session.default_transaction_isolation_level =
+        selected_transaction->isolation_level;
+    dispatch_session.default_transaction_read_only =
+        selected_transaction->read_only;
+  } else if (decoded->transaction_route ==
+             ExecuteTransactionRoute::kBeginAdditional) {
+    dispatch_session.local_transaction_id = 0;
+    dispatch_session.snapshot_visible_through_local_transaction_id = 0;
+    dispatch_session.transaction_uuid.clear();
+    dispatch_session.transaction_timestamp.clear();
+  }
   auto request_record = RegisterServerRequestLifecycle(registry,
                                                        request,
                                                        *session,
                                                        "execute_sblr",
-                                                       "sblr.dispatch.pending");
+                                                       "sblr.dispatch.pending",
+                                                       selected_transaction
+                                                           ? &*selected_transaction
+                                                           : nullptr);
   mark_execute_phase("register_request_lifecycle");
   std::string encoded = decoded->encoded_sblr_envelope;
   bool cursor_requested = decoded->cursor_requested;
   const auto prepared_it = registry->prepared_by_uuid.find(UuidBytesToText(decoded->prepared_statement_uuid));
   const ServerPreparedStatementRecord* prepared_statement =
       prepared_it == registry->prepared_by_uuid.end() ? nullptr : &prepared_it->second;
+  if (prepared_statement != nullptr) {
+    const bool prepared_is_transaction_routed =
+        prepared_statement->prepare_local_transaction_id != 0 ||
+        !prepared_statement->prepare_transaction_uuid.empty();
+    const bool prepared_selector_matches =
+        selected_transaction.has_value() &&
+        prepared_statement->prepare_local_transaction_id ==
+            selected_transaction->local_transaction_id &&
+        prepared_statement->prepare_transaction_uuid ==
+            selected_transaction->transaction_uuid &&
+        prepared_statement
+                ->prepare_snapshot_visible_through_local_transaction_id ==
+            selected_transaction
+                ->snapshot_visible_through_local_transaction_id;
+    const bool prepared_metadata_transfer_allowed =
+        v2 && selected_transaction.has_value() &&
+        session->prepared_metadata_transfer_v1_negotiated &&
+        prepared_statement->prepared_metadata_transferable &&
+        prepared_statement->prepared_metadata_binding != nullptr;
+    if ((v2 && (!prepared_is_transaction_routed ||
+                (!prepared_selector_matches &&
+                 !prepared_metadata_transfer_allowed))) ||
+        (!v2 && prepared_is_transaction_routed)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "prepared_transaction_selector_mismatch");
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema,
+          decoded->session_uuid,
+          "PARSER_SERVER_IPC.PREPARED_TRANSACTION_SELECTOR_MISMATCH",
+          "Prepared execution requires the exact transaction selector used by prepare.",
+          "prepared_transaction_selector_mismatch");
+    }
+  }
   if (encoded.empty() && prepared_statement == nullptr) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -7468,7 +8822,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     const std::string mismatch =
         PreparedStatementAuthorityMismatchReason(*registry,
                                                  *prepared_statement,
-                                                 *session);
+                                                 dispatch_session);
     const std::string detail = PreparedStatementRefusalDetail(mismatch);
     if (mismatch == "prepared_statement_closed" ||
         mismatch == "prepared_statement_cross_session") {
@@ -7508,7 +8862,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   const std::string target_object_hint =
       EncodedTextField(encoded, "target_object_uuid");
   const bool implicit_negative_cache_allowed =
-      !operation_hint.empty() && !target_object_hint.empty();
+      !v2 && !operation_hint.empty() && !target_object_hint.empty();
   mark_execute_phase("shape_and_hint_extract");
   const auto fail_authority_cache_before_dispatch =
       [&](std::string detail) -> SessionOperationResult {
@@ -7563,17 +8917,19 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                    "The cached negative authorization decision refused this statement before SBLR dispatch.",
                    detail);
   };
-  if (auto cached_refusal = validate_cache_reference(
-          "negative_authorization_cache_key", "negative_authorization", true)) {
-    return *cached_refusal;
-  }
-  if (auto stale_capability = validate_cache_reference(
-          "capability_cache_key", "capability_route", false)) {
-    return *stale_capability;
-  }
-  if (auto stale_preflight = validate_cache_reference(
-          "statement_preflight_cache_key", "statement_preflight", false)) {
-    return *stale_preflight;
+  if (!v2) {
+    if (auto cached_refusal = validate_cache_reference(
+            "negative_authorization_cache_key", "negative_authorization", true)) {
+      return *cached_refusal;
+    }
+    if (auto stale_capability = validate_cache_reference(
+            "capability_cache_key", "capability_route", false)) {
+      return *stale_capability;
+    }
+    if (auto stale_preflight = validate_cache_reference(
+            "statement_preflight_cache_key", "statement_preflight", false)) {
+      return *stale_preflight;
+    }
   }
   if (implicit_negative_cache_allowed) {
     const std::string implicit_negative_key =
@@ -7711,15 +9067,72 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                      "prepared_statement_shape_mismatch");
     }
   }
-  StoreServerAuthorityCacheDecision(registry,
-                                    *session,
-                                    "capability_route",
-                                    admission.operation_id,
-                                    target_object_hint,
-                                    statement_shape_hash,
-                                    {},
-                                    "capability_route_admitted",
-                                    false);
+  const bool transaction_control =
+      admission.operation_id == "transaction.begin" ||
+      admission.operation_id == "transaction.commit" ||
+      admission.operation_id == "transaction.rollback";
+  const bool server_special_route =
+      IsLanguageSessionOperation(admission.operation_id) ||
+      IsLanguageBundleOperation(admission.operation_id) ||
+      IsLanguageResourceDirectoryOperation(admission.operation_id) ||
+      admission.operation_id.starts_with("session.") ||
+      admission.operation_id.starts_with("jobs.scheduler.") ||
+      admission.operation_id.starts_with("backup_archive.") ||
+      admission.operation_id == "transaction.set_characteristics" ||
+      admission.operation_id == "routine.execute_cursor_argument";
+  if (v2 &&
+      (decoded->transaction_route == ExecuteTransactionRoute::kLegacyDefault ||
+       (decoded->transaction_route == ExecuteTransactionRoute::kBeginAdditional &&
+        admission.operation_id != "transaction.begin") ||
+       (decoded->transaction_route == ExecuteTransactionRoute::kSelected &&
+        admission.operation_id == "transaction.begin"))) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "transaction_route_operation_mismatch");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.TRANSACTION_ROUTE_OPERATION_MISMATCH",
+                   "The V2 transaction route does not match the admitted operation.",
+                   "transaction_route_operation_mismatch");
+  }
+  if (v2 && AutocommitEmulationRequested(encoded)) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "v2_autocommit_requires_selector_finality");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.V2_AUTOCOMMIT_UNSUPPORTED",
+                   "Transaction-routed autocommit is not supported by this V2 contract.",
+                   "v2_autocommit_requires_selector_finality");
+  }
+  if (v2 && !transaction_control &&
+      (!admission.requires_public_abi_dispatch || server_special_route)) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "v2_server_special_route_not_proven");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.V2_ROUTE_UNSUPPORTED",
+                   "The operation is not proven to execute entirely in the selected transaction context.",
+                   "v2_server_special_route_not_proven");
+  }
+  if (!v2) {
+    StoreServerAuthorityCacheDecision(registry,
+                                      *session,
+                                      "capability_route",
+                                      admission.operation_id,
+                                      target_object_hint,
+                                      statement_shape_hash,
+                                      {},
+                                      "capability_route_admitted",
+                                      false);
+  }
   if (IsLanguageSessionOperation(admission.operation_id)) {
     if (admission.operation_id == "language.session.set") {
       const std::string target_language_profile =
@@ -7989,7 +9402,11 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                      "prepared_statement_name_required");
     }
     if (auto* existing = FindPreparedByName(registry, decoded->session_uuid, statement_name)) {
-      existing->closed = true;
+      const auto existing_uuid = existing->prepared_statement_uuid;
+      (void)CloseServerPreparedStatement(registry,
+                                         decoded->session_uuid,
+                                         existing_uuid,
+                                         "prepared_statement_replaced");
     }
     ServerPreparedStatementRecord prepared;
     prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
@@ -8106,7 +9523,23 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                      "The prepared SBLR statement is not available for this session.",
                      "prepared_statement_not_found");
     }
-    prepared->closed = true;
+    const auto closed = CloseServerPreparedStatement(
+        registry,
+        decoded->session_uuid,
+        prepared->prepared_statement_uuid,
+        "prepared_statement_deallocated");
+    if (!closed.found) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "prepared_statement_not_found");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
+                     "The prepared SBLR statement is not available for this session.",
+                     "prepared_statement_not_found");
+    }
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
                                           admission.operation_id);
@@ -8270,7 +9703,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                             request_record.request_uuid,
                             cursor->cursor_uuid,
                             cursor->engine_result != nullptr);
-    MarkCursorFinality(cursor, "closed", "client_closed");
+    MarkCursorFinality(registry, cursor, "closed", "client_closed");
     cursor->closed = true;
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -8556,24 +9989,30 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                         request_record.request_uuid,
                                         admission.operation_id);
   if (auto transaction_refusal =
-          ValidateTransactionAdmission(engine_state, *session, admission, encoded)) {
+          ValidateTransactionAdmission(engine_state,
+                                       dispatch_session,
+                                       admission,
+                                       encoded)) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kFailed,
                                    transaction_refusal->diagnostics.empty()
                                        ? "transaction_admission_denied"
                                        : transaction_refusal->diagnostics.front().code);
+    transaction_refusal->response_schema_id = response_schema;
     return *transaction_refusal;
   }
-  StoreServerAuthorityCacheDecision(registry,
-                                    *session,
-                                    "statement_preflight",
-                                    admission.operation_id,
-                                    target_object_hint,
-                                    statement_shape_hash,
-                                    {},
-                                    "statement_preflight_admitted",
-                                    false);
+  if (!v2) {
+    StoreServerAuthorityCacheDecision(registry,
+                                      *session,
+                                      "statement_preflight",
+                                      admission.operation_id,
+                                      target_object_hint,
+                                      statement_shape_hash,
+                                      {},
+                                      "statement_preflight_admitted",
+                                      false);
+  }
   if (admission.operation_id == "routine.execute_cursor_argument") {
     const auto fail_routine_cursor = [&](std::string code,
                                          std::string message,
@@ -8689,7 +10128,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                      ServerRequestLifecycleState::kCompleted,
                                      "routine_cursor_inspect_completed");
     } else if (action == "close") {
-      MarkCursorFinality(&cursor, "closed", "routine_owned_close");
+      MarkCursorFinality(registry, &cursor, "closed", "routine_owned_close");
       cursor.closed = true;
       cleanup_state = "owned_cursor_closed";
       row_packet = ResultPacket(admission.operation_id,
@@ -8782,7 +10221,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     }
 
     if (trigger_scoped && !cursor.closed) {
-      MarkCursorFinality(&cursor, "closed", "trigger_event_scope_cleanup");
+      MarkCursorFinality(registry, &cursor, "closed", "trigger_event_scope_cleanup");
       cursor.closed = true;
       cleanup_state = "trigger_event_scope_cleanup";
       MarkServerRequestClosedByCursor(registry,
@@ -8847,12 +10286,555 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                               ? BulkStreamEventCount(requested_copy_reject_rows)
                                               : requested_stream_rows.value_or(admission.row_count_hint)));
   std::string row_packet;
+  ServerTransactionResponseState transaction_response;
+  if (v2 && selected_transaction.has_value()) {
+    transaction_response.selected_present = true;
+    transaction_response.selected = *selected_transaction;
+  }
   sb_engine_result_t engine_result = nullptr;
   std::vector<std::string> bulk_reject_records;
   std::uint64_t bulk_total_rows = bulk_stream_cursor ? requested_copy_total_rows : 0;
   std::uint64_t bulk_rejected_rows = bulk_stream_cursor ? requested_copy_reject_rows : 0;
   if (admission.requires_public_abi_dispatch) {
-    if (admission.operation_id == "transaction.begin" &&
+    if (v2 && admission.operation_id == "transaction.begin") {
+      const auto* database = HostedDatabaseForSession(engine_state, *session);
+      if (database == nullptr) {
+        return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                       response_schema,
+                       decoded->session_uuid,
+                       "PARSER_SERVER_IPC.TRANSACTION_DATABASE_UNAVAILABLE",
+                       "Transaction begin requires an available hosted database.",
+                       "database_unavailable");
+      }
+      engine_api::EngineBeginTransactionRequest begin;
+      begin.context =
+          ReplacementTransactionContext(*session,
+                                        *database,
+                                        request_record.request_uuid);
+      begin.isolation_level =
+          JsonTextField(encoded, "transaction_isolation_level")
+              .value_or(TextLineValue(encoded, "transaction_isolation_level")
+                            .value_or(session->default_transaction_isolation_level));
+      const bool read_only =
+          JsonBoolField(encoded, "transaction_read_only",
+                        session->default_transaction_read_only) ||
+          TextBoolField(encoded, "transaction_read_only",
+                        session->default_transaction_read_only);
+      begin.context.read_only_mode = read_only || session->attach_mode == "read_only";
+      begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+      begin.transaction_policy_profile.encoded_profiles.push_back(
+          std::string("transaction_read_only:") +
+          (begin.context.read_only_mode ? "true" : "false"));
+      begin.transaction_policy_profile.encoded_profiles.push_back(
+          std::string("transaction_read_mode:") +
+          (begin.context.read_only_mode ? "read_only" : "read_write"));
+      std::string wait_mode =
+          JsonTextField(encoded, "transaction_wait_mode")
+              .value_or(TextLineValue(encoded, "transaction_wait_mode")
+                            .value_or(""));
+      for (char& ch : wait_mode) {
+        ch = ch == '-'
+                 ? '_'
+                 : static_cast<char>(
+                       std::tolower(static_cast<unsigned char>(ch)));
+      }
+      auto lock_timeout =
+          JsonU64Field(encoded, "transaction_lock_timeout_ms");
+      if (!lock_timeout.has_value()) {
+        lock_timeout = TextLineU64(encoded, "transaction_lock_timeout_ms");
+      }
+      if (wait_mode.empty() && lock_timeout.has_value()) {
+        wait_mode = "wait";
+      }
+      if (!wait_mode.empty()) {
+        begin.transaction_policy_profile.encoded_profiles.push_back(
+            "transaction_wait_mode:" + wait_mode);
+      }
+      if (lock_timeout.has_value()) {
+        begin.transaction_policy_profile.encoded_profiles.push_back(
+            "transaction_lock_timeout_ms:" +
+            std::to_string(*lock_timeout));
+      }
+      const auto begun = engine_api::EngineBeginTransaction(begin);
+      if (!begun.ok ||
+          !IsCompleteEngineTransactionIdentity(
+              begun.local_transaction_id,
+              begun.transaction_uuid.canonical)) {
+        const std::string detail =
+            begun.diagnostics.empty() || begun.diagnostics.front().detail.empty()
+                ? "transaction_begin_failed"
+                : begun.diagnostics.front().detail;
+        CompleteServerRequestLifecycle(registry,
+                                       request_record.request_uuid,
+                                       ServerRequestLifecycleState::kFailed,
+                                       detail);
+        transaction_response.finality =
+            ServerTransactionResponseState::Finality::kNotApplicable;
+        transaction_response.outcome_detail = detail;
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    detail,
+                                    transaction_response);
+      }
+      auto begun_transaction = TransactionStateFromBeginResult(begun, *session);
+      begun_transaction.isolation_level = begin.isolation_level;
+      begun_transaction.read_only = begin.context.read_only_mode;
+      begun_transaction.wait_mode = wait_mode;
+      begun_transaction.lock_timeout_ms = lock_timeout.value_or(0);
+      begun_transaction.lock_timeout_present = lock_timeout.has_value();
+      begun_transaction.begin_ordinal = session->next_transaction_begin_ordinal++;
+      bool local_id_alias = false;
+      const bool identity_alias = TransactionIdentityAliasesSession(
+          *session, begun_transaction, &local_id_alias);
+      if (identity_alias) {
+        std::string cleanup_detail =
+            "cleanup_not_safe_for_local_id_alias";
+        const bool cleanup_applied =
+            !local_id_alias &&
+            RollbackUnpublishedTransaction(*session,
+                                           engine_state,
+                                           request_record.request_uuid,
+                                           begun_transaction,
+                                           &cleanup_detail);
+        if (!cleanup_applied) {
+          QuarantineUnpublishedTransaction(session, begun_transaction);
+        } else {
+          session->detached_recovery_quarantined = true;
+        }
+        transaction_response.finality =
+            cleanup_applied
+                ? ServerTransactionResponseState::Finality::kNotApplicable
+                : ServerTransactionResponseState::Finality::kUnknown;
+        transaction_response.outcome_detail = cleanup_applied
+            ? "duplicate_transaction_identity_cleanup_applied"
+            : "duplicate_transaction_identity_cleanup_unresolved:" +
+                  cleanup_detail;
+        CompleteServerRequestLifecycle(
+            registry,
+            request_record.request_uuid,
+            cleanup_applied ? ServerRequestLifecycleState::kFailed
+                            : ServerRequestLifecycleState::kUnknownOutcome,
+            transaction_response.outcome_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    transaction_response.outcome_detail,
+                                    transaction_response);
+      }
+      const auto begun_published = session->transactions_by_local_id.emplace(
+          begun_transaction.local_transaction_id, begun_transaction);
+      if (!begun_published.second) {
+        std::string cleanup_detail;
+        const bool cleanup_applied = RollbackUnpublishedTransaction(
+            *session,
+            engine_state,
+            request_record.request_uuid,
+            begun_transaction,
+            &cleanup_detail);
+        if (!cleanup_applied) {
+          QuarantineUnpublishedTransaction(session, begun_transaction);
+        } else {
+          session->detached_recovery_quarantined = true;
+        }
+        transaction_response.finality =
+            cleanup_applied
+                ? ServerTransactionResponseState::Finality::kNotApplicable
+                : ServerTransactionResponseState::Finality::kUnknown;
+        transaction_response.outcome_detail = cleanup_applied
+            ? "transaction_publication_failed_cleanup_applied"
+            : "transaction_publication_failed_cleanup_unresolved:" +
+                  cleanup_detail;
+        CompleteServerRequestLifecycle(
+            registry,
+            request_record.request_uuid,
+            cleanup_applied ? ServerRequestLifecycleState::kFailed
+                            : ServerRequestLifecycleState::kUnknownOutcome,
+            transaction_response.outcome_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    transaction_response.outcome_detail,
+                                    transaction_response);
+      }
+      transaction_response.selected_present = true;
+      transaction_response.selected = begun_transaction;
+      transaction_response.finality =
+          ServerTransactionResponseState::Finality::kNotApplicable;
+      row_packet = ExplicitTransactionStatePayload(admission.operation_id,
+                                                   begun_transaction,
+                                                   "active");
+      row_count = 0;
+    } else if (v2 &&
+               (admission.operation_id == "transaction.commit" ||
+                admission.operation_id == "transaction.rollback")) {
+      if (!selected_transaction.has_value()) {
+        return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                       response_schema,
+                       decoded->session_uuid,
+                       "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_REQUIRED",
+                       "Transaction finality requires an engine-issued selector.",
+                       "transaction_selector_required");
+      }
+      const auto finalized_transaction = *selected_transaction;
+      const auto deferred_catalog_mutations =
+          finalized_transaction.deferred_catalog_cache_mutations;
+      const auto* database = HostedDatabaseForSession(engine_state, *session);
+      if (database == nullptr) {
+        return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                       response_schema,
+                       decoded->session_uuid,
+                       "PARSER_SERVER_IPC.TRANSACTION_DATABASE_UNAVAILABLE",
+                       "Transaction finality requires an available hosted database.",
+                       "database_unavailable");
+      }
+      bool finality_applied = false;
+      bool finality_known = false;
+      bool secondary_failure = false;
+      std::uint64_t engine_finalized_local_transaction_id = 0;
+      std::string engine_finalized_transaction_uuid;
+      std::string finality_detail;
+      std::string finality_diagnostic_code;
+      std::string finality_diagnostic_detail;
+      if (admission.operation_id == "transaction.commit") {
+        engine_api::EngineCommitTransactionRequest commit;
+        commit.context = ActiveTransactionContext(dispatch_session,
+                                                  *database,
+                                                  request_record.request_uuid);
+        const auto committed = engine_api::EngineCommitTransaction(commit);
+        finality_known = committed.engine_finality_known;
+        finality_applied =
+            committed.commit_finality_state == "committed_by_engine_inventory" ||
+            committed.commit_finality_state ==
+                "committed_post_inventory_secondary_failure";
+        secondary_failure = !committed.ok && finality_applied;
+        engine_finalized_local_transaction_id =
+            committed.local_transaction_id;
+        engine_finalized_transaction_uuid =
+            committed.transaction_uuid.canonical;
+        finality_detail = committed.commit_finality_state;
+        if (!committed.diagnostics.empty()) {
+          finality_diagnostic_code = committed.diagnostics.front().code;
+          finality_diagnostic_detail = committed.diagnostics.front().detail;
+        }
+        transaction_response.diagnostic_code = finality_diagnostic_code;
+      } else {
+        engine_api::EngineRollbackTransactionRequest rollback;
+        rollback.context = ActiveTransactionContext(dispatch_session,
+                                                    *database,
+                                                    request_record.request_uuid);
+        const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+        finality_known = rolled_back.engine_finality_known;
+        finality_applied =
+            rolled_back.rollback_finality_state ==
+                "rolled_back_by_engine_inventory" ||
+            rolled_back.rollback_finality_state ==
+                "rolled_back_post_inventory_secondary_failure";
+        secondary_failure =
+            rolled_back.post_inventory_secondary_failure &&
+            finality_applied;
+        engine_finalized_local_transaction_id =
+            rolled_back.local_transaction_id;
+        engine_finalized_transaction_uuid =
+            rolled_back.transaction_uuid.canonical;
+        finality_detail = rolled_back.rollback_finality_state;
+        if (!rolled_back.diagnostics.empty()) {
+          finality_diagnostic_code = rolled_back.diagnostics.front().code;
+          finality_diagnostic_detail = rolled_back.diagnostics.front().detail;
+        }
+        transaction_response.diagnostic_code = finality_diagnostic_code;
+      }
+      if (finality_detail.empty()) {
+        finality_detail = finality_diagnostic_detail;
+      }
+      if (!finality_known) {
+        auto found = session->transactions_by_local_id.find(
+            finalized_transaction.local_transaction_id);
+        if (found != session->transactions_by_local_id.end() &&
+            found->second.transaction_uuid ==
+                finalized_transaction.transaction_uuid) {
+          found->second.lifecycle_state =
+              ServerTransactionLifecycleState::kFinalityUnknown;
+        }
+        transaction_response.finality =
+            ServerTransactionResponseState::Finality::kUnknown;
+        transaction_response.outcome_detail = finality_detail;
+        CompleteServerRequestLifecycle(registry,
+                                       request_record.request_uuid,
+                                       ServerRequestLifecycleState::kUnknownOutcome,
+                                       finality_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    finality_detail,
+                                    transaction_response);
+      }
+      if (!finality_applied) {
+        transaction_response.finality =
+            ServerTransactionResponseState::Finality::kKnownNotApplied;
+        transaction_response.outcome_detail = finality_detail;
+        CompleteServerRequestLifecycle(
+            registry,
+            request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed,
+            finality_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    finality_detail,
+                                    transaction_response);
+      }
+      if (engine_finalized_local_transaction_id !=
+              finalized_transaction.local_transaction_id ||
+          engine_finalized_transaction_uuid !=
+              finalized_transaction.transaction_uuid) {
+        const auto found = session->transactions_by_local_id.find(
+            finalized_transaction.local_transaction_id);
+        if (found != session->transactions_by_local_id.end() &&
+            found->second.transaction_uuid ==
+                finalized_transaction.transaction_uuid) {
+          found->second.lifecycle_state =
+              ServerTransactionLifecycleState::kFinalityUnknown;
+        }
+        session->detached_recovery_quarantined = true;
+        transaction_response.finality =
+            ServerTransactionResponseState::Finality::kUnknown;
+        transaction_response.diagnostic_code =
+            "PARSER_SERVER_IPC.ENGINE_FINALITY_IDENTITY_MISMATCH";
+        transaction_response.outcome_detail =
+            "engine_applied_finality_composite_identity_mismatch";
+        CompleteServerRequestLifecycle(
+            registry,
+            request_record.request_uuid,
+            ServerRequestLifecycleState::kUnknownOutcome,
+            transaction_response.outcome_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    transaction_response.outcome_detail,
+                                    transaction_response);
+      }
+      // Engine inventory finality is authoritative even if the in-memory
+      // routing registry is concurrently corrupted.  A registry mismatch is
+      // a secondary server-integrity failure; it must never downgrade an
+      // already-applied commit/rollback to outcome-unknown.
+      transaction_response.finality =
+          ServerTransactionResponseState::Finality::kKnownApplied;
+      transaction_response.finality_applied = true;
+      transaction_response.finalized_present = true;
+      transaction_response.finalized = finalized_transaction;
+      if (admission.operation_id == "transaction.commit" &&
+          !deferred_catalog_mutations.empty()) {
+        transaction_response.catalog_invalidation_applied = true;
+        for (const auto& mutation_operation : deferred_catalog_mutations) {
+          ClearStablePublicRelationNameCacheForMutation(
+              registry, mutation_operation);
+        }
+      }
+      const auto found = session->transactions_by_local_id.find(
+          finalized_transaction.local_transaction_id);
+      if (found == session->transactions_by_local_id.end() ||
+          found->second.transaction_uuid != finalized_transaction.transaction_uuid) {
+        session->detached_recovery_quarantined = true;
+        if (admission.operation_id == "transaction.commit") {
+          ClearDispatchSchemaParentPathCache();
+          registry->stable_public_name_resolution_cache_by_key.clear();
+          registry->stable_public_name_resolution_cache_lru.clear();
+        }
+        if (transaction_response.diagnostic_code.empty()) {
+          transaction_response.diagnostic_code =
+              "PARSER_SERVER_IPC.TRANSACTION_BINDING_CHANGED_AFTER_FINALITY";
+        }
+        transaction_response.outcome_detail =
+            "transaction_binding_changed_after_known_applied_finality";
+        CompleteServerRequestLifecycle(
+            registry,
+            request_record.request_uuid,
+            ServerRequestLifecycleState::kFailed,
+            transaction_response.outcome_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    {},
+                                    transaction_response.outcome_detail,
+                                    transaction_response);
+      }
+      const bool finalized_default =
+          session->default_local_transaction_id ==
+          finalized_transaction.local_transaction_id;
+      session->transactions_by_local_id.erase(found);
+      CloseCursorsOwnedByTransaction(registry,
+                                     decoded->session_uuid,
+                                     finalized_transaction,
+                                     admission.operation_id);
+      const bool retaining =
+          JsonBoolField(encoded, "retaining", false) ||
+          TextBoolField(encoded, "retaining", false);
+      const bool last_active = session->transactions_by_local_id.empty();
+      if (retaining || last_active) {
+        ServerTransactionState replacement;
+        std::string replacement_code;
+        std::string replacement_detail;
+        if (!BeginIndependentTransactionForSession(
+                *session,
+                engine_state,
+                request_record.request_uuid,
+                retaining ? &finalized_transaction : nullptr,
+                &replacement,
+                &replacement_code,
+                &replacement_detail)) {
+          ProjectDefaultTransactionToLegacyFields(session);
+          transaction_response.diagnostic_code =
+              replacement_code.empty()
+                  ? "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_FAILED"
+                  : replacement_code;
+          transaction_response.outcome_detail =
+              replacement_detail.empty()
+                  ? "replacement_transaction_begin_failed"
+                  : replacement_detail;
+          CompleteServerRequestLifecycle(registry,
+                                         request_record.request_uuid,
+                                         ServerRequestLifecycleState::kFailed,
+                                         transaction_response.outcome_detail);
+          return V2TransactionOutcome(false,
+                                      decoded->session_uuid,
+                                      request_record.request_uuid,
+                                      admission.operation_id,
+                                      ExplicitTransactionStatePayload(
+                                          admission.operation_id,
+                                          finalized_transaction,
+                                          "finalized"),
+                                      transaction_response.outcome_detail,
+                                      transaction_response);
+        }
+        bool replacement_local_id_alias = false;
+        if (TransactionIdentityAliasesSession(
+                *session,
+                replacement,
+                &replacement_local_id_alias)) {
+          std::string cleanup_detail =
+              "cleanup_not_safe_for_local_id_alias";
+          const bool cleanup_applied =
+              !replacement_local_id_alias &&
+              RollbackUnpublishedTransaction(
+                  *session,
+                  engine_state,
+                  request_record.request_uuid,
+                  replacement,
+                  &cleanup_detail);
+          if (!cleanup_applied) {
+            QuarantineUnpublishedTransaction(session, replacement);
+          } else {
+            session->detached_recovery_quarantined = true;
+          }
+          ProjectDefaultTransactionToLegacyFields(session);
+          transaction_response.diagnostic_code =
+              "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_IDENTITY_ALIAS";
+          transaction_response.outcome_detail = cleanup_applied
+              ? "replacement_identity_alias_cleanup_applied"
+              : "replacement_identity_alias_cleanup_unresolved:" +
+                    cleanup_detail;
+          CompleteServerRequestLifecycle(
+              registry,
+              request_record.request_uuid,
+              cleanup_applied ? ServerRequestLifecycleState::kFailed
+                              : ServerRequestLifecycleState::kUnknownOutcome,
+              transaction_response.outcome_detail);
+          return V2TransactionOutcome(
+              false,
+              decoded->session_uuid,
+              request_record.request_uuid,
+              admission.operation_id,
+              ExplicitTransactionStatePayload(admission.operation_id,
+                                              finalized_transaction,
+                                              "finalized"),
+              transaction_response.outcome_detail,
+              transaction_response);
+        }
+        replacement.begin_ordinal = session->next_transaction_begin_ordinal++;
+        const auto published = session->transactions_by_local_id.emplace(
+            replacement.local_transaction_id, replacement);
+        if (!published.second) {
+          std::string cleanup_detail;
+          const bool cleanup_applied = RollbackUnpublishedTransaction(
+              *session,
+              engine_state,
+              request_record.request_uuid,
+              replacement,
+              &cleanup_detail);
+          if (!cleanup_applied) {
+            QuarantineUnpublishedTransaction(session, replacement);
+          } else {
+            session->detached_recovery_quarantined = true;
+          }
+          transaction_response.diagnostic_code =
+              "PARSER_SERVER_IPC.TRANSACTION_REPLACEMENT_PUBLICATION_FAILED";
+          transaction_response.outcome_detail = cleanup_applied
+              ? "replacement_publication_failed_cleanup_applied"
+              : "replacement_publication_failed_cleanup_unresolved:" +
+                    cleanup_detail;
+          CompleteServerRequestLifecycle(
+              registry,
+              request_record.request_uuid,
+              cleanup_applied ? ServerRequestLifecycleState::kFailed
+                              : ServerRequestLifecycleState::kUnknownOutcome,
+              transaction_response.outcome_detail);
+          return V2TransactionOutcome(false,
+                                      decoded->session_uuid,
+                                      request_record.request_uuid,
+                                      admission.operation_id,
+                                      {},
+                                      transaction_response.outcome_detail,
+                                      transaction_response);
+        }
+        if (last_active || finalized_default) {
+          session->default_local_transaction_id =
+              replacement.local_transaction_id;
+        }
+        transaction_response.replacement_present = true;
+        transaction_response.replacement = replacement;
+        transaction_response.replacement_reason =
+            retaining
+                ? ServerTransactionResponseState::ReplacementReason::kRetaining
+                : ServerTransactionResponseState::ReplacementReason::kLastActiveReady;
+      }
+      ProjectDefaultTransactionToLegacyFields(session);
+      row_packet = ExplicitTransactionStatePayload(admission.operation_id,
+                                                   finalized_transaction,
+                                                   "finalized");
+      if (transaction_response.replacement_present) {
+        AppendReplacementTransactionState(&row_packet,
+                                          transaction_response.replacement);
+      }
+      transaction_response.outcome_detail = finality_detail;
+      row_count = 0;
+      if (secondary_failure) {
+        CompleteServerRequestLifecycle(registry,
+                                       request_record.request_uuid,
+                                       ServerRequestLifecycleState::kFailed,
+                                       finality_detail);
+        return V2TransactionOutcome(false,
+                                    decoded->session_uuid,
+                                    request_record.request_uuid,
+                                    admission.operation_id,
+                                    row_packet,
+                                    finality_detail,
+                                    transaction_response);
+      }
+    } else if (!v2 && admission.operation_id == "transaction.begin" &&
         session->local_transaction_id != 0) {
       row_packet = SessionTransactionStatePayload(admission.operation_id,
                                                   *session,
@@ -8874,6 +10856,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
         live_catalog_projection_path = CatalogProjectionPathForDispatch(encoded);
       }
       const bool use_server_live_catalog_projection =
+          !v2 &&
           (admission.operation_id == "observability.show_catalog" ||
            admission.operation_id == "dml.select_rows") &&
           !live_catalog_projection_path.empty();
@@ -8891,16 +10874,22 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
       }
       mark_execute_phase("pre_public_abi_dispatch");
       auto public_abi = use_server_live_catalog_projection
-                            ? DispatchServerLiveIparCatalogProjection(*session,
+                            ? DispatchServerLiveIparCatalogProjection(dispatch_session,
                                                                       encoded,
                                                                       live_ipar_sources)
                             : DispatchThroughPublicAbi(registry,
-                                                       *session,
+                                                       dispatch_session,
                                                        admission.operation_id,
                                                        admission.operation_family,
                                                        encoded,
                                                        decoded->data_packet,
-                                                       retain_engine_result);
+                                                       retain_engine_result,
+                                                       prepared_statement != nullptr &&
+                                                               prepared_statement
+                                                                   ->prepared_metadata_transferable
+                                                           ? prepared_statement
+                                                                 ->prepared_metadata_binding
+                                                           : nullptr);
       mark_execute_phase("public_abi_dispatch");
       if (!public_abi.ok) {
         if (autocommit_emulation) {
@@ -8932,17 +10921,20 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                          public_abi.diagnostic_detail.empty()
                                              ? "engine_dispatch_rejected_autocommit_rolled_back"
                                              : public_abi.diagnostic_detail);
-          return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                         kSchemaExecuteResultTestV1,
-                         decoded->session_uuid,
-                         public_abi.diagnostic_code.empty()
-                             ? "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"
-                             : public_abi.diagnostic_code,
-                         "The engine rejected the admitted SBLR envelope; autocommit rollback opened a replacement transaction.",
-                         (public_abi.diagnostic_detail.empty()
-                              ? "engine_dispatch_rejected"
-                              : public_abi.diagnostic_detail) +
-                             std::string(";") + autocommit.evidence);
+          const std::string detail =
+              (public_abi.diagnostic_detail.empty()
+                   ? "engine_dispatch_rejected"
+                   : public_abi.diagnostic_detail) +
+              std::string(";") + autocommit.evidence;
+          return FailureWithDiagnostics(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema,
+              decoded->session_uuid,
+              {PublicAbiFailureDiagnostic(
+                  public_abi,
+                  "The engine rejected the admitted SBLR envelope; autocommit rollback opened a replacement transaction.",
+                  detail)},
+              detail);
         }
         CompleteServerRequestLifecycle(registry,
                                        request_record.request_uuid,
@@ -8950,24 +10942,80 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                        public_abi.diagnostic_detail.empty()
                                            ? "engine_dispatch_rejected"
                                            : public_abi.diagnostic_detail);
-        return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                       kSchemaExecuteResultTestV1,
-                       decoded->session_uuid,
-                       public_abi.diagnostic_code.empty()
-                           ? "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED"
-                           : public_abi.diagnostic_code,
-                       "The engine rejected the admitted SBLR envelope.",
-                       public_abi.diagnostic_detail.empty() ? "engine_dispatch_rejected"
-                                                            : public_abi.diagnostic_detail);
+        const std::string detail = public_abi.diagnostic_detail.empty()
+                                       ? "engine_dispatch_rejected"
+                                       : public_abi.diagnostic_detail;
+        auto diagnostic = PublicAbiFailureDiagnostic(
+            public_abi,
+            "The engine rejected the admitted SBLR envelope.",
+            detail);
+        if (v2) {
+          transaction_response.outcome_detail = detail;
+          transaction_response.diagnostic_code = diagnostic.code;
+          std::vector<ServerDiagnostic> diagnostics;
+          diagnostics.push_back(std::move(diagnostic));
+          // The exact selected selector was captured at admission and remains
+          // active after this statement-level engine refusal.  Construct the
+          // typed V2 result here so the outer compatibility upgrader never
+          // has to reconstruct transaction authority from a later registry
+          // read.
+          return V2TransactionOutcome(false,
+                                      decoded->session_uuid,
+                                      request.header.request_uuid,
+                                      admission.operation_id,
+                                      {},
+                                      detail,
+                                      transaction_response,
+                                      std::move(diagnostics));
+        }
+        return FailureWithDiagnostics(
+            static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+            response_schema,
+            decoded->session_uuid,
+            {std::move(diagnostic)},
+            detail);
       }
       row_packet = public_abi.payload;
-      ClearStablePublicRelationNameCacheForMutation(registry, admission.operation_id);
-      SeedStablePublicRelationNameCacheAfterDdl(registry,
-                                                *session,
-                                                admission.operation_id,
-                                                encoded,
-                                                row_packet);
-      if (public_abi.affected_rows != 0) {
+      if (!v2) {
+        ClearStablePublicRelationNameCacheForMutation(registry,
+                                                      admission.operation_id);
+        SeedStablePublicRelationNameCacheAfterDdl(registry,
+                                                  *session,
+                                                  admission.operation_id,
+                                                  encoded,
+                                                  row_packet);
+      } else if (selected_transaction.has_value() &&
+                 MutatesPublicNameResolutionAuthority(
+                     admission.operation_id)) {
+        const auto live = session->transactions_by_local_id.find(
+            selected_transaction->local_transaction_id);
+        if (live == session->transactions_by_local_id.end() ||
+            live->second.transaction_uuid !=
+                selected_transaction->transaction_uuid ||
+            live->second.lifecycle_state !=
+                ServerTransactionLifecycleState::kActive) {
+          CompleteServerRequestLifecycle(
+              registry,
+              request_record.request_uuid,
+              ServerRequestLifecycleState::kUnknownOutcome,
+              "transaction_binding_changed_after_catalog_mutation");
+          return Failure(
+              static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+              response_schema,
+              decoded->session_uuid,
+              "PARSER_SERVER_IPC.TRANSACTION_BINDING_CHANGED",
+              "The selected transaction binding changed after catalog mutation dispatch.",
+              "transaction_binding_changed_after_catalog_mutation");
+        }
+        auto& deferred =
+            live->second.deferred_catalog_cache_mutations;
+        if (std::find(deferred.begin(),
+                      deferred.end(),
+                      admission.operation_id) == deferred.end()) {
+          deferred.push_back(admission.operation_id);
+        }
+      }
+      if (public_abi.affected_rows_present) {
         if (!row_packet.empty() && row_packet.back() != '\n') {
           row_packet.push_back('\n');
         }
@@ -9042,7 +11090,11 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
         mark_execute_phase("autocommit_finality_boundary");
       }
     }
-    ApplyTransactionResultToSession(admission.operation_id, row_packet, session);
+    if (!v2) {
+      ApplyTransactionResultToSession(admission.operation_id,
+                                      row_packet,
+                                      session);
+    }
     mark_execute_phase("apply_transaction_result");
   } else {
     row_packet = ResultPacket(admission.operation_id, true, row_count);
@@ -9067,6 +11119,18 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     cursor.warning_stream_kind = warning_stream_cursor ? "partial_result_warning_chain" : "";
     cursor.finality_kind = finality_kind.value_or("");
     cursor.finality_after_fetches = finality_after_fetches.value_or(0);
+    if (selected_transaction.has_value()) {
+      cursor.owning_local_transaction_id =
+          selected_transaction->local_transaction_id;
+      cursor.owning_snapshot_visible_through_local_transaction_id =
+          selected_transaction->snapshot_visible_through_local_transaction_id;
+      cursor.owning_transaction_uuid = selected_transaction->transaction_uuid;
+    } else {
+      cursor.owning_local_transaction_id = dispatch_session.local_transaction_id;
+      cursor.owning_snapshot_visible_through_local_transaction_id =
+          dispatch_session.snapshot_visible_through_local_transaction_id;
+      cursor.owning_transaction_uuid = dispatch_session.transaction_uuid;
+    }
     cursor.bulk_total_rows = bulk_stream_cursor ? bulk_total_rows : 0;
     cursor.bulk_rejected_rows = bulk_stream_cursor ? bulk_rejected_rows : 0;
     cursor.multi_result_count = multi_result_cursor ? *multi_result_count : 0;
@@ -9097,15 +11161,27 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
   SessionOperationResult result;
   result.accepted = true;
   result.response_message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult);
-  result.response_schema_id = kSchemaExecuteResultTestV1;
+  result.response_schema_id = response_schema;
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = decoded->session_uuid;
-  result.payload = EncodeExecuteResult("accepted",
-                                       request_uuid,
-                                       cursor_uuid,
-                                       row_count,
-                                       admission.operation_id,
-                                       cursor_requested ? "" : row_packet);
+  if (v2) {
+    result.transaction_state = transaction_response;
+    result.payload = EncodeExecuteResultV2("accepted",
+                                          request_uuid,
+                                          cursor_uuid,
+                                          row_count,
+                                          admission.operation_id,
+                                          cursor_requested ? "" : row_packet,
+                                          {},
+                                          transaction_response);
+  } else {
+    result.payload = EncodeExecuteResult("accepted",
+                                         request_uuid,
+                                         cursor_uuid,
+                                         row_count,
+                                         admission.operation_id,
+                                         cursor_requested ? "" : row_packet);
+  }
   mark_execute_phase("encode_execute_result");
   WriteServerPhaseTrace("SCRATCHBIRD_SERVER_EXECUTE_PHASE_TRACE_FILE",
                         "handle_execute_sblr_total",
@@ -9113,6 +11189,218 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                         encoded.size(),
                         execute_phase_micros);
   return result;
+}
+
+SessionOperationResult HandleExecuteSblr(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request,
+    const ServerIparProjectionSourceFactory* ipar_source_factory) {
+  auto result = HandleExecuteSblrImpl(registry,
+                                      engine_state,
+                                      request,
+                                      ipar_source_factory);
+  if (request.header.payload_schema_id != kSchemaExecuteSblrTestV2 ||
+      result.transaction_state.has_value()) {
+    return result;
+  }
+
+  const auto decoded =
+      DecodeExecutePayload(request.payload, request.header.payload_schema_id);
+  ServerTransactionResponseState transaction_state;
+  std::string operation_id;
+  if (decoded) {
+    operation_id = EncodedTextField(decoded->encoded_sblr_envelope,
+                                    "operation_id");
+    if (operation_id.empty()) {
+      operation_id = TextLineValue(decoded->encoded_sblr_envelope,
+                                   "operation_id")
+                         .value_or("");
+    }
+  }
+  // A statement-level refusal does not finalize the selected MGA
+  // transaction.  Echo the exact still-active selector on both accepted and
+  // rejected V2 results so the parser can retain its wire handle without
+  // inferring transaction state from the statement outcome.
+  if (decoded &&
+      decoded->transaction_route == ExecuteTransactionRoute::kSelected &&
+      registry != nullptr) {
+    if (auto* session = FindMutableSession(registry, decoded->session_uuid)) {
+      std::unique_lock<std::mutex> lock;
+      if (session->transaction_mutex != nullptr) {
+        lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
+      }
+      const auto found =
+          session->transactions_by_local_id.find(decoded->local_transaction_id);
+      if (found != session->transactions_by_local_id.end() &&
+          found->second.transaction_uuid == decoded->transaction_uuid &&
+          found->second.lifecycle_state ==
+              ServerTransactionLifecycleState::kActive) {
+        transaction_state.selected_present = true;
+        transaction_state.selected = found->second;
+      }
+    }
+  }
+  if (result.accepted) {
+    std::size_t offset = 0;
+    std::string outcome;
+    std::array<std::uint8_t, 16> server_request_uuid{};
+    std::array<std::uint8_t, 16> cursor_uuid{};
+    std::uint64_t row_count = 0;
+    std::string response_operation_id;
+    std::string row_packet;
+    std::string detail;
+    const bool payload_valid =
+        ReadString(result.payload, &offset, &outcome) &&
+        offset + 16 + 16 + 8 <= result.payload.size();
+    if (payload_valid) {
+      server_request_uuid = GetUuid(result.payload, offset);
+      offset += 16;
+      cursor_uuid = GetUuid(result.payload, offset);
+      offset += 16;
+      row_count = GetU64(result.payload, offset);
+      offset += 8;
+    }
+    if (!payload_valid ||
+        !ReadString(result.payload, &offset, &response_operation_id) ||
+        !ReadString(result.payload, &offset, &row_packet) ||
+        !ReadString(result.payload, &offset, &detail)) {
+      return V2TransactionOutcome(
+          false,
+          request.header.session_uuid,
+          request.header.request_uuid,
+          operation_id,
+          {},
+          "v1_to_v2_execute_result_upgrade_failed",
+          transaction_state);
+    }
+    result.response_schema_id = kSchemaExecuteResultTestV2;
+    result.transaction_state = transaction_state;
+    result.payload = EncodeExecuteResultV2(outcome,
+                                          server_request_uuid,
+                                          cursor_uuid,
+                                          row_count,
+                                          response_operation_id,
+                                          row_packet,
+                                          detail,
+                                          transaction_state);
+    return result;
+  }
+
+  if (operation_id == "transaction.commit" ||
+      operation_id == "transaction.rollback") {
+    transaction_state.finality =
+        ServerTransactionResponseState::Finality::kKnownNotApplied;
+  }
+  std::string detail = "execute_rejected_before_engine_finality";
+  if (!result.diagnostics.empty()) {
+    detail = result.diagnostics.front().code;
+    if (!result.diagnostics.front().safe_message.empty()) {
+      detail += ":" + result.diagnostics.front().safe_message;
+    }
+    // Preserve the engine's neutral, redaction-safe refusal detail in the V2
+    // typed outcome. Without it, exact parser/server callers receive only the
+    // generic diagnostic summary and cannot distinguish descriptor, snapshot,
+    // or resource validation failures. This is diagnostic information only;
+    // it carries no transaction finality or parser-family authority.
+    for (const auto& field : result.diagnostics.front().fields) {
+      if (field.key == "detail" && !field.value.empty()) {
+        detail += ":" + field.value;
+        break;
+      }
+    }
+    transaction_state.diagnostic_code = result.diagnostics.front().code;
+  }
+  return V2TransactionOutcome(false,
+                              decoded ? decoded->session_uuid
+                                      : request.header.session_uuid,
+                              request.header.request_uuid,
+                              operation_id,
+                              {},
+                              detail,
+                              transaction_state,
+                              std::move(result.diagnostics));
+}
+
+SessionOperationResult RejectPrepareSblrBeforeEngine(
+    const sbps::Frame& request,
+    std::string diagnostic_code,
+    std::string detail) {
+  if (request.header.payload_schema_id != kSchemaPrepareSblrTestV2) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+        kSchemaPrepareResultTestV1,
+        request.header.session_uuid,
+        std::move(diagnostic_code),
+        "The server refused SBLR prepare before engine dispatch.",
+        std::move(detail));
+  }
+  SessionOperationResult result;
+  result.accepted = false;
+  result.response_message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult);
+  result.response_schema_id = kSchemaPrepareResultTestV2;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  result.payload = EncodePrepareResult(
+      "rejected", {}, "sblr.dispatch", detail);
+  result.diagnostics.push_back(SblrServerDiagnostic(
+      std::move(diagnostic_code),
+      "The server refused V2 SBLR prepare before engine dispatch.",
+      std::move(detail)));
+  return result;
+}
+
+SessionOperationResult RejectExecuteSblrBeforeEngine(
+    const sbps::Frame& request,
+    std::string diagnostic_code,
+    std::string detail,
+    std::vector<ServerDiagnosticField> diagnostic_fields) {
+  if (request.header.payload_schema_id != kSchemaExecuteSblrTestV2) {
+    return Failure(
+        static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+        kSchemaExecuteResultTestV1,
+        request.header.session_uuid,
+        std::move(diagnostic_code),
+        "The server refused SBLR execution before engine dispatch.",
+        std::move(detail));
+  }
+  const auto decoded = DecodeExecutePayload(
+      request.payload, request.header.payload_schema_id);
+  std::string operation_id;
+  if (decoded) {
+    operation_id = EncodedTextField(decoded->encoded_sblr_envelope,
+                                    "operation_id");
+    if (operation_id.empty()) {
+      operation_id = TextLineValue(decoded->encoded_sblr_envelope,
+                                   "operation_id")
+                         .value_or("");
+    }
+  }
+  ServerTransactionResponseState transaction_state;
+  if (operation_id == "transaction.commit" ||
+      operation_id == "transaction.rollback") {
+    transaction_state.finality =
+        ServerTransactionResponseState::Finality::kKnownNotApplied;
+  }
+  transaction_state.outcome_detail = detail;
+  transaction_state.diagnostic_code = diagnostic_code;
+  std::vector<ServerDiagnostic> diagnostics;
+  auto diagnostic = SblrServerDiagnostic(
+      std::move(diagnostic_code),
+      "The server refused V2 SBLR execution before engine dispatch.",
+      detail);
+  diagnostic.fields = std::move(diagnostic_fields);
+  diagnostics.push_back(std::move(diagnostic));
+  return V2TransactionOutcome(false,
+                              decoded ? decoded->session_uuid
+                                      : request.header.session_uuid,
+                              request.header.request_uuid,
+                              operation_id,
+                              {},
+                              detail,
+                              transaction_state,
+                              std::move(diagnostics));
 }
 
 SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
@@ -9125,6 +11413,19 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                    "PARSER_SERVER_IPC.FETCH_INVALID",
                    "The fetch payload is invalid.",
                    "fetch_invalid");
+  }
+  auto* session = FindMutableSession(registry, decoded->session_uuid);
+  if (session == nullptr) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                   kSchemaFetchResultTestV1,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.SESSION_REQUIRED",
+                   "Fetch requires a bound session.",
+                   "session_required");
+  }
+  std::unique_lock<std::mutex> transaction_lock;
+  if (session->transaction_mutex != nullptr) {
+    transaction_lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
   }
   auto it = registry->cursors_by_uuid.find(UuidBytesToText(decoded->cursor_uuid));
   if (it == registry->cursors_by_uuid.end() || it->second.closed) {
@@ -9144,14 +11445,24 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                    "The requested cursor does not exist.",
                    "cursor_not_found");
   }
-  auto session = FindSession(*registry, decoded->session_uuid);
-  if (!session) {
-    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
-                   kSchemaFetchResultTestV1,
-                   decoded->session_uuid,
-                   "PARSER_SERVER_IPC.SESSION_REQUIRED",
-                   "Fetch requires a bound session.",
-                   "session_required");
+  const ServerTransactionState* cursor_transaction = nullptr;
+  if (cursor.owning_local_transaction_id != 0) {
+    const auto found = session->transactions_by_local_id.find(
+        cursor.owning_local_transaction_id);
+    if (found == session->transactions_by_local_id.end() ||
+        found->second.lifecycle_state !=
+            ServerTransactionLifecycleState::kActive ||
+        found->second.transaction_uuid != cursor.owning_transaction_uuid ||
+        found->second.snapshot_visible_through_local_transaction_id !=
+            cursor.owning_snapshot_visible_through_local_transaction_id) {
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
+                     kSchemaFetchResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.CURSOR_TRANSACTION_RETIRED",
+                     "The cursor's owning transaction is no longer active.",
+                     "cursor_transaction_retired");
+    }
+    cursor_transaction = &found->second;
   }
   auto request_record = RegisterServerRequestLifecycle(registry,
                                                        request,
@@ -9159,13 +11470,14 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                                        "fetch_cursor",
                                                        cursor.operation_id.empty()
                                                            ? "cursor.fetch"
-                                                           : cursor.operation_id);
+                                                           : cursor.operation_id,
+                                                       cursor_transaction);
   LinkServerRequestCursor(registry,
                           request_record.request_uuid,
                           decoded->cursor_uuid,
                           cursor.engine_result != nullptr);
   if (cursor.finality_kind == "timeout" && cursor.fetch_count >= cursor.finality_after_fetches) {
-    MarkCursorFinality(&cursor, "timed_out", "stream_timeout");
+    MarkCursorFinality(registry, &cursor, "timed_out", "stream_timeout");
     cursor.closed = true;
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
@@ -9179,12 +11491,10 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                    "The active stream timed out before the next fetch could be delivered.",
                    "stream_timeout");
   }
-  if (registry->channel_state == ServerChannelState::kDraining ||
+  if (session->channel_state == ServerChannelState::kDraining ||
       (cursor.finality_kind == "drain" && cursor.fetch_count >= cursor.finality_after_fetches)) {
-    MarkCursorFinality(&cursor, "drained", "server_draining");
     const auto packet = StreamFinalityPacket(cursor, "drained", "server_draining");
-    cursor.next_row_index = cursor.total_row_count;
-    cursor.fetch_count++;
+    MarkCursorFinality(registry, &cursor, "drained", "server_draining");
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kDrained,
@@ -9332,6 +11642,119 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
   return result;
 }
 
+SessionOperationResult HandleClosePreparedSblr(
+    ServerSessionRegistry* registry,
+    const sbps::Frame& request) {
+  const auto decoded =
+      request.header.payload_schema_id == kSchemaClosePreparedSblrTestV1
+          ? DecodeClosePreparedSblrPayload(request.payload)
+          : std::nullopt;
+  auto* session = decoded ? FindMutableSession(registry, decoded->session_uuid)
+                          : nullptr;
+  if (!decoded || session == nullptr) {
+    return Failure(
+        static_cast<std::uint16_t>(
+            sbps::MessageType::kClosePreparedSblrResult),
+        kSchemaClosePreparedSblrResultTestV1,
+        request.header.session_uuid,
+        "PARSER_SERVER_IPC.CLOSE_PREPARED_INVALID",
+        "The prepared SBLR close payload is invalid or its session is unavailable.",
+        "close_prepared_invalid");
+  }
+  if (!ExactV2FrameBinding(request, decoded->session_uuid, *session)) {
+    return Failure(
+        static_cast<std::uint16_t>(
+            sbps::MessageType::kClosePreparedSblrResult),
+        kSchemaClosePreparedSblrResultTestV1,
+        request.header.session_uuid,
+        "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+        "Prepared SBLR close requires exact connection, header, payload, and session binding.",
+        "close_prepared_binding_mismatch");
+  }
+
+  std::unique_lock<std::mutex> transaction_lock;
+  if (session->transaction_mutex != nullptr) {
+    transaction_lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
+  }
+
+  // Resource retirement is deliberately not admitted through a transaction.
+  // Keep the request lifecycle transaction-free even when the session has an
+  // active default projection or is quarantined awaiting engine finality.
+  ServerSessionRecord resource_session = *session;
+  resource_session.local_transaction_id = 0;
+  resource_session.snapshot_visible_through_local_transaction_id = 0;
+  resource_session.transaction_uuid.clear();
+  resource_session.transaction_timestamp.clear();
+  resource_session.default_local_transaction_id = 0;
+  const auto request_record = RegisterServerRequestLifecycle(
+      registry,
+      request,
+      resource_session,
+      "close_prepared_sblr",
+      "session.close_prepared_sblr",
+      nullptr);
+
+  const auto prepared_it = registry->prepared_by_uuid.find(
+      UuidBytesToText(decoded->prepared_statement_uuid));
+  if (prepared_it == registry->prepared_by_uuid.end() ||
+      prepared_it->second.session_uuid != decoded->session_uuid ||
+      prepared_it->second.database_uuid != session->database_uuid) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "prepared_statement_not_found");
+    return Failure(
+        static_cast<std::uint16_t>(
+            sbps::MessageType::kClosePreparedSblrResult),
+        kSchemaClosePreparedSblrResultTestV1,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
+        "The requested prepared statement does not exist for this session.",
+        "prepared_statement_not_found");
+  }
+
+  LinkServerRequestPreparedStatement(registry,
+                                     request_record.request_uuid,
+                                     decoded->prepared_statement_uuid);
+  const auto closed = CloseServerPreparedStatement(
+      registry,
+      decoded->session_uuid,
+      decoded->prepared_statement_uuid,
+      "prepared_statement_closed");
+  if (!closed.found) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "prepared_statement_not_found");
+    return Failure(
+        static_cast<std::uint16_t>(
+            sbps::MessageType::kClosePreparedSblrResult),
+        kSchemaClosePreparedSblrResultTestV1,
+        decoded->session_uuid,
+        "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
+        "The requested prepared statement does not exist for this session.",
+        "prepared_statement_not_found");
+  }
+
+  const std::string detail = closed.already_closed
+                                 ? "prepared_statement_already_closed"
+                                 : "prepared_statement_closed";
+  CompleteServerRequestLifecycle(registry,
+                                 request_record.request_uuid,
+                                 ServerRequestLifecycleState::kCompleted,
+                                 detail);
+  SessionOperationResult result;
+  result.accepted = true;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kClosePreparedSblrResult);
+  result.response_schema_id = kSchemaClosePreparedSblrResultTestV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = decoded->session_uuid;
+  result.payload = EncodeClosePreparedSblrResult(
+      "accepted", decoded->prepared_statement_uuid, detail);
+  return result;
+}
+
 SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                                          const sbps::Frame& request) {
   auto decoded = DecodeCursorPayload(request.payload);
@@ -9354,14 +11777,41 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                      "The requested cursor does not exist.",
                      "cursor_not_found");
     }
-    auto session = FindSession(*registry, decoded->session_uuid);
-    if (!session) {
+    auto* session = FindMutableSession(registry, decoded->session_uuid);
+    if (session == nullptr) {
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
                      kSchemaCloseCursorResultTestV1,
                      decoded->session_uuid,
                      "PARSER_SERVER_IPC.SESSION_REQUIRED",
                      "Close cursor requires a bound session.",
                      "session_required");
+    }
+    std::unique_lock<std::mutex> transaction_lock;
+    if (session->transaction_mutex != nullptr) {
+      transaction_lock =
+          std::unique_lock<std::mutex>(*session->transaction_mutex);
+    }
+    const ServerTransactionState* cursor_transaction = nullptr;
+    if (it->second.owning_local_transaction_id != 0) {
+      const auto found = session->transactions_by_local_id.find(
+          it->second.owning_local_transaction_id);
+      if (found == session->transactions_by_local_id.end() ||
+          found->second.lifecycle_state !=
+              ServerTransactionLifecycleState::kActive ||
+          found->second.transaction_uuid !=
+              it->second.owning_transaction_uuid ||
+          found->second.snapshot_visible_through_local_transaction_id !=
+              it->second
+                  .owning_snapshot_visible_through_local_transaction_id) {
+        return Failure(
+            static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
+            kSchemaCloseCursorResultTestV1,
+            decoded->session_uuid,
+            "PARSER_SERVER_IPC.CURSOR_TRANSACTION_RETIRED",
+            "The cursor's owning transaction is no longer active.",
+            "cursor_transaction_retired");
+      }
+      cursor_transaction = &found->second;
     }
     const bool cancelled = (decoded->fetch_flags & kCursorCloseFlagCancel) != 0;
     auto request_record = RegisterServerRequestLifecycle(registry,
@@ -9371,7 +11821,8 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                                                                    : "close_cursor",
                                                          it->second.operation_id.empty()
                                                              ? "cursor.close"
-                                                             : it->second.operation_id);
+                                                             : it->second.operation_id,
+                                                         cursor_transaction);
     LinkServerRequestCursor(registry,
                             request_record.request_uuid,
                             decoded->cursor_uuid,
@@ -9395,7 +11846,7 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
         detail = CursorMetadataDetail(cursor_after_cancel->second);
       }
     } else {
-      MarkCursorFinality(&it->second, "closed", "client_closed");
+      MarkCursorFinality(registry, &it->second, "closed", "client_closed");
       it->second.closed = true;
       CompleteServerRequestLifecycle(registry,
                                      request_record.request_uuid,

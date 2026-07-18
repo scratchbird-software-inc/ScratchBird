@@ -130,14 +130,11 @@ int main(int argc, char** argv) {
 
   const auto control_dir = work / "control";
   const auto runtime_dir = work / "runtime";
-  const auto marker_path = work / "crash_once.marker";
   const auto stdout_path = work / "listener.out";
   const auto stderr_path = work / "listener.err";
 
   const pid_t pid = ::fork();
   if (pid == 0) {
-    ::setenv("SB_PARSER_DUMMY_BEHAVIOR", "crash_once_after_handoff", 1);
-    ::setenv("SB_PARSER_DUMMY_CRASH_ONCE_FILE", marker_path.c_str(), 1);
     int out = ::creat(stdout_path.c_str(), 0600);
     int err = ::creat(stderr_path.c_str(), 0600);
     if (out >= 0) {
@@ -156,7 +153,7 @@ int main(int argc, char** argv) {
             listener.c_str(),
             "--foreground",
             "--protocol-family=sbsql",
-            "--listener-profile=default",
+            "--listener-profile=fixture.parser-dummy.behavior.crash_once_after_handoff",
             "--bundle-contract-id=bundle.default@1",
             "--database-selector=dev_bootstrap_path:/tmp/sb_listener_parser_crash_recovery.sbdb",
             "--server-endpoint=unix:/tmp/sb_listener_parser_crash_recovery.sbps.sock",

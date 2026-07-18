@@ -16,6 +16,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_dispatch_server.hpp"
+#include "ipc_server.hpp"
 #include "session_registry.hpp"
 #include "transaction_lock.hpp"
 
@@ -662,12 +663,28 @@ void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
   out->push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
 }
 
+void PutU8(std::vector<std::uint8_t>* out, std::uint8_t value) {
+  out->push_back(value);
+}
+
+void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+  }
+}
+
 void PutUuid(std::vector<std::uint8_t>* out, const std::array<std::uint8_t, 16>& uuid) {
   out->insert(out->end(), uuid.begin(), uuid.end());
 }
 
 void PutString(std::vector<std::uint8_t>* out, std::string_view value) {
   PutU16(out, static_cast<std::uint16_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+void PutBytes(std::vector<std::uint8_t>* out,
+              const std::vector<std::uint8_t>& value) {
+  PutU64(out, static_cast<std::uint64_t>(value.size()));
   out->insert(out->end(), value.begin(), value.end());
 }
 
@@ -693,11 +710,18 @@ scratchbird::server::HostedEngineState MakeEngineStateForDatabase(
 scratchbird::server::ServerSessionRecord MakeSession(std::array<std::uint8_t, 16>* session_uuid) {
   scratchbird::server::ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
+  session.transaction_routing_v2_negotiated = true;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sb_sbsql_concurrent_session_txn.sbdb";
   session.database_uuid = "019e07be-f11e-7000-8000-000000000001";
+  session.local_transaction_id = 1;
+  session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid =
+      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
+  session.default_transaction_isolation_level = "read_committed";
   *session_uuid = session.session_uuid;
   return session;
 }
@@ -742,6 +766,7 @@ sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
   return frame;
@@ -754,9 +779,82 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
       session_uuid, prepared_uuid, encoded, cursor_requested);
+  return frame;
+}
+
+sbps::Frame ExecuteFrameV2(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string_view encoded,
+    std::uint8_t route,
+    const scratchbird::server::ServerTransactionState* transaction = nullptr,
+    bool cursor_requested = false) {
+  sbps::Frame frame;
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4011;
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
+  frame.header.session_uuid = session_uuid;
+  PutUuid(&frame.payload, session_uuid);
+  PutUuid(&frame.payload, std::array<std::uint8_t, 16>{});
+  PutU8(&frame.payload, cursor_requested ? 1 : 0);
+  PutU8(&frame.payload, route);
+  PutU64(&frame.payload,
+         transaction == nullptr ? 0 : transaction->local_transaction_id);
+  PutString(&frame.payload,
+            transaction == nullptr ? std::string_view{}
+                                   : std::string_view(
+                                         transaction->transaction_uuid));
+  PutString(&frame.payload, encoded);
+  PutBytes(&frame.payload, {});
+  return frame;
+}
+
+sbps::Frame PrepareFrameV2(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::string_view encoded,
+    const scratchbird::server::ServerTransactionState& transaction) {
+  sbps::Frame frame;
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
+  frame.header.payload_schema_id = 4009;
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
+  frame.header.session_uuid = session_uuid;
+  PutUuid(&frame.payload, session_uuid);
+  PutUuid(&frame.payload, sbps::MakeUuidV7Bytes());
+  PutU64(&frame.payload, 1);
+  PutU64(&frame.payload, 1);
+  PutU64(&frame.payload, 1);
+  PutU64(&frame.payload, transaction.local_transaction_id);
+  PutString(&frame.payload, transaction.transaction_uuid);
+  PutString(&frame.payload, encoded);
+  return frame;
+}
+
+sbps::Frame ExecutePreparedFrameV2(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_uuid,
+    const scratchbird::server::ServerTransactionState& transaction) {
+  sbps::Frame frame;
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4011;
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
+  frame.header.session_uuid = session_uuid;
+  PutUuid(&frame.payload, session_uuid);
+  PutUuid(&frame.payload, prepared_uuid);
+  PutU8(&frame.payload, 0);
+  PutU8(&frame.payload, 1);
+  PutU64(&frame.payload, transaction.local_transaction_id);
+  PutString(&frame.payload, transaction.transaction_uuid);
+  PutString(&frame.payload, std::string_view{});
+  PutBytes(&frame.payload, {});
   return frame;
 }
 
@@ -1025,6 +1123,7 @@ sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kFetch);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid, 1);
   return frame;
@@ -1035,10 +1134,577 @@ sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   PutUuid(&frame.payload, session_uuid);
   PutString(&frame.payload, reason);
   return frame;
+}
+
+std::vector<std::uint8_t> AttachPayloadForBindingTest(
+    const std::array<std::uint8_t, 16>& connection_uuid,
+    const std::array<std::uint8_t, 16>& auth_context_uuid) {
+  std::vector<std::uint8_t> payload;
+  PutUuid(&payload, connection_uuid);
+  PutUuid(&payload, auth_context_uuid);
+  PutString(&payload, "default");
+  PutString(&payload, "read_write");
+  return payload;
+}
+
+void VerifyNeutralV2MultiTransactionRouting(
+    const std::filesystem::path& database_path) {
+  auto initial_context = BeginTransaction(database_path, "310");
+  auto route = MakeServerRoute(database_path, initial_context);
+  auto& session = route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(route.session_uuid)];
+  const std::uint64_t hidden_default_id = session.local_transaction_id;
+  const std::string hidden_default_uuid = session.transaction_uuid;
+  auto selected_query = ServerOperationEnvelope("dml.select_rows",
+                                                "SBLR_DML_SELECT_ROWS",
+                                                "sblr.query.relational.v3",
+                                                true);
+  selected_query += "target_object_uuid=";
+  selected_query += kTableUuid;
+  selected_query += "\ntarget_object_kind=table\nlimit=1\n";
+
+  auto begin_envelope = TransactionEnvelope("transaction.begin",
+                                            "SBLR_TRANSACTION_BEGIN");
+  const auto begin_t1 = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid, begin_envelope, 2));
+  Require(begin_t1.accepted && begin_t1.response_schema_id == 4012 &&
+              begin_t1.transaction_state.has_value() &&
+              begin_t1.transaction_state->selected_present,
+          "V2 begin-additional did not publish an engine-issued selector");
+  const auto t1 = begin_t1.transaction_state->selected;
+  Require(t1.local_transaction_id != hidden_default_id &&
+              !t1.transaction_uuid.empty(),
+          "V2 begin-additional aliased the hidden default transaction");
+
+  const auto begin_t2 = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid, begin_envelope, 2));
+  Require(begin_t2.accepted && begin_t2.transaction_state.has_value() &&
+              begin_t2.transaction_state->selected_present,
+          "second V2 begin-additional did not publish a selector");
+  const auto t2 = begin_t2.transaction_state->selected;
+  Require(t2.local_transaction_id != t1.local_transaction_id &&
+              t2.transaction_uuid != t1.transaction_uuid,
+          "independent V2 begins reused transaction identity");
+  Require(session.local_transaction_id == hidden_default_id &&
+              session.transaction_uuid == hidden_default_uuid,
+          "V2 begin-additional swapped the shared default transaction scalar");
+
+  const auto prepared_t2 = scratchbird::server::HandlePrepareSblr(
+      &route.registry,
+      route.engine_state,
+      PrepareFrameV2(route.session_uuid, selected_query, t2));
+  Require(prepared_t2.accepted && prepared_t2.response_schema_id == 4010,
+          "V2 prepare on the selected transaction failed");
+  const auto prepared_t2_uuid =
+      scratchbird::server::DecodePreparedStatementUuidForTest(
+          prepared_t2.payload);
+  Require(prepared_t2_uuid.has_value(),
+          "V2 prepare did not publish a prepared UUID");
+  const auto prepared_same_selector =
+      scratchbird::server::HandleExecuteSblr(
+          &route.registry,
+          route.engine_state,
+          ExecutePreparedFrameV2(route.session_uuid,
+                                 *prepared_t2_uuid,
+                                 t2));
+  Require(prepared_same_selector.accepted,
+          "V2 prepared execution rejected the exact prepare selector");
+  const auto prepared_other_selector =
+      scratchbird::server::HandleExecuteSblr(
+          &route.registry,
+          route.engine_state,
+          ExecutePreparedFrameV2(route.session_uuid,
+                                 *prepared_t2_uuid,
+                                 t1));
+  Require(!prepared_other_selector.accepted &&
+              HasDiagnostic(
+                  prepared_other_selector,
+                  "PARSER_SERVER_IPC.PREPARED_TRANSACTION_SELECTOR_MISMATCH"),
+          "V2 prepared execution accepted a different transaction selector");
+  const auto v1_execute_v2_prepare = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrame(route.session_uuid, *prepared_t2_uuid, ""));
+  Require(!v1_execute_v2_prepare.accepted &&
+              HasDiagnostic(
+                  v1_execute_v2_prepare,
+                  "PARSER_SERVER_IPC.PREPARED_TRANSACTION_SELECTOR_MISMATCH"),
+          "V1 execution accepted a V2 transaction-bound prepare");
+
+  const auto prepared_v1 = scratchbird::server::HandlePrepareSblr(
+      &route.registry,
+      route.engine_state,
+      PrepareFrame(route.session_uuid, selected_query));
+  Require(prepared_v1.accepted, "V1 prepare fixture failed");
+  const auto prepared_v1_uuid =
+      scratchbird::server::DecodePreparedStatementUuidForTest(
+          prepared_v1.payload);
+  Require(prepared_v1_uuid.has_value(), "V1 prepare UUID missing");
+  const auto v2_execute_v1_prepare =
+      scratchbird::server::HandleExecuteSblr(
+          &route.registry,
+          route.engine_state,
+          ExecutePreparedFrameV2(route.session_uuid,
+                                 *prepared_v1_uuid,
+                                 t2));
+  Require(!v2_execute_v1_prepare.accepted &&
+              HasDiagnostic(
+                  v2_execute_v1_prepare,
+                  "PARSER_SERVER_IPC.PREPARED_TRANSACTION_SELECTOR_MISMATCH"),
+          "V2 execution accepted a V1 default-bound prepare");
+
+  const auto selected_t1_cursor = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     selected_query,
+                     1,
+                     &t1,
+                     true));
+  Require(selected_t1_cursor.accepted &&
+              selected_t1_cursor.transaction_state.has_value() &&
+              selected_t1_cursor.transaction_state->selected_present &&
+              selected_t1_cursor.transaction_state->selected.local_transaction_id ==
+                  t1.local_transaction_id,
+          "V2 selected execution did not retain the selected transaction");
+  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(
+      selected_t1_cursor.payload);
+  Require(cursor_uuid.has_value(),
+          "V2 selected cursor execution did not publish a cursor UUID");
+
+  const auto selected_t2 = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     selected_query,
+                     1,
+                     &t2));
+  Require(selected_t2.accepted,
+          "V2 execution through the second transaction failed");
+  Require(session.local_transaction_id == hidden_default_id &&
+              session.transaction_uuid == hidden_default_uuid,
+          "V2 selected execution swapped the shared default transaction scalar");
+
+  const auto special_route = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     scratchbird::server::EncodeShowVersionSblrForTest(),
+                     1,
+                     &t2));
+  Require(!special_route.accepted &&
+              HasDiagnostic(special_route,
+                            "PARSER_SERVER_IPC.V2_ROUTE_UNSUPPORTED"),
+          "V2 selected execution entered an unproven server-special route");
+
+  const std::size_t transaction_count_before_autocommit =
+      session.transactions_by_local_id.size();
+  auto selected_autocommit = selected_query;
+  selected_autocommit += "autocommit_emulation=true\n";
+  const auto autocommit = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     selected_autocommit,
+                     1,
+                     &t2));
+  Require(!autocommit.accepted &&
+              HasDiagnostic(autocommit,
+                            "PARSER_SERVER_IPC.V2_AUTOCOMMIT_UNSUPPORTED") &&
+              session.transactions_by_local_id.size() ==
+                  transaction_count_before_autocommit,
+          "V2 autocommit did not fail closed before selected-transaction finality");
+
+  const auto fetch_after_other_selection = scratchbird::server::HandleFetch(
+      &route.registry, FetchFrame(route.session_uuid, *cursor_uuid));
+  Require(fetch_after_other_selection.accepted,
+          "cursor fetch inferred the current/default transaction instead of its immutable owner");
+
+  auto& live_t1 =
+      session.transactions_by_local_id.at(t1.local_transaction_id);
+  const auto original_t1_snapshot =
+      live_t1.snapshot_visible_through_local_transaction_id;
+  live_t1.snapshot_visible_through_local_transaction_id++;
+  const auto fetch_with_snapshot_alias = scratchbird::server::HandleFetch(
+      &route.registry, FetchFrame(route.session_uuid, *cursor_uuid));
+  Require(!fetch_with_snapshot_alias.accepted &&
+              HasDiagnostic(fetch_with_snapshot_alias,
+                            "PARSER_SERVER_IPC.CURSOR_TRANSACTION_RETIRED"),
+          "cursor fetch did not validate the immutable owner snapshot");
+  live_t1.snapshot_visible_through_local_transaction_id =
+      original_t1_snapshot;
+
+  auto bad_selector = t1;
+  bad_selector.transaction_uuid =
+      "019e07be-f11e-7000-8000-00000000bad1";
+  const auto mismatched_selector = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     selected_query,
+                     1,
+                     &bad_selector));
+  Require(!mismatched_selector.accepted &&
+              mismatched_selector.response_schema_id == 4012 &&
+              mismatched_selector.transaction_state.has_value() &&
+              mismatched_selector.transaction_state->finality ==
+                  scratchbird::server::ServerTransactionResponseState::Finality::
+                      kNotApplicable,
+          "id/UUID mismatch did not return a typed V2 rejection");
+
+  std::array<std::uint8_t, 16> other_session_uuid{};
+  auto other_session = MakeSession(&other_session_uuid);
+  route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(other_session_uuid)] =
+      other_session;
+  const auto cross_session = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(other_session_uuid,
+                     selected_query,
+                     1,
+                     &t1));
+  Require(!cross_session.accepted && cross_session.transaction_state.has_value(),
+          "cross-session transaction selector was accepted");
+
+  const auto bad_commit = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     TransactionEnvelope("transaction.commit",
+                                         "SBLR_TRANSACTION_COMMIT"),
+                     1,
+                     &bad_selector));
+  Require(!bad_commit.accepted && bad_commit.transaction_state.has_value() &&
+              bad_commit.transaction_state->finality ==
+                  scratchbird::server::ServerTransactionResponseState::Finality::
+                      kKnownNotApplied,
+          "pre-engine commit rejection did not publish known-not-applied finality");
+
+  const auto committed_t1 = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     TransactionEnvelope("transaction.commit",
+                                         "SBLR_TRANSACTION_COMMIT"),
+                     1,
+                     &t1));
+  Require(committed_t1.accepted && committed_t1.transaction_state.has_value() &&
+              committed_t1.transaction_state->finality ==
+                  scratchbird::server::ServerTransactionResponseState::Finality::
+                      kKnownApplied &&
+              committed_t1.transaction_state->finalized_present &&
+              committed_t1.transaction_state->finalized.local_transaction_id ==
+                  t1.local_transaction_id,
+          "V2 commit did not publish typed known-applied finality");
+  Require(session.local_transaction_id == hidden_default_id &&
+              session.transaction_uuid == hidden_default_uuid,
+          "V2 finality on a non-default transaction swapped the default scalar");
+  const auto fetch_after_owner_finality = scratchbird::server::HandleFetch(
+      &route.registry, FetchFrame(route.session_uuid, *cursor_uuid));
+  Require(!fetch_after_owner_finality.accepted,
+          "cursor remained fetchable after its owner transaction finalized");
+
+  auto policy_begin_envelope = begin_envelope;
+  policy_begin_envelope += "transaction_isolation_level=snapshot\n";
+  policy_begin_envelope += "transaction_read_only=false\n";
+  policy_begin_envelope += "transaction_wait_mode=wait\n";
+  policy_begin_envelope += "transaction_lock_timeout_ms=250\n";
+  const auto policy_begin = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid, policy_begin_envelope, 2));
+  Require(policy_begin.accepted && policy_begin.transaction_state.has_value() &&
+              policy_begin.transaction_state->selected_present,
+          "neutral V2 begin policy was rejected");
+  const auto policy_tx = policy_begin.transaction_state->selected;
+  Require(policy_tx.isolation_level == "snapshot" && !policy_tx.read_only &&
+              policy_tx.wait_mode == "wait" &&
+              policy_tx.lock_timeout_present &&
+              policy_tx.lock_timeout_ms == 250,
+          "neutral V2 begin did not retain the admitted transaction policy");
+
+  auto retaining_commit = TransactionEnvelope("transaction.commit",
+                                               "SBLR_TRANSACTION_COMMIT");
+  retaining_commit += "retaining=true\n";
+  const auto retained = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid,
+                     retaining_commit,
+                     1,
+                     &policy_tx));
+  Require(retained.accepted && retained.transaction_state.has_value() &&
+              retained.transaction_state->replacement_present &&
+              retained.transaction_state->replacement_reason ==
+                  scratchbird::server::ServerTransactionResponseState::
+                      ReplacementReason::kRetaining,
+          "COMMIT RETAINING did not publish a replacement selector");
+  const auto& replacement = retained.transaction_state->replacement;
+  Require(replacement.isolation_level == policy_tx.isolation_level &&
+              replacement.read_only == policy_tx.read_only &&
+              replacement.wait_mode == policy_tx.wait_mode &&
+              replacement.lock_timeout_present ==
+                  policy_tx.lock_timeout_present &&
+              replacement.lock_timeout_ms == policy_tx.lock_timeout_ms,
+          "COMMIT RETAINING silently dropped admitted neutral transaction policy");
+
+  const std::size_t transaction_count_before_conflict =
+      session.transactions_by_local_id.size();
+  auto conflicting_begin = begin_envelope;
+  conflicting_begin += "transaction_wait_mode=no_wait\n";
+  conflicting_begin += "transaction_lock_timeout_ms=50\n";
+  const auto conflict = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrameV2(route.session_uuid, conflicting_begin, 2));
+  Require(!conflict.accepted && conflict.transaction_state.has_value() &&
+              conflict.transaction_state->finality ==
+                  scratchbird::server::ServerTransactionResponseState::Finality::
+                      kNotApplicable &&
+              session.transactions_by_local_id.size() ==
+                  transaction_count_before_conflict,
+          "conflicting neutral wait policy did not fail closed before identity publication");
+
+  std::array<std::uint8_t, 16> zero_prepared{};
+  const auto v1_payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
+      route.session_uuid,
+      zero_prepared,
+      scratchbird::server::EncodeShowVersionSblrForTest(),
+      false);
+  std::vector<std::uint8_t> expected_v1_payload;
+  PutUuid(&expected_v1_payload, route.session_uuid);
+  PutUuid(&expected_v1_payload, zero_prepared);
+  PutU8(&expected_v1_payload, 0);
+  PutString(&expected_v1_payload,
+            scratchbird::server::EncodeShowVersionSblrForTest());
+  Require(v1_payload == expected_v1_payload,
+          "V1 execute payload bytes changed while adding V2 routing");
+
+  auto zero_header_prepare = PrepareFrame(
+      route.session_uuid, scratchbird::server::EncodeShowVersionSblrForTest());
+  zero_header_prepare.header.session_uuid = {};
+  const auto zero_header_rejected =
+      scratchbird::server::HandlePrepareSblr(
+          &route.registry, route.engine_state, zero_header_prepare);
+  Require(!zero_header_rejected.accepted &&
+              HasDiagnostic(zero_header_rejected,
+                            "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH"),
+          "V1 prepare accepted a zero header session UUID");
+
+  const auto saved_default = session.default_local_transaction_id;
+  session.default_local_transaction_id = 999999;
+  const auto stale_default = scratchbird::server::HandleExecuteSblr(
+      &route.registry,
+      route.engine_state,
+      ExecuteFrame(route.session_uuid, {}, selected_query));
+  Require(!stale_default.accepted &&
+              HasDiagnostic(stale_default,
+                            "PARSER_SERVER_IPC.DEFAULT_TRANSACTION_NOT_ACTIVE"),
+          "V1 execution fell through a stale default map identity to scalar dispatch");
+  session.default_local_transaction_id = saved_default;
+}
+
+void VerifyNeutralPhysicalChannelGuards(
+    const std::filesystem::path& database_path) {
+  Require(scratchbird::server::ParserChannelHelloMayBeAdmittedForTest(
+              false, false, false) &&
+              scratchbird::server::ParserChannelHelloMayBeAdmittedForTest(
+                  true, true, true) &&
+              !scratchbird::server::ParserChannelHelloMayBeAdmittedForTest(
+                  true, false, true) &&
+              !scratchbird::server::ParserChannelHelloMayBeAdmittedForTest(
+                  true, true, false) &&
+              !scratchbird::server::ParserChannelHelloMayBeAdmittedForTest(
+                  true, true, true, true),
+          "physical channel hello was not idempotent with immutable capabilities");
+
+  scratchbird::server::ServerSessionRegistry binding_registry;
+  auto connection_uuid = sbps::MakeUuidV7Bytes();
+  auto auth_context_uuid = sbps::MakeUuidV7Bytes();
+  auto admitted_channel = sbps::MakeUuidV7Bytes();
+  auto replay_channel = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerSessionRecord auth_context;
+  auth_context.connection_uuid = connection_uuid;
+  auth_context.auth_context_uuid = auth_context_uuid;
+  auth_context.session_uuid = auth_context_uuid;
+  auth_context.server_channel_uuid = admitted_channel;
+  binding_registry.auth_contexts_by_uuid[
+      scratchbird::server::UuidBytesToText(auth_context_uuid)] = auth_context;
+  binding_registry.physical_channel_by_connection_uuid[
+      scratchbird::server::UuidBytesToText(connection_uuid)] = replay_channel;
+  sbps::Frame forged_attach;
+  forged_attach.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kAttachDatabase);
+  forged_attach.header.request_uuid = sbps::MakeUuidV7Bytes();
+  forged_attach.header.connection_uuid = connection_uuid;
+  forged_attach.payload =
+      AttachPayloadForBindingTest(connection_uuid, auth_context_uuid);
+  const auto replay = scratchbird::server::HandleAttachDatabase(
+      &binding_registry, MakeEngineStateForDatabase(database_path), forged_attach);
+  Require(!replay.accepted &&
+              HasDiagnostic(replay,
+                            "PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH"),
+          "an authentication context was replayed from a second physical channel");
+
+  binding_registry.physical_channel_by_connection_uuid[
+      scratchbird::server::UuidBytesToText(connection_uuid)] = admitted_channel;
+  std::array<std::uint8_t, 16> sibling_uuid{};
+  auto sibling = MakeSession(&sibling_uuid);
+  sibling.server_channel_uuid = admitted_channel;
+  binding_registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(sibling_uuid)] = sibling;
+  const auto sibling_attach = scratchbird::server::HandleAttachDatabase(
+      &binding_registry, MakeEngineStateForDatabase(database_path), forged_attach);
+  Require(!sibling_attach.accepted &&
+              HasDiagnostic(
+                  sibling_attach,
+                  "PARSER_SERVER_IPC.PHYSICAL_CHANNEL_SESSION_LIMIT"),
+          "one physical parser channel admitted a sibling attached session");
+
+  auto cleanup_context = BeginTransaction(database_path, "320");
+  auto cleanup_route = MakeServerRoute(database_path, cleanup_context);
+  auto& cleanup_session = cleanup_route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(cleanup_route.session_uuid)];
+  Require(scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
+              &cleanup_session) != nullptr,
+          "channel cleanup fixture did not adopt its exact default transaction");
+  const auto cleanup_channel = sbps::MakeUuidV7Bytes();
+  cleanup_session.server_channel_uuid = cleanup_channel;
+  cleanup_route.registry.physical_channel_by_connection_uuid[
+      scratchbird::server::UuidBytesToText(cleanup_session.connection_uuid)] =
+      cleanup_channel;
+  const auto cleaned =
+      scratchbird::server::HandleUnexpectedParserChannelClose(
+          &cleanup_route.registry, cleanup_channel);
+  Require(cleaned.size() == 1 && cleaned.front().accepted &&
+              cleanup_route.registry.sessions_by_uuid.empty() &&
+              cleanup_route.registry
+                  .physical_channel_by_connection_uuid.empty(),
+          "unexpected channel close did not roll back and detach its exact owned session");
+
+  auto quarantined_context = BeginTransaction(database_path, "321");
+  auto continuity_context = BeginTransaction(database_path, "322");
+  auto continuity_route = MakeServerRoute(database_path, quarantined_context);
+  auto& quarantined_session = continuity_route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(continuity_route.session_uuid)];
+  auto* quarantined_transaction =
+      scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
+          &quarantined_session);
+  Require(quarantined_transaction != nullptr,
+          "quarantine fixture did not adopt its exact default transaction");
+  quarantined_transaction->lifecycle_state =
+      scratchbird::server::ServerTransactionLifecycleState::kFinalityUnknown;
+  const auto quarantined_channel = sbps::MakeUuidV7Bytes();
+  quarantined_session.server_channel_uuid = quarantined_channel;
+  continuity_route.registry.physical_channel_by_connection_uuid[
+      scratchbird::server::UuidBytesToText(
+          quarantined_session.connection_uuid)] = quarantined_channel;
+
+  std::array<std::uint8_t, 16> continuity_session_uuid{};
+  auto continuity_session = MakeSessionForContext(
+      database_path, continuity_context, &continuity_session_uuid);
+  const auto continuity_channel = sbps::MakeUuidV7Bytes();
+  continuity_session.server_channel_uuid = continuity_channel;
+  auto* continuity_transaction =
+      scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
+          &continuity_session);
+  Require(continuity_transaction != nullptr,
+          "continuity fixture did not adopt its exact default transaction");
+  continuity_route.registry.sessions_by_uuid[
+      scratchbird::server::UuidBytesToText(continuity_session_uuid)] =
+      continuity_session;
+  continuity_route.registry.physical_channel_by_connection_uuid[
+      scratchbird::server::UuidBytesToText(
+          continuity_session.connection_uuid)] = continuity_channel;
+  scratchbird::server::ServerCursorRecord continuity_cursor;
+  continuity_cursor.cursor_uuid = sbps::MakeUuidV7Bytes();
+  continuity_cursor.session_uuid = continuity_session_uuid;
+  continuity_cursor.operation_id = "dml.select_rows";
+  continuity_cursor.row_packet = "continuity-row\n";
+  continuity_cursor.total_row_count = 1;
+  continuity_cursor.owning_local_transaction_id =
+      continuity_transaction->local_transaction_id;
+  continuity_cursor.owning_snapshot_visible_through_local_transaction_id =
+      continuity_transaction->snapshot_visible_through_local_transaction_id;
+  continuity_cursor.owning_transaction_uuid =
+      continuity_transaction->transaction_uuid;
+  continuity_route.registry.cursors_by_uuid[
+      scratchbird::server::UuidBytesToText(continuity_cursor.cursor_uuid)] =
+      continuity_cursor;
+
+  const auto quarantined =
+      scratchbird::server::HandleUnexpectedParserChannelClose(
+          &continuity_route.registry, quarantined_channel);
+  Require(quarantined.size() == 1 && quarantined.front().accepted &&
+              continuity_route.registry.channel_state ==
+                  scratchbird::server::ServerChannelState::kReady &&
+              continuity_route.registry.sessions_by_uuid
+                  .at(scratchbird::server::UuidBytesToText(
+                      continuity_route.session_uuid))
+                  .detached_recovery_quarantined,
+          "unknown channel-close finality was not retained as session-scoped quarantine");
+  const auto continuity_fetch = scratchbird::server::HandleFetch(
+      &continuity_route.registry,
+      FetchFrame(continuity_session_uuid, continuity_cursor.cursor_uuid));
+  Require(continuity_fetch.accepted,
+          "one channel's recovery quarantine drained another channel's cursor");
+
+  api::EngineRollbackTransactionRequest cleanup_quarantine;
+  cleanup_quarantine.context = quarantined_context;
+  (void)api::EngineRollbackTransaction(cleanup_quarantine);
+  api::EngineRollbackTransactionRequest cleanup_continuity;
+  cleanup_continuity.context = continuity_context;
+  (void)api::EngineRollbackTransaction(cleanup_continuity);
+}
+
+void VerifyNeutralPreEngineTypedRefusals() {
+  scratchbird::server::ServerTransactionState selector;
+  selector.local_transaction_id = 77;
+  selector.transaction_uuid =
+      "019e07be-f11e-7000-8000-000000000077";
+  const auto session_uuid = sbps::MakeUuidV7Bytes();
+  const auto maintenance_commit =
+      scratchbird::server::RejectExecuteSblrBeforeEngine(
+          ExecuteFrameV2(
+              session_uuid,
+              TransactionEnvelope("transaction.commit",
+                                  "SBLR_TRANSACTION_COMMIT"),
+              1,
+              &selector),
+          "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
+          "sblr_admission_fenced");
+  Require(!maintenance_commit.accepted &&
+              maintenance_commit.response_schema_id == 4012 &&
+              (maintenance_commit.frame_flags & sbps::kFlagError) == 0 &&
+              maintenance_commit.transaction_state.has_value() &&
+              maintenance_commit.transaction_state->finality ==
+                  scratchbird::server::ServerTransactionResponseState::
+                      Finality::kKnownNotApplied &&
+              maintenance_commit.transaction_state->diagnostic_code ==
+                  "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
+          "pre-engine maintenance commit refusal lost typed V2 finality or diagnostic authority");
+
+  const auto maintenance_prepare =
+      scratchbird::server::RejectPrepareSblrBeforeEngine(
+          PrepareFrameV2(session_uuid,
+                         scratchbird::server::EncodeShowVersionSblrForTest(),
+                         selector),
+          "SERVER.MAINTENANCE.SBLR_ADMISSION_FENCED",
+          "sblr_admission_fenced");
+  Require(!maintenance_prepare.accepted &&
+              maintenance_prepare.response_schema_id == 4010 &&
+              (maintenance_prepare.frame_flags & sbps::kFlagError) == 0,
+          "pre-engine maintenance prepare refusal lost the V2 result schema");
 }
 
 void VerifyServerSessionConformance() {
@@ -1237,6 +1903,9 @@ int main() {
   VerifyCdp032AutocommitEmulation(database_path);
   VerifyCdp032PressureRestartPolicy(database_path);
   VerifyCdp032BackgroundPressureDoesNotStarveForegroundDml(database_path);
+  VerifyNeutralV2MultiTransactionRouting(database_path);
+  VerifyNeutralPhysicalChannelGuards(database_path);
+  VerifyNeutralPreEngineTypedRefusals();
   VerifyLockTableConformance();
   VerifyServerSessionConformance();
   VerifyParserCacheConformance();

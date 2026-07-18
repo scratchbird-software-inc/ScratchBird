@@ -17,10 +17,13 @@
 #include "agent_background_jobs.hpp"
 
 #include "scratchbird/engine/engine.h"
+#include "prepared_metadata_binding.hpp"
 
 #include <array>
 #include <deque>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -96,8 +99,43 @@ struct ServerRequestLifecyclePolicy {
   std::uint64_t drain_timeout_ms = 30000;
 };
 
+enum class ServerTransactionLifecycleState {
+  kActive,
+  kFinalityUnknown,
+};
+
+// Engine-issued transaction identity and state owned by one server session.
+// The parser/server layer routes this state but never manufactures identity or
+// visibility decisions.
+struct ServerTransactionState {
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t snapshot_visible_through_local_transaction_id = 0;
+  std::string transaction_uuid;
+  std::string transaction_timestamp;
+  std::string isolation_level = "read_committed";
+  bool read_only = false;
+  std::string wait_mode;
+  std::uint64_t lock_timeout_ms = 0;
+  bool lock_timeout_present = false;
+  ServerTransactionLifecycleState lifecycle_state =
+      ServerTransactionLifecycleState::kActive;
+  std::uint64_t begin_ordinal = 0;
+  // Catalog/name-cache effects from transaction-routed DDL are not visible to
+  // other transactions until engine finality is known applied.  Keep only the
+  // neutral mutation operation identifiers here; commit applies invalidation
+  // and rollback simply discards this transaction-owned list.
+  std::vector<std::string> deferred_catalog_cache_mutations;
+};
+
 struct ServerSessionRecord {
   std::array<std::uint8_t, 16> connection_uuid{};
+  // Server-issued physical SBPS channel identity.  Unlike connection_uuid,
+  // this value is not chosen by the client and prevents a second socket from
+  // replaying a negotiated connection/session tuple.
+  std::array<std::uint8_t, 16> server_channel_uuid{};
+  // Drain/service state is scoped to this bound session's physical channel.
+  // The registry-wide lifecycle summary must never drain sibling channels.
+  ServerChannelState channel_state = ServerChannelState::kReady;
   std::array<std::uint8_t, 16> session_uuid{};
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::array<std::uint8_t, 16> principal_uuid{};
@@ -150,6 +188,30 @@ struct ServerSessionRecord {
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
   std::string transaction_uuid;
   std::string transaction_timestamp;
+  // The scalar fields above remain the V1/default projection.  V2 callers use
+  // an exact entry in this map, validated under transaction_mutex.
+  std::map<std::uint64_t, ServerTransactionState> transactions_by_local_id;
+  // Exact engine-issued identities that could not safely enter the keyed
+  // active map (for example, a duplicate local id).  Recovery accounts for
+  // them without ever projecting them as active/default transactions.
+  std::vector<ServerTransactionState> quarantined_unpublished_transactions;
+  std::uint64_t default_local_transaction_id = 0;
+  std::uint64_t next_transaction_begin_ordinal = 1;
+  std::shared_ptr<std::mutex> transaction_mutex =
+      std::make_shared<std::mutex>();
+  // This is server-owned negotiation state copied from the admitted physical
+  // SBPS channel at authentication time.  A V2 payload cannot self-enable the
+  // capability.
+  bool transaction_routing_v2_negotiated = false;
+  // A transferable prepared metadata binding is an engine-owned object
+  // negotiated by the physical SBPS channel.  It allows prepare-time metadata
+  // to be paired with a different exact execute-time data transaction without
+  // transferring data visibility or finality authority.
+  bool prepared_metadata_transfer_v1_negotiated = false;
+  // Server-owned admission evidence for neutral persisted relation
+  // projection.  A schema-7007 payload cannot self-enable this capability.
+  bool relation_descriptor_projection_v3_negotiated = false;
+  bool detached_recovery_quarantined = false;
   bool session_binding_present = false;
   std::array<std::uint8_t, 16> attachment_id{};
   std::array<std::uint8_t, 16> catalog_session_id{};
@@ -237,6 +299,15 @@ struct ServerPreparedStatementRecord {
   std::string authority_dependency_column_set_hash;
   std::string authority_proof_hash_algorithm = "sha256";
   std::string authority_proof_hash;
+  std::uint64_t prepare_local_transaction_id = 0;
+  std::string prepare_transaction_uuid;
+  std::uint64_t prepare_snapshot_visible_through_local_transaction_id = 0;
+  // Set only after the server has created an opaque engine-owned metadata
+  // binding for this prepared statement.  An envelope flag alone never makes
+  // a statement transferable.
+  bool prepared_metadata_transferable = false;
+  scratchbird::server_engine_bridge::PreparedMetadataBindingHandle
+      prepared_metadata_binding = nullptr;
   bool closed = false;
 };
 
@@ -253,6 +324,14 @@ struct ServerPreparedExecutionContextRecord {
   std::string authority_proof_hash;
   ServerAuthorityCacheEpochVector epoch_vector;
   bool grants_authority = false;
+};
+
+struct ServerPreparedStatementCloseSummary {
+  bool found = false;
+  bool already_closed = false;
+  std::uint64_t cursors_closed = 0;
+  std::uint64_t engine_results_released = 0;
+  bool session_object_handle_revoked = false;
 };
 
 struct ServerSessionObjectHandleRecord {
@@ -403,6 +482,10 @@ struct ServerCursorRecord {
   std::string finality_kind;
   std::string finality_state = "active";
   std::string finality_reason;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::uint64_t owning_snapshot_visible_through_local_transaction_id = 0;
+  std::string owning_transaction_uuid;
+  bool holdable_after_commit = false;
   sb_engine_result_t engine_result = nullptr;
   std::uint64_t bulk_total_rows = 0;
   std::uint64_t bulk_rejected_rows = 0;
@@ -432,6 +515,7 @@ struct ServerRequestRecord {
   std::string detail;
   std::uint64_t local_transaction_id_at_start = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
+  std::string transaction_uuid_at_start;
   std::uint64_t fetch_timeout_ms = 30000;
   std::uint64_t cancel_timeout_ms = 5000;
   std::uint64_t drain_timeout_ms = 30000;
@@ -454,6 +538,10 @@ struct ServerSessionRegistry {
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
   std::map<std::string, ServerSessionRecord> sessions_by_uuid;
   std::map<std::string, ServerSessionRecord> auth_contexts_by_uuid;
+  std::map<std::string, std::array<std::uint8_t, 32>>
+      negotiated_capabilities_by_connection_uuid;
+  std::map<std::string, std::array<std::uint8_t, 16>>
+      physical_channel_by_connection_uuid;
   std::map<std::string, ServerFinalityRecord> finality_by_request_uuid;
   std::map<std::string, ServerRequestRecord> requests_by_uuid;
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
@@ -504,6 +592,35 @@ struct AttachPayload {
   std::string requested_attachment_mode = "read_write";
 };
 
+struct ServerTransactionResponseState {
+  enum class Finality : std::uint8_t {
+    kNotApplicable = 0,
+    kKnownApplied = 1,
+    kKnownNotApplied = 2,
+    kUnknown = 3,
+  };
+  enum class ReplacementReason : std::uint8_t {
+    kNone = 0,
+    kRetaining = 1,
+    kLastActiveReady = 2,
+    kAutocommitReady = 3,
+  };
+  bool selected_present = false;
+  ServerTransactionState selected;
+  Finality finality = Finality::kNotApplicable;
+  bool finality_applied = false;
+  // Set only when a known-applied commit consumes at least one deferred
+  // catalog mutation and applies the corresponding cache invalidation.
+  bool catalog_invalidation_applied = false;
+  bool finalized_present = false;
+  ServerTransactionState finalized;
+  bool replacement_present = false;
+  ServerTransactionState replacement;
+  ReplacementReason replacement_reason = ReplacementReason::kNone;
+  std::string outcome_detail;
+  std::string diagnostic_code;
+};
+
 struct SessionOperationResult {
   bool accepted = false;
   std::uint16_t response_message_type = 0;
@@ -512,6 +629,7 @@ struct SessionOperationResult {
   std::array<std::uint8_t, 16> session_uuid{};
   std::vector<std::uint8_t> payload;
   std::vector<ServerDiagnostic> diagnostics;
+  std::optional<ServerTransactionResponseState> transaction_state;
 };
 
 struct ServerRequestLifecycleResult {
@@ -655,6 +773,8 @@ const char* ServerRequestLifecycleStateName(ServerRequestLifecycleState state);
 const char* ServerDriverTransactionEventName(ServerDriverTransactionEvent event);
 const char* ServerTransactionPressureActionName(ServerTransactionPressureAction action);
 std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid);
+bool IsCompleteEngineTransactionIdentity(std::uint64_t local_transaction_id,
+                                         std::string_view transaction_uuid);
 ServerLanguageContextIdentity ServerLanguageContextForSession(
     const ServerSessionRecord& session);
 scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
@@ -691,6 +811,11 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
                                                    const HostedEngineState& engine_state,
                                                    std::string requested_database,
                                                    std::string application_name = "sb_isql");
+// One controlled bridge from the legacy scalar projection into the canonical
+// map, followed by strict active/default identity validation.  Callers must
+// hold transaction_mutex when the session is shared.
+ServerTransactionState* AdoptAndFindExactActiveDefaultTransaction(
+    ServerSessionRecord* session);
 SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
                                               const sbps::Frame& request);
 std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry);
@@ -699,7 +824,8 @@ ServerRequestRecord RegisterServerRequestLifecycle(ServerSessionRegistry* regist
                                                    const sbps::Frame& request,
                                                    const ServerSessionRecord& session,
                                                    std::string request_kind,
-                                                   std::string operation_id);
+                                                   std::string operation_id,
+                                                   const ServerTransactionState* transaction = nullptr);
 void UpdateServerRequestLifecycleOperation(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& request_uuid,
@@ -727,6 +853,18 @@ void CloseSessionObjectHandlesForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string detail = "session_closed");
+// Releases an engine result and removes all buffered row/stream payloads from
+// a cursor while preserving only its identity and finality tombstone. Any
+// linked request no longer advertises a retained engine result. The caller
+// remains responsible for choosing the cursor/request finality state.
+bool ReleaseAndClearServerCursorResources(
+    ServerSessionRegistry* registry,
+    ServerCursorRecord* cursor);
+ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
+    std::string detail = "prepared_statement_closed");
 void CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,

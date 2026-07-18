@@ -320,6 +320,29 @@ struct EngineRequestContext {
   std::string client_protocol_uuid;
   std::string application_name;
   EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
+  // Metadata and data visibility are separate statement boundaries.  A
+  // source-engine compatibility profile may require statement-start metadata
+  // revalidation while preserving the owning transaction's data snapshot.
+  // Zero means "use the transaction data-snapshot boundary"; a non-zero
+  // value is selected by the engine from the durable transaction inventory,
+  // never supplied as parser authority.
+  EngineApiU64
+      statement_metadata_snapshot_visible_through_local_transaction_id = 0;
+  // The metadata snapshot is engine-issued and immutable for one prepared
+  // binding.  The exclusion sets preserve transactions that were unresolved
+  // when the snapshot was created even if they commit before execution.
+  bool statement_metadata_snapshot_engine_owned = false;
+  EngineUuid statement_metadata_snapshot_uuid;
+  std::vector<EngineApiU64>
+      statement_metadata_snapshot_active_excluded_local_transaction_ids;
+  std::vector<EngineApiU64>
+      statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids;
+  // Required executable-object metadata is populated only after the private
+  // server-engine bridge resolves an opaque engine-owned binding. SBLR
+  // operands are never copied into these authority fields.
+  EngineUuid prepared_metadata_required_object_uuid;
+  EngineApiU64 prepared_metadata_required_executable_generation = 0;
+  EngineApiU64 prepared_metadata_required_metadata_epoch = 0;
   std::string statement_timestamp;
   std::string transaction_timestamp;
   std::string current_timestamp;
@@ -349,11 +372,20 @@ struct EngineRequestContext {
   std::vector<std::string> trace_tags;
 };
 
+struct EngineApiDiagnosticField {
+  std::string key;
+  std::string value;
+};
+
 struct EngineApiDiagnostic {
   std::string code;
   std::string message_key;
   std::string detail;
   bool error = true;
+  // Redaction-safe structured fields that may cross the public engine ABI.
+  // Callers must not infer semantics by parsing `detail`; exact presentation
+  // adapters key on the diagnostic code and declared fields instead.
+  std::vector<EngineApiDiagnosticField> fields;
 };
 
 struct EngineDmlSummaryCounters {

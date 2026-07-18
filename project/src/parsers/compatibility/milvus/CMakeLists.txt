@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_milvus_parser_pipeline STATIC
   milvus_dialect.cpp
+  milvus_grpc_worker_session.cpp
 )
 
 target_compile_features(sbl_milvus_parser_pipeline PUBLIC cxx_std_23)

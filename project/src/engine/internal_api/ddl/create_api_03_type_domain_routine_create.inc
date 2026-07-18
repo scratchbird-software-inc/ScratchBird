@@ -13,8 +13,31 @@
       }
       result.created_storage_objects.push_back({{created_index.index_uuid}, "index"});
       result.evidence.push_back({"inline_index_create", created_index.index_uuid});
+      relation_descriptor_indexes.push_back(created_index);
     }
   }
+  MgaRelationStorageDescriptor relation_descriptor;
+  EngineRequestContext relation_descriptor_context = request.context;
+  relation_descriptor_context.current_schema_uuid.canonical =
+      target_schema_uuid;
+  const auto relation_descriptor_ready = EnsureMgaRelationStorageDescriptor(
+      relation_descriptor_context,
+      created_table,
+      relation_descriptor_indexes,
+      &relation_descriptor);
+  if (relation_descriptor_ready.error) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+        request.context,
+        "ddl.create_table",
+        relation_descriptor_ready);
+  }
+  result.effective_table_descriptor.descriptor_uuid =
+      relation_descriptor.descriptor_uuid;
+  result.effective_table_descriptor.descriptor_kind =
+      "mga_relation_storage_descriptor";
+  result.effective_table_descriptor.canonical_type_name = "table";
+  result.evidence.push_back(
+      {"mga_relation_descriptor", relation_descriptor.descriptor_uuid.canonical});
   AddDdlPublicationResult(&result,
                           "ddl.create_table",
                           "table",

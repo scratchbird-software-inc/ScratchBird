@@ -55,8 +55,22 @@ std::array<std::uint8_t, 16> First16(const std::array<std::uint8_t, 32>& value) 
   return out;
 }
 
-bool IsSbsqlManagerProfile(std::string_view profile) {
-  return profile.empty() || profile == "SBsql" || profile == "native_v3";
+std::string NormalizeProfileName(std::string_view profile) {
+  std::string normalized(profile);
+  std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return normalized;
+}
+
+bool RequestedProfileMatchesListener(const ListenerConfig& config,
+                                     std::string_view requested_profile) {
+  if (requested_profile.empty()) return true;
+  const std::string requested = NormalizeProfileName(requested_profile);
+  return requested == NormalizeProfileName(config.protocol_family) ||
+         requested == NormalizeProfileName(config.parser_package) ||
+         requested == NormalizeProfileName(config.listener_profile);
 }
 
 std::string ErrnoString() {
@@ -1374,11 +1388,10 @@ ListenerRuntimeResult ListenerRuntime::ExecuteManagementCommandText(const std::s
     if (!preface) {
       return {1, MakeMessageVectorSet(std::move(diagnostics), config_.language, config_.dialect)};
     }
-    if (!IsSbsqlManagerProfile(preface->requested_profile) ||
-        config_.protocol_family != "sbsql") {
+    if (!RequestedProfileMatchesListener(config_, preface->requested_profile)) {
       return {1, MakeMessageVectorSet({MakeDiagnostic("LISTENER.LPREFACE_PROFILE_UNSUPPORTED",
                                                        "ERROR",
-                                                       "LPREFACE manager-mediated authentication is limited to SBsql listeners",
+                                                       "LPREFACE requested profile does not match the configured listener profile",
                                                        "sb_listener.management",
                                                        {{"requested_profile", preface->requested_profile},
                                                         {"protocol_family", config_.protocol_family}})},

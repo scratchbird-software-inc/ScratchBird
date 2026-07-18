@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "common/common.hpp"
 #include "ipc/sbps_client.hpp"
 
 #include <memory>

@@ -253,6 +253,637 @@ std::string FormatTimestampTz(const ParsedTemporal& temporal) {
   return FormatTimestamp(temporal) + "Z";
 }
 
+// Source-engine temporal behavior is admitted only through an explicit operation
+// profile.  These helpers are descriptor-aware and remain engine-owned: a
+// parser may select a profile and lower typed arguments, but it does not
+// perform the arithmetic.  The Firebird exact-time profile uses the source engine's
+// public 100-microsecond tick representation.
+constexpr std::int64_t kFirebirdTicksPerSecond = 10000;
+constexpr std::int64_t kFirebirdTicksPerMinute =
+    60 * kFirebirdTicksPerSecond;
+constexpr std::int64_t kFirebirdTicksPerHour =
+    60 * kFirebirdTicksPerMinute;
+constexpr std::int64_t kFirebirdTicksPerDay =
+    24 * kFirebirdTicksPerHour;
+
+enum class ProfileTemporalKind : std::uint8_t {
+  date,
+  time,
+  timestamp,
+};
+
+struct ProfileTemporal {
+  ProfileTemporalKind kind{ProfileTemporalKind::date};
+  std::int64_t year{0};
+  unsigned month{0};
+  unsigned day{0};
+  unsigned hour{0};
+  unsigned minute{0};
+  unsigned second{0};
+  unsigned fraction_ticks{0};
+};
+
+bool CheckedAddInt64(std::int64_t left,
+                     std::int64_t right,
+                     std::int64_t* out) {
+  if (out == nullptr) return false;
+  if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
+      (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
+    return false;
+  }
+  *out = left + right;
+  return true;
+}
+
+bool CheckedSubtractInt64(std::int64_t left,
+                          std::int64_t right,
+                          std::int64_t* out) {
+  if (out == nullptr) return false;
+  if ((right > 0 && left < std::numeric_limits<std::int64_t>::min() + right) ||
+      (right < 0 && left > std::numeric_limits<std::int64_t>::max() + right)) {
+    return false;
+  }
+  *out = left - right;
+  return true;
+}
+
+bool CheckedMultiplyInt64(std::int64_t left,
+                          std::int64_t right,
+                          std::int64_t* out) {
+  if (out == nullptr) return false;
+  if (left == 0 || right == 0) {
+    *out = 0;
+    return true;
+  }
+  if (left == -1) {
+    if (right == std::numeric_limits<std::int64_t>::min()) return false;
+    *out = -right;
+    return true;
+  }
+  if (right == -1) {
+    if (left == std::numeric_limits<std::int64_t>::min()) return false;
+    *out = -left;
+    return true;
+  }
+  if (left > 0) {
+    if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() / right) ||
+        (right < 0 && right < std::numeric_limits<std::int64_t>::min() / left)) {
+      return false;
+    }
+  } else {
+    if ((right > 0 && left < std::numeric_limits<std::int64_t>::min() / right) ||
+        (right < 0 && left < std::numeric_limits<std::int64_t>::max() / right)) {
+      return false;
+    }
+  }
+  *out = left * right;
+  return true;
+}
+
+bool ParseFirebirdTickFraction(std::string_view text,
+                               std::size_t separator,
+                               unsigned* fraction_ticks) {
+  if (fraction_ticks == nullptr) return false;
+  if (separator == text.size()) {
+    *fraction_ticks = 0;
+    return true;
+  }
+  if (separator >= text.size() ||
+      (text[separator] != '.' && text[separator] != ':')) {
+    return false;
+  }
+  const std::size_t fraction_begin = separator + 1;
+  const std::size_t fraction_length = text.size() - fraction_begin;
+  if (fraction_length == 0 || fraction_length > 4) return false;
+  std::int64_t fraction = 0;
+  if (!ParseFixedInt(text, fraction_begin, fraction_length, &fraction)) {
+    return false;
+  }
+  for (std::size_t index = fraction_length; index < 4; ++index) {
+    fraction *= 10;
+  }
+  *fraction_ticks = static_cast<unsigned>(fraction);
+  return true;
+}
+
+bool ParseFirebirdProfileDate(std::string_view text,
+                              ProfileTemporal* out) {
+  if (out == nullptr || text.size() != 10 || text[4] != '-' ||
+      text[7] != '-') {
+    return false;
+  }
+  std::int64_t year = 0;
+  std::int64_t month = 0;
+  std::int64_t day = 0;
+  if (!ParseFixedInt(text, 0, 4, &year) ||
+      !ParseFixedInt(text, 5, 2, &month) ||
+      !ParseFixedInt(text, 8, 2, &day) || year < 1 || year > 9999 ||
+      month < 1 || month > 12 || day < 1 ||
+      day > static_cast<std::int64_t>(
+                DaysInMonth(year, static_cast<unsigned>(month)))) {
+    return false;
+  }
+  out->year = year;
+  out->month = static_cast<unsigned>(month);
+  out->day = static_cast<unsigned>(day);
+  return true;
+}
+
+bool ParseFirebirdProfileTime(std::string_view text,
+                              std::size_t offset,
+                              ProfileTemporal* out) {
+  if (out == nullptr || offset + 8 > text.size() ||
+      text[offset + 2] != ':' || text[offset + 5] != ':') {
+    return false;
+  }
+  std::int64_t hour = 0;
+  std::int64_t minute = 0;
+  std::int64_t second = 0;
+  if (!ParseFixedInt(text, offset, 2, &hour) ||
+      !ParseFixedInt(text, offset + 3, 2, &minute) ||
+      !ParseFixedInt(text, offset + 6, 2, &second) || hour < 0 ||
+      hour > 23 || minute < 0 || minute > 59 || second < 0 ||
+      second > 59 ||
+      !ParseFirebirdTickFraction(text, offset + 8, &out->fraction_ticks)) {
+    return false;
+  }
+  out->hour = static_cast<unsigned>(hour);
+  out->minute = static_cast<unsigned>(minute);
+  out->second = static_cast<unsigned>(second);
+  return true;
+}
+
+bool ParseFirebirdProfileTemporal(std::string descriptor_id,
+                                  std::string_view text,
+                                  ProfileTemporal* out) {
+  if (out == nullptr) return false;
+  descriptor_id = LowerAscii(std::move(descriptor_id));
+  ProfileTemporal parsed;
+  if (descriptor_id == "date") {
+    parsed.kind = ProfileTemporalKind::date;
+    if (!ParseFirebirdProfileDate(text, &parsed)) return false;
+  } else if (descriptor_id == "time") {
+    parsed.kind = ProfileTemporalKind::time;
+    if (!ParseFirebirdProfileTime(text, 0, &parsed)) return false;
+  } else if (descriptor_id == "timestamp") {
+    parsed.kind = ProfileTemporalKind::timestamp;
+    if (text.size() < 19 || (text[10] != 'T' && text[10] != ' ')) {
+      return false;
+    }
+    if (!ParseFirebirdProfileDate(text.substr(0, 10), &parsed) ||
+        !ParseFirebirdProfileTime(text, 11, &parsed)) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  *out = parsed;
+  return true;
+}
+
+std::int64_t FirebirdProfileTimeTicks(const ProfileTemporal& temporal) {
+  return static_cast<std::int64_t>(temporal.hour) *
+             kFirebirdTicksPerHour +
+         static_cast<std::int64_t>(temporal.minute) *
+             kFirebirdTicksPerMinute +
+         static_cast<std::int64_t>(temporal.second) *
+             kFirebirdTicksPerSecond +
+         static_cast<std::int64_t>(temporal.fraction_ticks);
+}
+
+bool FirebirdProfileTemporalTicks(const ProfileTemporal& temporal,
+                                  std::int64_t* ticks) {
+  if (ticks == nullptr) return false;
+  if (temporal.kind == ProfileTemporalKind::time) {
+    *ticks = FirebirdProfileTimeTicks(temporal);
+    return true;
+  }
+  std::int64_t day_ticks = 0;
+  if (!CheckedMultiplyInt64(
+          DaysFromCivil(temporal.year, temporal.month, temporal.day),
+          kFirebirdTicksPerDay, &day_ticks)) {
+    return false;
+  }
+  const std::int64_t time_ticks =
+      temporal.kind == ProfileTemporalKind::timestamp
+          ? FirebirdProfileTimeTicks(temporal)
+          : 0;
+  return CheckedAddInt64(day_ticks, time_ticks, ticks);
+}
+
+std::string FormatFirebirdProfileTime(const ProfileTemporal& temporal) {
+  return TwoDigit(temporal.hour) + ":" + TwoDigit(temporal.minute) +
+         ":" + TwoDigit(temporal.second) + "." +
+         FourDigit(temporal.fraction_ticks);
+}
+
+std::string FormatFirebirdProfileTemporal(const ProfileTemporal& temporal) {
+  if (temporal.kind == ProfileTemporalKind::time) {
+    return FormatFirebirdProfileTime(temporal);
+  }
+  const std::string date = FourDigit(temporal.year) + "-" +
+                           TwoDigit(temporal.month) + "-" +
+                           TwoDigit(temporal.day);
+  if (temporal.kind == ProfileTemporalKind::date) return date;
+  return date + "T" + FormatFirebirdProfileTime(temporal);
+}
+
+constexpr std::string_view kFirebirdTemporalCastProfile =
+    "firebird.temporal_cast.v1";
+
+struct TemporalCastCharacterTarget {
+  std::string descriptor_id;
+  std::size_t maximum_bytes{0};
+};
+
+std::optional<TemporalCastCharacterTarget>
+ParseTemporalCastCharacterTarget(std::string_view encoded) {
+  const std::string descriptor =
+      LowerAscii(TrimAscii(std::string(encoded)));
+  const auto parse_bounded = [&](std::string_view prefix,
+                                 std::string descriptor_id)
+      -> std::optional<TemporalCastCharacterTarget> {
+    if (descriptor.size() <= prefix.size() + 1 ||
+        !descriptor.starts_with(prefix) || descriptor.back() != ')') {
+      return std::nullopt;
+    }
+    const std::string_view digits(descriptor.data() + prefix.size(),
+                                  descriptor.size() - prefix.size() - 1);
+    std::size_t length = 0;
+    for (const unsigned char ch : digits) {
+      if (std::isdigit(ch) == 0) return std::nullopt;
+      if (length > 1048576u / 10u) return std::nullopt;
+      length = length * 10u + static_cast<std::size_t>(ch - '0');
+      if (length > 1048576u) return std::nullopt;
+    }
+    if (length == 0) return std::nullopt;
+    return TemporalCastCharacterTarget{std::move(descriptor_id), length};
+  };
+
+  if (auto target = parse_bounded("character(", "character")) {
+    return target;
+  }
+  return parse_bounded("varchar(", "varchar");
+}
+
+bool ReadFirebirdCastDecimalComponent(std::string_view text,
+                                      std::size_t* cursor,
+                                      std::size_t minimum_digits,
+                                      std::size_t maximum_digits,
+                                      std::int64_t* value) {
+  if (cursor == nullptr || value == nullptr || *cursor >= text.size()) {
+    return false;
+  }
+  const std::size_t begin = *cursor;
+  std::int64_t parsed = 0;
+  while (*cursor < text.size() &&
+         std::isdigit(static_cast<unsigned char>(text[*cursor])) != 0 &&
+         *cursor - begin < maximum_digits) {
+    parsed = parsed * 10 + static_cast<std::int64_t>(text[*cursor] - '0');
+    ++*cursor;
+  }
+  const std::size_t digits = *cursor - begin;
+  if (digits < minimum_digits || digits > maximum_digits ||
+      (*cursor < text.size() &&
+       std::isdigit(static_cast<unsigned char>(text[*cursor])) != 0)) {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool ParseFirebirdCastDmyDate(std::string_view text,
+                              std::size_t* cursor,
+                              ProfileTemporal* out) {
+  if (cursor == nullptr || out == nullptr) return false;
+  std::int64_t day = 0;
+  std::int64_t month = 0;
+  std::int64_t year = 0;
+  if (!ReadFirebirdCastDecimalComponent(text, cursor, 1, 2, &day) ||
+      *cursor >= text.size() || text[(*cursor)++] != '.' ||
+      !ReadFirebirdCastDecimalComponent(text, cursor, 1, 2, &month) ||
+      *cursor >= text.size() || text[(*cursor)++] != '.' ||
+      !ReadFirebirdCastDecimalComponent(text, cursor, 4, 4, &year) ||
+      year < 1 || year > 9999 || month < 1 || month > 12 || day < 1 ||
+      day > static_cast<std::int64_t>(
+                DaysInMonth(year, static_cast<unsigned>(month)))) {
+    return false;
+  }
+  out->kind = ProfileTemporalKind::date;
+  out->year = year;
+  out->month = static_cast<unsigned>(month);
+  out->day = static_cast<unsigned>(day);
+  return true;
+}
+
+bool ParseFirebirdCastTime(std::string_view text,
+                           std::size_t* cursor,
+                           ProfileTemporal* out) {
+  if (cursor == nullptr || out == nullptr) return false;
+  std::int64_t hour = 0;
+  std::int64_t minute = 0;
+  std::int64_t second = 0;
+  if (!ReadFirebirdCastDecimalComponent(text, cursor, 1, 2, &hour) ||
+      *cursor >= text.size() || text[(*cursor)++] != ':' ||
+      !ReadFirebirdCastDecimalComponent(text, cursor, 1, 2, &minute) ||
+      *cursor >= text.size() || text[(*cursor)++] != ':' ||
+      !ReadFirebirdCastDecimalComponent(text, cursor, 1, 2, &second) ||
+      hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 ||
+      second > 59) {
+    return false;
+  }
+
+  unsigned fraction_ticks = 0;
+  if (*cursor < text.size()) {
+    if (text[*cursor] != '.') return false;
+    ++*cursor;
+    const std::size_t fraction_begin = *cursor;
+    std::int64_t fraction = 0;
+    if (!ReadFirebirdCastDecimalComponent(text, cursor, 1, 4, &fraction)) {
+      return false;
+    }
+    const std::size_t fraction_digits = *cursor - fraction_begin;
+    for (std::size_t digits = fraction_digits; digits < 4; ++digits) {
+      fraction *= 10;
+    }
+    fraction_ticks = static_cast<unsigned>(fraction);
+  }
+  out->kind = ProfileTemporalKind::time;
+  out->hour = static_cast<unsigned>(hour);
+  out->minute = static_cast<unsigned>(minute);
+  out->second = static_cast<unsigned>(second);
+  out->fraction_ticks = fraction_ticks;
+  return true;
+}
+
+bool ParseFirebirdCastCharacterTemporal(std::string_view encoded,
+                                        ProfileTemporalKind target_kind,
+                                        ProfileTemporal* out) {
+  if (out == nullptr) return false;
+  const std::string text = TrimAscii(std::string(encoded));
+  std::size_t cursor = 0;
+  ProfileTemporal parsed;
+  if (target_kind == ProfileTemporalKind::date) {
+    if (!ParseFirebirdCastDmyDate(text, &cursor, &parsed) ||
+        cursor != text.size()) {
+      return false;
+    }
+  } else if (target_kind == ProfileTemporalKind::time) {
+    if (!ParseFirebirdCastTime(text, &cursor, &parsed) ||
+        cursor != text.size()) {
+      return false;
+    }
+  } else {
+    if (!ParseFirebirdCastDmyDate(text, &cursor, &parsed) ||
+        cursor >= text.size() || text[cursor++] != ' ' ||
+        !ParseFirebirdCastTime(text, &cursor, &parsed) ||
+        cursor != text.size()) {
+      return false;
+    }
+    parsed.kind = ProfileTemporalKind::timestamp;
+  }
+  *out = parsed;
+  return true;
+}
+
+FunctionCallResult EvaluateFirebirdTemporalCast(
+    const FunctionCallRequest& request,
+    std::string_view target_descriptor) {
+  if (request.arguments.size() != 3) {
+    return RefuseFunctionInvalidInput(
+        request, "Firebird temporal cast profile expects exactly three arguments");
+  }
+
+  const auto character_target =
+      ParseTemporalCastCharacterTarget(target_descriptor);
+  const std::string target = LowerAscii(TrimAscii(
+      character_target ? character_target->descriptor_id
+                       : std::string(target_descriptor)));
+  if (target != "date" && target != "time" && target != "timestamp" &&
+      !character_target) {
+    return RefuseFunctionInvalidInput(
+        request,
+        "Firebird temporal cast target must be date, time, timestamp, character(n), or varchar(n)");
+  }
+  if (IsSqlNull(request.arguments[0].value)) {
+    return MakeFunctionSuccess(request, {MakeNullValue(target)});
+  }
+
+  const auto& source = request.arguments[0].value;
+  const std::string source_descriptor =
+      LowerAscii(TrimAscii(source.descriptor_id));
+  ProfileTemporal temporal;
+  if (source_descriptor == "character" ||
+      source_descriptor == "character.none" ||
+      source_descriptor == "varchar" || source_descriptor == "text" ||
+      source_descriptor == "string") {
+    ProfileTemporalKind target_kind;
+    if (target == "date") {
+      target_kind = ProfileTemporalKind::date;
+    } else if (target == "time") {
+      target_kind = ProfileTemporalKind::time;
+    } else if (target == "timestamp") {
+      target_kind = ProfileTemporalKind::timestamp;
+    } else {
+      return RefuseFunctionInvalidInput(
+          request,
+          "Firebird character-to-character temporal profile requires an intermediate temporal value");
+    }
+    if (!ParseFirebirdCastCharacterTemporal(ValueAsText(source), target_kind,
+                                            &temporal)) {
+      return RefuseFunctionConversionInput(
+          request, ValueAsText(source),
+          "conversion input is not valid for the requested temporal target");
+    }
+  } else if (!ParseFirebirdProfileTemporal(source_descriptor,
+                                           ValueAsText(source), &temporal)) {
+    return RefuseFunctionConversionInput(
+        request, ValueAsText(source),
+        "conversion input descriptor is not valid for the requested temporal target");
+  }
+
+  if (character_target) {
+    std::string encoded = FormatFirebirdProfileTemporal(temporal);
+    if (temporal.kind == ProfileTemporalKind::timestamp &&
+        encoded.size() > 10 && encoded[10] == 'T') {
+      encoded[10] = ' ';
+    }
+    if (encoded.size() > character_target->maximum_bytes) {
+      return RefuseFunctionOverflow(
+          request,
+          "Firebird temporal cast result exceeds the requested character length");
+    }
+    return MakeFunctionSuccess(
+        request,
+        {MakeTextValue(character_target->descriptor_id, std::move(encoded))});
+  }
+
+  if (target == "date") {
+    if (temporal.kind == ProfileTemporalKind::time) {
+      return RefuseFunctionInvalidInput(
+          request, "Firebird TIME cannot be cast directly to DATE");
+    }
+    temporal.kind = ProfileTemporalKind::date;
+    temporal.hour = temporal.minute = temporal.second = temporal.fraction_ticks =
+        0;
+  } else if (target == "time") {
+    if (temporal.kind == ProfileTemporalKind::date) {
+      return RefuseFunctionInvalidInput(
+          request, "Firebird DATE cannot be cast directly to TIME");
+    }
+    temporal.kind = ProfileTemporalKind::time;
+    temporal.year = 0;
+    temporal.month = temporal.day = 0;
+  } else {
+    if (temporal.kind == ProfileTemporalKind::time) {
+      return RefuseFunctionInvalidInput(
+          request, "Firebird TIME cannot be cast directly to TIMESTAMP");
+    }
+    temporal.kind = ProfileTemporalKind::timestamp;
+  }
+  return MakeFunctionSuccess(
+      request,
+      {MakeTextValue(target, FormatFirebirdProfileTemporal(temporal))});
+}
+
+bool FirebirdProfileTemporalFromTicks(std::int64_t ticks,
+                                      ProfileTemporalKind kind,
+                                      ProfileTemporal* out) {
+  if (out == nullptr) return false;
+  ProfileTemporal result;
+  result.kind = kind;
+  if (kind == ProfileTemporalKind::time) {
+    ticks %= kFirebirdTicksPerDay;
+    if (ticks < 0) ticks += kFirebirdTicksPerDay;
+  } else {
+    std::int64_t days = ticks / kFirebirdTicksPerDay;
+    std::int64_t day_ticks = ticks % kFirebirdTicksPerDay;
+    if (day_ticks < 0) {
+      day_ticks += kFirebirdTicksPerDay;
+      --days;
+    }
+    CivilFromDays(days, &result.year, &result.month, &result.day);
+    if (result.year < 1 || result.year > 9999) return false;
+    ticks = day_ticks;
+    if (kind == ProfileTemporalKind::date && ticks != 0) return false;
+  }
+  if (kind != ProfileTemporalKind::date) {
+    result.hour = static_cast<unsigned>(ticks / kFirebirdTicksPerHour);
+    ticks %= kFirebirdTicksPerHour;
+    result.minute = static_cast<unsigned>(ticks / kFirebirdTicksPerMinute);
+    ticks %= kFirebirdTicksPerMinute;
+    result.second = static_cast<unsigned>(ticks / kFirebirdTicksPerSecond);
+    result.fraction_ticks =
+        static_cast<unsigned>(ticks % kFirebirdTicksPerSecond);
+  }
+  *out = result;
+  return true;
+}
+
+bool FirebirdProfileTickMultiplier(std::string unit,
+                                   ProfileTemporalKind source_kind,
+                                   std::int64_t* multiplier) {
+  if (multiplier == nullptr) return false;
+  unit = LowerAscii(TrimAscii(std::move(unit)));
+  if (unit == "millisecond" || unit == "milliseconds") {
+    *multiplier = kFirebirdTicksPerSecond / 1000;
+  } else if (unit == "second" || unit == "seconds") {
+    *multiplier = kFirebirdTicksPerSecond;
+  } else if (unit == "minute" || unit == "minutes") {
+    *multiplier = kFirebirdTicksPerMinute;
+  } else if (unit == "hour" || unit == "hours") {
+    *multiplier = kFirebirdTicksPerHour;
+  } else if ((unit == "day" || unit == "days") &&
+             source_kind != ProfileTemporalKind::time) {
+    *multiplier = kFirebirdTicksPerDay;
+  } else {
+    return false;
+  }
+  if (source_kind == ProfileTemporalKind::date &&
+      *multiplier != kFirebirdTicksPerDay) {
+    return false;
+  }
+  return true;
+}
+
+bool AddFirebirdProfileTicks(const ProfileTemporal& source,
+                             std::int64_t delta_ticks,
+                             ProfileTemporal* out) {
+  if (out == nullptr) return false;
+  std::int64_t source_ticks = 0;
+  if (!FirebirdProfileTemporalTicks(source, &source_ticks)) return false;
+  if (source.kind == ProfileTemporalKind::time) {
+    delta_ticks %= kFirebirdTicksPerDay;
+  }
+  std::int64_t result_ticks = 0;
+  if (!CheckedAddInt64(source_ticks, delta_ticks, &result_ticks)) {
+    return false;
+  }
+  return FirebirdProfileTemporalFromTicks(result_ticks, source.kind, out);
+}
+
+bool AddFirebirdCalendarMonths(const ProfileTemporal& source,
+                               std::int64_t quantity,
+                               ProfileTemporal* out) {
+  if (out == nullptr || source.kind == ProfileTemporalKind::time ||
+      quantity < -9999 * 12 || quantity > 9999 * 12) {
+    return false;
+  }
+
+  std::array<int, 12> month_days =
+      {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  const std::int64_t years = quantity / 12;
+  const std::int64_t months = quantity % 12;
+  const int source_month_index = static_cast<int>(source.month) - 1;
+  const int last_day_delta =
+      month_days[static_cast<std::size_t>(source_month_index)] -
+      static_cast<int>(source.day);
+
+  std::int64_t target_year = source.year + years;
+  std::int64_t target_month_index = source_month_index + months;
+  if (target_month_index > 11) {
+    ++target_year;
+    target_month_index -= 12;
+  } else if (target_month_index < 0) {
+    --target_year;
+    target_month_index += 12;
+  }
+  if (target_year < 1 || target_year > 9999) return false;
+  if (IsLeapYear(target_year)) ++month_days[1];
+
+  int target_day = static_cast<int>(source.day);
+  // This intentionally mirrors the named compatibility profile.  In particular,
+  // 2004-02-29 + 11 months becomes 2005-01-31 because the target year is
+  // non-leap and the compatibility profile applies its last-day delta adjustment.
+  if (years >= 0 && months >= 0 &&
+      static_cast<int>(source.day) >
+          month_days[static_cast<std::size_t>(source_month_index)]) {
+    target_day =
+        month_days[static_cast<std::size_t>(target_month_index)] -
+        last_day_delta;
+  }
+  target_day = std::max(
+      1, std::min(target_day,
+                  month_days[static_cast<std::size_t>(target_month_index)]));
+
+  *out = source;
+  out->year = target_year;
+  out->month = static_cast<unsigned>(target_month_index + 1);
+  out->day = static_cast<unsigned>(target_day);
+  return true;
+}
+
+std::string FormatFirebirdTenths(std::int64_t ticks) {
+  const bool negative = ticks < 0;
+  const std::uint64_t magnitude =
+      negative
+          ? static_cast<std::uint64_t>(-(ticks + 1)) + 1
+          : static_cast<std::uint64_t>(ticks);
+  return std::string(negative ? "-" : "") +
+         std::to_string(magnitude / 10) + "." +
+         std::to_string(magnitude % 10);
+}
+
 std::string MonthNameEnglish(unsigned month) {
   static constexpr std::string_view kMonths[] = {"January", "February", "March", "April", "May", "June",
                                                  "July", "August", "September", "October", "November", "December"};

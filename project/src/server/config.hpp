@@ -46,6 +46,36 @@ enum class ServerConfigCompatibilityClass {
   kMigrationRequiredWithoutPlanRefused,
 };
 
+// A server listener profile is an opaque controller record for one instance of
+// the generic SBgate executable.  The server does not infer any of these
+// parser-facing values from a protocol name, a conventional port, an installed
+// package, or another parser profile.
+struct ServerListenerProfileConfig {
+  std::string config_key;
+  bool enabled = false;
+  std::string protocol_family;
+  std::string profile_id;
+  std::string parser_package;
+  std::string parser_package_uuid;
+  std::string dialect_profile_uuid;
+  std::string bundle_contract_id;
+  std::uint32_t parser_api_major = 0;
+  std::filesystem::path parser_executable_path;
+  std::string bind_address;
+  std::uint64_t port = 0;
+  std::string database_selector;
+  std::filesystem::path sbps_endpoint;
+  std::filesystem::path control_dir;
+  std::filesystem::path runtime_dir;
+  bool tls_required = true;
+  std::filesystem::path tls_cert_file;
+  std::filesystem::path tls_key_file;
+  std::filesystem::path tls_ca_file;
+  std::uint64_t ready_timeout_ms = 5000;
+  std::uint32_t warm_pool_min = 2;
+  std::uint32_t warm_pool_max = 8;
+};
+
 struct ServerBootstrapConfig {
   ServerMode mode = ServerMode::kForeground;
   bool allow_current_directory = true;
@@ -82,18 +112,10 @@ struct ServerBootstrapConfig {
   bool allow_uncredentialed_fixture_database = false;
   std::string database_ownership_owner_kind = "server";
   bool embedded_direct_mode = false;
-  bool listener_native_enabled = false;
-  std::string listener_native_bind_host = "127.0.0.1";
-  std::uint64_t listener_native_port = 3092;
-  std::filesystem::path listener_native_executable_path;
-  std::filesystem::path listener_native_parser_executable_path;
-  std::filesystem::path listener_native_control_dir;
-  std::filesystem::path listener_native_runtime_dir;
-  bool listener_native_tls_required = true;
-  std::filesystem::path listener_native_tls_cert_file;
-  std::filesystem::path listener_native_tls_key_file;
-  std::filesystem::path listener_native_tls_ca_file;
-  std::uint64_t listener_native_ready_timeout_ms = 5000;
+  std::filesystem::path listener_executable_path;
+  std::filesystem::path listener_control_dir;
+  std::filesystem::path listener_runtime_dir;
+  std::vector<ServerListenerProfileConfig> listener_profiles;
   bool metrics_enabled = true;
   std::uint64_t metrics_flush_interval_ms = 5000;
   std::string memory_policy_name = "default_local_server_memory_cache_v1";

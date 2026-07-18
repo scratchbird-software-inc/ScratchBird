@@ -1,0 +1,3 @@
+source_id,status,reference_family,source_kind,source_identifier,license_status,redistribution_status,transformation_policy,target_namespace,object_manifest,checksum_policy,notes
+EXSRC-000,public_safe,all,scratchbird_authored,canonical example root,ScratchBird MPL-2.0,redistributable,generated_from_sbsql,users.public.examples,required,sha256_manifest,Root objects shared by all examples.
+EXSRC-001,local_only,per_family,original_example_or_regression_schema,per-family acquired local suite input,license verified before use,redistributable or local only or recreate,import_or_recreate_as_scratchbird_equivalent,users.public.examples.reference.family,required,sha256_manifest,One row is expanded per source input in private evidence before release.

@@ -29,7 +29,10 @@ target_link_libraries(sbl_apache_ignite_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_apache_ignite main.cpp)
+add_executable(sbp_apache_ignite
+  main.cpp
+  apache_ignite_thin_worker_session.cpp
+)
 target_compile_features(sbp_apache_ignite PRIVATE cxx_std_23)
 target_link_libraries(sbp_apache_ignite PRIVATE
   sbl_apache_ignite_parser_pipeline

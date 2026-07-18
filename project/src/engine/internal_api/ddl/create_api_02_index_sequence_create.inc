@@ -206,7 +206,38 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         column_descriptor += (column_descriptor.empty() ? "" : ";") + std::string("domain_uuid=") + domain_uuid;
       }
     }
+    const auto text_resource_diagnostic =
+        ValidateAndCanonicalizeColumnTextResources(
+            request.context, column, &column_descriptor);
+    if (text_resource_diagnostic.error) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          text_resource_diagnostic);
+    }
     columns.push_back({column_name, column_descriptor});
+  }
+  bool primary_key_seen = false;
+  for (const auto& [column_name, column_descriptor] : columns) {
+    const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
+    if (!DescriptorBoolLocal(descriptor_fields, {"primary_key", "pk"})) {
+      continue;
+    }
+    if (primary_key_seen) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "multiple_primary_key_indexes_for_table"));
+    }
+    if (DescriptorBoolLocal(descriptor_fields, {"nullable"})) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "primary_key_column_nullable:" + column_name));
+    }
+    primary_key_seen = true;
   }
   for (const auto& inline_index : request.table_indexes) {
     const std::string requested_profile = !inline_index.index_kind.empty() ? inline_index.index_kind : inline_index.physical_profile;
@@ -236,7 +267,8 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           "ddl.create_table",
           UnsupportedCrudFeatureDiagnostic("ddl.create_table", "inline_partial_predicate_required"));
     }
-    if (inline_record.key_envelopes.empty()) {
+    const auto inline_key_columns = InlineIndexKeyColumns(inline_record);
+    if (inline_key_columns.empty()) {
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context,
           "ddl.create_table",
@@ -249,10 +281,156 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           "ddl.create_table",
           UnsupportedCrudFeatureDiagnostic("ddl.create_table", "unsupported_inline_expression_index_envelope"));
     }
+    const bool primary_key_index =
+        std::find(inline_index.key_envelopes.begin(),
+                  inline_index.key_envelopes.end(),
+                  "primary_key") != inline_index.key_envelopes.end();
+    const bool unique_constraint_index =
+        std::find(inline_index.key_envelopes.begin(),
+                  inline_index.key_envelopes.end(),
+                  "unique") != inline_index.key_envelopes.end();
+    if (primary_key_index || unique_constraint_index) {
+      std::set<std::string> distinct_constraint_key_columns;
+      for (const auto& key_envelope : inline_index.key_envelopes) {
+        if (key_envelope == "primary_key" || key_envelope == "unique") {
+          continue;
+        }
+        if (!DirectIndexKeyEnvelope(key_envelope)) {
+          return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+              request.context,
+              "ddl.create_table",
+              UnsupportedCrudFeatureDiagnostic(
+                  "ddl.create_table",
+                  primary_key_index
+                      ? "primary_key_requires_direct_columns"
+                      : "unique_constraint_requires_direct_columns"));
+        }
+        if (!distinct_constraint_key_columns.insert(key_envelope).second) {
+          return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+              request.context,
+              "ddl.create_table",
+              MakeInvalidRequestDiagnostic(
+                  "ddl.create_table",
+                  "inline_index_duplicate_key_column:" + key_envelope));
+        }
+      }
+    }
+    if (primary_key_index && primary_key_seen) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_table", "multiple_primary_key_indexes_for_table"));
+    }
+    primary_key_seen = primary_key_seen || primary_key_index;
+    const bool composite_unique_index =
+        unique_constraint_index && inline_key_columns.size() > 1;
+    if (primary_key_index || composite_unique_index) {
+      for (const auto& key_column : inline_key_columns) {
+        const auto column = std::find_if(
+            columns.begin(), columns.end(), [&key_column](const auto& candidate) {
+              return candidate.first == key_column;
+            });
+        if (column == columns.end()) {
+          return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+              request.context,
+              "ddl.create_table",
+              MakeInvalidRequestDiagnostic(
+                  "ddl.create_table",
+                  "inline_index_key_column_not_found:" + key_column));
+        }
+        const auto descriptor_fields = DescriptorFieldsLocal(column->second);
+        if (DescriptorBoolLocal(descriptor_fields, {"nullable"})) {
+          return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+              request.context,
+              "ddl.create_table",
+              MakeInvalidRequestDiagnostic(
+                  "ddl.create_table",
+                  std::string(primary_key_index
+                                  ? "primary_key_column_nullable:"
+                                  : "composite_unique_nullable_policy_unsupported:") +
+                      key_column));
+        }
+      }
+    }
   }
   const auto temporary_options = ResolveTemporaryTableOptions(request);
   if (temporary_options.diagnostic.error) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", temporary_options.diagnostic);
+  }
+  // Column-level candidate keys receive neutral engine-owned identities at
+  // table creation.  A later FK binds these exact persisted identities; it
+  // must never synthesize a parent key descriptor from a support index.
+  for (auto& [column_name, column_descriptor] : columns) {
+    const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
+    const bool primary_key =
+        DescriptorBoolLocal(descriptor_fields, {"primary_key", "pk"});
+    const bool unique_key = primary_key ||
+        DescriptorBoolLocal(descriptor_fields, {"unique", "unique_key"});
+    if (!unique_key) continue;
+    // Candidate-key, key-descriptor, and physical-support identities are
+    // durable engine identities.  A parser/request describes semantics but
+    // cannot choose or inject them.
+    constexpr const char* kReservedCandidateIdentityFields[] = {
+        "candidate_key_constraint_uuid",
+        "candidate_key_descriptor_uuid",
+        "key_descriptor_uuid",
+        "support_uuid",
+        "support_index_uuid",
+        "index_uuid"};
+    bool supplied_reserved_identity = false;
+    for (const char* field : kReservedCandidateIdentityFields) {
+      if (descriptor_fields.find(field) != descriptor_fields.end()) {
+        supplied_reserved_identity = true;
+        break;
+      }
+    }
+    if (supplied_reserved_identity) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_table",
+              "reserved_candidate_key_identity_supplied:" + column_name));
+    }
+    const std::string candidate_constraint_uuid =
+        GenerateCrudEngineUuid("object");
+    const std::string candidate_key_descriptor_uuid =
+        GenerateCrudEngineUuid("object");
+    const std::string support_uuid = GenerateCrudEngineUuid("object");
+    const auto valid_object_identity = [](const std::string& value) {
+      return !value.empty() &&
+          scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
+              scratchbird::core::platform::UuidKind::object, value)
+              .ok();
+    };
+    if (!valid_object_identity(candidate_constraint_uuid) ||
+        !valid_object_identity(candidate_key_descriptor_uuid) ||
+        !valid_object_identity(support_uuid)) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          MakeInvalidRequestDiagnostic(
+              "ddl.create_table",
+              "candidate_key_identity_generation_failed:" + column_name));
+    }
+    column_descriptor = SetDescriptorFieldLocal(
+        std::move(column_descriptor),
+        "candidate_key_constraint_uuid",
+        candidate_constraint_uuid);
+    column_descriptor = SetDescriptorFieldLocal(
+        std::move(column_descriptor),
+        "candidate_key_descriptor_uuid",
+        candidate_key_descriptor_uuid);
+    column_descriptor = SetDescriptorFieldLocal(
+        std::move(column_descriptor), "support_uuid", support_uuid);
+    column_descriptor = SetDescriptorFieldLocal(
+        std::move(column_descriptor), "support_family", "btree");
+    column_descriptor = SetDescriptorFieldLocal(
+        std::move(column_descriptor),
+        "candidate_key_class",
+        primary_key ? "primary_key" : "unique");
+    (void)column_name;
   }
   CrudTableRecord created_table;
   created_table.creator_tx = request.context.local_transaction_id;
@@ -356,6 +534,8 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     result.evidence.push_back({"constraint_support_index", support_index.index_uuid});
     result.evidence.push_back({"constraint_support_column", support_index.column_name});
   }
+  std::vector<CrudIndexRecord> relation_descriptor_indexes =
+      implicit_support_indexes;
   if (temporary_options.temporary) {
     result.evidence.push_back({"temporary_object_scope", temporary_options.scope});
     result.evidence.push_back({"temporary_on_commit", temporary_options.on_commit_action});

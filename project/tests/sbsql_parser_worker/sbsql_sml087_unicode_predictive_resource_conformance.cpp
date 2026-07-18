@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lexer/lexer.hpp"
-#include "parser_ipc_common.hpp"
+#include "ipc/sbsql_ipc_common.hpp"
 #include "resources/language_resource_contract.hpp"
 
 #include <algorithm>

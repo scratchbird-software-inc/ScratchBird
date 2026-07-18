@@ -29,7 +29,10 @@ target_link_libraries(sbl_foundationdb_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_foundationdb main.cpp)
+add_executable(sbp_foundationdb
+  main.cpp
+  foundationdb_flow_worker_session.cpp
+)
 target_compile_features(sbp_foundationdb PRIVATE cxx_std_23)
 target_link_libraries(sbp_foundationdb PRIVATE
   sbl_foundationdb_parser_pipeline

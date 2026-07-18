@@ -17,6 +17,9 @@ enable_testing()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PublicBranding.cmake")
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
+  add_subdirectory(tests/parser_family_isolation)
+endif()
 set(SB_PUBLIC_HEADER_GATE_SCRIPT
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_header_gate.py")
 if(EXISTS "${SB_PUBLIC_HEADER_GATE_SCRIPT}")
@@ -3008,6 +3011,22 @@ option(SB_BUILD_SBU_XTDB_PARSER_SUPPORT "Build the trusted XTDB parser-support U
 option(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS
   "Build compatibility SQL parser and parser-support UDR proof gates"
   OFF)
+option(SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES
+  "Build every compatibility parser worker and same-family parser-support UDR for isolated packaging"
+  OFF)
+if(SB_BUILD_STANDALONE_COMPATIBILITY_PARSER_PACKAGES)
+  foreach(sb_standalone_parser_option_stem IN ITEMS
+      APACHE_IGNITE CASSANDRA CLICKHOUSE COCKROACHDB DOLT DUCKDB FIREBIRD
+      FOUNDATIONDB IMMUDB INFLUXDB MARIADB MILVUS MONGODB MYSQL NEO4J
+      OPENSEARCH OPENSEARCH_SQL_PPL POSTGRESQL REDIS SQLITE TIDB TIKV
+      VITESS XTDB YUGABYTEDB)
+    set(SB_BUILD_${sb_standalone_parser_option_stem}_PARSER_WORKER ON CACHE BOOL
+      "Build compatibility parser worker for standalone package closure" FORCE)
+    set(SB_BUILD_SBU_${sb_standalone_parser_option_stem}_PARSER_SUPPORT ON CACHE BOOL
+      "Build same-family parser-support UDR for standalone package closure" FORCE)
+  endforeach()
+  unset(sb_standalone_parser_option_stem)
+endif()
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   set(SB_BUILD_SBSQL_PARSER_WORKER ON CACHE BOOL
     "Build the native SBSQL parser-worker product vertical slice"
@@ -3832,6 +3851,17 @@ if(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/t
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_subdirectory(tests/release)
 endif()
+
+include(cmake/StandaloneParserPackages.cmake)
+foreach(sb_standalone_compatibility_parser_family IN ITEMS
+    apache_ignite cassandra clickhouse cockroachdb dolt duckdb firebird
+    foundationdb immudb influxdb mariadb milvus mongodb mysql neo4j
+    opensearch opensearch_sql_ppl postgresql redis sqlite tidb tikv vitess
+    xtdb yugabytedb)
+  sb_register_standalone_compatibility_parser_package(
+    "${sb_standalone_compatibility_parser_family}")
+endforeach()
+unset(sb_standalone_compatibility_parser_family)
 
 sb_public_brand_target(sb_engine "SBcore_static" "ScratchBird Engine Static Library" "runtime")
 sb_public_brand_target(sb_engine_shared "SBcore" "ScratchBird Engine" "runtime")

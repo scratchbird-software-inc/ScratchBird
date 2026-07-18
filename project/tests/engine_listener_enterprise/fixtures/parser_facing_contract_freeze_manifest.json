@@ -33,12 +33,12 @@
     {
             "path": "project/src/server/sblr_admission.cpp",
             "resource_kind": "server_sblr_admission_surface",
-            "sha256": "80a817e5c39d9b0ede3a7d97252fdb702dd6fadeb15eec7fe5c01dd63a13d668"
+            "sha256": "d1814b30183ed1fdc607b99785836e250f9d1f46aa0834437e99c954ee858610"
     },
     {
             "path": "project/src/server/sblr_dispatch_server.cpp",
             "resource_kind": "server_sblr_dispatch_surface",
-            "sha256": "d5788fc0027f91ffd7c11b4d372252fbb070e3ff222b69ae658a7c7d9470da19"
+            "sha256": "6735952187c729f2ab3f64556a868bfcaed77c9daee59ab8b8a0b4a8681d9f3d"
     },
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",

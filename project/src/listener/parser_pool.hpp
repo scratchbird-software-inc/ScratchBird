@@ -202,6 +202,11 @@ class ParserPool {
   std::uint64_t next_restart_at_ms_{0};
   std::uint64_t quarantine_until_ms_{0};
   std::uint32_t last_backoff_ms_{0};
+  // Captured once from the listener controller's family-neutral startup
+  // envelope.  Worker restarts never reread mutable ambient process state.
+  std::string parser_auth_password_;
+  std::string parser_auth_verifier_;
+  std::string parser_auth_principal_uuid_;
 };
 
 std::string WorkerStateName(ParserWorkerState state);

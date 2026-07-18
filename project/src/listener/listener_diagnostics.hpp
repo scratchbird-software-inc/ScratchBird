@@ -26,7 +26,7 @@ proto::Diagnostic MakeDiagnostic(std::string code,
 
 proto::MessageVectorSet MakeMessageVectorSet(std::vector<proto::Diagnostic> diagnostics,
                                              std::string language = "en",
-                                             std::string dialect = "sbsql.v3");
+                                             std::string dialect = {});
 
 std::string MessageVectorSetJson(const proto::MessageVectorSet& set);
 

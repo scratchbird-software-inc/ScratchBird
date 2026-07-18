@@ -127,12 +127,13 @@ ServerListenerProfileRuntime Listener(const Fixture& fixture,
                                       std::string_view state) {
   ServerListenerProfileRuntime profile;
   profile.listener_uuid = std::string(listener_uuid);
-  profile.profile_name = "native";
+  profile.profile_name = "fixture";
   profile.state = std::string(state);
   profile.enabled = state != "stopped";
   profile.pid = -1;
   profile.database_selector = fixture.path.string();
-  profile.parser_package_ref = "sbp_native";
+  profile.parser_package_ref = "fixture.parser.package";
+  profile.engine_endpoint = "/tmp/sb_dblc011_engine.sock";
   profile.management_socket_path = "/tmp/sb_dblc011_listener.sock";
   profile.last_transition = "associated";
   if (state == "failed") profile.diagnostic_code = "LISTENER.MANAGEMENT_TIMEOUT";
@@ -142,7 +143,6 @@ ServerListenerProfileRuntime Listener(const Fixture& fixture,
 ServerListenerOrchestrator Listeners(const Fixture& fixture, bool failed_listener) {
   ServerListenerOrchestrator listeners;
   listeners.generation = 11;
-  listeners.engine_endpoint = "/tmp/sb_dblc011_engine.sock";
   listeners.profiles.push_back(
       Listener(fixture, "019e1100-0000-7000-8000-000000000101", failed_listener ? "failed" : "running"));
   ServerListenerProfileRuntime unrelated;
@@ -151,7 +151,8 @@ ServerListenerOrchestrator Listeners(const Fixture& fixture, bool failed_listene
   unrelated.enabled = true;
   unrelated.pid = -1;
   unrelated.database_selector = "unrelated-database-uuid";
-  unrelated.parser_package_ref = "sbp_native";
+  unrelated.parser_package_ref = "fixture.parser.package";
+  unrelated.engine_endpoint = "/tmp/sb_dblc011_unrelated_engine.sock";
   unrelated.last_transition = "associated";
   listeners.profiles.push_back(std::move(unrelated));
   return listeners;

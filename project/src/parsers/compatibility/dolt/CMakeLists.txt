@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_dolt_parser_pipeline STATIC
   dolt_dialect.cpp
+  dolt_worker_session.cpp
 )
 
 target_compile_features(sbl_dolt_parser_pipeline PUBLIC cxx_std_23)

@@ -10,8 +10,11 @@
 
 #include "api_diagnostics.hpp"
 
+#include <cctype>
 #include <cstdlib>
+#include <limits>
 #include <string>
+#include <string_view>
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -68,6 +71,150 @@ std::string GeneratedIdentity(const std::string& kind) {
   return GenerateCrudEngineUuid(kind);
 }
 
+std::string JoinDescriptorList(const std::vector<std::string>& values) {
+  std::string joined;
+  for (const auto& value : values) {
+    if (!joined.empty()) joined.push_back(',');
+    joined += value;
+  }
+  return joined;
+}
+
+std::string EncodeDescriptorList(const std::string& legacy_field,
+                                 const std::vector<std::string>& values) {
+  return EncodeCrudPairs({{legacy_field, JoinDescriptorList(values)}});
+}
+
+std::vector<std::string> DecodeDescriptorList(
+    const std::string& encoded,
+    const std::string& legacy_field) {
+  std::vector<std::string> values;
+  const auto pairs = DecodeCrudPairs(encoded);
+  if (pairs.size() == 1 && pairs.front().first == legacy_field) {
+    const std::string& joined = pairs.front().second;
+    std::size_t offset = 0;
+    while (offset <= joined.size()) {
+      const auto delimiter = joined.find(',', offset);
+      const auto length = delimiter == std::string::npos
+                              ? joined.size() - offset
+                              : delimiter - offset;
+      if (length != 0) values.push_back(joined.substr(offset, length));
+      if (delimiter == std::string::npos) break;
+      offset = delimiter + 1;
+    }
+    return values;
+  }
+  for (const auto& pair : pairs) {
+    values.push_back(pair.second);
+  }
+  return values;
+}
+
+std::string TrimDescriptorText(std::string value) {
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.front()))) {
+    value.erase(value.begin());
+  }
+  while (!value.empty() &&
+         std::isspace(static_cast<unsigned char>(value.back()))) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::string LowerDescriptorText(std::string value) {
+  for (char& ch : value) {
+    ch = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return value;
+}
+
+std::string EncodedDescriptorField(const std::string& descriptor,
+                                   const std::string& requested_field) {
+  const std::string normalized_field = LowerDescriptorText(requested_field);
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto delimiter = descriptor.find(';', offset);
+    const auto length = delimiter == std::string::npos
+                            ? descriptor.size() - offset
+                            : delimiter - offset;
+    const std::string part =
+        TrimDescriptorText(descriptor.substr(offset, length));
+    const auto equals = part.find('=');
+    if (equals != std::string::npos &&
+        LowerDescriptorText(TrimDescriptorText(part.substr(0, equals))) ==
+            normalized_field) {
+      return TrimDescriptorText(part.substr(equals + 1));
+    }
+    if (delimiter == std::string::npos) break;
+    offset = delimiter + 1;
+  }
+  return {};
+}
+
+std::uint32_t EncodedDescriptorU32(const std::string& descriptor,
+                                   const std::string& field) {
+  const std::string value = EncodedDescriptorField(descriptor, field);
+  if (value.empty()) return 0;
+  try {
+    std::size_t consumed = 0;
+    const auto parsed = std::stoull(value, &consumed, 10);
+    if (consumed != value.size() || parsed == 0 ||
+        parsed > std::numeric_limits<std::uint32_t>::max()) {
+      return 0;
+    }
+    return static_cast<std::uint32_t>(parsed);
+  } catch (...) {
+    return 0;
+  }
+}
+
+bool EncodedDescriptorBool(const std::string& descriptor,
+                           const std::string& field,
+                           bool fallback) {
+  const std::string value = LowerDescriptorText(
+      EncodedDescriptorField(descriptor, field));
+  if (value == "1" || value == "true") return true;
+  if (value == "0" || value == "false") return false;
+  return fallback;
+}
+
+std::string EncodedDescriptorTypeName(const std::string& descriptor) {
+  for (const std::string_view field :
+       {"type", "canonical", "canonical_type", "descriptor"}) {
+    auto value = EncodedDescriptorField(descriptor, std::string(field));
+    if (!value.empty()) return value;
+  }
+  return descriptor;
+}
+
+std::string EncodedDescriptorBaseType(const std::string& descriptor) {
+  std::string type = LowerDescriptorText(
+      TrimDescriptorText(EncodedDescriptorTypeName(descriptor)));
+  const auto open = type.find('(');
+  if (open != std::string::npos) type = type.substr(0, open);
+  std::string collapsed;
+  bool prior_space = false;
+  for (const char ch : type) {
+    const bool space = std::isspace(static_cast<unsigned char>(ch)) != 0;
+    if (space) {
+      if (!collapsed.empty() && !prior_space) collapsed.push_back(' ');
+    } else {
+      collapsed.push_back(ch);
+    }
+    prior_space = space;
+  }
+  return TrimDescriptorText(std::move(collapsed));
+}
+
+bool EncodedDescriptorSupportsLargeObjectTextResources(
+    const std::string& descriptor) {
+  const std::string base = EncodedDescriptorBaseType(descriptor);
+  return base == "blob" || base == "clob" ||
+         base == "character large object";
+}
+
 }  // namespace
 
 EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorageDescriptor& descriptor) {
@@ -99,6 +246,38 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
     }
     if (column.value_descriptor.encoded_descriptor.empty()) {
       return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "column_descriptor_required");
+    }
+    if (!column.collation_uuid.empty() && column.charset_uuid.empty()) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.relation_descriptor",
+          "column_collation_requires_charset_uuid");
+    }
+    const std::string text_resource_storage = LowerDescriptorText(
+        EncodedDescriptorField(column.value_descriptor.encoded_descriptor,
+                               "text_resource_storage"));
+    const bool large_object_text_resource =
+        text_resource_storage == "large_object";
+    if (!text_resource_storage.empty() && !large_object_text_resource) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.relation_descriptor", "text_resource_storage_invalid");
+    }
+    if (large_object_text_resource &&
+        !EncodedDescriptorSupportsLargeObjectTextResources(
+            column.value_descriptor.encoded_descriptor)) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.relation_descriptor",
+          "text_resource_modifier_on_incompatible_type");
+    }
+    if (large_object_text_resource && column.character_length != 0) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.relation_descriptor",
+          "large_object_text_resource_forbids_character_length");
+    }
+    if ((!column.charset_uuid.empty() || !column.collation_uuid.empty()) &&
+        column.character_length == 0 && !large_object_text_resource) {
+      return MakeInvalidRequestDiagnostic(
+          "mga.relation_descriptor",
+          "text_resource_descriptor_requires_character_length");
     }
   }
   for (const auto& index : descriptor.indexes) {
@@ -148,7 +327,9 @@ std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDesc
     PushBool(&fields, prefix + "generated", column.generated);
     PushBool(&fields, prefix + "identity", column.identity_column);
     fields.push_back({prefix + "storage_class", column.storage_class});
+    fields.push_back({prefix + "charset_uuid", column.charset_uuid});
     fields.push_back({prefix + "collation_uuid", column.collation_uuid});
+    PushU64(&fields, prefix + "character_length", column.character_length);
     PushU64(&fields, prefix + "max_inline_bytes", column.max_inline_bytes);
     fields.push_back({prefix + "overflow_policy", column.overflow_policy});
   }
@@ -161,14 +342,10 @@ std::vector<std::pair<std::string, std::string>> SerializeMgaRelationStorageDesc
     fields.push_back({prefix + "profile", index.profile});
     PushBool(&fields, prefix + "unique", index.unique);
     PushBool(&fields, prefix + "approximate", index.approximate);
-    fields.push_back({prefix + "key_envelopes", EncodeCrudPairs({{"keys", [&]() {
-      std::string joined;
-      for (std::size_t key_i = 0; key_i < index.key_envelopes.size(); ++key_i) {
-        if (key_i != 0) { joined += ","; }
-        joined += index.key_envelopes[key_i];
-      }
-      return joined;
-    }()}})});
+    fields.push_back({prefix + "key_envelopes",
+                      EncodeDescriptorList("keys", index.key_envelopes)});
+    fields.push_back({prefix + "include_columns",
+                      EncodeDescriptorList("columns", index.include_columns)});
     fields.push_back({prefix + "predicate_kind", index.predicate_kind});
     fields.push_back({prefix + "predicate_column", index.predicate_column});
     fields.push_back({prefix + "predicate_value", index.predicate_value});
@@ -214,7 +391,10 @@ MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(
     column.generated = FieldBool(fields, prefix + "generated", false);
     column.identity_column = FieldBool(fields, prefix + "identity", false);
     column.storage_class = FieldValue(fields, prefix + "storage_class", column.storage_class);
+    column.charset_uuid = FieldValue(fields, prefix + "charset_uuid");
     column.collation_uuid = FieldValue(fields, prefix + "collation_uuid");
+    column.character_length =
+        FieldU32(fields, prefix + "character_length", 0);
     column.max_inline_bytes = FieldU64(fields, prefix + "max_inline_bytes", column.max_inline_bytes);
     column.overflow_policy = FieldValue(fields, prefix + "overflow_policy", column.overflow_policy);
     descriptor.columns.push_back(std::move(column));
@@ -228,6 +408,10 @@ MgaRelationStorageDescriptor DeserializeMgaRelationStorageDescriptor(
     index.profile = FieldValue(fields, prefix + "profile");
     index.unique = FieldBool(fields, prefix + "unique", false);
     index.approximate = FieldBool(fields, prefix + "approximate", false);
+    index.key_envelopes = DecodeDescriptorList(
+        FieldValue(fields, prefix + "key_envelopes"), "keys");
+    index.include_columns = DecodeDescriptorList(
+        FieldValue(fields, prefix + "include_columns"), "columns");
     index.predicate_kind = FieldValue(fields, prefix + "predicate_kind");
     index.predicate_column = FieldValue(fields, prefix + "predicate_column");
     index.predicate_value = FieldValue(fields, prefix + "predicate_value");
@@ -272,8 +456,21 @@ std::vector<std::pair<std::string, std::string>> BuildPersistedMgaRelationDescri
     column.canonical_name_key = table.columns[i].first;
     column.value_descriptor.descriptor_uuid.canonical = GeneratedIdentity("object");
     column.value_descriptor.descriptor_kind = "canonical_type_descriptor";
-    column.value_descriptor.canonical_type_name = table.columns[i].second;
+    column.value_descriptor.canonical_type_name =
+        EncodedDescriptorTypeName(table.columns[i].second);
     column.value_descriptor.encoded_descriptor = table.columns[i].second;
+    column.nullable =
+        EncodedDescriptorBool(table.columns[i].second, "nullable", true);
+    column.generated =
+        EncodedDescriptorBool(table.columns[i].second, "generated", false);
+    column.identity_column =
+        EncodedDescriptorBool(table.columns[i].second, "identity", false);
+    column.charset_uuid =
+        EncodedDescriptorField(table.columns[i].second, "charset_uuid");
+    column.collation_uuid =
+        EncodedDescriptorField(table.columns[i].second, "collation_uuid");
+    column.character_length =
+        EncodedDescriptorU32(table.columns[i].second, "character_length");
     descriptor.columns.push_back(std::move(column));
   }
   for (const auto& crud_index : indexes) {

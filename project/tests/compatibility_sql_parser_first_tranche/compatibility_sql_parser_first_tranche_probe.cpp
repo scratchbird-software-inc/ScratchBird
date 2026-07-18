@@ -346,7 +346,18 @@ bool FirebirdChecks() {
               "Firebird diagnostic surface count mismatch")) return false;
   if (!Expect(Contains(FirebirdPackageIdentityJson(), "\"dialect\":\"firebird\""),
               "Firebird package identity missing dialect")) return false;
-  if (!ExpectCommonEnvelope(ParseStatement("select 1"), "firebird",
+  const auto bare_singleton = ParseStatement("select 1");
+  if (!ExpectDiagnostic(bare_singleton.message_vector_json,
+                        "FIREBIRD.PARSE.INVALID_INPUT",
+                        "Firebird bare singleton select")) {
+    return false;
+  }
+  if (!ExpectCommonEnvelope(ParseStatement("select 1 from rdb$database"),
+                            "firebird",
+                            "firebird.catalog_overlay.rdb_core")) {
+    return false;
+  }
+  if (!ExpectCommonEnvelope(ParseStatement("select 1 from customer"), "firebird",
                             "firebird.query.select")) return false;
   const auto evidence = ParseStatement(
       "select count(*) from enterprise_secret_rdb_relation where id = :id");

@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_mysql_parser_pipeline STATIC
   mysql_dialect.cpp
+  mysql_worker_session.cpp
 )
 
 target_compile_features(sbl_mysql_parser_pipeline PUBLIC cxx_std_23)

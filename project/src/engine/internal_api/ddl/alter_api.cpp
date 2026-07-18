@@ -20,7 +20,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
+#include <map>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <system_error>
 
@@ -28,6 +31,46 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
+
+std::string LowerAscii(std::string_view value) {
+  std::string out;
+  out.reserve(value.size());
+  for (const char ch : value) {
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+  }
+  return out;
+}
+
+bool SameUnquotedIdentifier(std::string_view left, std::string_view right) {
+  return left == right || LowerAscii(left) == LowerAscii(right);
+}
+
+std::string VisibleColumnNamesForDiagnostic(
+    const std::vector<std::pair<std::string, std::string>>& columns) {
+  std::string out;
+  std::size_t emitted = 0;
+  for (const auto& [name, descriptor] : columns) {
+    (void)descriptor;
+    if (emitted >= 16) {
+      out.append(",...");
+      break;
+    }
+    if (!out.empty()) out.push_back(',');
+    out.append(name);
+    ++emitted;
+  }
+  return out.empty() ? std::string("<none>") : out;
+}
+
+EngineApiDiagnostic ColumnNotVisibleDiagnostic(
+    const std::string& operation_id,
+    const std::string& column_name,
+    const std::vector<std::pair<std::string, std::string>>& visible_columns) {
+  return MakeInvalidRequestDiagnostic(
+      operation_id,
+      "column_not_visible:requested=" + column_name +
+          ";visible=" + VisibleColumnNamesForDiagnostic(visible_columns));
+}
 
 std::string StripAllConstraintPrefix(const std::string& envelope) {
   return StartsWith(envelope, "all:") ? envelope.substr(4) : envelope;
@@ -136,11 +179,120 @@ std::string UpsertDescriptorField(std::string descriptor,
   return out;
 }
 
+std::map<std::string, std::string> ConstraintEnvelopeFields(
+    std::string_view envelope) {
+  std::map<std::string, std::string> fields;
+  std::size_t start = 0;
+  while (start <= envelope.size()) {
+    const auto end = envelope.find(';', start);
+    const std::string part = std::string(envelope.substr(
+        start,
+        end == std::string_view::npos ? envelope.size() - start
+                                      : end - start));
+    const auto equals = part.find('=');
+    if (equals != std::string::npos && equals != 0) {
+      fields[LowerAscii(part.substr(0, equals))] = part.substr(equals + 1);
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return fields;
+}
+
+bool ConstraintEnvelopeHasExactlyFields(
+    std::string_view envelope,
+    const std::set<std::string>& allowed_fields) {
+  std::set<std::string> seen;
+  std::size_t start = 0;
+  while (start <= envelope.size()) {
+    const auto end = envelope.find(';', start);
+    const std::string part = std::string(envelope.substr(
+        start,
+        end == std::string_view::npos ? envelope.size() - start
+                                      : end - start));
+    const auto equals = part.find('=');
+    if (equals == std::string::npos || equals == 0) return false;
+    const std::string key = LowerAscii(part.substr(0, equals));
+    if (allowed_fields.find(key) == allowed_fields.end() ||
+        !seen.insert(key).second) {
+      return false;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return seen == allowed_fields;
+}
+
+std::string ConstraintField(
+    const std::map<std::string, std::string>& fields,
+    std::string_view key) {
+  const auto found = fields.find(std::string(key));
+  return found == fields.end() ? std::string{} : found->second;
+}
+
+std::vector<std::string> AlterIndexKeyColumns(const CrudIndexRecord& index) {
+  std::vector<std::string> columns;
+  for (const auto& envelope : index.key_envelopes) {
+    if (envelope.empty() || envelope == "unique" ||
+        envelope == "primary_key" || StartsWith(envelope, "include:") ||
+        StartsWith(envelope, "where_eq:") ||
+        StartsWith(envelope, "where_mod_eq:") || envelope == "where_true") {
+      continue;
+    }
+    if (StartsWith(envelope, "identity:")) {
+      columns.push_back(envelope.substr(9));
+    } else if (StartsWith(envelope, "desc:")) {
+      columns.push_back(envelope.substr(5));
+    } else if (StartsWith(envelope, "cast:")) {
+      const std::string rest = envelope.substr(5);
+      const auto separator = rest.find(':');
+      columns.push_back(separator == std::string::npos
+                            ? rest
+                            : rest.substr(0, separator));
+    } else {
+      columns.push_back(envelope);
+    }
+  }
+  if (columns.empty() && !index.column_name.empty()) {
+    columns.push_back(index.column_name);
+  }
+  return columns;
+}
+
+const MgaRelationColumnStorageDescriptor* RelationColumnByUuid(
+    const MgaRelationStorageDescriptor& descriptor,
+    std::string_view column_uuid) {
+  const MgaRelationColumnStorageDescriptor* matched = nullptr;
+  for (const auto& column : descriptor.columns) {
+    if (column.column_uuid.canonical != column_uuid) continue;
+    if (matched != nullptr) return nullptr;
+    matched = &column;
+  }
+  return matched;
+}
+
+bool RelationDescriptorContainsIndex(
+    const MgaRelationStorageDescriptor& descriptor,
+    std::string_view index_uuid) {
+  return std::any_of(descriptor.indexes.begin(), descriptor.indexes.end(),
+                     [&](const auto& index) {
+                       return index.index_uuid.canonical == index_uuid;
+                     });
+}
+
+bool DescriptorValueSafe(std::string_view value) {
+  return value.find(';') == std::string_view::npos &&
+         value.find('=') == std::string_view::npos &&
+         value.find('\0') == std::string_view::npos;
+}
+
 bool HasColumnValue(const std::vector<std::pair<std::string, std::string>>& values,
                     const std::string& column_name) {
   return std::any_of(values.begin(),
                      values.end(),
-                     [&](const auto& value) { return value.first == column_name; });
+                     [&](const auto& value) {
+                       return SameUnquotedIdentifier(value.first, column_name);
+                     });
 }
 
 void RemoveColumnValue(std::vector<std::pair<std::string, std::string>>* values,
@@ -149,7 +301,7 @@ void RemoveColumnValue(std::vector<std::pair<std::string, std::string>>* values,
   values->erase(std::remove_if(values->begin(),
                                values->end(),
                                [&](const auto& value) {
-                                 return value.first == column_name;
+                                 return SameUnquotedIdentifier(value.first, column_name);
                                }),
                 values->end());
 }
@@ -160,7 +312,7 @@ bool RenameColumnValue(std::vector<std::pair<std::string, std::string>>* values,
   if (values == nullptr) return false;
   bool renamed = false;
   for (auto& value : *values) {
-    if (value.first == column_name) {
+    if (SameUnquotedIdentifier(value.first, column_name)) {
       value.first = new_column_name;
       renamed = true;
       break;
@@ -781,7 +933,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
               MakeInvalidRequestDiagnostic("ddl.alter_object", "column_name_required"));
         }
         for (const auto& column : updated.columns) {
-          if (column.first == column_name) {
+          if (SameUnquotedIdentifier(column.first, column_name)) {
             return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
                 request.context,
                 "ddl.alter_object",
@@ -792,23 +944,44 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
         if (descriptor.empty()) descriptor = "type=text;nullable=true";
         updated.columns.push_back({column_name, descriptor});
       } else if (action == "drop_column") {
+        if (column_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_name_required"));
+        }
         const auto before = updated.columns.size();
         updated.columns.erase(std::remove_if(updated.columns.begin(),
                                              updated.columns.end(),
                                              [&](const auto& column) {
-                                               return column.first == column_name;
+                                               return SameUnquotedIdentifier(column.first,
+                                                                            column_name);
                                              }),
                               updated.columns.end());
         if (updated.columns.size() == before) {
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
               request.context,
               "ddl.alter_object",
-              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+              ColumnNotVisibleDiagnostic("ddl.alter_object",
+                                         column_name,
+                                         visible->columns));
         }
       } else if (action == "rename_column") {
+        if (column_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_name_required"));
+        }
+        if (new_column_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "new_column_name_required"));
+        }
         bool renamed = false;
         for (auto& column : updated.columns) {
-          if (column.first == new_column_name) {
+          if (SameUnquotedIdentifier(column.first, new_column_name)) {
             return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
                 request.context,
                 "ddl.alter_object",
@@ -816,7 +989,7 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           }
         }
         for (auto& column : updated.columns) {
-          if (column.first == column_name) {
+          if (SameUnquotedIdentifier(column.first, column_name)) {
             column.first = new_column_name;
             renamed = true;
             break;
@@ -826,13 +999,21 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
               request.context,
               "ddl.alter_object",
-              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+              ColumnNotVisibleDiagnostic("ddl.alter_object",
+                                         column_name,
+                                         visible->columns));
         }
       } else if (action == "alter_column_default") {
+        if (column_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_name_required"));
+        }
         bool altered = false;
         const std::string default_expression = SecurityOptionValue(request, "default_expression:");
         for (auto& column : updated.columns) {
-          if (column.first == column_name) {
+          if (SameUnquotedIdentifier(column.first, column_name)) {
             column.second = UpsertDescriptorField(column.second, "default", default_expression);
             altered = true;
             break;
@@ -842,7 +1023,9 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
           return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
               request.context,
               "ddl.alter_object",
-              MakeInvalidRequestDiagnostic("ddl.alter_object", "column_not_visible"));
+              ColumnNotVisibleDiagnostic("ddl.alter_object",
+                                         column_name,
+                                         visible->columns));
         }
       }
       std::vector<CrudRowVersionRecord> row_versions = BuildAlteredColumnRowVersions(
@@ -1007,8 +1190,425 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
   return result;
 }
 
+EngineAlterConstraintResult EngineAlterForeignKeyConstraint(
+    const EngineAlterConstraintRequest& request) {
+  constexpr const char* kOperation = "ddl.constraint.alter";
+  auto fail = [&](std::string detail) {
+    return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
+        request.context,
+        kOperation,
+        MakeInvalidRequestDiagnostic(kOperation, std::move(detail)));
+  };
+  if (request.context.local_transaction_id == 0 ||
+      request.context.transaction_uuid.canonical.empty()) {
+    return fail("exact_active_mga_transaction_required");
+  }
+  if (request.target_object.uuid.canonical.empty() ||
+      request.target_object.object_kind != "table") {
+    return fail("target_child_table_uuid_required");
+  }
+  if (request.constraints.size() != 1) {
+    return fail("one_foreign_key_definition_required");
+  }
+  const auto& definition = request.constraints.front();
+  if (LowerAscii(definition.constraint_kind) != "foreign_key") {
+    return fail("foreign_key_definition_required");
+  }
+  if (!definition.requested_constraint_uuid.canonical.empty()) {
+    return fail("constraint_identity_must_be_engine_allocated");
+  }
+  const auto fields = ConstraintEnvelopeFields(
+      definition.canonical_constraint_envelope);
+  const std::set<std::string> allowed_input_fields = {
+      "descriptor_version",
+      "child_table_uuid",
+      "child_column_uuid",
+      "child_relation_descriptor_uuid",
+      "child_relation_descriptor_generation",
+      "parent_table_uuid",
+      "parent_column_uuid",
+      "parent_relation_descriptor_uuid",
+      "parent_relation_descriptor_generation",
+      "referenced_table_uuid",
+      "referenced_column_uuid",
+      "referenced_column",
+      "child_column",
+      "constraint_name_quoted",
+      "on_update",
+      "on_delete",
+      "referential_action",
+      "enforcement_timing",
+      "deferrable"};
+  if (!ConstraintEnvelopeHasExactlyFields(
+          definition.canonical_constraint_envelope,
+          allowed_input_fields) ||
+      fields.size() != allowed_input_fields.size()) {
+    return fail("neutral_foreign_key_input_shape_invalid_or_reserved");
+  }
+  if (ConstraintField(fields, "descriptor_version") !=
+      "neutral_fk_single_column_v1") {
+    return fail("neutral_single_column_foreign_key_descriptor_required");
+  }
+  const std::string child_table_uuid =
+      ConstraintField(fields, "child_table_uuid");
+  const std::string child_column_uuid =
+      ConstraintField(fields, "child_column_uuid");
+  const std::string parent_table_uuid =
+      ConstraintField(fields, "parent_table_uuid");
+  const std::string parent_column_uuid =
+      ConstraintField(fields, "parent_column_uuid");
+  if (child_table_uuid != request.target_object.uuid.canonical ||
+      ConstraintField(fields, "referenced_table_uuid") != parent_table_uuid ||
+      ConstraintField(fields, "referenced_column_uuid") != parent_column_uuid ||
+      child_column_uuid.empty() || parent_table_uuid.empty() ||
+      parent_column_uuid.empty()) {
+    return fail("exact_relation_and_column_uuid_bindings_required");
+  }
+  const std::string timing =
+      LowerAscii(ConstraintField(fields, "enforcement_timing"));
+  const std::string deferrable =
+      LowerAscii(ConstraintField(fields, "deferrable"));
+  const std::string on_update =
+      LowerAscii(ConstraintField(fields, "on_update"));
+  const std::string on_delete =
+      LowerAscii(ConstraintField(fields, "on_delete"));
+  const std::string action =
+      LowerAscii(ConstraintField(fields, "referential_action"));
+  if (timing != "immediate" || deferrable != "false" ||
+      on_update != "no_action" || on_delete != "no_action" ||
+      action != "no_action") {
+    return fail("deferred_or_referential_action_unsupported");
+  }
+
+  const auto loaded = LoadMgaRelationStoreState(request.context);
+  if (!loaded.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
+        request.context, kOperation, loaded.diagnostic);
+  }
+  const CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto child = FindVisibleCrudTable(
+      state, child_table_uuid, request.context.local_transaction_id);
+  const auto parent = FindVisibleCrudTable(
+      state, parent_table_uuid, request.context.local_transaction_id);
+  if (!child || !parent) {
+    return fail("child_or_parent_relation_not_visible");
+  }
+  const auto child_storage = LoadMgaRelationStorageDescriptor(
+      request.context, child_table_uuid);
+  const auto parent_storage = LoadMgaRelationStorageDescriptor(
+      request.context, parent_table_uuid);
+  if (!child_storage.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
+        request.context, kOperation, child_storage.diagnostic);
+  }
+  if (!parent_storage.ok) {
+    return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
+        request.context, kOperation, parent_storage.diagnostic);
+  }
+  const auto expected_child_descriptor_generation = ParseU64(
+      ConstraintField(fields, "child_relation_descriptor_generation"));
+  const auto expected_parent_descriptor_generation = ParseU64(
+      ConstraintField(fields, "parent_relation_descriptor_generation"));
+  if (ConstraintField(fields, "child_relation_descriptor_uuid") !=
+          child_storage.descriptor.descriptor_uuid.canonical ||
+      ConstraintField(fields, "parent_relation_descriptor_uuid") !=
+          parent_storage.descriptor.descriptor_uuid.canonical ||
+      !expected_child_descriptor_generation ||
+      !expected_parent_descriptor_generation ||
+      *expected_child_descriptor_generation !=
+          child_storage.descriptor.descriptor_generation ||
+      *expected_parent_descriptor_generation !=
+          parent_storage.descriptor.descriptor_generation) {
+    return fail("relation_descriptor_binding_changed_before_seal");
+  }
+  const auto* child_column = RelationColumnByUuid(
+      child_storage.descriptor, child_column_uuid);
+  const auto* parent_column = RelationColumnByUuid(
+      parent_storage.descriptor, parent_column_uuid);
+  if (child_column == nullptr || parent_column == nullptr ||
+      child_column->canonical_name_key.empty() ||
+      parent_column->canonical_name_key.empty()) {
+    return fail("bound_column_uuid_not_in_relation_descriptor");
+  }
+  if (LowerAscii(child_column->value_descriptor.canonical_type_name) !=
+      LowerAscii(parent_column->value_descriptor.canonical_type_name)) {
+    return fail("foreign_key_column_type_mismatch");
+  }
+  const std::string presented_child_column =
+      ConstraintField(fields, "child_column");
+  const std::string presented_parent_column =
+      ConstraintField(fields, "referenced_column");
+  if (presented_child_column.empty() || presented_parent_column.empty() ||
+      !SameUnquotedIdentifier(presented_child_column,
+                              child_column->canonical_name_key) ||
+      !SameUnquotedIdentifier(presented_parent_column,
+                              parent_column->canonical_name_key)) {
+    return fail("presented_column_name_does_not_match_bound_uuid");
+  }
+
+  const auto parent_metadata_column = std::find_if(
+      parent->columns.begin(), parent->columns.end(), [&](const auto& column) {
+        return SameUnquotedIdentifier(column.first,
+                                      parent_column->canonical_name_key);
+      });
+  if (parent_metadata_column == parent->columns.end()) {
+    return fail("parent_column_not_visible_in_relation_metadata");
+  }
+  const auto parent_key_fields =
+      ConstraintEnvelopeFields(parent_metadata_column->second);
+  const std::string parent_candidate_key_constraint_uuid = ConstraintField(
+      parent_key_fields, "candidate_key_constraint_uuid");
+  const std::string parent_candidate_key_descriptor_uuid = ConstraintField(
+      parent_key_fields, "candidate_key_descriptor_uuid");
+  const std::string expected_support_uuid = ConstraintField(
+      parent_key_fields, "support_uuid");
+  const std::string candidate_key_class = LowerAscii(
+      ConstraintField(parent_key_fields, "candidate_key_class"));
+  if (parent_candidate_key_constraint_uuid.empty() ||
+      parent_candidate_key_descriptor_uuid.empty() ||
+      expected_support_uuid.empty() ||
+      (candidate_key_class != "primary_key" &&
+       candidate_key_class != "unique")) {
+    return fail("authoritative_parent_candidate_key_descriptor_required");
+  }
+
+  std::vector<CrudIndexRecord> support_candidates;
+  for (const auto& index : VisibleCrudIndexesForTable(
+           state, parent_table_uuid, request.context.local_transaction_id)) {
+    const auto key_columns = AlterIndexKeyColumns(index);
+    if (index.index_uuid != expected_support_uuid || !index.unique ||
+        key_columns.size() != 1 ||
+        !SameUnquotedIdentifier(key_columns.front(),
+                                parent_column->canonical_name_key) ||
+        !RelationDescriptorContainsIndex(parent_storage.descriptor,
+                                         index.index_uuid)) {
+      continue;
+    }
+    support_candidates.push_back(index);
+  }
+  if (support_candidates.size() != 1) {
+    return fail("referenced_candidate_key_support_not_visible");
+  }
+  const CrudIndexRecord& support = support_candidates.front();
+  const std::string support_family = support.family.empty()
+                                         ? CrudIndexFamilyForProfile(
+                                               support.profile)
+                                         : support.family;
+  if (support.index_uuid.empty() || support_family.empty()) {
+    return fail("exact_support_index_identity_required");
+  }
+
+  CrudTableRecord updated = *child;
+  updated.creator_tx = request.context.local_transaction_id;
+  auto mutable_column = std::find_if(
+      updated.columns.begin(), updated.columns.end(), [&](const auto& column) {
+        return SameUnquotedIdentifier(column.first,
+                                      child_column->canonical_name_key);
+      });
+  if (mutable_column == updated.columns.end()) {
+    return fail("child_column_not_visible_in_relation_metadata");
+  }
+  for (const auto& [existing_column_name, existing_descriptor] :
+       updated.columns) {
+    (void)existing_column_name;
+    const auto sealed_fields = ConstraintEnvelopeFields(existing_descriptor);
+    if (ConstraintField(sealed_fields,
+                        "constraint_mutation_batch_state") == "sealed") {
+      return fail("bounded_d1_allows_one_sealed_foreign_key_per_table");
+    }
+  }
+  const auto existing_fields = ConstraintEnvelopeFields(mutable_column->second);
+  if (!ConstraintField(existing_fields, "referenced_table_uuid").empty() ||
+      !ConstraintField(existing_fields, "foreign_key").empty()) {
+    return fail("child_column_foreign_key_already_present");
+  }
+
+  std::string constraint_name = DefaultLocalizedName(
+      definition.names,
+      "FK_" + child->default_name + "_" + child_column->canonical_name_key);
+  if (!DescriptorValueSafe(constraint_name) ||
+      !DescriptorValueSafe(child->default_name) ||
+      !DescriptorValueSafe(parent->default_name) ||
+      !DescriptorValueSafe(child_column->canonical_name_key) ||
+      !DescriptorValueSafe(parent_column->canonical_name_key)) {
+    return fail("descriptor_unsafe_presentation_name");
+  }
+  const std::string constraint_name_quoted_field =
+      LowerAscii(ConstraintField(fields, "constraint_name_quoted"));
+  if (constraint_name_quoted_field != "true" &&
+      constraint_name_quoted_field != "false") {
+    return fail("constraint_name_quoted_boolean_required");
+  }
+  const bool constraint_name_quoted =
+      constraint_name_quoted_field == "true";
+  for (const auto& candidate_table : state.tables) {
+    if (!CrudCreatorVisible(state,
+                            candidate_table.creator_tx,
+                            candidate_table.event_sequence,
+                            request.context.local_transaction_id)) {
+      continue;
+    }
+    for (const auto& [candidate_column, candidate_descriptor] :
+         candidate_table.columns) {
+      (void)candidate_column;
+      const auto candidate_fields =
+          ConstraintEnvelopeFields(candidate_descriptor);
+      const std::string existing_name =
+          ConstraintField(candidate_fields, "constraint_name");
+      if (existing_name.empty()) continue;
+      const bool duplicate = constraint_name_quoted
+                                 ? existing_name == constraint_name
+                                 : SameUnquotedIdentifier(existing_name,
+                                                          constraint_name);
+      if (duplicate) return fail("constraint_name_already_visible");
+    }
+  }
+  const std::string constraint_uuid = GenerateCrudEngineUuid("object");
+  const std::string key_descriptor_uuid =
+      parent_candidate_key_descriptor_uuid;
+  const std::string mutation_batch_uuid = GenerateCrudEngineUuid("row");
+  std::string final_envelope = definition.canonical_constraint_envelope;
+  for (const auto& [key, value] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"constraint_uuid", constraint_uuid},
+           {"constraint_name", constraint_name},
+           {"child_column", child_column->canonical_name_key},
+           {"referenced_column", parent_column->canonical_name_key},
+           {"constraint_name_quoted",
+            constraint_name_quoted ? "true" : "false"},
+           {"owner_object_uuid", child_table_uuid},
+           {"key_descriptor_uuid", key_descriptor_uuid},
+           {"referenced_candidate_key_constraint_uuid",
+            parent_candidate_key_constraint_uuid},
+           {"support_uuid", support.index_uuid},
+           {"support_family", support_family},
+           {"constraint_mutation_batch_uuid", mutation_batch_uuid},
+           {"constraint_mutation_batch_state", "sealed"}}) {
+    final_envelope = UpsertDescriptorField(std::move(final_envelope), key, value);
+  }
+
+  std::string descriptor = mutable_column->second;
+  for (const auto& [key, value] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"foreign_key", "true"},
+           {"constraint_uuid", constraint_uuid},
+           {"constraint_name", constraint_name},
+           {"constraint_class", "foreign_key"},
+           {"owner_object_uuid", child_table_uuid},
+           {"owner_object_name", child->default_name},
+           {"child_column_uuid", child_column_uuid},
+           {"referenced_table_uuid", parent_table_uuid},
+           {"referenced_table_name", parent->default_name},
+           {"referenced_column_uuid", parent_column_uuid},
+           {"referenced_column", parent_column->canonical_name_key},
+           {"key_descriptor_uuid", key_descriptor_uuid},
+           {"referenced_key_descriptor_uuid", key_descriptor_uuid},
+           {"referenced_candidate_key_constraint_uuid",
+            parent_candidate_key_constraint_uuid},
+           {"support_uuid", support.index_uuid},
+           {"referenced_support_uuid", support.index_uuid},
+           {"support_family", support_family},
+           {"on_update", "no_action"},
+           {"on_delete", "no_action"},
+           {"referential_action", "no_action"},
+           {"enforcement_timing", "immediate"},
+           {"deferrable", "false"},
+           {"constraint_mutation_batch_uuid", mutation_batch_uuid},
+           {"constraint_mutation_batch_state", "sealed"}}) {
+    descriptor = UpsertDescriptorField(std::move(descriptor), key, value);
+  }
+  mutable_column->second = std::move(descriptor);
+
+  MgaConstraintMutationBatch batch;
+  batch.batch_uuid = mutation_batch_uuid;
+  batch.mutation_count = 1;
+  batch.database_uuid = request.context.database_uuid.canonical;
+  batch.constraint_uuid = constraint_uuid;
+  batch.owner_table_uuid = child_table_uuid;
+  batch.child_schema_uuid =
+      child_storage.descriptor.schema_uuid.canonical;
+  batch.child_relation_descriptor_uuid =
+      child_storage.descriptor.descriptor_uuid.canonical;
+  batch.child_relation_descriptor_generation =
+      child_storage.descriptor.descriptor_generation;
+  batch.child_column_uuid = child_column_uuid;
+  batch.parent_table_uuid = parent_table_uuid;
+  batch.parent_schema_uuid =
+      parent_storage.descriptor.schema_uuid.canonical;
+  batch.parent_relation_descriptor_uuid =
+      parent_storage.descriptor.descriptor_uuid.canonical;
+  batch.parent_relation_descriptor_generation =
+      parent_storage.descriptor.descriptor_generation;
+  batch.parent_column_uuid = parent_column_uuid;
+  batch.parent_candidate_key_constraint_uuid =
+      parent_candidate_key_constraint_uuid;
+  batch.key_descriptor_uuid = key_descriptor_uuid;
+  batch.support_uuid = support.index_uuid;
+  batch.support_family = support_family;
+  batch.support_policy = "required_exact_unique_index";
+  batch.match_policy = "simple";
+  batch.on_update_action = "no_action";
+  batch.on_delete_action = "no_action";
+  batch.enforcement_timing = "immediate";
+  batch.constraint_metadata_generation = 1;
+  batch.base_table_event_sequence = child->event_sequence;
+  batch.parent_base_table_event_sequence = parent->event_sequence;
+  batch.constraint_name = constraint_name;
+  batch.constraint_kind = "foreign_key";
+  batch.canonical_constraint_envelope = final_envelope;
+  batch.updated_table = std::move(updated);
+  const auto appended = AppendMgaConstraintMutationBatch(request.context, batch);
+  if (appended.error) {
+    return MakeCrudDiagnosticResult<EngineAlterConstraintResult>(
+        request.context, kOperation, appended);
+  }
+
+  auto result = MakeCrudSuccessResult<EngineAlterConstraintResult>(
+      request.context, kOperation);
+  result.primary_object.uuid.canonical = constraint_uuid;
+  result.primary_object.object_kind = "constraint";
+  result.catalog_row_uuid.canonical = mutation_batch_uuid;
+  result.bound_object_identity.object_uuid.canonical = constraint_uuid;
+  result.bound_object_identity.resolved_object_type = "constraint";
+  result.bound_object_identity.parent_object_uuid.canonical = child_table_uuid;
+  result.bound_object_identity.catalog_generation_id =
+      request.context.catalog_generation_id;
+  result.bound_object_identity.security_epoch = request.context.security_epoch;
+  result.bound_object_identity.resource_epoch = request.context.resource_epoch;
+  result.metadata_cache_epoch = request.context.catalog_generation_id;
+  AddApiBehaviorEvidence(&result, "constraint_mutation_batch",
+                         mutation_batch_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_mutation_batch_state", "sealed");
+  AddApiBehaviorEvidence(&result, "constraint_uuid", constraint_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_owner_uuid", child_table_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_child_column_uuid",
+                         child_column_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_parent_uuid",
+                         parent_table_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_parent_column_uuid",
+                         parent_column_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_key_descriptor_uuid",
+                         key_descriptor_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_support_uuid",
+                         support.index_uuid);
+  AddApiBehaviorEvidence(&result, "constraint_support_family",
+                         support_family);
+  AddDdlPublicationResult(&result,
+                          kOperation,
+                          "constraint",
+                          constraint_uuid,
+                          mutation_batch_uuid,
+                          "sealed_constraint_mutation_batch");
+  return result;
+}
+
 EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintRequest& request) {
   constexpr const char* kOperation = "ddl.constraint.alter";
+  if (request.constraints.size() == 1 &&
+      LowerAscii(request.constraints.front().constraint_kind) ==
+          "foreign_key") {
+    return EngineAlterForeignKeyConstraint(request);
+  }
   EngineCatalogApplyConstraintsRequest catalog_request;
   static_cast<EngineApiRequest&>(catalog_request) = request;
   catalog_request.operation_id = kOperation;

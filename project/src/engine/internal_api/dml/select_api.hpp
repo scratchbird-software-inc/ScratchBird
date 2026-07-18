@@ -9,6 +9,8 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/relation_projection_view.hpp"
+#include "dml/global_aggregate_projection.hpp"
 
 namespace scratchbird::engine::internal_api {
 
@@ -16,6 +18,9 @@ namespace scratchbird::engine::internal_api {
 struct EngineSelectRowsRequest : EngineApiRequest {
   EngineObjectReference source_object;
   EngineProjectionEnvelope select_projection;
+  EngineRelationProjectionViewSelectEnvelope relation_projection_view;
+  EngineRelationProjectionEnvelope relation_projection;
+  EngineGlobalAggregateProjectionEnvelope global_aggregate_projection;
   EnginePredicateEnvelope select_predicate;
   EngineOrderingEnvelope select_ordering;
   EngineApiU64 limit = 0;

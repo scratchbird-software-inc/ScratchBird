@@ -57,10 +57,26 @@ struct LoweringResult {
   bool ok() const;
 };
 
+// Parser-family code owns the mapping from its bound AST to a canonical SBLR
+// route.  The shared lowerer accepts only the selected route metadata; it must
+// not consult another parser's grammar, binding tables, or operation catalog.
+struct SblrRouteDescriptor {
+  std::string canonical_operation_family;
+  std::string route_operation_family;
+  std::string operation_id;
+  std::string sblr_opcode;
+  std::string result_shape;
+  std::string diagnostic_shape;
+  std::string payload_class;
+  bool requires_public_abi_dispatch = true;
+  bool contains_raw_sql_text = false;
+};
+
 LoweringResult LowerBoundShowIdentity(
     const scratchbird::parser::bound_ast::BoundShowIdentity& bound);
 LoweringResult LowerBoundStatementFamilyEvidence(
-    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound);
+    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound,
+    const SblrRouteDescriptor& route);
 
 std::string SerializeToJson(const LogicalEnvelope& envelope);
 std::string SerializeDiagnosticToJson(const LoweringDiagnostic& diagnostic);

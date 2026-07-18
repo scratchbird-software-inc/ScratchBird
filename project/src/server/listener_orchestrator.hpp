@@ -31,13 +31,19 @@ enum class ServerListenerState {
 
 struct ServerListenerProfileRuntime {
   std::string listener_uuid;
-  std::string profile_name = "native";
+  std::string profile_name;
+  std::string protocol_family;
+  std::string profile_id;
   std::string state = "disabled";
-  std::string bind_host = "127.0.0.1";
-  std::uint64_t port = 3092;
+  std::string bind_address;
+  std::uint64_t port = 0;
   bool enabled = false;
   bool reloadable = true;
-  std::string parser_package_ref = "SBParser";
+  std::string parser_package_ref;
+  std::string parser_package_uuid;
+  std::string dialect_profile_uuid;
+  std::string bundle_contract_id;
+  std::uint32_t parser_api_major = 0;
   std::string engine_endpoint;
   std::string database_selector;
   std::string listener_executable_path;
@@ -51,6 +57,9 @@ struct ServerListenerProfileRuntime {
   std::string management_socket_path;
   std::int64_t pid = -1;
   std::uint64_t ready_timeout_ms = 5000;
+  std::uint64_t lifecycle_generation = 1;
+  std::uint32_t warm_pool_min = 0;
+  std::uint32_t warm_pool_max = 0;
   std::string last_transition = "bootstrap";
   std::string diagnostic_code;
   std::string last_management_response;
@@ -68,7 +77,6 @@ struct ServerListenerOperationResult {
 
 struct ServerListenerOrchestrator {
   std::uint64_t generation = 1;
-  std::string engine_endpoint;
   std::vector<ServerListenerProfileRuntime> profiles;
   std::vector<ServerDiagnostic> diagnostics;
 };

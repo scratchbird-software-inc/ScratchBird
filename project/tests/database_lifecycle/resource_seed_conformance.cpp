@@ -8,19 +8,25 @@
 
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "database_lifecycle.hpp"
+#include "ddl/create_api.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "page_header.hpp"
 #include "page_manager.hpp"
 #include "resource_seed_pack.hpp"
+#include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
@@ -33,6 +39,7 @@ namespace {
 namespace catalog = scratchbird::core::catalog;
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
+namespace engine = scratchbird::engine::internal_api;
 namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace resources = scratchbird::core::resources;
@@ -86,8 +93,11 @@ std::uint64_t UniqueMillis() {
 }
 
 std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         ("sb_dblc_013aa_resource_seed_" + std::to_string(UniqueMillis()) + ".sbdb");
+  const auto directory = std::filesystem::temp_directory_path() /
+                         ("sb_dblc_013aa_resource_seed_" +
+                          std::to_string(UniqueMillis()));
+  std::filesystem::create_directories(directory);
+  return directory / "resource_seed.sbdb";
 }
 
 std::map<std::string, std::string> ParsePayloadFields(const std::string& payload) {
@@ -196,7 +206,12 @@ resources::ResourceSeedCatalogImage LoadSeedPack() {
   config.allow_minimal_bootstrap = false;
   const auto loaded = resources::LoadResourceSeedPack(config);
   if (!loaded.ok()) {
-    std::cerr << loaded.diagnostic.diagnostic_code << '\n';
+    std::cerr << loaded.diagnostic.diagnostic_code << ':'
+              << loaded.diagnostic.message_key;
+    for (const auto& argument : loaded.diagnostic.arguments) {
+      std::cerr << ':' << argument.key << '=' << argument.value;
+    }
+    std::cerr << '\n';
   }
   Require(loaded.ok(), "resource seed pack did not load");
   return loaded.image;
@@ -282,6 +297,570 @@ void RequireIndexDependencyEvidence(const resources::ResourceSeedCatalogImage& i
   Require(proven.ok(), "compatible index dependency proof was not accepted");
 }
 
+void RequireGbkDescriptorModel(const resources::ResourceSeedCatalogImage& image,
+                               bool durable_identity_required) {
+  const auto* gbk = resources::FindResourceSeedCharset(image, "CP936");
+  Require(gbk != nullptr, "CP936 did not resolve to the GBK charset descriptor");
+  Require(gbk->canonical_name == "GBK", "CP936 resolved to the wrong charset");
+  Require(gbk->min_bytes == 1 && gbk->max_bytes == 2,
+          "GBK width metadata is incorrect");
+  Require(gbk->family_epoch == image.charset_epoch &&
+              gbk->family_version == image.charset_version,
+          "GBK charset family authority is incomplete");
+  Require(gbk->default_collation_name == "GBK",
+          "GBK default collation was not derived by the neutral resource loader");
+
+  const auto* gbk_collation = resources::FindResourceSeedCollation(image, "gbk");
+  const auto* unicode_collation =
+      resources::FindResourceSeedCollation(image, "GBK_UNICODE");
+  Require(gbk_collation != nullptr && unicode_collation != nullptr,
+          "GBK collation descriptors are missing");
+  Require(gbk_collation->charset_name == "GBK" &&
+              unicode_collation->charset_name == "GBK",
+          "GBK collation parent names are incorrect");
+  Require(gbk_collation->default_for_charset &&
+              !unicode_collation->default_for_charset,
+          "GBK default collation authority is ambiguous");
+  Require(gbk_collation->default_authority ==
+              "seed_pack.default_collations.v1",
+          "GBK default collation lacks explicit seed-pack authority");
+  Require(gbk_collation->family_epoch == image.collation_epoch &&
+              gbk_collation->family_version == image.collation_version,
+          "GBK collation family authority is incomplete");
+
+  if (durable_identity_required) {
+    Require(!gbk->resource_uuid.empty() && !gbk_collation->resource_uuid.empty() &&
+                !unicode_collation->resource_uuid.empty(),
+            "database-scoped GBK resource UUIDs are missing");
+    Require(gbk_collation->charset_uuid == gbk->resource_uuid &&
+                unicode_collation->charset_uuid == gbk->resource_uuid,
+            "GBK collation parent UUIDs do not match the charset UUID");
+    Require(gbk->default_collation_uuid == gbk_collation->resource_uuid,
+            "GBK default collation UUID was not retained");
+  }
+}
+
+void RequirePersistedGbkRecords(const std::vector<DecodedRecord>& records,
+                                const resources::ResourceSeedCatalogImage& image) {
+  const auto* gbk = resources::FindResourceSeedCharset(image, "GBK");
+  const auto* collation = resources::FindResourceSeedCollation(image, "GBK");
+  Require(gbk != nullptr && collation != nullptr,
+          "GBK descriptors are unavailable for typed-row verification");
+  bool saw_charset = false;
+  bool saw_collation = false;
+  for (const auto& record : records) {
+    const auto canonical = record.fields.find("canonical_name");
+    if (canonical == record.fields.end() || canonical->second != "GBK") continue;
+    if (record.record.header.kind == catalog::CatalogRecordKind::charset) {
+      saw_charset = uuid::UuidToString(record.record.header.object_uuid.value) ==
+                        gbk->resource_uuid &&
+                    record.fields.at("min_bytes") == "1" &&
+                    record.fields.at("max_bytes") == "2" &&
+                    record.fields.at("default_collation_uuid") ==
+                        gbk->default_collation_uuid;
+    } else if (record.record.header.kind == catalog::CatalogRecordKind::collation) {
+      saw_collation =
+          uuid::UuidToString(record.record.header.object_uuid.value) ==
+              collation->resource_uuid &&
+          uuid::UuidToString(record.record.header.parent_uuid.value) ==
+              gbk->resource_uuid &&
+          record.fields.at("charset_uuid") == gbk->resource_uuid &&
+          record.fields.at("default_for_charset") == "1" &&
+          record.fields.at("default_authority") ==
+              "seed_pack.default_collations.v1";
+    }
+  }
+  Require(saw_charset, "typed GBK charset descriptor record is incomplete");
+  Require(saw_collation, "typed GBK collation relationship record is incomplete");
+}
+
+engine::EngineRequestContext BeginEngineTransaction(
+    const std::filesystem::path& database_path,
+    const db::DatabaseLifecycleResult& created,
+    std::uint64_t now,
+    bool read_only = false) {
+  engine::EngineRequestContext context;
+  context.trust_mode = engine::EngineTrustMode::server_isolated;
+  context.request_id = read_only
+                           ? "resource-seed-descriptor-conformance-read-only"
+                           : "resource-seed-descriptor-conformance";
+  context.database_path = database_path.string();
+  context.database_uuid.canonical =
+      uuid::UuidToString(created.state.database_uuid.value);
+  const auto principal = uuid::GenerateEngineIdentityV7(UuidKind::principal, now + 300);
+  const auto session = uuid::GenerateEngineIdentityV7(UuidKind::object, now + 301);
+  Require(principal.ok() && session.ok(), "engine context UUID generation failed");
+  context.principal_uuid.canonical = uuid::UuidToString(principal.value.value);
+  context.session_uuid.canonical = uuid::UuidToString(session.value.value);
+  context.security_context_present = true;
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
+  context.name_resolution_epoch = 1;
+
+  engine::EngineBeginTransactionRequest begin;
+  begin.context = context;
+  begin.isolation_level = "read_committed";
+  if (read_only) {
+    begin.transaction_policy_profile.encoded_profiles.push_back(
+        "transaction_read_mode:read_only");
+  }
+  const auto begun = engine::EngineBeginTransaction(begin);
+  Require(begun.ok, "engine transaction begin failed for resource resolution");
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  context.read_only_mode = begun.read_only;
+  return context;
+}
+
+void RequireEngineResourceResolution(const engine::EngineRequestContext& context) {
+  engine::EngineResolveNameRequest charset_request;
+  charset_request.context = context;
+  charset_request.sql_object_reference.expected_object_type = "charset";
+  charset_request.sql_object_reference.object_name.raw_text = "CP936";
+  const auto charset = engine::EngineResolveName(charset_request);
+  Require(charset.ok && charset.resource_descriptor.present,
+          "engine did not resolve CP936 through durable charset authority");
+  Require(charset.resource_descriptor.canonical_name == "GBK" &&
+              charset.resource_descriptor.max_bytes == 2 &&
+              !charset.resource_descriptor.default_collation_uuid.canonical.empty(),
+          "engine returned incomplete GBK charset metadata");
+
+  engine::EngineResolveNameRequest collation_request;
+  collation_request.context = context;
+  collation_request.sql_object_reference.expected_object_type = "collation";
+  collation_request.sql_object_reference.object_name.raw_text = "gbk";
+  const auto collation = engine::EngineResolveName(collation_request);
+  Require(collation.ok && collation.resource_descriptor.present,
+          "engine did not resolve GBK through durable collation authority");
+  Require(collation.resource_descriptor.default_for_parent &&
+              collation.resource_descriptor.parent_resource_uuid.canonical ==
+                  charset.primary_object.uuid.canonical,
+          "engine returned an invalid GBK collation relationship");
+
+  auto stale_context = context;
+  ++stale_context.resource_epoch;
+  charset_request.context = stale_context;
+  const auto stale = engine::EngineResolveName(charset_request);
+  Require(!stale.ok && !stale.diagnostics.empty() &&
+              stale.diagnostics.front().code == "CATALOG.RESOURCE.EPOCH_STALE",
+          "stale resource epoch was not refused by the engine");
+
+  engine::EngineRollbackTransactionRequest rollback;
+  rollback.context = context;
+  Require(engine::EngineRollbackTransaction(rollback).ok,
+          "engine transaction rollback failed after resource resolution");
+}
+
+template <typename TResult>
+void RequireEngineOk(const TResult& result, std::string_view message) {
+  if (!result.ok) {
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+    }
+  }
+  Require(result.ok, message);
+}
+
+bool HasDiagnosticDetail(const engine::EngineApiResult& result,
+                         std::string_view expected) {
+  for (const auto& diagnostic : result.diagnostics) {
+    if (diagnostic.detail.find(expected) != std::string::npos) return true;
+  }
+  return false;
+}
+
+std::string NewEngineUuidText(UuidKind kind, std::uint64_t now) {
+  const auto generated = uuid::GenerateEngineIdentityV7(kind, now);
+  Require(generated.ok(), "engine DDL UUID generation failed");
+  return uuid::UuidToString(generated.value.value);
+}
+
+engine::EngineLocalizedName EngineName(std::string value) {
+  engine::EngineLocalizedName name;
+  name.language_tag = "en";
+  name.name_class = "primary";
+  name.name = value;
+  name.raw_name_text = value;
+  name.display_name = value;
+  name.default_name = true;
+  return name;
+}
+
+engine::EngineColumnDefinition EngineColumn(std::string name,
+                                            std::string type,
+                                            std::string descriptor) {
+  engine::EngineColumnDefinition column;
+  column.names.push_back(EngineName(std::move(name)));
+  column.descriptor.descriptor_kind = "scalar";
+  column.descriptor.canonical_type_name = std::move(type);
+  column.descriptor.encoded_descriptor = std::move(descriptor);
+  column.nullable = true;
+  return column;
+}
+
+engine::EngineCreateTableResult CreateEngineTable(
+    const engine::EngineRequestContext& context,
+    const std::string& schema_uuid,
+    std::string table_name,
+    engine::EngineColumnDefinition column) {
+  engine::EngineCreateTableRequest table;
+  table.context = context;
+  table.target_schema.uuid.canonical = schema_uuid;
+  table.target_schema.object_kind = "schema";
+  table.table_names.push_back(EngineName(std::move(table_name)));
+  table.table_columns.push_back(std::move(column));
+  return engine::EngineCreateTable(table);
+}
+
+std::string ReadBinaryFile(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) return {};
+  return std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+}
+
+engine::MgaRelationStorageDescriptor LoadPersistedDescriptorWithoutWrite(
+    const engine::EngineRequestContext& context,
+    const std::string& relation_uuid,
+    const std::filesystem::path& descriptor_path) {
+  const std::string before = ReadBinaryFile(descriptor_path);
+  Require(!before.empty(),
+          "CREATE TABLE did not persist an MGA relation descriptor");
+  const auto loaded =
+      engine::LoadMgaRelationStorageDescriptor(context, relation_uuid);
+  if (!loaded.ok) {
+    std::cerr << loaded.diagnostic.code << ':' << loaded.diagnostic.detail
+              << '\n';
+  }
+  Require(loaded.ok, "persisted MGA relation descriptor load failed");
+  Require(ReadBinaryFile(descriptor_path) == before,
+          "load-only relation descriptor API changed durable bytes");
+  return loaded.descriptor;
+}
+
+void RequireResourceColumn(
+    const engine::MgaRelationStorageDescriptor& descriptor,
+    const std::string& expected_relation_uuid,
+    const std::string& expected_charset_uuid,
+    const std::string& expected_collation_uuid) {
+  Require(descriptor.relation_uuid.canonical == expected_relation_uuid,
+          "relation descriptor identifies the wrong table");
+  Require(descriptor.columns.size() == 1,
+          "relation descriptor column count is incorrect");
+  const auto& column = descriptor.columns.front();
+  Require(column.charset_uuid == expected_charset_uuid,
+          "relation descriptor lost the charset UUID");
+  Require(column.collation_uuid == expected_collation_uuid,
+          "relation descriptor lost the collation UUID");
+  Require(column.character_length == 20,
+          "relation descriptor lost canonical character length");
+  Require(column.value_descriptor.encoded_descriptor.find(
+              "character_length=20") != std::string::npos,
+          "encoded descriptor lost canonical character length");
+}
+
+void RequireLargeTextResourceColumn(
+    const engine::MgaRelationStorageDescriptor& descriptor,
+    const std::string& expected_relation_uuid,
+    const std::string& expected_charset_uuid,
+    const std::string& expected_collation_uuid) {
+  Require(descriptor.relation_uuid.canonical == expected_relation_uuid,
+          "large-text relation descriptor identifies the wrong table");
+  Require(descriptor.columns.size() == 1,
+          "large-text relation descriptor column count is incorrect");
+  const auto& column = descriptor.columns.front();
+  Require(column.charset_uuid == expected_charset_uuid,
+          "large-text relation descriptor lost the charset UUID");
+  Require(column.collation_uuid == expected_collation_uuid,
+          "large-text relation descriptor lost the collation UUID");
+  Require(column.character_length == 0,
+          "large-text relation descriptor fabricated a character length");
+  Require(column.value_descriptor.canonical_type_name == "BLOB" &&
+              column.value_descriptor.encoded_descriptor.find(
+                  "text_resource_storage=large_object") !=
+                  std::string::npos &&
+              column.value_descriptor.encoded_descriptor.find(
+                  "character_length=") == std::string::npos,
+          "large-text relation descriptor lost its canonical storage semantics");
+}
+
+void RequireGbkRelationDescriptorPersistence(
+    const std::filesystem::path& database_path,
+    const db::DatabaseLifecycleResult& created,
+    std::uint64_t now) {
+  const auto& image = created.state.resource_seed_catalog;
+  const auto* gbk = resources::FindResourceSeedCharset(image, "GBK");
+  const auto* gbk_default = resources::FindResourceSeedCollation(image, "GBK");
+  const auto* gbk_unicode =
+      resources::FindResourceSeedCollation(image, "GBK_UNICODE");
+  Require(gbk != nullptr && gbk_default != nullptr && gbk_unicode != nullptr,
+          "durable GBK descriptors are missing for relation DDL");
+  const resources::ResourceSeedCollationDescriptor* foreign_collation = nullptr;
+  for (const auto& candidate : image.collations) {
+    if (!candidate.resource_uuid.empty() &&
+        !candidate.charset_uuid.empty() &&
+        candidate.charset_uuid != gbk->resource_uuid) {
+      foreign_collation = &candidate;
+      break;
+    }
+  }
+  Require(foreign_collation != nullptr,
+          "foreign charset collation is missing for mismatch refusal");
+
+  auto context = BeginEngineTransaction(database_path, created, now + 1000);
+  engine::EngineUuid gbk_uuid;
+  gbk_uuid.canonical = gbk->resource_uuid;
+  auto missing_epoch_context = context;
+  missing_epoch_context.resource_epoch = 0;
+  const auto missing_epoch = engine::LookupEngineResourceDescriptorByUuid(
+      missing_epoch_context, gbk_uuid, "charset");
+  Require(!missing_epoch.ok &&
+              missing_epoch.diagnostic.code ==
+                  "CATALOG.RESOURCE.EPOCH_REQUIRED",
+          "UUID resource lookup accepted a zero resource epoch");
+  auto stale_epoch_context = context;
+  ++stale_epoch_context.resource_epoch;
+  const auto stale_epoch = engine::LookupEngineResourceDescriptorByUuid(
+      stale_epoch_context, gbk_uuid, "charset");
+  Require(!stale_epoch.ok &&
+              stale_epoch.diagnostic.code == "CATALOG.RESOURCE.EPOCH_STALE",
+          "UUID resource lookup accepted a stale resource epoch");
+
+  const std::string schema_uuid =
+      NewEngineUuidText(UuidKind::schema, now + 1100);
+  context.current_schema_uuid.canonical = schema_uuid;
+  engine::EngineCreateSchemaRequest schema;
+  schema.context = context;
+  schema.target_object.uuid.canonical = schema_uuid;
+  schema.target_object.object_kind = "schema";
+  schema.localized_names.push_back(EngineName("resource_relation"));
+  RequireEngineOk(engine::EngineCreateSchema(schema),
+                  "resource relation schema creation failed");
+
+  const auto explicit_table = CreateEngineTable(
+      context,
+      schema_uuid,
+      "explicit_gbk",
+      EngineColumn("f1",
+                   "VARCHAR(20)",
+                   "type=VARCHAR(20);charset_uuid=" + gbk->resource_uuid +
+                       ";collation_uuid=" + gbk_unicode->resource_uuid +
+                       ";character_length=20"));
+  RequireEngineOk(explicit_table,
+                  "explicit GBK/GBK_UNICODE table creation failed");
+  Require(!explicit_table.effective_table_descriptor.descriptor_uuid.canonical.empty(),
+          "CREATE TABLE did not publish its MGA descriptor identity");
+
+  const auto default_table = CreateEngineTable(
+      context,
+      schema_uuid,
+      "default_gbk",
+      EngineColumn("f1",
+                   "VARCHAR(20)",
+                   "type=VARCHAR(20);charset_uuid=" + gbk->resource_uuid +
+                       ";character_length=20"));
+  RequireEngineOk(default_table,
+                  "GBK default-collation table creation failed");
+
+  const auto large_text_table = CreateEngineTable(
+      context,
+      schema_uuid,
+      "large_text_gbk",
+      EngineColumn("f1",
+                   "BLOB",
+                   "type=BLOB;charset_uuid=" + gbk->resource_uuid +
+                       ";collation_uuid=" + gbk_unicode->resource_uuid +
+                       ";text_resource_storage=large_object"));
+  RequireEngineOk(large_text_table,
+                  "GBK large-text object table creation failed");
+
+  const auto missing_character_length = CreateEngineTable(
+      context,
+      schema_uuid,
+      "missing_character_length",
+      EngineColumn("f1",
+                   "VARCHAR",
+                   "type=VARCHAR;charset_uuid=" + gbk->resource_uuid));
+  Require(!missing_character_length.ok &&
+              HasDiagnosticDetail(
+                  missing_character_length,
+                  "text_resource_descriptor_requires_character_length"),
+          "bounded character string accepted resource UUIDs without a length");
+
+  const auto unmarked_large_text = CreateEngineTable(
+      context,
+      schema_uuid,
+      "unmarked_large_text",
+      EngineColumn("f1",
+                   "BLOB",
+                   "type=BLOB;charset_uuid=" + gbk->resource_uuid));
+  Require(!unmarked_large_text.ok &&
+              HasDiagnosticDetail(
+                  unmarked_large_text,
+                  "text_resource_modifier_on_incompatible_type"),
+          "BLOB resource UUIDs were accepted without large-text semantics");
+
+  const auto invalid_large_text_storage = CreateEngineTable(
+      context,
+      schema_uuid,
+      "invalid_large_text_storage",
+      EngineColumn("f1",
+                   "BLOB",
+                   "type=BLOB;charset_uuid=" + gbk->resource_uuid +
+                       ";text_resource_storage=inline"));
+  Require(!invalid_large_text_storage.ok &&
+              HasDiagnosticDetail(invalid_large_text_storage,
+                                  "text_resource_storage_invalid"),
+          "unknown text resource storage semantics were accepted");
+
+  const auto bounded_large_text = CreateEngineTable(
+      context,
+      schema_uuid,
+      "bounded_large_text",
+      EngineColumn("f1",
+                   "BLOB",
+                   "type=BLOB;charset_uuid=" + gbk->resource_uuid +
+                       ";character_length=20;"
+                       "text_resource_storage=large_object"));
+  Require(!bounded_large_text.ok &&
+              HasDiagnosticDetail(
+                  bounded_large_text,
+                  "large_object_text_resource_forbids_character_length"),
+          "large-text object accepted a fabricated character length");
+
+  const auto incompatible_large_text = CreateEngineTable(
+      context,
+      schema_uuid,
+      "incompatible_large_text",
+      EngineColumn("f1",
+                   "INTEGER",
+                   "type=INTEGER;charset_uuid=" + gbk->resource_uuid +
+                       ";text_resource_storage=large_object"));
+  Require(!incompatible_large_text.ok &&
+              HasDiagnosticDetail(
+                  incompatible_large_text,
+                  "text_resource_modifier_on_incompatible_type"),
+          "non-LOB column accepted large-text storage semantics");
+
+  const auto mismatch = CreateEngineTable(
+      context,
+      schema_uuid,
+      "mismatched_gbk",
+      EngineColumn("f1",
+                   "VARCHAR(20)",
+                   "type=VARCHAR(20);charset_uuid=" + gbk->resource_uuid +
+                       ";collation_uuid=" +
+                       foreign_collation->resource_uuid +
+                       ";character_length=20"));
+  Require(!mismatch.ok &&
+              HasDiagnosticDetail(
+                  mismatch, "collation_charset_relationship_mismatch"),
+          "mismatched charset/collation relationship was accepted");
+
+  const auto incompatible = CreateEngineTable(
+      context,
+      schema_uuid,
+      "incompatible_integer",
+      EngineColumn("f1",
+                   "INTEGER",
+                   "type=INTEGER;charset_uuid=" + gbk->resource_uuid +
+                       ";character_length=20"));
+  Require(!incompatible.ok &&
+              HasDiagnosticDetail(
+                  incompatible, "text_resource_modifier_on_incompatible_type"),
+          "integer column accepted text resource modifiers");
+
+  const auto descriptor_path = std::filesystem::path(
+      database_path.string() + ".sb.mga_relation_descriptors");
+  const auto explicit_descriptor = LoadPersistedDescriptorWithoutWrite(
+      context, explicit_table.primary_object.uuid.canonical, descriptor_path);
+  const auto default_descriptor = LoadPersistedDescriptorWithoutWrite(
+      context, default_table.primary_object.uuid.canonical, descriptor_path);
+  const auto large_text_descriptor = LoadPersistedDescriptorWithoutWrite(
+      context,
+      large_text_table.primary_object.uuid.canonical,
+      descriptor_path);
+  RequireResourceColumn(explicit_descriptor,
+                        explicit_table.primary_object.uuid.canonical,
+                        gbk->resource_uuid,
+                        gbk_unicode->resource_uuid);
+  RequireResourceColumn(default_descriptor,
+                        default_table.primary_object.uuid.canonical,
+                        gbk->resource_uuid,
+                        gbk_default->resource_uuid);
+  RequireLargeTextResourceColumn(
+      large_text_descriptor,
+      large_text_table.primary_object.uuid.canonical,
+      gbk->resource_uuid,
+      gbk_unicode->resource_uuid);
+  const auto explicit_fields =
+      engine::SerializeMgaRelationStorageDescriptor(explicit_descriptor);
+  const auto default_fields =
+      engine::SerializeMgaRelationStorageDescriptor(default_descriptor);
+  const auto large_text_fields =
+      engine::SerializeMgaRelationStorageDescriptor(large_text_descriptor);
+
+  auto wrong_transaction = context;
+  wrong_transaction.transaction_uuid.canonical =
+      NewEngineUuidText(UuidKind::transaction, now + 1200);
+  const std::string before_refusal = ReadBinaryFile(descriptor_path);
+  const auto refused = engine::LoadMgaRelationStorageDescriptor(
+      wrong_transaction, explicit_table.primary_object.uuid.canonical);
+  Require(!refused.ok &&
+              refused.diagnostic.detail.find(
+                  "exact_active_transaction_identity_required") !=
+                  std::string::npos,
+          "descriptor load accepted a mismatched transaction UUID");
+  Require(ReadBinaryFile(descriptor_path) == before_refusal,
+          "refused descriptor load changed durable bytes");
+
+  engine::EngineCommitTransactionRequest commit;
+  commit.context = context;
+  RequireEngineOk(engine::EngineCommitTransaction(commit),
+                  "resource relation transaction commit failed");
+
+  db::DatabaseOpenConfig reopen;
+  reopen.path = database_path.string();
+  reopen.read_only = true;
+  reopen.suppress_background_agents = true;
+  RequireOk(db::OpenDatabaseFile(reopen),
+            "resource relation database read-only reopen failed");
+
+  auto reopened_context =
+      BeginEngineTransaction(database_path, created, now + 2000, true);
+  reopened_context.current_schema_uuid.canonical = schema_uuid;
+  const auto reopened_explicit = LoadPersistedDescriptorWithoutWrite(
+      reopened_context,
+      explicit_table.primary_object.uuid.canonical,
+      descriptor_path);
+  const auto reopened_default = LoadPersistedDescriptorWithoutWrite(
+      reopened_context,
+      default_table.primary_object.uuid.canonical,
+      descriptor_path);
+  const auto reopened_large_text = LoadPersistedDescriptorWithoutWrite(
+      reopened_context,
+      large_text_table.primary_object.uuid.canonical,
+      descriptor_path);
+  Require(engine::SerializeMgaRelationStorageDescriptor(reopened_explicit) ==
+              explicit_fields,
+          "explicit resource descriptor changed after commit/reopen");
+  Require(engine::SerializeMgaRelationStorageDescriptor(reopened_default) ==
+              default_fields,
+          "default resource descriptor changed after commit/reopen");
+  Require(engine::SerializeMgaRelationStorageDescriptor(reopened_large_text) ==
+              large_text_fields,
+          "large-text resource descriptor changed after commit/reopen");
+
+  engine::EngineRollbackTransactionRequest rollback;
+  rollback.context = reopened_context;
+  RequireEngineOk(engine::EngineRollbackTransaction(rollback),
+                  "read-only resource relation transaction rollback failed");
+}
+
 }  // namespace
 
 int main() {
@@ -296,6 +875,7 @@ int main() {
 
   const auto loaded_image = LoadSeedPack();
   RequireSeedLifecycleReady(loaded_image);
+  RequireGbkDescriptorModel(loaded_image, false);
   RequireRuntimeCacheInvalidation(loaded_image);
   RequireIndexDependencyEvidence(loaded_image);
 
@@ -312,9 +892,7 @@ int main() {
     std::filesystem::path path;
     ~Cleanup() {
       std::error_code ignored;
-      std::filesystem::remove(path, ignored);
-      std::filesystem::remove(path.string() + ".dirty.manifest", ignored);
-      std::filesystem::remove(path.string() + ".recovery.evidence", ignored);
+      std::filesystem::remove_all(path.parent_path(), ignored);
     }
   } cleanup{database_path};
 
@@ -336,6 +914,7 @@ int main() {
   const auto created = db::CreateDatabaseFile(create);
   RequireOk(created, "CreateDatabaseFile failed");
   RequireSeedLifecycleReady(created.state.resource_seed_catalog);
+  RequireGbkDescriptorModel(created.state.resource_seed_catalog, true);
 
   db::DatabaseOpenConfig read_only_open;
   read_only_open.path = database_path.string();
@@ -346,6 +925,16 @@ int main() {
   const auto opened = db::OpenDatabaseFile(read_only_open);
   RequireOk(opened, "OpenDatabaseFile read-only with matching seed failed");
   RequireSeedLifecycleReady(opened.state.resource_seed_catalog);
+  RequireGbkDescriptorModel(opened.state.resource_seed_catalog, true);
+  const auto* created_gbk =
+      resources::FindResourceSeedCharset(created.state.resource_seed_catalog, "GBK");
+  const auto* opened_gbk =
+      resources::FindResourceSeedCharset(opened.state.resource_seed_catalog, "GBK");
+  Require(created_gbk != nullptr && opened_gbk != nullptr &&
+              created_gbk->resource_uuid == opened_gbk->resource_uuid &&
+              created_gbk->default_collation_uuid ==
+                  opened_gbk->default_collation_uuid,
+          "GBK durable identities changed across database reopen");
 
   db::DatabaseOpenConfig incompatible_open;
   incompatible_open.path = database_path.string();
@@ -369,6 +958,10 @@ int main() {
           "text index dependency evidence is missing");
   Require(HasIndexDependencyEvidence(records, "index_dependency_timezone_epoch_v1"),
           "timezone index dependency evidence is missing");
+  RequirePersistedGbkRecords(records, opened.state.resource_seed_catalog);
+  RequireEngineResourceResolution(
+      BeginEngineTransaction(database_path, created, now));
+  RequireGbkRelationDescriptorPersistence(database_path, created, now);
 
   return EXIT_SUCCESS;
 }

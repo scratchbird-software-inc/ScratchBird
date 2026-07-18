@@ -31,6 +31,9 @@ target_link_libraries(sbl_influxdb_parser_pipeline PUBLIC
 
 add_executable(sbp_influxdb main.cpp)
 target_compile_features(sbp_influxdb PRIVATE cxx_std_23)
+target_sources(sbp_influxdb PRIVATE
+  influxdb_http_worker_session.cpp
+)
 target_link_libraries(sbp_influxdb PRIVATE
   sbl_influxdb_parser_pipeline
   sbl_compatibility_parser_common

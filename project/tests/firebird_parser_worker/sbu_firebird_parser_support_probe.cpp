@@ -77,12 +77,15 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  if (!ExpectOk(sbu_firebird_validate_syntax("select 1", "firebird"),
+  constexpr std::string_view valid_query = "select 1 from customer";
+
+  if (!ExpectOk(sbu_firebird_validate_syntax(valid_query, "firebird"),
                 "validate_syntax")) {
     return EXIT_FAILURE;
   }
 
-  const auto valid_messages = sbu_firebird_validate_syntax("select 1", "firebird");
+  const auto valid_messages =
+      sbu_firebird_validate_syntax(valid_query, "firebird");
   const auto success_status =
       sbu_firebird_render_status_vector(valid_messages.message_vector_json,
                                         trusted_status_context);
@@ -204,7 +207,14 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  const auto missing_parse_context = sbu_firebird_parse_to_sblr("select 1", "");
+  if (!ExpectDiagnostic(sbu_firebird_validate_syntax("select 1", "firebird"),
+                        "FIREBIRD.PARSE.INVALID_INPUT",
+                        "validate_syntax bare singleton select")) {
+    return EXIT_FAILURE;
+  }
+
+  const auto missing_parse_context =
+      sbu_firebird_parse_to_sblr(valid_query, "");
   const auto missing_context_status =
       sbu_firebird_render_status_vector(missing_parse_context.message_vector_json,
                                         trusted_status_context);
@@ -224,21 +234,22 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  const auto normalized = sbu_firebird_normalize("  select    1  ", "firebird");
+  const auto normalized =
+      sbu_firebird_normalize("  select    1   from   customer  ", "firebird");
   if (!ExpectOk(normalized, "normalize")) return EXIT_FAILURE;
-  if (normalized.payload != "select 1") {
+  if (normalized.payload != std::string(valid_query)) {
     std::cerr << "normalize mismatch: " << normalized.payload << '\n';
     return EXIT_FAILURE;
   }
 
-  if (!ExpectDiagnostic(sbu_firebird_parse_to_sblr("select 1", ""),
+  if (!ExpectDiagnostic(sbu_firebird_parse_to_sblr(valid_query, ""),
                         "UDR.FIREBIRD.CONTEXT_MISSING",
                         "parse_to_sblr missing context")) {
     return EXIT_FAILURE;
   }
 
   if (!ExpectDiagnostic(
-          sbu_firebird_parse_to_sblr("select 1",
+          sbu_firebird_parse_to_sblr(valid_query,
                                      "not_engine_context=trusted;resolver=uuid"),
           "UDR.FIREBIRD.CONTEXT_MISSING",
           "parse_to_sblr spoofed context")) {
@@ -246,17 +257,19 @@ int main() {
   }
 
   if (!ExpectDiagnostic(
-          sbu_firebird_parse_to_sblr("select 1",
+          sbu_firebird_parse_to_sblr(valid_query,
                                      "engine_context=untrusted;resolver=uuid"),
           "UDR.FIREBIRD.SECURITY_DENIED",
           "parse_to_sblr untrusted context")) {
     return EXIT_FAILURE;
   }
 
-  const auto sblr = sbu_firebird_parse_to_sblr("select 1", trusted_sblr_context);
+  const auto sblr =
+      sbu_firebird_parse_to_sblr(valid_query, trusted_sblr_context);
   if (!ExpectOk(sblr, "parse_to_sblr trusted")) return EXIT_FAILURE;
   if (!Contains(sblr.payload, "SBLRExecutionEnvelope.v3") ||
-      Contains(sblr.payload, "select 1")) {
+      Contains(sblr.payload, "select 1") ||
+      Contains(sblr.payload, "customer")) {
     std::cerr << "SBLR payload mismatch: " << sblr.payload << '\n';
     return EXIT_FAILURE;
   }
@@ -268,7 +281,7 @@ int main() {
     return EXIT_FAILURE;
   }
   const auto dynamic_sblr = sbu_firebird_parse_concatenated_dynamic_sql(
-      "sel", "ect 1", trusted_dynamic_context);
+      "sel", "ect 1 from customer", trusted_dynamic_context);
   if (!ExpectOk(dynamic_sblr, "concatenated dynamic SQL")) return EXIT_FAILURE;
   if (!Contains(dynamic_sblr.payload, "\"dynamic_sql_parser\":\"sbu_firebird_parser_support\"") ||
       !Contains(dynamic_sblr.payload, "\"psql_runtime_context\":\"statement\"") ||
@@ -276,7 +289,8 @@ int main() {
       !Contains(dynamic_sblr.payload, "\"security_verification\":\"trusted_context_default\"") ||
       !Contains(dynamic_sblr.payload, "\"generated_code_admitted\":true") ||
       !Contains(dynamic_sblr.payload, "SBLRExecutionEnvelope.v3") ||
-      Contains(dynamic_sblr.payload, "select 1")) {
+      Contains(dynamic_sblr.payload, "select 1") ||
+      Contains(dynamic_sblr.payload, "customer")) {
     std::cerr << "dynamic SQL payload mismatch: " << dynamic_sblr.payload << '\n';
     return EXIT_FAILURE;
   }

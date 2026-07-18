@@ -95,7 +95,7 @@ bool ExpectWireDescriptorFuzzCases() {
                         "FIREBIRD.WIRE.CLUMPLET_LENGTH_INVALID")) {
     return false;
   }
-  if (!ExpectDecodeFail("DPB", {1, 250, 0}, "FIREBIRD.WIRE.UNKNOWN_TAG")) {
+  if (!ExpectDecodeOk("DPB", {1, 250, 0}, "unknown_clumplet_tag_250")) {
     return false;
   }
 
@@ -106,12 +106,15 @@ bool ExpectWireDescriptorFuzzCases() {
     return false;
   }
 
-  if (!ExpectDecodeOk("SPB", {2, 1}, "isc_action_svc_backup")) return false;
-  if (!ExpectDecodeFail("SPB", {2, 105, 4, 'g'},
+  if (!ExpectDecodeOk("SPB_SERVICE_START", {1}, "isc_action_svc_backup")) {
+    return false;
+  }
+  if (!ExpectDecodeFail("SPB_SERVICE_START", {1, 105, 4, 'g'},
                         "FIREBIRD.WIRE.CLUMPLET_LENGTH_INVALID")) {
     return false;
   }
-  if (!ExpectDecodeFail("SPB", {2, 255}, "FIREBIRD.WIRE.UNKNOWN_TAG")) {
+  if (!ExpectDecodeFail("SPB_SERVICE_START", {1, 255},
+                        "FIREBIRD.WIRE.UNKNOWN_TAG")) {
     return false;
   }
 

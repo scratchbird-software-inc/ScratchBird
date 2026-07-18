@@ -8,8 +8,6 @@
 
 #include "sblr_envelope.hpp"
 
-#include "sbsql_v3_sblr_catalog.hpp"
-
 #include <sstream>
 
 namespace scratchbird::parser::lowering {
@@ -80,38 +78,51 @@ LoweringResult LowerBoundShowIdentity(
 }
 
 LoweringResult LowerBoundStatementFamilyEvidence(
-    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound) {
-  const auto* route =
-      scratchbird::parser::sbsql_v3_sblr::RouteForCommandFamily(bound.header.command_family);
-  if (route == nullptr) {
-    return LoweringResult{Error("SBLRLOW_COMMAND_FAMILY_UNMAPPED",
-                                "bound AST command family has no SBLR route")};
-  }
+    const scratchbird::parser::bound_ast::BoundStatementFamilyEvidence& bound,
+    const SblrRouteDescriptor& route) {
   if (bound.header.database_uuid.empty() || bound.header.principal_uuid.empty()) {
     return LoweringResult{Error("SBLRLOW_IDENTITY_CONTEXT_MISSING",
                                 "bound AST is missing database or principal identity")};
   }
+  if (route.canonical_operation_family.empty() || route.route_operation_family.empty() ||
+      route.operation_id.empty() || route.sblr_opcode.empty() || route.result_shape.empty() ||
+      route.diagnostic_shape.empty() || route.payload_class.empty()) {
+    return LoweringResult{Error("SBLRLOW_ROUTE_DESCRIPTOR_INCOMPLETE",
+                                "parser-supplied SBLR route descriptor is incomplete")};
+  }
+  if (route.contains_raw_sql_text) {
+    return LoweringResult{Error("SBLRLOW_RAW_SQL_PAYLOAD_FORBIDDEN",
+                                "parser-supplied SBLR route cannot contain raw SQL text")};
+  }
+  if (!bound.header.sblr_operation_key.empty() &&
+      bound.header.sblr_operation_key != route.operation_id) {
+    return LoweringResult{Error("SBLRLOW_OPERATION_KEY_MISMATCH",
+                                "bound AST operation key does not match parser-supplied SBLR route")};
+  }
+  if (!bound.header.result_shape.empty() && bound.header.result_shape != route.result_shape) {
+    return LoweringResult{Error("SBLRLOW_RESULT_SHAPE_MISMATCH",
+                                "bound AST result shape does not match parser-supplied SBLR route")};
+  }
 
   LogicalEnvelope envelope;
   envelope.envelope_kind = "SBLRExecutionEnvelope.v3";
-  envelope.operation_family = route->route_operation_family;
-  envelope.canonical_operation_family = route->canonical_operation_family;
-  envelope.operation_key = route->operation_id;
-  envelope.sblr_opcode = route->sblr_opcode;
+  envelope.operation_family = route.route_operation_family;
+  envelope.canonical_operation_family = route.canonical_operation_family;
+  envelope.operation_key = route.operation_id;
+  envelope.sblr_opcode = route.sblr_opcode;
   envelope.operation_version = 3;
   envelope.database_uuid = bound.header.database_uuid;
   envelope.principal_uuid = bound.header.principal_uuid;
   envelope.registry_snapshot_uuid = bound.header.registry_snapshot_uuid;
-  envelope.result_shape = route->result_shape;
-  envelope.diagnostic_shape = route->diagnostic_shape;
-  envelope.payload_class = route->payload_class;
-  envelope.trace_key = bound.header.trace_key.empty() ? "SBSQL-MISS-003-LOWERING-CONTRACT"
-                                                      : bound.header.trace_key;
-  envelope.requires_public_abi_dispatch = route->requires_public_abi_dispatch;
-  envelope.contains_raw_sql_text = route->contains_raw_sql_text;
+  envelope.result_shape = route.result_shape;
+  envelope.diagnostic_shape = route.diagnostic_shape;
+  envelope.payload_class = route.payload_class;
+  envelope.trace_key = bound.header.trace_key;
+  envelope.requires_public_abi_dispatch = route.requires_public_abi_dispatch;
+  envelope.contains_raw_sql_text = false;
   envelope.operands.push_back({"descriptor_profile", "descriptor_profile", bound.descriptor_profile});
-  envelope.operands.push_back({"operation_family", "canonical_operation_family", route->canonical_operation_family});
-  envelope.operands.push_back({"operation_family", "route_operation_family", route->route_operation_family});
+  envelope.operands.push_back({"operation_family", "canonical_operation_family", route.canonical_operation_family});
+  envelope.operands.push_back({"operation_family", "route_operation_family", route.route_operation_family});
   return LoweringResult{std::move(envelope)};
 }
 

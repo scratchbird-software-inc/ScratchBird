@@ -205,10 +205,10 @@ void TestPackagedServiceDefaultsDeriveRuntimeAndLogPaths(const std::filesystem::
           "DBLC-013Q service lifecycle journal default mismatch");
   Require(loaded.config.sbps_endpoint == loaded.config.control_dir / "sb_server.sbps.sock",
           "DBLC-013Q service SBPS socket default mismatch");
-  Require(loaded.config.listener_native_control_dir ==
+  Require(loaded.config.listener_control_dir ==
               loaded.config.control_dir / "listeners",
           "DBLC-013Q listener control default mismatch");
-  Require(loaded.config.listener_native_runtime_dir ==
+  Require(loaded.config.listener_runtime_dir ==
               loaded.config.data_dir / "listeners",
           "DBLC-013Q listener runtime default mismatch");
   Require(loaded.config.log_file == "/var/log/scratchbird/sb_server.log",

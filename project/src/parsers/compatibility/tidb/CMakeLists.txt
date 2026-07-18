@@ -19,6 +19,7 @@ endif()
 
 add_library(sbl_tidb_parser_pipeline STATIC
   tidb_dialect.cpp
+  tidb_worker_session.cpp
 )
 
 target_compile_features(sbl_tidb_parser_pipeline PUBLIC cxx_std_23)

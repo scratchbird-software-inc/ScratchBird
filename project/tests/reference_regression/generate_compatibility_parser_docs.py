@@ -22,10 +22,7 @@ from typing import Any
 
 STATUS_REL = Path("docs/compatibility-parsers/compatibility-parser-status.csv")
 DOC_ROOT_REL = Path("docs/compatibility-parsers/parsers")
-REMAP_MATRIX_REL = Path(
-    "public_execution_plan/final-sblr-sbsql-parser-remap-closure/"
-    "COMPATIBILITY_PARSER_REMAP_MATRIX.csv"
-)
+REMAP_MATRIX_REL = Path("docs/compatibility-parsers/remap/COMPATIBILITY_PARSER_REMAP_MATRIX.csv")
 
 
 def md_escape(value: str) -> str:

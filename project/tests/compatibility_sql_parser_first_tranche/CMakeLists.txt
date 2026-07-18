@@ -798,6 +798,71 @@ set_tests_properties(compatibility_sql_parser_standalone_source_guard PROPERTIES
   LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_standalone_guard;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker"
 )
 
+if(NOT WIN32)
+  find_package(Threads REQUIRED)
+  foreach(parser_family IN ITEMS cockroachdb yugabytedb xtdb)
+    add_executable(${parser_family}_family_worker_session_probe
+      pgwire_family_worker_session_probe.cpp
+    )
+    string(TOUPPER "${parser_family}" parser_family_upper)
+    target_compile_definitions(${parser_family}_family_worker_session_probe PRIVATE
+      "SB_TEST_${parser_family_upper}=1"
+    )
+    target_compile_features(${parser_family}_family_worker_session_probe PRIVATE cxx_std_23)
+    target_link_libraries(${parser_family}_family_worker_session_probe PRIVATE
+      sbl_${parser_family}_parser_pipeline
+      Threads::Threads
+    )
+    add_test(
+      NAME ${parser_family}_family_worker_session_probe
+      COMMAND ${parser_family}_family_worker_session_probe
+    )
+    set_tests_properties(${parser_family}_family_worker_session_probe PROPERTIES
+      LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_standalone_guard;${parser_family}_parser_worker;parser_family_worker_session"
+    )
+  endforeach()
+endif()
+
+add_test(
+  NAME postgres_protocol_relative_parser_isolation_gate
+  COMMAND
+    "${COMPATIBILITY_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/postgres_protocol_relative_parser_isolation_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/postgres_protocol_relative_parser_isolation_evidence.json"
+)
+set_tests_properties(postgres_protocol_relative_parser_isolation_gate PROPERTIES
+  LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_standalone_guard;cockroachdb_parser_worker;yugabytedb_parser_worker;xtdb_parser_worker;parser_family_dependency_closure;mga_transaction_regression"
+)
+
+if(NOT WIN32)
+  foreach(parser_family IN ITEMS mariadb tidb vitess dolt)
+    add_executable(${parser_family}_family_packet_worker_session_probe
+      mywire_family_worker_session_probe.cpp
+    )
+    string(TOUPPER "${parser_family}" parser_family_upper)
+    target_compile_definitions(${parser_family}_family_packet_worker_session_probe PRIVATE
+      "SB_TEST_${parser_family_upper}=1"
+    )
+    target_compile_features(${parser_family}_family_packet_worker_session_probe PRIVATE cxx_std_23)
+    target_link_libraries(${parser_family}_family_packet_worker_session_probe PRIVATE
+      sbl_${parser_family}_parser_pipeline Threads::Threads
+    )
+    add_test(NAME ${parser_family}_family_packet_worker_session_probe
+      COMMAND ${parser_family}_family_packet_worker_session_probe)
+    set_tests_properties(${parser_family}_family_packet_worker_session_probe PROPERTIES
+      LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_standalone_guard;${parser_family}_parser_worker;parser_family_worker_session")
+  endforeach()
+endif()
+
+add_test(NAME mysql_protocol_relative_parser_isolation_gate COMMAND
+  "${COMPATIBILITY_SQL_PARSER_PYTHON3}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/mysql_protocol_relative_parser_isolation_gate.py"
+  --repo-root "${PROJECT_SOURCE_DIR}/.."
+  --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/mysql_protocol_relative_parser_isolation_evidence.json")
+set_tests_properties(mysql_protocol_relative_parser_isolation_gate PROPERTIES
+  LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_standalone_guard;mariadb_parser_worker;tidb_parser_worker;vitess_parser_worker;dolt_parser_worker;parser_family_dependency_closure;mga_transaction_regression")
+
 add_test(
   NAME non_sql_compatibility_sblr_surface_gate
   COMMAND

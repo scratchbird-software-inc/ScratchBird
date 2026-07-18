@@ -10,6 +10,7 @@
 
 #include "sbps.hpp"
 #include "manager_control.hpp"
+#include "parser_server_client.hpp"
 #include "session_registry.hpp"
 #include "sblr_dispatch_server.hpp"
 
@@ -530,6 +531,88 @@ int main(int argc, char** argv) {
   std::cerr << "POSIX AF_UNIX tester transport is required in this SIF stage\n";
   return 2;
 #else
+  if (options.scenario == "management_restart_listener") {
+    if (options.principal_uuid.empty()) {
+      std::cerr << "management_restart_listener requires an exact durable principal UUID\n";
+      return 2;
+    }
+
+    scratchbird::parser::ipc::SbpsClient client(options.endpoint);
+    scratchbird::parser::ipc::ParserClientConfig client_config;
+    client_config.server_endpoint = options.endpoint;
+
+    scratchbird::parser::ipc::AuthCredentialEnvelope credentials;
+    credentials.provider_family = "local_password";
+    credentials.principal = options.principal;
+    credentials.requested_database = "default";
+    credentials.requested_language = "en";
+    credentials.credential_evidence_present = true;
+    credentials.credential_evidence =
+        "scheme=local_password_v1;principal=" + options.principal +
+        ";principal_uuid=" + options.principal_uuid +
+        ";storage_authority=mga_security_principal_lifecycle;verifier="
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    scratchbird::parser::ipc::ParserSessionContext session;
+    scratchbird::parser::ipc::MessageVectorSet auth_messages;
+    if (!client.AuthenticateAndAttach(credentials,
+                                      client_config,
+                                      &session,
+                                      &auth_messages)) {
+      std::cerr << scratchbird::parser::ipc::MessageVectorToJson(auth_messages)
+                << '\n';
+      return 2;
+    }
+
+    auto management = client.Manage(session,
+                                    "restart_listener",
+                                    {},
+                                    "graceful",
+                                    "ipc_tester");
+    scratchbird::parser::ipc::MessageVectorSet disconnect_messages;
+    const bool disconnected =
+        client.DisconnectSession(session, &disconnect_messages);
+
+    bool code_match = options.expected_code.empty();
+    for (const auto& diagnostic : management.messages.diagnostics) {
+      if (diagnostic.code == options.expected_code) code_match = true;
+    }
+    const bool payload_match =
+        options.expected_payload_contains.empty() ||
+        management.payload.find(options.expected_payload_contains) !=
+            std::string::npos;
+    const bool error = !management.accepted;
+    const bool expectation_match =
+        (options.expected == "accept" ? management.accepted : error) &&
+        code_match && payload_match && disconnected;
+
+    std::cout << "{\"ipc_tester\":{\"scenario\":\""
+              << JsonEscape(options.scenario)
+              << "\",\"accepted\":"
+              << (management.accepted ? "true" : "false")
+              << ",\"error\":" << (error ? "true" : "false")
+              << ",\"response_type\":"
+              << static_cast<std::uint16_t>(
+                     scratchbird::server::sbps::MessageType::kManagementResult)
+              << ",\"expectation_match\":"
+              << (expectation_match ? "true" : "false")
+              << ",\"diagnostic_codes\":[";
+    for (std::size_t i = 0; i < management.messages.diagnostics.size(); ++i) {
+      if (i != 0) std::cout << ',';
+      std::cout << '"'
+                << JsonEscape(management.messages.diagnostics[i].code)
+                << '"';
+    }
+    std::cout << "],\"payload\":\"" << JsonEscape(management.payload)
+              << "\"}}\n";
+    if (!disconnected) {
+      std::cerr << scratchbird::parser::ipc::MessageVectorToJson(
+                       disconnect_messages)
+                << '\n';
+    }
+    return expectation_match ? 0 : 1;
+  }
+
   std::string exchange_error;
   std::optional<scratchbird::server::sbps::Frame> response;
   auto authenticate_and_attach_as = [&](const std::string& principal,

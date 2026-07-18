@@ -29,7 +29,10 @@ target_link_libraries(sbl_mongodb_parser_pipeline PUBLIC
   sbl_compatibility_parser_common
 )
 
-add_executable(sbp_mongodb main.cpp)
+add_executable(sbp_mongodb
+  main.cpp
+  mongodb_worker_session.cpp
+)
 target_compile_features(sbp_mongodb PRIVATE cxx_std_23)
 target_link_libraries(sbp_mongodb PRIVATE
   sbl_mongodb_parser_pipeline

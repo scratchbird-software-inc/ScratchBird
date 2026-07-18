@@ -632,6 +632,78 @@ std::string DirectFieldOrEmpty(
   return {};
 }
 
+std::string DirectConstraintUuid(
+    const std::map<std::string, std::string>& fields,
+    const CrudTableRecord& table,
+    const std::string& column_name,
+    const std::string& constraint_class);
+
+std::string DirectQuotedDiagnosticIdentifier(std::string_view identifier) {
+  std::string quoted{"\""};
+  for (const char ch : identifier) {
+    if (ch == '"') quoted.push_back('"');
+    quoted.push_back(ch);
+  }
+  quoted.push_back('"');
+  return quoted;
+}
+
+void PopulateDirectForeignKeyViolationFields(
+    const CrudTableRecord& table,
+    const scratchbird::core::bulk_load::BulkConstraintProofRequest& request,
+    const scratchbird::core::bulk_load::BulkConstraintProofResult& result,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic == nullptr ||
+      result.refusal_reason != "bulk_fk_proof_parent_missing") {
+    return;
+  }
+  std::string constraint_uuid;
+  std::string missing_key;
+  bool constraint_uuid_present = false;
+  bool missing_key_present = false;
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == "bulk_fk_proof_conflict_constraint") {
+      constraint_uuid = evidence.evidence_id;
+      constraint_uuid_present = true;
+    } else if (evidence.evidence_kind == "bulk_fk_proof_missing_parent_key") {
+      missing_key = evidence.evidence_id;
+      missing_key_present = true;
+    }
+  }
+  if (!constraint_uuid_present || !missing_key_present) return;
+
+  for (const auto& proof : request.foreign_key_proofs) {
+    if (proof.constraint_uuid != constraint_uuid) continue;
+    const auto descriptor = std::find_if(
+        table.columns.begin(), table.columns.end(), [&](const auto& column) {
+          return column.first == proof.child_column_name;
+        });
+    if (descriptor == table.columns.end()) return;
+    const auto fields = DirectDescriptorFields(descriptor->second);
+    if (LowerAscii(DirectFieldOrEmpty(
+            fields, {"constraint_mutation_batch_state"})) != "sealed") {
+      return;
+    }
+    if (DirectConstraintUuid(fields,
+                             table,
+                             proof.child_column_name,
+                             "foreign_key") != constraint_uuid) {
+      return;
+    }
+    diagnostic->fields = {
+        {"violation_kind", "parent_missing"},
+        {"constraint_display_label",
+         DirectFieldOrEmpty(fields, {"constraint_name"})},
+        {"owner_relation_display_label", table.default_name},
+        {"owner_schema_display_label", ""},
+        {"child_column_display_label", proof.child_column_name},
+        {"key_display_text",
+         "(" + DirectQuotedDiagnosticIdentifier(proof.child_column_name) +
+             " = " + missing_key + ")"}};
+    return;
+  }
+}
+
 bool DirectBoolField(const std::map<std::string, std::string>& fields,
                      std::initializer_list<const char*> keys) {
   const std::string value = LowerAscii(DirectFieldOrEmpty(fields, keys));
@@ -1624,6 +1696,13 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                                 unique.incoming_keys,
                                                 append_index_key_cache,
                                                 &unique.visible_keys);
+        if (unique.visible_keys.empty()) {
+          AddVisibleRowKeysForProof(state,
+                                    request.context,
+                                    *support_index,
+                                    &unique.visible_keys,
+                                    true);
+        }
       } else {
         AddVisibleRowKeysForProof(state,
                                   request.context,
@@ -1733,6 +1812,13 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                               unique.incoming_keys,
                                               append_index_key_cache,
                                               &unique.visible_keys);
+      if (unique.visible_keys.empty()) {
+        AddVisibleRowKeysForProof(state,
+                                  request.context,
+                                  index,
+                                  &unique.visible_keys,
+                                  true);
+      }
     } else {
       AddVisibleRowKeysForProof(state,
                                 request.context,
@@ -1753,6 +1839,10 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
                                    : proven.refusal_reason;
     selection.diagnostic = CoreBulkDiagnosticToEngine(proven.diagnostic,
                                                       selection.failure_reason);
+    PopulateDirectForeignKeyViolationFields(table,
+                                            proof_request,
+                                            proven,
+                                            &selection.diagnostic);
     return selection;
   }
   return selection;
@@ -4721,6 +4811,9 @@ void DirectBuildAppendIndexConflictCaches(
       continue;
     }
     const auto cached_entries = record.entry_by_index_key.find(index.index_uuid);
+    const std::size_t keys_before = keys_by_index == nullptr
+                                        ? 0
+                                        : (*keys_by_index)[index.index_uuid].size();
     for (const auto& values : logical_value_batch) {
       for (const auto& key : CrudIndexKeysForValues(index, values)) {
         if (cached_keys->second.count(key) == 0) {
@@ -4729,6 +4822,20 @@ void DirectBuildAppendIndexConflictCaches(
         if (keys_by_index != nullptr) {
           (*keys_by_index)[index.index_uuid].insert(key);
         }
+        if (entry_by_index_key != nullptr &&
+            cached_entries != record.entry_by_index_key.end()) {
+          const auto entry = cached_entries->second.find(key);
+          if (entry != cached_entries->second.end()) {
+            (*entry_by_index_key)[index.index_uuid][key] = entry->second;
+          }
+        }
+      }
+    }
+    if (keys_by_index != nullptr &&
+        (*keys_by_index)[index.index_uuid].size() == keys_before &&
+        !cached_keys->second.empty()) {
+      for (const auto& key : cached_keys->second) {
+        (*keys_by_index)[index.index_uuid].insert(key);
         if (entry_by_index_key != nullptr &&
             cached_entries != record.entry_by_index_key.end()) {
           const auto entry = cached_entries->second.find(key);

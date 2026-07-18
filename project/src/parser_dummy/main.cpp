@@ -11,8 +11,10 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -43,6 +45,19 @@ std::string Env(const char* name, std::string fallback = {}) {
 
 bool ModeIs(const std::string& mode, const char* expected) {
   return mode == expected;
+}
+
+std::string ConfiguredDummyBehavior() {
+  // The generic listener passes this profile opaquely.  Test-only behavior is
+  // interpreted by the standalone dummy parser, never by SBgate and never via
+  // inherited test-harness environment variables.
+  constexpr std::string_view kBehaviorProfilePrefix =
+      "fixture.parser-dummy.behavior.";
+  const std::string profile = Env("SB_PARSER_PROFILE_ID");
+  if (profile.starts_with(kBehaviorProfilePrefix)) {
+    return profile.substr(kBehaviorProfilePrefix.size());
+  }
+  return Env("SB_PARSER_DUMMY_BEHAVIOR", "normal");
 }
 
 std::uint64_t ReadU64(const std::vector<std::uint8_t>& data, std::size_t off) {
@@ -80,7 +95,15 @@ void SlowServeClient(int fd) {
 
 bool ShouldCrashOnceAfterHandoff(const std::string& behavior) {
   if (!ModeIs(behavior, "crash_once_after_handoff")) return false;
-  const auto marker = Env("SB_PARSER_DUMMY_CRASH_ONCE_FILE");
+  std::string marker = Env("SB_PARSER_DUMMY_CRASH_ONCE_FILE");
+  if (marker.empty()) {
+    const std::string runtime_dir = Env("SB_LISTENER_RUNTIME_DIR");
+    if (!runtime_dir.empty()) {
+      marker = (std::filesystem::path(runtime_dir) /
+                "parser-dummy-crash-once.marker")
+                   .string();
+    }
+  }
   if (marker.empty()) return true;
   const int fd = ::open(marker.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (fd < 0) return false;
@@ -93,7 +116,7 @@ bool ShouldCrashOnceAfterHandoff(const std::string& behavior) {
 
 int main(int argc, char** argv) {
   bool listener_worker = false;
-  std::string behavior = Env("SB_PARSER_DUMMY_BEHAVIOR", "normal");
+  std::string behavior = ConfiguredDummyBehavior();
   for (int i = 1; i < argc; ++i) {
     if (std::string(argv[i]) == "--listener-worker") listener_worker = true;
     if (std::string(argv[i]).starts_with("--dummy-behavior=")) {

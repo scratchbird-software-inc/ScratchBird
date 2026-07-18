@@ -110,7 +110,7 @@ BindResult BindShowIdentityAst(const scratchbird::parser::ast::ShowIdentityAst& 
   BoundShowIdentity bound;
   bound.show_kind = ast.show_kind;
   bound.header.surface_key = ast.header.surface_key_candidate;
-  bound.header.command_family = "sbsql.identity_session";
+  bound.header.command_family = ast.header.command_family_candidate;
   bound.header.database_uuid = context.database_uuid;
   bound.header.principal_uuid = context.principal_uuid;
   bound.header.catalog_epoch = context.catalog_epoch;

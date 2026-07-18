@@ -195,8 +195,11 @@ std::string DiagnosticCodes(const scratchbird::listener::proto::MessageVectorSet
 scratchbird::listener::ListenerConfig ValidListenerConfigBase(const std::filesystem::path& work) {
   scratchbird::listener::ListenerConfig base;
   base.protocol_family = "sbsql";
+  base.parser_executable = "/opt/scratchbird/test-parser-worker";
   base.database_selector = "dev_bootstrap_path:" + (work / "listener.sbdb").string();
   base.server_endpoint = "unix:" + (work / "server.sbps.sock").string();
+  base.bind_address = "127.0.0.1";
+  base.port = 45062;
   return base;
 }
 
@@ -388,7 +391,8 @@ ListenerProcess StartListener(const std::filesystem::path& listener,
   args.push_back(listener.string());
   args.push_back("--foreground");
   args.push_back("--protocol-family=sbsql");
-  args.push_back("--listener-profile=default");
+  args.push_back("--listener-profile=fixture.parser-dummy.behavior." +
+                 (behavior.empty() ? std::string("normal") : behavior));
   args.push_back("--bundle-contract-id=bundle.default@1");
   args.push_back("--database-selector=dev_bootstrap_path:" + (proc.work / "listener.sbdb").string());
   args.push_back("--server-endpoint=unix:" + (proc.work / "server.sbps.sock").string());
@@ -401,9 +405,6 @@ ListenerProcess StartListener(const std::filesystem::path& listener,
 
   const pid_t child = ::fork();
   if (child == 0) {
-    if (!behavior.empty()) {
-      ::setenv("SB_PARSER_DUMMY_BEHAVIOR", behavior.c_str(), 1);
-    }
     int out = ::creat(proc.stdout_path.c_str(), 0600);
     int err = ::creat(proc.stderr_path.c_str(), 0600);
     if (out >= 0) {

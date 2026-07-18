@@ -77,22 +77,48 @@ const std::unordered_map<std::uint8_t, TagInfo>& DpbTags() {
   static const std::unordered_map<std::uint8_t, TagInfo> tags = {
       {28, {"isc_dpb_user_name", "attach_identity"}},
       {29, {"isc_dpb_password", "secret_redacted"}},
+      {30, {"isc_dpb_password_enc", "secret_redacted"}},
       {48, {"isc_dpb_lc_ctype", "charset_descriptor"}},
       {57, {"isc_dpb_connect_timeout", "attach_policy"}},
+      {58, {"isc_dpb_dummy_packet_interval", "attach_policy"}},
       {60, {"isc_dpb_sql_role_name", "role_descriptor"}},
+      {61, {"isc_dpb_set_page_buffers", "create_database_policy"}},
+      {62, {"isc_dpb_working_directory", "client_environment_descriptor"}},
       {63, {"isc_dpb_sql_dialect", "dialect_profile"}},
+      {64, {"isc_dpb_set_db_readonly", "create_database_policy"}},
+      {65, {"isc_dpb_set_db_sql_dialect", "create_database_policy"}},
+      {68, {"isc_dpb_set_db_charset", "create_database_policy"}},
+      {71, {"isc_dpb_process_id", "client_environment_descriptor"}},
       {72, {"isc_dpb_no_db_triggers", "attach_policy"}},
+      {73, {"isc_dpb_trusted_auth", "auth_descriptor"}},
+      {74, {"isc_dpb_process_name", "client_environment_descriptor"}},
+      {75, {"isc_dpb_trusted_role", "role_descriptor"}},
+      {76, {"isc_dpb_org_filename", "database_name_descriptor"}},
       {77, {"isc_dpb_utf8_filename", "database_name_descriptor"}},
+      {78, {"isc_dpb_ext_call_depth", "attach_policy"}},
       {79, {"isc_dpb_auth_block", "auth_descriptor"}},
+      {80, {"isc_dpb_client_version", "client_environment_descriptor"}},
+      {81, {"isc_dpb_remote_protocol", "client_environment_descriptor"}},
+      {82, {"isc_dpb_host_name", "client_environment_descriptor"}},
+      {83, {"isc_dpb_os_user", "client_environment_descriptor"}},
+      {84, {"isc_dpb_specific_auth_data", "auth_descriptor"}},
       {85, {"isc_dpb_auth_plugin_list", "auth_descriptor"}},
       {86, {"isc_dpb_auth_plugin_name", "auth_descriptor"}},
       {87, {"isc_dpb_config", "configuration_descriptor"}},
+      {88, {"isc_dpb_nolinger", "attach_policy"}},
+      {89, {"isc_dpb_reset_icu", "attach_policy"}},
+      {90, {"isc_dpb_map_attach", "attach_policy"}},
       {91, {"isc_dpb_session_time_zone", "session_descriptor"}},
+      {92, {"isc_dpb_set_db_replica", "create_database_policy"}},
       {93, {"isc_dpb_set_bind", "datatype_binding_policy"}},
       {94, {"isc_dpb_decfloat_round", "decfloat_descriptor"}},
       {95, {"isc_dpb_decfloat_traps", "decfloat_descriptor"}},
+      {96, {"isc_dpb_clear_map", "attach_policy"}},
       {97, {"isc_dpb_upgrade_db", "upgrade_policy"}},
       {100, {"isc_dpb_parallel_workers", "service_policy"}},
+      {101, {"isc_dpb_worker_attach", "attach_policy"}},
+      {103, {"isc_dpb_max_blob_cache_size", "attach_policy"}},
+      {104, {"isc_dpb_max_inline_blob_size", "attach_policy"}},
   };
   return tags;
 }
@@ -212,18 +238,39 @@ const std::unordered_map<std::uint8_t, TagInfo>& BpbTags() {
 
 const std::unordered_map<std::uint8_t, TagInfo>& SpbClumpletTags() {
   static const std::unordered_map<std::uint8_t, TagInfo> tags = {
+      {5, {"isc_spb_sec_userid", "scratchbird_security_projection"}},
+      {6, {"isc_spb_sec_groupid", "scratchbird_security_projection"}},
+      {7, {"isc_spb_sec_username", "scratchbird_security_projection"}},
+      {8, {"isc_spb_sec_password", "secret_redacted"}},
+      {9, {"isc_spb_sec_groupname", "scratchbird_security_projection"}},
+      {10, {"isc_spb_sec_firstname", "scratchbird_security_projection"}},
+      {11, {"isc_spb_sec_middlename", "scratchbird_security_projection"}},
+      {12, {"isc_spb_sec_lastname", "scratchbird_security_projection"}},
+      {13, {"isc_spb_sec_admin", "scratchbird_security_projection"}},
       {28, {"isc_spb_user_name", "service_identity"}},
       {29, {"isc_spb_password", "secret_redacted"}},
+      {30, {"isc_spb_password_enc", "secret_redacted"}},
+      {57, {"isc_spb_connect_timeout", "attach_policy"}},
+      {58, {"isc_spb_dummy_packet_interval", "attach_policy"}},
       {60, {"isc_spb_sql_role_name", "role_descriptor"}},
       {105, {"isc_spb_command_line", "service_command_descriptor"}},
       {106, {"isc_spb_dbname", "database_name_descriptor"}},
       {107, {"isc_spb_verbose", "service_output_policy"}},
       {108, {"isc_spb_options", "service_options"}},
+      {109, {"isc_spb_address_path", "client_environment_descriptor"}},
+      {110, {"isc_spb_process_id", "client_environment_descriptor"}},
+      {111, {"isc_spb_trusted_auth", "auth_descriptor"}},
+      {112, {"isc_spb_process_name", "client_environment_descriptor"}},
+      {113, {"isc_spb_trusted_role", "role_descriptor"}},
       {114, {"isc_spb_verbint", "service_output_policy"}},
       {115, {"isc_spb_auth_block", "auth_descriptor"}},
       {116, {"isc_spb_auth_plugin_name", "auth_descriptor"}},
       {117, {"isc_spb_auth_plugin_list", "auth_descriptor"}},
       {118, {"isc_spb_utf8_filename", "database_name_descriptor"}},
+      {119, {"isc_spb_client_version", "client_environment_descriptor"}},
+      {120, {"isc_spb_remote_protocol", "client_environment_descriptor"}},
+      {121, {"isc_spb_host_name", "client_environment_descriptor"}},
+      {122, {"isc_spb_os_user", "client_environment_descriptor"}},
       {123, {"isc_spb_config", "configuration_descriptor"}},
       {124, {"isc_spb_expected_db", "security_database_descriptor"}},
   };
@@ -258,6 +305,43 @@ const std::unordered_map<std::uint8_t, TagInfo>& ServiceActions() {
   return tags;
 }
 
+const std::unordered_map<std::uint8_t, TagInfo>& ServiceActionByteTags() {
+  static const std::unordered_map<std::uint8_t, TagInfo> tags = {
+      {11, {"isc_spb_prp_reserve_space", "database_properties_policy"}},
+      {12, {"isc_spb_prp_write_mode", "database_properties_policy"}},
+      {13, {"isc_spb_prp_access_mode", "database_properties_policy"}},
+      {44, {"isc_spb_prp_shutdown_mode", "database_properties_policy"}},
+      {45, {"isc_spb_prp_online_mode", "database_properties_policy"}},
+      {46, {"isc_spb_prp_replica_mode", "database_properties_policy"}},
+  };
+  return tags;
+}
+
+const std::unordered_map<std::uint8_t, TagInfo>& ServiceActionIntTags() {
+  static const std::unordered_map<std::uint8_t, TagInfo> tags = {
+      {5, {"isc_spb_prp_page_buffers", "database_properties_policy"}},
+      {6, {"isc_spb_prp_sweep_interval", "database_properties_policy"}},
+      {7, {"isc_spb_prp_shutdown_db", "database_properties_policy"}},
+      {9, {"isc_spb_prp_deny_new_attachments", "database_properties_policy"}},
+      {10, {"isc_spb_prp_deny_new_transactions", "database_properties_policy"}},
+      {14, {"isc_spb_prp_set_sql_dialect", "database_properties_policy"}},
+      {41, {"isc_spb_prp_force_shutdown", "database_properties_policy"}},
+      {42, {"isc_spb_prp_attachments_shutdown", "database_properties_policy"}},
+      {43, {"isc_spb_prp_transactions_shutdown", "database_properties_policy"}},
+      {52, {"isc_spb_rpr_par_workers", "validation_repair_policy"}},
+      {108, {"isc_spb_options", "service_options"}},
+  };
+  return tags;
+}
+
+bool IsSecurityUserServiceAction(std::string_view action) {
+  return action == "isc_action_svc_add_user" ||
+         action == "isc_action_svc_delete_user" ||
+         action == "isc_action_svc_modify_user" ||
+         action == "isc_action_svc_display_user" ||
+         action == "isc_action_svc_display_user_adm";
+}
+
 ParameterBufferDecodeResult Fail(std::string_view kind,
                                  std::string diagnostic_code,
                                  std::string diagnostic_message) {
@@ -273,6 +357,32 @@ ParameterBufferDecodeResult Fail(std::string_view kind,
                 EscapeJsonLocal(result.diagnostic_message) +
                 "\",\"runtime_policy\":\"fail_closed\"}";
   return result;
+}
+
+bool DecodeSpbClumpletItem(std::string_view kind,
+                           std::uint8_t tag,
+                           const TagInfo& clumplet,
+                           const std::vector<std::uint8_t>& buffer,
+                           std::size_t* offset,
+                           ParameterBufferDecodeResult* result) {
+  if (*offset + 2 > buffer.size()) {
+    *result = Fail(kind, "FIREBIRD.WIRE.CLUMPLET_LENGTH_INVALID",
+                   "Service start SPB clumplet is missing its length.");
+    return false;
+  }
+  const auto length = ReadLeU16(buffer, *offset);
+  *offset += 2;
+  if (*offset + length > buffer.size()) {
+    *result = Fail(kind, "FIREBIRD.WIRE.CLUMPLET_LENGTH_INVALID",
+                   "Service start SPB clumplet length exceeds remaining bytes.");
+    return false;
+  }
+  result->items.push_back({tag, std::string(clumplet.name),
+                           {buffer.begin() + static_cast<std::ptrdiff_t>(*offset),
+                            buffer.begin() + static_cast<std::ptrdiff_t>(*offset + length)},
+                           std::string(clumplet.policy)});
+  *offset += length;
+  return true;
 }
 
 std::string ItemsToJson(const ParameterBufferDecodeResult& result) {
@@ -301,7 +411,8 @@ std::string ItemsToJson(const ParameterBufferDecodeResult& result) {
 ParameterBufferDecodeResult DecodeClumpletBuffer(
     std::string_view kind,
     const std::vector<std::uint8_t>& buffer,
-    const std::unordered_map<std::uint8_t, TagInfo>& tags) {
+    const std::unordered_map<std::uint8_t, TagInfo>& tags,
+    bool preserve_unknown_tags = false) {
   if (buffer.empty()) return Fail(kind, "FIREBIRD.WIRE.BUFFER_EMPTY", "Parameter buffer is empty.");
   ParameterBufferDecodeResult result;
   result.ok = true;
@@ -322,14 +433,147 @@ ParameterBufferDecodeResult DecodeClumpletBuffer(
     }
     const auto found = tags.find(tag);
     if (found == tags.end()) {
-      return Fail(kind, "FIREBIRD.WIRE.UNKNOWN_TAG",
-                  "Parameter buffer contains an unassigned tag.");
+      if (!preserve_unknown_tags) {
+        return Fail(kind, "FIREBIRD.WIRE.UNKNOWN_TAG",
+                    "Parameter buffer contains an unassigned tag.");
+      }
+      result.items.push_back(
+          {tag,
+           "unknown_clumplet_tag_" + std::to_string(tag),
+           {buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+            buffer.begin() + static_cast<std::ptrdiff_t>(offset + length)},
+           "preserved_unknown_clumplet_no_engine_authority"});
+      offset += length;
+      continue;
     }
     result.items.push_back({tag, std::string(found->second.name),
                             {buffer.begin() + static_cast<std::ptrdiff_t>(offset),
                              buffer.begin() + static_cast<std::ptrdiff_t>(offset + length)},
                             std::string(found->second.policy)});
     offset += length;
+  }
+  result.json = ItemsToJson(result);
+  return result;
+}
+
+ParameterBufferDecodeResult DecodeWideTaggedClumpletBuffer(
+    std::string_view kind,
+    const std::vector<std::uint8_t>& buffer,
+    const std::unordered_map<std::uint8_t, TagInfo>& tags,
+    bool preserve_unknown_tags = false) {
+  if (buffer.empty()) return Fail(kind, "FIREBIRD.WIRE.BUFFER_EMPTY", "Parameter buffer is empty.");
+  ParameterBufferDecodeResult result;
+  result.ok = true;
+  result.kind = std::string(kind);
+  result.version = buffer[0];
+  result.runtime_policy = "descriptor_only_no_engine_authority";
+  std::size_t offset = 1;
+  while (offset < buffer.size()) {
+    const auto tag = buffer[offset++];
+    if (offset + 4 > buffer.size()) {
+      return Fail(kind, "FIREBIRD.WIRE.CLUMPLET_LENGTH_MISSING",
+                  "Wide parameter buffer clumplet tag is missing its length field.");
+    }
+    const auto length = ReadLeU32(buffer, offset);
+    offset += 4;
+    if (offset + length > buffer.size()) {
+      return Fail(kind, "FIREBIRD.WIRE.CLUMPLET_LENGTH_INVALID",
+                  "Wide parameter buffer clumplet length exceeds remaining bytes.");
+    }
+    const auto found = tags.find(tag);
+    if (found == tags.end()) {
+      if (!preserve_unknown_tags) {
+        return Fail(kind, "FIREBIRD.WIRE.UNKNOWN_TAG",
+                    "Wide parameter buffer contains an unassigned tag.");
+      }
+      result.items.push_back(
+          {tag,
+           "unknown_clumplet_tag_" + std::to_string(tag),
+           {buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+            buffer.begin() + static_cast<std::ptrdiff_t>(offset + length)},
+           "preserved_unknown_clumplet_no_engine_authority"});
+      offset += length;
+      continue;
+    }
+    result.items.push_back({tag, std::string(found->second.name),
+                            {buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+                             buffer.begin() + static_cast<std::ptrdiff_t>(offset + length)},
+                            std::string(found->second.policy)});
+    offset += length;
+  }
+  result.json = ItemsToJson(result);
+  return result;
+}
+
+ParameterBufferDecodeResult DecodeServiceStartSpbBuffer(
+    std::string_view kind,
+    const std::vector<std::uint8_t>& buffer) {
+  if (buffer.empty()) return Fail(kind, "FIREBIRD.WIRE.BUFFER_EMPTY", "Service start SPB is empty.");
+
+  ParameterBufferDecodeResult result;
+  result.ok = true;
+  result.kind = "SPB_SERVICE_START";
+  result.version = 0;
+  result.runtime_policy = "emulated_service_or_authority_diagnostic";
+  std::size_t offset = 0;
+  while (offset < buffer.size()) {
+    const auto tag = buffer[offset++];
+    if (result.service_action.empty()) {
+      const auto action = ServiceActions().find(tag);
+      if (action == ServiceActions().end()) {
+        return Fail(kind, "FIREBIRD.WIRE.SERVICE_ACTION_MISSING",
+                    "Service start SPB must begin with a service action tag.");
+      }
+      result.items.push_back({tag, std::string(action->second.name), {},
+                              std::string(action->second.policy)});
+      result.service_action = std::string(action->second.name);
+      continue;
+    }
+
+    const auto clumplet = SpbClumpletTags().find(tag);
+    if (IsSecurityUserServiceAction(result.service_action) &&
+        clumplet != SpbClumpletTags().end() && tag >= 7 && tag <= 13) {
+      if (!DecodeSpbClumpletItem(kind, tag, clumplet->second, buffer, &offset, &result)) {
+        return result;
+      }
+      continue;
+    }
+
+    const auto byte_option = ServiceActionByteTags().find(tag);
+    if (byte_option != ServiceActionByteTags().end()) {
+      if (offset >= buffer.size()) {
+        return Fail(kind, "FIREBIRD.WIRE.SERVICE_OPTION_TRUNCATED",
+                    "Service start SPB byte option is missing its value.");
+      }
+      result.items.push_back({tag, std::string(byte_option->second.name),
+                              {buffer[offset++]},
+                              std::string(byte_option->second.policy)});
+      continue;
+    }
+
+    const auto int_option = ServiceActionIntTags().find(tag);
+    if (int_option != ServiceActionIntTags().end()) {
+      if (offset + 4 > buffer.size()) {
+        return Fail(kind, "FIREBIRD.WIRE.SERVICE_OPTION_TRUNCATED",
+                    "Service start SPB integer option is truncated.");
+      }
+      result.items.push_back({tag, std::string(int_option->second.name),
+                              {buffer.begin() + static_cast<std::ptrdiff_t>(offset),
+                               buffer.begin() + static_cast<std::ptrdiff_t>(offset + 4)},
+                              std::string(int_option->second.policy)});
+      offset += 4;
+      continue;
+    }
+
+    if (clumplet != SpbClumpletTags().end() && offset + 2 <= buffer.size()) {
+      if (!DecodeSpbClumpletItem(kind, tag, clumplet->second, buffer, &offset, &result)) {
+        return result;
+      }
+      continue;
+    }
+
+    return Fail(kind, "FIREBIRD.WIRE.UNKNOWN_TAG",
+                "Service start SPB contains an unassigned action option tag.");
   }
   result.json = ItemsToJson(result);
   return result;
@@ -655,7 +899,10 @@ ParameterBufferDecodeResult DecodeFirebirdParameterBuffer(
     if (buffer.empty() || (buffer[0] != kDpbVersion1 && buffer[0] != kDpbVersion2)) {
       return Fail(kind, "FIREBIRD.WIRE.VERSION_INVALID", "DPB version is invalid.");
     }
-    return DecodeClumpletBuffer("DPB", buffer, DpbTags());
+    if (buffer[0] == kDpbVersion2) {
+      return DecodeWideTaggedClumpletBuffer("DPB", buffer, DpbTags(), true);
+    }
+    return DecodeClumpletBuffer("DPB", buffer, DpbTags(), true);
   }
   if (upper_kind == "BPB") {
     if (buffer.empty() || buffer[0] != kBpbVersion1) {
@@ -690,12 +937,18 @@ ParameterBufferDecodeResult DecodeFirebirdParameterBuffer(
          buffer[0] != kSpbVersion3)) {
       return Fail(kind, "FIREBIRD.WIRE.VERSION_INVALID", "SPB version is invalid.");
     }
+    if (buffer[0] == kSpbVersion3) {
+      return DecodeWideTaggedClumpletBuffer("SPB", buffer, SpbClumpletTags(), true);
+    }
     ParameterBufferDecodeResult result;
     result.ok = true;
     result.kind = "SPB";
     result.version = buffer[0];
     result.runtime_policy = "emulated_service_or_authority_diagnostic";
-    std::size_t offset = 1;
+    std::size_t offset = buffer[0] == kSpbVersion2 ? 2 : 1;
+    if (buffer[0] == kSpbVersion2) {
+      result.version = buffer[1];
+    }
     while (offset < buffer.size()) {
       const auto tag = buffer[offset++];
       const auto clumplet = SpbClumpletTags().find(tag);
@@ -722,6 +975,9 @@ ParameterBufferDecodeResult DecodeFirebirdParameterBuffer(
     }
     result.json = ItemsToJson(result);
     return result;
+  }
+  if (upper_kind == "SPB_SERVICE_START" || upper_kind == "SERVICE_START_SPB") {
+    return DecodeServiceStartSpbBuffer("SPB_SERVICE_START", buffer);
   }
   return Fail(kind, "FIREBIRD.WIRE.BUFFER_KIND_INVALID",
               "Parameter buffer kind must be DPB TPB SPB or BPB.");

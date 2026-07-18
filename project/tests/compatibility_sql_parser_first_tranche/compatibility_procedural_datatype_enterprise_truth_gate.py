@@ -60,8 +60,8 @@ EXPECTED_COMPATIBILITYS = (
 
 REQUIRED_FILES = (
     "README.md",
-    "TRACKER.csv",
-    "ACCEPTANCE_GATES.csv",
+    "COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv",
+    "COMPATIBILITY_PARSER_REMAP_GATE_STATUS.csv",
     "PROCEDURAL_LANGUAGE_SCOPE_MATRIX.csv",
     "DATATYPE_EXACTNESS_SCOPE_MATRIX.csv",
     "COMPATIBILITY_SEMANTIC_DEFAULTS_MATRIX.csv",
@@ -558,8 +558,8 @@ def validate_compatibility_operation_execution_plans(repo_root: pathlib.Path) ->
                 invalid.append(f"{rel_root}: README missing phrase {phrase!r}")
         joined = ""
         for name in (
-            "TRACKER.csv",
-            "ACCEPTANCE_GATES.csv",
+            "COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv",
+            "COMPATIBILITY_PARSER_REMAP_GATE_STATUS.csv",
             "ENTERPRISE_COMPLETION_PROOF_MATRIX.csv",
             "COMPATIBILITY_VARIANCE_DECISION_REGISTER.csv",
         ):
@@ -630,8 +630,8 @@ def build_evidence(repo_root: pathlib.Path, strict_release: bool) -> dict[str, o
 
     matrices = {
         "readme": validate_readme(execution_plan / "README.md"),
-        "tracker": validate_tracker(execution_plan / "TRACKER.csv"),
-        "acceptance_gates": validate_acceptance_gates(execution_plan / "ACCEPTANCE_GATES.csv"),
+        "tracker": validate_tracker(execution_plan / "COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv"),
+        "acceptance_gates": validate_acceptance_gates(execution_plan / "COMPATIBILITY_PARSER_REMAP_GATE_STATUS.csv"),
         "procedural": validate_procedural_matrix(execution_plan / "PROCEDURAL_LANGUAGE_SCOPE_MATRIX.csv"),
         "datatype": validate_datatype_matrix(execution_plan / "DATATYPE_EXACTNESS_SCOPE_MATRIX.csv"),
         "semantic_defaults": validate_semantic_defaults_matrix(

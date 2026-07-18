@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace {
@@ -213,6 +214,34 @@ void TestPersistLoadRoundTrip() {
           "storage linkage digest missing");
   Require(agents::ValidateDurableAgentCatalogForProduction(persisted.image).ok,
           "persisted image does not validate as production durable catalog");
+
+  const auto relation_descriptor =
+      api::LoadMgaRelationStorageDescriptor(context, persisted.table_uuid);
+  Require(relation_descriptor.ok,
+          "durable catalog MGA relation descriptor missing: " +
+              relation_descriptor.diagnostic.detail);
+  Require(relation_descriptor.descriptor.relation_uuid.canonical ==
+              persisted.table_uuid &&
+              relation_descriptor.descriptor.columns.size() == 7,
+          "durable catalog MGA relation descriptor drifted");
+  std::unordered_set<std::string> descriptor_identities;
+  descriptor_identities.insert(
+      relation_descriptor.descriptor.relation_uuid.canonical);
+  Require(!relation_descriptor.descriptor.descriptor_uuid.canonical.empty() &&
+              descriptor_identities
+                  .insert(relation_descriptor.descriptor.descriptor_uuid.canonical)
+                  .second,
+          "durable catalog relation/descriptor identities are missing or collide");
+  for (const auto& column : relation_descriptor.descriptor.columns) {
+    Require(!column.column_uuid.canonical.empty() &&
+                descriptor_identities.insert(column.column_uuid.canonical).second,
+            "durable catalog column identity is missing or collides");
+    Require(!column.value_descriptor.descriptor_uuid.canonical.empty() &&
+                descriptor_identities
+                    .insert(column.value_descriptor.descriptor_uuid.canonical)
+                    .second,
+            "durable catalog type-descriptor identity is missing or collides");
+  }
 
   const auto loaded = api::LoadAgentDurableCatalogImage(context, true);
   Require(loaded.ok, "durable catalog MGA load failed: " +

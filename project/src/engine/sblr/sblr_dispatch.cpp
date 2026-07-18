@@ -12,6 +12,7 @@
 #include "sblr_context_variables.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "sblr_operator_runtime.hpp"
+#include "sblr_procedural_block_runtime.hpp"
 
 #include "agents/agent_action_hooks_api.hpp"
 #include "agents/agent_management_api.hpp"
@@ -20,8 +21,10 @@
 #include "catalog/descriptor_api.hpp"
 #include "catalog/descriptor_mutation_api.hpp"
 #include "catalog/catalog_lookup_api.hpp"
+#include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/relation_projection_view.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "cluster/cluster_control_api.hpp"
 #include "cluster/cluster_inspect_api.hpp"
@@ -109,8 +112,10 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -344,6 +349,24 @@ std::optional<std::string_view> TextOperandValue(
   return std::nullopt;
 }
 
+bool CanonicalEnvelopeHasExactField(std::string_view envelope,
+                                    std::string_view name,
+                                    std::string_view value) {
+  const std::string expected = std::string(name) + "=" + std::string(value);
+  std::size_t offset = 0;
+  while (offset <= envelope.size()) {
+    const auto separator = envelope.find(';', offset);
+    const auto field = envelope.substr(
+        offset,
+        separator == std::string_view::npos ? envelope.size() - offset
+                                            : separator - offset);
+    if (field == expected) return true;
+    if (separator == std::string_view::npos) break;
+    offset = separator + 1;
+  }
+  return false;
+}
+
 std::uint64_t ParseCompactU64(std::string_view value) {
   std::uint64_t out = 0;
   if (value.empty()) return 0;
@@ -373,6 +396,10 @@ bool LooksLikeOrdinalInsertFieldName(std::string_view name) {
 
 bool HexDecodeString(std::string_view text, std::string* out) {
   if (out == nullptr) return false;
+  if (text.empty()) {
+    out->clear();
+    return true;
+  }
   std::vector<std::uint8_t> bytes;
   if (!HexDecodeBytes(text, &bytes)) return false;
   out->assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
@@ -393,12 +420,1537 @@ std::vector<std::string_view> SplitCompactInsertCell(std::string_view cell) {
   return parts;
 }
 
+// SB_ENGINE_GLOBAL_AGGREGATE_PROJECTION_TRANSPORT_V1_BEGIN
+constexpr std::string_view kGlobalAggregateProjectionTransportV1 =
+    "sblr.global_aggregate_projection.v1";
+
+bool ParseStrictTransportU64(std::string_view text, std::uint64_t* out) {
+  if (out == nullptr || text.empty()) return false;
+  if (text.size() > 1 && text.front() == '0') return false;
+  std::uint64_t value = 0;
+  for (const unsigned char ch : text) {
+    if (!std::isdigit(ch)) return false;
+    const std::uint64_t digit = static_cast<std::uint64_t>(ch - '0');
+    if (value >
+        (std::numeric_limits<std::uint64_t>::max() - digit) / 10u) {
+      return false;
+    }
+    value = value * 10u + digit;
+  }
+  *out = value;
+  return true;
+}
+
+bool ReadExactSingleTransportOption(const api::EngineApiRequest& request,
+                                    std::string_view prefix,
+                                    std::string* out) {
+  if (out == nullptr) return false;
+  std::size_t matches = 0;
+  std::string value;
+  for (const auto& option : request.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(prefix)) continue;
+    ++matches;
+    value.assign(encoded.substr(prefix.size()));
+  }
+  if (matches != 1) return false;
+  *out = std::move(value);
+  return true;
+}
+
+void SetInvalidGlobalAggregateProjectionTransport(
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return;
+  typed->global_aggregate_projection = {};
+  typed->global_aggregate_projection.relation_uuid.canonical = "invalid";
+  typed->global_aggregate_projection.relation_descriptor_uuid.canonical =
+      "invalid";
+  typed->global_aggregate_projection.relation_descriptor_generation = 1;
+  api::EngineGlobalAggregateProjection invalid;
+  invalid.operation =
+      static_cast<api::EngineGlobalAggregateOperation>(0);
+  invalid.aggregate_function_uuid.canonical =
+      std::string(api::EngineGlobalAggregateCountFunctionUuid());
+  invalid.output_alias = "invalid";
+  invalid.result_descriptor =
+      api::EngineGlobalAggregateCountResultDescriptor();
+  typed->global_aggregate_projection.outputs.push_back(std::move(invalid));
+}
+
+// Decodes only the family-neutral typed aggregate packet carried through the
+// existing bounded DML operand slots.  It does not inspect dialect identity or
+// SQL text.  A present marker always constructs a non-empty envelope, including
+// on malformed input, so EngineSelectRows fails before materializing rows.
+bool DecodeGlobalAggregateProjectionTransportV1(
+    const api::EngineApiRequest& base,
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view result_projection_prefix =
+      "result_projection:";
+  constexpr std::string_view aggregate_marker_family =
+      "sblr.global_aggregate_projection.";
+  std::size_t result_projection_count = 0;
+  std::size_t exact_marker_count = 0;
+  std::size_t aggregate_marker_family_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(result_projection_prefix)) continue;
+    ++result_projection_count;
+    const std::string_view value =
+        encoded.substr(result_projection_prefix.size());
+    if (value == kGlobalAggregateProjectionTransportV1) {
+      ++exact_marker_count;
+    }
+    if (value.starts_with(aggregate_marker_family)) {
+      ++aggregate_marker_family_count;
+    }
+  }
+  if (aggregate_marker_family_count == 0) return false;
+  SetInvalidGlobalAggregateProjectionTransport(typed);
+  if (result_projection_count != 1 || exact_marker_count != 1 ||
+      aggregate_marker_family_count != 1) {
+    return true;
+  }
+  const std::string encoded_marker =
+      std::string(result_projection_prefix) +
+      std::string(kGlobalAggregateProjectionTransportV1);
+  typed->option_envelopes.erase(
+      std::remove(typed->option_envelopes.begin(),
+                  typed->option_envelopes.end(),
+                  encoded_marker),
+      typed->option_envelopes.end());
+
+  std::string aggregate_function;
+  if (!ReadExactSingleTransportOption(
+          base, "aggregate_function:", &aggregate_function) ||
+      (aggregate_function != api::EngineGlobalAggregateCountFunctionUuid() &&
+       aggregate_function != api::EngineGlobalAggregateAvgFunctionUuid())) {
+    return true;
+  }
+  std::string encoded_output_count;
+  std::uint64_t output_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "projection_count:", &encoded_output_count) ||
+      !ParseStrictTransportU64(encoded_output_count, &output_count) ||
+      output_count == 0 || output_count > 16) {
+    return true;
+  }
+
+  constexpr std::string_view projection_prefix = "projection_";
+  std::vector<std::optional<std::string>> packed_outputs(
+      static_cast<std::size_t>(output_count));
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (encoded.starts_with("projection_count:")) continue;
+    if (!encoded.starts_with(projection_prefix)) continue;
+    const std::size_t separator = encoded.find(':', projection_prefix.size());
+    if (separator == std::string_view::npos) return true;
+    const std::string_view encoded_index = encoded.substr(
+        projection_prefix.size(), separator - projection_prefix.size());
+    std::uint64_t index = 0;
+    if (!ParseStrictTransportU64(encoded_index, &index) ||
+        std::to_string(index) != std::string(encoded_index) || index >= 16 ||
+        index >= output_count ||
+        packed_outputs[static_cast<std::size_t>(index)].has_value()) {
+      return true;
+    }
+    packed_outputs[static_cast<std::size_t>(index)] =
+        std::string(encoded.substr(separator + 1));
+  }
+  if (std::any_of(packed_outputs.begin(), packed_outputs.end(),
+                  [](const auto& value) { return !value.has_value(); })) {
+    return true;
+  }
+
+  api::EngineGlobalAggregateProjectionEnvelope decoded;
+  decoded.outputs.reserve(static_cast<std::size_t>(output_count));
+  for (std::uint64_t index = 0; index < output_count; ++index) {
+    const std::string& packed =
+        *packed_outputs[static_cast<std::size_t>(index)];
+    const auto parts = SplitCompactInsertCell(packed);
+    if (parts.size() != 15 || parts[0] != "gag1") return true;
+
+    std::string function_uuid;
+    std::string output_alias;
+    std::string relation_uuid;
+    std::string relation_descriptor_uuid;
+    std::string column_uuid;
+    std::string source_descriptor_uuid;
+    std::string source_descriptor_kind;
+    std::string source_canonical_type;
+    std::string source_encoded_descriptor;
+    std::string result_descriptor_kind;
+    std::string result_canonical_type;
+    std::string result_encoded_descriptor;
+    std::uint64_t operation = 0;
+    std::uint64_t descriptor_generation = 0;
+    if (!HexDecodeString(parts[1], &function_uuid) ||
+        !ParseStrictTransportU64(parts[2], &operation) ||
+        !HexDecodeString(parts[3], &output_alias) ||
+        !HexDecodeString(parts[4], &relation_uuid) ||
+        !HexDecodeString(parts[5], &relation_descriptor_uuid) ||
+        !ParseStrictTransportU64(parts[6], &descriptor_generation) ||
+        descriptor_generation == 0 ||
+        !HexDecodeString(parts[7], &column_uuid) ||
+        !HexDecodeString(parts[8], &source_descriptor_uuid) ||
+        !HexDecodeString(parts[9], &source_descriptor_kind) ||
+        !HexDecodeString(parts[10], &source_canonical_type) ||
+        !HexDecodeString(parts[11], &source_encoded_descriptor) ||
+        !HexDecodeString(parts[12], &result_descriptor_kind) ||
+        !HexDecodeString(parts[13], &result_canonical_type) ||
+        !HexDecodeString(parts[14], &result_encoded_descriptor)) {
+      return true;
+    }
+    const bool count_function =
+        aggregate_function == api::EngineGlobalAggregateCountFunctionUuid();
+    const bool count_operation =
+        operation >= static_cast<std::uint64_t>(
+                         api::EngineGlobalAggregateOperation::count_star) &&
+        operation <= static_cast<std::uint64_t>(
+                         api::EngineGlobalAggregateOperation::
+                             count_distinct_field);
+    const bool avg_operation =
+        operation >= static_cast<std::uint64_t>(
+                         api::EngineGlobalAggregateOperation::avg_field) &&
+        operation <= static_cast<std::uint64_t>(
+                         api::EngineGlobalAggregateOperation::
+                             avg_distinct_field);
+    if (function_uuid != aggregate_function ||
+        (count_function && !count_operation) ||
+        (!count_function && !avg_operation)) {
+      return true;
+    }
+    if (index == 0) {
+      decoded.relation_uuid.canonical = relation_uuid;
+      decoded.relation_descriptor_uuid.canonical =
+          relation_descriptor_uuid;
+      decoded.relation_descriptor_generation = descriptor_generation;
+    } else if (decoded.relation_uuid.canonical != relation_uuid ||
+               decoded.relation_descriptor_uuid.canonical !=
+                   relation_descriptor_uuid ||
+               decoded.relation_descriptor_generation !=
+                   descriptor_generation) {
+      return true;
+    }
+
+    api::EngineGlobalAggregateProjection output;
+    output.operation =
+        static_cast<api::EngineGlobalAggregateOperation>(operation);
+    output.aggregate_function_uuid.canonical = std::move(function_uuid);
+    output.output_alias = std::move(output_alias);
+    output.source_field.column_uuid.canonical = std::move(column_uuid);
+    output.source_field.value_descriptor.descriptor_uuid.canonical =
+        std::move(source_descriptor_uuid);
+    output.source_field.value_descriptor.descriptor_kind =
+        std::move(source_descriptor_kind);
+    output.source_field.value_descriptor.canonical_type_name =
+        std::move(source_canonical_type);
+    output.source_field.value_descriptor.encoded_descriptor =
+        std::move(source_encoded_descriptor);
+    output.result_descriptor.descriptor_kind =
+        std::move(result_descriptor_kind);
+    output.result_descriptor.canonical_type_name =
+        std::move(result_canonical_type);
+    output.result_descriptor.encoded_descriptor =
+        std::move(result_encoded_descriptor);
+    decoded.outputs.push_back(std::move(output));
+  }
+  typed->global_aggregate_projection = std::move(decoded);
+  return true;
+}
+// SB_ENGINE_GLOBAL_AGGREGATE_PROJECTION_TRANSPORT_V1_END
+
+// SB_ENGINE_GLOBAL_AGGREGATE_VIEW_TRANSPORT_V1_BEGIN
+constexpr std::string_view kGlobalAggregateViewTransportV1 =
+    "engine.global_aggregate_view.v1";
+constexpr std::string_view kGlobalAggregateViewCreatePacketV1 = "gavc1";
+constexpr std::string_view kGlobalAggregateViewSelectPacketV1 = "gavs1";
+
+bool IsAdmittedGlobalAggregateViewContextOption(std::string_view name) {
+  return name == "identifier_profile_uuid" || name == "principal_name" ||
+         name == "requested_role_name" || name == "active_role_name" ||
+         name == "current_role_uuid" ||
+         name == "effective_role_uuid_set" ||
+         name == "effective_group_uuid_set" || name == "authorization_tag";
+}
+
+bool GlobalAggregateViewBaseDataEmpty(const api::EngineApiRequest& base) {
+  return base.target_database.uuid.canonical.empty() &&
+         base.target_database.object_kind.empty() &&
+         base.sql_object_reference.expected_object_type.empty() &&
+         base.sql_object_reference.path_type == "unqualified" &&
+         !base.sql_object_reference.no_search_path &&
+         base.sql_object_reference.path_components.empty() &&
+         base.sql_object_reference.object_name.raw_text.empty() &&
+         !base.sql_object_reference.object_name.was_quoted &&
+         base.sql_object_reference.object_name.quote_style.empty() &&
+         base.sql_object_reference.object_name.identifier_profile_uuid.empty() &&
+         base.sql_object_reference.object_name.normalized_lookup_key.empty() &&
+         base.sql_object_reference.object_name.exact_lookup_key.empty() &&
+         !base.sql_object_reference.object_name.requires_exact_match &&
+         base.sql_object_reference.object_name.source_span.empty() &&
+         base.bound_object_identity.object_uuid.canonical.empty() &&
+         base.bound_object_identity.resolved_object_type.empty() &&
+         base.bound_object_identity.resolved_schema_uuid.canonical.empty() &&
+         base.bound_object_identity.parent_object_uuid.canonical.empty() &&
+         base.bound_object_identity.catalog_generation_id == 0 &&
+         base.bound_object_identity.security_epoch == 0 &&
+         base.bound_object_identity.resource_epoch == 0 &&
+         !base.native_row_packet.present &&
+         base.native_row_packet.version == 0 &&
+         base.native_row_packet.row_count == 0 &&
+         base.native_row_packet.column_count == 0 &&
+         base.native_row_packet.packet_bytes.empty() &&
+         base.native_row_packet.field_order.empty() &&
+         base.native_row_packet.column_type_tags.empty() &&
+         base.native_row_packet.row_offsets.empty() &&
+         base.native_row_packet.row_sizes.empty() &&
+         base.shared_row_field_order.empty() &&
+         base.related_objects.empty() && base.localized_names.empty() &&
+         base.descriptors.empty() && base.columns.empty() &&
+         base.constraints.empty() && base.indexes.empty() &&
+         base.rows.empty() && base.assignments.empty() &&
+         base.predicate.predicate_kind.empty() &&
+         base.predicate.canonical_predicate_envelope.empty() &&
+         base.predicate.bound_values.empty() &&
+         base.projection.canonical_projection_envelopes.empty() &&
+         base.ordering.canonical_ordering_envelopes.empty() &&
+         base.physical_profile.names.empty() &&
+         base.physical_profile.encoded_profiles.empty() &&
+         base.policy_profile.names.empty() &&
+         base.policy_profile.encoded_profiles.empty() &&
+         base.compatibility_profile.names.empty() &&
+         base.compatibility_profile.encoded_profiles.empty() &&
+         base.diagnostic_options.empty();
+}
+
+bool GlobalAggregateViewOptionsAdmitted(
+    const api::EngineApiRequest& base,
+    std::initializer_list<std::string_view> admitted_transport_names) {
+  std::set<std::string_view> seen_single_context_names;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    const auto separator = encoded.find(':');
+    if (separator == std::string_view::npos || separator == 0) return false;
+    const auto name = encoded.substr(0, separator);
+    const bool admitted_transport =
+        std::find(admitted_transport_names.begin(),
+                  admitted_transport_names.end(),
+                  name) != admitted_transport_names.end();
+    if (!admitted_transport &&
+        !IsAdmittedGlobalAggregateViewContextOption(name)) {
+      return false;
+    }
+    if (!admitted_transport && name != "authorization_tag" &&
+        !seen_single_context_names.insert(name).second) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void SetInvalidGlobalAggregateViewCreateTransport(
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return;
+  typed->related_objects.clear();
+  typed->columns.clear();
+  typed->assignments.clear();
+  typed->descriptors.clear();
+  typed->projection = {};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+      std::string(kGlobalAggregateViewTransportV1)};
+}
+
+// Reconstructs the exact SQL-free engine request for the bounded persisted
+// aggregate-view surface.  A marker-family packet is always consumed; any
+// malformed packet leaves a marked but invalid request so DDL fails closed.
+bool DecodeGlobalAggregateViewCreateTransportV1(
+    const api::EngineApiRequest& base,
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "view_query_shape:";
+  constexpr std::string_view marker_family =
+      "engine.global_aggregate_view";
+  std::size_t marker_field_count = 0;
+  std::size_t marker_family_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    const auto value = encoded.substr(marker_prefix.size());
+    if (!value.starts_with(marker_family)) continue;
+    ++marker_family_count;
+    if (value == kGlobalAggregateViewTransportV1) ++exact_marker_count;
+  }
+  if (marker_family_count == 0) return false;
+
+  SetInvalidGlobalAggregateViewCreateTransport(typed);
+  if (marker_field_count != 1 || marker_family_count != 1 ||
+      exact_marker_count != 1 || !GlobalAggregateViewBaseDataEmpty(base) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_kind", "view_name", "name",
+           "target_schema_uuid", "view_projection_count",
+           "view_query_shape", "view_source_uuid", "view_projection_0"})) {
+    return true;
+  }
+  if (!base.target_object.uuid.canonical.empty() ||
+      base.target_object.object_kind != "view" ||
+      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string encoded_count;
+  std::string packed;
+  std::string source_option;
+  std::string target_kind;
+  std::string view_name;
+  std::string canonical_name;
+  std::string target_schema_uuid;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "view_projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 1 ||
+      !ReadExactSingleTransportOption(base, "view_projection_0:", &packed) ||
+      !ReadExactSingleTransportOption(
+          base, "view_source_uuid:", &source_option) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(base, "view_name:", &view_name) ||
+      !ReadExactSingleTransportOption(base, "name:", &canonical_name) ||
+      !ReadExactSingleTransportOption(
+          base, "target_schema_uuid:", &target_schema_uuid) ||
+      target_kind != "view" || view_name.empty() ||
+      view_name != canonical_name || target_schema_uuid.empty() ||
+      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_object.object_kind != "view") {
+    return true;
+  }
+
+  const auto parts = SplitCompactInsertCell(packed);
+  if (parts.size() != 23 || parts[0] != kGlobalAggregateViewCreatePacketV1 ||
+      (parts[1] != "0" && parts[1] != "1")) {
+    return true;
+  }
+
+  std::string source_relation_uuid;
+  std::string source_relation_descriptor_uuid;
+  std::string source_column_uuid;
+  std::string source_column_descriptor_uuid;
+  std::string source_descriptor_kind;
+  std::string source_canonical_type;
+  std::string source_encoded_descriptor;
+  std::string expression_kind;
+  std::string literal_descriptor_kind;
+  std::string literal_canonical_type;
+  std::string literal_encoded_descriptor;
+  std::string literal_value;
+  std::string expression_descriptor_kind;
+  std::string expression_canonical_type;
+  std::string expression_encoded_descriptor;
+  std::string aggregate_function_uuid;
+  std::string result_alias;
+  std::string result_descriptor_kind;
+  std::string result_canonical_type;
+  std::string result_encoded_descriptor;
+  std::uint64_t source_generation = 0;
+  if (!HexDecodeString(parts[2], &source_relation_uuid) ||
+      !HexDecodeString(parts[3], &source_relation_descriptor_uuid) ||
+      !ParseStrictTransportU64(parts[4], &source_generation) ||
+      source_generation == 0 ||
+      !HexDecodeString(parts[5], &source_column_uuid) ||
+      !HexDecodeString(parts[6], &source_column_descriptor_uuid) ||
+      !HexDecodeString(parts[7], &source_descriptor_kind) ||
+      !HexDecodeString(parts[8], &source_canonical_type) ||
+      !HexDecodeString(parts[9], &source_encoded_descriptor) ||
+      !HexDecodeString(parts[10], &expression_kind) ||
+      !HexDecodeString(parts[11], &literal_descriptor_kind) ||
+      !HexDecodeString(parts[12], &literal_canonical_type) ||
+      !HexDecodeString(parts[13], &literal_encoded_descriptor) ||
+      !HexDecodeString(parts[14], &literal_value) ||
+      !HexDecodeString(parts[15], &expression_descriptor_kind) ||
+      !HexDecodeString(parts[16], &expression_canonical_type) ||
+      !HexDecodeString(parts[17], &expression_encoded_descriptor) ||
+      !HexDecodeString(parts[18], &aggregate_function_uuid) ||
+      !HexDecodeString(parts[19], &result_alias) ||
+      !HexDecodeString(parts[20], &result_descriptor_kind) ||
+      !HexDecodeString(parts[21], &result_canonical_type) ||
+      !HexDecodeString(parts[22], &result_encoded_descriptor) ||
+      source_relation_uuid != source_option ||
+      expression_kind != api::kEngineGlobalAggregateViewInt32MultiplyV1 ||
+      aggregate_function_uuid != api::EngineGlobalAggregateAvgFunctionUuid()) {
+    return true;
+  }
+
+  api::EngineDescriptor source_descriptor;
+  source_descriptor.descriptor_uuid.canonical =
+      std::move(source_column_descriptor_uuid);
+  source_descriptor.descriptor_kind = std::move(source_descriptor_kind);
+  source_descriptor.canonical_type_name = std::move(source_canonical_type);
+  source_descriptor.encoded_descriptor =
+      std::move(source_encoded_descriptor);
+
+  api::EngineDescriptor literal_descriptor;
+  literal_descriptor.descriptor_kind = std::move(literal_descriptor_kind);
+  literal_descriptor.canonical_type_name =
+      std::move(literal_canonical_type);
+  literal_descriptor.encoded_descriptor =
+      std::move(literal_encoded_descriptor);
+
+  api::EngineDescriptor expression_descriptor;
+  expression_descriptor.descriptor_kind =
+      std::move(expression_descriptor_kind);
+  expression_descriptor.canonical_type_name =
+      std::move(expression_canonical_type);
+  expression_descriptor.encoded_descriptor =
+      std::move(expression_encoded_descriptor);
+
+  api::EngineDescriptor result_descriptor;
+  result_descriptor.descriptor_kind = std::move(result_descriptor_kind);
+  result_descriptor.canonical_type_name = std::move(result_canonical_type);
+  result_descriptor.encoded_descriptor =
+      std::move(result_encoded_descriptor);
+
+  api::EngineObjectReference source_relation;
+  source_relation.uuid.canonical = std::move(source_relation_uuid);
+  source_relation.object_kind = "table";
+  api::EngineColumnDefinition source_column;
+  source_column.requested_column_uuid.canonical = std::move(source_column_uuid);
+  source_column.descriptor = std::move(source_descriptor);
+  source_column.ordinal = 0;
+
+  api::EngineTypedValue literal;
+  literal.descriptor = std::move(literal_descriptor);
+  literal.encoded_value = std::move(literal_value);
+  literal.setState(api::EngineValueState::value);
+
+  typed->related_objects = {std::move(source_relation)};
+  typed->columns = {std::move(source_column)};
+  typed->assignments = {{"int32_literal", std::move(literal)}};
+  typed->descriptors = {std::move(expression_descriptor),
+                        std::move(result_descriptor)};
+  typed->projection.canonical_projection_envelopes = {
+      std::string(api::kEngineGlobalAggregateViewInt32MultiplyV1)};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+          std::string(api::kEngineGlobalAggregateViewMarkerV1),
+      "source_relation_descriptor_uuid:" +
+          source_relation_descriptor_uuid,
+      "source_relation_descriptor_generation:" +
+          std::to_string(source_generation),
+      "aggregate_function_uuid:" + aggregate_function_uuid,
+      "aggregate_result_alias:" + result_alias};
+  if (parts[1] == "1") {
+    typed->option_envelopes.push_back("create_or_alter:true");
+  }
+  return true;
+}
+
+void SetInvalidGlobalAggregateViewSelectTransport(
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return;
+  typed->source_object.object_kind = "view";
+  typed->select_projection.canonical_projection_envelopes = {
+      std::string(kGlobalAggregateViewTransportV1)};
+  typed->projection = {};
+  typed->descriptors.clear();
+  typed->option_envelopes.clear();
+}
+
+// Decodes the bounded semantic descriptor returned by neutral name
+// resolution.  No source-relation or expression internals cross this route.
+bool DecodeGlobalAggregateViewSelectTransportV1(
+    const api::EngineApiRequest& base,
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "result_projection:";
+  constexpr std::string_view marker_family =
+      "engine.global_aggregate_view";
+  std::size_t marker_field_count = 0;
+  std::size_t marker_family_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    const auto value = encoded.substr(marker_prefix.size());
+    if (!value.starts_with(marker_family)) continue;
+    ++marker_family_count;
+    if (value == kGlobalAggregateViewTransportV1) ++exact_marker_count;
+  }
+  if (marker_family_count == 0) return false;
+
+  SetInvalidGlobalAggregateViewSelectTransport(typed);
+  if (marker_field_count != 1 || marker_family_count != 1 ||
+      exact_marker_count != 1 || !GlobalAggregateViewBaseDataEmpty(base) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_uuid", "target_object_kind", "source_uuid",
+           "source_kind", "result_projection", "projection_count",
+           "projection_0"})) {
+    return true;
+  }
+  if (!base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string encoded_count;
+  std::string packed;
+  std::string target_uuid;
+  std::string target_kind;
+  std::string source_uuid;
+  std::string source_kind;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 1 ||
+      !ReadExactSingleTransportOption(base, "projection_0:", &packed) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_uuid:", &target_uuid) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(base, "source_uuid:", &source_uuid) ||
+      !ReadExactSingleTransportOption(base, "source_kind:", &source_kind) ||
+      target_uuid.empty() || target_uuid != source_uuid ||
+      target_kind != "view" || source_kind != "view" ||
+      typed->source_object.uuid.canonical != target_uuid ||
+      typed->source_object.object_kind != "view") {
+    return true;
+  }
+  const auto parts = SplitCompactInsertCell(packed);
+  if (parts.size() != 11 || parts[0] != kGlobalAggregateViewSelectPacketV1) {
+    return true;
+  }
+
+  std::string marker;
+  std::string projection_descriptor_uuid;
+  std::string projection_descriptor_kind;
+  std::string projection_canonical_type;
+  std::string projection_encoded_descriptor;
+  std::string result_alias;
+  std::string result_descriptor_kind;
+  std::string result_canonical_type;
+  std::string result_encoded_descriptor;
+  std::uint64_t descriptor_generation = 0;
+  if (!HexDecodeString(parts[1], &marker) ||
+      !HexDecodeString(parts[2], &projection_descriptor_uuid) ||
+      !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
+      descriptor_generation == 0 ||
+      !HexDecodeString(parts[4], &projection_descriptor_kind) ||
+      !HexDecodeString(parts[5], &projection_canonical_type) ||
+      !HexDecodeString(parts[6], &projection_encoded_descriptor) ||
+      !HexDecodeString(parts[7], &result_alias) ||
+      !HexDecodeString(parts[8], &result_descriptor_kind) ||
+      !HexDecodeString(parts[9], &result_canonical_type) ||
+      !HexDecodeString(parts[10], &result_encoded_descriptor) ||
+      marker != api::kEngineGlobalAggregateViewMarkerV1 ||
+      projection_descriptor_uuid.empty() ||
+      projection_descriptor_kind != "global_aggregate_view" ||
+      projection_canonical_type != api::kEngineGlobalAggregateViewMarkerV1 ||
+      result_alias.empty()) {
+    return true;
+  }
+
+  const api::EngineDescriptor expected_result =
+      api::EngineGlobalAggregateAvgIntegerResultDescriptor();
+  if (result_descriptor_kind != expected_result.descriptor_kind ||
+      result_canonical_type != expected_result.canonical_type_name ||
+      result_encoded_descriptor != expected_result.encoded_descriptor) {
+    return true;
+  }
+  const std::string expected_semantic_descriptor =
+      std::string("marker=") +
+      std::string(api::kEngineGlobalAggregateViewMarkerV1) +
+      ";view_uuid=" + target_uuid +
+      ";view_descriptor_generation=" +
+      std::to_string(descriptor_generation) +
+      ";result_alias=" + result_alias +
+      ";result_type=int64;result_nullable=true";
+  if (projection_encoded_descriptor != expected_semantic_descriptor) {
+    return true;
+  }
+
+  api::EngineDescriptor semantic;
+  semantic.descriptor_uuid.canonical =
+      std::move(projection_descriptor_uuid);
+  semantic.descriptor_kind = std::move(projection_descriptor_kind);
+  semantic.canonical_type_name = std::move(projection_canonical_type);
+  semantic.encoded_descriptor = std::move(projection_encoded_descriptor);
+  typed->descriptors = {std::move(semantic)};
+  return true;
+}
+// SB_ENGINE_GLOBAL_AGGREGATE_VIEW_TRANSPORT_V1_END
+
+// SB_ENGINE_RELATION_PROJECTION_VIEW_TRANSPORT_V1_BEGIN
+constexpr std::string_view kRelationProjectionViewTransportV1 =
+    "engine.relation_projection_view.v1";
+constexpr std::string_view kRelationProjectionViewCreatePacketV1 = "rpvc1";
+constexpr std::string_view kRelationProjectionViewSelectPacketV1 = "rpvs1";
+constexpr std::string_view kRelationProjectionViewTransportV2 =
+    "engine.relation_projection_view.v2";
+constexpr std::string_view kRelationProjectionViewCreatePacketV2 = "rpvc2";
+constexpr std::string_view kRelationProjectionViewDeletePacketV2 = "rpvd2";
+
+bool CanonicalTransportUuid(std::string_view value) {
+  if (value.size() != 36u || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  bool nonzero = false;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8u || index == 13u || index == 18u || index == 23u) {
+      continue;
+    }
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+    nonzero = nonzero || ch != '0';
+  }
+  return nonzero;
+}
+
+bool SafeTransportOutputName(std::string_view value) {
+  if (value.empty() || value.size() > 63u) return false;
+  const auto alpha = [](unsigned char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+  };
+  const auto digit = [](unsigned char ch) {
+    return ch >= '0' && ch <= '9';
+  };
+  const unsigned char first = static_cast<unsigned char>(value.front());
+  if (!alpha(first) && first != '_') return false;
+  for (const unsigned char ch : value) {
+    if (!alpha(ch) && !digit(ch) && ch != '_') return false;
+  }
+  return true;
+}
+
+bool TransportInt32Descriptor(std::string_view kind,
+                              std::string_view canonical,
+                              std::string_view encoded) {
+  std::string lowered(canonical);
+  std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                 [](unsigned char ch) {
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  return !kind.empty() && !encoded.empty() &&
+         (lowered == "int32" || lowered == "integer" || lowered == "int");
+}
+
+bool CanonicalTransportInt32(std::string_view value) {
+  if (value.empty() || value.front() == '+') return false;
+  std::int32_t parsed = 0;
+  const auto [end, error] =
+      std::from_chars(value.data(), value.data() + value.size(), parsed);
+  return error == std::errc{} && end == value.data() + value.size() &&
+         std::to_string(parsed) == value;
+}
+
+void SetInvalidRelationProjectionViewCreateTransport(
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return;
+  typed->related_objects.clear();
+  typed->columns.clear();
+  typed->assignments.clear();
+  typed->descriptors.clear();
+  typed->projection = {};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+      std::string(kRelationProjectionViewTransportV1)};
+}
+
+bool DecodeRelationProjectionViewCreateTransportV1(
+    const api::EngineApiRequest& base,
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "view_query_shape:";
+  constexpr std::string_view marker_family =
+      "engine.relation_projection_view";
+  std::size_t marker_field_count = 0;
+  std::size_t marker_family_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    const auto value = encoded.substr(marker_prefix.size());
+    if (!value.starts_with(marker_family)) continue;
+    ++marker_family_count;
+    if (value == kRelationProjectionViewTransportV1) ++exact_marker_count;
+  }
+  if (marker_family_count == 0) return false;
+
+  SetInvalidRelationProjectionViewCreateTransport(typed);
+  if (marker_field_count != 1u || marker_family_count != 1u ||
+      exact_marker_count != 1u || !GlobalAggregateViewBaseDataEmpty(base) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_kind", "view_name", "name",
+           "target_schema_uuid", "view_projection_count",
+           "view_query_shape", "view_source_uuid", "view_projection_0",
+           "view_projection_1"}) ||
+      !base.target_object.uuid.canonical.empty() ||
+      base.target_object.object_kind != "view" ||
+      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string encoded_count;
+  std::string packed[2];
+  std::string source_option;
+  std::string target_kind;
+  std::string view_name;
+  std::string canonical_name;
+  std::string target_schema_uuid;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "view_projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 2u ||
+      !ReadExactSingleTransportOption(
+          base, "view_projection_0:", &packed[0]) ||
+      !ReadExactSingleTransportOption(
+          base, "view_projection_1:", &packed[1]) ||
+      !ReadExactSingleTransportOption(
+          base, "view_source_uuid:", &source_option) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(base, "view_name:", &view_name) ||
+      !ReadExactSingleTransportOption(base, "name:", &canonical_name) ||
+      !ReadExactSingleTransportOption(
+          base, "target_schema_uuid:", &target_schema_uuid) ||
+      target_kind != "view" || !SafeTransportOutputName(view_name) ||
+      view_name != canonical_name ||
+      !CanonicalTransportUuid(target_schema_uuid) ||
+      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_object.object_kind != "view" ||
+      typed->localized_names.size() != 1u ||
+      typed->localized_names.front().name != view_name) {
+    return true;
+  }
+
+  struct DecodedProjection {
+    std::uint32_t ordinal = 0;
+    std::string relation_uuid;
+    std::string relation_descriptor_uuid;
+    std::uint64_t relation_descriptor_generation = 0;
+    std::uint64_t resource_epoch = 0;
+    std::string output_name;
+    std::string expression_kind;
+    std::string source_column_uuid;
+    std::string source_type_descriptor_uuid;
+    std::string descriptor_kind;
+    std::string canonical_type;
+    std::string encoded_descriptor;
+    bool nullable = true;
+    std::string typed_value;
+  } decoded[2];
+
+  for (std::uint32_t ordinal = 0; ordinal < 2u; ++ordinal) {
+    const auto parts = SplitCompactInsertCell(packed[ordinal]);
+    std::uint64_t encoded_ordinal = 0;
+    if (parts.size() != 16u ||
+        parts[0] != kRelationProjectionViewCreatePacketV1 ||
+        parts[1] != "0" ||
+        !ParseStrictTransportU64(parts[2], &encoded_ordinal) ||
+        encoded_ordinal != ordinal ||
+        !HexDecodeString(parts[3], &decoded[ordinal].relation_uuid) ||
+        !HexDecodeString(
+            parts[4], &decoded[ordinal].relation_descriptor_uuid) ||
+        !ParseStrictTransportU64(
+            parts[5], &decoded[ordinal].relation_descriptor_generation) ||
+        decoded[ordinal].relation_descriptor_generation == 0u ||
+        !ParseStrictTransportU64(
+            parts[6], &decoded[ordinal].resource_epoch) ||
+        decoded[ordinal].resource_epoch == 0u ||
+        !HexDecodeString(parts[7], &decoded[ordinal].output_name) ||
+        !HexDecodeString(parts[8], &decoded[ordinal].expression_kind) ||
+        !HexDecodeString(parts[9], &decoded[ordinal].source_column_uuid) ||
+        !HexDecodeString(
+            parts[10], &decoded[ordinal].source_type_descriptor_uuid) ||
+        !HexDecodeString(parts[11], &decoded[ordinal].descriptor_kind) ||
+        !HexDecodeString(parts[12], &decoded[ordinal].canonical_type) ||
+        !HexDecodeString(parts[13], &decoded[ordinal].encoded_descriptor) ||
+        (parts[14] != "0" && parts[14] != "1") ||
+        !HexDecodeString(parts[15], &decoded[ordinal].typed_value) ||
+        !SafeTransportOutputName(decoded[ordinal].output_name) ||
+        !CanonicalTransportUuid(decoded[ordinal].relation_uuid) ||
+        !CanonicalTransportUuid(
+            decoded[ordinal].relation_descriptor_uuid) ||
+        !TransportInt32Descriptor(decoded[ordinal].descriptor_kind,
+                                  decoded[ordinal].canonical_type,
+                                  decoded[ordinal].encoded_descriptor)) {
+      return true;
+    }
+    decoded[ordinal].ordinal = ordinal;
+    decoded[ordinal].nullable = parts[14] == "1";
+  }
+  if (decoded[0].relation_uuid != source_option ||
+      decoded[0].relation_uuid != decoded[1].relation_uuid ||
+      decoded[0].relation_descriptor_uuid !=
+          decoded[1].relation_descriptor_uuid ||
+      decoded[0].relation_descriptor_generation !=
+          decoded[1].relation_descriptor_generation ||
+      decoded[0].resource_epoch != decoded[1].resource_epoch ||
+      decoded[0].resource_epoch != base.context.resource_epoch ||
+      decoded[0].output_name == decoded[1].output_name ||
+      decoded[0].expression_kind !=
+          api::kEngineRelationProjectionSourceColumnV1 ||
+      !CanonicalTransportUuid(decoded[0].source_column_uuid) ||
+      !CanonicalTransportUuid(decoded[0].source_type_descriptor_uuid) ||
+      !decoded[0].typed_value.empty() ||
+      decoded[1].expression_kind !=
+          api::kEngineRelationProjectionTypedInt32LiteralV1 ||
+      !decoded[1].source_column_uuid.empty() ||
+      !decoded[1].source_type_descriptor_uuid.empty() ||
+      decoded[1].nullable ||
+      !CanonicalTransportInt32(decoded[1].typed_value)) {
+    return true;
+  }
+  const std::set<std::string> source_identities = {
+      decoded[0].relation_uuid,
+      decoded[0].relation_descriptor_uuid,
+      decoded[0].source_column_uuid,
+      decoded[0].source_type_descriptor_uuid};
+  if (source_identities.size() != 4u) return true;
+
+  api::EngineObjectReference source_relation;
+  source_relation.uuid.canonical = decoded[0].relation_uuid;
+  source_relation.object_kind = "table";
+  api::EngineColumnDefinition source_column;
+  source_column.requested_column_uuid.canonical =
+      decoded[0].source_column_uuid;
+  source_column.names.push_back(
+      {"en", "primary", "", decoded[0].output_name, true});
+  source_column.descriptor.descriptor_uuid.canonical =
+      decoded[0].source_type_descriptor_uuid;
+  source_column.descriptor.descriptor_kind =
+      decoded[0].descriptor_kind;
+  source_column.descriptor.canonical_type_name =
+      decoded[0].canonical_type;
+  source_column.descriptor.encoded_descriptor =
+      decoded[0].encoded_descriptor;
+  source_column.ordinal = 0;
+  source_column.nullable = decoded[0].nullable;
+
+  api::EngineColumnDefinition literal_column;
+  literal_column.names.push_back(
+      {"en", "primary", "", decoded[1].output_name, true});
+  literal_column.descriptor.descriptor_kind =
+      decoded[1].descriptor_kind;
+  literal_column.descriptor.canonical_type_name =
+      decoded[1].canonical_type;
+  literal_column.descriptor.encoded_descriptor =
+      decoded[1].encoded_descriptor;
+  literal_column.ordinal = 1;
+  literal_column.nullable = false;
+  api::EngineTypedValue literal;
+  literal.descriptor = literal_column.descriptor;
+  literal.encoded_value = decoded[1].typed_value;
+  literal.setState(api::EngineValueState::value);
+
+  typed->related_objects = {std::move(source_relation)};
+  typed->columns = {std::move(source_column), std::move(literal_column)};
+  typed->assignments = {{"projection_1_literal", std::move(literal)}};
+  typed->descriptors.clear();
+  typed->projection.canonical_projection_envelopes = {
+      std::string(api::kEngineRelationProjectionSourceColumnV1),
+      std::string(api::kEngineRelationProjectionTypedInt32LiteralV1)};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+          std::string(api::kEngineRelationProjectionViewMarkerV1),
+      "source_relation_descriptor_uuid:" +
+          decoded[0].relation_descriptor_uuid,
+      "source_relation_descriptor_generation:" +
+          std::to_string(decoded[0].relation_descriptor_generation),
+      "source_resource_epoch:" +
+          std::to_string(decoded[0].resource_epoch)};
+  return true;
+}
+
+void SetInvalidRelationProjectionViewCreateTransportV2(
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return;
+  typed->related_objects.clear();
+  typed->columns.clear();
+  typed->assignments.clear();
+  typed->descriptors.clear();
+  typed->projection = {};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+      std::string(kRelationProjectionViewTransportV2)};
+}
+
+bool DecodeRelationProjectionViewCreateTransportV2(
+    const api::EngineApiRequest& base,
+    api::EngineCreateViewRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "view_query_shape:";
+  constexpr std::string_view marker_family =
+      "engine.relation_projection_view";
+  std::size_t marker_field_count = 0;
+  std::size_t marker_family_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    const auto value = encoded.substr(marker_prefix.size());
+    if (!value.starts_with(marker_family)) continue;
+    ++marker_family_count;
+    if (value == kRelationProjectionViewTransportV2) ++exact_marker_count;
+  }
+  if (exact_marker_count == 0) return false;
+
+  SetInvalidRelationProjectionViewCreateTransportV2(typed);
+  if (marker_field_count != 1u || marker_family_count != 1u ||
+      exact_marker_count != 1u || !GlobalAggregateViewBaseDataEmpty(base) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_kind", "view_name", "name",
+           "target_schema_uuid", "view_projection_count",
+           "view_query_shape", "view_source_uuid", "view_projection_0"}) ||
+      !base.target_object.uuid.canonical.empty() ||
+      base.target_object.object_kind != "view" ||
+      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string encoded_count;
+  std::string packed;
+  std::string source_option;
+  std::string target_kind;
+  std::string view_name;
+  std::string canonical_name;
+  std::string target_schema_uuid;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "view_projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 1u ||
+      !ReadExactSingleTransportOption(
+          base, "view_projection_0:", &packed) ||
+      !ReadExactSingleTransportOption(
+          base, "view_source_uuid:", &source_option) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(base, "view_name:", &view_name) ||
+      !ReadExactSingleTransportOption(base, "name:", &canonical_name) ||
+      !ReadExactSingleTransportOption(
+          base, "target_schema_uuid:", &target_schema_uuid) ||
+      target_kind != "view" || !SafeTransportOutputName(view_name) ||
+      view_name != canonical_name ||
+      !CanonicalTransportUuid(target_schema_uuid) ||
+      typed->target_schema.uuid.canonical != target_schema_uuid ||
+      typed->target_object.object_kind != "view" ||
+      typed->localized_names.size() != 1u ||
+      typed->localized_names.front().name != view_name) {
+    return true;
+  }
+
+  const auto parts = SplitCompactInsertCell(packed);
+  std::uint64_t encoded_ordinal = 0;
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t resource_epoch = 0;
+  std::string relation_uuid;
+  std::string relation_descriptor_uuid;
+  std::string output_name;
+  std::string source_column_name;
+  std::string source_column_uuid;
+  std::string source_type_uuid;
+  std::string descriptor_kind;
+  std::string canonical_type;
+  std::string encoded_descriptor;
+  std::string typed_value;
+  if (parts.size() != 16u ||
+      parts[0] != kRelationProjectionViewCreatePacketV2 ||
+      parts[1] != "0" ||
+      !ParseStrictTransportU64(parts[2], &encoded_ordinal) ||
+      encoded_ordinal != 0u ||
+      !HexDecodeString(parts[3], &relation_uuid) ||
+      !HexDecodeString(parts[4], &relation_descriptor_uuid) ||
+      !ParseStrictTransportU64(parts[5], &descriptor_generation) ||
+      descriptor_generation == 0u ||
+      !ParseStrictTransportU64(parts[6], &resource_epoch) ||
+      resource_epoch == 0u ||
+      !HexDecodeString(parts[7], &output_name) ||
+      !HexDecodeString(parts[8], &source_column_name) ||
+      !HexDecodeString(parts[9], &source_column_uuid) ||
+      !HexDecodeString(parts[10], &source_type_uuid) ||
+      !HexDecodeString(parts[11], &descriptor_kind) ||
+      !HexDecodeString(parts[12], &canonical_type) ||
+      !HexDecodeString(parts[13], &encoded_descriptor) ||
+      (parts[14] != "0" && parts[14] != "1") ||
+      !HexDecodeString(parts[15], &typed_value) ||
+      !typed_value.empty() || !SafeTransportOutputName(output_name) ||
+      !SafeTransportOutputName(source_column_name) ||
+      !CanonicalTransportUuid(relation_uuid) ||
+      !CanonicalTransportUuid(relation_descriptor_uuid) ||
+      !CanonicalTransportUuid(source_column_uuid) ||
+      !CanonicalTransportUuid(source_type_uuid) ||
+      !TransportInt32Descriptor(descriptor_kind,
+                                canonical_type,
+                                encoded_descriptor) ||
+      relation_uuid != source_option ||
+      resource_epoch != base.context.resource_epoch) {
+    return true;
+  }
+  const std::set<std::string> source_identities = {
+      relation_uuid, relation_descriptor_uuid, source_column_uuid,
+      source_type_uuid};
+  if (source_identities.size() != 4u) return true;
+
+  api::EngineObjectReference source_relation;
+  source_relation.uuid.canonical = relation_uuid;
+  source_relation.object_kind = "table";
+  api::EngineColumnDefinition source_column;
+  source_column.requested_column_uuid.canonical = source_column_uuid;
+  source_column.names.push_back(
+      {"en", "primary", "", output_name, true});
+  source_column.descriptor.descriptor_uuid.canonical = source_type_uuid;
+  source_column.descriptor.descriptor_kind = descriptor_kind;
+  source_column.descriptor.canonical_type_name = canonical_type;
+  source_column.descriptor.encoded_descriptor = encoded_descriptor;
+  source_column.ordinal = 0;
+  source_column.nullable = parts[14] == "1";
+
+  typed->related_objects = {std::move(source_relation)};
+  typed->columns = {std::move(source_column)};
+  typed->assignments.clear();
+  typed->descriptors.clear();
+  typed->projection.canonical_projection_envelopes = {
+      std::string(api::kEngineRelationProjectionSourceColumnV1)};
+  typed->option_envelopes = {
+      std::string("view_query_shape:") +
+          std::string(api::kEngineRelationProjectionViewMarkerV2),
+      "source_relation_descriptor_uuid:" + relation_descriptor_uuid,
+      "source_relation_descriptor_generation:" +
+          std::to_string(descriptor_generation),
+      "source_resource_epoch:" + std::to_string(resource_epoch)};
+  return true;
+}
+
+void SetInvalidRelationProjectionViewSelectTransport(
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return;
+  typed->source_object.object_kind = "view";
+  typed->relation_projection_view = {};
+  typed->relation_projection_view.present = true;
+  typed->relation_projection_view.marker =
+      kRelationProjectionViewTransportV1;
+  typed->select_projection = {};
+  typed->projection = {};
+  typed->relation_projection = {};
+  typed->global_aggregate_projection = {};
+}
+
+bool DecodeRelationProjectionViewSelectTransportV1(
+    const api::EngineApiRequest& base,
+    api::EngineSelectRowsRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "result_projection:";
+  constexpr std::string_view marker_family =
+      "engine.relation_projection_view";
+  std::size_t marker_field_count = 0;
+  std::size_t marker_family_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    const auto value = encoded.substr(marker_prefix.size());
+    if (!value.starts_with(marker_family)) continue;
+    ++marker_family_count;
+    if (value == kRelationProjectionViewTransportV1) ++exact_marker_count;
+  }
+  if (marker_family_count == 0) return false;
+
+  SetInvalidRelationProjectionViewSelectTransport(typed);
+  if (marker_field_count != 1u || marker_family_count != 1u ||
+      exact_marker_count != 1u || !GlobalAggregateViewBaseDataEmpty(base) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_uuid", "target_object_kind", "source_uuid",
+           "source_kind", "result_projection", "projection_count",
+           "projection_0"}) ||
+      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string encoded_count;
+  std::string packed;
+  std::string target_uuid;
+  std::string target_kind;
+  std::string source_uuid;
+  std::string source_kind;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 1u ||
+      !ReadExactSingleTransportOption(base, "projection_0:", &packed) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_uuid:", &target_uuid) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(base, "source_uuid:", &source_uuid) ||
+      !ReadExactSingleTransportOption(base, "source_kind:", &source_kind) ||
+      !CanonicalTransportUuid(target_uuid) || target_uuid != source_uuid ||
+      target_kind != "view" || source_kind != "view" ||
+      typed->source_object.uuid.canonical != target_uuid ||
+      typed->source_object.object_kind != "view") {
+    return true;
+  }
+
+  const auto parts = SplitCompactInsertCell(packed);
+  constexpr std::size_t kHeaderParts = 5u;
+  constexpr std::size_t kOutputParts = 8u;
+  constexpr std::size_t kOutputCount = 2u;
+  std::string marker;
+  std::string descriptor_uuid;
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t output_count = 0;
+  if (parts.size() != kHeaderParts + kOutputParts * kOutputCount ||
+      parts[0] != kRelationProjectionViewSelectPacketV1 ||
+      !HexDecodeString(parts[1], &marker) ||
+      !HexDecodeString(parts[2], &descriptor_uuid) ||
+      !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
+      descriptor_generation == 0u ||
+      !ParseStrictTransportU64(parts[4], &output_count) ||
+      output_count != kOutputCount ||
+      marker != api::kEngineRelationProjectionViewMarkerV1 ||
+      !CanonicalTransportUuid(descriptor_uuid) ||
+      descriptor_uuid == target_uuid) {
+    return true;
+  }
+
+  std::vector<api::EngineRelationProjectionViewSemanticOutput> outputs;
+  outputs.reserve(kOutputCount);
+  std::set<std::string> identities = {target_uuid, descriptor_uuid};
+  std::set<std::string> names;
+  for (std::uint32_t ordinal = 0; ordinal < kOutputCount; ++ordinal) {
+    const std::size_t base_index = kHeaderParts + ordinal * kOutputParts;
+    std::uint64_t encoded_ordinal = 0;
+    std::string output_name;
+    std::string output_column_uuid;
+    std::string type_descriptor_uuid;
+    std::string descriptor_kind;
+    std::string canonical_type;
+    std::string encoded_descriptor;
+    std::string nullable;
+    if (!ParseStrictTransportU64(parts[base_index], &encoded_ordinal) ||
+        encoded_ordinal != ordinal ||
+        !HexDecodeString(parts[base_index + 1u], &output_name) ||
+        !HexDecodeString(
+            parts[base_index + 2u], &output_column_uuid) ||
+        !HexDecodeString(
+            parts[base_index + 3u], &type_descriptor_uuid) ||
+        !HexDecodeString(parts[base_index + 4u], &descriptor_kind) ||
+        !HexDecodeString(parts[base_index + 5u], &canonical_type) ||
+        !HexDecodeString(parts[base_index + 6u], &encoded_descriptor) ||
+        !HexDecodeString(parts[base_index + 7u], &nullable) ||
+        (nullable != "0" && nullable != "1") ||
+        !SafeTransportOutputName(output_name) ||
+        !CanonicalTransportUuid(output_column_uuid) ||
+        !CanonicalTransportUuid(type_descriptor_uuid) ||
+        !TransportInt32Descriptor(descriptor_kind,
+                                  canonical_type,
+                                  encoded_descriptor) ||
+        !identities.insert(output_column_uuid).second ||
+        !identities.insert(type_descriptor_uuid).second ||
+        !names.insert(output_name).second ||
+        (ordinal == 1u && nullable != "0")) {
+      return true;
+    }
+    api::EngineRelationProjectionViewSemanticOutput output;
+    output.ordinal = ordinal;
+    output.output_column_uuid.canonical = std::move(output_column_uuid);
+    output.output_name = std::move(output_name);
+    output.output_type.type_descriptor_uuid.canonical =
+        std::move(type_descriptor_uuid);
+    output.output_type.descriptor_kind = std::move(descriptor_kind);
+    output.output_type.canonical_type_name = std::move(canonical_type);
+    output.output_type.encoded_descriptor = std::move(encoded_descriptor);
+    output.nullable = nullable == "1";
+    outputs.push_back(std::move(output));
+  }
+
+  typed->relation_projection_view.present = true;
+  typed->relation_projection_view.marker = std::move(marker);
+  typed->relation_projection_view.view_uuid.canonical = target_uuid;
+  typed->relation_projection_view.view_descriptor_uuid.canonical =
+      std::move(descriptor_uuid);
+  typed->relation_projection_view.view_descriptor_generation =
+      descriptor_generation;
+  typed->relation_projection_view.outputs = std::move(outputs);
+  typed->select_projection = {};
+  typed->projection = {};
+  typed->relation_projection = {};
+  typed->global_aggregate_projection = {};
+  typed->descriptors.clear();
+  typed->columns.clear();
+  typed->assignments.clear();
+  typed->related_objects.clear();
+  typed->option_envelopes.clear();
+  return true;
+}
+
+void SetInvalidRelationProjectionViewDeleteTransportV2(
+    api::EngineDeleteRowsRequest* typed) {
+  if (typed == nullptr) return;
+  typed->relation_projection_view = {};
+  typed->relation_projection_view.present = true;
+  typed->relation_projection_view.marker =
+      std::string(kRelationProjectionViewTransportV2);
+}
+
+bool DecodeRelationProjectionViewDeleteTransportV2(
+    const api::EngineApiRequest& base,
+    api::EngineDeleteRowsRequest* typed) {
+  if (typed == nullptr) return false;
+  constexpr std::string_view marker_prefix = "dml_surface_variant:";
+  std::size_t marker_field_count = 0;
+  std::size_t exact_marker_count = 0;
+  for (const auto& option : base.option_envelopes) {
+    const std::string_view encoded(option);
+    if (!encoded.starts_with(marker_prefix)) continue;
+    ++marker_field_count;
+    if (encoded.substr(marker_prefix.size()) ==
+        kRelationProjectionViewTransportV2) {
+      ++exact_marker_count;
+    }
+  }
+  if (exact_marker_count == 0) return false;
+
+  SetInvalidRelationProjectionViewDeleteTransportV2(typed);
+  api::EngineApiRequest data_shape = base;
+  data_shape.target_object = {};
+  data_shape.predicate = {};
+  if (marker_field_count != 1u || exact_marker_count != 1u ||
+      !GlobalAggregateViewBaseDataEmpty(data_shape) ||
+      !GlobalAggregateViewOptionsAdmitted(
+          base,
+          {"target_object_uuid", "target_object_kind",
+           "dml_surface_variant", "projection_count", "projection_0",
+           "predicate_kind", "predicate_column", "predicate_value",
+           "predicate_value_type"}) ||
+      !base.target_schema.uuid.canonical.empty() ||
+      !base.target_schema.object_kind.empty()) {
+    return true;
+  }
+
+  std::string target_uuid;
+  std::string target_kind;
+  std::string surface_variant;
+  std::string encoded_count;
+  std::string packed;
+  std::string predicate_kind;
+  std::string predicate_column;
+  std::string predicate_value;
+  std::string predicate_value_type;
+  std::uint64_t projection_count = 0;
+  if (!ReadExactSingleTransportOption(
+          base, "target_object_uuid:", &target_uuid) ||
+      !ReadExactSingleTransportOption(
+          base, "target_object_kind:", &target_kind) ||
+      !ReadExactSingleTransportOption(
+          base, "dml_surface_variant:", &surface_variant) ||
+      !ReadExactSingleTransportOption(
+          base, "projection_count:", &encoded_count) ||
+      !ParseStrictTransportU64(encoded_count, &projection_count) ||
+      projection_count != 1u ||
+      !ReadExactSingleTransportOption(base, "projection_0:", &packed) ||
+      !ReadExactSingleTransportOption(
+          base, "predicate_kind:", &predicate_kind) ||
+      !ReadExactSingleTransportOption(
+          base, "predicate_column:", &predicate_column) ||
+      !ReadExactSingleTransportOption(
+          base, "predicate_value:", &predicate_value) ||
+      !ReadExactSingleTransportOption(
+          base, "predicate_value_type:", &predicate_value_type) ||
+      !CanonicalTransportUuid(target_uuid) || target_kind != "view" ||
+      surface_variant != kRelationProjectionViewTransportV2 ||
+      predicate_kind != "column_equals" ||
+      !SafeTransportOutputName(predicate_column) ||
+      predicate_value_type != "int32" ||
+      !CanonicalTransportInt32(predicate_value) ||
+      base.target_object.uuid.canonical != target_uuid ||
+      base.target_object.object_kind != "view" ||
+      base.predicate.predicate_kind != predicate_kind ||
+      base.predicate.canonical_predicate_envelope != predicate_column ||
+      base.predicate.bound_values.size() != 1u) {
+    return true;
+  }
+  const auto& bound_value = base.predicate.bound_values.front();
+  if (!bound_value.descriptor.descriptor_uuid.canonical.empty() ||
+      bound_value.descriptor.descriptor_kind != "scalar" ||
+      bound_value.descriptor.canonical_type_name != "int32" ||
+      bound_value.descriptor.encoded_descriptor != "type=int32" ||
+      bound_value.encoded_value != predicate_value ||
+      bound_value.state != api::EngineValueState::value ||
+      bound_value.isSqlNull() || !bound_value.binary_value.empty()) {
+    return true;
+  }
+
+  const auto parts = SplitCompactInsertCell(packed);
+  std::string marker;
+  std::string descriptor_uuid;
+  std::uint64_t descriptor_generation = 0;
+  std::uint64_t output_count = 0;
+  std::uint64_t ordinal = 0;
+  std::string output_name;
+  std::string output_column_uuid;
+  std::string type_descriptor_uuid;
+  std::string descriptor_kind;
+  std::string canonical_type;
+  std::string encoded_descriptor;
+  std::string nullable;
+  if (parts.size() != 13u ||
+      parts[0] != kRelationProjectionViewDeletePacketV2 ||
+      !HexDecodeString(parts[1], &marker) ||
+      !HexDecodeString(parts[2], &descriptor_uuid) ||
+      !ParseStrictTransportU64(parts[3], &descriptor_generation) ||
+      descriptor_generation == 0u ||
+      !ParseStrictTransportU64(parts[4], &output_count) ||
+      output_count != 1u ||
+      !ParseStrictTransportU64(parts[5], &ordinal) || ordinal != 0u ||
+      !HexDecodeString(parts[6], &output_name) ||
+      !HexDecodeString(parts[7], &output_column_uuid) ||
+      !HexDecodeString(parts[8], &type_descriptor_uuid) ||
+      !HexDecodeString(parts[9], &descriptor_kind) ||
+      !HexDecodeString(parts[10], &canonical_type) ||
+      !HexDecodeString(parts[11], &encoded_descriptor) ||
+      !HexDecodeString(parts[12], &nullable) ||
+      (nullable != "0" && nullable != "1") ||
+      marker != api::kEngineRelationProjectionViewMarkerV2 ||
+      output_name != predicate_column ||
+      !SafeTransportOutputName(output_name) ||
+      !CanonicalTransportUuid(descriptor_uuid) ||
+      !CanonicalTransportUuid(output_column_uuid) ||
+      !CanonicalTransportUuid(type_descriptor_uuid) ||
+      !TransportInt32Descriptor(descriptor_kind,
+                                canonical_type,
+                                encoded_descriptor)) {
+    return true;
+  }
+  const std::set<std::string> public_identities = {
+      target_uuid, descriptor_uuid, output_column_uuid,
+      type_descriptor_uuid};
+  if (public_identities.size() != 4u) return true;
+
+  api::EngineRelationProjectionViewSemanticOutput output;
+  output.ordinal = 0;
+  output.output_column_uuid.canonical = std::move(output_column_uuid);
+  output.output_name = std::move(output_name);
+  output.output_type.type_descriptor_uuid.canonical =
+      std::move(type_descriptor_uuid);
+  output.output_type.descriptor_kind = std::move(descriptor_kind);
+  output.output_type.canonical_type_name = std::move(canonical_type);
+  output.output_type.encoded_descriptor = std::move(encoded_descriptor);
+  output.nullable = nullable == "1";
+  typed->relation_projection_view.present = true;
+  typed->relation_projection_view.marker = std::move(marker);
+  typed->relation_projection_view.view_descriptor_uuid.canonical =
+      std::move(descriptor_uuid);
+  typed->relation_projection_view.view_descriptor_generation =
+      descriptor_generation;
+  typed->relation_projection_view.outputs = {std::move(output)};
+  return true;
+}
+// SB_ENGINE_RELATION_PROJECTION_VIEW_TRANSPORT_V1_END
+
 struct CompactInsertValueCell {
   std::string name;
   std::string type;
   std::string value;
   bool is_null = false;
 };
+
+constexpr std::string_view kOctetFromInt64ScalarMarker =
+    "scalar.octet_from_int64.v1";
+
+enum class CompactInsertScalarEvaluationStatus : std::uint8_t {
+  not_marker = 0,
+  evaluated = 1,
+  invalid_syntax = 2,
+  out_of_range = 3,
+};
+
+struct CompactInsertScalarValidation {
+  bool ok = true;
+  std::string diagnostic_code;
+  std::string diagnostic_message_key;
+  std::string diagnostic_detail;
+};
+
+bool ParseStrictInt64Decimal(std::string_view text, std::int64_t* out) {
+  if (out == nullptr || text.empty()) return false;
+  std::size_t offset = 0;
+  bool negative = false;
+  if (text.front() == '+' || text.front() == '-') {
+    negative = text.front() == '-';
+    offset = 1;
+  }
+  if (offset == text.size()) return false;
+
+  const std::uint64_t positive_limit =
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+  const std::uint64_t limit = negative ? positive_limit + 1u : positive_limit;
+  std::uint64_t magnitude = 0;
+  for (; offset < text.size(); ++offset) {
+    const unsigned char ch = static_cast<unsigned char>(text[offset]);
+    if (!std::isdigit(ch)) return false;
+    const std::uint64_t digit = static_cast<std::uint64_t>(ch - '0');
+    if (magnitude > (limit - digit) / 10u) return false;
+    magnitude = magnitude * 10u + digit;
+  }
+
+  if (negative) {
+    if (magnitude == positive_limit + 1u) {
+      *out = std::numeric_limits<std::int64_t>::min();
+    } else {
+      *out = -static_cast<std::int64_t>(magnitude);
+    }
+  } else {
+    *out = static_cast<std::int64_t>(magnitude);
+  }
+  return true;
+}
+
+CompactInsertScalarEvaluationStatus EvaluateCompactInsertScalarMarker(
+    CompactInsertValueCell* cell) {
+  if (cell == nullptr || cell->type != kOctetFromInt64ScalarMarker) {
+    return CompactInsertScalarEvaluationStatus::not_marker;
+  }
+  if (cell->is_null) {
+    cell->type = "text";
+    cell->value.clear();
+    return CompactInsertScalarEvaluationStatus::evaluated;
+  }
+
+  std::int64_t integer = 0;
+  if (!ParseStrictInt64Decimal(cell->value, &integer)) {
+    return CompactInsertScalarEvaluationStatus::invalid_syntax;
+  }
+  if (integer < 0 || integer > 255) {
+    return CompactInsertScalarEvaluationStatus::out_of_range;
+  }
+
+  cell->type = "text";
+  cell->value.assign(
+      1, static_cast<char>(static_cast<unsigned char>(integer)));
+  return CompactInsertScalarEvaluationStatus::evaluated;
+}
 
 std::vector<CompactInsertValueCell> DecodeCompactInsertCells(
     std::string_view payload,
@@ -436,6 +1988,67 @@ std::vector<CompactInsertValueCell> DecodeCompactInsertCells(
   }
   if (ordinal != cell_count) return {};
   return cells;
+}
+
+CompactInsertScalarValidation ValidateCompactInsertScalarMarkers(
+    const SblrOperationEnvelope& envelope) {
+  CompactInsertScalarValidation validation;
+  const bool supported_operation =
+      envelope.operation_id == "dml.insert_rows" ||
+      envelope.operation_id == "dml.execute_native_bulk_ingest" ||
+      envelope.operation_id == "dml.execute_import_rows";
+  if (!supported_operation) return validation;
+
+  const auto compact_format =
+      TextOperandValue(envelope, "insert_values_compact_format");
+  const auto compact_payload =
+      TextOperandValue(envelope, "insert_values_compact_payload");
+  const bool supported_compact_format =
+      compact_format &&
+      (*compact_format == "sblr.dml.insert.cells.hex.v1" ||
+       *compact_format == "sbsql.insert_values.cells.v1");
+  if (!supported_compact_format || !compact_payload ||
+      compact_payload->empty()) {
+    return validation;
+  }
+
+  const std::uint64_t row_count = ParseCompactU64(
+      TextOperandValue(envelope, "insert_values_row_count")
+          .value_or(std::string_view{}));
+  const std::uint64_t column_count = ParseCompactU64(
+      TextOperandValue(envelope, "insert_values_column_count")
+          .value_or(std::string_view{}));
+  if (row_count == 0 || column_count == 0) return validation;
+
+  auto cells =
+      DecodeCompactInsertCells(*compact_payload, row_count, column_count);
+  if (cells.empty()) return validation;
+  for (auto& cell : cells) {
+    const auto status = EvaluateCompactInsertScalarMarker(&cell);
+    if (status == CompactInsertScalarEvaluationStatus::invalid_syntax) {
+      validation.ok = false;
+      validation.diagnostic_code =
+          "SB_SBLR_SCALAR_OCTET_FROM_INT64_INVALID_SYNTAX";
+      validation.diagnostic_message_key =
+          "engine.sblr.compact_insert.scalar_octet.invalid_syntax";
+      validation.diagnostic_detail =
+          "scalar.octet_from_int64.v1 requires an exact signed decimal "
+          "int64 operand";
+      return validation;
+    }
+    if (status == CompactInsertScalarEvaluationStatus::out_of_range) {
+      validation.ok = false;
+      validation.diagnostic_code =
+          "SB_SBLR_SCALAR_OCTET_FROM_INT64_OUT_OF_RANGE";
+      validation.diagnostic_message_key =
+          "engine.sblr.compact_insert.scalar_octet.out_of_range";
+      validation.diagnostic_detail =
+          "scalar.octet_from_int64.v1 operand must be in the inclusive "
+          "range [0, 255]";
+      return validation;
+    }
+  }
+  return validation;
 }
 
 std::vector<std::string> CompactDescriptorColumnNames(
@@ -494,7 +2107,11 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
   const auto compact_payload = TextOperandValue(
       envelope,
       "insert_values_compact_payload");
-  if (!compact_format || *compact_format != "sbsql.insert_values.cells.v1" ||
+  const bool supported_compact_format =
+      compact_format &&
+      (*compact_format == "sblr.dml.insert.cells.hex.v1" ||
+       *compact_format == "sbsql.insert_values.cells.v1");
+  if (!supported_compact_format ||
       !compact_payload || compact_payload->empty()) {
     return;
   }
@@ -508,6 +2125,20 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
   auto cells =
       DecodeCompactInsertCells(*compact_payload, row_count, column_count);
   if (cells.empty()) return;
+  std::uint64_t evaluated_scalar_count = 0;
+  for (auto& cell : cells) {
+    const auto status = EvaluateCompactInsertScalarMarker(&cell);
+    if (status == CompactInsertScalarEvaluationStatus::invalid_syntax ||
+        status == CompactInsertScalarEvaluationStatus::out_of_range) {
+      // Dispatch validates every bound marker before constructing the API
+      // request. Keep this boundary fail-closed if materialization is ever
+      // called through a new route without that validation.
+      return;
+    }
+    if (status == CompactInsertScalarEvaluationStatus::evaluated) {
+      ++evaluated_scalar_count;
+    }
+  }
   const bool explicit_column_list = CompactBool(
       TextOperandValue(envelope, "insert_values_column_list_present")
           .value_or(std::string_view{}));
@@ -622,6 +2253,14 @@ void MaterializeCompactInsertRows(const SblrOperationEnvelope& envelope,
   }
   request->option_envelopes.push_back(
       "sblr.compact_insert_row_count:" + std::to_string(row_count));
+  if (evaluated_scalar_count != 0) {
+    request->option_envelopes.push_back(
+        "sblr.compact_insert_scalar_evaluated:" +
+        std::string(kOctetFromInt64ScalarMarker));
+    request->option_envelopes.push_back(
+        "sblr.compact_insert_scalar_evaluation_count:" +
+        std::to_string(evaluated_scalar_count));
+  }
 }
 
 api::EngineApiResult FailureResult(const api::EngineRequestContext& context,
@@ -713,6 +2352,11 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     }
   }
   const auto operand_loop_finish = SblrSteadyClock::now();
+  const std::string identifier_profile_uuid =
+      api::SecurityOptionValue(api_request, "identifier_profile_uuid:");
+  if (!identifier_profile_uuid.empty()) {
+    api_request.context.identifier_profile_uuid = identifier_profile_uuid;
+  }
   const std::string current_role_uuid =
       api::SecurityOptionValue(api_request, "current_role_uuid:");
   if (!current_role_uuid.empty()) {
@@ -733,25 +2377,36 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       api_request.context.database_path = lifecycle_database_path;
     }
   }
-  if (api_request.predicate.predicate_kind.empty()) {
+  {
     const std::string predicate_kind =
         api::SecurityOptionValue(api_request, "predicate_kind:");
     const std::string predicate_column =
         api::SecurityOptionValue(api_request, "predicate_column:");
     const std::string predicate_value =
         api::SecurityOptionValue(api_request, "predicate_value:");
-    if (!predicate_kind.empty() && !predicate_column.empty()) {
+    const bool dml_predicate_operand_authoritative =
+        api_request.operation_id == "dml.select_rows" ||
+        api_request.operation_id == "dml.update_rows" ||
+        api_request.operation_id == "dml.delete_rows" ||
+        api_request.operation_id == "dml.merge_rows";
+    if ((api_request.predicate.predicate_kind.empty() ||
+         dml_predicate_operand_authoritative) &&
+        !predicate_kind.empty()) {
       api_request.predicate.predicate_kind = predicate_kind;
+    }
+    if ((api_request.predicate.canonical_predicate_envelope.empty() ||
+         dml_predicate_operand_authoritative) &&
+        !predicate_column.empty()) {
       api_request.predicate.canonical_predicate_envelope = predicate_column;
-      if (!predicate_value.empty()) {
-        const auto values = SplitCommaSeparatedLiterals(predicate_value);
-        const auto types = SplitCommaSeparatedLiterals(
-            api::SecurityOptionValue(api_request, "predicate_value_type:"));
-        for (std::size_t index = 0; index < values.size(); ++index) {
-          api_request.predicate.bound_values.push_back(TypedValueFromLoweredLiteral(
-              values[index],
-              index < types.size() ? types[index] : std::string{}));
-        }
+    }
+    if (api_request.predicate.bound_values.empty() && !predicate_value.empty()) {
+      const auto values = SplitCommaSeparatedLiterals(predicate_value);
+      const auto types = SplitCommaSeparatedLiterals(
+          api::SecurityOptionValue(api_request, "predicate_value_type:"));
+      for (std::size_t index = 0; index < values.size(); ++index) {
+        api_request.predicate.bound_values.push_back(TypedValueFromLoweredLiteral(
+            values[index],
+            index < types.size() ? types[index] : std::string{}));
       }
     }
   }
@@ -780,6 +2435,17 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
     if (!constraint_kind.empty() || !constraint_name.empty() ||
         !constraint_envelope.empty()) {
       if (constraint_kind.empty()) constraint_kind = "constraint";
+      // The bounded neutral foreign-key descriptor is an engine-validated
+      // transport contract.  It deliberately excludes parser-supplied seal,
+      // support, key, and hash identities, so the generic compatibility
+      // completion below must transport this descriptor unchanged.
+      const bool exact_neutral_single_column_foreign_key =
+          api_request.operation_id == "ddl.constraint.alter" &&
+          constraint_kind == "foreign_key" &&
+          CanonicalEnvelopeHasExactField(
+              constraint_envelope,
+              "descriptor_version",
+              "neutral_fk_single_column_v1");
       if (constraint_envelope.empty()) {
         constraint_envelope = "constraint_hash=" +
                               std::to_string(std::hash<std::string>{}(
@@ -788,8 +2454,9 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
                               ";enforcement_timing=immediate"
                               ";validation_state=unvalidated"
                               ";trust_state=untrusted";
-      } else if (constraint_envelope.find("constraint_hash=") ==
-                 std::string::npos) {
+      } else if (!exact_neutral_single_column_foreign_key &&
+                 constraint_envelope.find("constraint_hash=") ==
+                     std::string::npos) {
         constraint_envelope += ";constraint_hash=" +
                                std::to_string(std::hash<std::string>{}(
                                    api_request.operation_id + ":" +
@@ -1332,6 +2999,42 @@ TRequest TypedRequest(const SblrDispatchRequest& request) {
   return typed;
 }
 
+api::EngineExecuteTransactionBlockRequest TypedExecuteTransactionBlockRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineExecuteTransactionBlockRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  for (const auto& operand : request.envelope.operands) {
+    if (operand.name.starts_with("procedural_") &&
+        operand.type != "text") {
+      typed.procedural_block_present = true;
+      typed.procedural_block_valid = false;
+      typed.procedural_block_diagnostic = api::MakeEngineApiDiagnostic(
+          "SB_SBLR_PROCEDURAL_IR_OPERAND_TYPE_INVALID",
+          "engine.sblr.procedural_block.operand_type_invalid",
+          "procedural IR operands must use the SBLR text operand type: " +
+              operand.name,
+          true);
+      return typed;
+    }
+  }
+  const auto decoded =
+      DecodeSblrProceduralBlockV1(base.option_envelopes);
+  typed.procedural_block_present = decoded.present;
+  typed.procedural_block_valid = decoded.valid;
+  typed.procedural_block = decoded.block;
+  if (decoded.present && !decoded.valid) {
+    typed.procedural_block_diagnostic = api::MakeEngineApiDiagnostic(
+        decoded.diagnostic_code.empty()
+            ? "SB_SBLR_PROCEDURAL_IR_INVALID"
+            : decoded.diagnostic_code,
+        "engine.sblr.procedural_block.invalid",
+        decoded.diagnostic_detail,
+        true);
+  }
+  return typed;
+}
+
 api::EngineBeginTransactionRequest TypedBeginTransactionRequest(
     const SblrDispatchRequest& request) {
   api::EngineBeginTransactionRequest typed;
@@ -1357,6 +3060,27 @@ std::uint64_t DispatchOptionU64(const api::EngineApiRequest& request, const std:
     return static_cast<std::uint64_t>(std::stoull(value));
   } catch (...) {
     return 0;
+  }
+}
+
+std::optional<std::uint64_t> ParseBoundedDispatchCount(
+    const std::string& value,
+    std::uint64_t maximum) {
+  if (value.empty() ||
+      !std::all_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isdigit(ch) != 0;
+      })) {
+    return std::nullopt;
+  }
+  try {
+    std::size_t consumed = 0;
+    const auto parsed = std::stoull(value, &consumed);
+    if (consumed != value.size() || parsed > maximum) {
+      return std::nullopt;
+    }
+    return static_cast<std::uint64_t>(parsed);
+  } catch (...) {
+    return std::nullopt;
   }
 }
 
@@ -2168,6 +3892,72 @@ api::EngineCreateSchemaRequest TypedCreateSchemaRequest(const SblrDispatchReques
   return typed;
 }
 
+std::vector<api::EngineIndexDefinition> DecodeInlineTableIndexOptions(
+    const api::EngineApiRequest& base) {
+  constexpr std::uint64_t kMaximumInlineTableIndexes = 64;
+  constexpr std::uint64_t kMaximumInlineTableIndexKeys = 64;
+
+  const std::string index_count_text =
+      api::SecurityOptionValue(base, "table_index_count:");
+  if (index_count_text.empty()) { return {}; }
+
+  const auto index_count = ParseBoundedDispatchCount(
+      index_count_text, kMaximumInlineTableIndexes);
+  auto invalid_descriptor = [] {
+    api::EngineIndexDefinition invalid;
+    invalid.index_kind = "invalid_inline_table_index_descriptor";
+    return std::vector<api::EngineIndexDefinition>{std::move(invalid)};
+  };
+  if (!index_count) { return invalid_descriptor(); }
+
+  std::vector<api::EngineIndexDefinition> indexes;
+  indexes.reserve(static_cast<std::size_t>(*index_count));
+  for (std::uint64_t ordinal = 0; ordinal < *index_count; ++ordinal) {
+    const std::string prefix =
+        "table_index_" + std::to_string(ordinal) + "_";
+    const auto key_count = ParseBoundedDispatchCount(
+        api::SecurityOptionValue(base, prefix + "key_count:"),
+        kMaximumInlineTableIndexKeys);
+    if (!key_count || *key_count == 0) { return invalid_descriptor(); }
+
+    api::EngineIndexDefinition index;
+    index.index_kind =
+        api::SecurityOptionValue(base, prefix + "physical_profile:");
+    if (index.index_kind.empty()) { index.index_kind = "btree"; }
+    for (std::uint64_t key_ordinal = 0; key_ordinal < *key_count;
+         ++key_ordinal) {
+      const std::string key = api::SecurityOptionValue(
+          base, prefix + "key_" + std::to_string(key_ordinal) + ":");
+      if (key.empty()) { return invalid_descriptor(); }
+      index.key_envelopes.push_back(key);
+    }
+
+    const std::string constraint_kind = LowerAscii(
+        api::SecurityOptionValue(base, prefix + "constraint_kind:"));
+    if (constraint_kind != "primary_key" && constraint_kind != "unique") {
+      return invalid_descriptor();
+    }
+    index.key_envelopes.push_back(constraint_kind);
+
+    const std::string index_name =
+        api::SecurityOptionValue(base, prefix + "index_name:");
+    const std::string constraint_name =
+        api::SecurityOptionValue(base, prefix + "constraint_name:");
+    if (!index_name.empty()) {
+      index.names.push_back({"en", "primary", "", index_name, true});
+    }
+    if (!constraint_name.empty() && constraint_name != index_name) {
+      index.names.push_back({"en",
+                             index_name.empty() ? "primary" : "constraint",
+                             "",
+                             constraint_name,
+                             index_name.empty()});
+    }
+    indexes.push_back(std::move(index));
+  }
+  return indexes;
+}
+
 api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest& request) {
   api::EngineCreateTableRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
@@ -2279,6 +4069,15 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   }
   typed.table_constraints = base.constraints;
   typed.table_indexes = base.indexes;
+  const bool has_encoded_inline_indexes =
+      !api::SecurityOptionValue(base, "table_index_count:").empty();
+  if (!typed.table_indexes.empty() && has_encoded_inline_indexes) {
+    api::EngineIndexDefinition invalid;
+    invalid.index_kind = "mixed_inline_table_index_representations";
+    typed.table_indexes = {std::move(invalid)};
+  } else if (typed.table_indexes.empty()) {
+    typed.table_indexes = DecodeInlineTableIndexOptions(base);
+  }
   typed.table_physical_profile = base.physical_profile;
   const std::string physical_profile = [&]() {
     std::string value = api::SecurityOptionValue(base, "physical_profile:");
@@ -2568,6 +4367,10 @@ api::EngineCreateViewRequest TypedCreateViewRequest(const SblrDispatchRequest& r
       typed.localized_names.push_back({"en", "primary", "", view_name, true});
     }
   }
+  if (!DecodeRelationProjectionViewCreateTransportV2(base, &typed) &&
+      !DecodeRelationProjectionViewCreateTransportV1(base, &typed)) {
+    DecodeGlobalAggregateViewCreateTransportV1(base, &typed);
+  }
   return typed;
 }
 
@@ -2780,7 +4583,12 @@ api::EngineInsertRowsRequest TypedInsertRowsRequest(const SblrDispatchRequest& r
   typed.strict_bulk_load_requested = api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
   typed.reference_unique_checks_relaxed = api::SecurityOptionBool(base, "reference_unique_checks_relaxed:", false);
   typed.reference_foreign_key_checks_relaxed = api::SecurityOptionBool(base, "reference_foreign_key_checks_relaxed:", false);
+  const std::uint64_t default_values_row_count =
+      DispatchOptionU64(base, "insert_default_values_row_count:");
   typed.input_rows = std::move(base.rows);
+  if (typed.input_rows.empty() && default_values_row_count == 1) {
+    typed.input_rows.emplace_back();
+  }
   static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
@@ -2791,6 +4599,31 @@ api::EngineSelectRowsRequest TypedSelectRowsRequest(const SblrDispatchRequest& r
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.source_object = TargetObjectForDml(base, "table");
   typed.select_projection = base.projection;
+  const bool relation_projection_view =
+      DecodeRelationProjectionViewSelectTransportV1(base, &typed);
+  const bool global_aggregate_view =
+      relation_projection_view
+          ? false
+          : DecodeGlobalAggregateViewSelectTransportV1(base, &typed);
+  const bool global_aggregate_projection =
+      relation_projection_view || global_aggregate_view
+          ? false
+          : DecodeGlobalAggregateProjectionTransportV1(base, &typed);
+  if (!relation_projection_view && !global_aggregate_view &&
+      !global_aggregate_projection &&
+      typed.select_projection.canonical_projection_envelopes.empty()) {
+    const std::uint64_t projection_count =
+        DispatchOptionU64(base, "projection_count:");
+    for (std::uint64_t index = 0; index < projection_count && index < 16;
+         ++index) {
+      const std::string projection = api::SecurityOptionValue(
+          base, "projection_" + std::to_string(index) + ":");
+      if (!projection.empty()) {
+        typed.select_projection.canonical_projection_envelopes.push_back(
+            projection);
+      }
+    }
+  }
   typed.select_predicate = base.predicate;
   typed.select_ordering = base.ordering;
   const std::string order_by = api::SecurityOptionValue(base, "order_by:");
@@ -3038,7 +4871,82 @@ api::EngineApiDiagnostic FunctionDiagnosticToApi(const SblrRuntimeDiagnostic& di
                                                    : diagnostic.message_key;
   out.detail = diagnostic.detail;
   out.error = diagnostic.severity != SblrDiagnosticSeverity::info;
+  // Only explicitly public, bounded function-diagnostic fields cross the
+  // neutral engine API. Runtime identity/security fields remain private.
+  // Conversion presentation adapters consume this structured field and must
+  // never parse `detail` prose to recover an input value.
+  for (const auto& field : diagnostic.fields) {
+    if (field.key == "conversion_input_text") {
+      out.fields.push_back({field.key, field.value});
+    }
+  }
   return out;
+}
+
+api::EngineApiResult DispatchExecuteTransactionBlock(
+    const SblrDispatchRequest& request) {
+  auto typed = TypedExecuteTransactionBlockRequest(request);
+
+  // Keep the contract-absent behavior-row route exactly on its legacy path.
+  // A procedural block, including a malformed one, holds the same per-database
+  // inventory guard used by MGA finality from exact admission until its runtime
+  // has completed. Commit/rollback therefore cannot finalize in the gap
+  // between transaction validation and expression execution.
+  if (!typed.procedural_block_present) {
+    auto legacy = api::EngineExecuteTransactionBlock(typed);
+    return std::move(static_cast<api::EngineApiResult&>(legacy));
+  }
+  const auto transaction_inventory_guard =
+      api::AcquireTransactionInventoryGuard(request.context.database_path);
+  auto admitted = api::EngineExecuteTransactionBlock(typed);
+  api::EngineApiResult result =
+      std::move(static_cast<api::EngineApiResult&>(admitted));
+  result.evidence.push_back(
+      {"mga_transaction_guard_scope",
+       "exact_admission_through_procedural_runtime"});
+  if (!result.ok) {
+    return result;
+  }
+
+  const auto execution = ExecuteSblrProceduralBlockV1(
+      typed.procedural_block,
+      SblrExecutionContextFromEngineContext(request.context));
+  if (!execution.result.ok()) {
+    result.ok = false;
+    result.result_shape = {};
+    if (execution.result.diagnostics.empty()) {
+      result.diagnostics.push_back(api::MakeEngineApiDiagnostic(
+          "SB_SBLR_PROCEDURAL_RUNTIME_FAILED",
+          "engine.sblr.procedural_block.runtime_failed",
+          "procedural runtime failed without a diagnostic",
+          true));
+    } else {
+      for (const auto& diagnostic : execution.result.diagnostics) {
+        result.diagnostics.push_back(FunctionDiagnosticToApi(diagnostic));
+      }
+    }
+    result.evidence.push_back(
+        {"procedural_runtime", "refused_without_transaction_finality"});
+    result.evidence.push_back({"parser_finality", "false"});
+    return result;
+  }
+
+  result.result_shape.result_kind = "sblr.procedural.block.rows.v1";
+  result.result_shape.columns.clear();
+  result.result_shape.rows.clear();
+  result.evidence.push_back(
+      {"procedural_instruction_count_executed",
+       std::to_string(execution.instructions_executed)});
+  result.evidence.push_back(
+      {"procedural_yield_count_executed",
+       std::to_string(execution.yields_executed)});
+  result.evidence.push_back(
+      {"wire_output_descriptor_authority", "parser"});
+  result.evidence.push_back(
+      {"procedural_result_row_authority", "engine_yield_only"});
+  result.evidence.push_back({"transaction_effect", "read"});
+  result.evidence.push_back({"parser_finality", "false"});
+  return result;
 }
 
 std::vector<std::string> ActiveSavepointNamesForContext(const api::EngineRequestContext& context) {
@@ -3995,6 +5903,8 @@ api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& r
   typed.target_table = TargetObjectForDml(base, "table");
   typed.update_predicate = std::move(base.predicate);
   typed.assignments = std::move(base.assignments);
+  typed.limit = DispatchOptionU64(base, "limit:");
+  typed.offset = DispatchOptionU64(base, "offset:");
   if (typed.assignments.empty()) {
     const std::string assignment_plan = api::SecurityOptionValue(base, "assignment_plan:");
     std::string item;
@@ -4016,9 +5926,10 @@ api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& r
 api::EngineDeleteRowsRequest TypedDeleteRowsRequest(const SblrDispatchRequest& request) {
   api::EngineDeleteRowsRequest typed;
   api::EngineApiRequest base = BaseApiRequest(request);
-  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   typed.target_table = TargetObjectForDml(base, "table");
-  typed.delete_predicate = std::move(base.predicate);
+  const bool relation_projection_view =
+      DecodeRelationProjectionViewDeleteTransportV2(base, &typed);
+  typed.delete_predicate = base.predicate;
   typed.delete_surface_variant = api::SecurityOptionValue(base, "dml_surface_variant:");
   if (typed.delete_surface_variant.empty()) {
     typed.delete_surface_variant = api::SecurityOptionValue(base, "delete_surface_variant:");
@@ -4028,10 +5939,14 @@ api::EngineDeleteRowsRequest TypedDeleteRowsRequest(const SblrDispatchRequest& r
   }
   typed.batch_on_column = api::SecurityOptionValue(base, "batch_on_column:");
   typed.batch_limit_rows = DispatchOptionU64(base, "batch_limit:");
-  if (typed.batch_limit_rows == 0) {
-    typed.batch_limit_rows = DispatchOptionU64(base, "limit:");
-  }
+  typed.limit = DispatchOptionU64(base, "limit:");
+  typed.offset = DispatchOptionU64(base, "offset:");
   typed.series_name = api::SecurityOptionValue(base, "series_name:");
+  if (relation_projection_view) {
+    base.option_envelopes.clear();
+    base.predicate = {};
+  }
+  EnsureDefaultWriteResultPolicy(&base, base.operation_id);
   static_cast<api::EngineApiRequest&>(typed) = std::move(base);
   return typed;
 }
@@ -4732,6 +6647,21 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
+  const auto compact_scalar_validation =
+      ValidateCompactInsertScalarMarkers(request.envelope);
+  if (!compact_scalar_validation.ok) {
+    result.diagnostics.push_back(DispatchDiagnostic(
+        compact_scalar_validation.diagnostic_code,
+        compact_scalar_validation.diagnostic_detail));
+    result.api_result = FailureResult(
+        request.context,
+        request.envelope.operation_id,
+        compact_scalar_validation.diagnostic_code,
+        compact_scalar_validation.diagnostic_message_key,
+        compact_scalar_validation.diagnostic_detail);
+    return result;
+  }
+
   if ((request.envelope.requires_cluster_authority ||
        (IsClusterOperationId(request.envelope.operation_id) &&
         request.envelope.operation_id != "cluster.profile_operation")) &&
@@ -4940,7 +6870,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "transaction.create_savepoint") result.api_result = api::EngineCreateSavepoint(TypedRequest<api::EngineCreateSavepointRequest>(request));
   else if (op == "transaction.release_savepoint") result.api_result = api::EngineReleaseSavepoint(TypedRequest<api::EngineReleaseSavepointRequest>(request));
   else if (op == "transaction.rollback_to_savepoint") result.api_result = api::EngineRollbackToSavepoint(TypedRequest<api::EngineRollbackToSavepointRequest>(request));
-  else if (op == "transaction.execute_block") result.api_result = api::EngineExecuteTransactionBlock(TypedRequest<api::EngineExecuteTransactionBlockRequest>(request));
+  else if (op == "transaction.execute_block") result.api_result = DispatchExecuteTransactionBlock(request);
   else if (op == "transaction.lock_table") result.api_result = api::EngineLockTable(TypedRequest<api::EngineLockTableRequest>(request));
   else if (op == "transaction.unlock_table") result.api_result = api::EngineUnlockTable(TypedRequest<api::EngineUnlockTableRequest>(request));
   else if (op == "transaction.lock_named") result.api_result = api::EngineLockNamed(TypedRequest<api::EngineLockNamedRequest>(request));

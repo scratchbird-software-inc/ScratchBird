@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import pathlib
 import subprocess
 import sys
@@ -24,6 +25,7 @@ REFERENCE_ACQUISITION_PREFIX = (
 )
 NATIVE_TOOL_COMPONENT = "/native_tool_harness/tools/"
 FORBIDDEN_COMPONENTS = {
+    "acquired",
     "clean-room",
     "evidence",
     "license",
@@ -42,6 +44,17 @@ FORBIDDEN_FILENAMES = {
 def tracked_files(repo_root: pathlib.Path) -> list[str]:
     result = subprocess.run(
         ["git", "ls-files", REFERENCE_TEST_PREFIX],
+        cwd=repo_root,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def git_lines(repo_root: pathlib.Path, args: list[str]) -> list[str]:
+    result = subprocess.run(
+        ["git", *args],
         cwd=repo_root,
         check=True,
         text=True,
@@ -70,16 +83,58 @@ def declared_native_tools(repo_root: pathlib.Path) -> set[str]:
     return allowed
 
 
+def local_payload_roots(repo_root: pathlib.Path) -> list[pathlib.Path]:
+    root = repo_root / "project/tests/reference_regression"
+    roots: list[pathlib.Path] = []
+    acquisition = root / "reference_release_acquisition"
+    if acquisition.exists():
+        roots.append(acquisition)
+    for family_dir in sorted(path for path in root.iterdir() if path.is_dir()):
+        for candidate in sorted(family_dir.glob("original*")):
+            if candidate.is_dir():
+                roots.append(candidate)
+    return roots
+
+
+def tracked_under(repo_root: pathlib.Path, root: pathlib.Path) -> list[str]:
+    rel = root.relative_to(repo_root).as_posix()
+    return git_lines(repo_root, ["ls-files", rel])
+
+
+def is_ignored(repo_root: pathlib.Path, path: pathlib.Path) -> bool:
+    rel = path.relative_to(repo_root).as_posix()
+    candidates = [rel]
+    if path.is_dir():
+        candidates.append(rel.rstrip("/") + "/")
+        first_file = next((child for child in path.rglob("*") if child.is_file()), None)
+        if first_file is not None:
+            candidates.append(first_file.relative_to(repo_root).as_posix())
+    for candidate in candidates:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", candidate],
+            cwd=repo_root,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--evidence-file", type=pathlib.Path)
     args = parser.parse_args()
 
     repo_root = pathlib.Path(args.repo_root).resolve()
     failures: list[str] = []
     allowed_tools = declared_native_tools(repo_root)
+    tracked_count = 0
+    local_payload_count = 0
+    ignored_local_payload_count = 0
 
     for rel in tracked_files(repo_root):
+        tracked_count += 1
         if not rel.startswith(REFERENCE_ACQUISITION_PREFIX):
             continue
         suffix = rel[len(REFERENCE_ACQUISITION_PREFIX) :]
@@ -99,12 +154,57 @@ def main() -> int:
         if rel not in allowed_tools:
             failures.append(f"{rel}: tracked reference native tool is not declared in a harness manifest")
 
+    for root in local_payload_roots(repo_root):
+        local_payload_count += 1
+        rel = root.relative_to(repo_root).as_posix()
+        tracked_payload = [
+            path for path in tracked_under(repo_root, root)
+            if path.endswith("/PUBLIC_REGRESSION_SCOPE.md")
+            or path.endswith("/SOURCE_POINTERS.md")
+            or path.endswith("/FIREBIRD_QA_CANDIDATE.md")
+            or path.endswith("/FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv")
+            or path.endswith("/FIREBIRD_QA_CANDIDATE_TEST_INDEX.csv")
+            or path.endswith("/FIREBIRD_QA_REFERENCE_REPLAY_FAMILY_MANIFEST.csv")
+            or path.endswith("/FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv")
+        ]
+        all_tracked = tracked_under(repo_root, root)
+        unexpected = sorted(set(all_tracked) - set(tracked_payload))
+        if unexpected:
+            failures.append(f"{rel}: tracked local payload files are not public-safe scope manifests")
+        if root.name.startswith("original") and not is_ignored(repo_root, root):
+            failures.append(f"{rel}: local original-suite payload root is not gitignored")
+        if root.name.startswith("original") and is_ignored(repo_root, root):
+            ignored_local_payload_count += 1
+        if root.name == "reference_release_acquisition":
+            ignored = is_ignored(repo_root, root)
+            if ignored:
+                ignored_local_payload_count += 1
+
     if failures:
         print("\n".join(failures[:300]))
         if len(failures) > 300:
             print(f"... {len(failures) - 300} more")
         return 1
 
+    if args.evidence_file:
+        args.evidence_file.parent.mkdir(parents=True, exist_ok=True)
+        args.evidence_file.write_text(
+            json.dumps(
+                {
+                    "gate": "reference_public_payload_policy_gate",
+                    "status": "passed",
+                    "tracked_reference_files": tracked_count,
+                    "declared_native_tool_paths": len(allowed_tools),
+                    "local_payload_roots": local_payload_count,
+                    "ignored_local_payload_roots": ignored_local_payload_count,
+                    "forbidden_tracked_components": sorted(FORBIDDEN_COMPONENTS),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     print("reference_public_payload_policy_gate: PASS")
     return 0
 

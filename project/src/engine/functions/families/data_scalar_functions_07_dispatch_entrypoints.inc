@@ -452,6 +452,39 @@
   }
 
   if (IdIs(id, {"data.scalar.hash64", "data.scalar.checksum64", "sb.fn.crypto.hash64", "hash64", "checksum64"})) {
+    if (request.arguments.size() == 2) {
+      if (id != "data.scalar.hash64") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "only data.scalar.hash64 accepts an explicit operation profile");
+      }
+      const auto& input = request.arguments[0].value;
+      const auto& profile = request.arguments[1].value;
+      if (LowerAscii(input.descriptor_id) != "character" ||
+          (!IsSqlNull(input) &&
+           input.payload_kind !=
+               scratchbird::engine::sblr::SblrValuePayloadKind::text) ||
+          LowerAscii(profile.descriptor_id) != "text" ||
+          profile.payload_kind !=
+              scratchbird::engine::sblr::SblrValuePayloadKind::text ||
+          IsSqlNull(profile)) {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled hash64 requires character input and a non-NULL text operation_profile");
+      }
+      if (ValueAsText(profile) != "firebird.weak_hash.v1") {
+        return RefuseFunctionInvalidInput(
+            request,
+            "profiled hash64 operation_profile is not registered");
+      }
+      if (IsSqlNull(input)) {
+        return MakeFunctionSuccess(request, {MakeNullValue("int64")});
+      }
+      return MakeFunctionSuccess(
+          request,
+          {MakeInt64Value("int64",
+                          FirebirdWeakHash64(RawBytesFromValue(input)))});
+    }
     if (request.arguments.size() != 1) return RefuseFunctionInvalidInput(request, "hash64/checksum64 expects one argument");
     if (IsSqlNull(request.arguments[0].value)) return MakeFunctionSuccess(request, {MakeNullValue("uint64")});
     return MakeFunctionSuccess(request, {MakeUint64Value("uint64", Fnva64(RawBytesFromValue(request.arguments[0].value)))});

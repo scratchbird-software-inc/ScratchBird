@@ -9,17 +9,25 @@
 #include "extensibility/executable_object_lifecycle.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "dml/delete_api.hpp"
+#include "local_transaction_store.hpp"
 #include "dml/insert_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <charconv>
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -127,6 +135,91 @@ std::string Join(const std::vector<std::string>& values, char delimiter) {
   return out;
 }
 
+EngineApiDiagnostic ExecDiagnostic(const char* code, std::string detail);
+EngineApiDiagnostic OkDiagnostic();
+
+struct RoutineDeleteColumnRangeCountDescriptor {
+  std::string table_uuid;
+  std::string column_uuid;
+  std::uint32_t lower_input_slot = 0;
+  std::uint32_t upper_input_slot = 0;
+  std::uint32_t affected_rows_output_slot = 0;
+  std::uint32_t yield_output_slot = 0;
+};
+
+bool IsRoutineDeleteColumnRangeCountDescriptor(std::string_view descriptor) {
+  return descriptor == kRoutineDeleteColumnRangeCountDescriptorV1 ||
+         descriptor.starts_with(
+             std::string(kRoutineDeleteColumnRangeCountDescriptorV1) + "|");
+}
+
+std::optional<std::uint32_t> ParseRoutineSlot(std::string_view text) {
+  if (text.empty()) { return std::nullopt; }
+  std::uint32_t slot = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), slot);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+      slot > 63) {
+    return std::nullopt;
+  }
+  return slot;
+}
+
+std::optional<std::int64_t> ParseRoutineInteger(std::string_view text) {
+  if (text.empty()) { return std::nullopt; }
+  std::int64_t value = 0;
+  const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+bool IsRoutineIntegerType(std::string type_name) {
+  type_name = LowerAscii(std::move(type_name));
+  return type_name == "integer" || type_name == "int" ||
+         type_name == "int32";
+}
+
+EngineApiDiagnostic ParseRoutineDeleteColumnRangeCountDescriptor(
+    const std::string& encoded,
+    RoutineDeleteColumnRangeCountDescriptor* descriptor) {
+  if (descriptor == nullptr) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "descriptor_output_required");
+  }
+  const auto parts = Split(encoded, '|');
+  if (parts.size() != 7 ||
+      parts[0] != kRoutineDeleteColumnRangeCountDescriptorV1 ||
+      parts[1].empty() || parts[2].empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "delete_column_range_count_descriptor_shape");
+  }
+  const auto lower_slot = ParseRoutineSlot(parts[3]);
+  const auto upper_slot = ParseRoutineSlot(parts[4]);
+  const auto affected_slot = ParseRoutineSlot(parts[5]);
+  const auto yield_slot = ParseRoutineSlot(parts[6]);
+  if (!lower_slot || !upper_slot || !affected_slot || !yield_slot ||
+      *lower_slot != 0 || *upper_slot != 1 || *affected_slot != 2 ||
+      *yield_slot != 2) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "delete_column_range_count_slot_layout");
+  }
+  descriptor->table_uuid = parts[1];
+  descriptor->column_uuid = parts[2];
+  descriptor->lower_input_slot = *lower_slot;
+  descriptor->upper_input_slot = *upper_slot;
+  descriptor->affected_rows_output_slot = *affected_slot;
+  descriptor->yield_output_slot = *yield_slot;
+  return OkDiagnostic();
+}
+
+bool CreateOrAlterProcedureRequested(const EngineApiRequest& request) {
+  return HasOptionToken(request, "create_or_alter:true") ||
+         HasOptionToken(request, "procedure_create_mode:create_or_alter") ||
+         HasOptionToken(request,
+                        "executable_descriptor_kind:create_or_alter_procedure");
+}
+
 EngineApiDiagnostic ExecDiagnostic(const char* code, std::string detail = {}) {
   std::string message_key = "engine.executable_object.lifecycle";
   if (code == std::string(kExecutableObjectDiagnosticDatabasePathRequired)) {
@@ -179,6 +272,21 @@ EngineApiDiagnostic ExecDiagnostic(const char* code, std::string detail = {}) {
     message_key = "sbsql.event_trigger_authority_unavailable";
   } else if (code == std::string(kExecutableObjectDiagnosticEventTriggerEventUnsupported)) {
     message_key = "engine.executable_object.event_trigger_event_unsupported";
+  } else if (code == std::string(kExecutableObjectDiagnosticExactMgaSelectorRequired)) {
+    message_key = "engine.executable_object.exact_mga_selector_required";
+  } else if (code == std::string(kExecutableObjectDiagnosticExactMgaSelectorMismatch)) {
+    message_key = "engine.executable_object.exact_mga_selector_mismatch";
+  } else if (code == std::string(kExecutableObjectDiagnosticRoutineDescriptorInvalid)) {
+    message_key = "engine.executable_object.routine_descriptor_invalid";
+  } else if (code == std::string(kExecutableObjectDiagnosticRoutineArgumentInvalid)) {
+    message_key = "engine.executable_object.routine_argument_invalid";
+  } else if (code == std::string(kExecutableObjectDiagnosticRoutineBindingNotVisible)) {
+    message_key = "engine.executable_object.routine_binding_not_visible";
+  } else if (code ==
+             std::string(
+                 kExecutableObjectDiagnosticPreparedMetadataVersionMismatch)) {
+    message_key =
+        "engine.executable_object.prepared_metadata_version_mismatch";
   }
   return EngineApiDiagnostic{code, std::move(message_key), std::move(detail), true};
 }
@@ -232,9 +340,107 @@ void AddEvidence(EngineApiResult* result, std::string kind, std::string id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
 }
 
-bool EventVisible(const EngineRequestContext& context, std::uint64_t creator_tx) {
+void AddPreparedMetadataEvidence(const EngineRequestContext& context,
+                                 EngineApiResult* result) {
+  if (!context.statement_metadata_snapshot_engine_owned) { return; }
+  AddEvidence(result, "prepared_metadata_binding", "consumed");
+  AddEvidence(result,
+              "prepared_metadata_snapshot_uuid",
+              context.statement_metadata_snapshot_uuid.canonical);
+  AddEvidence(
+      result,
+      "prepared_metadata_exact_version",
+      context.prepared_metadata_required_object_uuid.canonical + ":" +
+          std::to_string(
+              context.prepared_metadata_required_executable_generation) +
+          ":" +
+          std::to_string(context.prepared_metadata_required_metadata_epoch));
+  AddEvidence(
+      result,
+      "prepared_metadata_active_exclusion_count",
+      std::to_string(context
+                         .statement_metadata_snapshot_active_excluded_local_transaction_ids
+                         .size()));
+  AddEvidence(
+      result,
+      "prepared_metadata_in_doubt_exclusion_count",
+      std::to_string(context
+                         .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids
+                         .size()));
+}
+
+bool EventVisible(
+    const EngineRequestContext& context,
+    std::uint64_t creator_tx,
+    const scratchbird::storage::database::LocalTransactionStoreResult*
+        transaction_inventory) {
   if (creator_tx == 0) { return true; }
-  if (context.local_transaction_id != 0 && creator_tx == context.local_transaction_id) { return true; }
+  const bool engine_metadata_snapshot =
+      context.statement_metadata_snapshot_engine_owned;
+  const auto metadata_excludes = [&](const auto& excluded) {
+    return std::find(excluded.begin(), excluded.end(), creator_tx) !=
+           excluded.end();
+  };
+  if (transaction_inventory != nullptr && transaction_inventory->ok()) {
+    for (const auto& entry : transaction_inventory->inventory.entries) {
+      if (!entry.identity.local_id.valid() ||
+          entry.identity.local_id.value != creator_tx) {
+        continue;
+      }
+      using scratchbird::transaction::mga::TransactionState;
+      if (creator_tx == context.local_transaction_id &&
+          entry.identity.transaction_uuid.valid() &&
+          scratchbird::core::uuid::UuidToString(
+              entry.identity.transaction_uuid.value) ==
+              context.transaction_uuid.canonical) {
+        return entry.state == TransactionState::active ||
+               entry.state == TransactionState::read_only_active ||
+               entry.state == TransactionState::preparing ||
+               entry.state == TransactionState::prepared;
+      }
+      if (engine_metadata_snapshot &&
+          (metadata_excludes(
+               context
+                   .statement_metadata_snapshot_active_excluded_local_transaction_ids) ||
+           metadata_excludes(
+               context
+                   .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids))) {
+        return false;
+      }
+      if (entry.state != TransactionState::committed &&
+          entry.state != TransactionState::archived) {
+        return false;
+      }
+      const std::uint64_t visible_through =
+          engine_metadata_snapshot
+              ? context
+                    .statement_metadata_snapshot_visible_through_local_transaction_id
+              : context.snapshot_visible_through_local_transaction_id != 0
+                    ? context.snapshot_visible_through_local_transaction_id
+                    : context.local_transaction_id;
+      return engine_metadata_snapshot
+                 ? creator_tx <= visible_through
+                 : visible_through == 0 || creator_tx <= visible_through;
+    }
+    return false;
+  }
+  if (context.local_transaction_id != 0 &&
+      creator_tx == context.local_transaction_id) {
+    return true;
+  }
+  if (engine_metadata_snapshot) {
+    if (metadata_excludes(
+            context
+                .statement_metadata_snapshot_active_excluded_local_transaction_ids) ||
+        metadata_excludes(
+            context
+                .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids)) {
+      return false;
+    }
+    return creator_tx <=
+           context
+               .statement_metadata_snapshot_visible_through_local_transaction_id;
+  }
   if (context.snapshot_visible_through_local_transaction_id != 0) {
     return creator_tx <= context.snapshot_visible_through_local_transaction_id;
   }
@@ -457,6 +663,113 @@ EngineApiDiagnostic ValidateManageAuthority(const EngineApiRequest& request,
   return OkDiagnostic();
 }
 
+std::string CompiledBodyDescriptor(const EngineApiRequest& request) {
+  return OptionValue(request, "compiled_body_descriptor:");
+}
+
+EngineApiDiagnostic ValidateExactMgaSelector(const EngineRequestContext& context) {
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorRequired,
+                          "local_transaction_id_and_transaction_uuid_required");
+  }
+  const auto loaded =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          context.database_path);
+  if (!loaded.ok()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorRequired,
+                          "durable_transaction_inventory_unavailable");
+  }
+  for (const auto& entry : loaded.inventory.entries) {
+    if (!entry.identity.local_id.valid() ||
+        entry.identity.local_id.value != context.local_transaction_id) {
+      continue;
+    }
+    if (!entry.identity.transaction_uuid.valid() ||
+        scratchbird::core::uuid::UuidToString(
+            entry.identity.transaction_uuid.value) !=
+            context.transaction_uuid.canonical) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
+                            "local_transaction_id_and_transaction_uuid_do_not_match");
+    }
+    using scratchbird::transaction::mga::TransactionState;
+    if (entry.state != TransactionState::active) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
+                            "selected_transaction_is_not_active_write_authority");
+    }
+    return OkDiagnostic();
+  }
+  return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorMismatch,
+                        "selected_transaction_not_found_in_durable_inventory");
+}
+
+EngineApiDiagnostic ValidateRoutineIntegerSignature(
+    const EngineApiRequest& request) {
+  if (OptionValue(request, "routine_parameter_count:") != "2" ||
+      OptionValue(request, "routine_return_count:") != "1") {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "two_integer_inputs_and_one_integer_output_required");
+  }
+  for (std::size_t slot = 0; slot < 2; ++slot) {
+    const std::string prefix = "routine_parameter_" + std::to_string(slot);
+    if (LowerAscii(OptionValue(request, prefix + "_mode:")) != "in" ||
+        !IsRoutineIntegerType(OptionValue(request, prefix + "_type:"))) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                            prefix + "_must_be_integer_in");
+    }
+  }
+  if (!IsRoutineIntegerType(OptionValue(request, "routine_return_0_type:"))) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "routine_return_0_must_be_integer_out");
+  }
+  return OkDiagnostic();
+}
+
+EngineApiDiagnostic ResolveRoutineColumnBinding(
+    const EngineRequestContext& context,
+    const RoutineDeleteColumnRangeCountDescriptor& routine,
+    std::string* column_name) {
+  // Stored routine binding is a read-only validation boundary.  CREATE TABLE
+  // owns descriptor persistence; routine creation/invocation must not repair
+  // or synthesize catalog/storage metadata as a side effect of validation.
+  const auto loaded =
+      LoadMgaRelationStorageDescriptor(context, routine.table_uuid);
+  if (!loaded.ok) { return loaded.diagnostic; }
+  for (const auto& column : loaded.descriptor.columns) {
+    if (column.column_uuid.canonical != routine.column_uuid) { continue; }
+    if (column.canonical_name_key.empty()) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
+                            "column_name_key_missing:" + routine.column_uuid);
+    }
+    if (column_name != nullptr) { *column_name = column.canonical_name_key; }
+    return OkDiagnostic();
+  }
+  return ExecDiagnostic(kExecutableObjectDiagnosticRoutineBindingNotVisible,
+                        "column_uuid:" + routine.column_uuid);
+}
+
+EngineApiDiagnostic ValidateRoutineDeleteColumnRangeCountProgram(
+    const EngineApiRequest& request,
+    const std::string& object_kind,
+    const std::string& descriptor) {
+  if (!IsRoutineDeleteColumnRangeCountDescriptor(descriptor)) {
+    return OkDiagnostic();
+  }
+  if (object_kind != "procedure") {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "delete_column_range_count_requires_procedure");
+  }
+  const auto selector = ValidateExactMgaSelector(request.context);
+  if (selector.error) { return selector; }
+  const auto signature = ValidateRoutineIntegerSignature(request);
+  if (signature.error) { return signature; }
+  RoutineDeleteColumnRangeCountDescriptor parsed;
+  const auto decoded =
+      ParseRoutineDeleteColumnRangeCountDescriptor(descriptor, &parsed);
+  if (decoded.error) { return decoded; }
+  return ResolveRoutineColumnBinding(request.context, parsed, nullptr);
+}
+
 EngineApiDiagnostic ValidateStoredProgram(const EngineApiRequest& request,
                                           const std::string& object_kind,
                                           const EngineExecutableObjectRecord* existing,
@@ -492,6 +805,9 @@ EngineApiDiagnostic ValidateStoredProgram(const EngineApiRequest& request,
       return ExecDiagnostic(kExecutableObjectDiagnosticEventTriggerEventUnsupported, *event_trigger_event);
     }
   }
+  const auto routine_program = ValidateRoutineDeleteColumnRangeCountProgram(
+      request, object_kind, CompiledBodyDescriptor(request));
+  if (routine_program.error) { return routine_program; }
   return OkDiagnostic();
 }
 
@@ -592,6 +908,17 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
   std::map<std::string, EngineExecutableObjectRecord> objects;
   std::map<std::string, EngineExecutableDependencyRecord> dependencies;
   std::map<std::string, EngineExecutableInvocationRecord> active_invocations;
+  const auto transaction_inventory =
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
+          context.database_path);
+  if (options.enforce_visibility &&
+      context.statement_metadata_snapshot_engine_owned &&
+      !transaction_inventory.ok()) {
+    result.diagnostic = ExecDiagnostic(
+        kExecutableObjectDiagnosticMgaVisibilityRefused,
+        "prepared_metadata_transaction_inventory_unavailable");
+    return result;
+  }
   std::uint64_t event_sequence = 0;
   std::string line;
   while (std::getline(in, line)) {
@@ -600,7 +927,10 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
     const auto parts = Split(line, '\t');
     if (parts.size() < 2) { continue; }
     const std::uint64_t creator_tx = parts.size() >= 3 ? ParseU64(parts[2]) : 0;
-    if (options.enforce_visibility && !EventVisible(context, creator_tx)) { continue; }
+    if (options.enforce_visibility &&
+        !EventVisible(context, creator_tx, &transaction_inventory)) {
+      continue;
+    }
     const std::string& event = parts[1];
     if (event == "OBJECT" && parts.size() >= 19) {
       EngineExecutableObjectRecord record;
@@ -902,6 +1232,47 @@ std::string RequestedLeaseUuid(const EngineApiRequest& request,
          "-" + std::to_string(active_count + 1);
 }
 
+EngineApiDiagnostic ValidatePreparedMetadataRequiredVersion(
+    const EngineRequestContext& context,
+    const EngineExecutableObjectRecord& object) {
+  if (!context.statement_metadata_snapshot_engine_owned) {
+    return OkDiagnostic();
+  }
+  if (context.statement_metadata_snapshot_uuid.canonical.empty() ||
+      context.prepared_metadata_required_object_uuid.canonical.empty() ||
+      context.prepared_metadata_required_executable_generation == 0 ||
+      context.prepared_metadata_required_metadata_epoch == 0) {
+    return ExecDiagnostic(
+        kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
+        "engine_owned_binding_missing_exact_metadata_identity");
+  }
+  if (object.object_uuid !=
+      context.prepared_metadata_required_object_uuid.canonical) {
+    return ExecDiagnostic(
+        kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
+        "object_uuid:" + object.object_uuid + ":required:" +
+            context.prepared_metadata_required_object_uuid.canonical);
+  }
+  if (object.executable_generation !=
+      context.prepared_metadata_required_executable_generation) {
+    return ExecDiagnostic(
+        kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
+        "executable_generation:" +
+            std::to_string(object.executable_generation) + ":required:" +
+            std::to_string(
+                context.prepared_metadata_required_executable_generation));
+  }
+  if (object.metadata_epoch !=
+      context.prepared_metadata_required_metadata_epoch) {
+    return ExecDiagnostic(
+        kExecutableObjectDiagnosticPreparedMetadataVersionMismatch,
+        "metadata_epoch:" + std::to_string(object.metadata_epoch) +
+            ":required:" +
+            std::to_string(context.prepared_metadata_required_metadata_epoch));
+  }
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic ValidateInvocationReadiness(const EngineApiRequest& request,
                                                 const EngineExecutableObjectLifecycleState& state,
                                                 const EngineExecutableObjectRecord& object) {
@@ -912,6 +1283,9 @@ EngineApiDiagnostic ValidateInvocationReadiness(const EngineApiRequest& request,
     return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused,
                           "engine_accepts_stored_sblr_or_internal_procedure_invocation_only");
   }
+  const auto prepared_metadata =
+      ValidatePreparedMetadataRequiredVersion(request.context, object);
+  if (prepared_metadata.error) { return prepared_metadata; }
   if (object.lifecycle_state == "quiescing") {
     return ExecDiagnostic(kExecutableObjectDiagnosticQuiescing, object.object_uuid);
   }
@@ -926,6 +1300,12 @@ EngineApiDiagnostic ValidateInvocationReadiness(const EngineApiRequest& request,
   if (object.executor_kind == "metadata_only") {
     return ExecDiagnostic(kExecutableObjectDiagnosticStoredSblrRequired,
                           "metadata_only_executable_descriptor");
+  }
+  const std::string compiled_descriptor =
+      PayloadFieldValue(object.payload, "compiled_body_descriptor:");
+  if (IsRoutineDeleteColumnRangeCountDescriptor(compiled_descriptor)) {
+    const auto selector = ValidateExactMgaSelector(request.context);
+    if (selector.error) { return selector; }
   }
   const auto dependencies = ValidateExecutableDependencies(state, object);
   if (dependencies.error) { return dependencies; }
@@ -1044,6 +1424,101 @@ EngineApiDiagnostic ExecuteProcessTasksProcedure(const EngineInvokeExecutableObj
   return OkDiagnostic();
 }
 
+EngineApiDiagnostic ExecuteDeleteColumnRangeCountProcedure(
+    const EngineInvokeExecutableObjectRequest& request,
+    const std::string& encoded_descriptor,
+    EngineApiResult* body_result) {
+  if (body_result == nullptr) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "routine_body_result_required");
+  }
+  RoutineDeleteColumnRangeCountDescriptor descriptor;
+  const auto decoded = ParseRoutineDeleteColumnRangeCountDescriptor(
+      encoded_descriptor, &descriptor);
+  if (decoded.error) { return decoded; }
+  if (OptionValue(request, "routine_argument_count:") != "2") {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineArgumentInvalid,
+                          "two_integer_argument_slots_required");
+  }
+  std::array<std::int64_t, 2> arguments{};
+  for (std::size_t slot = 0; slot < arguments.size(); ++slot) {
+    const std::string prefix = "routine_argument_" + std::to_string(slot);
+    const std::string type = OptionValue(request, prefix + "_type:");
+    if (!type.empty() && !IsRoutineIntegerType(type)) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineArgumentInvalid,
+                            prefix + "_type_must_be_integer");
+    }
+    const auto value =
+        ParseRoutineInteger(OptionValue(request, prefix + "_value:"));
+    if (!value) {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineArgumentInvalid,
+                            prefix + "_value_must_be_integer");
+    }
+    arguments[slot] = *value;
+  }
+
+  std::string column_name;
+  const auto binding =
+      ResolveRoutineColumnBinding(request.context, descriptor, &column_name);
+  if (binding.error) { return binding; }
+
+  EngineDeleteRowsRequest delete_request;
+  delete_request.context = request.context;
+  delete_request.operation_id = "dml.delete_rows";
+  delete_request.target_table.uuid.canonical = descriptor.table_uuid;
+  delete_request.target_table.object_kind = "table";
+  // The routine body invokes the canonical DELETE API; its compiled-routine
+  // origin is carried as evidence below, not as new compatibility-specific DML
+  // surface variant.
+  delete_request.delete_surface_variant = "delete";
+  delete_request.delete_predicate.predicate_kind = "column_range";
+  delete_request.delete_predicate.canonical_predicate_envelope = column_name;
+  delete_request.delete_predicate.bound_values.push_back(
+      ScalarValue("integer", std::to_string(arguments[descriptor.lower_input_slot])));
+  delete_request.delete_predicate.bound_values.push_back(
+      ScalarValue("integer", std::to_string(arguments[descriptor.upper_input_slot])));
+  delete_request.option_envelopes.push_back(
+      "policy:executable.side_effect:allow");
+  const auto deleted = EngineDeleteRows(delete_request);
+  if (!deleted.ok) {
+    if (!deleted.diagnostics.empty()) { return deleted.diagnostics.front(); }
+    return ExecDiagnostic(kExecutableObjectDiagnosticExecutionBoundaryRefused,
+                          "compiled_routine_delete_failed");
+  }
+
+  EngineDescriptor output_descriptor;
+  output_descriptor.descriptor_kind = "routine_output";
+  output_descriptor.canonical_type_name = "integer";
+  output_descriptor.encoded_descriptor =
+      "mode=out;slot=" +
+      std::to_string(descriptor.affected_rows_output_slot) +
+      ";source=authoritative_deleted_count";
+  body_result->result_shape.result_kind = "routine.procedure.result.v1";
+  body_result->result_shape.columns.push_back(output_descriptor);
+  EngineRowValue yielded;
+  yielded.fields.push_back(
+      {"routine_output_slot_" + std::to_string(descriptor.yield_output_slot),
+       ScalarValue("integer", std::to_string(deleted.deleted_count))});
+  body_result->result_shape.rows.push_back(std::move(yielded));
+  body_result->dml_summary = deleted.dml_summary;
+  body_result->evidence.insert(body_result->evidence.end(),
+                               deleted.evidence.begin(),
+                               deleted.evidence.end());
+  AddEvidence(body_result,
+              "routine_instruction",
+              "delete.uuid_bound.column_range");
+  AddEvidence(body_result, "routine_target_table_uuid", descriptor.table_uuid);
+  AddEvidence(body_result, "routine_target_column_uuid", descriptor.column_uuid);
+  AddEvidence(body_result,
+              "routine_affected_rows_output_slot",
+              std::to_string(descriptor.affected_rows_output_slot) + ":" +
+                  std::to_string(deleted.deleted_count));
+  AddEvidence(body_result,
+              "routine_yielded_output_rows",
+              std::to_string(body_result->result_shape.rows.size()));
+  return OkDiagnostic();
+}
+
 EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
     const EngineInvokeExecutableObjectRequest& request,
     const EngineExecutableObjectRecord& object,
@@ -1052,6 +1527,10 @@ EngineApiDiagnostic ExecuteInternalProcedureDescriptor(
       PayloadFieldValue(object.payload, "compiled_body_descriptor:");
   if (descriptor == "sbsql.compiled.procedural.process_tasks.v1") {
     return ExecuteProcessTasksProcedure(request, evidence_result);
+  }
+  if (IsRoutineDeleteColumnRangeCountDescriptor(descriptor)) {
+    return ExecuteDeleteColumnRangeCountProcedure(
+        request, descriptor, evidence_result);
   }
   if (descriptor.empty()) { return OkDiagnostic(); }
   AddEvidence(evidence_result, "internal_procedure_descriptor_no_side_effect", descriptor);
@@ -1103,6 +1582,7 @@ EngineBeginExecutableObjectInvocationResult BeginInvocationWithOperation(
   auto result = SuccessResult<EngineBeginExecutableObjectInvocationResult>(request.context, operation_id);
   result.invocation_lease_uuid = invocation.invocation_lease_uuid;
   FillObjectResult(&result, request.context, object, active_count + 1);
+  AddPreparedMetadataEvidence(request.context, &result);
   AddEvidence(&result, "invocation_lifecycle", "active_invocation_acquired");
   if (object.executor_kind == "sblr") {
     AddEvidence(&result, "sblr_authority", "stored_sblr_hash_verified");
@@ -1146,6 +1626,12 @@ EngineFinishExecutableObjectInvocationResult FinishInvocationWithOperation(
         operation_id,
         ExecDiagnostic(kExecutableObjectDiagnosticNotFound, object_uuid));
   }
+  const auto prepared_metadata =
+      ValidatePreparedMetadataRequiredVersion(request.context, *object);
+  if (prepared_metadata.error) {
+    return DiagnosticResult<EngineFinishExecutableObjectInvocationResult>(
+        request.context, operation_id, prepared_metadata);
+  }
   bool found = false;
   for (const auto& invocation : loaded.state.active_invocations) {
     if (invocation.invocation_lease_uuid == lease_uuid && invocation.object_uuid == object_uuid) {
@@ -1179,8 +1665,75 @@ EngineFinishExecutableObjectInvocationResult FinishInvocationWithOperation(
                    request.context,
                    output_object,
                    ActiveInvocationCount(loaded.state, object_uuid) - 1);
+  AddPreparedMetadataEvidence(request.context, &result);
   AddEvidence(&result, "invocation_lifecycle", "active_invocation_released");
   return result;
+}
+
+EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
+    const EngineCreateExecutableObjectRequest& request) {
+  const std::string object_uuid = ObjectUuid(request);
+  const std::string object_kind = ObjectKind(request);
+  if (object_kind.empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticKindRequired,
+                          "target_object.object_kind");
+  }
+  const auto authority = ValidateManageAuthority(request, object_kind);
+  if (authority.error) { return authority; }
+  if (object_uuid.empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticUuidRequired,
+                          "target_object.uuid");
+  }
+  if (!ValidObjectKind(object_kind)) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticUnsupportedKind,
+                          object_kind);
+  }
+  if (object_kind != "event_trigger" &&
+      request.target_schema.uuid.canonical.empty()) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticSchemaUuidRequired,
+                          "target_schema.uuid");
+  }
+  const bool create_or_alter = CreateOrAlterProcedureRequested(request);
+  if (create_or_alter) {
+    if (object_kind != "procedure") {
+      return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                            "create_or_alter_route_requires_procedure");
+    }
+    const auto selector = ValidateExactMgaSelector(request.context);
+    if (selector.error) { return selector; }
+  }
+
+  std::string executor_kind;
+  std::string stored_sblr_hash;
+  std::string stored_sblr_provenance;
+  std::string internal_procedure_id;
+  std::string side_effect_class;
+  std::string event_trigger_event;
+  const auto stored = ValidateStoredProgram(request,
+                                            object_kind,
+                                            nullptr,
+                                            &executor_kind,
+                                            &stored_sblr_hash,
+                                            &stored_sblr_provenance,
+                                            &internal_procedure_id,
+                                            &side_effect_class,
+                                            &event_trigger_event);
+  if (stored.error) { return stored; }
+
+  const auto loaded = LoadState(request.context, {.enforce_visibility = true});
+  if (!loaded.ok) { return loaded.diagnostic; }
+  if (FindObject(loaded.state, object_uuid) != nullptr) {
+    return create_or_alter
+               ? OkDiagnostic()
+               : ExecDiagnostic(kExecutableObjectDiagnosticDuplicate,
+                                object_uuid);
+  }
+  if (create_or_alter &&
+      !request.create_or_alter_identity_engine_allocated) {
+    return ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                          "create_or_alter_identity_must_be_engine_allocated");
+  }
+  return ValidateRelatedObjects(loaded.state, request);
 }
 
 }  // namespace
@@ -1193,6 +1746,16 @@ EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStat
 EngineLoadExecutableObjectLifecycleStateResult LoadExecutableObjectLifecycleStateForRuntimeDispatch(
     const EngineRequestContext& context) {
   return LoadState(context, {.enforce_visibility = false});
+}
+
+EngineApiDiagnostic ValidateExecutableObjectExactMgaSelector(
+    const EngineRequestContext& context) {
+  return ValidateExactMgaSelector(context);
+}
+
+EngineApiDiagnostic PreflightCreateExecutableObject(
+    const EngineCreateExecutableObjectRequest& request) {
+  return PreflightCreateExecutableObjectImpl(request);
 }
 
 EngineCreateExecutableObjectResult EngineCreateExecutableObject(
@@ -1228,6 +1791,21 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
         kOperationCreate,
         ExecDiagnostic(kExecutableObjectDiagnosticSchemaUuidRequired, "target_schema.uuid"));
   }
+  const bool create_or_alter = CreateOrAlterProcedureRequested(request);
+  if (create_or_alter) {
+    if (object_kind != "procedure") {
+      return DiagnosticResult<EngineCreateExecutableObjectResult>(
+          request.context,
+          kOperationCreate,
+          ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                         "create_or_alter_route_requires_procedure"));
+    }
+    const auto selector = ValidateExactMgaSelector(request.context);
+    if (selector.error) {
+      return DiagnosticResult<EngineCreateExecutableObjectResult>(
+          request.context, kOperationCreate, selector);
+    }
+  }
   std::string executor_kind;
   std::string stored_sblr_hash;
   std::string stored_sblr_provenance;
@@ -1250,6 +1828,24 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
   if (!loaded.ok) {
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
         request.context, kOperationCreate, loaded.diagnostic);
+  }
+  if (FindObject(loaded.state, object_uuid) != nullptr && create_or_alter) {
+    EngineAlterExecutableObjectRequest alter;
+    static_cast<EngineApiRequest&>(alter) = request;
+    auto altered = EngineAlterExecutableObject(alter);
+    if (altered.ok) {
+      AddEvidence(&altered, "create_or_alter_resolution", "alter");
+      AddEvidence(&altered, "create_or_alter_authority", "engine_exact_mga");
+    }
+    return altered;
+  }
+  if (create_or_alter &&
+      !request.create_or_alter_identity_engine_allocated) {
+    return DiagnosticResult<EngineCreateExecutableObjectResult>(
+        request.context,
+        kOperationCreate,
+        ExecDiagnostic(kExecutableObjectDiagnosticRoutineDescriptorInvalid,
+                       "create_or_alter_identity_must_be_engine_allocated"));
   }
   if (FindObject(loaded.state, object_uuid) != nullptr) {
     return DiagnosticResult<EngineCreateExecutableObjectResult>(
@@ -1300,6 +1896,10 @@ EngineCreateExecutableObjectResult EngineCreateExecutableObject(
   FillObjectResult(&result, request.context, record, 0);
   AddEvidence(&result, "permission_check", "manage_executable");
   AddEvidence(&result, "dependency_generation", std::to_string(dependency_generation));
+  if (create_or_alter) {
+    AddEvidence(&result, "create_or_alter_resolution", "create");
+    AddEvidence(&result, "create_or_alter_authority", "engine_exact_mga");
+  }
   if (object_kind == "event_trigger") {
     AddEvidence(&result, "event_trigger_boundary", "ddl_event_filter_registered");
   }
@@ -1575,7 +2175,12 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
   if (visible.error) {
     body_diagnostic = visible;
   } else {
-    body_diagnostic = ExecuteInternalProcedureDescriptor(request, object, &body_evidence);
+    body_diagnostic =
+        ValidatePreparedMetadataRequiredVersion(request.context, object);
+    if (!body_diagnostic.error) {
+      body_diagnostic =
+          ExecuteInternalProcedureDescriptor(request, object, &body_evidence);
+    }
   }
   EngineFinishExecutableObjectInvocationRequest finish;
   static_cast<EngineApiRequest&>(finish) = request;
@@ -1598,6 +2203,12 @@ EngineInvokeExecutableObjectResult EngineInvokeExecutableObject(
   result.evidence.insert(result.evidence.end(),
                          body_evidence.evidence.begin(),
                          body_evidence.evidence.end());
+  if (!body_evidence.result_shape.result_kind.empty() ||
+      !body_evidence.result_shape.columns.empty() ||
+      !body_evidence.result_shape.rows.empty()) {
+    result.result_shape = std::move(body_evidence.result_shape);
+  }
+  result.dml_summary = std::move(body_evidence.dml_summary);
   AddEvidence(&result, "invocation_lifecycle", "sblr_or_internal_procedure_completed");
   if (HasOptionToken(request, "policy:executable.side_effect:allow") ||
       HasOptionToken(request, "side_effect_policy:allow")) {

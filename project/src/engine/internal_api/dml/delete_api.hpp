@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/relation_projection_view.hpp"
 
 namespace scratchbird::engine::internal_api {
 
@@ -16,9 +17,12 @@ namespace scratchbird::engine::internal_api {
 struct EngineDeleteRowsRequest : EngineApiRequest {
   EngineObjectReference target_table;
   EnginePredicateEnvelope delete_predicate;
+  EngineRelationProjectionViewDeleteEnvelope relation_projection_view;
   std::string delete_surface_variant = "delete";
   std::string batch_on_column;
   EngineApiU64 batch_limit_rows = 0;
+  EngineApiU64 limit = 0;
+  EngineApiU64 offset = 0;
   std::string series_name;
   bool tombstone_only = true;
 };

@@ -84,6 +84,37 @@ EngineDropObjectResult DropCatalogBackedObject(const EngineDropObjectRequest& re
   return result;
 }
 
+EngineApiDiagnostic DropCatalogLifecycleObjectIfPresent(const EngineDropObjectRequest& request,
+                                                        const std::string& kind,
+                                                        bool* dropped_lifecycle_object) {
+  if (dropped_lifecycle_object != nullptr) {
+    *dropped_lifecycle_object = false;
+  }
+  if (request.target_object.uuid.canonical.empty()) {
+    return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
+  EngineCatalogDropObjectRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = "ddl.drop_object";
+  catalog_request.target_object.uuid.canonical = request.target_object.uuid.canonical;
+  catalog_request.target_object.object_kind = kind;
+  const auto dropped = EngineCatalogDropObject(catalog_request);
+  if (!dropped.ok) {
+    const EngineApiDiagnostic diagnostic = dropped.diagnostics.empty()
+                                               ? MakeInvalidRequestDiagnostic("ddl.drop_object",
+                                                                              "catalog_drop_failed")
+                                               : dropped.diagnostics.front();
+    if (diagnostic.code == kCatalogObjectDiagnosticNotFound) {
+      return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+    }
+    return diagnostic;
+  }
+  if (dropped_lifecycle_object != nullptr) {
+    *dropped_lifecycle_object = true;
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
 }  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_DROP_API_BEHAVIOR
@@ -197,6 +228,17 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
       return result;
     }
   }
+  bool catalog_lifecycle_dropped = false;
+  if (kind == "table" || kind == "relation") {
+    const auto catalog_drop_status =
+        DropCatalogLifecycleObjectIfPresent(request, "table", &catalog_lifecycle_dropped);
+    if (catalog_drop_status.error) {
+      return MakeCrudDiagnosticResult<EngineDropObjectResult>(
+          request.context,
+          "ddl.drop_object",
+          catalog_drop_status);
+    }
+  }
   auto result = PersistedRecordResult<EngineDropObjectResult>(request, "ddl.drop_object", kind, true, "dropped", true);
   if (!result.ok) { return result; }
   const std::string object_uuid = request.target_object.uuid.canonical.empty()
@@ -207,6 +249,9 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     return MakeCrudDiagnosticResult<EngineDropObjectResult>(request.context, "ddl.drop_object", retired);
   }
   result.evidence.push_back({"name_registry_retired", object_uuid});
+  if (catalog_lifecycle_dropped) {
+    result.evidence.push_back({"catalog_lifecycle_drop", "table"});
+  }
   AddDdlPublicationResult(&result,
                           "ddl.drop_object",
                           kind,

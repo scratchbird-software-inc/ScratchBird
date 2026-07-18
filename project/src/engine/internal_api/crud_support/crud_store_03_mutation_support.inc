@@ -221,6 +221,10 @@ std::string CrudFieldValue(const std::vector<std::pair<std::string, std::string>
   for (const auto& [key, value] : values) {
     if (key == field) { return value; }
   }
+  const std::string lowered_field = LowerAscii(field);
+  for (const auto& [key, value] : values) {
+    if (LowerAscii(key) == lowered_field) { return value; }
+  }
   return {};
 }
 
@@ -228,6 +232,10 @@ std::string CrudColumnDescriptorForName(const std::vector<std::pair<std::string,
                                         const std::string& column_name) {
   for (const auto& [name, descriptor] : columns) {
     if (name == column_name) { return descriptor; }
+  }
+  const std::string lowered_column_name = LowerAscii(column_name);
+  for (const auto& [name, descriptor] : columns) {
+    if (LowerAscii(name) == lowered_column_name) { return descriptor; }
   }
   return {};
 }
@@ -252,6 +260,12 @@ bool CrudExpressionTouchesColumn(const std::string& expression, const std::strin
   if (StartsWith(expression, "length:") && expression.substr(7) == column_name) { return true; }
   if (StartsWith(expression, "identity:") && expression.substr(9) == column_name) { return true; }
   if (StartsWith(expression, "desc:") && expression.substr(5) == column_name) { return true; }
+  if (StartsWith(expression, "sum:")) {
+    const std::string rest = expression.substr(4);
+    const auto pos = rest.find(':');
+    if (pos == std::string::npos) return false;
+    return rest.substr(0, pos) == column_name || rest.substr(pos + 1) == column_name;
+  }
   if (StartsWith(expression, "cast:")) {
     const std::string rest = expression.substr(5);
     const auto pos = rest.find(':');

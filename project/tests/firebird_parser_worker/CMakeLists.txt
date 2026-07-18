@@ -14,12 +14,135 @@ set_tests_properties(firebird_parser_pipeline_probe PROPERTIES
   LABELS "firebird_lexer_conformance;firebird_cst_ast_conformance;firebird_datatype_descriptor_conformance;firebird_expression_builtin_conformance;firebird_dml_query_conformance;firebird_ddl_catalog_overlay_conformance;firebird_psql_dynamic_sql_conformance;firebird_non_file_emulation_gate;firebird_status_vector_diagnostic_conformance;firebird_parser_worker"
 )
 
+add_executable(firebird_foreign_key_route_gate
+  firebird_foreign_key_route_gate.cpp
+)
+target_compile_features(firebird_foreign_key_route_gate PRIVATE cxx_std_23)
+target_link_libraries(firebird_foreign_key_route_gate PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_foreign_key_route_gate
+  COMMAND firebird_foreign_key_route_gate
+)
+set_tests_properties(firebird_foreign_key_route_gate PROPERTIES
+  LABELS "firebird_foreign_key_d1;firebird_mga_authority_gate;firebird_parser_worker_isolation;firebird_parser_worker"
+)
+
+add_executable(firebird_scalar_projection_probe
+  firebird_scalar_projection_probe.cpp
+)
+target_compile_features(firebird_scalar_projection_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_scalar_projection_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_scalar_projection_probe
+  COMMAND firebird_scalar_projection_probe
+)
+set_tests_properties(firebird_scalar_projection_probe PROPERTIES
+  LABELS "firebird_expression_builtin_conformance;firebird_dml_query_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_hash_projection_probe
+  firebird_hash_projection_probe.cpp
+)
+target_compile_features(firebird_hash_projection_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_hash_projection_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_hash_projection_probe
+  COMMAND firebird_hash_projection_probe
+)
+set_tests_properties(firebird_hash_projection_probe PROPERTIES
+  LABELS "firebird_expression_builtin_conformance;firebird_dml_query_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_count_aggregate_projection_probe
+  firebird_count_aggregate_projection_probe.cpp
+)
+target_compile_features(firebird_count_aggregate_projection_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_count_aggregate_projection_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_count_aggregate_projection_probe
+  COMMAND firebird_count_aggregate_projection_probe
+)
+set_tests_properties(firebird_count_aggregate_projection_probe PROPERTIES
+  LABELS "firebird_expression_builtin_conformance;firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_avg_aggregate_projection_probe
+  firebird_avg_aggregate_projection_probe.cpp
+)
+target_compile_features(firebird_avg_aggregate_projection_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_avg_aggregate_projection_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_avg_aggregate_projection_probe
+  COMMAND firebird_avg_aggregate_projection_probe
+)
+set_tests_properties(firebird_avg_aggregate_projection_probe PROPERTIES
+  LABELS "firebird_expression_builtin_conformance;firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker_isolation;firebird_parser_worker"
+)
+
+add_executable(firebird_avg_worker_prepare_admission_probe
+  firebird_avg_worker_prepare_admission_probe.cpp
+)
+target_compile_features(firebird_avg_worker_prepare_admission_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_avg_worker_prepare_admission_probe PRIVATE
+  sbl_firebird_parser_pipeline
+  sb_server_core
+)
+add_test(
+  NAME firebird_avg_worker_prepare_admission_probe
+  COMMAND firebird_avg_worker_prepare_admission_probe
+)
+set_tests_properties(firebird_avg_worker_prepare_admission_probe PROPERTIES
+  LABELS "firebird_expression_builtin_conformance;firebird_parser_worker_ipc_conformance;firebird_bridge_service_surface_conformance;firebird_parser_worker"
+)
+
+add_executable(firebird_relation_projection_view_probe
+  firebird_relation_projection_view_probe.cpp
+)
+target_compile_features(firebird_relation_projection_view_probe PRIVATE
+  cxx_std_23
+)
+target_link_libraries(firebird_relation_projection_view_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_relation_projection_view_probe
+  COMMAND firebird_relation_projection_view_probe
+)
+set_tests_properties(firebird_relation_projection_view_probe PROPERTIES
+  LABELS "firebird_ddl_catalog_overlay_conformance;firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker_isolation;firebird_parser_worker"
+)
+
 add_executable(firebird_binder_sblr_probe firebird_binder_sblr_probe.cpp)
 target_compile_features(firebird_binder_sblr_probe PRIVATE cxx_std_23)
 target_link_libraries(firebird_binder_sblr_probe PRIVATE sbl_firebird_parser_pipeline)
 add_test(NAME firebird_binder_sblr_probe COMMAND firebird_binder_sblr_probe)
 set_tests_properties(firebird_binder_sblr_probe PROPERTIES
   LABELS "firebird_binder_descriptor_uuid_conformance;firebird_sblr_lowering_verifier;firebird_parser_worker"
+)
+
+add_executable(firebird_derived_table_diagnostic_probe
+  firebird_derived_table_diagnostic_probe.cpp
+)
+target_compile_features(firebird_derived_table_diagnostic_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_derived_table_diagnostic_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_derived_table_diagnostic_probe
+  COMMAND firebird_derived_table_diagnostic_probe
+)
+set_tests_properties(firebird_derived_table_diagnostic_probe PROPERTIES
+  LABELS "firebird_binder_descriptor_uuid_conformance;firebird_status_vector_diagnostic_conformance;firebird_parser_worker_isolation;firebird_parser_worker"
 )
 
 add_executable(firebird_isql_original_regression_probe firebird_isql_original_regression_probe.cpp)
@@ -47,6 +170,197 @@ set_tests_properties(firebird_parameter_buffer_decoder_probe PROPERTIES
 )
 
 find_program(FIREBIRD_PYTHON3 python3 REQUIRED)
+add_test(
+  NAME firebird_count_aggregate_authority_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_count_aggregate_authority_gate.py"
+          --parser-header
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_global_aggregate_projection.hpp"
+          --parser-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_global_aggregate_projection.cpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --engine-header
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/global_aggregate_projection.hpp"
+          --engine-source
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/global_aggregate_projection.cpp"
+          --dispatch-source
+          "${PROJECT_SOURCE_DIR}/src/engine/sblr/sblr_dispatch.cpp"
+          --select-source
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/select_api.cpp"
+          --server-source
+          "${PROJECT_SOURCE_DIR}/src/server/sblr_dispatch_server.cpp"
+)
+set_tests_properties(firebird_count_aggregate_authority_gate PROPERTIES
+  LABELS "firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker_isolation;firebird_parser_worker"
+)
+
+add_test(
+  NAME firebird_avg_aggregate_authority_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_avg_aggregate_authority_gate.py"
+          --parser-header
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_global_aggregate_projection.hpp"
+          --parser-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_global_aggregate_projection.cpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --engine-header
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/global_aggregate_projection.hpp"
+          --engine-source
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/global_aggregate_projection.cpp"
+          --view-engine-header
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/catalog/global_aggregate_view.hpp"
+          --view-engine-source
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/catalog/global_aggregate_view.cpp"
+          --dispatch-source
+          "${PROJECT_SOURCE_DIR}/src/engine/sblr/sblr_dispatch.cpp"
+          --select-source
+          "${PROJECT_SOURCE_DIR}/src/engine/internal_api/dml/select_api.cpp"
+          --server-source
+          "${PROJECT_SOURCE_DIR}/src/server/sblr_dispatch_server.cpp"
+          --ipc-server-source
+          "${PROJECT_SOURCE_DIR}/src/server/ipc_server.cpp"
+)
+set_tests_properties(firebird_avg_aggregate_authority_gate PROPERTIES
+  LABELS "firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker_isolation;global_avg_aggregate_projection;firebird_parser_worker"
+)
+
+add_test(
+  NAME firebird_dml_returning_authority_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_dml_returning_authority_gate.py"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+)
+set_tests_properties(firebird_dml_returning_authority_gate PROPERTIES
+  LABELS "firebird_dml_query_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_test(
+  NAME firebird_transaction_handle_authority_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_transaction_handle_authority_gate.py"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --dialect-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_dialect.cpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+          --server-source
+          "${PROJECT_SOURCE_DIR}/src/server/sblr_dispatch_server.cpp"
+          --client-source
+          "${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc/parser_server_client.cpp"
+)
+set_tests_properties(firebird_transaction_handle_authority_gate PROPERTIES
+  LABELS "firebird_mga_authority_gate;firebird_parser_worker_ipc_conformance;firebird_parser_worker"
+)
+
+add_test(
+  NAME firebird_relation_descriptor_projection_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_relation_descriptor_projection_gate.py"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --execution-header
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.hpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+)
+set_tests_properties(firebird_relation_descriptor_projection_gate PROPERTIES
+  LABELS "firebird_parser_worker_ipc_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_relation_descriptor_projection_probe
+  firebird_relation_descriptor_projection_probe.cpp
+)
+target_compile_features(firebird_relation_descriptor_projection_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_relation_descriptor_projection_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_relation_descriptor_projection_probe
+  COMMAND firebird_relation_descriptor_projection_probe
+)
+set_tests_properties(firebird_relation_descriptor_projection_probe PROPERTIES
+  LABELS "firebird_parser_worker_ipc_conformance;firebird_datatype_descriptor_conformance;firebird_parser_worker"
+)
+
+add_executable(firebird_core_0076_routine_probe
+  firebird_core_0076_routine_probe.cpp
+)
+target_compile_features(firebird_core_0076_routine_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_core_0076_routine_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_core_0076_routine_probe
+  COMMAND firebird_core_0076_routine_probe
+)
+set_tests_properties(firebird_core_0076_routine_probe PROPERTIES
+  LABELS "firebird_psql_dynamic_sql_conformance;firebird_dml_query_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_procedural_block_probe
+  firebird_procedural_block_probe.cpp
+)
+target_compile_features(firebird_procedural_block_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_procedural_block_probe PRIVATE
+  sbl_firebird_parser_pipeline
+)
+add_test(
+  NAME firebird_procedural_block_probe
+  COMMAND firebird_procedural_block_probe
+)
+set_tests_properties(firebird_procedural_block_probe PROPERTIES
+  LABELS "firebird_psql_dynamic_sql_conformance;firebird_datatype_descriptor_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_test(
+  NAME firebird_core_0076_routine_authority_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/firebird_core_0076_routine_authority_gate.py"
+          --worker-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_worker_session.cpp"
+          --execution-header
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.hpp"
+          --execution-source
+          "${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird/firebird_execution_session.cpp"
+          --sbps-header
+          "${PROJECT_SOURCE_DIR}/src/server/sbps.hpp"
+          --client-types
+          "${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc/parser_client_types.hpp"
+          --client-header
+          "${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc/parser_server_client.hpp"
+          --client-source
+          "${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc/parser_server_client.cpp"
+)
+set_tests_properties(firebird_core_0076_routine_authority_gate PROPERTIES
+  LABELS "firebird_psql_dynamic_sql_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
+add_executable(firebird_transaction_control_probe firebird_transaction_control_probe.cpp)
+target_compile_features(firebird_transaction_control_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_transaction_control_probe PRIVATE sbl_firebird_parser_pipeline)
+add_test(NAME firebird_transaction_control_probe COMMAND firebird_transaction_control_probe)
+set_tests_properties(firebird_transaction_control_probe PROPERTIES
+  LABELS "firebird_mga_authority_gate;firebird_dml_query_conformance;firebird_parser_worker"
+)
+
+add_executable(firebird_transaction_policy_probe firebird_transaction_policy_probe.cpp)
+target_compile_features(firebird_transaction_policy_probe PRIVATE cxx_std_23)
+target_link_libraries(firebird_transaction_policy_probe PRIVATE sbl_firebird_transaction_policy)
+add_test(NAME firebird_transaction_policy_probe COMMAND firebird_transaction_policy_probe)
+set_tests_properties(firebird_transaction_policy_probe PROPERTIES
+  LABELS "firebird_blr_parameter_buffer_conformance;firebird_mga_authority_gate;firebird_parser_worker"
+)
+
 add_test(
   NAME firebird_parameter_buffer_cli_gate
   COMMAND "${FIREBIRD_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/firebird_parameter_buffer_cli_gate.py"

@@ -224,6 +224,45 @@ void RequireRejectionPathsPreserved() {
   Require(HasAdmissionDiagnostic(duplicate_json, "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD"),
           "duplicate JSON field did not return duplicate-field refusal");
 
+  const auto nested_authority_evidence = Admit(
+      "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
+      "\"operation_family\":\"sblr.optimizer.plan.v3\","
+      "\"operation_id\":\"query.plan_operation\","
+      "\"result_shape\":\"result.shape.family_admission\","
+      "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\","
+      "\"parser_evidence\":{"
+      "\"operation_family\":\"firebird.query.select\","
+      "\"operation_id\":\"firebird.query.select\","
+      "\"result_shape\":\"parser.evidence.result\","
+      "\"diagnostic_shape\":\"parser.evidence.diagnostic\"}}");
+  Require(nested_authority_evidence.admitted,
+          "nested JSON evidence keys were treated as duplicate root authority fields");
+  Require(nested_authority_evidence.operation_family ==
+              "sblr.optimizer.plan.v3" &&
+              nested_authority_evidence.operation_id ==
+                  "query.plan_operation",
+          "nested JSON evidence keys changed root admission authority");
+
+  const auto nested_before_root_authority = Admit(
+      "{\"parser_evidence\":{"
+      "\"envelope\":\"SBLRExecutionEnvelope.v3\","
+      "\"operation_family\":\"sblr.unknown.family.v3\","
+      "\"operation_id\":\"parser.evidence.operation\","
+      "\"result_shape\":\"\","
+      "\"diagnostic_shape\":\"\"},"
+      "\"envelope\":\"SBLRExecutionEnvelope.v3\","
+      "\"operation_family\":\"sblr.optimizer.plan.v3\","
+      "\"operation_id\":\"query.plan_operation\","
+      "\"result_shape\":\"result.shape.family_admission\","
+      "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");
+  Require(nested_before_root_authority.admitted,
+          "nested JSON evidence before root fields overrode root admission authority");
+  Require(nested_before_root_authority.operation_family ==
+              "sblr.optimizer.plan.v3" &&
+              nested_before_root_authority.operation_id ==
+                  "query.plan_operation",
+          "root JSON authority was not selected after preceding nested evidence");
+
   const auto duplicate_text = Admit(
       "operation_id=query.plan_operation\n"
       "operation_id=query.evaluate_projection\n"

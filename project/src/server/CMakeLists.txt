@@ -154,5 +154,6 @@ if(SB_BUILD_SERVER)
   target_link_libraries(sb_ipc_tester PRIVATE
     sb_server_core
     sb_server_event_notifications
+    sbl_parser_server_ipc_client
   )
 endif()

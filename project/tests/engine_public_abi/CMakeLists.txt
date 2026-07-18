@@ -44,6 +44,9 @@ add_executable(sb_engine_public_sblr_admission_fixture
   public_sblr_admission_fixture.cpp
 )
 target_compile_features(sb_engine_public_sblr_admission_fixture PRIVATE cxx_std_23)
+target_include_directories(sb_engine_public_sblr_admission_fixture PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/server_engine_bridge
+)
 target_link_libraries(sb_engine_public_sblr_admission_fixture PRIVATE sb_engine)
 add_test(NAME sb_engine_public_sblr_admission_fixture COMMAND sb_engine_public_sblr_admission_fixture)
 set_tests_properties(sb_engine_public_sblr_admission_fixture PROPERTIES

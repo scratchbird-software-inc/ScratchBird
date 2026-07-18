@@ -51,10 +51,10 @@ DIALECTS = (
 )
 
 MATRIX_REL = (
-    "public_execution_plan/final-sblr-sbsql-parser-remap-closure/COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv"
+    "docs/compatibility-parsers/remap/COMPATIBILITY_REPLAY_PROOF_UPDATE_MATRIX.csv"
 )
-TRACKER_REL = "public_execution_plan/final-sblr-sbsql-parser-remap-closure/TRACKER.csv"
-GATES_REL = "public_execution_plan/final-sblr-sbsql-parser-remap-closure/ACCEPTANCE_GATES.csv"
+TRACKER_REL = "docs/compatibility-parsers/remap/COMPATIBILITY_PARSER_REMAP_SLICE_STATUS.csv"
+GATES_REL = "docs/compatibility-parsers/remap/COMPATIBILITY_PARSER_REMAP_GATE_STATUS.csv"
 REPLAY_GATE_REL = "project/tests/reference_regression/first_tranche_original_tool_replay_gate.py"
 
 EXPECTED_MATRIX_COUNTS = {

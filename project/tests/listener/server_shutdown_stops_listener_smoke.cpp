@@ -161,14 +161,24 @@ bool WriteConfig(const std::filesystem::path& config_path,
   out << "[server.parser]\n";
   out << "sbps_enabled=true\n";
   out << "sbps_endpoint=" << (control_dir / "sb_server.sbps.sock").string() << "\n\n";
-  out << "[server.listener.native]\n";
-  out << "enabled=true\n";
-  out << "bind_host=127.0.0.1\n";
-  out << "port=" << port << "\n";
+  out << "[server.listener]\n";
   out << "executable_path=" << listener.string() << "\n";
-  out << "parser_executable_path=" << parser.string() << "\n";
   out << "control_dir=" << listener_control_dir.string() << "\n";
-  out << "runtime_dir=" << listener_runtime_dir.string() << "\n";
+  out << "runtime_dir=" << listener_runtime_dir.string() << "\n\n";
+  out << "[server.listener.profile.echo_fixture]\n";
+  out << "enabled=true\n";
+  out << "protocol_family=fixture.echo.wire\n";
+  out << "profile_id=fixture.echo.profile\n";
+  out << "parser_package=fixture.echo.package\n";
+  out << "parser_package_uuid=fixture-echo-package-v1\n";
+  out << "dialect_profile_uuid=fixture-echo-dialect-v1\n";
+  out << "bundle_contract_id=bundle.default@1\n";
+  out << "parser_api_major=1\n";
+  out << "parser_executable_path=" << parser.string() << "\n";
+  out << "bind_address=127.0.0.1\n";
+  out << "port=" << port << "\n";
+  out << "database_selector=dev_bootstrap_path:" << (work / "t.sbdb").string() << "\n";
+  out << "sbps_endpoint=" << (control_dir / "sb_server.sbps.sock").string() << "\n";
   out << "tls_required=false\n";
   out << "ready_timeout_ms=8000\n";
   return static_cast<bool>(out);
@@ -273,6 +283,9 @@ int main(int argc, char** argv) {
   const std::filesystem::path server = argv[1];
   const std::filesystem::path listener = argv[2];
   const std::filesystem::path parser = argv[3];
+  ::setenv("SCRATCHBIRD_LISTENER_DBBT_KEY_HEX",
+           "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+           1);
   const auto work = MakeTempDir();
   Require(!work.empty(), "could not create temp dir");
   const int port = FindFreePort();

@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     ::kill(pid, SIGKILL);
     return EXIT_FAILURE;
   }
-  if (!Expect(WriteText(client_pair[0], "PARSE select 1\n"),
+  if (!Expect(WriteText(client_pair[0], "PARSE select 1 from rdb$database\n"),
               "failed to write parse command") ||
       !Expect(ReadLine(client_pair[0], &line), "Firebird parse response missing") ||
       !Expect(Contains(line, "SBLR") && Contains(line, "\"dialect\":\"firebird\""),

@@ -9,8 +9,20 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "procedural/procedural_block_ir.hpp"
+
+#include <mutex>
 
 namespace scratchbird::engine::internal_api {
+
+// Engine-internal publication ordering for one routed database. Transaction
+// finality paths hold this guard across durable inventory replacement; private
+// server-to-engine metadata dispatch holds the same guard from current-version
+// validation through exact invocation. Cross-process exclusion is supplied by
+// the routed server's database-owner lock, not by a public or validation-only
+// engine handle.
+std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuard(
+    const std::string& database_path);
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_TRANSACTION_TRANSACTION_API
 struct EngineBeginTransactionRequest : EngineApiRequest {
@@ -58,7 +70,11 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     const EngineAutocommitBoundaryRequest& request);
 
 struct EngineRollbackTransactionRequest : EngineApiRequest {};
-struct EngineRollbackTransactionResult : EngineApiResult {};
+struct EngineRollbackTransactionResult : EngineApiResult {
+  std::string rollback_finality_state = "not_final";
+  bool engine_finality_known = false;
+  bool post_inventory_secondary_failure = false;
+};
 EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTransactionRequest& request);
 
 struct EngineCleanupTemporarySessionRequest : EngineApiRequest {};
@@ -75,7 +91,12 @@ struct EnginePrepareTransactionRequest : EngineApiRequest {};
 struct EnginePrepareTransactionResult : EngineApiResult {};
 EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTransactionRequest& request);
 
-struct EngineExecuteTransactionBlockRequest : EngineApiRequest {};
+struct EngineExecuteTransactionBlockRequest : EngineApiRequest {
+  EngineProceduralBlockV1 procedural_block;
+  EngineApiDiagnostic procedural_block_diagnostic;
+  bool procedural_block_present = false;
+  bool procedural_block_valid = false;
+};
 struct EngineExecuteTransactionBlockResult : EngineApiResult {};
 EngineExecuteTransactionBlockResult EngineExecuteTransactionBlock(
     const EngineExecuteTransactionBlockRequest& request);

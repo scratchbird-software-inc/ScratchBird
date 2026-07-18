@@ -62,8 +62,8 @@ bool IsQualifiedNamePartToken(const Token& token) {
   return token.kind == TokenKind::kIdentifier || token.kind == TokenKind::kKeyword;
 }
 
-bool ConsumeQualifiedPathStartsWithSys(const std::vector<const Token*>& tokens,
-                                       std::size_t* index) {
+bool ConsumeEngineOwnedProjectionPath(const std::vector<const Token*>& tokens,
+                                      std::size_t* index) {
   if (index == nullptr) return false;
   std::size_t cursor = *index;
   std::vector<std::string> parts;
@@ -84,7 +84,16 @@ bool ConsumeQualifiedPathStartsWithSys(const std::vector<const Token*>& tokens,
     }
     break;
   }
-  if (parts.size() < 2 || expect_part || parts.front() != "SYS") return false;
+  if (parts.size() < 2 || expect_part) return false;
+  bool engine_owned = parts.front() == "SYS" ||
+                      parts.front() == "INFORMATION" ||
+                      parts.front() == "EMULATED";
+  for (std::size_t part = 1; part < parts.size(); ++part) {
+    engine_owned = engine_owned || parts[part] == "SYS" ||
+                   parts[part] == "INFORMATION" ||
+                   parts[part] == "EMULATED";
+  }
+  if (!engine_owned) return false;
   *index = cursor;
   return true;
 }
@@ -117,7 +126,7 @@ bool IsSourceFreeCatalogProjectionCountRoute(const CstDocument& cst) {
   if (!saw_count_projection || from_index == tokens.size()) return false;
 
   std::size_t relation_index = from_index + 1;
-  return ConsumeQualifiedPathStartsWithSys(tokens, &relation_index);
+  return ConsumeEngineOwnedProjectionPath(tokens, &relation_index);
 }
 
 std::string ResultShapeFor(const AstDocument& ast) {

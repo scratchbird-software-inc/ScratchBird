@@ -10,6 +10,7 @@
 
 #include <string>
 #include <string_view>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -26,6 +27,31 @@ struct Diagnostic {
   std::string message;
   std::string component;
   std::vector<Field> fields;
+};
+
+struct Token {
+  std::string kind;
+  std::string lexeme;
+  std::size_t offset{0};
+};
+
+// Firebird-owned binder diagnostics for derived-table scopes.  These values
+// are produced before SBLR lowering and carry presentation arguments only;
+// they grant no execution, catalog, or transaction authority.
+enum class FirebirdDerivedTableDiagnosticKind {
+  kDuplicateOutputName,
+  kIllegalOuterReference,
+};
+
+struct FirebirdDerivedTableDiagnostic {
+  FirebirdDerivedTableDiagnosticKind kind{
+      FirebirdDerivedTableDiagnosticKind::kDuplicateOutputName};
+  std::string derived_table_alias;
+  std::string column_name;
+  std::string outer_relation_alias;
+  std::string qualified_field_name;
+  std::size_t line{0};
+  std::size_t column{0};
 };
 
 struct ParseResult {
@@ -47,12 +73,22 @@ struct ParseResult {
   std::string sblr_envelope;
   std::string message_vector_json;
   std::string parser_evidence_json;
+  std::optional<FirebirdDerivedTableDiagnostic> derived_table_diagnostic;
 };
 
-struct Token {
-  std::string kind;
-  std::string lexeme;
-  std::size_t offset{0};
+enum class FirebirdTransactionControlKind {
+  kNone,
+  kBegin,
+  kCommit,
+  kRollback,
+  kRollbackToSavepoint,
+  kSavepoint,
+  kReleaseSavepoint,
+};
+
+struct FirebirdTransactionControl {
+  FirebirdTransactionControlKind kind{FirebirdTransactionControlKind::kNone};
+  bool retaining{false};
 };
 
 struct SurfaceDescriptor {
@@ -91,7 +127,16 @@ std::string NormalizeWhitespace(std::string_view text);
 std::string ToUpperAscii(std::string_view text);
 std::string MessageVectorToJson(const std::vector<Diagnostic>& diagnostics);
 std::vector<Token> LexTokens(std::string_view sql_text);
+std::optional<FirebirdDerivedTableDiagnostic>
+AnalyzeFirebirdDerivedTableDiagnostics(
+    std::span<const Token> tokens,
+    std::string_view original_sql);
+FirebirdTransactionControl ClassifyFirebirdTransactionControl(
+    std::string_view sql_text);
 ParseResult ParseStatement(std::string_view sql_text);
+ParseResult ParseStatementWithOriginalSource(
+    std::string_view parser_sql,
+    std::string_view original_sql);
 bool IsNonFileEmulatedOperation(std::string_view normalized_upper_sql);
 std::span<const FirebirdLifecycleMappingDescriptor> FirebirdLifecycleMappings();
 const FirebirdLifecycleMappingDescriptor* MapFirebirdLifecycleCommand(std::string_view normalized_upper_sql);
@@ -104,5 +149,7 @@ const std::vector<SurfaceDescriptor>& DiagnosticSurfaces();
 std::string FirebirdPackageIdentityJson();
 std::string FirebirdSurfaceReportJson();
 std::string FirebirdLifecycleMappingReportJson();
+std::string FirebirdConnectionSandboxReportJson();
+std::string FirebirdDialectVariantReportJson();
 
 } // namespace scratchbird::parser::firebird

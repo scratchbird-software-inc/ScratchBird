@@ -42,6 +42,19 @@ constexpr std::uint32_t kSchemaManagementRequestV1 = 6001;
 constexpr std::uint32_t kSchemaManagementResponseV1 = 6002;
 constexpr std::uint32_t kSchemaResolveNameRequestV1 = 7001;
 constexpr std::uint32_t kSchemaResolveNameResultV1 = 7002;
+constexpr std::uint32_t kSchemaResolveNameRequestV2 = 7005;
+constexpr std::uint32_t kSchemaResolveNameResultV2 = 7006;
+constexpr std::uint32_t kSchemaResolveNameRequestV3 = 7007;
+constexpr std::uint32_t kSchemaResolveNameResultV3 = 7008;
+
+constexpr std::uint8_t kCapabilityBaseline = 0x01u;
+constexpr std::uint8_t kCapabilityTransactionRoutingV2 = 0x02u;
+constexpr std::uint8_t kCapabilityPreparedMetadataTransferV1 = 0x04u;
+constexpr std::uint8_t kCapabilityRelationDescriptorProjectionV3 = 0x08u;
+constexpr std::uint8_t kKnownCapabilityByte0 =
+    kCapabilityBaseline | kCapabilityTransactionRoutingV2 |
+    kCapabilityPreparedMetadataTransferV1 |
+    kCapabilityRelationDescriptorProjectionV3;
 constexpr std::uint32_t kSchemaRenderUuidRequestV1 = 7003;
 constexpr std::uint32_t kSchemaRenderUuidResultV1 = 7004;
 constexpr std::uint32_t kSchemaEventSubscribeRequestV1 = 5001;
@@ -76,6 +89,8 @@ enum class MessageType : std::uint16_t {
   kFetchResult = 45,
   kCloseCursor = 46,
   kCloseCursorResult = 47,
+  kClosePreparedSblr = 48,
+  kClosePreparedSblrResult = 49,
   kDiagnostic = 60,
   kPing = 70,
   kPong = 71,
