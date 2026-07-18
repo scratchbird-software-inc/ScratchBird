@@ -9,10 +9,13 @@
 
 """Generate SBSQL differential replay fixture index and payload JSONL.
 
-The replay fixtures are derived from the canonical SBSQL surface registry,
-the SBLR operation matrix, and the full parser/UDR/engine proof artifacts.
-The output is intentionally deterministic and repo-local; it does not execute
-the parser or engine and does not introduce parser-side storage/finality.
+The replay fixtures are derived from the public surface implementation
+authority, optional public operation/alias matrices, and the full
+parser/UDR/engine proof artifacts.  The implementation backlog is the
+checked-in public surface authority: it contains the canonical identity,
+status, scope, and SBLR-family fields consumed here.  The output is
+intentionally deterministic and repo-local; it does not execute the parser
+or engine and does not introduce parser-side storage/finality.
 """
 
 from __future__ import annotations
@@ -25,9 +28,6 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-CANONICALIZATION_ROOT = (
-    "public_input_snapshot"
-)
 FULL_SURFACE_ARTIFACT_ROOT = (
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts"
 )
@@ -77,27 +77,14 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def canonicalization_file(canonicalization_root: Path, filename: str) -> Path | None:
-    if canonicalization_root.is_file():
-        if filename == "SBSQL_SURFACE_REGISTRY.csv":
-            return canonicalization_root
-        return None
-    path = canonicalization_root / filename
-    if path.exists():
-        return path
-    return None
-
-
 def surface_source_status(surface: dict[str, str]) -> str:
     return surface.get("source_status") or surface.get("status", "")
 
 
-def read_surfaces(canonicalization_root: Path) -> list[dict[str, str]]:
-    path = canonicalization_file(canonicalization_root, "SBSQL_SURFACE_REGISTRY.csv")
-    if path is None:
-        raise FileNotFoundError(
-            f"{canonicalization_root}/SBSQL_SURFACE_REGISTRY.csv"
-        )
+def read_surfaces(artifact_root: Path) -> list[dict[str, str]]:
+    path = artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+    if not path.is_file():
+        raise FileNotFoundError(path)
     rows = read_csv(path)
     for row in rows:
         row["source_status"] = surface_source_status(row)
@@ -116,11 +103,9 @@ def index_unique(rows: list[dict[str, str]], key: str, label: str) -> dict[str, 
     return out
 
 
-def read_reference_native_names(canonicalization_root: Path) -> set[str]:
-    path = canonicalization_file(
-        canonicalization_root, "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"
-    )
-    if path is None:
+def read_reference_native_names(artifact_root: Path) -> set[str]:
+    path = artifact_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"
+    if not path.is_file():
         return set()
     rows = read_csv(path)
     names: set[str] = set()
@@ -231,11 +216,9 @@ def diagnostics(surface: dict[str, str]) -> str:
     return "; ".join(base)
 
 
-def read_operations(
-    canonicalization_root: Path, surfaces: list[dict[str, str]]
-) -> dict[str, dict[str, str]]:
-    path = canonicalization_file(canonicalization_root, "SBSQL_TO_SBLR_OPERATION_MATRIX.csv")
-    if path is not None:
+def read_operations(artifact_root: Path, surfaces: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    path = artifact_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"
+    if path.is_file():
         return index_unique(read_csv(path), "surface_id", "SBSQL_TO_SBLR_OPERATION_MATRIX")
     return {
         surface["surface_id"]: {
@@ -348,19 +331,17 @@ def payload_for(row: dict[str, str]) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--canonicalization-root", default=CANONICALIZATION_ROOT)
     parser.add_argument("--artifact-root", default=FULL_SURFACE_ARTIFACT_ROOT)
     parser.add_argument("--replay-root", default=REPLAY_ROOT)
     args = parser.parse_args()
 
     root = args.repo_root
-    canonicalization_root = root / args.canonicalization_root
     artifact_root = root / args.artifact_root
     replay_root = root / args.replay_root
 
-    surfaces = read_surfaces(canonicalization_root)
-    reference_native_names = read_reference_native_names(canonicalization_root)
-    operations = read_operations(canonicalization_root, surfaces)
+    surfaces = read_surfaces(artifact_root)
+    reference_native_names = read_reference_native_names(artifact_root)
+    operations = read_operations(artifact_root, surfaces)
     backlog = index_unique(
         read_csv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
         "surface_id",

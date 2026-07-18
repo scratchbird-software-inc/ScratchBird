@@ -1,0 +1,50 @@
+# SBSQL-B7E4638E5F7C — SIGNAL
+
+Generated public per-element contract snapshot.
+
+## Identity
+
+| Field | Value |
+| --- | --- |
+| Surface ID | SBSQL-B7E4638E5F7C |
+| Fixed UUID v7 | 019dffbb-f000-7fc6-9cd9-9f09c27cb8c2 |
+| Canonical name | SIGNAL |
+| Surface kind | function |
+| Family | expression_runtime |
+
+## Route Contract
+
+| Field | Value |
+| --- | --- |
+| Source status | native_now |
+| Cluster scope | noncluster_or_profile_scoped |
+| SBLR operation family | sblr.expression.runtime.v3 |
+| Diagnostic target | canonical_message_vector_and_parser_rendering |
+| Final acceptance rule | implemented_sbsfc_016r_k_fixture_runtime_projection_evidence |
+| Closure action | implemented_full_route_engine_owned_procedural_condition_or_diagnostic_scalar |
+
+## Release Closure
+
+| Field | Value |
+| --- | --- |
+| Backlog closure status | e2e_passed |
+| Release final status | e2e_passed |
+| Release claim | public_sbsql_e2e_implemented |
+| Release status | row_evidence_complete |
+| Remaining risk | none |
+
+## Semantic Oracle
+
+| Field | Value |
+| --- | --- |
+| Fixture ID | SBSQL-SURFACE-470C0FB80C27 |
+| Oracle type | canonical_spec_plus_sblr_matrix |
+| Oracle search key | SBSQL-B7E4638E5F7C |
+| Expected result summary | expected parse, bind, lower, result shape, diagnostic, and executable/refusal behavior derived from canonical spec and operation matrix |
+| Oracle closure status | closed_by_semantic_oracle_authority_gate |
+
+## Boundary
+
+- This snapshot is derived only from tracked public release artifacts.
+- SQL text remains parser-side input; engine behavior is reached through the published SBLR/internal-API contract.
+- This snapshot carries no implementation, source-tree, absolute, or private canonicalization path.

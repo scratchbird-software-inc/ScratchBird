@@ -19,6 +19,16 @@ import subprocess
 import sys
 
 
+RELEASE_TOOL_ROOT = pathlib.Path(__file__).resolve().parents[2] / "tools" / "release"
+if str(RELEASE_TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(RELEASE_TOOL_ROOT))
+
+from public_reference_acquisition_policy import (  # noqa: E402
+    is_public_reference_acquisition_metadata,
+    validate_public_reference_acquisition_metadata_inventory,
+)
+
+
 REFERENCE_TEST_PREFIX = "project/tests/reference_regression/"
 REFERENCE_ACQUISITION_PREFIX = (
     "project/tests/reference_regression/reference_release_acquisition/"
@@ -128,6 +138,10 @@ def main() -> int:
 
     repo_root = pathlib.Path(args.repo_root).resolve()
     failures: list[str] = []
+    failures.extend(
+        "invalid registered reference acquisition metadata: " + error
+        for error in validate_public_reference_acquisition_metadata_inventory(repo_root)
+    )
     allowed_tools = declared_native_tools(repo_root)
     tracked_count = 0
     local_payload_count = 0
@@ -159,13 +173,7 @@ def main() -> int:
         rel = root.relative_to(repo_root).as_posix()
         tracked_payload = [
             path for path in tracked_under(repo_root, root)
-            if path.endswith("/PUBLIC_REGRESSION_SCOPE.md")
-            or path.endswith("/SOURCE_POINTERS.md")
-            or path.endswith("/FIREBIRD_QA_CANDIDATE.md")
-            or path.endswith("/FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv")
-            or path.endswith("/FIREBIRD_QA_CANDIDATE_TEST_INDEX.csv")
-            or path.endswith("/FIREBIRD_QA_REFERENCE_REPLAY_FAMILY_MANIFEST.csv")
-            or path.endswith("/FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv")
+            if is_public_reference_acquisition_metadata(path)
         ]
         all_tracked = tracked_under(repo_root, root)
         unexpected = sorted(set(all_tracked) - set(tracked_payload))

@@ -10,9 +10,8 @@
 """Generate STRICT_ROW_COVERAGE_LEDGER.csv for the SBsql Surface-to-SBLR execution_plan.
 
 Inputs (repo-local, no network):
-  public_input_snapshot
-  public_input_snapshot
-  public_input_snapshot
+  project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv
+  (the tracked public canonical projection for registry, status, and operation fields)
   project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/ROW_STATE_CONTRACT.csv
 
 Output:
@@ -42,9 +41,13 @@ from pathlib import Path
 from sbsql_bridge_command_surface import BRIDGE_COMMAND_BY_SURFACE_ID, BRIDGE_CTEST, BRIDGE_TEST_SOURCE
 
 
-REGISTRY = "public_input_snapshot"
-STATUS_MATRIX = "public_input_snapshot"
-OPERATION_MATRIX = "public_input_snapshot"
+PUBLIC_SURFACE_INPUT = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
+REGISTRY = PUBLIC_SURFACE_INPUT
+STATUS_MATRIX = PUBLIC_SURFACE_INPUT
+OPERATION_MATRIX = PUBLIC_SURFACE_INPUT
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 ORACLE_MATRIX_NAME = "FUNCTION_SEMANTIC_ORACLE_MATRIX.csv"
 STATE_CONTRACT_NAME = "ROW_STATE_CONTRACT.csv"
@@ -2329,11 +2332,11 @@ def _sbsfc078_procedural_general_row(
     return {
         "canonical_name": canonical_name,
         "surface_kind": surface_kind,
-        "canonical_sblr_operation_family": "sblr.general.operation.v3",
+        "canonical_sblr_operation_family": "sblr.management.control.v3",
         "operation_id": operation_id,
         "sblr_operation": sblr_operation,
         "api": api,
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.management.control.v3",
         "syntax_role": canonical_name,
         "route_kind": canonical_name,
         "fixture": fixture,
@@ -4004,7 +4007,7 @@ EVENT_NOTIFICATION_EXACT_ROUTE_ROW_EVIDENCE = {
         "surface_kind": "grammar_production",
         "source_family": "general",
         "source_sblr_operation_family": "sblr.general.operation.v3",
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.event.channel.v3",
         "operation_id": "event.channel.listen",
         "sblr_operation": "SBLR_EVENT_CHANNEL_LISTEN",
         "sql_fixture": "LISTEN EVENT CHANNEL audit_channel",
@@ -4019,7 +4022,7 @@ EVENT_NOTIFICATION_EXACT_ROUTE_ROW_EVIDENCE = {
         "surface_kind": "grammar_production",
         "source_family": "general",
         "source_sblr_operation_family": "sblr.general.operation.v3",
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.event.channel.v3",
         "operation_id": "event.channel.notify",
         "sblr_operation": "SBLR_EVENT_CHANNEL_NOTIFY",
         "sql_fixture": "NOTIFY EVENT CHANNEL audit_channel PAYLOAD 'payload-001'",
@@ -4034,7 +4037,7 @@ EVENT_NOTIFICATION_EXACT_ROUTE_ROW_EVIDENCE = {
         "surface_kind": "grammar_production",
         "source_family": "general",
         "source_sblr_operation_family": "sblr.general.operation.v3",
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.event.channel.v3",
         "operation_id": "event.channel.notify",
         "sblr_operation": "SBLR_EVENT_CHANNEL_NOTIFY",
         "sql_fixture": "POST EVENT CHANNEL audit_channel PAYLOAD 'post-001'",
@@ -4049,7 +4052,7 @@ EVENT_NOTIFICATION_EXACT_ROUTE_ROW_EVIDENCE = {
         "surface_kind": "grammar_production",
         "source_family": "general",
         "source_sblr_operation_family": "sblr.general.operation.v3",
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.event.channel.v3",
         "operation_id": "event.channel.listen",
         "sblr_operation": "SBLR_EVENT_CHANNEL_LISTEN",
         "sql_fixture": "SUBSCRIBE EVENT CHANNEL audit_channel",
@@ -4064,7 +4067,7 @@ EVENT_NOTIFICATION_EXACT_ROUTE_ROW_EVIDENCE = {
         "surface_kind": "grammar_production",
         "source_family": "general",
         "source_sblr_operation_family": "sblr.general.operation.v3",
-        "route_family": "sblr.general.operation.v3",
+        "route_family": "sblr.event.channel.v3",
         "operation_id": "event.channel.listen",
         "sblr_operation": "SBLR_EVENT_CHANNEL_LISTEN",
         "sql_fixture": "SUBSCRIBE EVENT CHANNEL audit_channel",
@@ -5099,7 +5102,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
     "SBSQL-5535E9A48BE4": {
         "canonical_name": "prepare_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.session.management.v3",
         "operation_id": "session.prepare_statement",
         "sblr_operation": "SBLR_SESSION_PREPARE_STATEMENT",
         "sql_fixture": "PREPARE prep_one AS SELECT 7 AS value",
@@ -5109,7 +5112,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
     "SBSQL-414E9A624B34": {
         "canonical_name": "execute_prepared_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.session.management.v3",
         "operation_id": "session.execute_prepared_statement",
         "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
         "sql_fixture": "EXECUTE prep_one",
@@ -5119,7 +5122,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
     "SBSQL-6677B188A72E": {
         "canonical_name": "execute_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.session.management.v3",
         "operation_id": "session.execute_prepared_statement",
         "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
         "sql_fixture": "EXECUTE prep_one",
@@ -5129,7 +5132,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
     "SBSQL-3F4B1406188A": {
         "canonical_name": "execute_stmt_option",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.session.management.v3",
         "operation_id": "session.execute_prepared_statement",
         "sblr_operation": "SBLR_SESSION_EXECUTE_PREPARED_STATEMENT",
         "sql_fixture": "EXECUTE prep_one WITH CURSOR",
@@ -5139,7 +5142,7 @@ SBSFC068_PREPARED_STATEMENT_CONTROL_ROW_EVIDENCE = {
     "SBSQL-FB03794952FB": {
         "canonical_name": "deallocate_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.session.management.v3",
         "operation_id": "session.deallocate_prepared_statement",
         "sblr_operation": "SBLR_SESSION_DEALLOCATE_PREPARED_STATEMENT",
         "sql_fixture": "DEALLOCATE PREPARE prep_one",
@@ -5152,7 +5155,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-4A41A00C4F5C": {
         "canonical_name": "psql_open_cursor_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_open",
         "sblr_operation": "SBLR_SESSION_CURSOR_OPEN",
         "sql_fixture": "OPEN route_cur FOR SELECT 7 AS value",
@@ -5162,7 +5165,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-930016752278": {
         "canonical_name": "psql_fetch_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_fetch",
         "sblr_operation": "SBLR_SESSION_CURSOR_FETCH",
         "sql_fixture": "FETCH NEXT FROM route_cur",
@@ -5172,7 +5175,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-C78D9C182EC7": {
         "canonical_name": "fetch_direction",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_fetch",
         "sblr_operation": "SBLR_SESSION_CURSOR_FETCH",
         "sql_fixture": "FETCH NEXT FROM route_cur",
@@ -5182,7 +5185,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-A4F34F00C071": {
         "canonical_name": "psql_close_cursor_stmt",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_close",
         "sblr_operation": "SBLR_SESSION_CURSOR_CLOSE",
         "sql_fixture": "CLOSE route_cur",
@@ -5192,7 +5195,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-D6BD1FBB84A3": {
         "canonical_name": "cursor_name",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_open",
         "sblr_operation": "SBLR_SESSION_CURSOR_OPEN",
         "sql_fixture": "OPEN route_cur FOR SELECT 7 AS value",
@@ -5202,7 +5205,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-6E4796473DD3": {
         "canonical_name": "declare_cursor",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_open",
         "sblr_operation": "SBLR_SESSION_CURSOR_OPEN",
         "sql_fixture": "DECLARE decl_cur CURSOR FOR SELECT 8 AS value",
@@ -5212,7 +5215,7 @@ SBSFC070_PSQL_CURSOR_CONTROL_ROW_EVIDENCE = {
     "SBSQL-CAD2C514F4BF": {
         "canonical_name": "cursor_declaration",
         "surface_kind": "grammar_production",
-        "surface_family": "sblr.general.operation.v3",
+        "surface_family": "sblr.cursor.operation.v3",
         "operation_id": "session.cursor_open",
         "sblr_operation": "SBLR_SESSION_CURSOR_OPEN",
         "sql_fixture": "DECLARE decl_cur CURSOR FOR SELECT 8 AS value",
@@ -14629,7 +14632,7 @@ def classify_row(
 
         operation_id = sbsfc068_prepared_evidence["operation_id"]
         sblr_operation = sbsfc068_prepared_evidence["sblr_operation"]
-        route_family = "sblr.general.operation.v3"
+        route_family = "sblr.session.management.v3"
         sql_fixture = sbsfc068_prepared_evidence["sql_fixture"]
         row_role = sbsfc068_prepared_evidence["row_role"]
         runtime_proof = sbsfc068_prepared_evidence["runtime_proof"]
@@ -14670,7 +14673,7 @@ def classify_row(
 
         operation_id = sbsfc070_cursor_evidence["operation_id"]
         sblr_operation = sbsfc070_cursor_evidence["sblr_operation"]
-        route_family = "sblr.general.operation.v3"
+        route_family = "sblr.cursor.operation.v3"
         sql_fixture = sbsfc070_cursor_evidence["sql_fixture"]
         row_role = sbsfc070_cursor_evidence["row_role"]
         runtime_proof = sbsfc070_cursor_evidence["runtime_proof"]

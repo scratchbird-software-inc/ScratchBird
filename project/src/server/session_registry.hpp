@@ -302,6 +302,11 @@ struct ServerPreparedStatementRecord {
   std::uint64_t prepare_local_transaction_id = 0;
   std::string prepare_transaction_uuid;
   std::uint64_t prepare_snapshot_visible_through_local_transaction_id = 0;
+  // V1 prepare records the default transaction authority context for
+  // validation, but it is not a transaction-routed prepare.  Preserve the
+  // wire-origin distinction so V1 and V2 prepared execution cannot be
+  // confused merely because both carry a transaction identity.
+  bool prepared_transaction_routing_v2 = false;
   // Set only after the server has created an opaque engine-owned metadata
   // binding for this prepared statement.  An envelope flag alone never makes
   // a statement transferable.

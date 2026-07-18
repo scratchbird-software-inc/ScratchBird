@@ -27,7 +27,10 @@ from collections import Counter
 from pathlib import Path
 
 
-REGISTRY_CSV = "public_input_snapshot"
+REGISTRY_CSV = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"
 STRICT_LEDGER_NAME = "STRICT_ROW_COVERAGE_LEDGER.csv"
@@ -255,7 +258,8 @@ def main() -> int:
             "artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
             "artifacts/AUTHENTICATED_FULL_ROUTE_MATRIX.csv",
             "artifacts/SBLR_BINARY_ROUND_TRIP_MATRIX.csv",
-            "public_input_snapshot",
+            "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+            "SURFACE_IMPLEMENTATION_BACKLOG.csv",
         ],
         "expected_total_rows": len(registry),
         "declared_rows": len(output_rows),

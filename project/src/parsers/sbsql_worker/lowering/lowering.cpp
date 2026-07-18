@@ -29804,9 +29804,16 @@ void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
     envelope->operation_family = "sblr.catalog.mutation.v3";
     envelope->sblr_operation_key = "sblr.catalog.mutation.v3";
     envelope->resource_contract_key = "resource.contract.metadata_mutation";
+  } else if (info.operation_id == "event.subscription.list") {
+    envelope->operation_family = "sblr.event.subscription.v3";
+    envelope->sblr_operation_key = "sblr.event.subscription.v3";
+    envelope->resource_contract_key = "resource.contract.control";
   } else {
-    envelope->operation_family = "sblr.general.operation.v3";
-    envelope->sblr_operation_key = "sblr.general.operation.v3";
+    // LISTEN, UNLISTEN, NOTIFY, and their subscription aliases are concrete
+    // event-channel operations.  The generic family is deliberately not
+    // server-admissible and must never cross the parser IPC boundary.
+    envelope->operation_family = "sblr.event.channel.v3";
+    envelope->sblr_operation_key = "sblr.event.channel.v3";
     envelope->resource_contract_key = "resource.contract.control";
   }
   envelope->result_shape_key =
@@ -30639,8 +30646,11 @@ void PopulateSbsfc078ProceduralGeneralResidualAuthority(
     const Sbsfc078ProceduralGeneralResidualRouteInfo& info) {
   if (envelope == nullptr || !info.active || !info.valid) return;
 
-  envelope->operation_family = "sblr.general.operation.v3";
-  envelope->sblr_operation_key = "sblr.general.operation.v3";
+  // The source grammar is a general/procedural residual, but its executable
+  // IPC route is the concrete management-control family.  Generic is an
+  // audit-only family and is intentionally refused by server admission.
+  envelope->operation_family = "sblr.management.control.v3";
+  envelope->sblr_operation_key = "sblr.management.control.v3";
   envelope->operation_id = info.operation_id;
   envelope->engine_api_operation_id = info.operation_id;
   envelope->engine_api_function = info.engine_api_function;
@@ -31118,7 +31128,7 @@ void AppendSbsfc078ProceduralGeneralResidualJson(
   out << "\"sbsfc078_procedural_general_residual\":true,"
       << "\"row_surface_id\":\"" << EscapeJson(info.surface_id) << "\","
       << "\"canonical_name\":\"" << EscapeJson(info.canonical_name) << "\","
-      << "\"route_family\":\"sblr.general.operation.v3\","
+      << "\"route_family\":\"sblr.management.control.v3\","
       << "\"route_kind\":\"" << EscapeJson(info.route_kind) << "\","
       << "\"engine_api_function\":\"" << EscapeJson(info.engine_api_function) << "\","
       << "\"api_authority\":\"" << EscapeJson(info.api_authority) << "\","
@@ -35581,8 +35591,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     }
   }
   if (cursor_control.active) {
-    envelope.operation_family = "sblr.general.operation.v3";
-    envelope.sblr_operation_key = "sblr.general.operation.v3";
+    // Cursor aliases are session-scoped server state, not an umbrella
+    // grammar route.  Emit the concrete IPC-admissible family.
+    envelope.operation_family = "sblr.cursor.operation.v3";
+    envelope.sblr_operation_key = "sblr.cursor.operation.v3";
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.server.cursor_session_registry_required");
     AppendIfMissing(&envelope.required_authority_steps,
@@ -35593,8 +35605,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendIfMissing(&envelope.required_rights, "right.execute");
   }
   if (prepared_control.active) {
-    envelope.operation_family = "sblr.general.operation.v3";
-    envelope.sblr_operation_key = "sblr.general.operation.v3";
+    // Prepared-statement aliases are likewise server session state.  The
+    // generic family is an audit-only umbrella and must never cross IPC.
+    envelope.operation_family = "sblr.session.management.v3";
+    envelope.sblr_operation_key = "sblr.session.management.v3";
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.server.prepared_statement_session_registry_required");
     AppendIfMissing(&envelope.required_authority_steps,
@@ -36927,8 +36941,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC078_OPCODE_INVALID",
                        "SBSFC-078 exact routes must lower to their general runtime opcode");
     }
-    if (envelope.operation_family != "sblr.general.operation.v3" ||
-        envelope.sblr_operation_key != "sblr.general.operation.v3" ||
+    if (envelope.operation_family != "sblr.management.control.v3" ||
+        envelope.sblr_operation_key != "sblr.management.control.v3" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"runtime_evidence_kind\"") == std::string::npos ||
         envelope.payload.find("\"runtime_evidence_id\"") == std::string::npos ||
@@ -37525,12 +37539,13 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "event notification SBLR operation id and opcode do not match");
     }
     const bool create_channel = envelope.operation_id == "event.channel.create";
-    const bool family_ok =
-        create_channel
-            ? (envelope.operation_family == "sblr.catalog.mutation.v3" &&
-               envelope.sblr_operation_key == "sblr.catalog.mutation.v3")
-            : (envelope.operation_family == "sblr.general.operation.v3" &&
-               envelope.sblr_operation_key == "sblr.general.operation.v3");
+    const bool list_subscriptions = envelope.operation_id == "event.subscription.list";
+    const std::string_view expected_family =
+        create_channel ? "sblr.catalog.mutation.v3"
+        : list_subscriptions ? "sblr.event.subscription.v3"
+                             : "sblr.event.channel.v3";
+    const bool family_ok = envelope.operation_family == expected_family &&
+                           envelope.sblr_operation_key == expected_family;
     if (!family_ok ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.event_notification_api_required") ||
@@ -37558,7 +37573,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_NOTIFICATION_AUTHORITY_INVALID",
                        "event notification SBLR must route through engine event APIs with structured operands and no parser SQL execution");
     }
-    if (!create_channel &&
+    if (!create_channel && !list_subscriptions &&
         envelope.payload.find("\"channel_uuid\"") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_CHANNEL_UUID_MISSING",
                        "event notification runtime routes require a server-resolved channel UUID");
@@ -37575,6 +37590,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
              std::string::npos)) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_PAYLOAD_AUTHORITY_INVALID",
                        "NOTIFY/POST event routes must carry payload as typed user data");
+    }
+    if (list_subscriptions &&
+        !HasValue(envelope.descriptor_refs, "sys.event.subscription")) {
+      AddVerifierError(&result.messages,
+                       "SBSQL.SBLR.EVENT_SUBSCRIPTION_DESCRIPTOR_MISSING",
+                       "SHOW EVENT SUBSCRIPTIONS requires the server event-subscription descriptor");
     }
   }
   if (IsSupportedJobsSchedulerOperation(envelope.operation_id)) {
@@ -37816,8 +37837,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.CURSOR_CONTROL_OPCODE_MISMATCH",
                        "cursor-control SBLR operation id and opcode do not match");
     }
-    if (envelope.operation_family != "sblr.general.operation.v3" ||
-        envelope.sblr_operation_key != "sblr.general.operation.v3" ||
+    if (envelope.operation_family != "sblr.cursor.operation.v3" ||
+        envelope.sblr_operation_key != "sblr.cursor.operation.v3" ||
         !HasValue(envelope.required_authority_steps,
                   "authority.server.cursor_session_registry_required") ||
         !HasValue(envelope.required_authority_steps,

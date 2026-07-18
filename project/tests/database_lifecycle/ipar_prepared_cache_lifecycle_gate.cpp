@@ -442,6 +442,10 @@ api::EngineInsertRowsResult LiveInsert(const api::EngineRequestContext& context,
   request.bound_object_identity.security_epoch = context.security_epoch;
   request.bound_object_identity.resource_epoch = context.resource_epoch;
   request.estimated_row_count = 1;
+  // This gate asserts generic prepared-descriptor validator evidence.  Keep
+  // it on that route; direct physical bulk insertion has distinct,
+  // engine-owned preflight-proof evidence and is covered separately.
+  request.option_envelopes.push_back("direct_physical_insert=disabled");
   request.input_rows.push_back(std::move(row));
   return api::EngineInsertRows(request);
 }

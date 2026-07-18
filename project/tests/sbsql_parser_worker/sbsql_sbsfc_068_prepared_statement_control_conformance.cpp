@@ -47,6 +47,20 @@ void Require(bool condition, std::string_view message) {
   }
 }
 
+void RequireServerAccepted(
+    const scratchbird::server::SessionOperationResult& result,
+    std::string_view message) {
+  if (result.accepted) return;
+  std::cerr << message << '\n';
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << "  diagnostic=" << diagnostic.code << '\n';
+    for (const auto& field : diagnostic.fields) {
+      std::cerr << "    " << field.key << '=' << field.value << '\n';
+    }
+  }
+  std::exit(EXIT_FAILURE);
+}
+
 bool Contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
@@ -108,7 +122,7 @@ void RequireCleanPipeline(const PipelineArtifacts& artifacts, std::string_view l
   Require(!artifacts.ast.messages.has_errors(), std::string(label) + " AST failed");
   Require(artifacts.bound.bound, std::string(label) + " bind failed");
   Require(artifacts.verifier.admitted, std::string(label) + " SBLR verifier rejected");
-  Require(artifacts.envelope.operation_family == "sblr.general.operation.v3",
+  Require(artifacts.envelope.operation_family == "sblr.session.management.v3",
           std::string(label) + " operation family mismatch");
   Require(!artifacts.envelope.parser_executes_sql,
           std::string(label) + " allowed parser SQL execution");
@@ -143,7 +157,7 @@ void RequireRegistryEvidence() {
     Require(registry_row != nullptr, "SBSFC-068 generated registry row missing");
     Require(registry_row->canonical_name == row.canonical_name,
             "SBSFC-068 generated registry canonical name drifted");
-    Require(registry_row->sblr_operation_family == "sblr.general.operation.v3",
+    Require(registry_row->sblr_operation_family == "sblr.session.management.v3",
             "SBSFC-068 generated registry SBLR family drifted");
   }
 }
@@ -152,6 +166,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   ServerSessionRegistry registry;
   ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
@@ -164,6 +179,8 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.policy_generation = 1;
   session.local_transaction_id = 1;
   session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid =
+      scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
   *session_uuid = session.session_uuid;
   registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
   return registry;
@@ -186,7 +203,9 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
+  frame.header.payload_schema_id = 4003;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(session_uuid, {}, encoded);
   return frame;
 }
@@ -196,7 +215,9 @@ sbps::Frame CloseCursorFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kCloseCursor);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
+  frame.header.payload_schema_id = 4007;
   frame.payload = scratchbird::server::EncodeCloseCursorPayloadForTest(session_uuid, cursor_uuid);
   return frame;
 }
@@ -213,7 +234,8 @@ void RequireServerRoute() {
 
   const auto prepare_result = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, prepare.envelope.payload));
-  Require(prepare_result.accepted, "SBSFC-068 server prepare control was not accepted");
+  RequireServerAccepted(prepare_result,
+                        "SBSFC-068 server prepare control was not accepted");
   Require(registry.prepared_by_uuid.size() == 1,
           "SBSFC-068 server did not create one prepared statement record");
   const auto prepared_it = registry.prepared_by_uuid.begin();

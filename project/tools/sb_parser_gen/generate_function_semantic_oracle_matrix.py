@@ -10,7 +10,7 @@
 """Generate FUNCTION_SEMANTIC_ORACLE_MATRIX.csv for the SBsql Surface-to-SBLR execution_plan.
 
 Inputs (repo-local, no network):
-  public_input_snapshot
+  project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv
   public_contract_snapshot
   public_contract_snapshot
   public_contract_snapshot
@@ -81,7 +81,10 @@ from pathlib import Path
 import yaml
 
 
-REGISTRY_CSV = "public_input_snapshot"
+REGISTRY_CSV = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 EXPR_REGISTRY = "public_contract_snapshot"
 SPECIAL_FORM_REGISTRY = "public_contract_snapshot"
 BINDING_REGISTRY = "public_contract_snapshot"

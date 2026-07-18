@@ -24,6 +24,10 @@ import subprocess
 import sys
 from typing import Any
 
+from public_reference_acquisition_policy import (
+    is_public_reference_acquisition_metadata,
+)
+
 
 ALLOWED_RELEASE_BUCKETS = {
     "release_supported",
@@ -220,15 +224,7 @@ def validate_reference_payload_boundary(repo_root: Path, paths: list[str], exclu
         if path.startswith("project/tests/reference_regression/firebird/original_firebird_qa/"):
             blocked.append(f"tracked raw upstream regression path: {path}")
         if path.startswith("project/tests/reference_regression/reference_release_acquisition/"):
-            name = Path(path).name
-            allowed = (
-                name == "PUBLIC_REGRESSION_SCOPE.md"
-                or name == "SOURCE_POINTERS.md"
-                or name.endswith("_CANDIDATE.md")
-                or name.endswith("_MANIFEST.csv")
-                or name.endswith("_INDEX.csv")
-            )
-            if not allowed:
+            if not is_public_reference_acquisition_metadata(path):
                 blocked.append(f"tracked reference acquisition payload: {path}")
 
     for rel_path in paths:

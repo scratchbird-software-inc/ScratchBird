@@ -59,8 +59,10 @@ server::ServerSessionRecord MakeSession(std::uint8_t seed,
                                         std::string database_uuid =
                                             "database-ipar-prepared-authority") {
   server::ServerSessionRecord session;
-  session.connection_uuid = Uuid(seed);
   session.session_uuid = Uuid(static_cast<std::uint8_t>(seed + 16));
+  // Direct server fixtures must carry the same explicit route association as
+  // parser-server IPC clients; zero header fields are not a legacy fallback.
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = Uuid(static_cast<std::uint8_t>(seed + 32));
   session.principal_uuid = Uuid(static_cast<std::uint8_t>(seed + 48));
   session.effective_user_uuid = session.principal_uuid;
@@ -75,6 +77,10 @@ server::ServerSessionRecord MakeSession(std::uint8_t seed,
   session.role_set_hash = "roles/ipar-prepared";
   session.group_set_hash = "groups/ipar-prepared";
   session.search_path_hash = "search/ipar-prepared";
+  session.local_transaction_id = 1;
+  session.snapshot_visible_through_local_transaction_id = 1;
+  session.transaction_uuid =
+      server::UuidBytesToText(Uuid(static_cast<std::uint8_t>(seed + 64)));
   return session;
 }
 
@@ -84,12 +90,15 @@ void AddSession(server::ServerSessionRegistry* registry,
 }
 
 sbps::Frame Frame(sbps::MessageType type,
+                  std::uint32_t payload_schema_id,
                   std::vector<std::uint8_t> payload,
                   const std::array<std::uint8_t, 16>& session_uuid) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(type);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
+  frame.header.payload_schema_id = payload_schema_id;
   frame.payload = std::move(payload);
   return frame;
 }
@@ -97,6 +106,7 @@ sbps::Frame Frame(sbps::MessageType type,
 sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::string& encoded) {
   return Frame(sbps::MessageType::kPrepareSblr,
+               4001,
                server::EncodePrepareSblrPayloadForTest(session_uuid, encoded),
                session_uuid);
 }
@@ -134,6 +144,7 @@ sbps::Frame ExecutePreparedFrame(
     const std::array<std::uint8_t, 16>& session_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid) {
   return Frame(sbps::MessageType::kExecuteSblr,
+               4003,
                server::EncodeExecuteSblrPayloadForTest(
                    session_uuid, prepared_statement_uuid, ""),
                session_uuid);
@@ -144,6 +155,7 @@ sbps::Frame ExecutePreparedFrameWithEnvelope(
     const std::array<std::uint8_t, 16>& prepared_statement_uuid,
     const std::string& encoded) {
   return Frame(sbps::MessageType::kExecuteSblr,
+               4003,
                server::EncodeExecuteSblrPayloadForTest(
                    session_uuid, prepared_statement_uuid, encoded),
                session_uuid);

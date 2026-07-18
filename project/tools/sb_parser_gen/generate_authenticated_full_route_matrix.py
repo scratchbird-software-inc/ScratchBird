@@ -10,7 +10,7 @@
 """Generate AUTHENTICATED_FULL_ROUTE_MATRIX.csv for the SBsql Surface-to-SBLR execution_plan.
 
 Inputs (repo-local, no network):
-  public_input_snapshot
+  project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv
 
 Output:
   project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/AUTHENTICATED_FULL_ROUTE_MATRIX.csv
@@ -54,7 +54,10 @@ import sys
 from pathlib import Path
 
 
-REGISTRY_CSV = "public_input_snapshot"
+REGISTRY_CSV = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 OUTPUT_NAME = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
 

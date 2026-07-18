@@ -10,7 +10,7 @@
 """Generate NATIVE_FUTURE_PROMOTION_MATRIX.csv for the SBsql Surface-to-SBLR execution_plan.
 
 Inputs (repo-local, no network):
-  public_input_snapshot
+  project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv
 
 Output:
   project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/NATIVE_FUTURE_PROMOTION_MATRIX.csv
@@ -52,7 +52,10 @@ from collections import Counter
 from pathlib import Path
 
 
-REGISTRY = "public_input_snapshot"
+REGISTRY = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 OUTPUT_NAME = "NATIVE_FUTURE_PROMOTION_MATRIX.csv"
 DECISION_AUTHORITY = "user-directive-2026-05-18-implement-all"

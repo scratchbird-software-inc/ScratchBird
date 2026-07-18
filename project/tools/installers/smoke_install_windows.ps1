@@ -181,9 +181,19 @@ function Assert-InstalledWindowsSystem {
       throw "installed configuration missing: $configName"
     }
     $configText = Get-Content -LiteralPath $configPath -Raw
-    if ($configText.Contains("3050") -or -not $configText.Contains("3092")) {
+    if ($configText.Contains("3050")) {
       throw "native port contract failed: $configName"
     }
+    if ($configName -ne "SBsrv.conf" -and -not $configText.Contains("3092")) {
+      throw "native port contract failed: $configName"
+    }
+    if ($configText.Contains("server.listener.native")) {
+      throw "legacy server listener profile present: $configName"
+    }
+  }
+  $serverConfig = Get-Content -LiteralPath (Join-Path $stateRoot "config\SBsrv.conf") -Raw
+  if ($serverConfig -match '(?m)^\s*\[server\.listener\.profile\.') {
+    throw "unconfigured generic listener profile present in system defaults"
   }
   Assert-NoInstallerDatabaseArtifacts $stateRoot
   return @{

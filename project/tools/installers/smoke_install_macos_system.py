@@ -59,9 +59,6 @@ CONFIG_REPLACEMENTS: dict[str, dict[str, str]] = {
         "executable_path = bin/SBgate": (
             "executable_path = /opt/ScratchBird/bin/SBgate"
         ),
-        "parser_executable_path = bin/SBParser": (
-            "parser_executable_path = /opt/ScratchBird/bin/SBParser"
-        ),
         "control_dir = runtime/listener/control": (
             "control_dir = /var/run/scratchbird/listener/control"
         ),
@@ -116,6 +113,14 @@ class SmokeFailure(RuntimeError):
 
 def fail(code: str) -> None:
     raise SmokeFailure(code)
+
+
+def has_listener_profile_section(text: str) -> bool:
+    return any(
+        line.strip().startswith("[server.listener.profile.")
+        and line.strip().endswith("]")
+        for line in text.splitlines()
+    )
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -483,10 +488,8 @@ def validate_config_tree(config_root: Path, *, expected_mode: int = 0o640) -> No
     manager = (config_root / "SBmgr.conf").read_text(encoding="utf-8")
     parser = (config_root / "SBParser.conf").read_text(encoding="utf-8")
     required_fragments = (
-        (server, "port = 3092"),
         (server, "default_path = /var/lib/scratchbird/data/default.sbdb"),
         (server, "executable_path = /opt/ScratchBird/bin/SBgate"),
-        (server, "parser_executable_path = /opt/ScratchBird/bin/SBParser"),
         (
             server,
             "sbps_endpoint = /var/run/scratchbird/sb_server/control/"
@@ -501,6 +504,10 @@ def validate_config_tree(config_root: Path, *, expected_mode: int = 0o640) -> No
     for content, fragment in required_fragments:
         if fragment not in content:
             fail(f"installed_config_contract_missing:{fragment}")
+    if "server.listener.native" in server:
+        fail("installed_config_legacy_listener_profile_present")
+    if has_listener_profile_section(server):
+        fail("installed_config_unconfigured_listener_profile_present")
     combined = "\n".join((server, listener, manager, parser))
     for forbidden_port in (3050, 3090, 3392):
         if str(forbidden_port) in combined:

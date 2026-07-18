@@ -23,7 +23,13 @@ AUTH_MATRIX = "AUTHENTICATED_FULL_ROUTE_MATRIX.csv"
 ROUND_MATRIX = "SBLR_BINARY_ROUND_TRIP_MATRIX.csv"
 LEDGER = "STRICT_ROW_COVERAGE_LEDGER.csv"
 MANIFEST = "PER_ROW_EVIDENCE_MANIFEST.csv"
-REGISTRY = "public_input_snapshot"
+# The historical canonicalization registry is not a public checkout input.
+# The tracked public implementation backlog carries the same bridge identity,
+# family, status, scope, and SBLR-family fields used by this gate.
+PUBLIC_SURFACE_BACKLOG = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/"
+    "artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 AUTH_DIR = "project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route"
 ROUND_DIR = "project/tests/sbsql_parser_worker/generated/full_surface/sblr_binary_round_trip"
 CMAKE = "project/tests/sbsql_parser_worker/CMakeLists.txt"
@@ -103,7 +109,10 @@ def main() -> int:
     if len(expected_ids) != 34:
         fail(f"bridge command surface definition count drift: {len(expected_ids)}")
 
-    registry = index_by_surface("SBSQL_SURFACE_REGISTRY", read_csv(root / REGISTRY))
+    registry = index_by_surface(
+        "SURFACE_IMPLEMENTATION_BACKLOG",
+        read_csv(root / PUBLIC_SURFACE_BACKLOG),
+    )
     ledger = index_by_surface("STRICT_ROW_COVERAGE_LEDGER", read_csv(artifact_root / LEDGER))
     manifest = index_by_surface("PER_ROW_EVIDENCE_MANIFEST", read_csv(artifact_root / MANIFEST))
     auth = index_by_surface("AUTHENTICATED_FULL_ROUTE_MATRIX", read_csv(artifact_root / AUTH_MATRIX))

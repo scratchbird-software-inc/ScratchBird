@@ -9,7 +9,7 @@
 #include "wire/sbsql_test_wire.hpp"
 #include "embedded/embedded_engine_client.hpp"
 #include "database_lifecycle.hpp"
-#include "wire/parser_server_ipc/parser_server_client.hpp"
+#include "parser_server_client.hpp"
 #include "datatype_wire_metadata.hpp"
 #include "sbps.hpp"
 #include "uuid.hpp"
@@ -592,7 +592,7 @@ void CheckSbpsUnknownCapabilityBits() {
           "SBPS transaction-routing V2 capability was not recognized");
 
   auto unknown_low = *decoded;
-  unknown_low.capability_bitmap[0] |= 0x04u;
+  unknown_low.capability_bitmap[0] |= 0x10u;
   Require(sbps::HasUnknownCapabilityBits(unknown_low.capability_bitmap),
           "SBPS low-byte unknown capability bit was not detected");
   Require(!sbps::IsBuiltInTestHello(unknown_low),

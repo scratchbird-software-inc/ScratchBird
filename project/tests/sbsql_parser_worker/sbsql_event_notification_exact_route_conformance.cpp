@@ -63,7 +63,7 @@ struct EngineFixture {
   std::string database_uuid;
 };
 
-constexpr std::array<EventRowEvidence, 7> kEventRows{{
+constexpr std::array<EventRowEvidence, 10> kEventRows{{
     {"SBSQL-7693C369D578",
      "create_event_stmt",
      "SBSQL-SURFACE-BD4A7B1CDE19",
@@ -94,7 +94,7 @@ constexpr std::array<EventRowEvidence, 7> kEventRows{{
      "LISTEN EVENT CHANNEL audit_channel",
      "event.channel.listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
-     "sblr.general.operation.v3",
+     "sblr.event.channel.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -106,7 +106,7 @@ constexpr std::array<EventRowEvidence, 7> kEventRows{{
      "NOTIFY EVENT CHANNEL audit_channel PAYLOAD 'payload-001'",
      "event.channel.notify",
      "SBLR_EVENT_CHANNEL_NOTIFY",
-     "sblr.general.operation.v3",
+     "sblr.event.channel.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -118,7 +118,7 @@ constexpr std::array<EventRowEvidence, 7> kEventRows{{
      "POST EVENT CHANNEL audit_channel PAYLOAD 'post-001'",
      "event.channel.notify",
      "SBLR_EVENT_CHANNEL_NOTIFY",
-     "sblr.general.operation.v3",
+     "sblr.event.channel.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -130,7 +130,7 @@ constexpr std::array<EventRowEvidence, 7> kEventRows{{
      "SUBSCRIBE EVENT CHANNEL audit_channel",
      "event.channel.listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
-     "sblr.general.operation.v3",
+     "sblr.event.channel.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -142,7 +142,43 @@ constexpr std::array<EventRowEvidence, 7> kEventRows{{
      "SUBSCRIBE EVENT CHANNEL audit_channel",
      "event.channel.listen",
      "SBLR_EVENT_CHANNEL_LISTEN",
-     "sblr.general.operation.v3",
+     "sblr.event.channel.v3",
+     "general",
+     "parser.grammar_ast",
+     "lowering.sblr_family.sblr_general_operation_v3",
+     "server.admission.sblr_general_operation_v3",
+     "engine.rule.sblr_general_operation_v3"},
+    {"SBSQL-34936281765E",
+     "listen_notify_stmt",
+     "SBSQL-SURFACE-3C216CD0A0B7",
+     "UNLISTEN EVENT CHANNEL audit_channel",
+     "event.channel.unlisten",
+     "SBLR_EVENT_CHANNEL_UNLISTEN",
+     "sblr.event.channel.v3",
+     "general",
+     "parser.grammar_ast",
+     "lowering.sblr_family.sblr_general_operation_v3",
+     "server.admission.sblr_general_operation_v3",
+     "engine.rule.sblr_general_operation_v3"},
+    {"SBSQL-832A8A3D2913",
+     "subscription_stmt",
+     "SBSQL-SURFACE-84AC75E4F879",
+     "UNSUBSCRIBE EVENT CHANNEL audit_channel",
+     "event.channel.unlisten",
+     "SBLR_EVENT_CHANNEL_UNLISTEN",
+     "sblr.event.channel.v3",
+     "general",
+     "parser.grammar_ast",
+     "lowering.sblr_family.sblr_general_operation_v3",
+     "server.admission.sblr_general_operation_v3",
+     "engine.rule.sblr_general_operation_v3"},
+    {"SBSQL-832A8A3D2913",
+     "subscription_stmt",
+     "SBSQL-SURFACE-84AC75E4F879",
+     "SHOW EVENT SUBSCRIPTIONS",
+     "event.subscription.list",
+     "SBLR_EVENT_SUBSCRIPTION_LIST",
+     "sblr.event.subscription.v3",
      "general",
      "parser.grammar_ast",
      "lowering.sblr_family.sblr_general_operation_v3",
@@ -243,7 +279,10 @@ struct PipelineArtifacts {
 };
 
 std::vector<std::string> ResolvedUuidsFor(const EventRowEvidence& row) {
-  if (row.operation_id == "event.channel.create") return {};
+  if (row.operation_id == "event.channel.create" ||
+      row.operation_id == "event.subscription.list") {
+    return {};
+  }
   return {std::string(kChannelUuid)};
 }
 
@@ -341,6 +380,14 @@ void RequireExactLowering(const EventRowEvidence& row) {
     Require(Contains(artifacts.envelope.payload,
                      "\"channel_name_text_is_user_payload\":true"),
             "CREATE EVENT CHANNEL did not mark channel name as user payload");
+  } else if (row.operation_id == "event.subscription.list") {
+    Require(!Contains(artifacts.envelope.payload, "\"channel_uuid\""),
+            "event subscription list payload carried an unneeded channel UUID");
+    Require(!Contains(artifacts.envelope.payload, "audit_channel"),
+            "event subscription list payload embedded channel name text");
+    Require(HasValue(artifacts.envelope.required_rights,
+                     "right.event_delivery_read"),
+            "event subscription list delivery-read authority missing");
   } else {
     Require(Contains(artifacts.envelope.payload,
                      std::string("\"channel_uuid\":\"") + std::string(kChannelUuid) + "\""),
@@ -354,6 +401,11 @@ void RequireExactLowering(const EventRowEvidence& row) {
     Require(Contains(artifacts.envelope.payload,
                      "\"payload_descriptor_uuid\":\"event_payload_descriptor:text.v1\""),
             "event notification payload descriptor missing");
+  }
+  if (row.operation_id == "event.channel.unlisten") {
+    Require(HasValue(artifacts.envelope.required_rights,
+                     "right.event_subscribe"),
+            "event unlisten authority missing");
   }
   Require(!Contains(artifacts.envelope.payload, row.sql),
           "event notification envelope embedded source SQL text");

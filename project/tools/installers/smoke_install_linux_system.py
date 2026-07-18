@@ -44,9 +44,7 @@ SYSTEM_CONFIG_TOKENS = {
         "control_dir = /run/scratchbird/control",
         "log_file = /var/log/scratchbird/SBsrv.log",
         "default_path = /var/lib/scratchbird/data/default.sbdb",
-        "port = 3092",
         "executable_path = /opt/ScratchBird/bin/SBgate",
-        "parser_executable_path = /opt/ScratchBird/bin/SBParser",
         "control_dir = /run/scratchbird/listener/control",
         "runtime_dir = /run/scratchbird/listener/runtime",
         "sbps_endpoint = /run/scratchbird/control/sb_server.sbps.sock",
@@ -83,6 +81,7 @@ FORBIDDEN_SYSTEM_CONFIG_TOKENS = (
     "parser_executable = bin/SBParser",
     "executable_path = bin/SBgate",
     "parser_executable_path = bin/SBParser",
+    "server.listener.native",
     "server_endpoint = runtime/",
     "control_dir = runtime/",
     "runtime_dir = runtime/",
@@ -101,6 +100,14 @@ SECURITY_SIDECAR_MARKERS = (
 def fail(message: str) -> None:
     print(f"smoke_install_linux_system=fail:{message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def has_listener_profile_section(text: str) -> bool:
+    return any(
+        line.strip().startswith("[server.listener.profile.")
+        and line.strip().endswith("]")
+        for line in text.splitlines()
+    )
 
 
 def ar_member(path: Path, requested_name: str) -> bytes:
@@ -315,6 +322,8 @@ def verify_deb(deb: Path, work_root: Path) -> tuple[dict[str, Any], bytes]:
             for token in FORBIDDEN_SYSTEM_CONFIG_TOKENS:
                 if token in text:
                     fail(f"relative_or_placeholder_system_config:{name}:{token}")
+            if name == "etc/scratchbird/SBsrv.conf" and has_listener_profile_section(text):
+                fail("unconfigured_listener_profile_in_system_defaults")
 
         profile = json.loads(
             member_text(

@@ -1545,6 +1545,10 @@ std::string PreparedAuthorityProofPayload(const ServerPreparedStatementRecord& p
       prepared.prepare_snapshot_visible_through_local_transaction_id);
   AppendPreparedAuthorityProofField(
       &out,
+      "prepared_transaction_routing_v2",
+      prepared.prepared_transaction_routing_v2 ? "true" : "false");
+  AppendPreparedAuthorityProofField(
+      &out,
       "prepared_metadata_transferable",
       prepared.prepared_metadata_transferable ? "true" : "false");
   AppendPreparedAuthorityProofField(
@@ -8544,6 +8548,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   ServerPreparedStatementRecord prepared;
   prepared.prepared_statement_uuid = sbps::MakeUuidV7Bytes();
   prepared.client_statement_uuid = decoded->client_statement_uuid;
+  prepared.prepared_transaction_routing_v2 = v2;
   CapturePreparedAuthorityContext(&prepared, prepare_session);
   prepared.encoded_sblr_envelope = decoded->encoded_sblr_envelope;
   prepared.operation_family = admission.operation_family;
@@ -8770,10 +8775,30 @@ SessionOperationResult HandleExecuteSblrImpl(
   const auto prepared_it = registry->prepared_by_uuid.find(UuidBytesToText(decoded->prepared_statement_uuid));
   const ServerPreparedStatementRecord* prepared_statement =
       prepared_it == registry->prepared_by_uuid.end() ? nullptr : &prepared_it->second;
+  // Do not let a later transaction-selector refusal disclose that another
+  // session owns this opaque prepared-statement identity.  Ownership and
+  // tombstone failures deliberately collapse to not-found before any
+  // statement-specific validation.
+  if (prepared_statement != nullptr &&
+      (prepared_statement->closed ||
+       prepared_statement->session_uuid != dispatch_session.session_uuid)) {
+    const std::string ownership_detail =
+        prepared_statement->closed ? "prepared_statement_closed"
+                                   : "prepared_statement_cross_session";
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   ownership_detail);
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
+                   "The prepared SBLR statement is not available for this session.",
+                   ownership_detail);
+  }
   if (prepared_statement != nullptr) {
     const bool prepared_is_transaction_routed =
-        prepared_statement->prepare_local_transaction_id != 0 ||
-        !prepared_statement->prepare_transaction_uuid.empty();
+        prepared_statement->prepared_transaction_routing_v2;
     const bool prepared_selector_matches =
         selected_transaction.has_value() &&
         prepared_statement->prepare_local_transaction_id ==

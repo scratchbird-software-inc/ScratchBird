@@ -44,7 +44,7 @@ using scratchbird::server::ServerIpcEndpointOperation;
 using scratchbird::server::ServerLifecycleArtifacts;
 using scratchbird::server::WriteServerIpcEndpointDescriptor;
 namespace ps = scratchbird::server::sbps;
-namespace legacy = scratchbird::parser::sbsql;
+namespace parser_ipc = scratchbird::parser::ipc;
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
@@ -321,44 +321,45 @@ void TestSbpsFrameValidation() {
           "DBLC-013F bad SBPS payload CRC diagnostic absent");
 }
 
-bool HasLegacyDiagnostic(const legacy::MessageVectorSet& messages, std::string_view code) {
+bool HasParserIpcDiagnostic(const parser_ipc::MessageVectorSet& messages,
+                            std::string_view code) {
   for (const auto& diagnostic : messages.diagnostics) {
     if (diagnostic.code == code) return true;
   }
   return false;
 }
 
-void TestLegacyParserWorkerPacketValidation() {
-  legacy::ParserServerPacket packet;
-  packet.opcode = legacy::ParserServerOpcode::kParserHello;
+void TestParserServerPacketValidation() {
+  parser_ipc::ParserServerPacket packet;
+  packet.opcode = parser_ipc::ParserServerOpcode::kParserHello;
   packet.protocol_version = 1;
   packet.request_id = 42;
   packet.payload = {'o', 'k'};
-  legacy::MessageVectorSet messages;
-  Require(legacy::DecodePacket(legacy::EncodePacket(packet), &messages).has_value(),
-          "DBLC-013F legacy parser worker IPC packet did not decode");
+  parser_ipc::MessageVectorSet messages;
+  Require(parser_ipc::DecodePacket(parser_ipc::EncodePacket(packet), &messages).has_value(),
+          "DBLC-013F parser/server IPC packet did not decode");
 
   std::vector<std::uint8_t> truncated{1, 2, 3};
   messages.diagnostics.clear();
-  Require(!legacy::DecodePacket(truncated, &messages).has_value(),
+  Require(!parser_ipc::DecodePacket(truncated, &messages).has_value(),
           "DBLC-013F truncated parser worker packet was decoded");
-  Require(HasLegacyDiagnostic(messages, "PARSER_IPC.FRAME.TRUNCATED"),
+  Require(HasParserIpcDiagnostic(messages, "PARSER_IPC.FRAME.TRUNCATED"),
           "DBLC-013F truncated parser worker diagnostic absent");
 
-  auto bad_magic = legacy::EncodePacket(packet);
+  auto bad_magic = parser_ipc::EncodePacket(packet);
   bad_magic[0] ^= 0xffu;
   messages.diagnostics.clear();
-  Require(!legacy::DecodePacket(bad_magic, &messages).has_value(),
+  Require(!parser_ipc::DecodePacket(bad_magic, &messages).has_value(),
           "DBLC-013F bad-magic parser worker packet was decoded");
-  Require(HasLegacyDiagnostic(messages, "PARSER_IPC.FRAME.BAD_MAGIC"),
+  Require(HasParserIpcDiagnostic(messages, "PARSER_IPC.FRAME.BAD_MAGIC"),
           "DBLC-013F bad-magic parser worker diagnostic absent");
 
-  auto bad_length = legacy::EncodePacket(packet);
+  auto bad_length = parser_ipc::EncodePacket(packet);
   bad_length[20] = 0xffu;
   messages.diagnostics.clear();
-  Require(!legacy::DecodePacket(bad_length, &messages).has_value(),
+  Require(!parser_ipc::DecodePacket(bad_length, &messages).has_value(),
           "DBLC-013F bad-length parser worker packet was decoded");
-  Require(HasLegacyDiagnostic(messages, "PARSER_IPC.FRAME.LENGTH_INVALID"),
+  Require(HasParserIpcDiagnostic(messages, "PARSER_IPC.FRAME.LENGTH_INVALID"),
           "DBLC-013F bad-length parser worker diagnostic absent");
 }
 
@@ -483,7 +484,7 @@ int main() {
   TestDescriptorWriteAndAdmission();
   TestLifecycleFailClosedCases();
   TestSbpsFrameValidation();
-  TestLegacyParserWorkerPacketValidation();
+  TestParserServerPacketValidation();
   TestEventIpcSessionDrainAndCleanup();
   std::cout << "database_lifecycle_ipc_conformance=passed\n";
   return EXIT_SUCCESS;

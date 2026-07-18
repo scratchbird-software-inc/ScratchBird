@@ -515,7 +515,6 @@ def stage_linux_system_install_tree(
             "log_file = stderr": "log_file = /var/log/scratchbird/SBsrv.log",
             "default_path = data/default.sbdb": "default_path = /var/lib/scratchbird/data/default.sbdb",
             "executable_path = bin/SBgate": "executable_path = /opt/ScratchBird/bin/SBgate",
-            "parser_executable_path = bin/SBParser": "parser_executable_path = /opt/ScratchBird/bin/SBParser",
             "control_dir = runtime/listener/control": "control_dir = /run/scratchbird/listener/control",
             "runtime_dir = runtime/listener/runtime": "runtime_dir = /run/scratchbird/listener/runtime",
             "sbps_endpoint = runtime/control/sb_server.sbps.sock": "sbps_endpoint = /run/scratchbird/control/sb_server.sbps.sock",
@@ -684,9 +683,6 @@ def stage_windows_system_install_tree(
             ),
             "executable_path = bin/SBgate": (
                 f"executable_path = {install}/bin/SBgate.exe"
-            ),
-            "parser_executable_path = bin/SBParser": (
-                f"parser_executable_path = {install}/bin/SBParser.exe"
             ),
             "control_dir = runtime/listener/control": (
                 f"control_dir = {state}/run/listener/control"
@@ -915,9 +911,6 @@ def stage_macos_system_install_tree(
             ),
             "executable_path = bin/SBgate": (
                 "executable_path = /opt/ScratchBird/bin/SBgate"
-            ),
-            "parser_executable_path = bin/SBParser": (
-                "parser_executable_path = /opt/ScratchBird/bin/SBParser"
             ),
             "control_dir = runtime/listener/control": (
                 "control_dir = /var/run/scratchbird/listener/control"

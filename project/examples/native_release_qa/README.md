@@ -115,6 +115,9 @@ The helper:
 - writes instance-specific copies of all four native configuration files and
   the create-time platform profile;
 - wires the installed resource and policy packs into `SBsrv`;
+- creates the explicit `[server.listener.profile.sbsql]` record for the shared
+  `SBgate` executable on loopback port 3092; it never uses a legacy
+  `server.listener.native` profile;
 - generates a random protected DBBT key for the current environment bridge;
 - keeps TLS required and adds only local certificate/key paths;
 - validates `SBsrv`, `SBgate`, and `SBmgr` before reporting success;

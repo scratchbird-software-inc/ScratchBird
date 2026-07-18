@@ -27,7 +27,7 @@ namespace {
 
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
-namespace legacy = scratchbird::parser::sbsql;
+namespace parser_ipc = scratchbird::parser::ipc;
 namespace ps = scratchbird::server::sbps;
 namespace server = scratchbird::server;
 namespace uuid = scratchbird::core::uuid;
@@ -48,7 +48,8 @@ bool HasServerDiagnostic(const std::vector<server::ServerDiagnostic>& diagnostic
   return false;
 }
 
-bool HasLegacyDiagnostic(const legacy::MessageVectorSet& messages, std::string_view code) {
+bool HasParserIpcDiagnostic(const parser_ipc::MessageVectorSet& messages,
+                            std::string_view code) {
   for (const auto& diagnostic : messages.diagnostics) {
     if (diagnostic.code == code) return true;
   }
@@ -87,20 +88,20 @@ void TestSbpsVersionRefusals() {
           "DBLC-013O too-old SBPS major version did not fail closed");
 }
 
-void TestLegacyParserIpcVersionRefusals() {
-  legacy::ParserServerPacket packet;
-  packet.opcode = legacy::ParserServerOpcode::kParserHello;
-  packet.protocol_version = legacy::kParserServerIpcProtocolCurrent;
+void TestParserIpcVersionRefusals() {
+  parser_ipc::ParserServerPacket packet;
+  packet.opcode = parser_ipc::ParserServerOpcode::kParserHello;
+  packet.protocol_version = parser_ipc::kParserServerIpcProtocolCurrent;
   packet.payload = {'h', 'i'};
-  legacy::MessageVectorSet messages;
-  Require(legacy::DecodePacket(legacy::EncodePacket(packet), &messages).has_value(),
-          "DBLC-013O current legacy parser IPC protocol was not accepted");
+  parser_ipc::MessageVectorSet messages;
+  Require(parser_ipc::DecodePacket(parser_ipc::EncodePacket(packet), &messages).has_value(),
+          "DBLC-013O current parser/server IPC protocol was not accepted");
 
-  packet.protocol_version = legacy::kParserServerIpcProtocolMaxSupported + 1;
+  packet.protocol_version = parser_ipc::kParserServerIpcProtocolMaxSupported + 1;
   messages.diagnostics.clear();
-  Require(!legacy::DecodePacket(legacy::EncodePacket(packet), &messages).has_value(),
+  Require(!parser_ipc::DecodePacket(parser_ipc::EncodePacket(packet), &messages).has_value(),
           "DBLC-013O future legacy parser IPC protocol was admitted");
-  Require(HasLegacyDiagnostic(messages, "PARSER_IPC.PROTOCOL.FUTURE_UNSUPPORTED"),
+  Require(HasParserIpcDiagnostic(messages, "PARSER_IPC.PROTOCOL.FUTURE_UNSUPPORTED"),
           "DBLC-013O future legacy parser IPC diagnostic missing");
 }
 
@@ -231,7 +232,7 @@ void TestPersistedFormatVersionRefusals() {
 
 int main() {
   TestSbpsVersionRefusals();
-  TestLegacyParserIpcVersionRefusals();
+  TestParserIpcVersionRefusals();
   TestEndpointDescriptorVersionAndEpochs();
   TestConfigPolicySecurityVersionAndEpochs();
   TestPersistedFormatVersionRefusals();

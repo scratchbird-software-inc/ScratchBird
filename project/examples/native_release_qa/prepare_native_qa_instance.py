@@ -41,6 +41,17 @@ POLICY_PACK = Path(
     "share/scratchbird/resources/policy-packs/default-local-password"
 )
 
+# The native release configures one explicit instance of the generic SBgate
+# listener. These are checked-in SBSQL package identities, never values
+# inferred from a conventional port or another parser family.
+SBSQL_LISTENER_PROFILE_KEY = "sbsql"
+SBSQL_LISTENER_PROFILE_ID = "default"
+SBSQL_PROTOCOL_FAMILY = "sbsql"
+SBSQL_PARSER_PACKAGE = "SBParser"
+SBSQL_PARSER_PACKAGE_UUID = "parser.native.scratchbird"
+SBSQL_DIALECT_PROFILE_UUID = "sbsql_v3"
+SBSQL_BUNDLE_CONTRACT_ID = "sbp_sbsql@1"
+
 
 def fail(message: str) -> None:
     print(f"prepare_native_qa_instance=fail:{message}", file=sys.stderr)
@@ -717,12 +728,30 @@ def write_configs(
         "server.database.default_path": safe_value(database),
         "server.database.resource_seed_pack_root": safe_value(resource_pack),
         "server.database.policy_seed_pack_root": safe_value(policy_pack),
-        "server.listener.native.executable_path": safe_value(bin_paths["SBgate"]),
-        "server.listener.native.parser_executable_path": safe_value(bin_paths["SBParser"]),
-        "server.listener.native.control_dir": safe_value(listener_runtime / "control"),
-        "server.listener.native.runtime_dir": safe_value(listener_runtime / "runtime"),
-        "server.listener.native.tls_cert_file": safe_value(cert),
-        "server.listener.native.tls_key_file": safe_value(key),
+        "server.listener.executable_path": safe_value(bin_paths["SBgate"]),
+        "server.listener.control_dir": safe_value(listener_runtime / "control"),
+        "server.listener.runtime_dir": safe_value(listener_runtime / "runtime"),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.enabled": "true",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.protocol_family": SBSQL_PROTOCOL_FAMILY,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.profile_id": SBSQL_LISTENER_PROFILE_ID,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.parser_package": SBSQL_PARSER_PACKAGE,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.parser_package_uuid": SBSQL_PARSER_PACKAGE_UUID,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.dialect_profile_uuid": SBSQL_DIALECT_PROFILE_UUID,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.bundle_contract_id": SBSQL_BUNDLE_CONTRACT_ID,
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.parser_api_major": "1",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.parser_executable_path": safe_value(bin_paths["SBParser"]),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.bind_address": "127.0.0.1",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.port": "3092",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.database_selector": "server_database_default",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.sbps_endpoint": safe_value(runtime / "control" / "sb_server.sbps.sock"),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.control_dir": safe_value(listener_runtime / "control"),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.runtime_dir": safe_value(listener_runtime / "runtime"),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.tls_required": "true",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.tls_cert_file": safe_value(cert),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.tls_key_file": safe_value(key),
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.ready_timeout_ms": "5000",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.warm_pool_min": "1",
+        f"server.listener.profile.{SBSQL_LISTENER_PROFILE_KEY}.warm_pool_max": "16",
         "server.parser.sbps_endpoint": safe_value(runtime / "control" / "sb_server.sbps.sock"),
     }
     listener_replacements = {

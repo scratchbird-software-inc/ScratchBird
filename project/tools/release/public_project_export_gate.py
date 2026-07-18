@@ -19,6 +19,14 @@ import subprocess
 import time
 from pathlib import Path
 
+from public_reference_acquisition_policy import (
+    REFERENCE_ACQUISITION_PREFIX,
+    iter_public_reference_acquisition_metadata,
+    public_reference_acquisition_metadata_relative_paths,
+    public_reference_acquisition_metadata_validation_error,
+    validate_public_reference_acquisition_metadata_inventory,
+)
+
 
 PUBLIC_TOP_LEVEL = {
     "project",
@@ -35,8 +43,6 @@ PUBLIC_TOP_LEVEL = {
     "data",
     "release",
     "public_contract_snapshot",
-    "public_execution_plan",
-    "public_input_snapshot",
 }
 
 REQUIRED_TOP_LEVEL = {
@@ -54,8 +60,6 @@ REQUIRED_TOP_LEVEL = {
     "data",
     "release",
     "public_contract_snapshot",
-    "public_execution_plan",
-    "public_input_snapshot",
 }
 
 DOCS_CHILDREN = {"build_requirements"}
@@ -169,8 +173,11 @@ def copy2_public(src: Path, dst: Path) -> None:
     fail(f"public export copy not visible: {dst}")
 
 
-def copytree_public(src: Path, dst: Path) -> None:
-    shutil.copytree(io_path(src), io_path(dst), ignore=ignore_public_copy)
+def copytree_public(src: Path, dst: Path, repo_root: Path) -> None:
+    def ignore(dirpath: str, names: list[str]) -> set[str]:
+        return ignore_public_copy(dirpath, names, repo_root)
+
+    shutil.copytree(io_path(src), io_path(dst), ignore=ignore)
 
 
 def rmtree_public(path: Path) -> None:
@@ -220,17 +227,8 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
         src = repo_root / entry
         dst = stage_root / entry
         if not src.exists():
-            if entry in REQUIRED_TOP_LEVEL - {
-                "LICENSE",
-                "NOTICE",
-                "SECURITY.md",
-                "KNOWN_LIMITATIONS.md",
-                "RELEASE_TERMS.md",
-                "THIRD_PARTY_NOTICES.md",
-                "SBOM.json",
-                "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
-            }:
-                mkdir_public(dst)
+            if entry in REQUIRED_TOP_LEVEL:
+                fail(f"public export source is missing required top-level entry: {entry}")
             continue
         if entry == "docs":
             mkdir_public(dst)
@@ -238,7 +236,7 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
                 child_src = src / child
                 child_dst = dst / child
                 if child_src.exists():
-                    copytree_public(child_src, child_dst)
+                    copytree_public(child_src, child_dst, repo_root)
             continue
         if entry == "release":
             mkdir_public(dst)
@@ -251,23 +249,68 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
                     copy2_public(layout_src, dst / platform / "ENGINE_BINARY_LAYOUT.json")
             metadata_src = src / "metadata"
             if metadata_src.exists():
-                copytree_public(metadata_src, dst / "metadata")
+                copytree_public(metadata_src, dst / "metadata", repo_root)
             continue
         if src.is_dir():
-            copytree_public(src, dst)
+            copytree_public(src, dst, repo_root)
         else:
             copy2_public(src, dst)
 
+    copy_public_reference_acquisition_metadata(repo_root, stage_root)
+    check_reference_acquisition_export_boundary(stage_root)
 
-def ignore_public_copy(dirpath: str, names: list[str]) -> set[str]:
+
+def ignore_public_copy(dirpath: str, names: list[str], repo_root: Path) -> set[str]:
     ignored: set[str] = set()
+    relative_dir = normal_path(Path(dirpath)).resolve().relative_to(repo_root.resolve())
     for name in names:
+        relative_path = relative_dir / name
+        if relative_path.as_posix() == REFERENCE_ACQUISITION_PREFIX:
+            ignored.add(name)
+            continue
         if name == dot_git() or name.startswith(dot_git()) or name in SKIP_DIRS:
             ignored.add(name)
             continue
         if name.endswith((".tmp", ".log", ".pyc")):
             ignored.add(name)
     return ignored
+
+
+def copy_public_reference_acquisition_metadata(repo_root: Path, stage_root: Path) -> None:
+    errors = validate_public_reference_acquisition_metadata_inventory(repo_root)
+    if errors:
+        fail(
+            "public reference acquisition metadata inventory is invalid: "
+            + ", ".join(errors[:20])
+        )
+    for source in iter_public_reference_acquisition_metadata(repo_root):
+        relative = source.relative_to(repo_root)
+        copy2_public(source, stage_root / relative)
+
+
+def check_reference_acquisition_export_boundary(stage_root: Path) -> None:
+    acquisition_root = stage_root / REFERENCE_ACQUISITION_PREFIX
+    forbidden: list[str] = []
+    actual: set[str] = set()
+    if acquisition_root.exists():
+        for path in iter_files(acquisition_root):
+            relative = path.relative_to(stage_root)
+            relative_text = relative.as_posix()
+            actual.add(relative_text)
+            error = public_reference_acquisition_metadata_validation_error(
+                path, relative
+            )
+            if error is not None:
+                forbidden.append(f"{relative_text}:{error}")
+    expected = set(public_reference_acquisition_metadata_relative_paths())
+    missing = sorted(expected - actual)
+    if missing:
+        forbidden.extend(f"{relative}:missing_exported_metadata" for relative in missing)
+    if forbidden:
+        fail(
+            "public export contains local reference acquisition payload: "
+            + ", ".join(forbidden[:20])
+        )
 
 
 def iter_files(root: Path):
@@ -340,6 +383,8 @@ def fail(message: str) -> None:
 
 
 def check_package_shape(stage_root: Path) -> None:
+    check_reference_acquisition_export_boundary(stage_root)
+
     present = {path.name for path in stage_root.iterdir()}
     missing = sorted(REQUIRED_TOP_LEVEL - present)
     if missing:
@@ -605,6 +650,7 @@ def build_cleanup_manifest(stage_root: Path, payload_files: list[str]) -> dict[s
             "cache_outputs",
             "temporary_outputs",
             "stale_generated_outputs",
+            "local_reference_regression_acquisition_payloads",
             "absolute_developer_paths",
             "legacy_checkout_paths",
             "unsupported_platform_layouts",

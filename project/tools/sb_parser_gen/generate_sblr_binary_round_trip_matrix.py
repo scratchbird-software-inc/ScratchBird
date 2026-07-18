@@ -10,7 +10,7 @@
 """Generate SBLR_BINARY_ROUND_TRIP_MATRIX.csv for the SBsql Surface-to-SBLR execution_plan.
 
 Inputs (repo-local, no network):
-  public_input_snapshot
+  project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv
   project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/FUNCTION_SEMANTIC_ORACLE_MATRIX.csv
   project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/PER_ROW_EVIDENCE_MANIFEST.csv
 
@@ -76,7 +76,10 @@ import sys
 from pathlib import Path
 
 
-REGISTRY_CSV = "public_input_snapshot"
+REGISTRY_CSV = (
+    "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/"
+    "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+)
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 ORACLE_MATRIX_NAME = "FUNCTION_SEMANTIC_ORACLE_MATRIX.csv"
 PER_ROW_MANIFEST_NAME = "PER_ROW_EVIDENCE_MANIFEST.csv"

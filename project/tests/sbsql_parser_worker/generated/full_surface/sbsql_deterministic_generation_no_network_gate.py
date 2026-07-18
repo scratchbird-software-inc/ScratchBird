@@ -88,6 +88,10 @@ GENERATORS: list[tuple[str, str]] = [
         "project/tools/sb_parser_gen/generate_sbsql_surface_release_declaration.py",
         "SBSQL_SURFACE_RELEASE_DECLARATION.csv",
     ),
+    (
+        "project/tools/sb_parser_gen/generate_per_element_spec_sources.py",
+        "PER_ELEMENT_CONTRACTS",
+    ),
 ]
 
 DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
@@ -132,11 +136,31 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def md5_of(path: Path) -> str:
-    if not path.is_file():
+def digest_of(path: Path) -> str:
+    """Return a deterministic content digest for a generated file or tree."""
+
+    if path.is_file():
+        h = hashlib.md5()
+        h.update(b"file\\0")
+        h.update(path.read_bytes())
+        return h.hexdigest()
+    if not path.is_dir():
         return ""
     h = hashlib.md5()
-    h.update(path.read_bytes())
+    h.update(b"tree\\0")
+    for entry in sorted(path.rglob("*"), key=lambda candidate: candidate.as_posix()):
+        relative = entry.relative_to(path).as_posix().encode("utf-8")
+        if entry.is_symlink():
+            h.update(b"symlink\\0" + relative)
+            continue
+        if entry.is_dir():
+            h.update(b"directory\\0" + relative)
+            continue
+        if not entry.is_file():
+            h.update(b"unsupported\\0" + relative)
+            continue
+        h.update(b"file\\0" + relative + b"\\0")
+        h.update(entry.read_bytes())
     return h.hexdigest()
 
 
@@ -166,11 +190,11 @@ def check_determinism(root: Path, artifact_root: Path) -> tuple[list[str], list[
             if not gen_path.is_file():
                 drift.append(f"generator missing: {generator_rel}")
                 continue
-            if not out_path.is_file():
+            if not out_path.exists():
                 drift.append(f"output missing: {artifact_root / output_name}")
                 continue
 
-            before = md5_of(out_path)
+            before = digest_of(out_path)
             result = subprocess.run(
                 [
                     sys.executable,
@@ -190,10 +214,10 @@ def check_determinism(root: Path, artifact_root: Path) -> tuple[list[str], list[
                 )
                 continue
 
-            after = md5_of(out_path)
+            after = digest_of(out_path)
             summary.append((generator_rel, before, after))
             if before != after:
-                drift.append(f"{generator_rel}: non-deterministic regeneration before_md5={before} after_md5={after}")
+                drift.append(f"{generator_rel}: non-deterministic regeneration before_digest={before} after_digest={after}")
     return drift, summary
 
 
@@ -223,7 +247,7 @@ def main() -> int:
     )
     for generator_rel, before, after in summary:
         ok = "ok" if before == after else "DRIFT"
-        print(f"  {generator_rel}: md5={before} -> {after} [{ok}]")
+        print(f"  {generator_rel}: digest={before} -> {after} [{ok}]")
 
     if network_findings or drift_findings:
         print("sbsql_deterministic_generation_no_network_gate=failed", file=sys.stderr)

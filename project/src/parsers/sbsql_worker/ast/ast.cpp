@@ -1269,7 +1269,14 @@ void ApplyStatementDescriptorMetadata(AstDocument* ast,
   ast->exact_refusal_required = descriptor->exact_refusal_required;
   ast->requires_cluster_profile = descriptor->cluster_scope == "cluster_private" ||
                                   descriptor->source_status == "cluster_private";
-  if (ast->operation_family.empty()) {
+  // Keyword classification may initially assign the generic umbrella family.
+  // Once a generated surface descriptor identifies a concrete IPC-admissible
+  // family, carry that authority into the AST rather than letting the
+  // umbrella survive to lowering.  Do not overwrite a separately selected
+  // concrete route: those route selectors remain authoritative.
+  if (ast->operation_family.empty() ||
+      (ast->operation_family == "sblr.general.operation.v3" &&
+       descriptor->sblr_operation_family != "sblr.general.operation.v3")) {
     ast->operation_family = descriptor->sblr_operation_family;
   }
 }

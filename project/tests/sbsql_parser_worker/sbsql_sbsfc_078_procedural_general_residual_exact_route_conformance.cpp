@@ -186,7 +186,7 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-078 generated registry status drifted");
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           "SBSFC-078 generated registry cluster scope drifted");
-  Require(registry_row->sblr_operation_family == "sblr.general.operation.v3",
+  Require(registry_row->sblr_operation_family == "sblr.management.control.v3",
           "SBSFC-078 generated registry SBLR family drifted");
 }
 
@@ -206,15 +206,15 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-078 AST canonical name mismatch");
   Require(artifacts.ast.registry_family == "sbsql.general.operation.v3",
           "SBSFC-078 AST registry family mismatch");
-  Require(artifacts.ast.operation_family == "sblr.general.operation.v3",
+  Require(artifacts.ast.operation_family == "sblr.management.control.v3",
           "SBSFC-078 AST operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-078 bind failed");
   Require(artifacts.verifier.admitted, "SBSFC-078 verifier rejected exact route");
-  Require(artifacts.envelope.operation_family == "sblr.general.operation.v3",
+  Require(artifacts.envelope.operation_family == "sblr.management.control.v3",
           std::string("SBSFC-078 operation family mismatch for ") +
               std::string(row.canonical_name) + ": got " +
               artifacts.envelope.operation_family);
-  Require(artifacts.envelope.sblr_operation_key == "sblr.general.operation.v3",
+  Require(artifacts.envelope.sblr_operation_key == "sblr.management.control.v3",
           "SBSFC-078 operation key mismatch");
   Require(artifacts.envelope.operation_id == row.operation_id,
           "SBSFC-078 operation id mismatch");
@@ -260,7 +260,7 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-078 server admission did not require public ABI dispatch");
   Require(admission.operation_id == row.operation_id,
           "SBSFC-078 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.general.operation.v3",
+  Require(admission.operation_family == "sblr.management.control.v3",
           "SBSFC-078 server admission operation family mismatch");
 
   const auto* opcode = sblr::LookupSblrOperation(std::string(row.operation_id));

@@ -1844,6 +1844,17 @@ set_tests_properties(public_release_version_metadata_gate PROPERTIES
   LABELS "public_release_correctness;public_release_version_metadata_gate;PCR-GATE-112;PCR-112;ELER-108;ELER-GATE-108;release_hygiene;version_metadata;compatibility;database_format;catalog_schema;catalog_codec;datatype_wire;debug_symbols;fail_closed;release_artifact_trust;linux_proof"
 )
 
+# PUBLIC_PROJECT_EXPORT_COPY_FILTER_TEST
+add_test(
+  NAME public_project_export_copy_filter_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/public_project_export_copy_filter_test.py
+          --work-root ${CMAKE_CURRENT_BINARY_DIR}/public_project_export_copy_filter_test
+)
+set_tests_properties(public_project_export_copy_filter_test PROPERTIES
+  LABELS "public_release_correctness;public_project_export_copy_filter_test;PCR-GATE-001;release_hygiene;project_only_export;reference_acquisition_boundary;source_archive_safe;linux_proof"
+)
+
 # PUBLIC_ARTIFACT_REPRODUCIBILITY_GATE
 add_test(
   NAME public_artifact_reproducibility_gate

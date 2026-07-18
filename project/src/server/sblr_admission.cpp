@@ -1671,9 +1671,12 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "The engine accepts canonical SBLR only.",
                   "raw_sql_forbidden");
   }
-  if (TextField(encoded, "operation_id").has_value()) {
-    return AdmitTextOperationEnvelope(encoded, false, request.cluster_authority_active);
-  }
+  // Parser JSON envelopes also contain an ``operation_id`` field.  Classify
+  // their declared envelope version before attempting the text-line parser;
+  // otherwise TextField() mistakes JSON for a text operation envelope, loses
+  // ``operation_family``, and falls back to an inadmissible umbrella family.
+  // The concrete family emitted by the standalone parser is part of the
+  // server-side authority contract and must survive this boundary unchanged.
   if (const auto envelope = JsonStringField(encoded, "envelope");
       envelope.has_value() && envelope->starts_with("SBLRExecutionEnvelope.")) {
     if (*envelope != "SBLRExecutionEnvelope.v3") {
@@ -1682,6 +1685,9 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                     "unsupported_sblr_execution_envelope_version");
     }
     return AdmitParserJsonEnvelope(encoded, request.cluster_authority_active);
+  }
+  if (TextField(encoded, "operation_id").has_value()) {
+    return AdmitTextOperationEnvelope(encoded, false, request.cluster_authority_active);
   }
   if (IsFailClosedSblrFamily(encoded)) {
     return RejectFamilyReconciliationRequired(encoded);

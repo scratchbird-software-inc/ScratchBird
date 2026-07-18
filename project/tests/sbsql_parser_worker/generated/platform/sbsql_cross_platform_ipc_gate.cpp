@@ -25,6 +25,7 @@
 
 namespace listener = scratchbird::listener;
 namespace parser = scratchbird::parser::sbsql;
+namespace parser_ipc = scratchbird::parser::ipc;
 namespace server = scratchbird::server;
 namespace sbps = scratchbird::server::sbps;
 
@@ -61,10 +62,10 @@ bool HasListenerDiagnostic(const listener::proto::MessageVectorSet& messages,
                      });
 }
 
-bool HasParserDiagnostic(const parser::MessageVectorSet& messages,
+bool HasParserDiagnostic(const parser_ipc::MessageVectorSet& messages,
                          std::string_view code) {
   return std::any_of(messages.diagnostics.begin(), messages.diagnostics.end(),
-                     [code](const parser::Diagnostic& diagnostic) {
+                     [code](const parser_ipc::Diagnostic& diagnostic) {
                        return diagnostic.code == code;
                      });
 }
@@ -120,7 +121,7 @@ void ValidateControlPlanePayloads(Harness* harness) {
   handoff.dbbt_id = UuidSeed(0x20);
   handoff.manager_session_id = UuidSeed(0x30);
   const auto handoff_payload = listener::EncodeHandoffSocketPayload(handoff);
-  harness->Check(handoff_payload.size() == 193,
+  harness->Check(handoff_payload.size() == 241,
                  "HANDOFF_SOCKET payload size is not stable");
 
   listener::HandoffAckPayload ack;
@@ -183,7 +184,7 @@ void ValidateSbpsAndParserEndpoint(Harness* harness) {
                  "SBPS oversized physical frame did not fail closed");
 
   parser::SbpsClient client("unix:/" + std::string(256, 'x'));
-  parser::MessageVectorSet messages;
+  parser_ipc::MessageVectorSet messages;
   harness->Check(!client.SendHello(&messages) &&
                      HasParserDiagnostic(messages,
                                          "PARSER_SERVER_IPC.ENDPOINT_PATH_TOO_LONG"),
@@ -225,7 +226,8 @@ void ValidateSourceContracts(const std::filesystem::path& source_root,
   const auto server_ipc_surface = server_ipc + "\n" + server_ipc_lifecycle;
   const auto orchestrator = ReadFile(source_root / "src/server/listener_orchestrator.cpp");
   const auto parser_runtime = ReadFile(source_root / "src/parsers/sbsql_worker/runtime/parser_runtime.cpp");
-  const auto sbps_client = ReadFile(source_root / "src/parsers/sbsql_worker/ipc/sbps_client.cpp");
+  const auto sbps_client = ReadFile(
+      source_root / "src/wire/parser_server_ipc/parser_server_client.cpp");
 
   harness->Check(Contains(control_plane_h, "kControlFlagHasHandle") &&
                      Contains(control_plane, "SCM_RIGHTS") &&
@@ -236,7 +238,7 @@ void ValidateSourceContracts(const std::filesystem::path& source_root,
   harness->Check(Contains(parser_pool, "socketpair(AF_UNIX") &&
                      Contains(parser_pool, "SB_LISTENER_CONTROL_FD") &&
                      Contains(parser_pool, "SB_SERVER_ENDPOINT") &&
-                     Contains(parser_pool, "execl") &&
+                     Contains(parser_pool, "::execve(") &&
                      Contains(parser_pool, "_exit(127)"),
                  "parser pool lacks expected Unix control-fd/env/exec evidence");
   harness->Check(Contains(listener_runtime, "LISTENER.MANAGEMENT_SOCKET_PATH_TOO_LONG") &&

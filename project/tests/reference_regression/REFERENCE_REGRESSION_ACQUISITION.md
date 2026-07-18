@@ -38,3 +38,11 @@ build/reference_regression_acquisition/
 The acquired payloads are intentionally ignored by git. Normal public CTest
 runs do not depend on them; reference-parser replay jobs opt into them when
 validating a specific parser lane against the original reference test tools.
+
+Public source exports retain only the exact path-and-SHA-256 metadata registry
+in `project/tools/release/public_reference_acquisition_policy.py`. Filename
+patterns are not an export permission: an unregistered direct manifest, index,
+or candidate file is private and is excluded. Registered metadata must be a
+regular non-symlink file within the public size limit and match its recorded
+content hash. Public exports never include locally acquired suites, native
+tools, upstream source trees, or nested payload below the acquisition root.

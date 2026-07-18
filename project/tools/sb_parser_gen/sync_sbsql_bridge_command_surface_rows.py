@@ -7,140 +7,248 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Synchronize canonical SBsql bridge command rows into surface matrices."""
+"""Synchronize canonical SBsql bridge rows into tracked public artifacts.
+
+The public repository deliberately does not contain the legacy canonicalization
+CSV inputs or the private coverage registry that older versions of this tool
+attempted to rewrite.  The complete public bridge record instead consists of
+the tracked implementation backlog, batch membership, semantic-oracle map, and
+batching-plan CSVs below.  This tool never opens or writes any other matrix.
+
+Checking is the default and is read-only.  ``--update`` is required before an
+existing public artifact tree can be changed.  ``--output-root`` permits a
+caller to stage the four public outputs in a copied tree before applying an
+in-place update to a checkout.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
+import os
 import sys
-from collections import Counter
+import tempfile
 from pathlib import Path
-
-from sbsql_bridge_command_surface import (
-    BRIDGE_COMMAND_SURFACES,
-    BRIDGE_CTEST,
-    CANONICAL_SPEC,
-    DOCUMENTATION_FAMILY,
-    ENGINE_PACKET,
-    PARSER_PACKET,
-    SBLR_OPERATION_FAMILY,
-    SOURCE_ANCHOR,
-    SOURCE_FILE,
-)
+from types import ModuleType
 
 
-REGISTRY = "public_input_snapshot"
-STATUS_MATRIX = "public_input_snapshot"
-OPERATION_MATRIX = "public_input_snapshot"
-FULL_PARSER_ARTIFACT_ROOT = (
+FULL_PARSER_ARTIFACT_ROOT = Path(
     "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts"
 )
-BACKLOG = f"{FULL_PARSER_ARTIFACT_ROOT}/SURFACE_IMPLEMENTATION_BACKLOG.csv"
-BATCH_MEMBERSHIP = f"{FULL_PARSER_ARTIFACT_ROOT}/BATCH_ROW_MEMBERSHIP.csv"
-ORACLE_MAP = f"{FULL_PARSER_ARTIFACT_ROOT}/SEMANTIC_ORACLE_AUTHORITY_MAP.csv"
-REGISTRY_BATCHING_PLAN = f"{FULL_PARSER_ARTIFACT_ROOT}/REGISTRY_FAMILY_BATCHING_PLAN.csv"
-COVERAGE_REGISTRY = "public_contract_snapshot"
+BACKLOG = FULL_PARSER_ARTIFACT_ROOT / "SURFACE_IMPLEMENTATION_BACKLOG.csv"
+BATCH_MEMBERSHIP = FULL_PARSER_ARTIFACT_ROOT / "BATCH_ROW_MEMBERSHIP.csv"
+ORACLE_MAP = FULL_PARSER_ARTIFACT_ROOT / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv"
+REGISTRY_BATCHING_PLAN = FULL_PARSER_ARTIFACT_ROOT / "REGISTRY_FAMILY_BATCHING_PLAN.csv"
+BRIDGE_MODULE = Path("project/tools/sb_parser_gen/sbsql_bridge_command_surface.py")
 BRIDGE_BATCH_ID = "BATCH-0077"
 
+BACKLOG_FIELDS = (
+    "surface_id",
+    "fixed_uuid_v7",
+    "canonical_name",
+    "surface_kind",
+    "family",
+    "source_status",
+    "cluster_scope",
+    "source_search_key",
+    "canonical_spec",
+    "sblr_operation_family",
+    "parser_packet",
+    "engine_packet",
+    "owner_lane",
+    "target_file_group",
+    "parser_target_behavior",
+    "udr_target_behavior",
+    "server_target_behavior",
+    "engine_target_behavior",
+    "diagnostic_target",
+    "validation_fixture_id",
+    "final_acceptance_rule",
+    "closure_action",
+    "status",
+)
+BATCH_FIELDS = (
+    "batch_id",
+    "surface_id",
+    "fixed_uuid_v7",
+    "canonical_name",
+    "family",
+    "surface_kind",
+    "source_status",
+    "cluster_scope",
+    "owner_lane",
+    "validation_fixture_id",
+    "ctest_label",
+    "source_search_key",
+    "status",
+)
+ORACLE_FIELDS = (
+    "fixture_id",
+    "surface_id",
+    "oracle_type",
+    "oracle_source",
+    "source_search_key",
+    "expected_result_summary",
+    "status",
+)
+BATCH_PLAN_FIELDS = (
+    "batch_id",
+    "source_matrix",
+    "surface_filter",
+    "row_count",
+    "owner_lane",
+    "parser_target",
+    "udr_target",
+    "server_target",
+    "engine_target",
+    "diagnostic_target",
+    "fixture_target",
+    "ctest_label",
+    "max_batch_size",
+    "depends_on",
+    "status",
+)
 
 def fail(message: str) -> None:
     print(message, file=sys.stderr)
     raise SystemExit(1)
 
 
-def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+def public_file(root: Path, relative: Path, label: str) -> Path:
+    """Return an existing, non-symlink tracked-file candidate under ``root``."""
+
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"{label} has an unsafe relative path: {relative}")
+    path = root / relative
     if not path.is_file():
-        fail(f"required CSV missing: {path}")
+        fail(f"required public {label} missing: {path}")
+    if path.is_symlink():
+        fail(f"public {label} must not be a symlink: {path}")
+    try:
+        path.resolve(strict=True).relative_to(root)
+    except ValueError:
+        fail(f"public {label} resolves outside the selected root: {path}")
+    return path
+
+
+def read_csv(
+    path: Path,
+    label: str,
+    required_fields: tuple[str, ...],
+) -> tuple[list[str], list[dict[str, str]]]:
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
-            fail(f"required CSV has no header: {path}")
-        return list(reader.fieldnames), list(reader)
+            fail(f"required public {label} has no header: {path}")
+        fieldnames = list(reader.fieldnames)
+        if len(fieldnames) != len(set(fieldnames)):
+            fail(f"required public {label} has duplicate header fields: {path}")
+        missing = [field for field in required_fields if field not in fieldnames]
+        if missing:
+            fail(f"required public {label} missing header fields {missing}: {path}")
+        rows: list[dict[str, str]] = []
+        for line_number, row in enumerate(reader, start=2):
+            if None in row or any(value is None for value in row.values()):
+                fail(f"malformed public {label} CSV row {line_number}: {path}")
+            rows.append(dict(row))
+    return fieldnames, rows
 
 
-def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({field: row.get(field, "") for field in fieldnames})
+def unique_index(
+    rows: list[dict[str, str]],
+    key: str,
+    label: str,
+) -> dict[str, int]:
+    index: dict[str, int] = {}
+    for row_index, row in enumerate(rows):
+        value = row.get(key, "")
+        if not value:
+            fail(f"{label} row {row_index + 2} missing {key}")
+        if value in index:
+            fail(f"{label} duplicate {key} {value}")
+        index[value] = row_index
+    return index
 
 
-def upsert(rows: list[dict[str, str]], key: str, replacement: dict[str, str], label: str) -> bool:
-    for index, row in enumerate(rows):
-        if row.get(key, "") != replacement[key]:
-            continue
-        existing_name = row.get("canonical_name", "")
-        if existing_name and existing_name != replacement["canonical_name"]:
+def load_bridge_module(root: Path) -> ModuleType:
+    """Load the public bridge definition from the selected repository root."""
+
+    module_path = public_file(root, BRIDGE_MODULE, "bridge command surface module")
+    module_name = "scratchbird_public_sbsql_bridge_command_surface"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load public bridge command surface module: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # pragma: no cover - reports malformed checked-in module
+        sys.modules.pop(module_name, None)
+        fail(f"cannot execute public bridge command surface module: {exc}")
+
+    for attribute in (
+        "BRIDGE_COMMAND_SURFACES",
+        "BRIDGE_CTEST",
+        "CANONICAL_SPEC",
+        "ENGINE_PACKET",
+        "PARSER_PACKET",
+        "SBLR_OPERATION_FAMILY",
+    ):
+        if not hasattr(module, attribute):
+            fail(f"public bridge command surface module missing {attribute}")
+    return module
+
+
+def bridge_surfaces(bridge: ModuleType) -> tuple[object, ...]:
+    surfaces = tuple(bridge.BRIDGE_COMMAND_SURFACES)
+    if not surfaces:
+        fail("public bridge command surface module has no rows")
+
+    seen_surface_ids: set[str] = set()
+    seen_names: set[str] = set()
+    seen_uuids: set[str] = set()
+    for surface in surfaces:
+        for attribute in (
+            "surface_id",
+            "fixed_uuid_v7",
+            "canonical_name",
+            "surface_kind",
+            "family",
+            "status",
+            "cluster_scope",
+            "opcode",
+            "effective_udr_operation",
+        ):
+            value = getattr(surface, attribute, None)
+            if not isinstance(value, str) or not value:
+                fail(f"bridge surface has missing {attribute}: {surface!r}")
+        if surface.surface_id in seen_surface_ids:
+            fail(f"duplicate public bridge surface id {surface.surface_id}")
+        if surface.canonical_name in seen_names:
+            fail(f"duplicate public bridge canonical_name {surface.canonical_name}")
+        if surface.fixed_uuid_v7 in seen_uuids:
+            fail(f"duplicate public bridge fixed_uuid_v7 {surface.fixed_uuid_v7}")
+        if surface.family != "bridge":
+            fail(f"{surface.surface_id} bridge module family drift: {surface.family}")
+        if surface.surface_kind != "grammar_production":
             fail(
-                f"{label} {replacement[key]} collision: "
-                f"existing canonical_name={existing_name} replacement={replacement['canonical_name']}"
+                f"{surface.surface_id} bridge module surface_kind drift: "
+                f"{surface.surface_kind}"
             )
-        changed = any(row.get(field, "") != replacement.get(field, "") for field in replacement)
-        rows[index] = dict(row)
-        rows[index].update(replacement)
-        return changed
-    rows.append(replacement)
-    return True
+        if surface.status != "native_now":
+            fail(f"{surface.surface_id} bridge module status drift: {surface.status}")
+        seen_surface_ids.add(surface.surface_id)
+        seen_names.add(surface.canonical_name)
+        seen_uuids.add(surface.fixed_uuid_v7)
+    return surfaces
 
 
-def registry_row(surface) -> dict[str, str]:
-    return {
-        "surface_id": surface.surface_id,
-        "fixed_uuid_v7": surface.fixed_uuid_v7,
-        "canonical_name": surface.canonical_name,
-        "surface_kind": surface.surface_kind,
-        "family": surface.family,
-        "status": surface.status,
-        "cluster_scope": surface.cluster_scope,
-        "source_file": SOURCE_FILE,
-        "source_anchor": SOURCE_ANCHOR,
-        "canonical_spec": CANONICAL_SPEC,
-        "sblr_operation_family": SBLR_OPERATION_FAMILY,
-        "parser_packet": PARSER_PACKET,
-        "engine_packet": ENGINE_PACKET,
-        "documentation_family": DOCUMENTATION_FAMILY,
-        "notes": f"tracked_bridge_command_surface;{surface.notes_tokens}",
-    }
-
-
-def status_row(surface) -> dict[str, str]:
-    diagnostic = ""
-    if surface.cluster_route:
-        diagnostic = "SBLR.CLUSTER.SUPPORT_NOT_ENABLED;SBLR.CLUSTER.STUB_RESPONSE;SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY;UDR.BRIDGE.UNSUPPORTED;UDR.BRIDGE.UNLICENSED"
-    elif surface.expected_refusal_code:
-        diagnostic = surface.expected_refusal_code
-    return {
-        "surface_id": surface.surface_id,
-        "canonical_name": surface.canonical_name,
-        "status": surface.status,
-        "status_reason": "Accepted bridge command surface; exact behavior is specified by universal bridge ABI and bridge route proof.",
-        "allowed_lowering": "yes",
-        "diagnostic_if_not_allowed": diagnostic,
-    }
-
-
-def operation_row(surface) -> dict[str, str]:
-    return {
-        "surface_id": surface.surface_id,
-        "canonical_name": surface.canonical_name,
-        "sblr_operation_family": SBLR_OPERATION_FAMILY,
-        "ingress_envelope": "SBLRExecutionEnvelope.v3",
-        "required_context": "session_uuid; database_uuid; transaction_context; security_context; language_profile; bridge_context; result_contract",
-        "binding_steps": "parse_to_ast; resolve_bridge_connection_uuid; validate_security; bind_bridge_policy; build_sblr_envelope; verify_sblr; dispatch_trusted_parser_support_udr",
-        "result_shape": "rs.sbsql.bridge_operation.v1",
-        "diagnostics": "diag.parser.syntax.v1; diag.binding.failure.v1; diag.sbsql.sblr_envelope.v1; diag.sbsql.opcode_admission.v1; diag.bridge.policy.v1; diag.server.runtime.v1",
-        "notes": surface.notes_tokens,
-    }
-
-
-def validation_fixture_id(surface) -> str:
+def validation_fixture_id(surface: object) -> str:
     return f"SBSQL-SURFACE-{surface.surface_id.removeprefix('SBSQL-')}"
 
 
-def backlog_row(surface) -> dict[str, str]:
+def backlog_row(surface: object, bridge: ModuleType) -> dict[str, str]:
     engine_behavior = "execute_bridge_udr_route_without_sql_text_or_reference_finality"
     if surface.cluster_route:
         engine_behavior = "compile_gate_to_cluster_provider_stub_or_public_unsupported_vector"
@@ -155,10 +263,10 @@ def backlog_row(surface) -> dict[str, str]:
         "source_status": surface.status,
         "cluster_scope": surface.cluster_scope,
         "source_search_key": surface.surface_id,
-        "canonical_spec": CANONICAL_SPEC,
-        "sblr_operation_family": SBLR_OPERATION_FAMILY,
-        "parser_packet": PARSER_PACKET,
-        "engine_packet": ENGINE_PACKET,
+        "canonical_spec": bridge.CANONICAL_SPEC,
+        "sblr_operation_family": bridge.SBLR_OPERATION_FAMILY,
+        "parser_packet": bridge.PARSER_PACKET,
+        "engine_packet": bridge.ENGINE_PACKET,
         "owner_lane": "bridge parser worker",
         "target_file_group": "project/src/parsers/sbsql_worker/statements;project/src/parsers/sbsql_worker/lowering;project/src/server;project/src/engine/sblr;project/src/udr/sbsql_bridge",
         "parser_target_behavior": "parse_bind_lower_bridge_command_to_row_specific_sblr_bridge_operation",
@@ -173,7 +281,7 @@ def backlog_row(surface) -> dict[str, str]:
     }
 
 
-def batch_row(surface) -> dict[str, str]:
+def batch_row(surface: object, bridge: ModuleType) -> dict[str, str]:
     return {
         "batch_id": BRIDGE_BATCH_ID,
         "surface_id": surface.surface_id,
@@ -185,13 +293,13 @@ def batch_row(surface) -> dict[str, str]:
         "cluster_scope": surface.cluster_scope,
         "owner_lane": "bridge parser worker",
         "validation_fixture_id": validation_fixture_id(surface),
-        "ctest_label": BRIDGE_CTEST,
+        "ctest_label": bridge.BRIDGE_CTEST,
         "source_search_key": surface.surface_id,
         "status": "ready_for_fixture_generation",
     }
 
 
-def oracle_row(surface) -> dict[str, str]:
+def oracle_row(surface: object, bridge: ModuleType) -> dict[str, str]:
     refusal = ""
     if surface.expected_refusal_code:
         refusal = f", exact refusal {surface.expected_refusal_code}"
@@ -199,7 +307,7 @@ def oracle_row(surface) -> dict[str, str]:
         "fixture_id": validation_fixture_id(surface),
         "surface_id": surface.surface_id,
         "oracle_type": "canonical_spec_plus_sblr_matrix",
-        "oracle_source": CANONICAL_SPEC,
+        "oracle_source": bridge.CANONICAL_SPEC,
         "source_search_key": surface.surface_id,
         "expected_result_summary": (
             "expected parser bridge command route, SBLR bridge operation envelope, "
@@ -211,12 +319,14 @@ def oracle_row(surface) -> dict[str, str]:
     }
 
 
-def batching_plan_row() -> dict[str, str]:
+def batching_plan_row(bridge: ModuleType, row_count: int) -> dict[str, str]:
     return {
         "batch_id": BRIDGE_BATCH_ID,
-        "source_matrix": "SBSQL_SURFACE_REGISTRY.csv",
+        # The public implementation backlog is the only tracked, complete
+        # source matrix available to this synchronizer.
+        "source_matrix": BACKLOG.name,
         "surface_filter": "family=bridge;surface_kind=grammar_production;source_status=native_now;cluster_scope=all;SBSQL_BRIDGE_COMMAND_SURFACE_FULL_TRACKING",
-        "row_count": str(len(BRIDGE_COMMAND_SURFACES)),
+        "row_count": str(row_count),
         "owner_lane": "bridge parser worker",
         "parser_target": "generated parser registry plus exact bridge-command parser/lowering route",
         "udr_target": "trusted universal bridge UDR route or exact policy refusal",
@@ -224,173 +334,298 @@ def batching_plan_row() -> dict[str, str]:
         "engine_target": "SBLR bridge opcode route through registered UDR and cluster-provider stub gate",
         "diagnostic_target": "message-vector row and parser rendering fixture",
         "fixture_target": f"project/tests/sbsql_parser_worker/generated/{BRIDGE_BATCH_ID}",
-        "ctest_label": BRIDGE_CTEST,
+        "ctest_label": bridge.BRIDGE_CTEST,
         "max_batch_size": "100",
         "depends_on": "SBSQL_BRIDGE_COMMAND_SURFACE_FULL_TRACKING route and SBLR opcode proof",
         "status": "ready_for_fixture_generation",
     }
 
 
-def ordered_counts(rows: list[dict[str, str]], field: str, order: list[str]) -> list[tuple[str, int]]:
-    counts = Counter(row[field] for row in rows)
-    out = [(key, counts.pop(key, 0)) for key in order]
-    out.extend(sorted(counts.items()))
-    return out
+def validate_owned_rows(
+    backlog_rows: list[dict[str, str]],
+    batch_rows: list[dict[str, str]],
+    oracle_rows: list[dict[str, str]],
+    expected_surface_ids: set[str],
+) -> None:
+    """Refuse destructive repair of rows outside the canonical bridge set."""
 
+    extra_backlog = [
+        row["surface_id"]
+        for row in backlog_rows
+        if row.get("family") == "bridge" and row["surface_id"] not in expected_surface_ids
+    ]
+    if extra_backlog:
+        fail(
+            "SURFACE_IMPLEMENTATION_BACKLOG has bridge rows outside the public "
+            f"bridge definition: {sorted(extra_backlog)[:8]}"
+        )
 
-def format_count_map(name: str, values: list[tuple[str, int]]) -> list[str]:
-    lines = [f"  {name}:"]
-    for key, value in values:
-        lines.append(f"    {key}: {value}")
-    return lines
+    wrong_batch = [
+        row["surface_id"]
+        for row in batch_rows
+        if row["surface_id"] in expected_surface_ids and row["batch_id"] != BRIDGE_BATCH_ID
+    ]
+    if wrong_batch:
+        fail(
+            "BATCH_ROW_MEMBERSHIP assigns public bridge rows outside "
+            f"{BRIDGE_BATCH_ID}: {sorted(wrong_batch)[:8]}"
+        )
+    extra_batch = [
+        row["surface_id"]
+        for row in batch_rows
+        if row["batch_id"] == BRIDGE_BATCH_ID
+        and row["surface_id"] not in expected_surface_ids
+    ]
+    if extra_batch:
+        fail(
+            f"BATCH_ROW_MEMBERSHIP {BRIDGE_BATCH_ID} has non-bridge rows: "
+            f"{sorted(extra_batch)[:8]}"
+        )
 
-
-def baseline_counts_block(rows: list[dict[str, str]]) -> list[str]:
-    expression_rows = [row for row in rows if row["family"] == "expression_runtime"]
-    expression_counts = Counter(row["status"] for row in expression_rows)
-    return (
-        ["baseline_counts:", f"  total_surfaces: {len(rows)}"]
-        + format_count_map(
-            "status",
-            ordered_counts(rows, "status", ["native_now", "cluster_private", "native_future"]),
-        )
-        + format_count_map(
-            "cluster_scope",
-            ordered_counts(rows, "cluster_scope", ["noncluster_or_profile_scoped", "cluster_private"]),
-        )
-        + format_count_map(
-            "surface_kind",
-            ordered_counts(
-                rows,
-                "surface_kind",
-                ["grammar_production", "canonical_surface", "variable", "operator", "function"],
-            ),
-        )
-        + format_count_map(
-            "family",
-            ordered_counts(
-                rows,
-                "family",
-                [
-                    "acceleration",
-                    "archive_replication",
-                    "bridge",
-                    "cluster_private",
-                    "ddl_catalog",
-                    "dml",
-                    "expression_runtime",
-                    "general",
-                    "jobs_scheduler",
-                    "migration",
-                    "multi_model",
-                    "observability",
-                    "query",
-                    "runtime_management",
-                    "security",
-                    "storage_management",
-                    "transaction",
-                ],
-            ),
-        )
-        + format_count_map(
-            "sblr_operation_family",
-            ordered_counts(
-                rows,
-                "sblr_operation_family",
-                [
-                    "sblr.acceleration.llvm.v3",
-                    "sblr.acceleration.operation.v3",
-                    "sblr.archive_replication.operation.v3",
-                    "sblr.bridge.operation.v3",
-                    "sblr.cluster.private_operation.v3",
-                    "sblr.catalog.mutation.v3",
-                    "sblr.dml.operation.v3",
-                    "sblr.expression.runtime.v3",
-                    "sblr.general.operation.v3",
-                    "sblr.query.values.v3",
-                    "sblr.jobs.operation.v3",
-                    "sblr.migration.operation.v3",
-                    "sblr.query.multimodel_or_ddl.v3",
-                    "sblr.observability.inspect.v3",
-                    "sblr.query.relational.v3",
-                    "sblr.management.runtime_operation.v3",
-                    "sblr.security.mutation_or_inspect.v3",
-                    "sblr.storage.management_operation.v3",
-                    "sblr.transaction.control.v3",
-                ],
-            ),
-        )
-        + [
-            "  expression_runtime:",
-            f"    total_rows: {len(expression_rows)}",
-            f"    native_now: {expression_counts.get('native_now', 0)}",
-            f"    cluster_private: {expression_counts.get('cluster_private', 0)}",
-            f"    native_future: {expression_counts.get('native_future', 0)}",
-        ]
+    bridge_oracle_prefix = (
+        "expected parser bridge command route, SBLR bridge operation envelope, "
     )
+    extra_oracle = [
+        row["surface_id"]
+        for row in oracle_rows
+        if row.get("expected_result_summary", "").startswith(bridge_oracle_prefix)
+        and row["surface_id"] not in expected_surface_ids
+    ]
+    if extra_oracle:
+        fail(
+            "SEMANTIC_ORACLE_AUTHORITY_MAP has bridge rows outside the public "
+            f"bridge definition: {sorted(extra_oracle)[:8]}"
+        )
 
 
-def rewrite_coverage_registry_baselines(path: Path, rows: list[dict[str, str]]) -> bool:
-    text = path.read_text(encoding="utf-8")
-    start = text.find("baseline_counts:\n")
-    end = text.find("\ncoverage_row_required_fields:", start)
-    if start == -1 or end == -1:
-        fail(f"coverage registry missing baseline_counts block: {path}")
-    replacement = "\n".join(baseline_counts_block(rows))
-    updated = text[:start] + replacement + text[end:]
-    if updated == text:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
+def reconcile_rows(
+    rows: list[dict[str, str]],
+    key: str,
+    replacements: list[dict[str, str]],
+    label: str,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Return a row-preserving update plan, without writing anything."""
+
+    index = unique_index(rows, key, label)
+    expected_keys: set[str] = set()
+    candidate = [dict(row) for row in rows]
+    changes: list[str] = []
+    for replacement in replacements:
+        value = replacement.get(key, "")
+        if not value:
+            fail(f"{label} generated replacement is missing {key}")
+        if value in expected_keys:
+            fail(f"{label} generated duplicate {key} {value}")
+        expected_keys.add(value)
+        existing_index = index.get(value)
+        if existing_index is None:
+            candidate.append(dict(replacement))
+            changes.append(f"{label}:{value}:missing")
+            continue
+
+        existing = candidate[existing_index]
+        existing_name = existing.get("canonical_name", "")
+        replacement_name = replacement.get("canonical_name", "")
+        if existing_name and replacement_name and existing_name != replacement_name:
+            fail(
+                f"{label} {value} collision: existing canonical_name={existing_name} "
+                f"replacement={replacement_name}"
+            )
+        differing_fields = [
+            field
+            for field, expected in replacement.items()
+            if existing.get(field, "") != expected
+        ]
+        if differing_fields:
+            existing.update(replacement)
+            changes.append(f"{label}:{value}:{','.join(differing_fields)}")
+    return candidate, changes
+
+
+def require_replacement_columns(
+    header: list[str],
+    replacements: list[dict[str, str]],
+    label: str,
+) -> None:
+    available = set(header)
+    generated = {field for row in replacements for field in row}
+    missing = sorted(generated - available)
+    if missing:
+        fail(f"{label} cannot preserve generated fields absent from header: {missing}")
+
+
+def write_outputs_atomically(
+    outputs: list[tuple[Path, list[str], list[dict[str, str]]]],
+) -> None:
+    """Stage every changed file before replacing any public artifact."""
+
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for destination, header, rows in outputs:
+            mode = destination.stat().st_mode & 0o777
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                newline="",
+                encoding="utf-8",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                writer = csv.DictWriter(handle, fieldnames=header, lineterminator="\n")
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({field: row.get(field, "") for field in header})
+            os.chmod(temporary, mode)
+            staged.append((destination, temporary))
+        for destination, temporary in staged:
+            os.replace(temporary, destination)
+    finally:
+        for _, temporary in staged:
+            if temporary.exists():
+                temporary.unlink()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--repo-root", required=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--repo-root", required=True, help="public ScratchBird checkout")
+    parser.add_argument(
+        "--output-root",
+        help=(
+            "existing public artifact tree to check or update; defaults to --repo-root. "
+            "Use a copied tree to stage changes."
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--check",
+        action="store_true",
+        help="verify the public artifacts only (the default)",
+    )
+    mode.add_argument(
+        "--update",
+        action="store_true",
+        help="apply the checked public-artifact update plan",
+    )
     args = parser.parse_args()
+
     root = Path(args.repo_root).resolve()
+    if not root.is_dir():
+        fail(f"public repository root does not exist: {root}")
+    output_root = Path(args.output_root) if args.output_root else root
+    if not output_root.is_absolute():
+        output_root = root / output_root
+    output_root = output_root.resolve()
+    if not output_root.is_dir():
+        fail(f"public output root does not exist: {output_root}")
 
-    registry_header, registry_rows = read_csv(root / REGISTRY)
-    status_header, status_rows = read_csv(root / STATUS_MATRIX)
-    op_header, op_rows = read_csv(root / OPERATION_MATRIX)
-    backlog_header, backlog_rows = read_csv(root / BACKLOG)
-    batch_header, batch_rows = read_csv(root / BATCH_MEMBERSHIP)
-    oracle_header, oracle_rows = read_csv(root / ORACLE_MAP)
-    batching_plan_header, batching_plan_rows = read_csv(root / REGISTRY_BATCHING_PLAN)
+    bridge = load_bridge_module(root)
+    surfaces = bridge_surfaces(bridge)
+    expected_surface_ids = {surface.surface_id for surface in surfaces}
 
-    changed = 0
-    seen_surface_ids: set[str] = set()
-    seen_names: set[str] = set()
-    for surface in BRIDGE_COMMAND_SURFACES:
-        if surface.surface_id in seen_surface_ids:
-            fail(f"duplicate generated bridge surface id {surface.surface_id}")
-        if surface.canonical_name in seen_names:
-            fail(f"duplicate bridge canonical_name {surface.canonical_name}")
-        seen_surface_ids.add(surface.surface_id)
-        seen_names.add(surface.canonical_name)
-        changed += int(upsert(registry_rows, "surface_id", registry_row(surface), "SBSQL_SURFACE_REGISTRY"))
-        changed += int(upsert(status_rows, "surface_id", status_row(surface), "SBSQL_SURFACE_STATUS_MATRIX"))
-        changed += int(upsert(op_rows, "surface_id", operation_row(surface), "SBSQL_TO_SBLR_OPERATION_MATRIX"))
-        changed += int(upsert(backlog_rows, "surface_id", backlog_row(surface), "SURFACE_IMPLEMENTATION_BACKLOG"))
-        changed += int(upsert(batch_rows, "surface_id", batch_row(surface), "BATCH_ROW_MEMBERSHIP"))
-        changed += int(upsert(oracle_rows, "surface_id", oracle_row(surface), "SEMANTIC_ORACLE_AUTHORITY_MAP"))
-    changed += int(upsert(batching_plan_rows, "batch_id", batching_plan_row(), "REGISTRY_FAMILY_BATCHING_PLAN"))
+    backlog_path = public_file(output_root, BACKLOG, "SURFACE_IMPLEMENTATION_BACKLOG.csv")
+    batch_path = public_file(output_root, BATCH_MEMBERSHIP, "BATCH_ROW_MEMBERSHIP.csv")
+    oracle_path = public_file(output_root, ORACLE_MAP, "SEMANTIC_ORACLE_AUTHORITY_MAP.csv")
+    batch_plan_path = public_file(
+        output_root,
+        REGISTRY_BATCHING_PLAN,
+        "REGISTRY_FAMILY_BATCHING_PLAN.csv",
+    )
 
-    registry_rows.sort(key=lambda row: row["surface_id"])
-    status_rows.sort(key=lambda row: row["surface_id"])
-    op_rows.sort(key=lambda row: row["surface_id"])
-    write_csv(root / REGISTRY, registry_header, registry_rows)
-    write_csv(root / STATUS_MATRIX, status_header, status_rows)
-    write_csv(root / OPERATION_MATRIX, op_header, op_rows)
-    write_csv(root / BACKLOG, backlog_header, backlog_rows)
-    write_csv(root / BATCH_MEMBERSHIP, batch_header, batch_rows)
-    write_csv(root / ORACLE_MAP, oracle_header, oracle_rows)
-    write_csv(root / REGISTRY_BATCHING_PLAN, batching_plan_header, batching_plan_rows)
-    changed += int(rewrite_coverage_registry_baselines(root / COVERAGE_REGISTRY, registry_rows))
+    backlog_header, backlog_rows = read_csv(
+        backlog_path, "SURFACE_IMPLEMENTATION_BACKLOG", BACKLOG_FIELDS
+    )
+    batch_header, batch_rows = read_csv(
+        batch_path, "BATCH_ROW_MEMBERSHIP", BATCH_FIELDS
+    )
+    oracle_header, oracle_rows = read_csv(
+        oracle_path, "SEMANTIC_ORACLE_AUTHORITY_MAP", ORACLE_FIELDS
+    )
+    batch_plan_header, batch_plan_rows = read_csv(
+        batch_plan_path, "REGISTRY_FAMILY_BATCHING_PLAN", BATCH_PLAN_FIELDS
+    )
 
+    unique_index(backlog_rows, "surface_id", "SURFACE_IMPLEMENTATION_BACKLOG")
+    unique_index(batch_rows, "surface_id", "BATCH_ROW_MEMBERSHIP")
+    unique_index(oracle_rows, "surface_id", "SEMANTIC_ORACLE_AUTHORITY_MAP")
+    unique_index(batch_plan_rows, "batch_id", "REGISTRY_FAMILY_BATCHING_PLAN")
+    validate_owned_rows(backlog_rows, batch_rows, oracle_rows, expected_surface_ids)
+
+    backlog_replacements = [backlog_row(surface, bridge) for surface in surfaces]
+    batch_replacements = [batch_row(surface, bridge) for surface in surfaces]
+    oracle_replacements = [oracle_row(surface, bridge) for surface in surfaces]
+    batch_plan_replacements = [batching_plan_row(bridge, len(surfaces))]
+    require_replacement_columns(
+        backlog_header, backlog_replacements, "SURFACE_IMPLEMENTATION_BACKLOG"
+    )
+    require_replacement_columns(batch_header, batch_replacements, "BATCH_ROW_MEMBERSHIP")
+    require_replacement_columns(
+        oracle_header, oracle_replacements, "SEMANTIC_ORACLE_AUTHORITY_MAP"
+    )
+    require_replacement_columns(
+        batch_plan_header, batch_plan_replacements, "REGISTRY_FAMILY_BATCHING_PLAN"
+    )
+
+    backlog_candidate, backlog_changes = reconcile_rows(
+        backlog_rows,
+        "surface_id",
+        backlog_replacements,
+        "SURFACE_IMPLEMENTATION_BACKLOG",
+    )
+    batch_candidate, batch_changes = reconcile_rows(
+        batch_rows,
+        "surface_id",
+        batch_replacements,
+        "BATCH_ROW_MEMBERSHIP",
+    )
+    oracle_candidate, oracle_changes = reconcile_rows(
+        oracle_rows,
+        "surface_id",
+        oracle_replacements,
+        "SEMANTIC_ORACLE_AUTHORITY_MAP",
+    )
+    batch_plan_candidate, batch_plan_changes = reconcile_rows(
+        batch_plan_rows,
+        "batch_id",
+        batch_plan_replacements,
+        "REGISTRY_FAMILY_BATCHING_PLAN",
+    )
+
+    all_changes = (
+        backlog_changes + batch_changes + oracle_changes + batch_plan_changes
+    )
+    outputs = [
+        (backlog_path, backlog_header, backlog_candidate, backlog_changes),
+        (batch_path, batch_header, batch_candidate, batch_changes),
+        (oracle_path, oracle_header, oracle_candidate, oracle_changes),
+        (batch_plan_path, batch_plan_header, batch_plan_candidate, batch_plan_changes),
+    ]
+
+    if all_changes and not args.update:
+        for change in all_changes[:40]:
+            print(f"stale_public_bridge_artifact={change}", file=sys.stderr)
+        if len(all_changes) > 40:
+            print(
+                f"... {len(all_changes) - 40} additional stale public bridge rows",
+                file=sys.stderr,
+            )
+        print(
+            "sbsql_bridge_command_surface_rows=stale "
+            f"rows={len(surfaces)} changed={len(all_changes)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.update and all_changes:
+        write_outputs_atomically(
+            [(path, header, rows) for path, header, rows, changes in outputs if changes]
+        )
+
+    status = "synchronized" if args.update else "verified"
     print(
-        "sbsql_bridge_command_surface_rows=synchronized "
-        f"rows={len(BRIDGE_COMMAND_SURFACES)} changed={changed}"
+        f"sbsql_bridge_command_surface_rows={status} "
+        f"rows={len(surfaces)} changed={len(all_changes)}"
     )
     return 0
 

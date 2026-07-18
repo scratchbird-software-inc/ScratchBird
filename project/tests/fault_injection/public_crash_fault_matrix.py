@@ -133,7 +133,7 @@ MATRIX_ROWS: tuple[dict[str, Any], ...] = (
                 "failed to create durable principal credential state",
                 "storage_authority=durable_security_catalog",
                 "durable_principal_credential_missing",
-                "durable verifier mismatch was accepted",
+                "raw local-password mismatch was accepted",
                 "security_database_temporary_token_revoked",
                 "security_state_authority",
             ),

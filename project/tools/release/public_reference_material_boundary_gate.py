@@ -22,6 +22,12 @@ from pathlib import Path
 import subprocess
 import sys
 
+from public_reference_acquisition_policy import (
+    is_public_reference_acquisition_metadata,
+    public_reference_acquisition_metadata_relative_paths,
+    validate_public_reference_acquisition_metadata_inventory,
+)
+
 
 # PUBLIC_REFERENCE_MATERIAL_BOUNDARY_GATE
 
@@ -44,13 +50,20 @@ REQUIRED_IGNORE_PATTERNS = (
     "project/docs/**/*reference-system*",
     "project/docs/**/*ReferenceSystem*",
     "project/tests/reference_regression/reference_release_acquisition/**",
-    "!project/tests/reference_regression/reference_release_acquisition/**/regression/PUBLIC_REGRESSION_SCOPE.md",
+    "!project/tests/reference_regression/reference_release_acquisition/",
+    "!project/tests/reference_regression/reference_release_acquisition/**/",
+    "!project/tests/reference_regression/reference_release_acquisition/**/regression/",
+    "project/tests/reference_regression/**/native_tool_harness/tools/**",
+    "project/tests/reference_regression/firebird/original_firebird_qa/**",
+) + tuple(
+    "!" + path for path in public_reference_acquisition_metadata_relative_paths()
+)
+
+FORBIDDEN_REFERENCE_ACQUISITION_IGNORE_EXCEPTIONS = (
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_CANDIDATE.md",
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_MANIFEST.csv",
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv",
     "!project/tests/reference_regression/reference_release_acquisition/**/regression/SOURCE_POINTERS.md",
-    "project/tests/reference_regression/**/native_tool_harness/tools/**",
-    "project/tests/reference_regression/firebird/original_firebird_qa/**",
 )
 
 FORBIDDEN_PUBLIC_PATH_TOKENS = (
@@ -61,14 +74,6 @@ FORBIDDEN_PUBLIC_PATH_TOKENS = (
 
 EXCLUDED_PATH_PREFIXES = (
     "docs/documentation/draft/",
-)
-
-ALLOWED_REFERENCE_ACQUISITION_FILES = (
-    "PUBLIC_REGRESSION_SCOPE.md",
-    "_CANDIDATE.md",
-    "_MANIFEST.csv",
-    "_INDEX.csv",
-    "SOURCE_POINTERS.md",
 )
 
 PUBLIC_STANDALONE_FORBIDDEN_TOKENS = (
@@ -147,16 +152,7 @@ def blocked_public_path_terms(paths: list[str]) -> list[str]:
 
 
 def is_allowed_reference_acquisition_metadata(path: str) -> bool:
-    if not path.startswith("project/tests/reference_regression/reference_release_acquisition/"):
-        return False
-    if "/regression/" not in path:
-        return False
-    name = Path(path).name
-    if name == "PUBLIC_REGRESSION_SCOPE.md":
-        return True
-    if name == "SOURCE_POINTERS.md":
-        return True
-    return any(name.endswith(suffix) for suffix in ALLOWED_REFERENCE_ACQUISITION_FILES[1:])
+    return is_public_reference_acquisition_metadata(path)
 
 
 def blocked_external_payload_paths(paths: list[str]) -> list[str]:
@@ -177,7 +173,15 @@ def validate_gitignore(repo_root: Path) -> list[str]:
         return ["missing " + "." + "gitignore"]
     text = gitignore.read_text(encoding="utf-8", errors="replace")
     missing = [pattern for pattern in REQUIRED_IGNORE_PATTERNS if pattern not in text]
-    return [f"missing ignore pattern: {pattern}" for pattern in missing]
+    broad_exceptions = [
+        pattern
+        for pattern in FORBIDDEN_REFERENCE_ACQUISITION_IGNORE_EXCEPTIONS
+        if pattern in text
+    ]
+    return [f"missing ignore pattern: {pattern}" for pattern in missing] + [
+        f"broad reference acquisition ignore exception is forbidden: {pattern}"
+        for pattern in broad_exceptions
+    ]
 
 
 def validate_public_standalone_profile(repo_root: Path) -> list[str]:
@@ -268,6 +272,10 @@ def main() -> int:
         fail(f"not_a_git_repository:{repo_root}")
 
     errors = validate_gitignore(repo_root)
+    errors.extend(
+        "invalid registered reference acquisition metadata: " + error
+        for error in validate_public_reference_acquisition_metadata_inventory(repo_root)
+    )
     errors.extend(validate_public_standalone_profile(repo_root))
     errors.extend(validate_public_release_option_defaults(repo_root))
     errors.extend(validate_public_output_stage_gate(repo_root))

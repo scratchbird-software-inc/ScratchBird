@@ -2136,9 +2136,6 @@ void VerifyServerRoutedCreateOrAlterRoutineEnvelope() {
   CreateNeutralVisibilityTable(&fixture);
   CreateNeutralRoutineTable(&fixture);
   const auto context = BeginEngineTransaction(fixture, 41);
-  auto route = MakeNeutralLiveV2Route(fixture, context);
-  const auto selector = route.default_transaction;
-
   const std::string create_envelope =
       NeutralRoutineCreateOrAlterEnvelope(fixture);
   Require(create_envelope.find("\"target_object_uuid\":") ==
@@ -2150,6 +2147,8 @@ void VerifyServerRoutedCreateOrAlterRoutineEnvelope() {
               create_envelope.find("\"contains_sql_text\":false") !=
                   std::string::npos,
           "neutral routine CREATE envelope supplied identity or SQL text");
+  auto route = MakeNeutralLiveV2Route(fixture, context);
+  const auto selector = route.default_transaction;
   const auto created = server::HandleExecuteSblr(
       &route.registry,
       route.engine_state,

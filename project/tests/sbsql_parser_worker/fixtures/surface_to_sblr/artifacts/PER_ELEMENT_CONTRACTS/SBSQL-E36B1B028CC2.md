@@ -1,0 +1,50 @@
+# SBSQL-E36B1B028CC2 — error_class
+
+Generated public per-element contract snapshot.
+
+## Identity
+
+| Field | Value |
+| --- | --- |
+| Surface ID | SBSQL-E36B1B028CC2 |
+| Fixed UUID v7 | 019dffbb-f000-76db-a78e-a284e73015dc |
+| Canonical name | error_class |
+| Surface kind | function |
+| Family | expression_runtime |
+
+## Route Contract
+
+| Field | Value |
+| --- | --- |
+| Source status | native_now |
+| Cluster scope | noncluster_or_profile_scoped |
+| SBLR operation family | sblr.expression.runtime.v3 |
+| Diagnostic target | canonical_message_vector_and_parser_rendering |
+| Final acceptance rule | implement_full_route_or_exact_canonical_refusal |
+| Closure action | implement_full_route_or_exact_canonical_refusal |
+
+## Release Closure
+
+| Field | Value |
+| --- | --- |
+| Backlog closure status | e2e_passed |
+| Release final status | e2e_passed |
+| Release claim | public_sbsql_e2e_implemented |
+| Release status | row_evidence_complete |
+| Remaining risk | none |
+
+## Semantic Oracle
+
+| Field | Value |
+| --- | --- |
+| Fixture ID | SBSQL-SURFACE-0F60AC8A0128 |
+| Oracle type | promotion_or_canonical_refusal_decision |
+| Oracle search key | SBSQL-E36B1B028CC2 |
+| Expected result summary | owning slice must resolve expected success/refusal before fixture emission; source authority is preassigned here |
+| Oracle closure status | closed_by_semantic_oracle_authority_gate |
+
+## Boundary
+
+- This snapshot is derived only from tracked public release artifacts.
+- SQL text remains parser-side input; engine behavior is reached through the published SBLR/internal-API contract.
+- This snapshot carries no implementation, source-tree, absolute, or private canonicalization path.

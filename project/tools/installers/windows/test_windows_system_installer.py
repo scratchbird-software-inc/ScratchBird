@@ -127,6 +127,10 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertNotIn("3050", all_text)
             self.assertIn("port = 3092", all_text)
+            self.assertNotIn("server.listener.native", all_text)
+            self.assertNotRegex(
+                all_text, r"(?m)^\s*\[server[.]listener[.]profile[.]"
+            )
             self.assertIn("@SCRATCHBIRD_STATE_ROOT@/data/default.sbdb", all_text)
             self.assertIn(
                 "@SCRATCHBIRD_INSTALL_ROOT@/bin/SBgate.exe", all_text

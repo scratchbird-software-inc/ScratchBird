@@ -256,6 +256,8 @@ scratchbird::server::sbps::Frame BaseFrame(std::uint16_t message_type,
   return frame;
 }
 
+constexpr std::uint32_t kExecuteSblrV1PayloadSchema = 4003;
+
 std::vector<std::uint8_t> EncodeAuthPayload(
     const AuthCredentialEnvelope& credentials,
     const std::array<std::uint8_t, 16>& connection_uuid) {
@@ -855,6 +857,7 @@ ServerExecutionResult EmbeddedEngineClient::ExecuteSblrWithDataPacket(
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kExecuteSblr),
                          session);
+  frame.header.payload_schema_id = kExecuteSblrV1PayloadSchema;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
       TextToUuid(session.session_uuid),
       {},
