@@ -452,6 +452,28 @@ def check_native_release_stage(
         ):
             fail(f"raw_proof_output_packaging_forbidden:{rel}:{job_name}:{platform}")
 
+
+def check_mkdtemp_header_contract(repo_root: Path) -> None:
+    """Require every direct POSIX temporary-directory caller to include unistd.
+
+    Apple documents mkdtemp in unistd.h.  Relying on a transitive declaration
+    happens to work with some libc implementations but fails with current
+    macOS SDK headers, so enforce the source-level dependency before platform
+    builds begin.
+    """
+
+    tests_root = repo_root / "project" / "tests"
+    for source in sorted(tests_root.rglob("*.cpp")):
+        text = source.read_text(encoding="utf-8")
+        if "::mkdtemp(" not in text:
+            continue
+        if re.search(r"(?m)^#include <unistd[.]h>\s*$", text) is None:
+            fail(
+                "mkdtemp_unistd_header_missing:"
+                f"{source.relative_to(repo_root).as_posix()}"
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[3])
@@ -461,6 +483,7 @@ def main() -> int:
     workflow_root = repo_root / ("." + "github") / "workflows"
     if not workflow_root.is_dir():
         fail("workflow_root_missing")
+    check_mkdtemp_header_contract(repo_root)
     for name, tokens in REQUIRED_WORKFLOWS.items():
         path = workflow_root / name
         if not path.is_file():

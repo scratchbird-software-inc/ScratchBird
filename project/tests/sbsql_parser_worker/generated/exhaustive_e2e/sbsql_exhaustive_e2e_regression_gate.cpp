@@ -33,6 +33,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <unistd.h>
 #include <vector>
 
 namespace {

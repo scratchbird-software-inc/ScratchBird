@@ -70,14 +70,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Xcode enables strict ANSI feature visibility for C++23 targets.  ScratchBird
-# test and smoke targets deliberately use POSIX mkdtemp for collision-safe
-# private fixture directories, so expose the Darwin POSIX declarations before
-# any target is compiled.
-if(APPLE)
-  add_compile_definitions(_DARWIN_C_SOURCE)
-endif()
-
 # DPC_BENCHMARK_CLEAN_FLAGS: project-owned compile-time controls for
 # benchmark-clean and diagnostic instrumentation builds.
 set(_SCRATCHBIRD_ENABLE_DEBUG_LOGS_DEFAULT OFF)
