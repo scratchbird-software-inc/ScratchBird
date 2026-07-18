@@ -729,6 +729,11 @@ std::string ReadFileText(const std::string& path) {
   return out.str();
 }
 
+bool FileExists(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return in.good();
+}
+
 bool WriteScopedUserOverlay(std::string_view database_name,
                             std::string_view user_name) {
   const std::string path =
@@ -994,20 +999,20 @@ bool RunWorkerCase(const std::vector<std::uint8_t>& connect_packet,
   return ok;
 }
 
-bool RunCreateDatabaseCharsetBoundaryCase() {
+bool RunPublicCreateDatabaseRefusalCase() {
   const std::string database_name =
-      "sb_firebird_create_charset_" +
+      "sb_firebird_public_create_refusal_" +
       std::to_string(static_cast<long long>(::getpid()));
   const std::string overlay =
       database_name + ".scratchbird-firebird-metadata.tsv";
+  std::remove(database_name.c_str());
   std::remove(overlay.c_str());
-  FileCleanupGuard cleanup{{overlay}};
-  bool ok = Expect(WriteScopedUserOverlay(database_name, "SBPROBE"),
-                   "create charset overlay setup failed");
+  FileCleanupGuard cleanup{{database_name, overlay}};
+  bool ok = true;
 
   int sockets[2] = {-1, -1};
   if (!Expect(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0,
-              "create charset socketpair failed")) {
+              "public create refusal socketpair failed")) {
     return false;
   }
   const pid_t pid = ::fork();
@@ -1019,70 +1024,40 @@ bool RunCreateDatabaseCharsetBoundaryCase() {
     _exit(rc == 0 ? 0 : 1);
   }
   CloseFd(&sockets[1]);
-  if (!Expect(pid > 0, "create charset fork failed")) {
+  if (!Expect(pid > 0, "public create refusal fork failed")) {
     CloseFd(&sockets[0]);
     return false;
   }
 
   ok = ok && Expect(WriteAll(sockets[0], ConnectPacket()),
-                    "create charset connect write failed");
+                    "public create refusal connect write failed");
   std::vector<std::uint8_t> response;
   ok = ok && Expect(ReadExact(sockets[0], &response, 16),
-                    "create charset accept read failed") &&
+                    "public create refusal accept read failed") &&
        Expect(ReadXdrU32(response, 0) == 3,
-              "create charset connect did not accept");
+              "public create refusal connect did not accept");
 
-  // Load a scoped test principal first. The subsequent protocol create uses
-  // the same database scope, so this remains a self-contained worker probe and
-  // does not require an external engine authentication route.
-  std::uint32_t attached_database_id = 0;
-  ok = ok && Expect(
-                 WriteAll(sockets[0],
-                          AttachPacketNamed(19, database_name,
-                                            DpbUserNameBuffer("SBPROBE"))),
-                 "create charset prerequisite attach write failed") &&
-       ReadAndExpectResponse(sockets[0], "", 0, true,
-                             &attached_database_id,
-                             "create charset prerequisite attach failed");
-
-  std::uint32_t created_database_id = 0;
   const std::string create_dpb =
       DpbCreateCharsetBuffer("SBPROBE", "WIN1251", "UTF8");
   ok = ok && Expect(
                  WriteAll(sockets[0],
                           AttachPacketNamed(20, database_name, create_dpb)),
-                 "create charset op_create write failed") &&
-       ReadAndExpectResponse(sockets[0], "", 0, true,
-                             &created_database_id,
-                             "create charset op_create response failed");
-
-  ok = ok && Expect(WriteAll(sockets[0],
-                             ReleasePacket(21, attached_database_id)),
-                    "create charset prerequisite detach write failed") &&
-       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
-                             "create charset prerequisite detach failed");
-  ok = ok && Expect(WriteAll(sockets[0],
-                             ReleasePacket(21, created_database_id)),
-                    "create charset created database detach write failed") &&
-       ReadAndExpectResponse(sockets[0], "", 0, false, nullptr,
-                             "create charset created database detach failed");
+                 "public create refusal op_create write failed") &&
+       ReadAndExpectResponse(
+           sockets[0], "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+           335544378u, false, nullptr,
+           "public create refusal op_create response failed");
 
   CloseFd(&sockets[0]);
   int status = 0;
   ok = Expect(::waitpid(pid, &status, 0) == pid,
-              "create charset waitpid failed") && ok;
+              "public create refusal waitpid failed") && ok;
   ok = Expect(WIFEXITED(status) && WEXITSTATUS(status) == 0,
-              "Firebird create-database charset boundary failed") && ok;
-
-  const std::string text = ReadFileText(overlay);
-  const std::string default_row =
-      "database_default_charset\t" + HexEncodeTest("UTF8") + "\n";
-  const std::string attachment_row =
-      "database_default_charset\t" + HexEncodeTest("WIN1251") + "\n";
-  ok = ok && Expect(text.find(default_row) != std::string::npos,
-                    "create DPB did not persist set_db_charset as database default");
-  ok = ok && Expect(text.find(attachment_row) == std::string::npos,
-                    "create DPB persisted lc_ctype as database default");
+              "Firebird public create refusal worker failed") && ok;
+  ok = ok && Expect(!FileExists(database_name),
+                    "Firebird public op_create created a database file") &&
+       Expect(!FileExists(overlay),
+                    "Firebird public op_create created a metadata overlay");
   return ok;
 }
 
@@ -1704,7 +1679,7 @@ int main() {
                      "Firebird malformed connect reject failed")) {
     return EXIT_FAILURE;
   }
-  if (!RunCreateDatabaseCharsetBoundaryCase()) {
+  if (!RunPublicCreateDatabaseRefusalCase()) {
     return EXIT_FAILURE;
   }
   if (!RunServiceLifecycleCase()) {

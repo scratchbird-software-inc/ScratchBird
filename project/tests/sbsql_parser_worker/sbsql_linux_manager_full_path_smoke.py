@@ -28,15 +28,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from live_auth_fixture import DEFAULT_PRINCIPAL_UUID, write_temporary_token_auth_fixture
-
-
-VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 DBBT_KEY_HEX = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 MANAGER_TOKEN = "manager-route-token-1"
 MANAGER_DB = "linux_gold_route"
 OWNER_DB_UUID = "019f0000000070008000000000000a11"
-TOKEN_HANDLE = "linux-manager-full-path-token-handle"
+DATABASE_USER = "alice"
+DATABASE_PASSWORD = "ManagerDbPassword-2026!"
+WRONG_DATABASE_PASSWORD = "ManagerDbPassword-wrong"
+SECURITY_SIDECAR_SUFFIXES = (".sb.security_principal_events", ".sb.local_password_auth")
 CONTROL_MAGIC = 0x54434253
 CONTROL_VERSION = 1
 CONTROL_HEADER = struct.Struct("<IHHHHQQ")
@@ -127,6 +126,32 @@ def wait_for_json_metric(path: Path, metric_name: str, minimum: int, timeout: fl
                         return last_value
         time.sleep(0.05)
     raise SmokeError(f"{metric_name} stayed below {minimum}; last={last_value}")
+
+
+def wait_for_jsonl_metric(path: Path,
+                          metric_path: str,
+                          labels: dict[str, str],
+                          minimum: int,
+                          timeout: float = 5.0) -> int:
+    deadline = time.monotonic() + timeout
+    last_value = 0
+    while time.monotonic() < deadline:
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    metric = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if metric.get("path") != metric_path or metric.get("labels") != labels:
+                    continue
+                try:
+                    last_value = max(last_value, int(metric.get("value", 0)))
+                except (TypeError, ValueError):
+                    continue
+                if last_value >= minimum:
+                    return last_value
+        time.sleep(0.05)
+    raise SmokeError(f"{metric_path} with {labels} stayed below {minimum}; last={last_value}")
 
 
 def encode_control_frame(opcode: int, request_id: int, payload: bytes) -> bytes:
@@ -249,6 +274,8 @@ def dump_logs(work: Path) -> None:
         "listener.err",
         "manager.out",
         "manager.err",
+        "sb_isql_wrong_password.out",
+        "sb_isql_wrong_password.err",
         "sb_isql.out",
         "sb_isql.err",
     ):
@@ -264,6 +291,82 @@ def write_private(path: Path, text: str) -> None:
     os.chmod(path, 0o600)
 
 
+def seed_manager_database(seeder: str, database: Path) -> None:
+    result = subprocess.run(
+        [seeder, str(database), DATABASE_USER],
+        input=DATABASE_PASSWORD + "\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    output = result.stdout or ""
+    if result.returncode != 0:
+        raise SmokeError(
+            "canonical manager database seed failed "
+            f"rc={result.returncode}: {output.strip()}"
+        )
+    if "sbsql_manager_database_seed=passed" not in output:
+        raise SmokeError("canonical manager database seed did not report success")
+    if not database.is_file():
+        raise SmokeError("canonical manager database seed did not create the database")
+
+
+def require_no_security_sidecars(database: Path) -> None:
+    sidecars = [str(database) + suffix for suffix in SECURITY_SIDECAR_SUFFIXES
+                if Path(str(database) + suffix).exists()]
+    if sidecars:
+        raise SmokeError(f"canonical database has forbidden security sidecars: {sidecars}")
+
+
+def wait_for_listener_pool_ready(management_socket: Path, timeout: float = 8.0) -> None:
+    deadline = time.monotonic() + timeout
+    last_pool: object = None
+    while time.monotonic() < deadline:
+        status = read_listener_status(management_socket)
+        pool = status.get("pool")
+        last_pool = pool
+        if isinstance(pool, dict) and pool.get("parser_pool_ready") is True:
+            return
+        time.sleep(0.05)
+    raise SmokeError(f"listener parser pool did not become ready after refused authentication: {last_pool!r}")
+
+
+def run_managed_isql(sb_isql: str,
+                      database: Path,
+                      manager_port: int,
+                      password: str,
+                      output_stem: str,
+                      work: Path) -> subprocess.CompletedProcess[bytes]:
+    command = [
+        sb_isql,
+        str(database),
+        "--mode=managed",
+        "--front-door-mode=manager_proxy",
+        "--host=127.0.0.1",
+        f"--port={manager_port}",
+        f"--manager-user={DATABASE_USER}",
+        f"--manager-db={MANAGER_DB}",
+        f"--manager-auth-token={MANAGER_TOKEN}",
+        "--manager-auth-fast-path=true",
+        "--manager-profile=SBsql",
+        "--manager-intent=SBsql",
+        "--sslmode=disable",
+        "-U",
+        DATABASE_USER,
+        "-P",
+        password,
+        "-q",
+        "-A",
+        "-t",
+        "-c",
+        "SELECT 1",
+    ]
+    with (work / f"{output_stem}.out").open("wb") as stdout:
+        with (work / f"{output_stem}.err").open("wb") as stderr:
+            return subprocess.run(command, stdout=stdout, stderr=stderr, check=False)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--server", required=True)
@@ -271,6 +374,7 @@ def main() -> int:
     parser.add_argument("--manager", required=True)
     parser.add_argument("--parser-worker", required=True)
     parser.add_argument("--sb-isql", required=True)
+    parser.add_argument("--manager-db-seeder", required=True)
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--evidence-file", required=True)
     args = parser.parse_args()
@@ -294,19 +398,14 @@ def main() -> int:
         manager_port = find_free_port()
         token_store = work / "manager_tokens.tsv"
         keyring = work / "dbbt.keyring"
+        manager_config = work / "manager.conf"
 
-        write_temporary_token_auth_fixture(
-            database,
-            "alice",
-            MANAGER_TOKEN,
-            TOKEN_HANDLE,
-            DEFAULT_PRINCIPAL_UUID,
-        )
+        seed_manager_database(args.manager_db_seeder, database)
+        require_no_security_sidecars(database)
         write_private(
             token_store,
-            f"{MANAGER_TOKEN}\talice\t0\tactive\t"
-            "database.connect,manager.status,listener.status\t"
-            f"{DEFAULT_PRINCIPAL_UUID}\t{TOKEN_HANDLE}\tmga_security_principal_lifecycle\n",
+            f"{MANAGER_TOKEN}\t{DATABASE_USER}\t0\tactive\t"
+            "database.connect,manager.status,listener.status\n",
         )
         write_private(
             keyring,
@@ -314,13 +413,17 @@ def main() -> int:
             "active_key_id=active\n"
             f"active_key_hex={DBBT_KEY_HEX}\n",
         )
+        write_private(
+            manager_config,
+            "manager.proxy.enabled=true\n"
+            "manager.proxy.tls_required=false\n",
+        )
 
         server = subprocess.Popen(
             [
                 args.server,
                 "--foreground",
                 "--no-listeners",
-                "--create-if-missing",
                 "--control-dir",
                 str(server_control),
                 "--runtime-dir",
@@ -370,6 +473,8 @@ def main() -> int:
             [
                 args.manager,
                 "--foreground",
+                "--config",
+                str(manager_config),
                 "--runtime-dir",
                 str(manager_runtime),
                 "--control-dir",
@@ -378,6 +483,8 @@ def main() -> int:
                 "127.0.0.1",
                 "--port",
                 str(manager_port),
+                "--tls-required",
+                "false",
                 "--native-bind",
                 "127.0.0.1",
                 "--native-port",
@@ -405,35 +512,33 @@ def main() -> int:
         wait_for_tcp(manager_port)
         require_running(manager, "sbmn_manager", work)
 
-        evidence = f"scheme=local_password_v1;principal=alice;verifier={VERIFIER}"
-        completed = subprocess.run(
-            [
-                args.sb_isql,
-                str(database),
-                "--mode=managed",
-                "--front-door-mode=manager_proxy",
-                "--host=127.0.0.1",
-                f"--port={manager_port}",
-                "--manager-user=alice",
-                f"--manager-db={MANAGER_DB}",
-                f"--manager-auth-token={MANAGER_TOKEN}",
-                "--manager-auth-fast-path=true",
-                "--manager-profile=SBsql",
-                "--manager-intent=SBsql",
-                "--sslmode=disable",
-                "-U",
-                "alice",
-                "-P",
-                evidence,
-                "-q",
-                "-A",
-                "-t",
-                "-c",
-                "SELECT 1",
-            ],
-            stdout=(work / "sb_isql.out").open("wb"),
-            stderr=(work / "sb_isql.err").open("wb"),
-            check=False,
+        audit = manager_control / "sbmn_manager.audit.jsonl"
+        metrics = manager_control / "sbmn_manager.metrics.json"
+        server_audit = server_control / "sb_server.audit.jsonl"
+        server_metrics = server_control / "sb_server.metrics.jsonl"
+        rejected = run_managed_isql(
+            args.sb_isql,
+            database,
+            manager_port,
+            WRONG_DATABASE_PASSWORD,
+            "sb_isql_wrong_password",
+            work,
+        )
+        if rejected.returncode == 0:
+            raise SmokeError("manager route accepted an incorrect canonical database password")
+        wait_for_file_contains(
+            server_audit,
+            '"event_type":"server.auth_handoff","actor_class":"server","outcome":"rejected"',
+        )
+        wait_for_listener_pool_ready(management_socket)
+
+        completed = run_managed_isql(
+            args.sb_isql,
+            database,
+            manager_port,
+            DATABASE_PASSWORD,
+            "sb_isql",
+            work,
         )
         if completed.returncode != 0:
             raise SmokeError(f"sb_isql exited {completed.returncode}")
@@ -441,9 +546,7 @@ def main() -> int:
         if output != "1":
             raise SmokeError(f"sb_isql SELECT 1 through manager returned {output!r}")
 
-        audit = manager_control / "sbmn_manager.audit.jsonl"
-        metrics = manager_control / "sbmn_manager.metrics.json"
-        server_audit = server_control / "sb_server.audit.jsonl"
+        require_no_security_sidecars(database)
         wait_for_file_contains(audit, "MANAGER_PROXY_ADMISSION_DECISION")
         wait_for_file_contains(audit, "MANAGER_AUTH_DECISION")
         wait_for_file_contains(audit, "MANAGER_DB_CONNECT_DECISION")
@@ -455,9 +558,11 @@ def main() -> int:
             server_audit,
             '"event_type":"server.attach_database","actor_class":"server","outcome":"accepted"',
         )
-        wait_for_file_contains(
-            server_audit,
-            '"event_type":"server.sblr.execute","actor_class":"server","outcome":"completed"',
+        server_sblr_execute = wait_for_jsonl_metric(
+            server_metrics,
+            "sys.metrics.ipc.parser_server.sblr.execute_microseconds",
+            {"operation_family": "sblr", "outcome": "accepted"},
+            1,
         )
         client_bytes = wait_for_json_metric(metrics, "sb_manager_proxy_bytes_total", 1)
         listener_requests = wait_for_json_metric(metrics, "sb_manager_listener_control_requests_total", 1)
@@ -509,12 +614,17 @@ def main() -> int:
                         "engine_select_execution",
                     ],
                     "client_result": output,
+                    "canonical_tx1_bootstrap_principal": DATABASE_USER,
+                    "manager_token_scope": "mcp_route_admission_only",
+                    "wrong_canonical_database_password_refused": True,
+                    "security_sidecars_absent": True,
                     "manager_audit_proxy_admission": True,
                     "manager_audit_auth": True,
                     "manager_audit_db_connect_lpreface": True,
+                    "server_audit_auth_handoff_rejected": True,
                     "server_audit_auth_handoff_accepted": True,
                     "server_audit_attach_database_accepted": True,
-                    "server_audit_sblr_execute_completed": True,
+                    "server_metric_sblr_execute_accepted_min": server_sblr_execute,
                     "manager_proxy_bytes_total_min": client_bytes,
                     "manager_listener_control_requests_total_min": listener_requests,
                     "listener_status_handoff_complete_total_min": listener_handoff_total,

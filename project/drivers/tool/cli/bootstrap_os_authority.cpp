@@ -8,6 +8,7 @@
 #include <cctype>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <string>
@@ -331,11 +332,29 @@ bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
                                            gid_t primary_group,
                                            gid_t required_group) {
   if (primary_group != required_group) return false;
+#ifdef __APPLE__
+  // Darwin declares getgrouplist with int group IDs, unlike the POSIX/Linux
+  // gid_t form. Do not narrow an unrepresentable configured group: bootstrap
+  // authorization must fail closed rather than query a different group.
+  if (static_cast<std::uint64_t>(primary_group) >
+      static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+    return false;
+  }
+  const int group_list_primary_group = static_cast<int>(primary_group);
+#else
+  const gid_t group_list_primary_group = primary_group;
+#endif
   int count = 0;
-  (void)getgrouplist(identity.c_str(), primary_group, nullptr, &count);
+  (void)getgrouplist(identity.c_str(), group_list_primary_group, nullptr,
+                     &count);
   if (count <= 0) return false;
+#ifdef __APPLE__
+  std::vector<int> groups(static_cast<std::size_t>(count));
+#else
   std::vector<gid_t> groups(static_cast<std::size_t>(count));
-  if (getgrouplist(identity.c_str(), primary_group, groups.data(), &count) < 0) {
+#endif
+  if (getgrouplist(identity.c_str(), group_list_primary_group, groups.data(),
+                   &count) < 0) {
     return false;
   }
   if (count <= 0 || static_cast<std::size_t>(count) > groups.size()) {
@@ -345,6 +364,11 @@ bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
   resolved_group_ids.reserve(static_cast<std::size_t>(count) + 1);
   resolved_group_ids.push_back(static_cast<std::uint64_t>(primary_group));
   for (int index = 0; index < count; ++index) {
+#ifdef __APPLE__
+    // A negative int cannot name a valid POSIX group ID. Treat a Darwin API
+    // value outside the usable gid_t range as an authorization failure.
+    if (groups[static_cast<std::size_t>(index)] < 0) return false;
+#endif
     resolved_group_ids.push_back(
         static_cast<std::uint64_t>(groups[static_cast<std::size_t>(index)]));
   }

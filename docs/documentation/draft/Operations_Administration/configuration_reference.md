@@ -69,25 +69,43 @@ SBsrv is the IPC server that hosts the engine and manages database opens. Its co
 | Key | Default (template) | Notes |
 | --- | --- | --- |
 | `default_path` | `data/default.sbdb` | Path to the default database file. |
-| `auto_create` | `false` | Whether to create the database file if it does not exist. |
+| `auto_create` | `false` | Must remain `false` in the public server profile. A missing database is refused; create it first with the approved local embedded bootstrap operation. |
 | `open_mode` | `normal` | Database open mode. |
 | `daemon_scope` | `shared` | Scope under which the database is owned. |
 
-### `[server.listener.native]`
+### `[server.listener]`
 
-This section configures the native SBsql listener that SBsrv will supervise. When `enabled = true`, SBsrv will spawn `SBgate` at the path given by `executable_path` and keep it alive.
+This is the generic shared-listener owner record. It identifies the one
+`SBgate` executable that SBsrv may supervise and the listener's control and
+runtime roots. It does not select a parser, bind a network endpoint, or create
+an active route. The shipped default has no
+`[server.listener.profile.<instance-key>]` section, so installation alone never
+infers a dialect, port, TLS material, parser path, or database selector.
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
-| `enabled` | `true` | Whether to start the listener. |
-| `bind_host` | `127.0.0.1` | Listener bind address. |
-| `port` | `3092` | Native SBSQL listener TCP port. Port 3050 is reserved for Firebird compatibility endpoints. |
 | `executable_path` | `bin/SBgate` | Path to the shared SBgate binary, relative to the deterministic configuration base. |
-| `parser_executable_path` | `bin/SBParser` | Path to the standalone native parser worker, relative to the same base. |
 | `control_dir` | `runtime/listener/control` | Control-plane socket directory for the listener. |
 | `runtime_dir` | `runtime/listener/runtime` | Runtime directory for the listener. |
-| `tls_required` | `true` | Whether TLS is required for client connections. Setting this to `false` is strongly discouraged on any network-exposed interface. |
-| `ready_timeout_ms` | `8000` | How long SBsrv will wait for SBgate to report ready before treating the startup as failed. |
+
+### `[server.listener.profile.<instance-key>]` — explicit activation
+
+An operator or a controlled startup helper adds one complete profile only when
+activating a specific network, port, and standalone parser. The profile is an
+opaque launch record for the same shared `SBgate` executable; it is not a
+listener executable per parser. SBsrv passes its profile values to SBgate and
+does not read `SBgate.conf` on SBgate's behalf.
+
+| Key | Required activation value | Notes |
+| --- | --- | --- |
+| `enabled` | `true` | Enables that explicitly named listener instance. |
+| `protocol_family`, `profile_id` | Explicit values | Identify the client protocol and opaque profile record. |
+| `parser_package`, `parser_package_uuid`, `dialect_profile_uuid`, `bundle_contract_id`, `parser_api_major` | Explicit values | Identify exactly one standalone parser package; no parser may fall through to another parser. |
+| `parser_executable_path` | Explicit path | Path to that profile's standalone parser worker. This key is valid only in an explicit profile, never in the shipped `[server.listener]` default. |
+| `bind_address`, `port` | Explicit values | The native SBSQL default, when an operator activates it, is port `3092`; port `3050` is Firebird compatibility only. |
+| `database_selector`, `sbps_endpoint` | Explicit values | Bind the listener to its declared database selection and SBPS IPC endpoint. |
+| `tls_required`, `tls_cert_file`, `tls_key_file`, `tls_ca_file` | Explicit values | TLS policy and operator-provisioned material for that endpoint. |
+| `ready_timeout_ms`, `warm_pool_min`, `warm_pool_max` | Explicit values | Supervision and parser-pool limits for that profile. |
 
 ### `[server.metrics]`
 
@@ -250,7 +268,13 @@ SBParser is the native SBsql parser worker. It is spawned and managed by the
 shared SBgate listener. Every parser executable is standalone for one dialect:
 it must not load, invoke, or fall through to another parser. A network parser
 has no in-process engine path; it sends SBLR over SBPS IPC to the SBsrv-owned
-engine endpoint. Its configuration uses a flat `parser.*` namespace.
+engine endpoint.
+
+`SBParser.conf` is currently a packaged declarative release contract, not a
+runtime configuration file read by SBParser. SBgate supplies the selected
+worker's launch arguments and environment. The package validator requires its
+`parser.worker_binary` declaration to match `SBgate.conf`'s
+`parser_executable` and to name the shipped standalone `SBParser` binary.
 
 | Key | Default (template) | Notes |
 | --- | --- | --- |
@@ -297,9 +321,14 @@ A few principles underlie the configuration design:
 
 **Explicit over implicit.** Security-sensitive keys have explicit defaults that are safe. `tls_required = true`, `management_auth_required = true`, and `allow_dev_dbbt_env = false` are all default. If you change them, do so knowingly and document why.
 
-**Fail closed.** The server memory policy defaults to `failure_mode = fail_closed`. A session that would exceed memory limits is refused, not allowed to proceed in a degraded state.
+**Fail closed.** The server memory policy defaults to `failure_mode = return_error`. A session that would exceed memory limits receives a bounded error rather than proceeding in a degraded state.
 
-**Relative paths are relative to the working directory.** All paths in the configuration templates — `bin/SBgate`, `runtime/control/sb_server.sbps.sock`, and so on — are relative. Processes must be started from the output root for these to resolve correctly, or you must replace them with absolute paths.
+**Relative paths use a deterministic configuration base.** When the executable
+is installed under `bin/`, relative SBsrv and SBmgr values resolve from the
+installation root. For a non-installed executable they resolve from the
+selected configuration directory. They are not resolved from an arbitrary
+working directory. System packages materialize the relevant paths under their
+platform roots.
 
 **Secrets do not belong in configuration files.** The `mcp_secret_ref` key in SBmgr's runtime source is a reference to a secret, not the secret itself. Keep credential material out of configuration files.
 

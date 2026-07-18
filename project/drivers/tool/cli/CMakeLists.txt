@@ -55,8 +55,6 @@ add_executable(sb_backup sb_backup.cpp)
 add_executable(sb_security
     sb_security.cpp
     cli_auth_bootstrap.cpp
-    bootstrap_os_authority.cpp
-    bootstrap_password_verifier.cpp
 )
 add_executable(sb_verify sb_verify.cpp)
 add_executable(sbdriver_conformance
@@ -74,6 +72,28 @@ set(cli_targets
     sb_verify
     sbdriver_conformance
 )
+
+# The first-principal database bootstrap is a bounded embedded-engine lifecycle
+# operation shared by SBsql and SBsec.  It intentionally has no dependency on a
+# parser worker, listener, manager, or client connection path.
+add_library(sb_cli_first_principal_bootstrap STATIC
+    first_principal_bootstrap.cpp
+    bootstrap_os_authority.cpp
+    bootstrap_password_verifier.cpp
+)
+target_include_directories(sb_cli_first_principal_bootstrap
+    PRIVATE
+        "${SB_CPP_DRIVER_DIR}/include"
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(sb_cli_first_principal_bootstrap
+    PUBLIC
+        sb_storage_database
+        OpenSSL::Crypto
+)
+if(WIN32)
+    target_link_libraries(sb_cli_first_principal_bootstrap PUBLIC advapi32 netapi32)
+endif()
 
 if (SB_BUILD_CLI_FDW)
     add_executable(sb_pg_isql sb_pg_isql.cpp)
@@ -243,10 +263,8 @@ foreach(target IN LISTS cli_targets)
     endif()
 endforeach()
 
-target_link_libraries(sb_security PRIVATE OpenSSL::Crypto sb_storage_database)
-if(WIN32)
-    target_link_libraries(sb_security PRIVATE advapi32 netapi32)
-endif()
+target_link_libraries(sb_isql PRIVATE sb_cli_first_principal_bootstrap)
+target_link_libraries(sb_security PRIVATE OpenSSL::Crypto sb_cli_first_principal_bootstrap)
 
 add_executable(sb_bootstrap_password_verifier_tests
     bootstrap_password_verifier_test.cpp
@@ -339,6 +357,18 @@ if(WIN32)
     target_link_libraries(sb_bootstrap_os_authority_tests PRIVATE advapi32 netapi32)
 endif()
 
+add_executable(sb_first_principal_bootstrap_args_tests
+    first_principal_bootstrap_args_test.cpp
+)
+target_include_directories(sb_first_principal_bootstrap_args_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(sb_first_principal_bootstrap_args_tests
+    PRIVATE
+        sb_cli_first_principal_bootstrap
+)
+
 add_executable(sbdriver_conformance_assertion_tests
     conformance_assertions_test.cpp
     conformance_assertions.cpp
@@ -353,6 +383,21 @@ if (BUILD_TESTING)
     add_test(NAME cli_auth_bootstrap_tests COMMAND sbdriver_auth_bootstrap_tests)
     add_test(NAME cli_bootstrap_os_authority_tests COMMAND sb_bootstrap_os_authority_tests)
     add_test(NAME cli_bootstrap_password_verifier_tests COMMAND sb_bootstrap_password_verifier_tests)
+    add_test(NAME cli_first_principal_bootstrap_args_tests COMMAND sb_first_principal_bootstrap_args_tests)
+    add_test(
+        NAME cli_first_principal_bootstrap_cli_smoke
+        COMMAND "${Python3_EXECUTABLE}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/first_principal_bootstrap_cli_smoke.py"
+                --sb-isql $<TARGET_FILE:sb_isql>
+                --sb-security $<TARGET_FILE:sb_security>
+                --work-dir "${CMAKE_BINARY_DIR}/first_principal_bootstrap_cli_smoke"
+    )
+    set_tests_properties(
+        cli_first_principal_bootstrap_args_tests
+        cli_first_principal_bootstrap_cli_smoke
+        PROPERTIES
+            LABELS "public_release_correctness;cli_tool_gate;security_auth_gate;embedded_bootstrap_gate"
+    )
     add_test(NAME cli_txn_exec_parity_tests COMMAND sbdriver_txn_exec_tests)
     add_test(NAME cli_metadata_shaping_tests COMMAND sbdriver_metadata_shaping_tests)
     add_test(NAME cli_res_lifecycle_tests COMMAND sbdriver_res_lifecycle_tests)

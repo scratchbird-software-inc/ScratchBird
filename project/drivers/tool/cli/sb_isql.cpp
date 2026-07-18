@@ -88,6 +88,7 @@
 #include <cctype>
 #include <csignal>
 #include <thread>
+#include <string_view>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -107,6 +108,7 @@
 #include "scratchbird/client/connection.h"
 #include "scratchbird/core/status.h"
 #include "scratchbird/core/error_context.h"
+#include "first_principal_bootstrap.hpp"
 #include "metadata_shaping.h"
 
 using namespace scratchbird;
@@ -3718,6 +3720,15 @@ void printUsage(const char* program) {
     std::cout << "ScratchBird Interactive SQL Shell\n\n";
     std::cout << "Usage:\n";
     std::cout << "  " << program << " <database_path> [options]\n\n";
+    std::cout << "First-principal local bootstrap:\n";
+    std::cout << "  " << program
+              << " bootstrap <principal> <database> --mode=embedded"
+                 " --platform-profile <file> --resource-seed-pack-root <dir>"
+                 " --policy-seed-pack-root <dir> [--password-stdin]\n";
+    std::cout << "  This one-shot embedded operation creates the database and its "
+                 "initial security catalog without an existing database login. "
+                 "It never uses a listener, manager, parser, or normal connection "
+                 "options.\n\n";
     std::cout << "Options:\n";
     std::cout << "  -U, --user=<username>     Username for authentication\n";
     std::cout << "  -P, --password=<pass>     Password (prompted if not given)\n";
@@ -3805,6 +3816,10 @@ void printUsage(const char* program) {
     std::cout << "  EXIT [N]                  Exit with optional code\n";
     std::cout << "  QUIT                      Quit immediately\n\n";
     std::cout << "Examples:\n";
+    std::cout << "  " << program << " bootstrap qa_admin mydb.sbdb --mode=embedded "
+                 "--platform-profile=SBbootstrap.profile "
+                 "--resource-seed-pack-root=resource-pack "
+                 "--policy-seed-pack-root=policy-pack\n";
     std::cout << "  " << program << " /path/to/mydb.sbdb\n";
     std::cout << "  " << program << " mydb.sbdb -U admin -c \"SELECT * FROM users\"\n";
     std::cout << "  " << program << " mydb.sbdb -f queries.sql -o results.txt\n";
@@ -4363,6 +4378,12 @@ static bool outputSchemaTree() {
 // =============================================================================
 
 int main(int argc, char* argv[]) {
+    // Bootstrap is intentionally intercepted before normal SBsql parsing.  It
+    // cannot inherit a parser, connection, listener, manager, or auth route.
+    if (argc >= 2 && std::string_view(argv[1]) == "bootstrap") {
+        return scratchbird::cli::RunFirstPrincipalBootstrapCli(
+            argv[0], argc - 2, argv + 2, std::cin, std::cout, std::cerr);
+    }
     if (argc < 2) {
         printUsage(argv[0]);
         return 1;

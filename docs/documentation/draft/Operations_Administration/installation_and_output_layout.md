@@ -110,7 +110,7 @@ The staged output does **not** contain a `runtime/` directory. Runtime directori
 | Configuration | `etc/scratchbird/` | Copy and edit for deployment; do not edit in place |
 | Resources | `share/scratchbird/resources/` | Do not modify; must match the binary version |
 | Runtime sockets and PID files | Configured paths, not in output tree | Created by processes at startup |
-| Database files | Configured data path, not in output tree | Created only by an explicit approved embedded `SBsec bootstrap` operation before service startup |
+| Database files | Configured data path, not in output tree | Created only by an explicit approved embedded `SBsql bootstrap` operation (or equivalent `SBsec` entry point) before service startup |
 | Log files | Configured `log_file`, not in output tree | Defaults to stderr |
 
 ## Verifying the Output

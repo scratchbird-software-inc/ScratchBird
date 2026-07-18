@@ -479,12 +479,11 @@ int RunParserWorker(ParserConfig config) {
     if (client_fd < 0) continue;
 
     metrics.SetState(ParserState::kIdlePreAuth);
+    // A manager token is listener route-admission evidence only.  It must not
+    // become parser configuration or database credential evidence: the SBWP
+    // client response is authenticated by the engine against the canonical
+    // database security catalog.
     ParserConfig session_config = config;
-    if (handoff_payload) {
-      session_config.manager_auth_provider_family = handoff_payload->auth_provider_family;
-      session_config.manager_auth_principal = handoff_payload->auth_principal;
-      session_config.manager_auth_token = handoff_payload->auth_token;
-    }
     SbsqlTestWireSession session(session_config, &metrics, &cache);
     const int rc = session.ServeFd(client_fd);
 #ifdef _WIN32

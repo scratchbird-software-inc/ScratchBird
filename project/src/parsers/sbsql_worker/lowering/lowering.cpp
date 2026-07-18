@@ -34404,7 +34404,9 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
       << "\"requires_cluster_authority\":" << (mapping.requires_cluster_authority ? "true" : "false") << ','
       << "\"bound_object_uuid_inputs\":\"" << EscapeJson(mapping.bound_object_uuid_inputs) << "\","
       << "\"database_uuid_generated_by_engine\":"
-      << (IsLifecycleCreate(mapping) ? "true" : "false") << ',';
+      << "false,"
+      << "\"bootstrap_authority\":\""
+      << (IsLifecycleCreate(mapping) ? "local_embedded_only" : "not_applicable") << "\",";
   if (lifecycle_database_name_present) {
     out << "\"database_name\":\""
         << EscapeJson(lifecycle_database_name_parts.back()) << "\",";

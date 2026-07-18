@@ -173,6 +173,32 @@ def native_resource_fixture(marker: str) -> tuple[dict[str, bytes], dict[str, in
     return resources, dict(sorted(family_counts.items())), len(policy_rows)
 
 
+def native_config_fixture(name: str, marker: str) -> bytes:
+    if name != "SBsrv.conf":
+        return (
+            f"# {marker}:{name}\n"
+            + "\n".join(native.REQUIRED_CONFIG_TOKENS[name])
+            + "\n"
+        ).encode()
+    return (
+        f"# {marker}:{name}\n"
+        "[server.security]\n"
+        "provider_family = local_password\n"
+        "default_policy_installed = true\n"
+        "[server.database]\n"
+        "auto_create = false\n"
+        "[server.listener]\n"
+        "executable_path = bin/SBgate\n"
+        "control_dir = runtime/listener/control\n"
+        "runtime_dir = runtime/listener/runtime\n"
+        "[server.parser]\n"
+        "sbps_enabled = true\n"
+        "sbps_endpoint = runtime/control/sb_server.sbps.sock\n"
+        "[server.memory]\n"
+        "failure_mode = return_error\n"
+    ).encode()
+
+
 def macho_bytes(architecture: str) -> bytes:
     cpu = {"x86_64": 0x01000007, "arm64": 0x0100000C}
     if architecture in cpu:
@@ -226,9 +252,7 @@ def native_archive(
         **libraries,
         **runtime_files,
         **{
-            f"etc/scratchbird/{name}": (
-                f"# {marker}:{name}\n" + "\n".join(native.REQUIRED_CONFIG_TOKENS[name]) + "\n"
-            ).encode()
+            f"etc/scratchbird/{name}": native_config_fixture(name, marker)
             for name in native.NATIVE_CONFIGS
         },
         **{
@@ -337,7 +361,7 @@ def replace_manifest_file(root: Path, rel: str, content: bytes) -> None:
     )
 
 
-def make_fixture(input_root: Path, version: str = "1.2.3-nightly", include_msi: bool = False) -> None:
+def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
     write_installer_artifact(
         input_root / "scratchbird-linux-installers",
         "linux",
@@ -354,10 +378,9 @@ def make_fixture(input_root: Path, version: str = "1.2.3-nightly", include_msi: 
     )
     windows_files = {
         f"scratchbird-windows-{version}.zip": native_archive("windows", "windows"),
+        f"scratchbird-windows-{version}.msi": b"windows msi",
         "scratchbird.wxs": b"internal wix source",
     }
-    if include_msi:
-        windows_files[f"scratchbird-windows-{version}.msi"] = b"windows msi"
     write_installer_artifact(
         input_root / "scratchbird-windows-installers",
         "windows",
@@ -429,9 +452,15 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             manifest_path = self.create(input_root, output_root)
             expected = {
                 "scratchbird-nightly-linux-x86_64.tar.gz",
+                "scratchbird-nightly-linux-x86_64.deb",
+                "scratchbird-nightly-linux-x86_64.rpm",
+                "scratchbird-nightly-linux-x86_64-aur.tar.gz",
                 "scratchbird-nightly-windows-x86_64.zip",
+                "scratchbird-nightly-windows-x86_64.msi",
                 "scratchbird-nightly-macos-x86_64.tar.gz",
+                "scratchbird-nightly-macos-x86_64.pkg",
                 "scratchbird-nightly-macos-arm64.tar.gz",
+                "scratchbird-nightly-macos-arm64.pkg",
                 "scratchbird-nightly-macos-universal.tar.gz",
                 "scratchbird-nightly-manifest.json",
                 "scratchbird-nightly-SHA256SUMS",
@@ -445,10 +474,36 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             self.assertEqual("scratchbird_native_no_emulation", manifest["distribution_surface"])
             self.assertEqual("SBSQL", manifest["native_parser"])
             self.assertEqual(
-                "fully_extracted_and_exact_native_payload_verified_portable_archives_only",
+                "fully_verified_native_portable_and_system_installer_artifacts",
                 manifest["public_asset_policy"],
             )
-            self.assertEqual(["deb", "rpm", "aur", "pkg", "msi"], manifest["workflow_only_package_formats"])
+            self.assertEqual(
+                ["build_recipes", "install_smoke_proof"],
+                manifest["internal_only_artifact_classes"],
+            )
+            verification = {
+                row["name"]: row["verification"] for row in manifest["artifacts"]
+            }
+            self.assertEqual(
+                "installer_manifest_and_privileged_deb_smoke",
+                verification["scratchbird-nightly-linux-x86_64.deb"],
+            )
+            self.assertEqual(
+                "installer_manifest_and_rpm_recipe_verification",
+                verification["scratchbird-nightly-linux-x86_64.rpm"],
+            )
+            self.assertEqual(
+                "installer_manifest_and_aur_recipe_verification",
+                verification["scratchbird-nightly-linux-x86_64-aur.tar.gz"],
+            )
+            self.assertEqual(
+                "installer_manifest_and_msi_smoke",
+                verification["scratchbird-nightly-windows-x86_64.msi"],
+            )
+            self.assertEqual(
+                "installer_manifest_and_pkg_smoke",
+                verification["scratchbird-nightly-macos-x86_64.pkg"],
+            )
             self.assertEqual(
                 ["SBmgr", "SBgate", "SBParser", "SBsrv"],
                 [row["name"] for row in manifest["native_components"]],
@@ -466,17 +521,23 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             for name, expected_digest in sums.items():
                 self.assertEqual(expected_digest, bundle.sha256_file(output_root / name))
 
-    def test_non_portable_installers_remain_internal_even_when_present(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="sb-nightly-msi-") as temp:
+    def test_verified_system_installers_are_public_release_assets(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-system-installers-") as temp:
             root = Path(temp)
-            with_msi = root / "with"
-            make_fixture(with_msi, include_msi=True)
-            self.create(with_msi, root / "output")
+            input_root = root / "input"
+            make_fixture(input_root)
+            self.create(input_root, root / "output")
             output_names = {path.name for path in (root / "output").iterdir()}
-            self.assertEqual(7, len(output_names))
-            for suffix in (".deb", ".rpm", ".pkg", ".msi"):
-                self.assertFalse(any(name.endswith(suffix) for name in output_names))
-            self.assertNotIn("scratchbird-nightly-linux-x86_64-aur.tar.gz", output_names)
+            self.assertEqual(13, len(output_names))
+            for name in (
+                "scratchbird-nightly-linux-x86_64.deb",
+                "scratchbird-nightly-linux-x86_64.rpm",
+                "scratchbird-nightly-linux-x86_64-aur.tar.gz",
+                "scratchbird-nightly-windows-x86_64.msi",
+                "scratchbird-nightly-macos-x86_64.pkg",
+                "scratchbird-nightly-macos-arm64.pkg",
+            ):
+                self.assertIn(name, output_names)
 
     def test_canonical_names_are_stable_across_versions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-stable-") as temp:

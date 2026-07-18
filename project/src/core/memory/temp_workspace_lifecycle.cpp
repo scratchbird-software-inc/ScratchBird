@@ -20,8 +20,10 @@
 #include <initializer_list>
 #include <limits>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -150,8 +152,132 @@ DiagnosticRecord MakeTempManifestDiagnostic(Status status,
 }
 
 #if defined(_WIN32)
+constexpr std::wstring_view kWindowsExtendedPathPrefix = LR"(\\?\)";
+constexpr std::wstring_view kWindowsExtendedUncPathPrefix = LR"(\\?\UNC\)";
+constexpr std::wstring_view kWindowsDevicePathPrefix = LR"(\\.\)";
+
+bool StartsWith(std::wstring_view value, std::wstring_view prefix) {
+  return value.size() >= prefix.size() &&
+         value.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool StartsWithAsciiCaseInsensitive(std::wstring_view value,
+                                    std::wstring_view prefix) {
+  if (value.size() < prefix.size()) return false;
+  for (std::size_t index = 0; index < prefix.size(); ++index) {
+    wchar_t left = value[index];
+    wchar_t right = prefix[index];
+    if (left >= L'a' && left <= L'z') left -= L'a' - L'A';
+    if (right >= L'a' && right <= L'z') right -= L'a' - L'A';
+    if (left != right) return false;
+  }
+  return true;
+}
+
+void NormalizeWindowsPathSeparators(std::wstring* path) {
+  if (path == nullptr) return;
+  std::replace(path->begin(), path->end(), L'/', L'\\');
+}
+
+bool IsWindowsDriveAbsolutePath(std::wstring_view path) {
+  return path.size() >= 3 && path[1] == L':' && path[2] == L'\\';
+}
+
+bool IsWindowsUncPath(std::wstring_view path) {
+  return StartsWith(path, LR"(\\)") &&
+         !StartsWith(path, kWindowsExtendedPathPrefix) &&
+         !StartsWith(path, kWindowsDevicePathPrefix);
+}
+
+std::wstring ResolveWindowsAbsolutePath(std::wstring path) {
+  if (path.empty()) return path;
+  NormalizeWindowsPathSeparators(&path);
+  if (StartsWith(path, kWindowsExtendedPathPrefix) ||
+      StartsWith(path, kWindowsDevicePathPrefix)) {
+    return path;
+  }
+  if (IsWindowsDriveAbsolutePath(path) || IsWindowsUncPath(path)) {
+    return path;
+  }
+
+  const DWORD required = ::GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+  if (required == 0) return path;
+  std::vector<wchar_t> buffer(static_cast<std::size_t>(required));
+  DWORD written = ::GetFullPathNameW(path.c_str(),
+                                     static_cast<DWORD>(buffer.size()),
+                                     buffer.data(),
+                                     nullptr);
+  if (written == 0) return path;
+  if (written >= buffer.size()) {
+    buffer.resize(static_cast<std::size_t>(written) + 1);
+    written = ::GetFullPathNameW(path.c_str(),
+                                 static_cast<DWORD>(buffer.size()),
+                                 buffer.data(),
+                                 nullptr);
+    if (written == 0 || written >= buffer.size()) return path;
+  }
+  path.assign(buffer.data(), static_cast<std::size_t>(written));
+  NormalizeWindowsPathSeparators(&path);
+  return path;
+}
+
+std::optional<std::filesystem::path> NormalizeWindowsLogicalPath(
+    const std::filesystem::path& input) {
+  std::wstring logical = input.wstring();
+  NormalizeWindowsPathSeparators(&logical);
+  if (StartsWith(logical, kWindowsDevicePathPrefix)) {
+    return std::nullopt;
+  }
+  if (StartsWith(logical, kWindowsExtendedPathPrefix)) {
+    std::wstring tail = logical.substr(kWindowsExtendedPathPrefix.size());
+    if (StartsWithAsciiCaseInsensitive(tail, LR"(UNC\)")) {
+      logical = LR"(\\)" + tail.substr(4);
+    } else if (IsWindowsDriveAbsolutePath(tail)) {
+      logical = std::move(tail);
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  const auto normalized = std::filesystem::path(logical).lexically_normal();
+  std::wstring absolute = ResolveWindowsAbsolutePath(normalized.wstring());
+  if (StartsWith(absolute, kWindowsExtendedPathPrefix) ||
+      StartsWith(absolute, kWindowsDevicePathPrefix) ||
+      (!IsWindowsDriveAbsolutePath(absolute) && !IsWindowsUncPath(absolute))) {
+    return std::nullopt;
+  }
+  return std::filesystem::path(std::move(absolute)).lexically_normal();
+}
+
+// Win32 extended paths are an API-only representation.  Logical paths kept in
+// records, manifests, evidence, and diagnostics remain canonical and readable.
+std::wstring WidePath(const std::filesystem::path& path) {
+  std::wstring native = path.wstring();
+  NormalizeWindowsPathSeparators(&native);
+  if (StartsWith(native, kWindowsExtendedPathPrefix) ||
+      StartsWith(native, kWindowsDevicePathPrefix)) {
+    return native;
+  }
+  std::wstring absolute = ResolveWindowsAbsolutePath(path.lexically_normal().wstring());
+  if (StartsWith(absolute, kWindowsExtendedPathPrefix) ||
+      StartsWith(absolute, kWindowsDevicePathPrefix)) {
+    return absolute;
+  }
+  if (IsWindowsUncPath(absolute)) {
+    return std::wstring(kWindowsExtendedUncPathPrefix) + absolute.substr(2);
+  }
+  if (IsWindowsDriveAbsolutePath(absolute)) {
+    return std::wstring(kWindowsExtendedPathPrefix) + absolute;
+  }
+  return absolute;
+}
+
 std::string TempWorkspaceWindowsLastErrorText() {
   return "windows_error_" + std::to_string(::GetLastError());
+}
+
+std::string TempWorkspaceWindowsErrorText(DWORD error) {
+  return "windows_error_" + std::to_string(error);
 }
 
 bool DurableSyncHandle(HANDLE handle, std::string* detail) {
@@ -166,7 +292,8 @@ bool DurableSyncHandle(HANDLE handle, std::string* detail) {
 
 bool DurableSyncPath(const std::filesystem::path& path, bool writable, std::string* detail) {
   const DWORD access = GENERIC_READ | (writable ? GENERIC_WRITE : 0);
-  HANDLE handle = ::CreateFileW(path.wstring().c_str(),
+  const auto path_wide = WidePath(path);
+  HANDLE handle = ::CreateFileW(path_wide.c_str(),
                                 access,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr,
@@ -189,7 +316,8 @@ bool DurableSyncParentDirectory(const std::filesystem::path& path, std::string* 
   if (parent.empty()) {
     parent = ".";
   }
-  HANDLE handle = ::CreateFileW(parent.wstring().c_str(),
+  const auto parent_wide = WidePath(parent);
+  HANDLE handle = ::CreateFileW(parent_wide.c_str(),
                                 GENERIC_READ | GENERIC_WRITE,
                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                 nullptr,
@@ -261,12 +389,22 @@ bool DurableSyncParentDirectory(const std::filesystem::path& path, std::string* 
 }
 #endif
 
+std::filesystem::path PlatformFilesystemPath(const std::filesystem::path& path) {
+#if defined(_WIN32)
+  return std::filesystem::path(WidePath(path));
+#else
+  return path;
+#endif
+}
+
 bool ReplaceFileAtomically(const std::filesystem::path& temp_path,
                            const std::filesystem::path& target_path,
                            std::string* detail) {
 #if defined(_WIN32)
-  if (::MoveFileExW(temp_path.wstring().c_str(),
-                    target_path.wstring().c_str(),
+  const auto temp_wide = WidePath(temp_path);
+  const auto target_wide = WidePath(target_path);
+  if (::MoveFileExW(temp_wide.c_str(),
+                    target_wide.c_str(),
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
     return true;
   }
@@ -1149,10 +1287,6 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
 #endif
 }
 #else
-std::wstring WidePath(const std::filesystem::path& path) {
-  return path.wstring();
-}
-
 ReserveBytesResult ReserveBytes(HANDLE file,
                                 u64 bytes,
                                 TempWorkspaceDiskReservationMode mode,
@@ -1225,7 +1359,9 @@ SecureCreateResult OpenSecureRootDirectory(const std::filesystem::path& root_pat
   const auto root_wide = WidePath(root_path);
   const DWORD attributes = ::GetFileAttributesW(root_wide.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES) {
-    result.error = "GetFileAttributesW failed";
+    const DWORD attribute_error = ::GetLastError();
+    result.error = "GetFileAttributesW failed: " +
+                   TempWorkspaceWindowsErrorText(attribute_error);
     return result;
   }
   if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
@@ -1272,8 +1408,11 @@ SecureCreateResult CreateSecureTempWorkspaceFile(const std::filesystem::path& ro
                               FILE_ATTRIBUTE_TEMPORARY | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED,
                               nullptr);
   if (file == INVALID_HANDLE_VALUE) {
-    result.error = "CreateFileW(CREATE_NEW) failed";
-    if (::GetLastError() == ERROR_FILE_EXISTS || ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    const DWORD create_error = ::GetLastError();
+    result.error = "CreateFileW(CREATE_NEW) failed: " +
+                   TempWorkspaceWindowsErrorText(create_error);
+    if (create_error == ERROR_FILE_EXISTS ||
+        create_error == ERROR_ALREADY_EXISTS) {
       result.status_code = StatusCode::memory_invalid_request;
       result.diagnostic_code = "TEMP_WORKSPACE.SECURE_CREATE_REFUSED";
       result.message_key = "temp_workspace.secure_create.refused";
@@ -1327,8 +1466,19 @@ TempWorkspaceLifecycleManager::TempWorkspaceLifecycleManager(TempWorkspacePolicy
   if (policy_.root_path.empty()) {
     policy_.root_path = std::filesystem::temp_directory_path() / "scratchbird-temp-workspace";
   }
+#if defined(_WIN32)
+  auto logical_root = NormalizeWindowsLogicalPath(policy_.root_path);
+  if (!logical_root.has_value()) {
+    root_path_validation_error_ = "unsupported_windows_device_or_non_absolute_namespace";
+    policy_.root_path.clear();
+  } else {
+    policy_.root_path = std::move(*logical_root);
+  }
+#endif
   manifest_generation_ = policy_.manifest_generation == 0 ? 1 : policy_.manifest_generation;
-  (void)LoadManifestFromDisk();
+  if (root_path_validation_error_.empty()) {
+    (void)LoadManifestFromDisk();
+  }
 }
 
 TempWorkspaceResult TempWorkspaceLifecycleManager::ReserveTempFilespace(TempWorkspaceAllocationRequest request) {
@@ -1363,6 +1513,17 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
                                        {{"reason", "zero_byte_reservation"}});
     return result;
   }
+  if (!root_path_validation_error_.empty()) {
+    result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeDiagnostic(
+        result.status,
+        "TEMP_WORKSPACE.ROOT_UNSAFE",
+        "temp_workspace.root.unsafe",
+        request.owner,
+        {{"reason", root_path_validation_error_},
+         {"logical_path_normalization", "rejected_before_filesystem_access"}});
+    return result;
+  }
 
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1394,7 +1555,8 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   }
 
   std::error_code ec;
-  if (policy_.require_existing_root_path && !std::filesystem::is_directory(policy_.root_path, ec)) {
+  if (policy_.require_existing_root_path &&
+      !std::filesystem::is_directory(PlatformFilesystemPath(policy_.root_path), ec)) {
     result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeDiagnostic(result.status,
                                        "TEMP_WORKSPACE.ROOT_UNAVAILABLE",
@@ -1403,7 +1565,8 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
                                        {{"root_path", policy_.root_path.string()}});
     return result;
   }
-  const auto root_symlink_status = std::filesystem::symlink_status(policy_.root_path, ec);
+  const auto root_symlink_status =
+      std::filesystem::symlink_status(PlatformFilesystemPath(policy_.root_path), ec);
   if (!ec && std::filesystem::is_symlink(root_symlink_status)) {
     result.status = TempStatus(StatusCode::memory_invalid_request, Severity::error);
     result.diagnostic = MakeDiagnostic(result.status,
@@ -1417,7 +1580,7 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   }
   ec.clear();
   if (policy_.create_root_path) {
-    std::filesystem::create_directories(policy_.root_path, ec);
+    std::filesystem::create_directories(PlatformFilesystemPath(policy_.root_path), ec);
     if (ec) {
       result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
       result.diagnostic = MakeDiagnostic(result.status,
@@ -1525,7 +1688,7 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
   if (!CommitBudgetReservationLocked(&record.budget_reservation_evidence,
                                      request.owner,
                                      &result.diagnostic)) {
-    std::filesystem::remove(record.path, ec);
+    std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
     result.status = result.diagnostic.status;
     return result;
   }
@@ -1545,7 +1708,7 @@ TempWorkspaceResult TempWorkspaceLifecycleManager::Allocate(TempWorkspaceAllocat
       RemoveAccountingLocked(inserted->second);
       active_.erase(inserted);
     }
-    std::filesystem::remove(record.path, ec);
+    std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
     result.status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
     result.diagnostic = manifest_diagnostic;
     return result;
@@ -2048,10 +2211,11 @@ bool TempWorkspaceLifecycleManager::RemoveRecordFile(const TempWorkspaceRecord& 
                                                      DiagnosticRecord* diagnostic) const {
   if (!policy_.cleanup_files_on_release) return true;
   std::error_code ec;
-  if (record.path.empty() || !std::filesystem::exists(record.path, ec)) {
+  if (record.path.empty() ||
+      !std::filesystem::exists(PlatformFilesystemPath(record.path), ec)) {
     return true;
   }
-  std::filesystem::remove(record.path, ec);
+  std::filesystem::remove(PlatformFilesystemPath(record.path), ec);
   if (!ec) return true;
   if (diagnostic != nullptr) {
     const auto status = TempStatus(StatusCode::memory_allocation_failed, Severity::error);
@@ -2110,8 +2274,8 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
   for (u64 candidate_version : candidate_versions) {
     const auto path = ManifestPathForVersion(candidate_version);
     const auto tmp = TempWorkspaceManifestTempPath(path);
-    if (std::filesystem::exists(tmp, ec)) {
-      std::filesystem::remove(tmp, ec);
+    if (std::filesystem::exists(PlatformFilesystemPath(tmp), ec)) {
+      std::filesystem::remove(PlatformFilesystemPath(tmp), ec);
       if (ec) {
         return false;
       }
@@ -2120,10 +2284,10 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
         return false;
       }
     }
-    if (!std::filesystem::is_regular_file(path, ec)) {
+    if (!std::filesystem::is_regular_file(PlatformFilesystemPath(path), ec)) {
       continue;
     }
-    std::ifstream in(path, std::ios::binary);
+    std::ifstream in(PlatformFilesystemPath(path), std::ios::binary);
     if (!in) {
       return false;
     }
@@ -2187,7 +2351,8 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
         if (!record.has_value()) {
           return false;
         }
-        if (!std::filesystem::is_regular_file(record->path, ec)) {
+        if (!std::filesystem::is_regular_file(
+                PlatformFilesystemPath(record->path), ec)) {
           continue;
         }
         AddAccountingLocked(*record);
@@ -2198,7 +2363,7 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
         if (!PersistManifestLocked(&ignored)) {
           return false;
         }
-        std::filesystem::remove(path, ec);
+        std::filesystem::remove(PlatformFilesystemPath(path), ec);
       }
     }
     return true;
@@ -2207,11 +2372,25 @@ bool TempWorkspaceLifecycleManager::LoadManifestFromDisk() {
 }
 
 bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diagnostic) {
+  if (!root_path_validation_error_.empty()) {
+    if (diagnostic != nullptr) {
+      const auto status = TempManifestStatus(StatusCode::memory_invalid_request,
+                                             Severity::error);
+      *diagnostic = MakeTempManifestDiagnostic(
+          status,
+          "TEMP_WORKSPACE.MANIFEST_WRITE_FAILED",
+          "temp_workspace.manifest.write_failed",
+          policy_,
+          root_path_validation_error_);
+    }
+    return false;
+  }
   std::error_code ec;
   const auto path = ManifestPath();
   const auto tmp = TempWorkspaceManifestTempPath(path);
   if (active_.empty()) {
-    const bool manifest_existed = std::filesystem::exists(path, ec);
+    const bool manifest_existed =
+        std::filesystem::exists(PlatformFilesystemPath(path), ec);
     if (ec) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2226,7 +2405,8 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
       }
       return false;
     }
-    const bool temp_existed = std::filesystem::exists(tmp, ec);
+    const bool temp_existed =
+        std::filesystem::exists(PlatformFilesystemPath(tmp), ec);
     if (ec) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2241,7 +2421,7 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
       }
       return false;
     }
-    std::filesystem::remove(path, ec);
+    std::filesystem::remove(PlatformFilesystemPath(path), ec);
     if (ec) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2256,7 +2436,7 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
       }
       return false;
     }
-    std::filesystem::remove(tmp, ec);
+    std::filesystem::remove(PlatformFilesystemPath(tmp), ec);
     if (ec) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2290,7 +2470,7 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
     }
     return true;
   }
-  std::filesystem::create_directories(policy_.root_path, ec);
+  std::filesystem::create_directories(PlatformFilesystemPath(policy_.root_path), ec);
   if (ec) {
     if (diagnostic != nullptr) {
       const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2323,8 +2503,8 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
     }
     return false;
   }
-  if (std::filesystem::exists(tmp, ec)) {
-    std::filesystem::remove(tmp, ec);
+  if (std::filesystem::exists(PlatformFilesystemPath(tmp), ec)) {
+    std::filesystem::remove(PlatformFilesystemPath(tmp), ec);
     if (ec) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,
@@ -2367,7 +2547,8 @@ bool TempWorkspaceLifecycleManager::PersistManifestLocked(DiagnosticRecord* diag
                                                 : policy_.manifest_generation);
   const std::string checksum = TempWorkspaceManifestChecksum(body);
   {
-    std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+    std::ofstream out(PlatformFilesystemPath(tmp),
+                      std::ios::binary | std::ios::trunc);
     if (!out) {
       if (diagnostic != nullptr) {
         const auto status = TempManifestStatus(StatusCode::memory_allocation_failed,

@@ -566,7 +566,10 @@ operations:
     sblr_mapping_required: true
     accepts_names: true
     requires_transaction_context: false
-    notes: non-cluster GPU inspect/admission behavior implemented with policy gates materialized-batch reference kernels CPU fallback metric emission and deterministic diagnostics; no hardware GPU release claim is implied
+    notes:
+      - Catalog DDL creates a logical database namespace descriptor inside an already-open ScratchBird database.
+      - It does not create a database file, seed a security catalog, or establish a first principal.
+      - Physical first-principal creation belongs solely to the explicit local embedded bootstrap command; public lifecycle.create_database refuses with SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED.
   - operation_id: ddl.create_schema
     scope_status: noncluster_required
     closure_slice: NCE-1101
@@ -2306,15 +2309,15 @@ operations:
     authority_domain: engine_lifecycle
     header: lifecycle/engine_lifecycle_api.hpp
     implementation: lifecycle/engine_lifecycle_api.cpp
-    implementation_status: behavior_implemented
-    default_diagnostic: SB_ENGINE_API_OK
+    implementation_status: exact_refusal
+    default_diagnostic: SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED
     cluster_only: false
     requires_security_context: false
     requires_cluster_authority: false
     sblr_mapping_required: true
     accepts_names: false
     requires_transaction_context: false
-    notes: engine-owned lifecycle create with durable database and filespace identity bootstrap policy gates evidence and deterministic diagnostics
+    notes: public SBLR/API create is refused before any storage mutation; only the explicit local embedded first-principal bootstrap command may establish a database and its Tx1 security catalog
   - operation_id: lifecycle.open_database
     scope_status: noncluster_required
     closure_slice: DBLC-002

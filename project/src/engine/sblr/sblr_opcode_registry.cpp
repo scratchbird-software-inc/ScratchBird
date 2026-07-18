@@ -590,7 +590,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       Entry("ddl.alter_object", "SBLR_DDL_ALTER_OBJECT", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
       Entry("ddl.drop_object", "SBLR_DDL_DROP_OBJECT", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
       Entry("ddl.comment_on_object", "SBLR_DDL_COMMENT_ON_OBJECT", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, true, true),
-      Entry("lifecycle.create_database", "SBLR_LIFECYCLE_CREATE_DATABASE", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, false, false),
+      Entry("lifecycle.create_database", "SBLR_LIFECYCLE_CREATE_DATABASE", SblrOpcodeCategory::management, SblrOpcodeSupport::local_profile_refusal, false, false, false, "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"),
       Entry("lifecycle.open_database", "SBLR_LIFECYCLE_OPEN_DATABASE", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, false, false),
       Entry("lifecycle.attach_database", "SBLR_LIFECYCLE_ATTACH_DATABASE", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, true, false),
       Entry("lifecycle.detach_database", "SBLR_LIFECYCLE_DETACH_DATABASE", SblrOpcodeCategory::management, SblrOpcodeSupport::implemented, true, false),
@@ -959,6 +959,14 @@ SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnve
   if (entry->opcode != envelope.opcode) {
     result.diagnostic_id = "SB_DIAG_SBLR_OPCODE_MISMATCH";
     result.detail = "expected=" + entry->opcode + "; actual=" + envelope.opcode;
+    return result;
+  }
+  if (entry->support != SblrOpcodeSupport::implemented) {
+    result.diagnostic_id = entry->refusal_diagnostic.empty()
+                               ? "SB_DIAG_SBLR_OPCODE_REFUSED"
+                               : entry->refusal_diagnostic;
+    result.detail = "operation_is_refused_by_registered_sblr_profile:" +
+                    entry->operation_id;
     return result;
   }
   if (entry->requires_security_context && !envelope.requires_security_context) {

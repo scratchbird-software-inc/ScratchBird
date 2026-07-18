@@ -7,14 +7,15 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Embedded sb_isql route smoke.
+"""Embedded SBsql missing-database refusal smoke.
 
-Drives the public CLI through:
-  sb_isql -> in-process SBsql parser bridge -> embedded engine dispatcher.
+Drives the public CLI through its ordinary embedded route and proves that the
+route cannot turn a missing database into an uncredentialed database creation.
+First-principal creation is a distinct, explicit ``SBsql bootstrap`` command
+that runs before normal parsing and requires OS bootstrap authority.
 
-No server, listener, parser worker process, or authentication database is launched
-for this route. The embedded session is the local sysarch session for only this
-single database file.
+No server, listener, parser worker process, manager, or authentication database
+is launched for this route.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ def main() -> int:
     args = parser.parse_args()
 
     work = make_work_dir(Path(args.work_dir))
+    succeeded = False
     try:
         database = work / "embedded.sbdb"
         completed = subprocess.run(
@@ -75,21 +77,22 @@ def main() -> int:
             stderr=(work / "sb_isql.err").open("wb"),
             check=False,
         )
-        if completed.returncode != 0:
-            raise SmokeError(f"sb_isql exited {completed.returncode}")
+        if completed.returncode == 0:
+            raise SmokeError("ordinary embedded SBsql unexpectedly accepted a missing database")
+        if database.exists():
+            raise SmokeError("ordinary embedded SBsql created a database without bootstrap")
         output = (work / "sb_isql.out").read_text(encoding="utf-8", errors="replace").strip()
-        if output != "1":
-            raise SmokeError(f"sb_isql SELECT 1 returned {output!r}")
-        if not database.exists():
-            raise SmokeError("embedded route did not create/open the database file")
-        print(f"sbsql_sb_isql_embedded_route_smoke=passed work={work}")
+        if output == "1":
+            raise SmokeError("ordinary embedded SBsql executed SQL against a missing database")
+        succeeded = True
+        print("sbsql_sb_isql_embedded_route_smoke=passed missing_database_refused")
         return 0
     except Exception as exc:  # noqa: BLE001 - ctest should receive the concrete failure.
         print(f"sbsql_sb_isql_embedded_route_smoke=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
     finally:
-        if not any((work / name).exists() and (work / name).stat().st_size for name in ("sb_isql.err",)):
+        if succeeded:
             shutil.rmtree(work, ignore_errors=True)
 
 

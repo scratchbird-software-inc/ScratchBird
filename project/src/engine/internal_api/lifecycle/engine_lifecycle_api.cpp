@@ -12,9 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "database_lifecycle.hpp"
 #include "extensibility/extensibility_support.hpp"
-#include "uuid.hpp"
 
-#include <chrono>
 #include <string>
 
 namespace scratchbird::engine::internal_api {
@@ -105,29 +103,6 @@ bool ReadOnlyRequested(const EngineApiRequest& request) {
 std::string RequestedMode(const EngineApiRequest& request, const std::string& fallback) {
   const auto mode = OptionValue(request, "mode:");
   return mode.empty() ? fallback : mode;
-}
-
-std::uint64_t CurrentUnixEpochMillisForLifecycle() {
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-}
-
-std::uint32_t RequestedPageSize(const EngineApiRequest& request) {
-  const auto value = OptionValue(request, "page_size:");
-  if (value.empty()) {
-    return static_cast<std::uint32_t>(scratchbird::storage::disk::PageSizeProfile::profile_16k);
-  }
-  try {
-    return static_cast<std::uint32_t>(std::stoul(value));
-  } catch (...) {
-    return 0;
-  }
-}
-
-bool MinimalBootstrapAllowed(const EngineApiRequest& request) {
-  return HasOptionToken(request, "allow_minimal_resource_bootstrap:true");
 }
 
 scratchbird::storage::database::DatabaseLifecycleResult OpenDatabaseForLifecycle(
@@ -359,68 +334,11 @@ EngineOpenLifecycleResult EngineOpenLifecycle(const EngineOpenLifecycleRequest& 
 
 EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleRequest& request) {
   constexpr const char* operation = "lifecycle.create_database";
-  auto authority = ValidateLifecycleAuthority<EngineCreateLifecycleResult>(request, operation, false);
-  if (!authority.ok) { return authority; }
-  const auto now = CurrentUnixEpochMillisForLifecycle();
-  const auto database_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
-      scratchbird::core::platform::UuidKind::database, now);
-  if (!database_uuid.ok()) {
-    return LifecycleFailure<EngineCreateLifecycleResult>(request.context,
-                                                        operation,
-                                                        database_uuid.diagnostic.diagnostic_code,
-                                                        database_uuid.diagnostic.message_key);
-  }
-  const auto filespace_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
-      scratchbird::core::platform::UuidKind::filespace, now + 1);
-  if (!filespace_uuid.ok()) {
-    return LifecycleFailure<EngineCreateLifecycleResult>(request.context,
-                                                        operation,
-                                                        filespace_uuid.diagnostic.diagnostic_code,
-                                                        filespace_uuid.diagnostic.message_key);
-  }
-  scratchbird::storage::database::DatabaseCreateConfig create;
-  create.path = request.context.database_path;
-  create.database_uuid = database_uuid.value;
-  create.filespace_uuid = filespace_uuid.value;
-  create.page_size = RequestedPageSize(request);
-  create.creation_unix_epoch_millis = now;
-  create.resource_seed_pack_root = OptionValue(request, "resource_seed_pack_root:");
-  create.allow_minimal_resource_bootstrap = MinimalBootstrapAllowed(request);
-  create.require_resource_seed_pack = !create.allow_minimal_resource_bootstrap;
-  create.policy_seed_pack_root = OptionValue(request, "policy_seed_pack_root:");
-  create.require_policy_seed_pack = !create.allow_minimal_resource_bootstrap;
-  create.allow_overwrite = false;
-  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
-  if (!created.ok()) {
-    auto result = LifecycleFailure<EngineCreateLifecycleResult>(
-        request.context,
-        operation,
-        created.diagnostic.diagnostic_code.empty() ? "SB_ENGINE_API_LIFECYCLE_CREATE_FAILED" : created.diagnostic.diagnostic_code,
-        created.diagnostic.message_key);
-    result.cluster_authority_required = created.diagnostic.diagnostic_code.find("CLUSTER") != std::string::npos;
-    return result;
-  }
-  auto persisted_request = request;
-  persisted_request.localized_names.clear();
-  persisted_request.localized_names.push_back({"en", "default", "/sys/lifecycle", "created", true});
-  auto result = PersistedRecordResult<EngineCreateLifecycleResult>(persisted_request,
-                                                                  operation,
-                                                                  "engine_lifecycle",
-                                                                  false,
-                                                                  "created");
-  if (result.ok) {
-    result.primary_object.uuid.canonical = scratchbird::core::uuid::UuidToString(created.state.database_uuid.value);
-    result.primary_object.object_kind = "database";
-    AddApiBehaviorRow(&result, {{"lifecycle_state", "created"},
-                                {"phase", scratchbird::storage::database::DatabaseLifecyclePhaseName(created.state.phase)},
-                                {"database_path", created.state.path},
-                                {"database_uuid", scratchbird::core::uuid::UuidToString(created.state.database_uuid.value)},
-                                {"filespace_uuid", scratchbird::core::uuid::UuidToString(created.state.filespace_uuid.value)},
-                                {"write_admission_fenced", created.state.write_admission_fenced ? "true" : "false"}});
-    AddApiBehaviorEvidence(&result, "engine_lifecycle", "created");
-    AddApiBehaviorEvidence(&result, "database_file", "created");
-  }
-  return result;
+  return LifecycleFailure<EngineCreateLifecycleResult>(
+      request.context,
+      operation,
+      std::string(kEngineCreateLifecycleBootstrapRequiredDiagnostic),
+      "database_creation_requires_explicit_local_embedded_first_principal_bootstrap");
 }
 
 EngineAttachLifecycleResult EngineAttachLifecycle(const EngineAttachLifecycleRequest& request) {

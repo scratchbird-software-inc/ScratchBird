@@ -66,6 +66,28 @@ The exact command depends on the selected binary and mode. Whatever that command
 
 In a first test, avoid advanced options. Do not test backup, restore, repair, import, replication, or compatibility parser behavior until a basic create/open/connect/query cycle works.
 
+### Local embedded first-use bootstrap
+
+For a new local database, use the explicit `SBsql bootstrap` startup operation.
+It runs in-process, creates the database and transaction-1 security catalog
+together, and therefore does not require an existing database login. It is not
+a normal connection or an automatic create-on-open path: Root/Administrator
+authority and a protected initial password are still required.
+
+```text
+SBsql bootstrap <first-principal> <database-path> \
+  --mode=embedded \
+  --platform-profile <instance-config>/SBbootstrap.profile \
+  --resource-seed-pack-root <install-root>/share/scratchbird/resources/seed-packs/initial-resource-pack \
+  --policy-seed-pack-root <install-root>/share/scratchbird/resources/policy-packs/default-local-password
+```
+
+The command prompts twice for the first principal password unless
+`--password-stdin` is supplied. Never pass that password as an argument or
+environment variable. The equivalent `SBsec bootstrap` entry point uses the
+same implementation; the listener, manager, and all parser processes remain
+unable to create a database.
+
 ## First SBsql Workload
 
 Once connected with SBsql (ScratchBird's native command language), run a small transaction that exercises names, types, inserts, selects, and commit. The example below uses native SBsql syntax with standard types.

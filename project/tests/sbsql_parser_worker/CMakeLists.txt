@@ -3086,7 +3086,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_database_lifecycle_exact_route_conformance
   )
   set_tests_properties(sbsql_database_lifecycle_exact_route_conformance PROPERTIES
-    LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;database_lifecycle"
+    LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;sbsql_exact_refusal;database_lifecycle"
   )
 
   add_executable(
@@ -4714,6 +4714,20 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     target_compile_features(sbsql_example_database_seed PRIVATE cxx_std_23)
     target_link_libraries(sbsql_example_database_seed PRIVATE sb_engine_sblr sb_storage_database sb_core_uuid)
   endif()
+  if(TARGET sb_storage_database AND TARGET sb_core_uuid)
+    add_executable(sbsql_manager_database_seed sbsql_manager_database_seed.cpp)
+    target_compile_features(sbsql_manager_database_seed PRIVATE cxx_std_23)
+    target_include_directories(sbsql_manager_database_seed PRIVATE
+      "${PROJECT_SOURCE_DIR}/drivers/tool/cli"
+    )
+    # The fixture shares the production bootstrap verifier; it has no parser,
+    # listener, manager, or engine-authentication shortcut dependency.
+    target_link_libraries(sbsql_manager_database_seed PRIVATE
+      sb_storage_database
+      sb_core_uuid
+      sb_cli_first_principal_bootstrap
+    )
+  endif()
 
   add_executable(sbp_sbsql_full_route_execution_smoke sbsql_full_route_execution_smoke.cpp)
   target_compile_features(sbp_sbsql_full_route_execution_smoke PRIVATE cxx_std_23)
@@ -4743,7 +4757,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "public_single_node_full_route_gate;sbsql_parser_worker;sb_isql;cli_tool_gate;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
     )
   endif()
-  if(TARGET sb_isql AND TARGET sbmn_manager AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  if(TARGET sb_isql AND TARGET sbmn_manager AND TARGET sbsql_manager_database_seed AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(
       NAME sbsql_linux_manager_listener_parser_ipc_server_full_path_smoke
       COMMAND "${SBSQL_PYTHON3}"
@@ -4753,6 +4767,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --manager $<TARGET_FILE:sbmn_manager>
               --parser-worker $<TARGET_FILE:sbp_sbsql>
               --sb-isql $<TARGET_FILE:sb_isql>
+              --manager-db-seeder $<TARGET_FILE:sbsql_manager_database_seed>
               --work-dir "${CMAKE_BINARY_DIR}/sbsql_linux_manager_full_path"
               --evidence-file "${CMAKE_BINARY_DIR}/tests/sbsql_parser_worker/sbsql_linux_manager_full_path_smoke.json"
     )

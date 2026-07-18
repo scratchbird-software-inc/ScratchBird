@@ -5648,12 +5648,6 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     append_session_operand("database_path",
                            DerivedLifecycleDatabasePath(session, encoded));
   }
-  if (dispatch_operation_id == "lifecycle.create_database") {
-    append_session_operand("resource_seed_pack_root",
-                           session.resource_seed_pack_root);
-    append_session_operand("policy_seed_pack_root",
-                           session.policy_seed_pack_root);
-  }
   if (dispatch_operation_id == "lifecycle.repair_database") {
     append_session_operand("repair_plan_id",
                            JsonTextField(encoded, "repair_plan_id").value_or(""));

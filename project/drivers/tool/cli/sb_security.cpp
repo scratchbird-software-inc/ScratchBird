@@ -13,7 +13,7 @@
  *
  * Usage:
  *   sb_security <command> <database> [options]
- *   sb_security bootstrap <username> <database> --mode=embedded
+ *   sb_security bootstrap <username> <database> --mode=embedded ...
  *
  * User Management Commands:
  *   user list                        List all users
@@ -54,7 +54,6 @@
  *
  * Options:
  *   -U, --user=<username>    Admin username
- *   --password-stdin         Read a bootstrap password from protected stdin
  *   -p, --port=<n>           TCP port (default: 3092)
  *   -v, --verbose            Verbose output
  *   -q, --quiet              Only show errors
@@ -65,10 +64,8 @@
 
 #include <iostream>
 #include <algorithm>
-#include <chrono>
 #include <cctype>
 #include <cstdint>
-#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -77,7 +74,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <iomanip>
-#include <openssl/crypto.h>
+#include <string_view>
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -95,11 +92,7 @@
 #include "scratchbird/client/connection.h"
 #include "scratchbird/core/status.h"
 #include "scratchbird/core/error_context.h"
-#include "bootstrap_os_authority.hpp"
-#include "bootstrap_password_verifier.hpp"
-#include "database_lifecycle.hpp"
-#include "memory.hpp"
-#include "uuid.hpp"
+#include "first_principal_bootstrap.hpp"
 
 using namespace scratchbird;
 using namespace scratchbird::client;
@@ -110,7 +103,6 @@ using namespace scratchbird::client;
 
 enum class SecurityCommand {
     NONE,
-    BOOTSTRAP_FIRST_PRINCIPAL,
     // User commands
     USER_LIST,
     USER_CREATE,
@@ -192,11 +184,6 @@ struct SecurityConfig {
     bool json = false;
     bool probe_auth_surface = false;
     bool show_auth_context = false;
-    bool bootstrap_password_stdin = false;
-    bool mode_explicit = false;
-    std::string bootstrap_platform_profile;
-    std::string resource_seed_pack_root;
-    std::string policy_seed_pack_root;
 };
 
 // =============================================================================
@@ -269,186 +256,6 @@ std::string readPassword(const std::string& prompt) {
     std::cout << "\n";
 
     return password;
-}
-
-void clearSensitive(std::string& value) {
-    if (!value.empty()) {
-        OPENSSL_cleanse(value.data(), value.size());
-        value.clear();
-    }
-}
-
-bool validBootstrapPrincipalName(const std::string& value) {
-    if (value.empty() || value.size() > 128) return false;
-    const auto first = static_cast<unsigned char>(value.front());
-    if (!(std::isalpha(first) || first == '_')) return false;
-    return std::all_of(value.begin() + 1, value.end(), [](unsigned char ch) {
-        return std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.';
-    });
-}
-
-bool bootstrapFirstPrincipal() {
-    if (g_config.mode != "embedded") {
-        printError("First-principal bootstrap requires --mode=embedded");
-        return false;
-    }
-    if (!g_config.connection_string.empty() || !g_config.admin_user.empty() ||
-        !g_config.admin_password.empty()) {
-        printError("First-principal bootstrap accepts only an offline database path and protected password input");
-        return false;
-    }
-    if (!validBootstrapPrincipalName(g_config.username)) {
-        printError("Bootstrap principal must begin with a letter or underscore and contain only letters, digits, '_', '-', or '.'");
-        return false;
-    }
-    if (g_config.bootstrap_platform_profile.empty() ||
-        g_config.resource_seed_pack_root.empty() ||
-        g_config.policy_seed_pack_root.empty()) {
-        printError("BOOTSTRAP.AUTH_DB_INPUT_INVALID");
-        return false;
-    }
-    if (std::filesystem::exists(g_config.database_path)) {
-        printError("BOOTSTRAP.AUTH_DB_ALREADY_OWNED");
-        return false;
-    }
-
-    const auto loaded_profile = scratchbird::cli::LoadBootstrapPlatformProfile(
-        g_config.bootstrap_platform_profile);
-    if (!loaded_profile.ok) {
-        printError(scratchbird::cli::kBootstrapDeniedDiagnostic);
-        return false;
-    }
-    const auto os_authority =
-        scratchbird::cli::VerifyAndAssumeBootstrapServiceIdentity(
-            loaded_profile.profile);
-    if (!os_authority.ok || !os_authority.ownership_handoff_ready) {
-        printError(scratchbird::cli::kBootstrapDeniedDiagnostic);
-        return false;
-    }
-    const auto prepared_access =
-        scratchbird::cli::EnsureBootstrapServiceIdentityAccess(
-            loaded_profile.profile, g_config.database_path);
-    if (!prepared_access.ok || !prepared_access.ownership_handoff_ready) {
-        printError("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
-        return false;
-    }
-
-    std::string password;
-    if (g_config.bootstrap_password_stdin) {
-        if (!std::getline(std::cin, password)) {
-            printError("Unable to read bootstrap password from stdin");
-            return false;
-        }
-    } else {
-        password = readPassword("Enter password for " + g_config.username + ": ");
-        std::string confirmation = readPassword("Confirm password: ");
-        const bool matches = password == confirmation;
-        clearSensitive(confirmation);
-        if (!matches) {
-            clearSensitive(password);
-            printError("Passwords do not match");
-            return false;
-        }
-    }
-    if (!scratchbird::cli::BootstrapPasswordSecretValid(password)) {
-        clearSensitive(password);
-        printError("BOOTSTRAP.SYSARCH_PASSWORD_POLICY_INVALID");
-        return false;
-    }
-
-    std::string credential_fingerprint;
-    if (!scratchbird::cli::DeriveBootstrapPasswordVerifier(
-            password, &credential_fingerprint)) {
-        clearSensitive(password);
-        printError("BOOTSTRAP.SYSARCH_PASSWORD_POLICY_INVALID");
-        return false;
-    }
-    clearSensitive(password);
-
-    namespace db = scratchbird::storage::database;
-    namespace memory = scratchbird::core::memory;
-    namespace uuid = scratchbird::core::uuid;
-    using scratchbird::core::platform::UuidKind;
-    const auto configured_memory = memory::ConfigureDefaultMemoryManager(
-        memory::DefaultLocalEngineMemoryPolicy(), "sbsec.bootstrap");
-    if (!configured_memory.ok()) {
-        clearSensitive(credential_fingerprint);
-        printError("BOOTSTRAP.AUTH_DB_INPUT_INVALID");
-        return false;
-    }
-    const auto now = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
-    const auto database_uuid =
-        uuid::GenerateEngineIdentityV7(UuidKind::database, now);
-    const auto filespace_uuid =
-        uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
-    if (!database_uuid.ok() || !filespace_uuid.ok()) {
-        clearSensitive(credential_fingerprint);
-        printError("BOOTSTRAP.AUTH_DB_INPUT_INVALID");
-        return false;
-    }
-
-    db::DatabaseCreateConfig request;
-    request.path = g_config.database_path;
-    request.database_uuid = database_uuid.value;
-    request.filespace_uuid = filespace_uuid.value;
-    request.page_size = 16u * 1024u;
-    request.creation_unix_epoch_millis = now;
-    request.resource_seed_pack_root = g_config.resource_seed_pack_root;
-    request.require_resource_seed_pack = true;
-    request.policy_seed_pack_root = g_config.policy_seed_pack_root;
-    request.require_policy_seed_pack = true;
-    request.bootstrap_principal_name = g_config.username;
-    request.bootstrap_credential_fingerprint = credential_fingerprint;
-    request.require_bootstrap_principal = true;
-    request.allow_uncredentialed_bootstrap = false;
-    request.allow_overwrite = false;
-    const auto result = db::CreateDatabaseFile(request);
-    clearSensitive(request.bootstrap_credential_fingerprint);
-    clearSensitive(credential_fingerprint);
-    if (!result.ok()) {
-        printError(result.diagnostic.diagnostic_code.empty()
-                       ? "BOOTSTRAP.AUTH_DB_INPUT_INVALID"
-                       : result.diagnostic.diagnostic_code);
-        return false;
-    }
-    const auto finalized_access =
-        scratchbird::cli::EnsureBootstrapServiceIdentityAccess(
-            loaded_profile.profile, g_config.database_path);
-    if (!finalized_access.ok || !finalized_access.ownership_handoff_ready) {
-        printError("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
-        return false;
-    }
-
-    const auto committed_catalog =
-        db::ReadDatabaseBootstrapSecurityCatalog(g_config.database_path);
-    if (!committed_catalog.ok() || !committed_catalog.state.present ||
-        !committed_catalog.state.committed_by_inventory) {
-        printError("BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE");
-        return false;
-    }
-    const std::string principal_uuid =
-        uuid::UuidToString(committed_catalog.state.principal_uuid.value);
-    const std::string sysarch_role_uuid =
-        uuid::UuidToString(committed_catalog.state.sysarch_role_uuid.value);
-    if (sysarch_role_uuid != db::kCanonicalSysarchRoleObjectUuid ||
-        committed_catalog.state.principal_name != g_config.username ||
-        principal_uuid.empty()) {
-        printError("BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE");
-        return false;
-    }
-    log("First security principal created and committed by transaction-1 catalog authority");
-    log("bootstrap_principal_uuid=" + principal_uuid);
-    log("bootstrap_scope=initial_local_embedded_database_security_tree");
-    log("policy_generation=" +
-        std::to_string(committed_catalog.state.policy_generation));
-    if (result.create_finality ==
-        db::DatabaseCreateFinalityClass::committed_with_warning) {
-        logVerbose("Create finality: committed_with_warning");
-    }
-    return true;
 }
 
 std::string normalizeConnectionMode(std::string value) {
@@ -966,7 +773,6 @@ void disconnectFromDatabase() {
 
 bool executeCommand() {
     switch (g_config.command) {
-        case SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL: return bootstrapFirstPrincipal();
         case SecurityCommand::USER_LIST:      return userList();
         case SecurityCommand::USER_CREATE:    return userCreate();
         case SecurityCommand::USER_DELETE:    return userDelete();
@@ -1009,8 +815,11 @@ void printUsage(const char* program) {
     std::cout << "ScratchBird Security Administration Tool\n\n";
     std::cout << "Usage:\n";
     std::cout << "  " << program << " <command> <database> [options]\n\n";
-    std::cout << "Bootstrap Command:\n";
-    std::cout << "  bootstrap <username>          Create the first offline administrator\n\n";
+    std::cout << "First-principal bootstrap (shared with SBsql):\n";
+    std::cout << "  " << program
+              << " bootstrap <principal> <database> --mode=embedded"
+                 " --platform-profile <file> --resource-seed-pack-root <dir>"
+                 " --policy-seed-pack-root <dir> [--password-stdin]\n\n";
     std::cout << "User Commands:\n";
     std::cout << "  user list                    List all users\n";
     std::cout << "  user create <username>       Create a new user\n";
@@ -1037,10 +846,6 @@ void printUsage(const char* program) {
     std::cout << "  check                        Run security assessment\n\n";
     std::cout << "Options:\n";
     std::cout << "  -U, --user=<username>  Admin username\n";
-    std::cout << "      --password-stdin   Read bootstrap password from protected stdin\n";
-    std::cout << "      --platform-profile=<path> Bootstrap OS/service profile\n";
-    std::cout << "      --resource-seed-pack-root=<path> Required resource seed pack\n";
-    std::cout << "      --policy-seed-pack-root=<path> Required policy seed pack\n";
     std::cout << "  -H, --host=<host>      Host (default: localhost)\n";
     std::cout << "  -p, --port=<n>         TCP port (default: 3092)\n";
     std::cout << "      --connection=<str> Full driver connection string\n";
@@ -1074,7 +879,9 @@ void printUsage(const char* program) {
     std::cout << "      --version          Show version\n\n";
     std::cout << "Examples:\n";
     std::cout << "  " << program << " bootstrap qa_admin mydb.sbdb --mode=embedded "
-                 "--platform-profile=SBbootstrap.profile\n";
+                 "--platform-profile=SBbootstrap.profile "
+                 "--resource-seed-pack-root=resource-pack "
+                 "--policy-seed-pack-root=policy-pack\n";
     std::cout << "  " << program << " user list mydb.sbdb\n";
     std::cout << "  " << program << " user create admin mydb.sbdb -U root\n";
     std::cout << "  " << program << " check mydb.sbdb -v\n";
@@ -1092,15 +899,10 @@ bool parseArgs(int argc, char* argv[]) {
     int arg_index = 1;
     std::string category = argv[arg_index++];
 
-    // Parse command category
-    if (category == "bootstrap") {
-        if (arg_index >= argc) {
-            printError("Missing bootstrap principal name");
-            return false;
-        }
-        g_config.command = SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL;
-        g_config.username = argv[arg_index++];
-    } else if (category == "user") {
+    // Parse command category.  `bootstrap` is intercepted by main before this
+    // normal connection-oriented parser so it can never inherit CLI routing or
+    // security-login options.
+    if (category == "user") {
         if (arg_index >= argc) {
             printError("Missing user subcommand");
             return false;
@@ -1204,16 +1006,8 @@ bool parseArgs(int argc, char* argv[]) {
         } else if (arg.find("--user=") == 0) {
             g_config.admin_user = arg.substr(7);
         } else if (arg == "-P" && arg_index + 1 < argc) {
-            if (g_config.command == SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL) {
-                printError("Bootstrap passwords are forbidden in command-line arguments; use the prompt or --password-stdin");
-                return false;
-            }
             g_config.admin_password = argv[++arg_index];
         } else if (arg.find("--password=") == 0) {
-            if (g_config.command == SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL) {
-                printError("Bootstrap passwords are forbidden in command-line arguments; use the prompt or --password-stdin");
-                return false;
-            }
             g_config.admin_password = arg.substr(11);
         } else if (arg == "-H" && arg_index + 1 < argc) {
             g_config.host = argv[++arg_index];
@@ -1229,10 +1023,8 @@ bool parseArgs(int argc, char* argv[]) {
             g_config.connection_string = arg.substr(13);
         } else if (arg == "--mode" && arg_index + 1 < argc) {
             g_config.mode = argv[++arg_index];
-            g_config.mode_explicit = true;
         } else if (arg.rfind("--mode=", 0) == 0) {
             g_config.mode = arg.substr(7);
-            g_config.mode_explicit = true;
         } else if (arg == "--ipc-method" && arg_index + 1 < argc) {
             g_config.ipc_method = argv[++arg_index];
         } else if (arg.rfind("--ipc-method=", 0) == 0) {
@@ -1351,20 +1143,6 @@ bool parseArgs(int argc, char* argv[]) {
             g_config.probe_auth_surface = true;
         } else if (arg == "--show-auth-context") {
             g_config.show_auth_context = true;
-        } else if (arg == "--password-stdin") {
-            g_config.bootstrap_password_stdin = true;
-        } else if (arg == "--platform-profile" && arg_index + 1 < argc) {
-            g_config.bootstrap_platform_profile = argv[++arg_index];
-        } else if (arg.rfind("--platform-profile=", 0) == 0) {
-            g_config.bootstrap_platform_profile = arg.substr(19);
-        } else if (arg == "--resource-seed-pack-root" && arg_index + 1 < argc) {
-            g_config.resource_seed_pack_root = argv[++arg_index];
-        } else if (arg.rfind("--resource-seed-pack-root=", 0) == 0) {
-            g_config.resource_seed_pack_root = arg.substr(26);
-        } else if (arg == "--policy-seed-pack-root" && arg_index + 1 < argc) {
-            g_config.policy_seed_pack_root = argv[++arg_index];
-        } else if (arg.rfind("--policy-seed-pack-root=", 0) == 0) {
-            g_config.policy_seed_pack_root = arg.substr(24);
         } else if (arg == "-h" || arg == "--help") {
             printUsage(argv[0]);
             std::exit(0);
@@ -1381,37 +1159,13 @@ bool parseArgs(int argc, char* argv[]) {
     }
     g_config.mode = normalized_mode;
 
-    if (g_config.command == SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL) {
-        if (!g_config.mode_explicit || g_config.mode != "embedded") {
-            printError("First-principal bootstrap requires explicit --mode=embedded");
-            return false;
-        }
-        if (!g_config.connection_string.empty()) {
-            printError("First-principal bootstrap requires a database file path, not a connection string");
-            return false;
-        }
-        if (g_config.bootstrap_platform_profile.empty() ||
-            g_config.resource_seed_pack_root.empty() ||
-            g_config.policy_seed_pack_root.empty()) {
-            printError("Bootstrap requires --platform-profile, --resource-seed-pack-root, and --policy-seed-pack-root");
-            return false;
-        }
-    } else if (g_config.bootstrap_password_stdin ||
-               !g_config.bootstrap_platform_profile.empty() ||
-               !g_config.resource_seed_pack_root.empty() ||
-               !g_config.policy_seed_pack_root.empty()) {
-        printError("Bootstrap-only options are only valid with the bootstrap command");
-        return false;
-    }
-
     if (g_config.database_path.empty() && g_config.connection_string.empty()) {
         printError("Missing database path (or provide --connection)");
         return false;
     }
 
     // Prompt for admin password if user given but no password
-    if (g_config.command != SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL &&
-        !g_config.admin_user.empty() && g_config.admin_password.empty() &&
+    if (!g_config.admin_user.empty() && g_config.admin_password.empty() &&
         !g_config.probe_auth_surface) {
         g_config.admin_password = readPassword("Admin password: ");
     }
@@ -1424,6 +1178,10 @@ bool parseArgs(int argc, char* argv[]) {
 // =============================================================================
 
 int main(int argc, char* argv[]) {
+    if (argc >= 2 && std::string_view(argv[1]) == "bootstrap") {
+        return scratchbird::cli::RunFirstPrincipalBootstrapCli(
+            argv[0], argc - 2, argv + 2, std::cin, std::cout, std::cerr);
+    }
     if (argc < 3) {
         printUsage(argv[0]);
         return 1;
@@ -1448,10 +1206,6 @@ int main(int argc, char* argv[]) {
                           : scratchbird::cli::renderAuthProbeText(probe))
                   << "\n";
         return 0;
-    }
-
-    if (g_config.command == SecurityCommand::BOOTSTRAP_FIRST_PRINCIPAL) {
-        return bootstrapFirstPrincipal() ? 0 : 1;
     }
 
     // Connect to database

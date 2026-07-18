@@ -13,6 +13,10 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_CREATE_API
+// This is catalog DDL for a logical database namespace inside an already-open
+// ScratchBird database.  It must not be used to create a database file, seed a
+// security catalog, or establish the first principal; those actions belong
+// only to the explicit local embedded bootstrap command.
 struct EngineCreateDatabaseRequest : EngineApiRequest {};
 struct EngineCreateDatabaseResult : EngineApiResult {};
 EngineCreateDatabaseResult EngineCreateDatabase(const EngineCreateDatabaseRequest& request);

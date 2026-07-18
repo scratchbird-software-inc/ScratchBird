@@ -28,22 +28,22 @@
     {
             "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
             "resource_kind": "engine_sblr_opcode_registry",
-            "sha256": "fe33f3ffc717d68c4276b139957188ead04e87c6c13fa0776d410184852227c9"
+            "sha256": "bf21cba89fe2c04e549caba461767b5d9b698bbd1359b931189497af6e104e42"
     },
     {
             "path": "project/src/server/sblr_admission.cpp",
             "resource_kind": "server_sblr_admission_surface",
-            "sha256": "d1814b30183ed1fdc607b99785836e250f9d1f46aa0834437e99c954ee858610"
+            "sha256": "af440b449144f2fc459b70343c5c01a8c37fe6bdedbe26207c532790be5f7ffa"
     },
     {
             "path": "project/src/server/sblr_dispatch_server.cpp",
             "resource_kind": "server_sblr_dispatch_surface",
-            "sha256": "6735952187c729f2ab3f64556a868bfcaed77c9daee59ab8b8a0b4a8681d9f3d"
+            "sha256": "a594ec889d4d0f503345052162a36c15569ee4d03e8fe9c787e3143a8a8585e2"
     },
     {
             "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
             "resource_kind": "parser_facing_strict_row_coverage_ledger",
-            "sha256": "e996dcabcec3eba8a44df386f5e4a30b1f8c0597d0d37ed77bf80c8ed8d58dcd"
+            "sha256": "57ef88c5b31bf18e7b9861fc76e6474ee1770593aed160ec9c7079636ec3b8c9"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",

@@ -127,6 +127,85 @@ def workflow_job_block(text: str, job_name: str, rel: str) -> str:
     return match.group(0)
 
 
+def check_push_to_main_trigger(text: str, rel: str) -> None:
+    trigger_match = re.search(
+        r"(?ms)^on:\s*\n.*?(?=^permissions:\s*$)", text
+    )
+    if trigger_match is None:
+        fail(f"workflow_trigger_block_missing:{rel}")
+    if re.search(
+        r"(?m)^  push:\s*\n    branches:\s*\n      - main\s*$",
+        trigger_match.group(0),
+    ) is None:
+        fail(f"main_push_trigger_missing:{rel}")
+
+
+def check_main_push_ci_policy(
+    text: str,
+    rel: str,
+    job_name: str,
+    opt_in_variable: str,
+) -> None:
+    check_push_to_main_trigger(text, rel)
+    block = workflow_job_block(text, job_name, rel)
+    expected_condition = (
+        "if: ${{ github.event_name != 'pull_request' || "
+        f"vars.{opt_in_variable} == 'true' }}"
+    )
+    require_token(block, expected_condition, rel)
+
+
+def check_installer_upload_missing_files_policy(
+    text: str,
+    rel: str,
+    job_name: str,
+    step_name: str,
+    artifact_path: str,
+) -> None:
+    block = workflow_job_block(text, job_name, rel)
+    pattern = rf"""(?ms)^      - name: {re.escape(step_name)}\s*
+        uses: actions/upload-artifact@v4\s*
+        if: always\(\)\s*
+        with:\s*
+        .*?^          path: {re.escape(artifact_path)}\s*
+          if-no-files-found: warn\s*$"""
+    if re.search(pattern, block) is None:
+        fail(
+            "installer_upload_missing_files_policy_invalid:"
+            f"{rel}:{job_name}:{step_name}"
+        )
+
+
+def check_installer_main_push_policy(text: str, rel: str) -> None:
+    check_push_to_main_trigger(text, rel)
+    for job_name in (
+        "linux-installers",
+        "windows-installers",
+        "macos-installers",
+        "macos-universal-installers",
+    ):
+        block = workflow_job_block(text, job_name, rel)
+        require_token(block, "github.event_name == 'push'", rel)
+
+
+def check_linux_privileged_bootstrap_smoke(text: str, rel: str) -> None:
+    """Require hosted installer verification to execute, not skip, bootstrap."""
+
+    block = workflow_job_block(text, "linux-installers", rel)
+    required_tokens = (
+        "Smoke Linux system-package lifecycle",
+        "smoke_install_linux_system.py",
+        "--artifact-root build/installers/linux",
+        "--work-root build/install-smoke/linux/system-package-proof",
+        "--run-privileged-deb-install",
+        "--require-privileged-deb-install",
+        "set -o pipefail",
+        "build/install-smoke/linux/system-package-workflow.log",
+    )
+    for token in required_tokens:
+        require_token(block, token, rel)
+
+
 def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> None:
     block = workflow_job_block(text, job_name, rel)
     required_patterns = {
@@ -245,8 +324,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "native ScratchBird listener default is TCP port 3092",
         "default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources",
         "LLVM is mandatory",
-        "fully inspected portable tar.gz/ZIP bundles",
-        "DEB, RPM, AUR, PKG, and MSI packages remain workflow artifacts",
+        "fully verified portable archives and system installer packages",
+        "DEB, RPM, AUR, PKG, and MSI packages are published for tester installation",
         '--checkout-root "$GITHUB_WORKSPACE"',
     ):
         require_token(publish_block, token, rel)
@@ -274,28 +353,26 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         'NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")',
         "emulation_layers_included",
         "scratchbird-nightly-linux-x86_64.tar.gz",
+        "scratchbird-nightly-linux-x86_64.deb",
+        "scratchbird-nightly-linux-x86_64.rpm",
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
         "scratchbird-nightly-windows-x86_64.zip",
+        "scratchbird-nightly-windows-x86_64.msi",
         "scratchbird-nightly-macos-x86_64.tar.gz",
+        "scratchbird-nightly-macos-x86_64.pkg",
         "scratchbird-nightly-macos-arm64.tar.gz",
+        "scratchbird-nightly-macos-arm64.pkg",
         "scratchbird-nightly-macos-universal.tar.gz",
         "verify_native_installed_payload.py",
         "macos_architecture_mismatch",
-        "fully_extracted_and_exact_native_payload_verified_portable_archives_only",
-        "expected_count = 7",
+        "fully_verified_native_portable_and_system_installer_artifacts",
+        "expected_count = len(PACKAGE_RULES) + 3",
         "installer_manifest_sha256_mismatch",
         "package_cardinality",
     ):
         require_token(bundle_text, token, bundle_tool.name)
-    for forbidden_name in (
-        "scratchbird-nightly-linux-amd64.deb",
-        "scratchbird-nightly-linux-x86_64.rpm",
-        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
-        "scratchbird-nightly-windows-x86_64.msi",
-        "scratchbird-nightly-macos-x86_64.pkg",
-        "scratchbird-nightly-macos-arm64.pkg",
-    ):
-        if forbidden_name in bundle_text:
-            fail(f"nightly_unverified_system_package_forbidden:{forbidden_name}")
+    if "workflow_only_package_formats" in bundle_text:
+        fail("nightly_system_installer_publication_policy_missing")
 
     publisher_text = publisher_tool.read_text(encoding="utf-8")
     for token in (
@@ -316,6 +393,14 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "coherent_draft_retry_required",
         "verify_canonical_inventory(assets, exact=True)",
         "published_tag_revision_mismatch",
+        "fully_verified_native_portable_and_system_installer_artifacts",
+        "REQUIRED_ARTIFACT_VERIFICATION",
+        "scratchbird-nightly-linux-x86_64.deb",
+        "scratchbird-nightly-linux-x86_64.rpm",
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
+        "scratchbird-nightly-windows-x86_64.msi",
+        "scratchbird-nightly-macos-x86_64.pkg",
+        "scratchbird-nightly-macos-arm64.pkg",
         '"--draft"',
         'f"--draft={',
         "draft=False,",
@@ -385,6 +470,9 @@ def main() -> int:
         for token in tokens:
             require_token(text, token, name)
         if name == "ci-macos.yml":
+            check_main_push_ci_policy(
+                text, name, "public-release-macos", "SB_MACOS_CI_ENABLED"
+            )
             check_macos_real128_build_dependency(text, name, "public-release-macos")
             check_native_release_stage(
                 text,
@@ -395,11 +483,17 @@ def main() -> int:
                 retain_native_proof_artifacts=True,
             )
         elif name == "ci-linux.yml":
+            check_main_push_ci_policy(
+                text, name, "public-release-linux", "SB_LINUX_CI_ENABLED"
+            )
             check_linux_release_dependencies(text, name, "public-release-linux")
             check_native_release_stage(
                 text, name, "public-release-linux", "linux", False
             )
         elif name == "ci-windows.yml":
+            check_main_push_ci_policy(
+                text, name, "public-release-windows", "SB_WINDOWS_CI_ENABLED"
+            )
             check_windows_llvm_release_dependency(
                 text, name, "public-release-windows"
             )
@@ -407,6 +501,8 @@ def main() -> int:
                 text, name, "public-release-windows", "windows", False
             )
         elif name == "verify-installers.yml":
+            check_installer_main_push_policy(text, name)
+            check_linux_privileged_bootstrap_smoke(text, name)
             check_macos_real128_build_dependency(text, name, "macos-installers")
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")
@@ -422,6 +518,23 @@ def main() -> int:
             check_native_release_stage(
                 text, name, "macos-installers", "macos", True
             )
+            for job_name, step_name, artifact_path in (
+                ("linux-installers", "Upload Linux installers", "build/installers/linux"),
+                (
+                    "linux-installers",
+                    "Upload Linux install smoke proof",
+                    "build/install-smoke/linux",
+                ),
+                ("windows-installers", "Upload Windows installers", "build/installers/windows"),
+                (
+                    "macos-installers",
+                    "Upload macOS installers",
+                    "build/installers/macos-${{ matrix.arch }}",
+                ),
+            ):
+                check_installer_upload_missing_files_policy(
+                    text, name, job_name, step_name, artifact_path
+                )
         elif name == "nightly-installers.yml":
             check_nightly_publisher(text, name, repo_root)
         for token in FORBIDDEN_TOKENS:

@@ -17,7 +17,7 @@ concurrency:
 jobs:
   public-release-windows:
     name: Public release Windows build and CTest
-    if: ${{ vars.SB_WINDOWS_CI_ENABLED == 'true' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name != 'pull_request' || vars.SB_WINDOWS_CI_ENABLED == 'true' }}
     runs-on: windows-2022
     timeout-minutes: 240
 

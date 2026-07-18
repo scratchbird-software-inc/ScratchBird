@@ -233,7 +233,12 @@ class NativeQaBootstrapTest(unittest.TestCase):
         command[group_index] = "DOMAIN\\scratchbird-qa-testers"
         result = self.run_command(command)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("service_group_invalid", result.stdout)
+        expected = (
+            "windows_local_scratchbird_group_required"
+            if os.name == "nt"
+            else "service_group_invalid"
+        )
+        self.assertIn(expected, result.stdout)
 
     def test_windows_managed_service_identity_contract_is_exact(self) -> None:
         accepted = self.helper.validate_service_authority(
@@ -415,33 +420,59 @@ class NativeQaBootstrapTest(unittest.TestCase):
         cli_cmake = (
             REPO_ROOT / "project/drivers/tool/cli/CMakeLists.txt"
         ).read_text(encoding="utf-8")
-        self.assertEqual(cli_cmake.count("PRIVATE advapi32 netapi32"), 2)
+        self.assertIn(
+            "add_library(sb_cli_first_principal_bootstrap STATIC", cli_cmake
+        )
+        self.assertIn(
+            "target_link_libraries(sb_cli_first_principal_bootstrap PUBLIC advapi32 netapi32)",
+            cli_cmake,
+        )
+        self.assertIn(
+            "target_link_libraries(sb_isql PRIVATE sb_cli_first_principal_bootstrap)",
+            cli_cmake,
+        )
+        self.assertIn(
+            "target_link_libraries(sb_security PRIVATE OpenSSL::Crypto sb_cli_first_principal_bootstrap)",
+            cli_cmake,
+        )
 
-        security_source = (
-            REPO_ROOT / "project/drivers/tool/cli/sb_security.cpp"
+        bootstrap_source = (
+            REPO_ROOT / "project/drivers/tool/cli/first_principal_bootstrap.cpp"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "request.bootstrap_principal_name = g_config.username;",
-            security_source,
+            "create_request.bootstrap_principal_name = request.principal_name;",
+            bootstrap_source,
         )
         self.assertNotIn(
-            "request.bootstrap_principal_name = os_authority.service_identity;",
-            security_source,
+            "create_request.bootstrap_principal_name = os_authority.service_identity;",
+            bootstrap_source,
         )
         self.assertNotIn(
-            "request.bootstrap_principal_name = loaded_profile.profile.service_identity;",
-            security_source,
+            "create_request.bootstrap_principal_name = loaded_profile.profile.service_identity;",
+            bootstrap_source,
         )
+        for tool_name in ("sb_isql.cpp", "sb_security.cpp"):
+            tool_source = (
+                REPO_ROOT / "project/drivers/tool/cli" / tool_name
+            ).read_text(encoding="utf-8")
+            self.assertIn("RunFirstPrincipalBootstrapCli", tool_source)
+            self.assertNotIn("CreateDatabaseFile", tool_source)
 
     def test_bootstrap_secret_surface_is_not_argv_env_or_log_authority(self) -> None:
         source = (
-            REPO_ROOT / "project/drivers/tool/cli/sb_security.cpp"
+            REPO_ROOT / "project/drivers/tool/cli/first_principal_bootstrap.cpp"
         ).read_text(encoding="utf-8")
         self.assertIn("Bootstrap passwords are forbidden in command-line arguments", source)
         self.assertIn("--password-stdin", source)
         self.assertNotIn("std::getenv", source)
-        self.assertNotRegex(source, r"log(?:Verbose)?\([^\n]*credential_fingerprint")
-        self.assertNotRegex(source, r"printError\([^\n]*(?:verifier|salt)=")
+        self.assertNotRegex(source, r"(?:output|error)\s*<<[^\n]*credential_fingerprint")
+        self.assertNotRegex(source, r"(?:output|error)\s*<<[^\n]*(?:verifier|salt)=")
+        for tool_name in ("sb_isql.cpp", "sb_security.cpp"):
+            tool_source = (
+                REPO_ROOT / "project/drivers/tool/cli" / tool_name
+            ).read_text(encoding="utf-8")
+            self.assertIn("RunFirstPrincipalBootstrapCli", tool_source)
+            self.assertNotIn("CreateDatabaseFile", tool_source)
         readme = (
             REPO_ROOT / "project/examples/native_release_qa/README.md"
         ).read_text(encoding="utf-8")

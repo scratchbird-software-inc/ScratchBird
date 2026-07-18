@@ -14,6 +14,8 @@
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -512,12 +514,10 @@ int main() {
   Require(!work.empty(), "failed to create temp directory");
   const auto database_path = work / "odfr020.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_ODFR020_SEED_PACK_ROOT);
-  auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "lifecycle create database failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_ODFR020_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed lifecycle fixture database create failed");
   CreateSchemaAndTable(database_path);
 
   auto writer = BeginTransaction(database_path, "201");

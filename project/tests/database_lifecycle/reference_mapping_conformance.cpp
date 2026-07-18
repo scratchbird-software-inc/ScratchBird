@@ -201,6 +201,7 @@ void CheckSbsqlLifecycleMappings() {
 void CheckFirebirdMappingInventory() {
   std::size_t lifecycle_api = 0;
   std::size_t exact_diagnostic = 0;
+  bool public_create_refusal = false;
   for (const auto& mapping : fb::FirebirdLifecycleMappings()) {
     Require(!mapping.mapping_key.empty(), "DBLC-014 Firebird mapping key missing");
     Require(!mapping.produces_file_effects, "DBLC-014 Firebird mapping permits file effects");
@@ -212,6 +213,14 @@ void CheckFirebirdMappingInventory() {
       Require(Contains(mapping.sblr_operation, "SBLR_LIFECYCLE_"),
               "DBLC-014 Firebird opcode is not lifecycle");
       Require(!mapping.engine_api_function.empty(), "DBLC-014 Firebird engine API missing");
+      if (mapping.mapping_key == "firebird.lifecycle.create_database") {
+        Require(mapping.diagnostic_code ==
+                    "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+                "DBLC-014 Firebird public create lacks bootstrap-required diagnostic");
+        Require(Contains(mapping.diagnostic_message, "local embedded isql startup only"),
+                "DBLC-014 Firebird public create lacks local bootstrap boundary");
+        public_create_refusal = true;
+      }
     } else {
       ++exact_diagnostic;
       Require(mapping.exact_emulated_diagnostic,
@@ -220,6 +229,8 @@ void CheckFirebirdMappingInventory() {
   }
   Require(lifecycle_api >= 6, "DBLC-014 Firebird lifecycle API coverage incomplete");
   Require(exact_diagnostic >= 6, "DBLC-014 Firebird non-file diagnostic coverage incomplete");
+  Require(public_create_refusal,
+          "DBLC-014 Firebird public create refusal mapping missing");
 }
 
 void CheckFirebirdParse(std::string_view sql,

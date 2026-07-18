@@ -21,6 +21,8 @@
 #include "vector_maintenance_jobs.hpp"
 #include "vector_training_recall_lifecycle.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -228,13 +230,9 @@ void Rollback(const api::EngineRequestContext& context) {
 }
 
 void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_ORH121_SEED_PACK_ROOT);
-  create.option_envelopes.push_back("allow_minimal_resource_bootstrap:true");
-  const auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "lifecycle create failed");
+  const auto created = scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+      database_path, SB_ORH121_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed lifecycle fixture create failed");
 
   auto context = BeginTransaction(database_path, "101");
   api::EngineCreateSchemaRequest schema_request;

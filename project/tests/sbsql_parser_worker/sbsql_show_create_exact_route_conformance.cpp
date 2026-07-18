@@ -19,6 +19,8 @@
 #include "sblr_engine_envelope.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -218,13 +220,10 @@ void RemoveEngineFiles() {
 }
 
 void CreateAndOpenEngineDatabase() {
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseEngineContext();
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_SBSFC021_SEED_PACK_ROOT);
-  const auto created = api::EngineCreateLifecycle(create);
-  if (!created.ok) PrintApiDiagnostics(created, "lifecycle.create_database");
-  Require(created.ok, "lifecycle.create_database failed while seeding SHOW CREATE fixture");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          std::filesystem::path(kDatabasePath), SB_SBSFC021_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed fixture create failed while seeding SHOW CREATE");
 
   api::EngineOpenLifecycleRequest open;
   open.context = BaseEngineContext();

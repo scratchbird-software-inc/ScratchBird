@@ -35,9 +35,15 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
     root.mkdir(parents=True)
     packages = {
         "scratchbird-nightly-linux-x86_64.tar.gz": b"linux-" + marker,
+        "scratchbird-nightly-linux-x86_64.deb": b"linux-deb-" + marker,
+        "scratchbird-nightly-linux-x86_64.rpm": b"linux-rpm-" + marker,
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz": b"linux-aur-" + marker,
         "scratchbird-nightly-windows-x86_64.zip": b"windows-" + marker,
+        "scratchbird-nightly-windows-x86_64.msi": b"windows-msi-" + marker,
         "scratchbird-nightly-macos-x86_64.tar.gz": b"mac-x86-" + marker,
+        "scratchbird-nightly-macos-x86_64.pkg": b"mac-x86-pkg-" + marker,
         "scratchbird-nightly-macos-arm64.tar.gz": b"mac-" + marker,
+        "scratchbird-nightly-macos-arm64.pkg": b"mac-arm-pkg-" + marker,
         "scratchbird-nightly-macos-universal.tar.gz": b"mac-universal-" + marker,
     }
     rows = []
@@ -50,6 +56,7 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
                 "architecture": "test",
                 "format": Path(name).suffix.lstrip("."),
                 "source_name": f"source-{name}",
+                "verification": publisher.REQUIRED_ARTIFACT_VERIFICATION[name],
                 "bytes": len(data),
                 "sha256": sha(data),
             }
@@ -61,7 +68,7 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
         "github_run_id": run_id,
         "github_run_attempt": attempt,
         "distribution_surface": "scratchbird_native_no_emulation",
-        "public_asset_policy": "fully_extracted_and_exact_native_payload_verified_portable_archives_only",
+        "public_asset_policy": "fully_verified_native_portable_and_system_installer_artifacts",
         "native_parser": "SBSQL",
         "native_components": [
             {"name": "SBmgr", "role": "manager"},
@@ -349,7 +356,7 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             runner = FakeRunner()
             runner.seed_release(assets)
             original_release_id = runner.release["id"]
-            runner.release["assets"].append(runner.make_asset("scratchbird-nightly-windows-x86_64.msi", b"stale msi"))
+            runner.release["assets"].append(runner.make_asset("scratchbird-nightly-obsolete-legacy.msi", b"stale msi"))
             self.make_publisher(runner, notes).publish(assets)
             self.assertEqual(original_release_id, runner.release["id"])
             self.assertEqual({asset.name for asset in assets}, self.names(runner))

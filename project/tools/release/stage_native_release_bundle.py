@@ -117,17 +117,23 @@ REQUIRED_CONFIG_TOKENS = {
     "SBsrv.conf": (
         "provider_family = local_password",
         "default_policy_installed = true",
-        "parser_executable_path = bin/SBParser",
-        "port = 3092",
-        "tls_required = true",
+        "auto_create = false",
+        "executable_path = bin/SBgate",
+        "control_dir = runtime/listener/control",
+        "runtime_dir = runtime/listener/runtime",
+        "sbps_enabled = true",
+        "sbps_endpoint = runtime/control/sb_server.sbps.sock",
         "failure_mode = return_error",
     ),
     "SBgate.conf": (
         "protocol_family = sbsql",
         "parser_package = SBParser",
         "parser_executable = bin/SBParser",
+        "server_endpoint = runtime/control/sb_server.sbps.sock",
         "port = 3092",
         "tls_required = true",
+        "managed_by_server = true",
+        "managed_by_manager = false",
         "dbbt_key_source = keyring",
     ),
     "SBmgr.conf": (
@@ -153,6 +159,103 @@ REQUIRED_CONFIG_TOKENS = {
         "service_identity = operator_required",
         "service_group = operator_required",
     ),
+}
+
+# A system package rewrites portable paths and the bootstrap platform profile,
+# but it must retain the native-only security and topology invariants below.
+# Keep this separate from REQUIRED_CONFIG_TOKENS: that map is intentionally the
+# exact portable/staged configuration contract.
+INSTALLED_CONFIG_TOKENS = {
+    "SBsrv.conf": (
+        "provider_family = local_password",
+        "default_policy_installed = true",
+        "auto_create = false",
+        "sbps_enabled = true",
+        "failure_mode = return_error",
+    ),
+    "SBgate.conf": (
+        "protocol_family = sbsql",
+        "parser_package = SBParser",
+        "port = 3092",
+        "tls_required = true",
+        "managed_by_server = true",
+        "managed_by_manager = false",
+        "dbbt_key_source = keyring",
+    ),
+    "SBmgr.conf": (
+        "manager.release.profile = enterprise",
+        "manager.proxy.enabled = false",
+        "manager.proxy.bind = 127.0.0.1",
+        "manager.proxy.port = 3092",
+        "manager.proxy.tls_required = true",
+        "manager.backend.native_port = 0",
+    ),
+    "SBParser.conf": (
+        "parser.family = sbsql",
+        "parser.security.auth_relay_required = true",
+        "parser.execution.engine_authority_required = true",
+        "parser.execution.engine_transport = sbps_ipc_only",
+        "parser.execution.direct_engine_link = forbidden",
+        "parser.execution.cross_parser_dependency = forbidden",
+    ),
+    "SBbootstrap.profile": (
+        "schema_id = scratchbird.bootstrap_platform_profile.v1",
+    ),
+}
+
+# The first binding is the generic server-to-listener launcher.  The second is
+# the actual listener-to-parser launch setting.  SBParser.conf is declarative
+# today (the worker does not load it), but its declared worker path must still
+# agree with the listener's launch target so a shipped package cannot describe
+# a different parser than the binary it contains.
+NATIVE_EXECUTABLE_CONFIG_BINDINGS = (
+    ("SBsrv.conf", "server.listener", "executable_path", "SBgate"),
+    ("SBgate.conf", "", "parser_executable", "SBParser"),
+    ("SBParser.conf", "", "parser.worker_binary", "SBParser"),
+)
+
+DEFAULT_SERVER_PROFILE_ONLY_KEYS = frozenset(
+    {
+        "bind_address",
+        "bundle_contract_id",
+        "database_selector",
+        "dialect_profile_uuid",
+        "parser_api_major",
+        "parser_executable",
+        "parser_executable_path",
+        "parser_package",
+        "parser_package_uuid",
+        "port",
+        "profile_id",
+        "protocol_family",
+        "ready_timeout_ms",
+        "tls_ca_file",
+        "tls_cert_file",
+        "tls_key_file",
+        "tls_required",
+        "warm_pool_max",
+        "warm_pool_min",
+    }
+)
+
+INSTALLED_BOOTSTRAP_IDENTITIES = {
+    "linux": ("scratchbird", "scratchbird"),
+    "macos": ("scratchbird", "scratchbird"),
+    "windows": (r"NT SERVICE\scratchbird", "ScratchBird"),
+}
+
+DEFAULT_SERVER_INVARIANT_ASSIGNMENTS = {
+    ("server.security", "provider_family"): "local_password",
+    ("server.security", "default_policy_installed"): "true",
+    ("server.database", "auto_create"): "false",
+    ("server.parser", "sbps_enabled"): "true",
+    ("server.memory", "failure_mode"): "return_error",
+}
+
+PORTABLE_DEFAULT_SERVER_ASSIGNMENTS = {
+    ("server.listener", "control_dir"): "runtime/listener/control",
+    ("server.listener", "runtime_dir"): "runtime/listener/runtime",
+    ("server.parser", "sbps_endpoint"): "runtime/control/sb_server.sbps.sock",
 }
 
 REQUIRED_LIBRARY_CANDIDATES = {
@@ -414,10 +517,92 @@ def validate_policy_pack(policy_root: Path) -> int:
     return len(rows)
 
 
-def require_native_configs(config_root: Path) -> None:
-    for file_name, tokens in REQUIRED_CONFIG_TOKENS.items():
+def strip_config_inline_comment(line: str) -> str:
+    """Match the SBCD1 comment rule closely enough for package validation."""
+    quoted = False
+    escaped = False
+    for index, character in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if quoted and character == "\\":
+            escaped = True
+            continue
+        if character == '"':
+            quoted = not quoted
+            continue
+        if (
+            not quoted
+            and character in {"#", ";"}
+            and (index == 0 or line[index - 1].isspace())
+        ):
+            return line[:index]
+    return line
+
+
+def parse_config_assignments(text: str) -> dict[tuple[str, str], list[str]]:
+    """Return actual section/key assignments, never comments or prose."""
+    assignments: dict[tuple[str, str], list[str]] = {}
+    section = ""
+    for raw_line in text.splitlines():
+        line = strip_config_inline_comment(raw_line).strip()
+        if not line:
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip().lower()
+            continue
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        canonical_key = key.strip().lower().replace("-", "_")
+        if not canonical_key:
+            continue
+        assignments.setdefault((section, canonical_key), []).append(value.strip())
+    return assignments
+
+
+def native_config_assignment(
+    assignments: dict[tuple[str, str], list[str]],
+    file_name: str,
+    section: str,
+    key: str,
+) -> str:
+    values = assignments.get((section, key), [])
+    if len(values) != 1:
+        location = f"{section}.{key}" if section else key
+        fail(
+            "native_config_assignment_cardinality:"
+            f"{file_name}:{location}:{len(values)}"
+        )
+    return values[0]
+
+
+def native_config_token_present(
+    assignments: dict[tuple[str, str], list[str]],
+    token: str,
+) -> bool:
+    if "=" not in token:
+        return False
+    key, value = token.split("=", 1)
+    canonical_key = key.strip().lower().replace("-", "_")
+    expected_value = value.strip()
+    return any(
+        actual_key == canonical_key and expected_value in values
+        for (_, actual_key), values in assignments.items()
+    )
+
+
+def require_native_config_tokens(
+    config_root: Path,
+    token_contract: dict[str, tuple[str, ...]],
+) -> dict[str, dict[tuple[str, str], list[str]]]:
+    parsed: dict[str, dict[tuple[str, str], list[str]]] = {}
+    for file_name, tokens in token_contract.items():
         path = require_regular_file(config_root / file_name, f"native_config:{file_name}")
         text = path.read_text(encoding="utf-8")
+        assignments = parse_config_assignments(text)
+        if file_name != "SBsrv.conf" and any(section for section, _ in assignments):
+            fail(f"native_flat_config_section_forbidden:{file_name}")
         if re.search(
             r"(?m)^\s*(?:port|manager[.]proxy[.]port|manager[.]backend[.]native_port)\s*=\s*(?:3050|3090|3392)\s*$",
             text,
@@ -431,10 +616,190 @@ def require_native_configs(config_root: Path) -> None:
             if backend_ports != ["0"]:
                 fail("native_manager_backend_must_be_unset")
         for token in tokens:
-            if token not in text:
+            if not native_config_token_present(assignments, token):
                 fail(f"native_config_token_missing:{file_name}:{token}")
         if any(marker in text for marker in EMBEDDED_TLS_MARKERS):
             fail(f"native_config_embedded_tls_material_forbidden:{file_name}")
+        parsed[file_name] = assignments
+    return parsed
+
+
+def require_generic_default_server(
+    assignments: dict[tuple[str, str], list[str]],
+) -> None:
+    for section, key in assignments:
+        if section.startswith("server.listener.profile."):
+            fail("native_default_server_listener_profile_forbidden")
+        if key in DEFAULT_SERVER_PROFILE_ONLY_KEYS:
+            fail(f"native_default_server_profile_key_forbidden:{key}")
+    for (section, key), expected_value in DEFAULT_SERVER_INVARIANT_ASSIGNMENTS.items():
+        actual_value = native_config_assignment(assignments, "SBsrv.conf", section, key)
+        if actual_value != expected_value:
+            fail(
+                "native_default_server_assignment_invalid:"
+                f"{section}.{key}:{actual_value}"
+            )
+
+
+def require_portable_default_server(
+    assignments: dict[tuple[str, str], list[str]],
+) -> None:
+    for (section, key), expected_value in PORTABLE_DEFAULT_SERVER_ASSIGNMENTS.items():
+        actual_value = native_config_assignment(assignments, "SBsrv.conf", section, key)
+        if actual_value != expected_value:
+            fail(
+                "native_portable_server_assignment_invalid:"
+                f"{section}.{key}:{actual_value}"
+            )
+
+
+def normalize_config_path(value: str) -> str:
+    return value.replace("\\", "/")
+
+
+def portable_executable_path(binary: str) -> str:
+    return f"bin/{binary}"
+
+
+def installed_executable_path_allowed(value: str, binary: str, platform: str) -> bool:
+    normalized = normalize_config_path(value)
+    executable = platform_executable(binary, platform)
+    if platform in {"linux", "macos"}:
+        return normalized == f"/opt/ScratchBird/bin/{executable}"
+    if platform != "windows":
+        return False
+    if normalized == f"@SCRATCHBIRD_INSTALL_ROOT@/bin/{executable}":
+        return True
+    return re.fullmatch(
+        rf"(?i)[a-z]:/program files/scratchbird/bin/{re.escape(executable)}",
+        normalized,
+    ) is not None
+
+
+def classify_configured_executable_paths(
+    parsed: dict[str, dict[tuple[str, str], list[str]]],
+    platform: str,
+) -> str:
+    modes: set[str] = set()
+    values: dict[tuple[str, str], str] = {}
+    for file_name, section, key, binary in NATIVE_EXECUTABLE_CONFIG_BINDINGS:
+        value = native_config_assignment(parsed[file_name], file_name, section, key)
+        values[(file_name, key)] = value
+        if value == portable_executable_path(binary):
+            modes.add("portable")
+        elif installed_executable_path_allowed(value, binary, platform):
+            modes.add("installed")
+        else:
+            location = f"{section}.{key}" if section else key
+            fail(
+                "native_config_executable_path_invalid:"
+                f"{file_name}:{location}:{value}"
+            )
+    if len(modes) != 1:
+        fail(f"native_config_executable_path_mode_mismatch:{sorted(modes)}")
+    listener_parser = values[("SBgate.conf", "parser_executable")]
+    declared_parser = values[("SBParser.conf", "parser.worker_binary")]
+    if listener_parser != declared_parser:
+        fail("native_config_parser_worker_path_mismatch")
+    return next(iter(modes))
+
+
+def require_sbps_endpoint_match(
+    parsed: dict[str, dict[tuple[str, str], list[str]]],
+) -> None:
+    server_endpoint = native_config_assignment(
+        parsed["SBsrv.conf"],
+        "SBsrv.conf",
+        "server.parser",
+        "sbps_endpoint",
+    )
+    listener_endpoint = native_config_assignment(
+        parsed["SBgate.conf"],
+        "SBgate.conf",
+        "",
+        "server_endpoint",
+    )
+    if not server_endpoint or server_endpoint != listener_endpoint:
+        fail("native_config_sbps_endpoint_mismatch")
+
+
+def require_configured_native_binaries(
+    runtime_root: Path,
+    platform: str,
+) -> None:
+    for file_name, section, key, binary in NATIVE_EXECUTABLE_CONFIG_BINDINGS:
+        executable = runtime_root / "bin" / platform_executable(binary, platform)
+        location = f"{section}.{key}" if section else key
+        require_regular_file(
+            executable,
+            f"native_config_binary:{file_name}:{location}",
+        )
+
+
+def require_native_configs(
+    config_root: Path,
+    runtime_root: Path,
+    platform: str,
+) -> None:
+    """Validate the exact portable/staged native release configuration."""
+    parsed = require_native_config_tokens(config_root, REQUIRED_CONFIG_TOKENS)
+    require_generic_default_server(parsed["SBsrv.conf"])
+    require_portable_default_server(parsed["SBsrv.conf"])
+    if classify_configured_executable_paths(parsed, platform) != "portable":
+        fail("native_portable_config_path_mode_required")
+    require_sbps_endpoint_match(parsed)
+    require_configured_native_binaries(runtime_root, platform)
+
+
+def require_installed_bootstrap_profile(
+    assignments: dict[tuple[str, str], list[str]],
+    platform: str,
+) -> None:
+    expected_identity, expected_group = INSTALLED_BOOTSTRAP_IDENTITIES[platform]
+    profile_platform = native_config_assignment(
+        assignments,
+        "SBbootstrap.profile",
+        "",
+        "platform",
+    )
+    identity = native_config_assignment(
+        assignments,
+        "SBbootstrap.profile",
+        "",
+        "service_identity",
+    )
+    group = native_config_assignment(
+        assignments,
+        "SBbootstrap.profile",
+        "",
+        "service_group",
+    )
+    if profile_platform != platform:
+        fail(
+            "native_installed_bootstrap_platform_mismatch:"
+            f"expected={platform}:actual={profile_platform}"
+        )
+    if identity != expected_identity or group != expected_group:
+        fail("native_installed_bootstrap_identity_mismatch")
+    if "operator_required" in {profile_platform, identity, group}:
+        fail("native_installed_bootstrap_placeholder_forbidden")
+
+
+def require_native_installed_configs(
+    config_root: Path,
+    runtime_root: Path,
+    platform: str,
+) -> None:
+    """Validate either a portable payload or a platform-materialized install."""
+    parsed = require_native_config_tokens(config_root, INSTALLED_CONFIG_TOKENS)
+    require_generic_default_server(parsed["SBsrv.conf"])
+    mode = classify_configured_executable_paths(parsed, platform)
+    if mode == "portable":
+        require_native_configs(config_root, runtime_root, platform)
+        return
+    require_installed_bootstrap_profile(parsed["SBbootstrap.profile"], platform)
+    require_sbps_endpoint_match(parsed)
+    require_configured_native_binaries(runtime_root, platform)
 
 
 def require_regular_file(path: Path, label: str) -> Path:
@@ -752,7 +1117,11 @@ def stage(
         runtime_requirements.get("llvm"), platform
     )
     source_resource_summary = require_operational_resources(source_root / "share")
-    require_native_configs(source_root / "etc" / "scratchbird")
+    require_native_configs(
+        source_root / "etc" / "scratchbird",
+        source_root,
+        platform,
+    )
 
     if output_root.exists():
         shutil.rmtree(output_root)
@@ -800,7 +1169,11 @@ def stage(
     output_resource_summary = require_operational_resources(output_root / "share")
     if output_resource_summary != source_resource_summary:
         fail("operational_resource_summary_copy_mismatch")
-    require_native_configs(output_root / "etc" / "scratchbird")
+    require_native_configs(
+        output_root / "etc" / "scratchbird",
+        output_root,
+        platform,
+    )
     require_native_share_layout(output_root / "share")
 
     runtime_dependencies: list[str] = []

@@ -521,6 +521,9 @@ entries:
     security_authority_family: catalog_ddl
     current_implementation_status: behavior_implemented
     executor_readiness_status: mapped_ready
+    notes:
+      - Catalog namespace descriptor only within an already-open database context.
+      - No database-file, security-catalog, or first-principal bootstrap authority is serialized or executed by this operation.
   - sblr_operation: SBLR_DDL_CREATE_SCHEMA
     opcode_status: opcode_registered
     api_operation_id: ddl.create_schema
@@ -2080,15 +2083,15 @@ entries:
     required_transaction_context: false
     required_security_context: false
     required_descriptor_inputs: none
-    bound_object_uuid_inputs: database_uuid_generated_by_engine_lifecycle
+    bound_object_uuid_inputs: none_public_bootstrap_authority_is_not_serializable
     cluster_only: false
     requires_cluster_authority: false
     result_shape: canonical_engine_result
     diagnostic_mapping: engine_api_diagnostic_vector
     evidence_mapping: engine_api_evidence_vector
     security_authority_family: engine_lifecycle
-    current_implementation_status: behavior_implemented
-    executor_readiness_status: mapped_ready
+    current_implementation_status: exact_refusal
+    executor_readiness_status: exact_refusal
   - sblr_operation: SBLR_LIFECYCLE_OPEN_DATABASE
     opcode_status: opcode_registered
     api_operation_id: lifecycle.open_database

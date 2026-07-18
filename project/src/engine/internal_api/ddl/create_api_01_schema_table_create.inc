@@ -211,6 +211,9 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_CREATE_API_STUBS
 
 EngineCreateDatabaseResult EngineCreateDatabase(const EngineCreateDatabaseRequest& request) {
+  // Catalog namespace only: this has no storage-file or first-principal
+  // bootstrap authority.  Public physical creation is refused by
+  // EngineCreateLifecycle; local embedded bootstrap calls storage directly.
   return PersistedCreateWithNameRegistry<EngineCreateDatabaseResult>(request, "ddl.create_database", "database", false, "created");
 }
 

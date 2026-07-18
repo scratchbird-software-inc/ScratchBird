@@ -2666,6 +2666,8 @@ if(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
     "Build node manager for public release correctness gates" FORCE)
   set(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS ON CACHE BOOL
     "Build node manager enterprise release correctness gate" FORCE)
+  set(SB_BUILD_SBSQL_PARSER_WORKER_TESTS ON CACHE BOOL
+    "Build SBSQL parser-worker conformance probes for public release correctness" FORCE)
 endif()
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   set(SB_BUILD_SBMN_MANAGER ON)

@@ -16,6 +16,8 @@
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include "../../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <cstdlib>
 #include <filesystem>
 #include <initializer_list>
@@ -371,12 +373,10 @@ int main() {
   Require(!work.empty(), "MISS-008 failed to create temp directory");
   const auto database_path = work / "miss008.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_MISS008_SEED_PACK_ROOT);
-  auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "MISS-008 lifecycle create database failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_MISS008_SEED_PACK_ROOT);
+  Require(created.ok(), "MISS-008 credentialed fixture database create failed");
   CreateSchemaAndTable(database_path);
 
   auto context = BeginTransaction(database_path, "201");

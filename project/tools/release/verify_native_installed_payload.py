@@ -169,7 +169,7 @@ def main() -> int:
             f"installed_config_set_mismatch:missing={sorted(expected_configs - actual_configs)}:"
             f"unexpected={sorted(actual_configs - expected_configs)}"
         )
-    native.require_native_configs(config_root)
+    native.require_native_installed_configs(config_root, runtime_root, platform)
     print(f"verify_native_installed_payload=passed:{runtime_root}")
     return 0
 

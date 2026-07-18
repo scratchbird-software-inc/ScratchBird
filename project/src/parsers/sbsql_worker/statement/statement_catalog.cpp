@@ -29,7 +29,11 @@ constexpr std::string_view kLifecycleReportShape = "result.shape.management_repo
 constexpr std::string_view kLifecycleManagementResource = "resource.contract.lifecycle_management";
 constexpr std::string_view kLifecycleReadResource = "resource.contract.lifecycle_read";
 constexpr std::string_view kDatabaseUuidFromContext = "database_uuid_from_context";
-constexpr std::string_view kDatabaseUuidGenerated = "database_uuid_generated_by_engine_lifecycle";
+// A parser can describe CREATE DATABASE but cannot carry the first-principal
+// authority that makes a database creation valid.  That authority is only
+// available to the explicit local embedded bootstrap command.
+constexpr std::string_view kPublicBootstrapAuthorityNotSerializable =
+    "none_public_bootstrap_authority_not_serializable";
 
 bool Contains(std::string_view value, std::string_view needle) {
   return value.find(needle) != std::string_view::npos;
@@ -197,13 +201,13 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        kLifecycleStatusShape,
        kLifecycleDiagnosticShape,
        kLifecycleManagementResource,
-       "SBSQL.LIFECYCLE.MAPPED",
-       "INFO",
-       "SBSQL lifecycle command maps to ScratchBird engine lifecycle create authority.",
+       "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+       "ERROR",
+       "Public CREATE DATABASE is lowered only to the engine bootstrap-boundary refusal.",
        kLifecycleAuthorityDomain,
        kLifecycleSecurityAuthority,
-       "right.lifecycle_create",
-       kDatabaseUuidGenerated,
+       "right.local_embedded_first_principal_bootstrap",
+       kPublicBootstrapAuthorityNotSerializable,
        false,
        false,
        false,

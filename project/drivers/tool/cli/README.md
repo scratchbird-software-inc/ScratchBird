@@ -56,6 +56,21 @@ mode flags with `--conn-opt key=value` for additional driver parameters.
 
 ## Auth / Bootstrap
 
+`SBsql` and `SBsec` share one explicit local first-principal bootstrap command:
+
+```text
+SBsql bootstrap <first-principal> <database-path> --mode=embedded \
+  --platform-profile <file> --resource-seed-pack-root <dir> \
+  --policy-seed-pack-root <dir> [--password-stdin]
+```
+
+It is an embedded engine lifecycle operation rather than a normal connection.
+It creates the new database and its transaction-1 security catalog atomically,
+so no existing database login is needed. It still requires Root/Administrator
+authority and protected initial-password input. Ordinary `SBsql` embedded
+connections, listeners, managers, and parser processes never create a missing
+database.
+
 The network-backed tools `sb_isql`, `sb_admin`, and `sb_security` now expose
 the shared staged auth/bootstrap contract directly:
 

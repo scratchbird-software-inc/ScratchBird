@@ -100,7 +100,12 @@ IPC_ADMISSION_PATH = "sbps_frame_handshake_kFrameMagic_0x53504253;sblr_admission
 ENGINE_ADMISSION_AUTHORITY = "engine_internal_api_security_authority_api;revoke_all_default;evidence_before_success;catalog_authority_through_sblr_envelope_descriptors_and_uuids"
 MGA_EXECUTION_AUTHORITY = "mga_copy_on_write;no_wal_authority;transaction_inventory_and_version_chains;dirty_object_manifest_acceleration_only;page_level_durability_before_visibility"
 FIXTURE_KIND = "authenticated_route"
-ALLOWED_AUTHORED_FIXTURE_STATUSES = {"fixture_authored", "e2e_passed"}
+ALLOWED_AUTHORED_FIXTURE_STATUSES = {
+    "fixture_authored",
+    "e2e_passed",
+    "exact_refusal_passed",
+}
+PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID = "SBSQL-EB95D772BD63"
 
 
 def fail(message: str) -> None:
@@ -171,6 +176,27 @@ def classify(surface: dict[str, str]) -> dict[str, str]:
             "expected_diagnostic_codes": "SBSQL.SURFACE.NOT_ADMITTED;SBSQL.SURFACE.PARSER_PRIVATE_REFUSED;SBSQL.CLUSTER.AUTHORITY_REQUIRED",
             "fixture_status": "pending_authoring",
             "notes": "cluster_scope=cluster_private row: public build must fail-closed regardless of canonical source status; fixture must prove that the authenticated route refuses at parser/lowering admission without entering any cluster execution path; private-profile acceptance evidence, where available, lives outside the public matrix per SBSFC-025.",
+        }
+
+    if surface_id == PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID:
+        return {
+            "fixture_path": fixture_path,
+            "credential_profile_accepted": "not_applicable_public_create_database_is_not_credential_authorized",
+            "credential_profile_refused": "not_applicable_public_create_database_refuses_for_every_credential",
+            "auth_policy": AUTH_POLICY,
+            "session_profile": SESSION_PROFILE,
+            "transaction_profile": TRANSACTION_PROFILE,
+            "transport_route": TRANSPORT_ROUTE,
+            "tls_profile_ref": TLS_PROFILE_REF,
+            "listener_path": LISTENER_PATH,
+            "ipc_admission_path": IPC_ADMISSION_PATH,
+            "engine_admission_authority": ENGINE_ADMISSION_AUTHORITY,
+            "mga_execution_authority": MGA_EXECUTION_AUTHORITY,
+            "expected_authorization_accepted_outcome": "refused_with_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED_before_storage_mutation_for_every_credential",
+            "expected_authorization_refused_outcome": "refused_with_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED_before_storage_mutation_for_every_credential",
+            "expected_diagnostic_codes": "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;SBLR.ENVELOPE.*;SBLR.OPCODE.*",
+            "fixture_status": "pending_authoring",
+            "notes": "public CREATE DATABASE is parseable and SBLR-serializable but exact-refusal only: neither an authenticated client nor a listener, manager, or parser may establish first-principal bootstrap authority. The engine returns SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED before database or security-sidecar creation; only the explicit local embedded first-principal bootstrap command may create the database.",
         }
 
     if status == "native_now":
@@ -257,6 +283,9 @@ def main() -> int:
         source_status = surface.get("source_status") or surface["status"]
         status_counts[source_status] = status_counts.get(source_status, 0) + 1
         outcome = (
+            "bootstrap_refusal_only"
+            if surface["surface_id"] == PUBLIC_BOOTSTRAP_REFUSAL_SURFACE_ID
+            else
             "accepted_route_required"
             if source_status == "native_now" and surface["cluster_scope"] != "cluster_private"
             else "fail_closed_only"

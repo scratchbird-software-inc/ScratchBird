@@ -40,6 +40,9 @@ REQUIRED_LIFECYCLE_OPERATIONS = (
     ("lifecycle.drop_database", "SBLR_LIFECYCLE_DROP_DATABASE", "EngineDropLifecycle"),
 )
 
+CREATE_DATABASE_OPERATION = "lifecycle.create_database"
+CREATE_DATABASE_REFUSAL_DIAGNOSTIC = "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED"
+
 
 def fail(message: str) -> None:
     print(f"FAIL: {message}", file=sys.stderr)
@@ -58,12 +61,15 @@ def load_paths(repo_root: Path) -> dict[str, Path]:
     return {
         "engine_registry": repo_root / "project/src/engine/internal_api/ENGINE_API_SURFACE_REGISTRY.yaml",
         "internal_matrix": repo_root / "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml",
-        "sblr_opcodes": repo_root / "public_contract_snapshot",
-        "sblr_matrix": repo_root / "public_contract_snapshot",
         "lifecycle_header": repo_root / "project/src/engine/internal_api/lifecycle/engine_lifecycle_api.hpp",
         "lifecycle_impl": repo_root / "project/src/engine/internal_api/lifecycle/engine_lifecycle_api.cpp",
+        "ddl_create_header": repo_root / "project/src/engine/internal_api/ddl/create_api.hpp",
+        "ddl_create_impl": repo_root / "project/src/engine/internal_api/ddl/create_api_01_schema_table_create.inc",
         "sblr_dispatch": repo_root / "project/src/engine/sblr/sblr_dispatch.cpp",
         "sblr_static_registry": repo_root / "project/src/engine/sblr/sblr_opcode_registry.cpp",
+        "server_dispatch": repo_root / "project/src/server/sblr_dispatch_server.cpp",
+        "manager_control": repo_root / "project/src/server/manager_control.cpp",
+        "firebird_worker": repo_root / "project/src/parsers/compatibility/firebird/firebird_worker_session.cpp",
         "public_abi": repo_root / "project/src/engine/public_abi.cpp",
         "public_abi_map": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_PUBLIC_ABI_MAP.csv",
     }
@@ -120,7 +126,11 @@ def validate_engine_registry(paths: dict[str, Path]) -> None:
             "authority_domain": "engine_lifecycle",
             "header": "lifecycle/engine_lifecycle_api.hpp",
             "implementation": "lifecycle/engine_lifecycle_api.cpp",
-            "default_diagnostic": "SB_ENGINE_API_OK",
+            "default_diagnostic": (
+                CREATE_DATABASE_REFUSAL_DIAGNOSTIC
+                if operation_id == CREATE_DATABASE_OPERATION
+                else "SB_ENGINE_API_OK"
+            ),
         }
         for key, value in expected.items():
             if row.get(key) != value:
@@ -133,6 +143,16 @@ def validate_engine_registry(paths: dict[str, Path]) -> None:
         ):
             if row.get(bool_key) is not expected_bool:
                 fail(f"engine API registry {operation_id} {bool_key} expected {expected_bool}")
+        expected_status = (
+            "exact_refusal"
+            if operation_id == CREATE_DATABASE_OPERATION
+            else "behavior_implemented"
+        )
+        if row.get("implementation_status") != expected_status:
+            fail(
+                f"engine API registry {operation_id} implementation_status expected "
+                f"{expected_status}, got {row.get('implementation_status')}"
+            )
         if "placeholder" in str(row).lower() or "stub" in str(row).lower() or "deferred" in str(row).lower():
             fail(f"engine API registry {operation_id} contains placeholder/stub/deferred language")
         if opcode not in paths["sblr_static_registry"].read_text(encoding="utf-8"):
@@ -158,48 +178,48 @@ def validate_internal_matrix(paths: dict[str, Path]) -> None:
         for key, value in expected.items():
             if row.get(key) != value:
                 fail(f"internal SBLR/API matrix {operation_id} {key} expected {value}, got {row.get(key)}")
-        if row.get("current_implementation_status") != "behavior_implemented":
-            fail(f"internal SBLR/API matrix {operation_id} is not behavior_implemented")
+        expected_status = (
+            "exact_refusal"
+            if operation_id == CREATE_DATABASE_OPERATION
+            else "behavior_implemented"
+        )
+        if row.get("current_implementation_status") != expected_status:
+            fail(
+                f"internal SBLR/API matrix {operation_id} current_implementation_status "
+                f"expected {expected_status}, got {row.get('current_implementation_status')}"
+            )
+        if operation_id == CREATE_DATABASE_OPERATION and \
+                row.get("executor_readiness_status") != "exact_refusal":
+            fail("internal SBLR/API matrix create_database is not exact_refusal")
 
 
-def validate_sblr_opcode_docs(paths: dict[str, Path]) -> None:
-    registry = load_yaml(paths["sblr_opcodes"])
-    entries = by_key(registry.get("entries") or [], "name", "SBLR opcode registry")
-    seen_codes: set[int] = set()
-    for name, row in entries.items():
-        code = row.get("code")
-        if not isinstance(code, int):
-            fail(f"SBLR opcode {name} code is not an integer")
-        if code in seen_codes:
-            fail(f"SBLR opcode duplicate numeric code {code:#x}")
-        seen_codes.add(code)
+def validate_static_sblr_registry(paths: dict[str, Path]) -> None:
+    """Validate the checked-in C++ registry, the actual runtime registry authority.
+
+    The root public-contract snapshot is narrative text rather than an opcode
+    registry YAML document.  Parsing it as YAML masked this gate's intended
+    checks and made the test fail before it reached any lifecycle assertion.
+    """
+    static_registry = paths["sblr_static_registry"].read_text(encoding="utf-8")
     for operation_id, opcode, _function in REQUIRED_LIFECYCLE_OPERATIONS:
-        row = entries.get(opcode)
-        if row is None:
-            fail(f"SBLR opcode registry missing {opcode} for {operation_id}")
-        if row.get("family") != "database-management":
-            fail(f"SBLR opcode {opcode} is not in database-management family")
-        if row.get("status") != "required":
-            fail(f"SBLR opcode {opcode} status is not required")
-        code = row.get("code")
-        if not isinstance(code, int) or code < 0x1400 or code > 0x14FF:
-            fail(f"SBLR opcode {opcode} code {code!r} is outside database-management range")
-        if row.get("security_class") not in {"admin_authorized", "sysarch_authorized"}:
-            fail(f"SBLR opcode {opcode} security_class is not lifecycle-admin scoped")
-        if row.get("transaction_effect") not in {"read", "management"}:
-            fail(f"SBLR opcode {opcode} transaction_effect is not read/management")
-        if "DBLC-002" not in str(row.get("search_key", "")) and "SBLR-DATABASE-MANAGEMENT" not in str(row.get("search_key", "")):
-            fail(f"SBLR opcode {opcode} lacks DBLC-002/database-management search key")
-
-
-def validate_spec_operation_matrix(paths: dict[str, Path]) -> None:
-    text = paths["sblr_matrix"].read_text(encoding="utf-8")
-    for operation_id, opcode, function in REQUIRED_LIFECYCLE_OPERATIONS:
-        for token in (operation_id, opcode, function, "engine_lifecycle"):
-            if token not in text:
-                fail(f"spec SBLR operation matrix missing {token}")
-    if "sblr.database.management.v3" not in text:
-        fail("spec SBLR operation matrix missing database-management envelope family")
+        expected_support = (
+            "local_profile_refusal"
+            if operation_id == CREATE_DATABASE_OPERATION
+            else "implemented"
+        )
+        entry = re.compile(
+            rf'Entry\("{re.escape(operation_id)}",\s*"{re.escape(opcode)}",\s*'
+            rf'SblrOpcodeCategory::management,\s*'
+            rf'SblrOpcodeSupport::{expected_support}',
+            re.DOTALL,
+        )
+        if entry.search(static_registry) is None:
+            fail(
+                f"static SBLR registry missing {operation_id} -> {opcode} "
+                f"with support={expected_support}"
+            )
+    if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in static_registry:
+        fail("static SBLR registry lacks the public create_database refusal diagnostic")
 
 
 def validate_code_mappings(paths: dict[str, Path]) -> None:
@@ -207,7 +227,11 @@ def validate_code_mappings(paths: dict[str, Path]) -> None:
     impl = paths["lifecycle_impl"].read_text(encoding="utf-8")
     dispatch = paths["sblr_dispatch"].read_text(encoding="utf-8")
     static_registry = paths["sblr_static_registry"].read_text(encoding="utf-8")
+    server_dispatch = paths["server_dispatch"].read_text(encoding="utf-8")
+    manager_control = paths["manager_control"].read_text(encoding="utf-8")
     public_abi = paths["public_abi"].read_text(encoding="utf-8")
+    ddl_create_header = paths["ddl_create_header"].read_text(encoding="utf-8")
+    ddl_create_impl = paths["ddl_create_impl"].read_text(encoding="utf-8")
     if "DecodeAndDispatchSblrOperation" not in public_abi or "sb_engine_dispatch_sblr" not in public_abi:
         fail("public ABI does not route SBLR envelopes through engine dispatch")
     for operation_id, opcode, function in REQUIRED_LIFECYCLE_OPERATIONS:
@@ -224,6 +248,27 @@ def validate_code_mappings(paths: dict[str, Path]) -> None:
             fail(f"dispatch API map missing {operation_id} -> {function}")
         if f'Entry("{operation_id}", "{opcode}"' not in static_registry:
             fail(f"static SBLR opcode registry missing {operation_id} -> {opcode}")
+        if operation_id == CREATE_DATABASE_OPERATION:
+            if "SblrOpcodeSupport::local_profile_refusal" not in static_registry:
+                fail("static SBLR opcode registry does not refuse public create_database")
+            if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in static_registry:
+                fail("static SBLR opcode registry lacks create_database refusal diagnostic")
+            if "CreateDatabaseFile(" in impl:
+                fail("public EngineCreateLifecycle still reaches CreateDatabaseFile")
+            if CREATE_DATABASE_REFUSAL_DIAGNOSTIC not in header:
+                fail("public lifecycle header lacks the create_database refusal diagnostic")
+            if "kEngineCreateLifecycleBootstrapRequiredDiagnostic" not in manager_control:
+                fail("manager control path does not propagate the create_database refusal diagnostic")
+            if 'if (request.operation_key == "create_database")' not in manager_control:
+                fail("manager control path does not explicitly handle create_database")
+            if 'if (dispatch_operation_id == "lifecycle.create_database")' in server_dispatch:
+                fail("server dispatch still has a create_database seed-forwarding branch")
+    if "EngineCreateDatabaseRequest" not in ddl_create_header or \
+            "logical database namespace" not in ddl_create_header:
+        fail("ddl.create_database is not explicitly classified as catalog namespace DDL")
+    if "CreateDatabaseFile(" in ddl_create_impl or \
+            "first-principal" not in ddl_create_impl:
+        fail("ddl.create_database source is not isolated from physical bootstrap")
 
 
 def validate_public_abi_map(paths: dict[str, Path]) -> None:
@@ -255,8 +300,46 @@ def validate_public_abi_map(paths: dict[str, Path]) -> None:
             fail(f"public ABI map engine entrypoint mismatch for {operation_id}")
         if row["authority"] != "engine_lifecycle":
             fail(f"public ABI map authority mismatch for {operation_id}")
-        if row["status"] != "mapped":
+        expected_status = (
+            "exact_refusal"
+            if operation_id == CREATE_DATABASE_OPERATION
+            else "mapped"
+        )
+        if row["status"] != expected_status:
             fail(f"public ABI map status mismatch for {operation_id}")
+
+
+def validate_firebird_public_create_refusal(paths: dict[str, Path]) -> None:
+    """Keep the Firebird wire bootstrap boundary ahead of every stateful step."""
+    worker = paths["firebird_worker"].read_text(encoding="utf-8")
+    match = re.search(
+        r'if \(opcode == 20\) \{  // op_create(?P<body>.*?)\n      \}\n'
+        r'      const auto decoded =',
+        worker,
+        re.DOTALL,
+    )
+    if match is None:
+        fail("Firebird worker lacks the explicit op_create public refusal branch")
+    branch = match.group("body")
+    for required in (
+        CREATE_DATABASE_REFUSAL_DIAGNOSTIC,
+        r'\"storage_mutation\":false',
+        r'\"metadata_overlay_mutation\":false',
+        r'\"handle_allocated\":false',
+        "local_embedded_isql_startup",
+        "continue;",
+    ):
+        if required not in branch:
+            fail(f"Firebird op_create refusal branch lacks {required!r}")
+    for forbidden in (
+        "DecodeFirebirdParameterBuffer",
+        "AuthenticateFirebirdCanonicalSession",
+        "RegisterFirebirdServiceAlias",
+        "PersistFirebirdMetadataOverlay",
+        "state.handles",
+    ):
+        if forbidden in branch:
+            fail(f"Firebird op_create refusal reaches forbidden stateful step {forbidden}")
 
 
 def main() -> None:
@@ -271,10 +354,10 @@ def main() -> None:
     assert_not_ignored(repo_root, list(paths.values()))
     validate_engine_registry(paths)
     validate_internal_matrix(paths)
-    validate_sblr_opcode_docs(paths)
-    validate_spec_operation_matrix(paths)
+    validate_static_sblr_registry(paths)
     validate_code_mappings(paths)
     validate_public_abi_map(paths)
+    validate_firebird_public_create_refusal(paths)
     print(f"PASS: DBLC-002 lifecycle registry/API/ABI surface covers {len(REQUIRED_LIFECYCLE_OPERATIONS)} operations")
 
 

@@ -144,7 +144,7 @@ def main() -> int:
             f"native_config_set_mismatch:missing={sorted(expected_configs - actual_configs)}:"
             f"unexpected={sorted(actual_configs - expected_configs)}"
         )
-    native.require_native_configs(config_root)
+    native.require_native_configs(config_root, root, platform)
     resource_summary = native.require_operational_resources(root / "share")
     native.require_native_share_layout(root / "share")
     if profile.get("required_resource_directories") != list(native.REQUIRED_RESOURCE_DIRS):

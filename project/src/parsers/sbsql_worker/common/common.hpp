@@ -84,9 +84,6 @@ struct ParserConfig : ipc::ParserClientConfig {
   std::string tls_cert_file;
   std::string tls_key_file;
   std::string tls_ca_file;
-  std::string manager_auth_provider_family;
-  std::string manager_auth_principal;
-  std::string manager_auth_token;
   std::uint32_t parser_api_major{kSbsqlWorkerParserApiCurrentMajor};
   std::uint32_t protocol_version{kSbsqlWorkerProtocolCurrentVersion};
   std::uint32_t metrics_schema_version{1};

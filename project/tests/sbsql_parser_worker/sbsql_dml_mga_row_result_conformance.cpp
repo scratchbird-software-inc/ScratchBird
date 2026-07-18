@@ -15,6 +15,8 @@
 #include "sblr_dispatch_server.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -3592,12 +3594,10 @@ int main() {
   Require(!work.empty(), "failed to create temp directory");
   const auto database_path = work / "sbsfc021.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_SBSFC021_SEED_PACK_ROOT);
-  auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "lifecycle create database failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_SBSFC021_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed lifecycle fixture database create failed");
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
   auto open = Dispatch(database_path,

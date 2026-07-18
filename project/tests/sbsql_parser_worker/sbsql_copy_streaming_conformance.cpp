@@ -15,6 +15,8 @@
 #include "session_registry.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -323,12 +325,10 @@ std::filesystem::path CreateEngineBackedFixture() {
   Require(!work.empty(), "failed to create temp directory for engine-backed COPY stream");
   const auto database_path = work / "sbsfc021_copy_stream.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
-                                    SB_SBSFC021_SEED_PACK_ROOT);
-  const auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "engine-backed stream database create failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_SBSFC021_SEED_PACK_ROOT);
+  Require(created.ok(), "engine-backed stream credentialed fixture create failed");
 
   api::EngineOpenLifecycleRequest open;
   open.context = BaseContext(database_path);

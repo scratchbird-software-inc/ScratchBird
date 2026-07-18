@@ -1054,12 +1054,20 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     std::string* records,
     std::string* outcome,
     std::string* state_after) {
-  engine_api::EngineApiResult lifecycle_result;
   if (request.operation_key == "create_database") {
-    lifecycle_result = engine_api::EngineCreateLifecycle(
-        EngineLifecycleRequestForManagement<engine_api::EngineCreateLifecycleRequest>(
-            context, session, frame, request));
-  } else if (request.operation_key == "open_database") {
+    return ErrorResponse(
+        frame,
+        {ManagementDiagnostic(
+            std::string(engine_api::kEngineCreateLifecycleBootstrapRequiredDiagnostic),
+            "Database creation is available only through the explicit local embedded "
+            "first-principal bootstrap command.",
+            {{"operation_key", request.operation_key},
+             {"bootstrap_boundary", "local_embedded_cli"},
+             {"authorization_authority", "engine"}})});
+  }
+
+  engine_api::EngineApiResult lifecycle_result;
+  if (request.operation_key == "open_database") {
     lifecycle_result = engine_api::EngineOpenLifecycle(
         EngineLifecycleRequestForManagement<engine_api::EngineOpenLifecycleRequest>(
             context, session, frame, request));
@@ -1086,8 +1094,7 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     return ErrorResponse(frame, diagnostics);
   }
   *records = EngineLifecycleResultRecordsJson(lifecycle_result, request.operation_key);
-  *outcome = request.operation_key == "create_database" ? "created" :
-             request.operation_key == "open_database" ? "opened" :
+  *outcome = request.operation_key == "open_database" ? "opened" :
              request.operation_key == "attach_database" ? "attached" :
              "detached";
   *state_after = *outcome;

@@ -7,10 +7,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Promote authored SBsql route and SBLR round-trip fixtures to e2e evidence.
+"""Promote authored SBsql route and SBLR round-trip fixtures to final evidence.
 
 The authoring tool creates deterministic fixture records first. This promotion
-gate is the controlled transition from ``fixture_authored`` to ``e2e_passed``.
+gate is the controlled transition from ``fixture_authored`` to the matching
+per-row final state (``e2e_passed`` or ``exact_refusal_passed``).
 It does not infer implementation success from the fixture alone; every fixture
 must reference final per-row evidence, parser-worker CTest labels, canonical
 operation/refusal proof, and the SBWP/TLS/SBLR/MGA authority contracts before
@@ -76,15 +77,25 @@ def parse_fixture(path: Path) -> dict[str, str]:
     return fields
 
 
-def write_fixture(path: Path, fields: dict[str, str], note: str, expected_fields: dict[str, str]) -> bool:
+def fixture_status_for_manifest(manifest: dict[str, str]) -> str:
+    if manifest["final_state"] == "exact_refusal_passed":
+        return "exact_refusal_passed"
+    return "e2e_passed"
+
+
+def write_fixture(path: Path,
+                  fields: dict[str, str],
+                  note: str,
+                  expected_fields: dict[str, str],
+                  target_status: str) -> bool:
     lines = path.read_text(encoding="utf-8").splitlines()
     changed = False
     saw_note = False
     out: list[str] = []
     for line in lines:
         if line.startswith("fixture_status:"):
-            if fields.get("fixture_status") != "e2e_passed":
-                out.append('fixture_status: "e2e_passed"')
+            if fields.get("fixture_status") != target_status:
+                out.append(f"fixture_status: {json.dumps(target_status)}")
                 changed = True
             else:
                 out.append(line)
@@ -221,7 +232,12 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
     diagnostic_proof = fields.get("diagnostic_proof", "")
     if manifest["final_state"] == "exact_refusal_passed" and not any(
         code in diagnostic_proof
-        for code in ("SBLR.CLUSTER.SUPPORT_NOT_ENABLED", "SBLR.CAPABILITY.FORBIDDEN", "SBSQL.SURFACE.NOT_ADMITTED")
+        for code in (
+            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+            "SBLR.CAPABILITY.FORBIDDEN",
+            "SBSQL.SURFACE.NOT_ADMITTED",
+            "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+        )
     ):
         fail(f"{surface_id} exact-refusal fixture is missing refusal message-vector proof")
     if manifest["final_state"] == "cluster_provider_route_passed" and not all(
@@ -241,7 +257,7 @@ def require_common(surface_id: str, fields: dict[str, str], manifest: dict[str, 
 def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, str], matrix: dict[str, str]) -> None:
     if fields.get("fixture_kind") != "authenticated_route":
         fail(f"{surface_id} authenticated fixture has wrong kind {fields.get('fixture_kind', '')}")
-    if fields.get("fixture_status") not in {"fixture_authored", "e2e_passed"}:
+    if fields.get("fixture_status") not in {"fixture_authored", "e2e_passed", "exact_refusal_passed"}:
         fail(f"{surface_id} authenticated fixture has invalid status {fields.get('fixture_status', '')}")
     require_common(surface_id, fields, manifest, matrix)
     required_pairs = {
@@ -274,14 +290,17 @@ def validate_auth(surface_id: str, fields: dict[str, str], manifest: dict[str, s
             fail(f"{surface_id} cluster fixture has a public acceptance credential")
         if "NOT_ADMITTED" not in fields.get("expected_authorization_refused_outcome", ""):
             fail(f"{surface_id} cluster fixture lost public fail-closed route")
-    elif manifest["final_state"] != "e2e_passed":
-        fail(f"{surface_id} noncluster authenticated fixture must promote e2e evidence")
+    elif manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
+        fail(f"{surface_id} noncluster authenticated fixture has an unsupported final state")
+    elif manifest["final_state"] == "exact_refusal_passed":
+        if "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED" not in fields.get("expected_diagnostic_codes", ""):
+            fail(f"{surface_id} exact-refusal authenticated fixture lacks bootstrap refusal diagnostic")
 
 
 def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, str], matrix: dict[str, str]) -> None:
     if fields.get("fixture_kind") != "sblr_binary_round_trip":
         fail(f"{surface_id} round-trip fixture has wrong kind {fields.get('fixture_kind', '')}")
-    if fields.get("fixture_status") not in {"fixture_authored", "e2e_passed"}:
+    if fields.get("fixture_status") not in {"fixture_authored", "e2e_passed", "exact_refusal_passed"}:
         fail(f"{surface_id} round-trip fixture has invalid status {fields.get('fixture_status', '')}")
     require_common(surface_id, fields, manifest, matrix)
     required_pairs = {
@@ -322,8 +341,8 @@ def validate_round(surface_id: str, fields: dict[str, str], manifest: dict[str, 
         if "no_dispatch_path_in_public_build" not in fields.get("dispatch_phase_expectation", ""):
             fail(f"{surface_id} cluster round-trip fixture lost no-dispatch proof")
     else:
-        if manifest["final_state"] != "e2e_passed":
-            fail(f"{surface_id} noncluster round-trip fixture must promote e2e evidence")
+        if manifest["final_state"] not in {"e2e_passed", "exact_refusal_passed"}:
+            fail(f"{surface_id} noncluster round-trip fixture has an unsupported final state")
         if fields.get("byte_identical_round_trip_required", "") != "yes":
             fail(f"{surface_id} noncluster round-trip fixture must require byte-identical round-trip")
         if not op_id or op_id.startswith("not_applicable_") or op_id == "pending_canonical_authority_entry":
@@ -396,16 +415,19 @@ def main() -> int:
         validate_auth(surface_id, auth_validation_fields, manifest, auth_row)
         validate_round(surface_id, round_validation_fields, manifest, round_row)
 
-        if not args.dry_run and write_fixture(auth_path, auth_fields, AUTH_NOTE, expected_auth):
+        target_status = fixture_status_for_manifest(manifest)
+        if not args.dry_run and write_fixture(
+                auth_path, auth_fields, AUTH_NOTE, expected_auth, target_status):
             promoted_auth += 1
-        elif auth_fields.get("fixture_status") == "e2e_passed":
+        elif auth_fields.get("fixture_status") == target_status:
             already_auth += 1
         else:
             promoted_auth += 1
 
-        if not args.dry_run and write_fixture(round_path, round_fields, ROUND_NOTE, expected_round):
+        if not args.dry_run and write_fixture(
+                round_path, round_fields, ROUND_NOTE, expected_round, target_status):
             promoted_round += 1
-        elif round_fields.get("fixture_status") == "e2e_passed":
+        elif round_fields.get("fixture_status") == target_status:
             already_round += 1
         else:
             promoted_round += 1

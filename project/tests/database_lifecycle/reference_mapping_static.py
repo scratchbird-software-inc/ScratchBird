@@ -59,6 +59,8 @@ REQUIRED_TOKENS = {
         "SBLR_LIFECYCLE_CREATE_DATABASE",
         "EngineCreateLifecycle",
         "FIREBIRD.EMULATION.NON_FILE_SURFACE",
+        "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+        "local embedded isql startup only",
         "real_firebird_file_effects",
         "reference_engine_sql_executed",
     ),

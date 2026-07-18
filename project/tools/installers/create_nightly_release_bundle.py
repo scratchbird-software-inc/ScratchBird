@@ -32,6 +32,7 @@ UNIVERSAL_MANIFEST = "MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json"
 RELEASE_MANIFEST = "scratchbird-nightly-manifest.json"
 RELEASE_CHECKSUMS = "scratchbird-nightly-SHA256SUMS"
 SCHEMA_ID = "scratchbird.native_nightly_release.v1"
+PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
 NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")
 NATIVE_EXECUTABLES = (
     "SBsrv",
@@ -54,11 +55,63 @@ ARTIFACT_ROOTS = {
     "macos-universal": "scratchbird-macos-universal-installers",
 }
 
+# Every selected file is first integrity-bound to the platform installer
+# manifest from this exact reusable-workflow run.  Portable archives are also
+# extracted and validated here.  Native system installers are validated by
+# their platform job (installer verifier plus the applicable install-smoke or
+# package-recipe check) before the reusable workflow can succeed and make the
+# artifact available to this job.
 PACKAGE_RULES = (
-    ("linux", "linux", "x86_64", "tar.gz", "scratchbird-linux-*.tar.gz", "scratchbird-nightly-linux-x86_64.tar.gz", True),
-    ("windows", "windows", "x86_64", "zip", "scratchbird-windows-*.zip", "scratchbird-nightly-windows-x86_64.zip", True),
-    ("macos-x86_64", "macos", "x86_64", "tar.gz", "scratchbird-macos-*.tar.gz", "scratchbird-nightly-macos-x86_64.tar.gz", True),
-    ("macos-arm64", "macos", "arm64", "tar.gz", "scratchbird-macos-*.tar.gz", "scratchbird-nightly-macos-arm64.tar.gz", True),
+    (
+        "linux", "linux", "x86_64", "tar.gz", "scratchbird-linux-*.tar.gz",
+        "scratchbird-nightly-linux-x86_64.tar.gz", "portable_archive",
+        "exact_native_payload_extraction",
+    ),
+    (
+        "linux", "linux", "x86_64", "deb", "scratchbird_*.deb",
+        "scratchbird-nightly-linux-x86_64.deb", "system_installer",
+        "installer_manifest_and_privileged_deb_smoke",
+    ),
+    (
+        "linux", "linux", "x86_64", "rpm", "scratchbird-*.x86_64.rpm",
+        "scratchbird-nightly-linux-x86_64.rpm", "system_installer",
+        "installer_manifest_and_rpm_recipe_verification",
+    ),
+    (
+        "linux", "linux", "x86_64", "aur.tar.gz", "scratchbird-aur-*.tar.gz",
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz", "system_installer",
+        "installer_manifest_and_aur_recipe_verification",
+    ),
+    (
+        "windows", "windows", "x86_64", "zip", "scratchbird-windows-*.zip",
+        "scratchbird-nightly-windows-x86_64.zip", "portable_archive",
+        "exact_native_payload_extraction",
+    ),
+    (
+        "windows", "windows", "x86_64", "msi", "scratchbird-windows-*.msi",
+        "scratchbird-nightly-windows-x86_64.msi", "system_installer",
+        "installer_manifest_and_msi_smoke",
+    ),
+    (
+        "macos-x86_64", "macos", "x86_64", "tar.gz", "scratchbird-macos-*.tar.gz",
+        "scratchbird-nightly-macos-x86_64.tar.gz", "portable_archive",
+        "exact_native_payload_extraction",
+    ),
+    (
+        "macos-x86_64", "macos", "x86_64", "pkg", "scratchbird-macos-*.pkg",
+        "scratchbird-nightly-macos-x86_64.pkg", "system_installer",
+        "installer_manifest_and_pkg_smoke",
+    ),
+    (
+        "macos-arm64", "macos", "arm64", "tar.gz", "scratchbird-macos-*.tar.gz",
+        "scratchbird-nightly-macos-arm64.tar.gz", "portable_archive",
+        "exact_native_payload_extraction",
+    ),
+    (
+        "macos-arm64", "macos", "arm64", "pkg", "scratchbird-macos-*.pkg",
+        "scratchbird-nightly-macos-arm64.pkg", "system_installer",
+        "installer_manifest_and_pkg_smoke",
+    ),
 )
 
 FORBIDDEN_TEXT = (
@@ -427,6 +480,7 @@ def copy_package(
     platform: str,
     architecture: str,
     package_format: str,
+    verification: str,
 ) -> dict[str, Any]:
     target = output_root / canonical_name
     if target.exists():
@@ -438,6 +492,7 @@ def copy_package(
         "architecture": architecture,
         "format": package_format,
         "source_name": source.name,
+        "verification": verification,
         "bytes": target.stat().st_size,
         "sha256": sha256_file(target),
     }
@@ -511,11 +566,25 @@ def create_bundle(
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
     records: list[dict[str, Any]] = []
-    for root_key, platform, arch, package_format, pattern, canonical, normally_required in PACKAGE_RULES:
-        source = select_package(root_key, verified[root_key], pattern, normally_required)
-        if source is not None:
+    for root_key, platform, arch, package_format, pattern, canonical, verification, verification_record in PACKAGE_RULES:
+        source = select_package(root_key, verified[root_key], pattern, True)
+        if verification == "portable_archive":
             verify_native_payload_archive(source, platform, arch)
-            records.append(copy_package(source, output_root, canonical, platform, arch, package_format))
+        elif verification == "system_installer":
+            pass
+        else:
+            fail(f"package_verification_mode_invalid:{canonical}:{verification}")
+        records.append(
+            copy_package(
+                source,
+                output_root,
+                canonical,
+                platform,
+                arch,
+                package_format,
+                verification_record,
+            )
+        )
 
     universal_source = verify_universal_root(
         roots["macos-universal"], expected_version, f"{github_run_id}-universal"
@@ -529,6 +598,7 @@ def create_bundle(
             "macos",
             "universal",
             "tar.gz",
+            "exact_native_payload_extraction",
         )
     )
     records.sort(key=lambda row: row["name"])
@@ -551,8 +621,8 @@ def create_bundle(
             {"name": "SBsrv", "role": "database_server"},
         ],
         "emulation_layers_included": False,
-        "public_asset_policy": "fully_extracted_and_exact_native_payload_verified_portable_archives_only",
-        "workflow_only_package_formats": ["deb", "rpm", "aur", "pkg", "msi"],
+        "public_asset_policy": PUBLIC_ASSET_POLICY,
+        "internal_only_artifact_classes": ["build_recipes", "install_smoke_proof"],
         "llvm_runtime": {
             "linux": {
                 "delivery": "system-package",
@@ -590,7 +660,7 @@ def create_bundle(
     if parse_sha256sums(output_root / RELEASE_CHECKSUMS) != {path.name: sha256_file(path) for path in checksum_files}:
         fail("release_checksum_self_verification_failed")
     scan_output(output_root)
-    expected_count = 7
+    expected_count = len(PACKAGE_RULES) + 3
     actual_count = sum(1 for path in output_root.iterdir() if path.is_file())
     if actual_count != expected_count:
         fail(f"release_asset_count:expected={expected_count}:actual={actual_count}")

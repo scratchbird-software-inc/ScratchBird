@@ -15,6 +15,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
@@ -331,14 +333,15 @@ int main() {
   const auto database_path = work / "fspe011d.sbdb";
   VerifyServerRejectsSqlText();
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") + SB_FSP011D_SEED_PACK_ROOT);
-  auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "lifecycle create database failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_FSP011D_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed lifecycle fixture database create failed");
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
-  const std::string created_database_uuid = FieldValue(created, "database_uuid");
-  const std::string created_filespace_uuid = FieldValue(created, "filespace_uuid");
+  const std::string created_database_uuid =
+      scratchbird::core::uuid::UuidToString(created.state.database_uuid.value);
+  const std::string created_filespace_uuid =
+      scratchbird::core::uuid::UuidToString(created.state.filespace_uuid.value);
   Require(!created_database_uuid.empty(), "created database UUID was not reported");
   Require(!created_filespace_uuid.empty(), "created filespace UUID was not reported");
 

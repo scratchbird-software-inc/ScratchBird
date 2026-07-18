@@ -126,9 +126,10 @@ def risk_for(auth_row: dict[str, str], round_row: dict[str, str]) -> str:
     risks: list[str] = []
     auth_status = auth_row.get("fixture_status", "")
     round_status = round_row.get("fixture_status", "")
-    if auth_status and auth_status != "e2e_passed":
+    final_fixture_statuses = {"e2e_passed", "exact_refusal_passed"}
+    if auth_status and auth_status not in final_fixture_statuses:
         risks.append(f"authenticated_route_fixture_status={auth_status}")
-    if round_status and round_status != "e2e_passed":
+    if round_status and round_status not in final_fixture_statuses:
         risks.append(f"sblr_round_trip_fixture_status={round_status}")
     round_required = round_row.get("byte_identical_round_trip_required", "")
     if round_required and round_required.startswith("blocked_"):

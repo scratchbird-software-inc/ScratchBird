@@ -10,13 +10,15 @@ collects a database password, creates a principal or role, maps an OS identity t
 a database identity, provisions a security database, or activates a service.
 
 The first database and first `sysarch` principal are created only by a later,
-explicit `SBsec bootstrap --mode=embedded` operation. Root/Administrator is the
+explicit `SBsql bootstrap --mode=embedded` operation (the identical `SBsec
+bootstrap` entry point is retained for security administration). Root/Administrator is the
 sole create-time OS authorization gate. After that gate, the locked
 `scratchbird` service identity is used only for directory/file ownership,
 privilege drop or ACL handoff, and process execution. It never names or grants a
 database principal, authentication right, role, or security authority. The
 engine-owned MGA create transaction materializes the selected policy and first
-principal atomically; credentials are accepted by `SBsec`, never by an installer.
+principal atomically; credentials are accepted only through protected `SBsql` or
+`SBsec` bootstrap input, never by an installer.
 
 ## Native-SBsql identity options
 
@@ -35,8 +37,9 @@ it does not select, configure, or activate that choice for a database.
 
 Local authentication and authorization; the creator is added with the `sysarch`
 role; all users and rights live inside the database. No external dependency, fully
-portable. This is the explicit first-database bootstrap posture. `SBsec` prompts
-for the requested initial principal credential through protected input and the
+portable. This is the explicit first-database bootstrap posture. `SBsql bootstrap`
+(or its exact `SBsec bootstrap` peer) prompts for the requested initial principal
+credential through protected input and the
 engine records it inside the database transaction; no credential sidecar exists.
 
 ### (b) External authN + hybrid authorization

@@ -123,7 +123,11 @@ FORBIDDEN_AUTHORITY = "sql_text;identifier_names;parser_branch_names;reference_c
 EXECUTION_AUTHORITY = "mga_copy_on_write;no_wal_authority;sblr_envelope_with_uuid_and_descriptor_authority_only"
 PENDING = "pending_canonical_authority_entry"
 FIXTURE_KIND = "sblr_binary_round_trip"
-ALLOWED_AUTHORED_FIXTURE_STATUSES = {"fixture_authored", "e2e_passed"}
+ALLOWED_AUTHORED_FIXTURE_STATUSES = {
+    "fixture_authored",
+    "e2e_passed",
+    "exact_refusal_passed",
+}
 MANIFEST_OPERATION_PATTERNS = (
     ("sblr_binding", re.compile(r"(?:^|;)sblr_binding=([^;]+)")),
     ("binding", re.compile(r"(?:^|;)binding=([^;]+)")),
@@ -222,6 +226,23 @@ def native_now_manifest_phases(operation_id: str, authority_status: str) -> dict
     }
 
 
+def exact_refusal_manifest_phases(operation_id: str, authority_status: str) -> dict[str, str]:
+    return {
+        "expected_canonical_function_or_api_operation_id": operation_id,
+        "parse_phase_expectation": "parse_sbsql_text_to_cst_pass",
+        "bind_phase_expectation": "bind_to_bound_ast_with_uuid_and_descriptor_pass_no_names_as_authority",
+        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_reference_command_as_authority",
+        "binary_serialize_phase_expectation": "serialize_envelope_to_canonical_container_magic_0x53424C52_with_40byte_header_crc32c_deterministic_byte_identical_pass",
+        "verify_phase_expectation": "verifier_admit_container_with_magic_version_length_checksum_and_payload_authority_pass",
+        "binary_deserialize_phase_expectation": "deserialize_bytes_to_byte_identical_sblrexecutionenvelope_v3_pass",
+        "dispatch_phase_expectation": "engine_dispatch_by_canonical_function_or_api_operation_id_pass_reject_family_only_routing",
+        "execute_phase_expectation": "engine_dispatch_returns_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED_before_storage_mutation",
+        "render_phase_expectation": "renderer_emit_refusal_diagnostic_SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED",
+        "byte_identical_round_trip_required": "yes",
+        "notes": "final per-row exact refusal: the canonical SBLR container still serializes, verifies, deserializes, and dispatches by operation id, but execution returns SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED before any database, security sidecar, parser authority, or MGA finality mutation. Round-trip authority source=" + authority_status + ".",
+    }
+
+
 def native_future_phases() -> dict[str, str]:
     return {
         "expected_canonical_function_or_api_operation_id": "not_applicable_status_native_future_lower_refuses_before_envelope",
@@ -308,7 +329,11 @@ def main() -> int:
         if surface["cluster_scope"] == "cluster_private":
             phases = cluster_private_phases()
         elif status == "native_now":
-            if oracle_status == "full_oracle":
+            if (manifest_row and manifest_row.get("final_state") == "exact_refusal_passed"
+                    and manifest_operation_id):
+                oracle_status = f"per_row_manifest_{manifest_authority}"
+                phases = exact_refusal_manifest_phases(manifest_operation_id, oracle_status)
+            elif oracle_status == "full_oracle":
                 phases = native_now_phases(oracle_status, sblr_binding)
             elif manifest_row and manifest_row.get("final_state") == "e2e_passed" and manifest_operation_id:
                 oracle_status = f"per_row_manifest_{manifest_authority}"

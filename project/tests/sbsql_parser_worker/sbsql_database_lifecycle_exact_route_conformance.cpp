@@ -16,6 +16,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstdlib>
@@ -38,6 +40,8 @@ constexpr std::string_view kAttachOperation = "lifecycle.attach_database";
 constexpr std::string_view kAttachOpcode = "SBLR_LIFECYCLE_ATTACH_DATABASE";
 constexpr std::string_view kCreateOperation = "lifecycle.create_database";
 constexpr std::string_view kCreateOpcode = "SBLR_LIFECYCLE_CREATE_DATABASE";
+constexpr std::string_view kCreateBootstrapRefusalDiagnostic =
+    api::kEngineCreateLifecycleBootstrapRequiredDiagnostic;
 constexpr std::string_view kDetachOperation = "lifecycle.detach_database";
 constexpr std::string_view kDetachOpcode = "SBLR_LIFECYCLE_DETACH_DATABASE";
 constexpr std::string_view kDropOperation = "lifecycle.drop_database";
@@ -147,16 +151,6 @@ bool ApiResultHasField(const api::EngineApiResult& result,
   return false;
 }
 
-std::string ApiResultFieldValue(const api::EngineApiResult& result,
-                                std::string_view name) {
-  for (const auto& row : result.result_shape.rows) {
-    for (const auto& field : row.fields) {
-      if (field.first == name) return field.second.encoded_value;
-    }
-  }
-  return {};
-}
-
 SessionContext ParserSession() {
   SessionContext session;
   session.authenticated = true;
@@ -233,6 +227,9 @@ void RemoveEngineFiles() {
            ".sb.domain_events",
            ".sb.drop_evidence",
            ".sb.local_password_auth",
+           ".sb.security_principal_events",
+           ".sb.txn_publish",
+           ".sb.txn_publish.tmp",
            ".dirty.manifest",
            ".recovery.evidence",
        }) {
@@ -315,6 +312,11 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
                    std::string("\"database_uuid_generated_by_engine\":") +
                        (route.database_uuid_generated_by_engine ? "true" : "false")),
           "database lifecycle payload database UUID-generation evidence mismatch");
+  if (route.operation_id == kCreateOperation) {
+    Require(Contains(artifacts.envelope.payload,
+                     "\"bootstrap_authority\":\"local_embedded_only\""),
+            "database lifecycle create payload carried public bootstrap authority");
+  }
   for (const auto row_surface_id : route.row_surface_ids) {
     Require(Contains(artifacts.envelope.payload, row_surface_id),
             "database lifecycle payload row surface id missing");
@@ -375,20 +377,35 @@ void RequireEngineDispatch() {
   Require(created.envelope_validated, "lifecycle.create_database envelope did not validate");
   Require(created.accepted, "lifecycle.create_database dispatch was not accepted");
   Require(created.dispatched_to_api, "lifecycle.create_database did not dispatch to API");
-  Require(created.api_result.ok, "lifecycle.create_database returned a diagnostic");
+  Require(!created.api_result.ok,
+          "lifecycle.create_database unexpectedly created a database through public SBLR");
   Require(created.api_result.operation_id == kCreateOperation,
           "lifecycle.create_database returned wrong operation id");
-  Require(created.api_result.primary_object.object_kind == "database",
-          "lifecycle.create_database returned wrong primary object kind");
-  Require(ApiResultHasEvidence(created.api_result, "engine_lifecycle", "created"),
-          "lifecycle.create_database missing engine lifecycle evidence");
-  Require(ApiResultHasEvidence(created.api_result, "database_file", "created"),
-          "lifecycle.create_database missing database file evidence");
-  Require(ApiResultHasField(created.api_result, "lifecycle_state", "created"),
-          "lifecycle.create_database missing lifecycle_state row");
+  Require(ApiResultHasDiagnostic(created.api_result, kCreateBootstrapRefusalDiagnostic),
+          "lifecycle.create_database missing bootstrap-boundary refusal diagnostic");
+  Require(!std::filesystem::exists(std::filesystem::path(kDatabasePath)),
+          "public lifecycle.create_database created a database file");
+  for (const auto suffix : {".sb.local_password_auth",
+                            ".sb.security_principal_events",
+                            ".sb.txn_publish",
+                            ".sb.txn_publish.tmp"}) {
+    Require(!std::filesystem::exists(std::filesystem::path(std::string(kDatabasePath) + suffix)),
+            "public lifecycle.create_database created a security or transaction sidecar");
+  }
+
+  const auto fixture =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          std::filesystem::path(kDatabasePath), {});
+  Require(fixture.ok(), "credentialed lifecycle fixture database create failed");
+  const auto database_uuid =
+      scratchbird::core::uuid::UuidToString(fixture.state.database_uuid.value);
+  const auto filespace_uuid =
+      scratchbird::core::uuid::UuidToString(fixture.state.filespace_uuid.value);
+  Require(!database_uuid.empty(), "credentialed lifecycle fixture database UUID missing");
+  Require(!filespace_uuid.empty(), "credentialed lifecycle fixture filespace UUID missing");
 
   auto open_context = BaseEngineContext("sbsql-database-lifecycle-open-route");
-  open_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  open_context.database_uuid.canonical = database_uuid;
   const sblr::SblrDispatchRequest open_request{
       open_context,
       LifecycleEnvelope(std::string(kOpenOperation),
@@ -414,7 +431,7 @@ void RequireEngineDispatch() {
           "lifecycle.open_database missing lifecycle_state row");
 
   auto attach_context = BaseEngineContext("sbsql-database-lifecycle-attach-route");
-  attach_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  attach_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest attach_api_request;
   attach_api_request.option_envelopes.push_back("attach");
   const sblr::SblrDispatchRequest attach_request{
@@ -442,7 +459,7 @@ void RequireEngineDispatch() {
           "lifecycle.attach_database missing lifecycle_state row");
 
   auto maintenance_context = BaseEngineContext("sbsql-database-lifecycle-maintenance-route");
-  maintenance_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  maintenance_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest maintenance_api_request;
   maintenance_api_request.option_envelopes.push_back("mode:maintenance");
   const sblr::SblrDispatchRequest maintenance_request{
@@ -474,7 +491,7 @@ void RequireEngineDispatch() {
           "lifecycle.enter_maintenance missing lifecycle_state row");
 
   auto verify_context = BaseEngineContext("sbsql-database-lifecycle-verify-route");
-  verify_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  verify_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest verify_api_request;
   verify_api_request.option_envelopes.push_back("mode:maintenance");
   const sblr::SblrDispatchRequest verify_request{
@@ -505,17 +522,15 @@ void RequireEngineDispatch() {
   Require(ApiResultHasField(verified.api_result, "verification_result", "passed"),
           "lifecycle.verify_database missing verification result row");
 
-  const auto filespace_uuid = ApiResultFieldValue(created.api_result, "filespace_uuid");
-  Require(!filespace_uuid.empty(), "lifecycle.create_database missing filespace UUID row");
   auto repair_context = BaseEngineContext("sbsql-database-lifecycle-repair-route");
-  repair_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  repair_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest repair_api_request;
   repair_api_request.option_envelopes.push_back("mode:maintenance");
   repair_api_request.option_envelopes.push_back("repair_plan_id:record_verified_repair_evidence");
   repair_api_request.option_envelopes.push_back("repair_admission_proven:true");
   repair_api_request.option_envelopes.push_back("allow_repair:true");
   repair_api_request.option_envelopes.push_back(
-      std::string("expected_database_uuid:") + created.api_result.primary_object.uuid.canonical);
+      std::string("expected_database_uuid:") + database_uuid);
   repair_api_request.option_envelopes.push_back(
       std::string("expected_filespace_uuid:") + filespace_uuid);
   const sblr::SblrDispatchRequest repair_request{
@@ -551,7 +566,7 @@ void RequireEngineDispatch() {
           "lifecycle.repair_database missing repair result row");
 
   auto inspect_context = BaseEngineContext("sbsql-database-lifecycle-inspect-route");
-  inspect_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  inspect_context.database_uuid.canonical = database_uuid;
   const sblr::SblrDispatchRequest inspect_request{
       inspect_context,
       LifecycleEnvelope(std::string(kInspectOperation),
@@ -581,7 +596,7 @@ void RequireEngineDispatch() {
           "lifecycle.inspect_database missing lifecycle_state row");
 
   auto detach_context = BaseEngineContext("sbsql-database-lifecycle-detach-route");
-  detach_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  detach_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest detach_api_request;
   detach_api_request.option_envelopes.push_back("detach");
   const sblr::SblrDispatchRequest detach_request{
@@ -611,7 +626,7 @@ void RequireEngineDispatch() {
           "lifecycle.detach_database missing transition metric evidence");
 
   auto force_context = BaseEngineContext("sbsql-database-lifecycle-force-shutdown-route");
-  force_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  force_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest force_api_request;
   force_api_request.option_envelopes.push_back(
       "force_termination_policy_uuid:019f0000-0000-7000-8000-000000ef20f1");
@@ -646,8 +661,7 @@ void RequireEngineDispatch() {
 
   auto acknowledge_context =
       BaseEngineContext("sbsql-database-lifecycle-ack-shutdown-route");
-  acknowledge_context.database_uuid.canonical =
-      created.api_result.primary_object.uuid.canonical;
+  acknowledge_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest acknowledge_api_request;
   acknowledge_api_request.option_envelopes.push_back("acknowledger_kind:server");
   acknowledge_api_request.option_envelopes.push_back(
@@ -683,7 +697,7 @@ void RequireEngineDispatch() {
           "lifecycle.shutdown_acknowledge missing acknowledgement evidence");
 
   auto shutdown_context = BaseEngineContext("sbsql-database-lifecycle-shutdown-route");
-  shutdown_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  shutdown_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest shutdown_api_request;
   shutdown_api_request.option_envelopes.push_back("shutdown");
   const sblr::SblrDispatchRequest shutdown_request{
@@ -716,8 +730,7 @@ void RequireEngineDispatch() {
 
   auto refused_drop_context =
       BaseEngineContext("sbsql-database-lifecycle-drop-refusal-route");
-  refused_drop_context.database_uuid.canonical =
-      created.api_result.primary_object.uuid.canonical;
+  refused_drop_context.database_uuid.canonical = database_uuid;
   const sblr::SblrDispatchRequest refused_drop_request{
       refused_drop_context,
       LifecycleEnvelope(std::string(kDropOperation),
@@ -742,7 +755,7 @@ void RequireEngineDispatch() {
           "lifecycle.drop_database missing safety-precondition refusal diagnostic");
 
   auto drop_context = BaseEngineContext("sbsql-database-lifecycle-drop-route");
-  drop_context.database_uuid.canonical = created.api_result.primary_object.uuid.canonical;
+  drop_context.database_uuid.canonical = database_uuid;
   api::EngineApiRequest drop_api_request;
   drop_api_request.option_envelopes.push_back("drop_mode:logical");
   drop_api_request.option_envelopes.push_back("drop_safety_preconditions:true");
@@ -752,7 +765,7 @@ void RequireEngineDispatch() {
   drop_api_request.option_envelopes.push_back("backup_coverage_verified:true");
   drop_api_request.option_envelopes.push_back("legal_hold_clear:true");
   drop_api_request.option_envelopes.push_back(
-      std::string("expected_database_uuid:") + created.api_result.primary_object.uuid.canonical);
+      std::string("expected_database_uuid:") + database_uuid);
   drop_api_request.option_envelopes.push_back(
       std::string("expected_filespace_uuid:") + filespace_uuid);
   const sblr::SblrDispatchRequest drop_request{
@@ -801,9 +814,9 @@ void RequireRoutes() {
        kCreateOperation,
        kCreateOpcode,
        "EngineCreateLifecycle",
-       "right.lifecycle_create",
+       "right.local_embedded_first_principal_bootstrap",
        false,
-       true,
+       false,
        {"SBSQL-EB95D772BD63"}},
       {"OPEN DATABASE qa_lifecycle",
        "",

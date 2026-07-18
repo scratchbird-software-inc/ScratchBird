@@ -431,9 +431,10 @@ struct EmbeddedEngineClient::Impl {
 
     scratchbird::server::ServerBootstrapConfig server_config;
     server_config.database_default_path = database_path;
-    // Database creation is exclusively owned by the approved embedded SBsec
-    // bootstrap path. An embedded client may open an existing database, but it
-    // must never turn a connection attempt into create-time publication.
+    // Database creation is exclusively owned by the approved embedded first-
+    // principal bootstrap path shared by SBsql and SBsec. An embedded client
+    // may open an existing database, but it must never turn a connection
+    // attempt into create-time publication.
     server_config.database_auto_create = false;
     server_config.allow_uncredentialed_fixture_database =
         config.allow_uncredentialed_fixture_database;

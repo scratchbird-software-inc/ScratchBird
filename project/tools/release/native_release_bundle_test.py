@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ import stage_native_release_bundle as stage
 
 TOOLS_ROOT = Path(__file__).resolve().parent
 VERIFY = TOOLS_ROOT / "verify_native_release_bundle.py"
+VERIFY_INSTALLED = TOOLS_ROOT / "verify_native_installed_payload.py"
 
 
 class NativeReleaseBundleTest(unittest.TestCase):
@@ -76,9 +78,8 @@ class NativeReleaseBundleTest(unittest.TestCase):
         for name in ("libSBcore.so", "libSBcore_static.a", "libSBParser_udr.a"):
             (source / "lib" / name).write_bytes(b"native library\n")
         for name in stage.NATIVE_CONFIGS:
-            tokens = stage.REQUIRED_CONFIG_TOKENS[name]
             (source / "etc" / "scratchbird" / name).write_text(
-                "\n".join(tokens) + "\n", encoding="utf-8"
+                self.config_fixture_text(name), encoding="utf-8"
             )
         share_root = source / "share" / "scratchbird"
         for rel in stage.REQUIRED_RESOURCE_DIRS:
@@ -183,9 +184,60 @@ class NativeReleaseBundleTest(unittest.TestCase):
         )
         return source
 
+    @staticmethod
+    def config_fixture_text(name: str) -> str:
+        if name != "SBsrv.conf":
+            return "\n".join(stage.REQUIRED_CONFIG_TOKENS[name]) + "\n"
+        return (
+            "[server.security]\n"
+            "provider_family = local_password\n"
+            "default_policy_installed = true\n"
+            "[server.database]\n"
+            "auto_create = false\n"
+            "[server.listener]\n"
+            "executable_path = bin/SBgate\n"
+            "control_dir = runtime/listener/control\n"
+            "runtime_dir = runtime/listener/runtime\n"
+            "[server.parser]\n"
+            "sbps_enabled = true\n"
+            "sbps_endpoint = runtime/control/sb_server.sbps.sock\n"
+            "[server.memory]\n"
+            "failure_mode = return_error\n"
+        )
+
     def verify(self, output: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(VERIFY), str(output), "--platform", "linux"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+
+    def installed_payload(self, output: Path, payload: Path) -> Path:
+        runtime_root = payload / "opt" / "ScratchBird"
+        for name in ("bin", "lib", "share"):
+            shutil.copytree(output / name, runtime_root / name)
+        shutil.copytree(output / "etc", payload / "etc")
+        release_root = runtime_root / "share" / "scratchbird" / "release"
+        release_root.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "STANDALONE_OUTPUT_MANIFEST.json",
+            "NATIVE_RELEASE_PROFILE.json",
+        ):
+            shutil.copy2(output / name, release_root / name)
+        return runtime_root
+
+    def verify_installed(
+        self,
+        payload: Path,
+        config_root: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        command = [sys.executable, str(VERIFY_INSTALLED), str(payload)]
+        if config_root is not None:
+            command.extend(("--config-root", str(config_root)))
+        return subprocess.run(
+            command,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -206,6 +258,176 @@ class NativeReleaseBundleTest(unittest.TestCase):
             )
             result = self.verify(output)
             self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_stage_rejects_default_server_listener_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            server_config = source / "etc/scratchbird/SBsrv.conf"
+            server_config.write_text(
+                server_config.read_text(encoding="utf-8")
+                + "[server.listener.profile.sbsql]\n"
+                + "enabled = true\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                stage.stage(source, root / "native" / "output" / "linux", "linux")
+
+    def test_stage_rejects_duplicate_server_listener_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            server_config = source / "etc/scratchbird/SBsrv.conf"
+            server_config.write_text(
+                server_config.read_text(encoding="utf-8")
+                + "[server.listener]\n"
+                + "executable_path = bin/SBParser\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                stage.stage(source, root / "native" / "output" / "linux", "linux")
+
+    def test_installed_config_validator_accepts_materialized_linux_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            config_root = source / "etc/scratchbird"
+            replacements = {
+                "SBsrv.conf": {
+                    "executable_path = bin/SBgate": (
+                        "executable_path = /opt/ScratchBird/bin/SBgate"
+                    ),
+                },
+                "SBgate.conf": {
+                    "parser_executable = bin/SBParser": (
+                        "parser_executable = /opt/ScratchBird/bin/SBParser"
+                    ),
+                },
+                "SBParser.conf": {
+                    "parser.worker_binary = bin/SBParser": (
+                        "parser.worker_binary = /opt/ScratchBird/bin/SBParser"
+                    ),
+                },
+                "SBbootstrap.profile": {
+                    "platform = operator_required": "platform = linux",
+                    "service_identity = operator_required": (
+                        "service_identity = scratchbird"
+                    ),
+                    "service_group = operator_required": "service_group = scratchbird",
+                },
+            }
+            for name, mapping in replacements.items():
+                path = config_root / name
+                text = path.read_text(encoding="utf-8")
+                for old, new in mapping.items():
+                    self.assertEqual(text.count(old), 1)
+                    text = text.replace(old, new)
+                path.write_text(text, encoding="utf-8")
+            stage.require_native_installed_configs(config_root, source, "linux")
+
+    def test_installed_config_validator_accepts_windows_placeholder_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            for binary in ("SBgate", "SBParser"):
+                shutil.copy2(
+                    source / "bin" / binary,
+                    source / "bin" / f"{binary}.exe",
+                )
+            config_root = source / "etc/scratchbird"
+            replacements = {
+                "SBsrv.conf": {
+                    "executable_path = bin/SBgate": (
+                        "executable_path = @SCRATCHBIRD_INSTALL_ROOT@/bin/SBgate.exe"
+                    ),
+                },
+                "SBgate.conf": {
+                    "parser_executable = bin/SBParser": (
+                        "parser_executable = @SCRATCHBIRD_INSTALL_ROOT@/bin/SBParser.exe"
+                    ),
+                },
+                "SBParser.conf": {
+                    "parser.worker_binary = bin/SBParser": (
+                        "parser.worker_binary = @SCRATCHBIRD_INSTALL_ROOT@/bin/SBParser.exe"
+                    ),
+                },
+                "SBbootstrap.profile": {
+                    "platform = operator_required": "platform = windows",
+                    "service_identity = operator_required": (
+                        r"service_identity = NT SERVICE\scratchbird"
+                    ),
+                    "service_group = operator_required": (
+                        "service_group = ScratchBird"
+                    ),
+                },
+            }
+            for name, mapping in replacements.items():
+                path = config_root / name
+                text = path.read_text(encoding="utf-8")
+                for old, new in mapping.items():
+                    self.assertEqual(text.count(old), 1)
+                    text = text.replace(old, new)
+                path.write_text(text, encoding="utf-8")
+            stage.require_native_installed_configs(config_root, source, "windows")
+
+    def test_installed_payload_verifier_accepts_materialized_linux_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            output = root / "native" / "output" / "linux"
+            stage.stage(source, output, "linux")
+            payload = root / "payload"
+            self.installed_payload(output, payload)
+            config_root = payload / "etc" / "scratchbird"
+            replacements = {
+                "SBsrv.conf": {
+                    "executable_path = bin/SBgate": (
+                        "executable_path = /opt/ScratchBird/bin/SBgate"
+                    ),
+                },
+                "SBgate.conf": {
+                    "parser_executable = bin/SBParser": (
+                        "parser_executable = /opt/ScratchBird/bin/SBParser"
+                    ),
+                },
+                "SBParser.conf": {
+                    "parser.worker_binary = bin/SBParser": (
+                        "parser.worker_binary = /opt/ScratchBird/bin/SBParser"
+                    ),
+                },
+                "SBbootstrap.profile": {
+                    "platform = operator_required": "platform = linux",
+                    "service_identity = operator_required": (
+                        "service_identity = scratchbird"
+                    ),
+                    "service_group = operator_required": "service_group = scratchbird",
+                },
+            }
+            for name, mapping in replacements.items():
+                path = config_root / name
+                text = path.read_text(encoding="utf-8")
+                for old, new in mapping.items():
+                    self.assertEqual(text.count(old), 1)
+                    text = text.replace(old, new)
+                path.write_text(text, encoding="utf-8")
+            result = self.verify_installed(payload, config_root)
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_installed_config_validator_rejects_untrusted_parser_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.fixture(root)
+            config_root = source / "etc/scratchbird"
+            listener_config = config_root / "SBgate.conf"
+            listener_config.write_text(
+                listener_config.read_text(encoding="utf-8").replace(
+                    "parser_executable = bin/SBParser",
+                    "parser_executable = /untrusted/bin/SBParser",
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(SystemExit):
+                stage.require_native_installed_configs(config_root, source, "linux")
 
     def test_verifier_rejects_added_emulation_binary(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

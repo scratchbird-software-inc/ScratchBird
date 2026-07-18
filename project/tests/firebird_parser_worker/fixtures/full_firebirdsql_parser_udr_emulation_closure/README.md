@@ -31,7 +31,8 @@ The closure covers:
 - Firebird datatype, descriptor, domain, blob, array, charset, collation, and pseudo-type behavior.
 - Firebird functions, operators, aggregates, windows, context variables, generator behavior, and diagnostics.
 - DSQL, DDL, DML, PSQL, routines, triggers, packages, dynamic SQL, services, utility, API, and BLR-facing compatibility surfaces.
-- Non-file emulation for file/storage/admin commands such as `CREATE DATABASE`, shadow, backup, restore, validation, nbackup, external tables, trace, plugins, and service manager operations.
+- Exact `SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED` refusal for public Firebird `CREATE DATABASE` and wire `op_create`, before storage, metadata-overlay, or handle effects; local embedded isql first-principal startup is outside Firebird public paths.
+- Non-file emulation for remaining file/storage/admin commands such as shadow, backup, restore, validation, nbackup, external tables, trace, plugins, and service manager operations.
 - CTest coverage generated from exact Firebird surface rows plus reference-native tool and original reference regression replay.
 
 ## Boundary Rules

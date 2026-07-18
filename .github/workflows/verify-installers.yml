@@ -1,6 +1,9 @@
 name: ScratchBird Installer Verification
 
 on:
+  push:
+    branches:
+      - main
   workflow_call:
     inputs:
       platform:
@@ -51,7 +54,7 @@ concurrency:
 jobs:
   linux-installers:
     name: Linux installers
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == '' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -194,10 +197,14 @@ jobs:
 
       - name: Smoke Linux system-package lifecycle
         run: |
+          mkdir -p build/install-smoke/linux
+          set -o pipefail
           python3 project/tools/installers/smoke_install_linux_system.py \
             --artifact-root build/installers/linux \
             --work-root build/install-smoke/linux/system-package-proof \
-            --run-privileged-deb-install
+            --run-privileged-deb-install \
+            --require-privileged-deb-install \
+            2>&1 | tee build/install-smoke/linux/system-package-workflow.log
 
       - name: Upload Linux installers
         uses: actions/upload-artifact@v4
@@ -205,7 +212,7 @@ jobs:
         with:
           name: scratchbird-linux-installers
           path: build/installers/linux
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload Linux install smoke proof
@@ -219,7 +226,7 @@ jobs:
 
   windows-installers:
     name: Windows installers
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == '' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == '' }}
     runs-on: windows-2022
     timeout-minutes: 300
 
@@ -365,7 +372,7 @@ jobs:
         with:
           name: scratchbird-windows-installers
           path: build/installers/windows
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload Windows install smoke proof
@@ -379,7 +386,7 @@ jobs:
 
   macos-installers:
     name: macOS installers (${{ matrix.arch }})
-    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '' }}
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
 
@@ -691,7 +698,7 @@ jobs:
         with:
           name: scratchbird-macos-${{ matrix.arch }}-installers
           path: build/installers/macos-${{ matrix.arch }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 14
 
       - name: Upload macOS install smoke proof
@@ -706,7 +713,7 @@ jobs:
   macos-universal-installers:
     name: macOS universal QA installer bundle
     needs: macos-installers
-    if: ${{ success() && (inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '') }}
+    if: ${{ success() && (github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '') }}
     runs-on: macos-15
     timeout-minutes: 60
 

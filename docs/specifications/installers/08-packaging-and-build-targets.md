@@ -32,7 +32,8 @@ they flip to `supported` as each pipeline begins producing signed artifacts.
 | Linux | coordinator over native packages + metapackages; apt/dnf repo as later wrapper | systemd unit installed disabled and not started; postinst creates or verifies the non-login `scratchbird` identity and required directories only | `/var/lib/scratchbird`, `/etc/scratchbird`, journald |
 
 No platform installer creates a database or credential sidecar. Database
-bootstrap is a separate, explicit `SBsec` embedded operation after installation;
+bootstrap is a separate, explicit `SBsql bootstrap` (or equivalent `SBsec
+bootstrap`) embedded operation after installation;
 root/Administrator is its sole create-time OS authorization gate. The locked
 service identity/group is used only for ownership, privilege drop or ACL handoff,
 and process execution and grants no database/security authority. Installers never

@@ -18,6 +18,7 @@
     "sb_security",
     "sb_verify",
     "sbdriver_conformance",
+    "first_principal_embedded_bootstrap",
     "interactive_mode",
     "batch_mode"
   ],
@@ -54,6 +55,8 @@
     ],
     "lane_specific_proof": [
       "cli_auth_bootstrap_tests",
+      "cli_first_principal_bootstrap_args_tests",
+      "cli_first_principal_bootstrap_cli_smoke",
       "cli_txn_exec_parity_tests",
       "cli_metadata_shaping_tests",
       "cli_res_lifecycle_tests",

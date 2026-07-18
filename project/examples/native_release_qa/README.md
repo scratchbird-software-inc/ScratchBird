@@ -148,13 +148,15 @@ chain for any non-test deployment.
 ## Create the database and first SysArch principal
 
 The shipped and generated configurations retain `auto_create = false`. The
-database must not exist when `SBsec bootstrap` runs: this command creates the
+database must not exist when `SBsql bootstrap` runs: this command creates the
 database, its complete transaction-1 resource and policy catalog, and the first
 SysArch-equivalent principal as one engine-owned create transaction. It refuses
-an existing file and never writes credential authority to a sidecar.
+an existing file and never writes credential authority to a sidecar. `SBsec
+bootstrap` is the identical security-administration entry point; both tools use
+the same embedded bootstrap service.
 
-Root/Administrator is the sole create-time OS authorization gate. On POSIX,
-SBsec validates the exact local locked `scratchbird` user and primary group,
+Root/Administrator is the sole create-time OS authorization gate. On POSIX, the
+shared bootstrap service validates the exact local locked `scratchbird` user and primary group,
 then permanently drops to that identity before creating files. On Windows, it
 validates that `NT SERVICE\scratchbird` resolves as a `SidTypeUser` service SID
 under the `NT SERVICE` authority before applying its ACL. The service identity
@@ -167,7 +169,7 @@ On POSIX:
 
 ```text
 export SB_INSTANCE=/var/lib/scratchbird/native-qa
-sudo /opt/ScratchBird/bin/SBsec \
+sudo /opt/ScratchBird/bin/SBsql \
   bootstrap qa_admin "$SB_INSTANCE/data/default.sbdb" \
   --mode=embedded \
   --platform-profile="$SB_INSTANCE/config/SBbootstrap.profile" \
@@ -182,7 +184,7 @@ is the canonical ProgramData instance:
 ```powershell
 $Instance = "$env:ProgramData\ScratchBird"
 Set-Location "$env:ProgramFiles\ScratchBird"
-.\bin\SBsec.exe bootstrap qa_admin "$Instance\data\default.sbdb" `
+.\bin\SBsql.exe bootstrap qa_admin "$Instance\data\default.sbdb" `
   --mode=embedded `
   --platform-profile="$Instance\config\SBbootstrap.profile" `
   --resource-seed-pack-root="$PWD\share\scratchbird\resources\seed-packs\initial-resource-pack" `
@@ -207,7 +209,7 @@ sudo -u scratchbird bin/SBsrv --config "$SB_INSTANCE/config/SBsrv.conf" --foregr
 ```
 
 On Windows, `Start-Service` is valid only for the explicit
-`--windows-system-service` flow above, after `SBsec bootstrap` created
+`--windows-system-service` flow above, after `SBsql bootstrap` created
 `$env:ProgramData\ScratchBird\data\default.sbdb`. The helper has already put
 the DBBT bridge into the protected service environment without printing the
 key. Start the installer-registered `scratchbird` service through the Service
@@ -225,7 +227,7 @@ The DBBT value is secret session material: do not place it on a command line,
 commit it, or include it in test reports.
 
 No default cleartext administrator password is shipped. Use the `qa_admin`
-credential just created by `SBsec` and allow the tools to prompt for the
+credential just created by `SBsql bootstrap` and allow the tools to prompt for the
 password.
 From another shell, connect through the TLS-required native SBSQL listener and
 trust only the generated QA certificate:

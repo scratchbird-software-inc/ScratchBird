@@ -6639,20 +6639,13 @@ bool HandleStartup(SbsqlTestWireSession* session,
   if (credentials.requested_language.empty()) credentials.requested_language = "en";
   credentials.requested_role = get_param("role");
   credentials.application_name = get_param("application_name");
-  if (!config.manager_auth_token.empty()) {
-    credentials.provider_family = config.manager_auth_provider_family.empty()
-                                      ? "security_database_temporary_token"
-                                      : config.manager_auth_provider_family;
-    if (!config.manager_auth_principal.empty()) credentials.principal = config.manager_auth_principal;
-    credentials.credential_evidence_present = true;
-    credentials.credential_evidence = "scheme=security_database_temporary_token_v1;principal=" +
-                                      credentials.principal + ";token=" +
-                                      config.manager_auth_token + ";issuer=manager";
-  } else {
-    credentials.credential_evidence_present = !auth_response.payload.empty();
-    credentials.credential_evidence.assign(reinterpret_cast<const char*>(auth_response.payload.data()),
-                                           auth_response.payload.size());
-  }
+  // Manager admission and DBBT/LPREFACE binding authorize the route to this
+  // listener.  They never replace the database credential supplied by the
+  // client: database authentication remains engine-owned and is evaluated
+  // against the canonical Tx1 security catalog.
+  credentials.credential_evidence_present = !auth_response.payload.empty();
+  credentials.credential_evidence.assign(reinterpret_cast<const char*>(auth_response.payload.data()),
+                                         auth_response.payload.size());
 
   MessageVectorSet auth_messages;
   if (!session->AuthenticateCredentials(credentials, &auth_messages)) {

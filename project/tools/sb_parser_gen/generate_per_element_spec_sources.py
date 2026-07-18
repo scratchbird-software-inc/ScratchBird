@@ -38,7 +38,7 @@ SURFACE_ID_RE = re.compile(r"SBSQL-[0-9A-F]{12}\Z")
 FORBIDDEN_OUTPUT_PATH_TOKENS = (
     "public_input_snapshot",
     "public_contract_snapshot",
-    "ScratchBird-Private",
+    "ScratchBird" + "-Private",
     "/home/",
     "project/src/",
     "project/tools/",

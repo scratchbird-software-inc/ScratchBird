@@ -13,6 +13,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -814,12 +816,10 @@ int main() {
 
   Measurements measurements;
   measurements.startup_open_latency_ms = MeasureMs([&]() {
-    api::EngineCreateLifecycleRequest create;
-    create.context = BaseContext(database_path);
-    create.option_envelopes.push_back(std::string("resource_seed_pack_root:") + SB_PERF_SEED_PACK_ROOT);
-    auto created = api::EngineCreateLifecycle(create);
-    if (!created.ok) { PrintApiResultDiagnostics(created, "lifecycle create failed"); }
-    Require(created.ok, "lifecycle create failed");
+    const auto created =
+        scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+            database_path, SB_PERF_SEED_PACK_ROOT);
+    Require(created.ok(), "credentialed lifecycle fixture create failed");
     auto opened = Dispatch(database_path,
                            "lifecycle.open_database",
                            "SBLR_LIFECYCLE_OPEN_DATABASE",

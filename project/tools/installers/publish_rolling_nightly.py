@@ -29,15 +29,35 @@ TAG = "nightly"
 MANIFEST_NAME = "scratchbird-nightly-manifest.json"
 CHECKSUM_NAME = "scratchbird-nightly-SHA256SUMS"
 MANIFEST_SCHEMA = "scratchbird.native_nightly_release.v1"
+PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
 API_VERSION = "2026-03-10"
 CANONICAL_ASSET_NAMES = {
     "scratchbird-nightly-linux-x86_64.tar.gz",
+    "scratchbird-nightly-linux-x86_64.deb",
+    "scratchbird-nightly-linux-x86_64.rpm",
+    "scratchbird-nightly-linux-x86_64-aur.tar.gz",
     "scratchbird-nightly-windows-x86_64.zip",
+    "scratchbird-nightly-windows-x86_64.msi",
     "scratchbird-nightly-macos-x86_64.tar.gz",
+    "scratchbird-nightly-macos-x86_64.pkg",
     "scratchbird-nightly-macos-arm64.tar.gz",
+    "scratchbird-nightly-macos-arm64.pkg",
     "scratchbird-nightly-macos-universal.tar.gz",
     MANIFEST_NAME,
     CHECKSUM_NAME,
+}
+REQUIRED_ARTIFACT_VERIFICATION = {
+    "scratchbird-nightly-linux-x86_64.tar.gz": "exact_native_payload_extraction",
+    "scratchbird-nightly-linux-x86_64.deb": "installer_manifest_and_privileged_deb_smoke",
+    "scratchbird-nightly-linux-x86_64.rpm": "installer_manifest_and_rpm_recipe_verification",
+    "scratchbird-nightly-linux-x86_64-aur.tar.gz": "installer_manifest_and_aur_recipe_verification",
+    "scratchbird-nightly-windows-x86_64.zip": "exact_native_payload_extraction",
+    "scratchbird-nightly-windows-x86_64.msi": "installer_manifest_and_msi_smoke",
+    "scratchbird-nightly-macos-x86_64.tar.gz": "exact_native_payload_extraction",
+    "scratchbird-nightly-macos-x86_64.pkg": "installer_manifest_and_pkg_smoke",
+    "scratchbird-nightly-macos-arm64.tar.gz": "exact_native_payload_extraction",
+    "scratchbird-nightly-macos-arm64.pkg": "installer_manifest_and_pkg_smoke",
+    "scratchbird-nightly-macos-universal.tar.gz": "exact_native_payload_extraction",
 }
 NATIVE_COMPONENTS = [
     {"name": "SBmgr", "role": "manager"},
@@ -148,7 +168,7 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
         raise PublishError("release_manifest_schema_mismatch")
     if manifest.get("distribution_surface") != "scratchbird_native_no_emulation" or manifest.get("emulation_layers_included") is not False:
         raise PublishError("release_manifest_not_native_only")
-    if manifest.get("public_asset_policy") != "fully_extracted_and_exact_native_payload_verified_portable_archives_only":
+    if manifest.get("public_asset_policy") != PUBLIC_ASSET_POLICY:
         raise PublishError("release_manifest_public_asset_policy_mismatch")
     if manifest.get("native_parser") != "SBSQL":
         raise PublishError("release_manifest_native_parser_mismatch")
@@ -173,6 +193,8 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
     expected_package_names = set(checksums) - {MANIFEST_NAME}
     if manifest_names != expected_package_names:
         raise PublishError("release_manifest_checksum_inventory_mismatch")
+    if manifest_names != set(REQUIRED_ARTIFACT_VERIFICATION):
+        raise PublishError("release_manifest_verification_inventory_mismatch")
     for row in artifact_rows:
         if not isinstance(row, dict) or not isinstance(row.get("name"), str):
             raise PublishError("release_manifest_artifact_row_invalid")
@@ -184,6 +206,8 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
             raise PublishError(f"release_manifest_size_mismatch:{name}")
         if row.get("sha256") != sha256_file(package_path):
             raise PublishError(f"release_manifest_digest_mismatch:{name}")
+        if row.get("verification") != REQUIRED_ARTIFACT_VERIFICATION[name]:
+            raise PublishError(f"release_manifest_verification_mismatch:{name}")
 
     actual_names = {path.name for path in root.iterdir()}
     expected_names = set(checksums) | {CHECKSUM_NAME}
@@ -356,7 +380,7 @@ class RollingPublisher:
             or manifest.get("release_tag") != TAG
             or manifest.get("distribution_surface") != "scratchbird_native_no_emulation"
             or manifest.get("public_asset_policy")
-            != "fully_extracted_and_exact_native_payload_verified_portable_archives_only"
+            != PUBLIC_ASSET_POLICY
             or manifest.get("native_parser") != "SBSQL"
             or manifest.get("emulation_layers_included") is not False
             or manifest.get("native_components") != NATIVE_COMPONENTS

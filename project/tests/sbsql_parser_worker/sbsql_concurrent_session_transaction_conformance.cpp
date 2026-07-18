@@ -21,6 +21,8 @@
 #include "session_registry.hpp"
 #include "transaction_lock.hpp"
 
+#include "../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -1921,11 +1923,10 @@ int main() {
   Require(!work.empty(), "failed to create temp directory");
   const auto database_path = work / "fspe011e.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = BaseContext(database_path);
-  create.option_envelopes.push_back(std::string("resource_seed_pack_root:") + SB_FSP011E_SEED_PACK_ROOT);
-  auto created = api::EngineCreateLifecycle(create);
-  Require(created.ok, "lifecycle create database failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          database_path, SB_FSP011E_SEED_PACK_ROOT);
+  Require(created.ok(), "credentialed lifecycle fixture database create failed");
   Require(std::filesystem::exists(database_path), "lifecycle create did not create database file");
 
   auto open_result = Dispatch(database_path,

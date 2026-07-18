@@ -670,6 +670,10 @@ DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST_LABEL = (
     "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-030;"
     "sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;database_lifecycle"
 )
+DATABASE_LIFECYCLE_CREATE_REFUSAL_CTEST_LABEL = (
+    "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-030;"
+    "sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_exact_refusal;database_lifecycle"
+)
 
 CAST_VALUE_EXACT_ROUTE_CTEST = "sbsql_cast_value_exact_route_conformance"
 CAST_VALUE_EXACT_ROUTE_TEST_SOURCE = "project/tests/sbsql_parser_worker/sbsql_cast_value_exact_route_conformance.cpp"
@@ -1335,7 +1339,11 @@ DATABASE_LIFECYCLE_EXACT_ROUTE_ROW_EVIDENCE = {
         "api": "EngineCreateLifecycle",
         "fixture": "CREATE DATABASE qa_lifecycle",
         "mapping_key": "sbsql.lifecycle.create_database",
-        "result_evidence": "engine_lifecycle=created;database_file=created",
+        "final_state": "exact_refusal_passed",
+        "result_evidence": (
+            "api_result=refused;diagnostic=SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;"
+            "database_file=not_created;security_sidecars=not_created"
+        ),
         "row_surface_ids": "SBSQL-EB95D772BD63",
     },
     "SBSQL-80C5BA542433": {
@@ -24818,8 +24826,12 @@ def classify(
             fail(f"{surface_id} database lifecycle exact-route manifest override canonical SBLR family drift")
         if ledger_row is None:
             fail(f"{surface_id} database lifecycle exact-route manifest override requires strict ledger row")
-        if ledger_row.get("current_state") != "e2e_passed":
-            fail(f"{surface_id} database lifecycle exact-route manifest override requires e2e_passed strict ledger state")
+        expected_final_state = database_lifecycle_evidence.get("final_state", "e2e_passed")
+        if ledger_row.get("current_state") != expected_final_state:
+            fail(
+                f"{surface_id} database lifecycle exact-route manifest override requires "
+                f"{expected_final_state} strict ledger state"
+            )
         operation_id = database_lifecycle_evidence["operation_id"]
         ledger_operation_id = ledger_row.get("function_or_api_operation_id", "").split(";", 1)[0]
         if ledger_operation_id != operation_id:
@@ -24831,19 +24843,29 @@ def classify(
         fixture = database_lifecycle_evidence["fixture"]
         mapping_key = database_lifecycle_evidence["mapping_key"]
         row_surface_ids = database_lifecycle_evidence["row_surface_ids"]
+        is_public_bootstrap_refusal = expected_final_state == "exact_refusal_passed"
         return {
-            "final_state": "e2e_passed",
-            "ctest_label": DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST_LABEL,
+            "final_state": expected_final_state,
+            "ctest_label": (
+                DATABASE_LIFECYCLE_CREATE_REFUSAL_CTEST_LABEL
+                if is_public_bootstrap_refusal
+                else DATABASE_LIFECYCLE_EXACT_ROUTE_CTEST_LABEL
+            ),
             "fixture_path": DATABASE_LIFECYCLE_EXACT_ROUTE_TEST_SOURCE,
             "implementation_refs": (
                 f"operation_id={operation_id};opcode={sblr_operation};"
                 f"registry_surface_id={surface_id};api={api_name};"
                 f"canonical_operation_family={surface['sblr_operation_family']};"
                 f"route_operation_family={route_family};mapping_key={mapping_key};"
-                "server_public_abi_dispatch=true;scratchbird_lifecycle_api=true"
+                "server_public_abi_dispatch=true;scratchbird_lifecycle_api=true;"
+                "public_bootstrap_authority=false"
             ),
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
+                "SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED;"
+                "public_create_database_refused_before_storage_mutation"
+                if is_public_bootstrap_refusal
+                else "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SBSQL.LIFECYCLE.MAPPED;ENGINE.DBLC_*_for_lifecycle_storage_refusals"
             ),
             "result_proof": (
@@ -24859,8 +24881,8 @@ def classify(
             "promoter_slice": "SBSFC-020R-QV-through-SBSFC-020R-QW-SBSFC-030-database-lifecycle-selection-control-exact-route",
             "notes": (
                 "Bounded database lifecycle exact-route row evidence. "
-                "Exactly SBSQL-EB95D772BD63 create_database_stmt, SBSQL-80C5BA542433 attach_database_stmt, SBSQL-A3F3AF6910F9 database_name, SBSQL-5B1C5630A433 use_database_alias, SBSQL-1F38A5CF36B0 alter_database_action, SBSQL-796DE5C0B192 alter_database_extra, SBSQL-F9BE1FC733F6 maintenance_stmt, SBSQL-0E7563017DCD verify_options, and SBSQL-F4F4216A8C8A repair_options are promoted to e2e_passed using CREATE DATABASE, ATTACH DATABASE, USE database-alias, ALTER DATABASE maintenance, MAINTENANCE DATABASE, VERIFY DATABASE, and REPAIR DATABASE fixtures. "
-                "The route proves generated registry validation, parser/CST/AST/bound acceptance, lifecycle row_surface_ids payload evidence, lowering to ScratchBird lifecycle SBLR operations, server public ABI admission, EngineCreateLifecycle database-file creation, EngineAttachLifecycle attach/open behavior, EngineEnterMaintenanceLifecycle maintenance evidence, EngineVerifyLifecycle verification evidence, EngineRepairLifecycle repair evidence, MGA lifecycle evidence, no source SQL/path/name text authority, no parser-side file effects, no reference authority, no cluster-positive behavior, and no WAL/recovery authority. "
+                "SBSQL-EB95D772BD63 create_database_stmt is exact_refusal_passed: public CREATE DATABASE parses, binds, lowers, and dispatches to EngineCreateLifecycle, which returns SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED before any database or security sidecar is created. The test's credentialed direct-storage fixture is isolated setup only; production database creation belongs solely to the explicit local embedded first-principal bootstrap command, never to a parser, listener, manager, or public SBLR request. SBSQL-80C5BA542433 attach_database_stmt, SBSQL-A3F3AF6910F9 database_name, SBSQL-5B1C5630A433 use_database_alias, SBSQL-1F38A5CF36B0 alter_database_action, SBSQL-796DE5C0B192 alter_database_extra, SBSQL-F9BE1FC733F6 maintenance_stmt, SBSQL-0E7563017DCD verify_options, and SBSQL-F4F4216A8C8A repair_options remain e2e_passed against that credentialed fixture. "
+                "The route proves generated registry validation, parser/CST/AST/bound acceptance, lifecycle row_surface_ids payload evidence, lowering to ScratchBird lifecycle SBLR operations, server public ABI admission, engine-owned MGA lifecycle evidence for the operating routes, no source SQL/path/name text authority, no parser-side file effects, no reference authority, no cluster-positive behavior, and no WAL/recovery authority. "
                 "The alter_database_action and alter_database_extra rows are deliberately published from the real ALTER DATABASE lifecycle route, superseding older descriptor-token evidence. No broad DROP/OPEN/SHUTDOWN lifecycle closure, multi-database alias catalog semantics, authenticated SBWP driver route, transaction-finality change, or final no-grey closure is claimed."
             ),
         }

@@ -1921,8 +1921,7 @@ std::optional<bool> FirebirdConfigBooleanAssignment(std::string_view config_text
 }
 
 void ApplyFirebirdAttachSessionOptions(FirebirdBinarySessionState* state,
-                                       const ParameterBufferDecodeResult& decoded,
-                                       bool creating_database) {
+                                       const ParameterBufferDecodeResult& decoded) {
   if (state == nullptr) return;
   state->current_wire_compressed = false;
   if (state->current_attachment_charset.empty()) {
@@ -1939,19 +1938,6 @@ void ApplyFirebirdAttachSessionOptions(FirebirdBinarySessionState* state,
         state->current_attachment_charset = charset;
         TraceFirebirdWorker("op_attach.attachment_charset=" +
                             EscapeJsonLocal(state->current_attachment_charset));
-      }
-    } else if (item.name == "isc_dpb_set_db_charset" && creating_database) {
-      // Firebird's create-database DPB carries the database default character
-      // set separately from isc_dpb_lc_ctype, which is attachment-scoped.  Bind
-      // the former before the initial metadata snapshot is persisted so later
-      // parser-owned DDL lowering resolves implicit text resources to the
-      // database default and publishes those neutral resource UUIDs to the
-      // engine.  An attach DPB must not rewrite this durable database property.
-      const std::string charset = UpperIdentifier(FirebirdParameterItemText(item));
-      if (!charset.empty()) {
-        state->database_default_charset = charset;
-        TraceFirebirdWorker("op_create.database_default_charset=" +
-                            EscapeJsonLocal(state->database_default_charset));
       }
     } else if (item.name == "isc_dpb_sql_dialect" ||
                item.name == "isc_dpb_set_db_sql_dialect") {
@@ -1984,10 +1970,12 @@ std::string BytesToJsonString(const std::vector<std::uint8_t>& bytes) {
 
 std::string FirebirdWireLifecycleMappingJson(std::string_view wire_operation) {
   if (wire_operation == "op_create") {
-    return "\"scratchbird_lifecycle_api\":true,"
+    return "\"scratchbird_lifecycle_api\":false,"
            "\"lifecycle_operation_id\":\"lifecycle.create_database\","
            "\"sblr_operation\":\"SBLR_LIFECYCLE_CREATE_DATABASE\","
-           "\"engine_api_function\":\"EngineCreateLifecycle\",";
+           "\"engine_api_function\":\"EngineCreateLifecycle\","
+           "\"diagnostic_code\":\"SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED\","
+           "\"public_bootstrap_authority\":false,";
   }
   if (wire_operation == "op_attach") {
     return "\"scratchbird_lifecycle_api\":true,"
@@ -2075,7 +2063,7 @@ const FirebirdRemoteHandle* ResolveStatementHandle(
 
 std::uint32_t FirstDatabaseHandleId(const FirebirdBinarySessionState& state) {
   for (const auto& handle : state.handles) {
-    if (handle.kind == "database" || handle.kind == "database_create") {
+    if (handle.kind == "database") {
       return handle.id;
     }
   }
@@ -25404,8 +25392,7 @@ bool IsLastFirebirdAttachmentHandle(
     std::uint32_t releasing_handle_id) {
   for (const auto& handle : state.handles) {
     if (handle.id == releasing_handle_id) continue;
-    if (handle.kind == "database" || handle.kind == "database_create" ||
-        handle.kind == "service") {
+    if (handle.kind == "database" || handle.kind == "service") {
       return false;
     }
   }
@@ -25459,7 +25446,7 @@ std::string FirebirdAttachDescriptorJson(std::uint32_t opcode,
                                          const ParameterBufferDecodeResult& decoded) {
   const bool service = opcode == 82;
   const std::string wire_operation =
-      service ? "op_service_attach" : (opcode == 20 ? "op_create" : "op_attach");
+      service ? "op_service_attach" : "op_attach";
   return std::string("{\"ok\":true,\"wire_operation\":\"") +
          wire_operation +
          "\",\"object_handle\":" + std::to_string(handle_id) +
@@ -25476,7 +25463,7 @@ std::string FirebirdAttachDescriptorJson(std::uint32_t opcode,
 std::string FirebirdBufferFailureJson(std::uint32_t opcode,
                                       const ParameterBufferDecodeResult& decoded) {
   return std::string("{\"ok\":false,\"wire_operation\":\"") +
-         (opcode == 82 ? "op_service_attach" : (opcode == 20 ? "op_create" : "op_attach")) +
+         (opcode == 82 ? "op_service_attach" : "op_attach") +
          "\",\"parameter_buffer\":" + decoded.json +
          ",\"runtime_policy\":\"fail_closed_parameter_buffer\"}";
 }
@@ -33656,7 +33643,7 @@ int ServeFirebirdBinaryConnect(int fd) {
       }
       const auto* database = FindHandle(state, request.object_id);
       if (database == nullptr ||
-          (database->kind != "database" && database->kind != "database_create")) {
+          database->kind != "database") {
         if (!WritePacket(fd, FirebirdStatusResponsePacket(
                                  kIscBadDbHandle,
                                  FirebirdInvalidHandleJson(
@@ -33685,6 +33672,24 @@ int ServeFirebirdBinaryConnect(int fd) {
                                       (opcode == 20 ? "op_create" : "op_attach")) +
                           ".file=" + HexEncodeBytesLocal(request.file_name) +
                           " pb=" + HexEncodeBytesLocal(request.parameter_buffer));
+      if (opcode == 20) {  // op_create
+        // A Firebird wire create would establish the first durable database
+        // principal.  It must never become a parser-owned metadata/database
+        // bootstrap: consume the packet, allocate no handle, and return the
+        // canonical public-boundary refusal before DPB decoding, authentication,
+        // alias registration, or overlay persistence can touch state.
+        if (!WritePacket(fd, FirebirdWishListResponsePacket(
+                                 "{\"ok\":false,\"wire_operation\":\"op_create\","
+                                 "\"diagnostic_code\":\"SB_ENGINE_API_LIFECYCLE_BOOTSTRAP_REQUIRED\","
+                                 "\"runtime_policy\":\"public_database_creation_requires_explicit_local_embedded_first_principal_bootstrap\","
+                                 "\"bootstrap_boundary\":\"local_embedded_isql_startup\","
+                                 "\"storage_mutation\":false,"
+                                 "\"metadata_overlay_mutation\":false,"
+                                 "\"handle_allocated\":false}"))) {
+          return 1;
+        }
+        continue;
+      }
       const auto decoded =
           DecodeFirebirdParameterBuffer(service ? "SPB" : "DPB", request.parameter_buffer);
       TraceFirebirdWorker(std::string(service ? "op_service_attach" :
@@ -33733,42 +33738,16 @@ int ServeFirebirdBinaryConnect(int fd) {
 	          }
 	          continue;
 	        }
-	        if (opcode == 20) {
-	          // A protocol create starts with Firebird's database defaults.  The
-	          // create DPB below may replace either value, but a prior attachment
-	          // handled by the same worker must never leak its durable settings.
-	          state.database_default_charset = "NONE";
-	          state.database_sql_dialect = 3;
-	        }
-	        ApplyFirebirdAttachSessionOptions(&state, decoded, opcode == 20);
-	        if (opcode == 20) {
-	          state.domains.clear();
-          state.tables.clear();
-          state.procedures.clear();
-          state.triggers.clear();
-          state.views.clear();
-          state.indexes.clear();
-          state.sequences.clear();
-          state.roles.clear();
-          state.grant_lines.clear();
-          state.firebird_users.clear();
-          state.catalog_scope_by_object.clear();
-          state.user_session_context.clear();
-          state.blob_id_by_cell_key.clear();
-          state.blob_text_by_id.clear();
-          state.next_blob_id_low = 1;
-          PersistFirebirdMetadataOverlay(state);
-        } else {
-          LoadFirebirdMetadataOverlay(&state);
-          EnsureFirebirdQaMonitoringOverlay(&state);
-        }
+        ApplyFirebirdAttachSessionOptions(&state, decoded);
+        LoadFirebirdMetadataOverlay(&state);
+        EnsureFirebirdQaMonitoringOverlay(&state);
       }
       const auto handle_id = state.next_handle++;
       const std::string descriptor =
           FirebirdAttachDescriptorJson(opcode, request, handle_id, decoded);
       state.handles.push_back(
           {handle_id, 0, request.object_id,
-           service ? "service" : (opcode == 20 ? "database_create" : "database"),
+           service ? "service" : "database",
            descriptor, {}});
       state.handles.back().firebird_user =
           FirebirdPrincipalFromParameterBuffer(request.parameter_buffer, decoded,
@@ -33863,7 +33842,7 @@ int ServeFirebirdBinaryConnect(int fd) {
       }
       const auto* database = FindHandle(state, request.database_id);
       if (database == nullptr ||
-          (database->kind != "database" && database->kind != "database_create")) {
+          database->kind != "database") {
         if (!WritePacket(fd, FirebirdStatusResponsePacket(
                                  kIscBadDbHandle,
                                  FirebirdInvalidHandleJson(
@@ -34008,7 +33987,7 @@ int ServeFirebirdBinaryConnect(int fd) {
       }
       const auto* database = FindHandle(state, request.database_id);
       if (database == nullptr ||
-          (database->kind != "database" && database->kind != "database_create")) {
+          database->kind != "database") {
         if (!WritePacket(fd, FirebirdStatusResponsePacket(
                                  kIscBadDbHandle,
                                  FirebirdInvalidHandleJson(
@@ -35973,7 +35952,7 @@ int ServeFirebirdBinaryConnect(int fd) {
       }
       const auto* database = FindHandle(state, request.database_id);
       if (database == nullptr ||
-          (database->kind != "database" && database->kind != "database_create")) {
+          database->kind != "database") {
         if (!WritePacket(fd, FirebirdStatusResponsePacket(
                                  kIscBadDbHandle,
                                  FirebirdInvalidHandleJson(
@@ -36079,7 +36058,7 @@ int ServeFirebirdBinaryConnect(int fd) {
       }
       const auto* database = FindHandle(state, database_id);
       if (database == nullptr ||
-          (database->kind != "database" && database->kind != "database_create")) {
+          database->kind != "database") {
         if (!WritePacket(fd, FirebirdWishListResponsePacket(
                                  "{\"ok\":false,\"wire_operation\":\"op_allocate_statement\","
                                  "\"runtime_policy\":\"invalid_database_handle\"}"))) {
@@ -36232,35 +36211,6 @@ int ServeFirebirdBinaryConnect(int fd) {
       if (upper_sql.starts_with("SET SQL DIALECT")) {
         if (!WritePacket(fd, FirebirdSuccessResponsePacket(request.statement_id))) return 1;
         continue;
-      }
-      if (upper_sql.starts_with("CREATE DATABASE")) {
-        const auto* transaction = FindHandle(state, request.transaction_id);
-        const auto* database =
-            transaction != nullptr && transaction->kind == "transaction"
-                ? FindHandle(state, transaction->parent_id)
-                : nullptr;
-        if (database != nullptr && database->kind == "database_create") {
-          if (const auto default_charset = FirebirdIdentifierAfterPhrase(
-                  sql_text, "DEFAULT CHARACTER SET")) {
-            state.database_default_charset = UpperIdentifier(*default_charset);
-            PersistFirebirdMetadataOverlay(state);
-            TraceFirebirdWorker(
-                "op_exec_immediate.database_default_charset=" +
-                EscapeJsonLocal(state.database_default_charset));
-          }
-          // isc_create_database/op_create has already performed the durable
-          // lifecycle mutation.  isql then sends its CREATE DATABASE text as
-          // the SQL completion of that same operation; acknowledge only this
-          // parented protocol-create shape so no second lifecycle create is
-          // attempted and transaction authority remains with the engine.
-          TraceFirebirdWorker(
-              "op_exec_immediate.protocol_create_database_completion=true");
-          if (!WritePacket(fd, FirebirdSuccessResponsePacket(
-                                   request.transaction_id))) {
-            return 1;
-          }
-          continue;
-        }
       }
       if (!execution_call_scope.active()) {
         if (!WritePacket(fd, FirebirdStatusResponsePacket(

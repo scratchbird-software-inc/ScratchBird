@@ -14,6 +14,8 @@
 #include "memory.hpp"
 #include "transaction/transaction_api.hpp"
 
+#include "../../../database_lifecycle/credentialed_database_fixture.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -588,14 +590,13 @@ DynamicRouteContext CreateDynamicRouteContext(Harness* harness) {
   if (work.empty()) return route;
   route.database_path = work / "sbsql_dynamic_route.sbdb";
 
-  api::EngineCreateLifecycleRequest create;
-  create.context = MakeEngineContext(route.database_path);
-  create.option_envelopes.push_back("allow_minimal_resource_bootstrap:true");
-  const auto created = api::EngineCreateLifecycle(create);
-  harness->Check(created.ok, "dynamic route database create failed");
+  const auto created =
+      scratchbird::tests::database_lifecycle::CreateCredentialedDatabaseFixture(
+          route.database_path, {});
+  harness->Check(created.ok(), "dynamic route credentialed fixture database create failed");
   harness->Check(std::filesystem::exists(route.database_path),
                  "dynamic route database file was not created");
-  if (!created.ok) return route;
+  if (!created.ok()) return route;
 
   api::EngineOpenLifecycleRequest open;
   open.context = MakeEngineContext(route.database_path);

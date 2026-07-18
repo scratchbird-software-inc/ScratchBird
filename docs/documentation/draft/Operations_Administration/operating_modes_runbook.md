@@ -36,7 +36,8 @@ In this mode, SBsrv runs as a standalone process. It hosts the engine and expose
 - `etc/scratchbird/SBsrv.conf` has been copied and edited for the deployment.
 - The `data_dir` and `control_dir` paths are writable by the process user.
 - The database already exists. Create it before service startup with the
-  approved embedded `SBsec bootstrap` flow and the packaged platform profile;
+  approved embedded `SBsql bootstrap` flow (or its identical `SBsec` entry
+  point) and the packaged platform profile;
   the server does not create a missing database.
 - If `tls_required = true` (the default and recommended setting), TLS certificates are configured.
 - The `share/scratchbird/resources/` tree is present.
@@ -48,7 +49,8 @@ Edit a copy of `etc/scratchbird/SBsrv.conf`. Key decisions:
 1. Set `[server.runtime] data_dir` and `control_dir` to the deployment's runtime paths.
 2. Set `[server.database] default_path` to the database file location.
 3. Keep `[server.database] auto_create = false`. Bootstrap the database
-   separately with `SBsec` in approved embedded mode before starting SBsrv.
+   separately with `SBsql bootstrap` in approved embedded mode before starting
+   SBsrv.
 4. Set `[server.listener.native] bind_host` and `port` (defaults: `127.0.0.1`, `3092`; port `3050` is Firebird-only).
 5. Verify `[server.listener.native] executable_path` and `parser_executable_path` resolve to the correct binaries.
 6. Confirm `[server.parser] sbps_endpoint` will be writable and accessible to SBgate.

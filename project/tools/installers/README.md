@@ -89,7 +89,8 @@ authority identity blocks install.
 
 The package lifecycle never adds a human account to the `scratchbird` service
 group. Root is the sole create-time OS authorization gate for explicit
-`SBsec bootstrap`; after authorization SBsec permanently drops to the locked
+`SBsql bootstrap` (or its equivalent `SBsec bootstrap` entry point); after
+authorization the shared bootstrap service permanently drops to the locked
 service identity so database files are created with the correct owner. Neither
 the service user nor its primary group names or grant a database principal,
 role, authentication right, or security authority.
@@ -107,7 +108,14 @@ An actual DEB install/remove smoke is available for disposable CI hosts but is
 opt-in and skips cleanly when noninteractive root is unavailable. Set `CI=true`
 or `SB_ALLOW_HOST_PACKAGE_MUTATION=1`, then add
 `--run-privileged-deb-install`. It verifies that the unit remains disabled and
-inactive and that removal preserves the data root.
+inactive and that removal preserves the data root. After separately proving that
+package installation created no database, the same smoke invokes the installed
+`SBsql bootstrap` with a password supplied only on standard input and the
+installed profile/resource/policy paths. It verifies the created database has no
+security sidecars, that repeated `SBsql` and equivalent `SBsec` bootstrap calls
+are refused, and that an ordinary password-authenticated embedded `SBsql`
+session can run `SELECT 1` as the service-owned local process identity using
+the first database principal's password.
 
 macOS uses the same public output contract, with native x86_64 and arm64
 builds produced on GitHub-hosted macOS runners:
