@@ -29,6 +29,7 @@ install_root=/
 identity_mode=system
 package_version=unknown
 package_format=pkg
+identity_validation_stage=
 
 diagnostic() {
     printf '%s\n' "$1" >&2
@@ -36,6 +37,10 @@ diagnostic() {
 
 fail() {
     diagnostic "$1"
+    if [ "$1" = BOOTSTRAP.GROUP_INPUT_INVALID ] && \
+        [ -n "$identity_validation_stage" ]; then
+        diagnostic "BOOTSTRAP.MACOS_IDENTITY_VALIDATION_STAGE=$identity_validation_stage"
+    fi
     exit "${2:-1}"
 }
 
@@ -268,6 +273,7 @@ create_service_user() {
 }
 
 ensure_service_identity() {
+    identity_validation_stage=identity_record_validation
     require_system_authority
     command -v dscl >/dev/null 2>&1 || fail BOOTSTRAP.GROUP_CREATE_FAILED
     command -v dseditgroup >/dev/null 2>&1 || fail BOOTSTRAP.GROUP_CREATE_FAILED
@@ -329,10 +335,14 @@ ensure_service_identity() {
     fi
     local_group_has_member "$SERVICE_GROUP" "$SERVICE_USER" || \
         fail BOOTSTRAP.GROUP_INPUT_INVALID
+    identity_validation_stage=service_supplementary_group_validation
     ensure_service_has_no_explicit_supplementary_membership \
         "$group_generated_uid" "$user_generated_uid"
+    identity_validation_stage=service_admin_membership_validation
     ensure_service_is_not_admin "$group_generated_uid"
+    identity_validation_stage=service_resolved_group_validation
     ensure_service_resolved_group_set_is_least_authority "$group_gid"
+    identity_validation_stage=
 }
 
 make_directory() {
