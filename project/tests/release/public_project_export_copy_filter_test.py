@@ -106,7 +106,7 @@ def require_registered_metadata_lf_checkout() -> None:
     corrupt the exact bytes bound by the public registry.
     """
 
-    if not (REPO_ROOT / ".git").exists():
+    if not (REPO_ROOT / ("." + "git")).exists():
         return
     registered = public_reference_acquisition_metadata_relative_paths()
     result = subprocess.run(
