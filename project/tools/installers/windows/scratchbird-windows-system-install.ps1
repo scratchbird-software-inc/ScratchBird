@@ -32,6 +32,7 @@ $GroupDescription = "ScratchBird filesystem operations group; no database or sec
 $EvidenceName = "WINDOWS_SYSTEM_INSTALL_STATE.json"
 $AllowedActions = @("PostInstall", "PreRemove", "Verify")
 $ServiceCreatedByThisRun = $false
+$LifecyclePhase = "PRECHECK"
 
 function Rollback-CreatedService {
   if ($Action -ne "PostInstall" -or -not $script:ServiceCreatedByThisRun) {
@@ -57,6 +58,9 @@ function Invoke-NativeQuiet {
   param([string] $FilePath, [string[]] $Arguments, [string] $FailureCode)
   & $FilePath @Arguments 1>$null 2>$null
   if ($LASTEXITCODE -ne 0) {
+    if ($FailureCode -eq "BOOTSTRAP.INSTALL_DEFAULTS_INVALID") {
+      Fail-Code "${FailureCode}.$script:LifecyclePhase"
+    }
     Fail-Code $FailureCode
   }
 }
@@ -491,20 +495,27 @@ try {
   }
   $InstallRoot = Get-CanonicalPath $InstallRoot
   $StateRoot = Get-CanonicalPath $StateRoot
+  $LifecyclePhase = "SYSTEM_PATHS"
   Assert-SystemPaths
+  $LifecyclePhase = "INSTALL_ROOT"
   Assert-NotReparsePoint $InstallRoot
   if (-not (Test-Path -LiteralPath $InstallRoot -PathType Container)) {
     Fail-Code "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
   }
+  $LifecyclePhase = "STATE_ROOT"
   Ensure-Directory $StateRoot
+  $LifecyclePhase = "DATABASE_INVENTORY_BEFORE"
   $databaseArtifactsBefore = @(Get-InstallerDatabaseArtifactInventory)
 
   if ($Action -eq "PreRemove") {
+    $LifecyclePhase = "PRE_REMOVE_SERVICE"
     Remove-SBsrvService
     exit 0
   }
 
+  $LifecyclePhase = "GROUP_IDENTITY"
   $group = if ($Action -eq "PostInstall") { Ensure-LocalScratchBirdGroup } else { Get-LocalScratchBirdGroup }
+  $LifecyclePhase = "SERVICE_IDENTITY"
   $serviceState = if ($Action -eq "PostInstall") {
     Ensure-SBsrvService
   } else {
@@ -521,11 +532,16 @@ try {
       current_state = [string]$service.State
     }
   }
+  $LifecyclePhase = "SERVICE_SID"
   $serviceSid = Get-ManagedServiceSid
+  $LifecyclePhase = "GROUP_SID"
   $groupSid = [Security.Principal.SecurityIdentifier]::new([string]$group.SID)
+  $LifecyclePhase = "RUNTIME_ACL"
   Grant-ServiceRuntimeReadExecute $serviceSid
+  $LifecyclePhase = "SERVICE_REGISTRY_ACL"
   Set-ProtectedServiceRegistryAcl $serviceSid
 
+  $LifecyclePhase = "STATE_DIRECTORY_ACL"
   foreach ($entry in @(
     @{ Relative = "config"; Profile = "config" },
     @{ Relative = "data"; Profile = "mutable" },
@@ -544,15 +560,19 @@ try {
   }
 
   if ($Action -eq "PostInstall") {
+    $LifecyclePhase = "CONFIG_DEFAULTS"
     Copy-MissingConfigurationDefaults
   }
 
+  $LifecyclePhase = "DATABASE_INVENTORY_AFTER"
   Assert-DatabaseArtifactInventoryUnchanged $databaseArtifactsBefore
+  $LifecyclePhase = "INSTALL_EVIDENCE"
   Write-InstallEvidence $group $serviceState
+  $LifecyclePhase = "DATABASE_INVENTORY_FINAL"
   Assert-DatabaseArtifactInventoryUnchanged $databaseArtifactsBefore
   exit 0
 } catch {
   Rollback-CreatedService
-  [Console]::Error.WriteLine("BOOTSTRAP.INSTALL_DEFAULTS_INVALID")
+  [Console]::Error.WriteLine("BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase")
   exit 1
 }

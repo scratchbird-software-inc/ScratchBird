@@ -285,6 +285,8 @@ def main() -> int:
             "[Environment]::SystemDirectory",
             '"localgroup" $GroupName "/add"',
             "BOOTSTRAP.GROUP_CREATE_FAILED.NET_CREATE_EXIT_",
+            '$LifecyclePhase = "PRECHECK"',
+            "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase",
             "NT SERVICE\\scratchbird",
             '"start= demand"',
             '@("sidtype", $ServiceName, "restricted")',
