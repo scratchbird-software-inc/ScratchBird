@@ -79,7 +79,6 @@ WINDOWS_SERVICE_IDENTITY = r"NT SERVICE\scratchbird"
 WINDOWS_SERVICE_GROUP = "ScratchBird"
 POSIX_SERVICE_IDENTITY = "scratchbird"
 POSIX_SERVICE_GROUP = "scratchbird"
-MACOS_IMPLICIT_BASELINE_GIDS = frozenset({12, 61})
 
 
 def require_posix_service_authority() -> tuple[str, str]:
@@ -134,22 +133,25 @@ def require_posix_service_authority() -> tuple[str, str]:
     ):
         fail("posix_service_local_identity_not_unique")
 
-    current_groups = {effective_gid, *os.getgroups()}
     recorded_groups = {
         row.gr_gid
         for row in all_groups
         if POSIX_SERVICE_IDENTITY in row.gr_mem
     }
     recorded_groups.add(user_by_uid.pw_gid)
-    allowed_current_groups = {effective_gid}
-    if sys.platform == "darwin":
-        allowed_current_groups.update(MACOS_IMPLICIT_BASELINE_GIDS)
-    if (
-        effective_gid not in current_groups
-        or not current_groups.issubset(allowed_current_groups)
-        or recorded_groups != {effective_gid}
-    ):
+    if recorded_groups != {effective_gid}:
         fail("posix_service_numeric_membership_not_exact")
+    if sys.platform != "darwin":
+        current_groups = {effective_gid, *os.getgroups()}
+        if (
+            effective_gid not in current_groups
+            or not current_groups.issubset({effective_gid})
+        ):
+            fail("posix_service_numeric_membership_not_exact")
+    # Darwin's Python getgroups wrapper reports directory-derived memberships,
+    # not the process credential after launchd or setgroups. Do not turn those
+    # values into an authority allowlist; the installed SBlaunch raw-kernel
+    # credential proof is the authoritative runtime check on macOS.
     return POSIX_SERVICE_IDENTITY, POSIX_SERVICE_GROUP
 
 

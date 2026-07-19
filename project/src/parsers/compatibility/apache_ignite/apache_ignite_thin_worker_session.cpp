@@ -215,6 +215,7 @@ std::string ExtractDiagnosticMessage(std::string_view json) {
   return std::string(json.substr(start, end - start));
 }
 
+#ifndef _WIN32
 bool ReadFrame(int fd, std::vector<std::uint8_t>* payload) {
   std::uint8_t len_bytes[4] = {};
   if (!ReadExact(fd, len_bytes, sizeof(len_bytes))) return false;
@@ -235,6 +236,7 @@ bool WriteFrame(int fd, const std::vector<std::uint8_t>& payload) {
   return WriteAll(fd, len_bytes, sizeof(len_bytes)) &&
          (payload.empty() || WriteAll(fd, payload.data(), payload.size()));
 }
+#endif
 
 std::vector<std::uint8_t> HandshakeAcceptedPayload() {
   std::vector<std::uint8_t> out;

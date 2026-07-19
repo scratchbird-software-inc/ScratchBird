@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 from io import BytesIO
 import json
 import os
@@ -22,6 +23,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 from typing import Any
 
 
@@ -158,6 +160,164 @@ def ar_member(path: Path, requested_name: str) -> bytes:
     fail(f"ar_member_missing:{path.name}:{requested_name}")
 
 
+def tar_header_typeflags(payload: bytes, member_name: str) -> list[bytes]:
+    """Return raw tar typeflags without hiding PAX extension records."""
+
+    flags: list[bytes] = []
+    offset = 0
+    zero_block = b"\0" * 512
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(payload), mode="rb") as raw:
+            while True:
+                header = raw.read(512)
+                if not header:
+                    break
+                if len(header) != 512:
+                    fail(
+                        f"deb_tar_header_truncated:{member_name}:offset={offset}"
+                    )
+                if header == zero_block:
+                    break
+                typeflag = header[156:157] or b"\0"
+                flags.append(typeflag)
+                size_field = header[124:136].strip(b" \0") or b"0"
+                try:
+                    size = int(size_field, 8)
+                except ValueError:
+                    fail(
+                        f"deb_tar_header_size_invalid:{member_name}:"
+                        f"offset={offset}:value={size_field!r}"
+                    )
+                padded_size = ((size + 511) // 512) * 512
+                remaining = padded_size
+                while remaining:
+                    chunk = raw.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        fail(
+                            f"deb_tar_member_truncated:{member_name}:"
+                            f"offset={offset}:size={size}"
+                        )
+                    remaining -= len(chunk)
+                offset += 512 + padded_size
+    except (EOFError, OSError) as exc:
+        fail(f"deb_tar_gzip_invalid:{member_name}:{exc}")
+    if not flags:
+        fail(f"deb_tar_has_no_members:{member_name}")
+    return flags
+
+
+def verify_deb_archive_compatibility(
+    deb: Path,
+    control_payload: bytes,
+    data_payload: bytes,
+    work_root: Path,
+) -> dict[str, Any]:
+    """Fail before installation when dpkg cannot consume either tar member."""
+
+    header_type_counts: dict[str, dict[str, int]] = {}
+    for member_name, payload in (
+        ("control.tar.gz", control_payload),
+        ("data.tar.gz", data_payload),
+    ):
+        flags = tar_header_typeflags(payload, member_name)
+        for forbidden in (b"x", b"g"):
+            if forbidden in flags:
+                fail(
+                    f"deb_tar_pax_header_forbidden:{member_name}:"
+                    f"type={forbidden.decode('ascii')}"
+                )
+        counts: dict[str, int] = {}
+        for flag in flags:
+            label = flag.decode("ascii", errors="backslashreplace")
+            counts[label] = counts.get(label, 0) + 1
+        header_type_counts[member_name] = counts
+
+    dpkg_deb = shutil.which("dpkg-deb")
+    if dpkg_deb is None:
+        dpkg_status = "not_available_static_header_gate_passed"
+    else:
+        info = subprocess.run(
+            [dpkg_deb, "--info", str(deb)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if info.returncode != 0:
+            fail(
+                f"dpkg_deb_info_failed:{info.returncode}:"
+                f"{info.stdout[-2000:].strip()}"
+            )
+        extract_root = work_root / "dpkg-deb-extract"
+        if extract_root.exists():
+            shutil.rmtree(extract_root)
+        try:
+            extract = subprocess.run(
+                [dpkg_deb, "--extract", str(deb), str(extract_root)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            if extract.returncode != 0:
+                fail(
+                    f"dpkg_deb_extract_failed:{extract.returncode}:"
+                    f"{extract.stdout[-2000:].strip()}"
+                )
+        finally:
+            shutil.rmtree(extract_root, ignore_errors=True)
+        dpkg_status = "info_and_extract_passed"
+
+    dpkg = shutil.which("dpkg")
+    if dpkg is None:
+        dpkg_unpack_status = "not_available_static_header_gate_passed"
+    else:
+        with tempfile.TemporaryDirectory(
+            prefix="dpkg-unpack-", dir=work_root
+        ) as temp_name:
+            install_root = Path(temp_name) / "root"
+            admin_root = install_root / "var/lib/dpkg"
+            dpkg_log = Path(temp_name) / "dpkg.log"
+            admin_root.mkdir(parents=True)
+            (admin_root / "status").write_text("", encoding="utf-8")
+            unpack = subprocess.run(
+                [
+                    dpkg,
+                    f"--root={install_root}",
+                    f"--admindir={admin_root}",
+                    f"--log={dpkg_log}",
+                    "--force-not-root",
+                    "--no-triggers",
+                    "--unpack",
+                    str(deb),
+                ],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            if unpack.returncode != 0:
+                fail(
+                    f"dpkg_isolated_unpack_failed:{unpack.returncode}:"
+                    f"{unpack.stdout[-2000:].strip()}"
+                )
+            if not (install_root / "opt/ScratchBird").is_dir():
+                fail("dpkg_isolated_unpack_payload_missing")
+        dpkg_unpack_status = (
+            "isolated_non_root_unpack_passed"
+            if os.geteuid() != 0
+            else "isolated_root_unpack_passed"
+        )
+
+    return {
+        "static_tar_header_gate": "passed",
+        "pax_extended_headers": "absent",
+        "header_type_counts": header_type_counts,
+        "dpkg_deb": dpkg_status,
+        "dpkg_unpack": dpkg_unpack_status,
+    }
+
+
 def tar_members(payload: bytes) -> tuple[tarfile.TarFile, dict[str, tarfile.TarInfo]]:
     archive = tarfile.open(fileobj=BytesIO(payload), mode="r:gz")
     members = {member.name.removeprefix("./"): member for member in archive.getmembers()}
@@ -280,6 +440,9 @@ def verify_portable_tar(portable_tar: Path) -> dict[str, Any]:
 def verify_deb(deb: Path, work_root: Path) -> tuple[dict[str, Any], bytes]:
     data_payload = ar_member(deb, "data.tar.gz")
     control_payload = ar_member(deb, "control.tar.gz")
+    archive_compatibility = verify_deb_archive_compatibility(
+        deb, control_payload, data_payload, work_root
+    )
     data_archive, data_members = tar_members(data_payload)
     control_archive, control_members = tar_members(control_payload)
     try:
@@ -633,6 +796,7 @@ def verify_deb(deb: Path, work_root: Path) -> tuple[dict[str, Any], bytes]:
     return (
         {
             "archive": deb.name,
+            "archive_compatibility": archive_compatibility,
             "payload_members": len(data_members),
             "control_members": sorted(control_members),
             "lifecycle_fixture": "passed",

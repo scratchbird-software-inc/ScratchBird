@@ -106,7 +106,8 @@ def main() -> int:
         fail("external_llvm_runtime_must_not_be_bundled")
 
     expected_bins = {
-        native.platform_executable(name, platform) for name in native.NATIVE_EXECUTABLES
+        native.platform_executable(name, platform)
+        for name in native.native_executables(platform)
     }
     allowed_bin_libraries = {
         name

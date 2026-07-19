@@ -29,6 +29,14 @@
 #include <unistd.h>
 #endif
 
+#ifdef __APPLE__
+// Darwin maps the source-level getgroups name to the Open Directory
+// `_getgroups$DARWIN_EXTSN` variant under _DARWIN_C_SOURCE. That reports the
+// account's default directory groups instead of the current kernel process
+// credential. Bind the unextended symbol explicitly for credential proof.
+extern "C" int SbKernelGetGroups(int, gid_t[]) __asm("_getgroups");
+#endif
+
 namespace scratchbird::cli {
 namespace {
 
@@ -319,41 +327,25 @@ bool GrantServiceIdentityAccess(const std::wstring& path,
 
 #else
 
-std::vector<std::uint64_t> PlatformImplicitServiceGroupAllowlist() {
-#ifdef __APPLE__
-  return {kMacOsImplicitEveryoneGroupId,
-          kMacOsImplicitLocalAccountsGroupId};
-#else
-  return {};
-#endif
-}
-
 bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
                                            gid_t primary_group,
                                            gid_t required_group) {
   if (primary_group != required_group) return false;
 #ifdef __APPLE__
-  // Darwin declares getgrouplist with int group IDs, unlike the POSIX/Linux
-  // gid_t form. Do not narrow an unrepresentable configured group: bootstrap
-  // authorization must fail closed rather than query a different group.
-  if (static_cast<std::uint64_t>(primary_group) >
-      static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
-    return false;
-  }
-  const int group_list_primary_group = static_cast<int>(primary_group);
+  // Open Directory adds host-computed memberships for every local account.
+  // The system installer separately rejects all explicit name/GUID/nested
+  // memberships and transitive administrator membership. Process isolation is
+  // enforced below by clearing the supplementary group set before setuid.
+  (void)identity;
+  return true;
 #else
-  const gid_t group_list_primary_group = primary_group;
-#endif
+  using GroupListId = gid_t;
+  const GroupListId group_list_primary = primary_group;
   int count = 0;
-  (void)getgrouplist(identity.c_str(), group_list_primary_group, nullptr,
-                     &count);
+  (void)getgrouplist(identity.c_str(), group_list_primary, nullptr, &count);
   if (count <= 0) return false;
-#ifdef __APPLE__
-  std::vector<int> groups(static_cast<std::size_t>(count));
-#else
-  std::vector<gid_t> groups(static_cast<std::size_t>(count));
-#endif
-  if (getgrouplist(identity.c_str(), group_list_primary_group, groups.data(),
+  std::vector<GroupListId> groups(static_cast<std::size_t>(count));
+  if (getgrouplist(identity.c_str(), group_list_primary, groups.data(),
                    &count) < 0) {
     return false;
   }
@@ -364,25 +356,47 @@ bool ServiceIdentityHasOnlyConfiguredGroup(const std::string& identity,
   resolved_group_ids.reserve(static_cast<std::size_t>(count) + 1);
   resolved_group_ids.push_back(static_cast<std::uint64_t>(primary_group));
   for (int index = 0; index < count; ++index) {
-#ifdef __APPLE__
-    // A negative int cannot name a valid POSIX group ID. Treat a Darwin API
-    // value outside the usable gid_t range as an authorization failure.
-    if (groups[static_cast<std::size_t>(index)] < 0) return false;
-#endif
     resolved_group_ids.push_back(
         static_cast<std::uint64_t>(groups[static_cast<std::size_t>(index)]));
   }
   return BootstrapServiceIdentityGroupSetIsLeastAuthority(
-      resolved_group_ids, static_cast<std::uint64_t>(required_group),
-      PlatformImplicitServiceGroupAllowlist());
+      resolved_group_ids, static_cast<std::uint64_t>(required_group));
+#endif
+}
+
+bool ReadCurrentKernelGroupSet(std::vector<gid_t>* groups) {
+  if (groups == nullptr) return false;
+#ifdef __APPLE__
+  const int count = SbKernelGetGroups(0, nullptr);
+  if (count < 0 || count > 1024) return false;
+  groups->assign(static_cast<std::size_t>(count), 0);
+  if (count > 0 && SbKernelGetGroups(count, groups->data()) != count) {
+    groups->clear();
+    return false;
+  }
+  return true;
+#else
+  const int count = getgroups(0, nullptr);
+  if (count < 0) return false;
+  groups->assign(static_cast<std::size_t>(count), 0);
+  if (count > 0 && getgroups(count, groups->data()) != count) {
+    groups->clear();
+    return false;
+  }
+  return true;
+#endif
 }
 
 bool CurrentProcessHasOnlyConfiguredGroup(gid_t required_group) {
   if (getgid() != required_group || getegid() != required_group) return false;
-  const int count = getgroups(0, nullptr);
-  if (count < 0) return false;
-  std::vector<gid_t> groups(static_cast<std::size_t>(count));
-  if (count > 0 && getgroups(count, groups.data()) != count) return false;
+  std::vector<gid_t> groups;
+  if (!ReadCurrentKernelGroupSet(&groups)) return false;
+#ifdef __APPLE__
+  // XNU stores the effective group as the sole entry after setgroups(0) and
+  // setgid().  Require that concrete raw credential shape, not merely that no
+  // unexpected directory-service memberships were reported.
+  if (groups.size() != 1 || groups.front() != required_group) return false;
+#endif
   std::vector<std::uint64_t> resolved_group_ids;
   resolved_group_ids.reserve(groups.size() + 2);
   resolved_group_ids.push_back(static_cast<std::uint64_t>(getgid()));
@@ -391,8 +405,7 @@ bool CurrentProcessHasOnlyConfiguredGroup(gid_t required_group) {
     resolved_group_ids.push_back(static_cast<std::uint64_t>(group_id));
   }
   return BootstrapServiceIdentityGroupSetIsLeastAuthority(
-      resolved_group_ids, static_cast<std::uint64_t>(required_group),
-      PlatformImplicitServiceGroupAllowlist());
+      resolved_group_ids, static_cast<std::uint64_t>(required_group));
 }
 
 #endif
@@ -401,8 +414,7 @@ bool CurrentProcessHasOnlyConfiguredGroup(gid_t required_group) {
 
 bool BootstrapServiceIdentityGroupSetIsLeastAuthority(
     const std::vector<std::uint64_t>& resolved_group_ids,
-    std::uint64_t configured_group_id,
-    const std::vector<std::uint64_t>& implicit_group_allowlist) {
+    std::uint64_t configured_group_id) {
   if (configured_group_id == 0 || resolved_group_ids.empty()) return false;
   bool configured_group_seen = false;
   for (const std::uint64_t group_id : resolved_group_ids) {
@@ -410,13 +422,25 @@ bool BootstrapServiceIdentityGroupSetIsLeastAuthority(
       configured_group_seen = true;
       continue;
     }
-    if (std::find(implicit_group_allowlist.begin(),
-                  implicit_group_allowlist.end(),
-                  group_id) == implicit_group_allowlist.end()) {
-      return false;
-    }
+    return false;
   }
   return configured_group_seen;
+}
+
+bool BootstrapCurrentProcessHasOnlyConfiguredGroup(
+    std::uint64_t configured_group_id) {
+#ifdef _WIN32
+  (void)configured_group_id;
+  return false;
+#else
+  if (configured_group_id == 0 ||
+      configured_group_id >
+          static_cast<std::uint64_t>((std::numeric_limits<gid_t>::max)())) {
+    return false;
+  }
+  return CurrentProcessHasOnlyConfiguredGroup(
+      static_cast<gid_t>(configured_group_id));
+#endif
 }
 
 bool BootstrapWindowsServiceSidGroupInventoryIsLeastAuthority(
@@ -539,8 +563,14 @@ BootstrapOsAuthorityResult VerifyAndAssumeBootstrapServiceIdentity(
                                              service_group_id)) {
     return Denied("configured_service_identity_group_set_not_least_authority");
   }
-  if (initgroups(profile.service_identity.c_str(), service_group_id) != 0 ||
-      setgid(service_group_id) != 0 || setuid(service_user_id) != 0) {
+#ifdef __APPLE__
+  const bool group_assumption_failed = setgroups(0, nullptr) != 0;
+#else
+  const bool group_assumption_failed =
+      initgroups(profile.service_identity.c_str(), service_group_id) != 0;
+#endif
+  if (group_assumption_failed || setgid(service_group_id) != 0 ||
+      setuid(service_user_id) != 0) {
     return Denied("service_identity_assumption_failed");
   }
   if (geteuid() != service_user_id ||

@@ -46,6 +46,7 @@ NATIVE_EXECUTABLES = (
     "SBdoc",
     "SBcop",
 )
+MACOS_NATIVE_EXECUTABLES = NATIVE_EXECUTABLES + ("SBlaunch",)
 
 ARTIFACT_ROOTS = {
     "linux": "scratchbird-linux-installers",
@@ -396,7 +397,7 @@ def macho_architectures(path: Path) -> set[str]:
 
 
 def verify_macos_architecture(payload_root: Path, expected_architectures: set[str], context: str) -> None:
-    for executable in NATIVE_EXECUTABLES:
+    for executable in MACOS_NATIVE_EXECUTABLES:
         path = payload_root / "opt" / "ScratchBird" / "bin" / executable
         if not path.is_file():
             fail(f"macos_native_executable_missing:{context}:{executable}")

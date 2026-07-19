@@ -69,7 +69,7 @@ case "$package" in
     mkdir -p "$pkg_scripts_root"
     # pkgutil --expand can expose a component's Scripts member either as the
     # original compressed archive or as a materialized directory.  Accept both
-    # representations, but in every case require the package postinstall hook.
+    # representations, but in every case require both package lifecycle hooks.
     scripts_directory="$(find "$work_root/pkg-expanded" -name Scripts -type d | head -n 1)"
     scripts_file="$(find "$work_root/pkg-expanded" -name Scripts -type f | head -n 1)"
     if [[ -n "$scripts_directory" ]]; then
@@ -88,7 +88,11 @@ case "$package" in
       fail "pkg_scripts_missing"
     fi
     postinstall_script="$(find "$pkg_scripts_root" -name postinstall -type f | head -n 1)"
+    preinstall_script="$(find "$pkg_scripts_root" -name preinstall -type f | head -n 1)"
     [[ -n "$postinstall_script" ]] || fail "pkg_postinstall_missing"
+    [[ -n "$preinstall_script" ]] || fail "pkg_preinstall_missing"
+    grep -F 'BOOTSTRAP.SERVICE_STATE_INVALID' "$preinstall_script" >/dev/null || fail "pkg_preinstall_loaded_job_guard_missing"
+    grep -F '/opt/ScratchBird/bin/SBlaunch' "$preinstall_script" >/dev/null || fail "pkg_preinstall_launcher_guard_missing"
     grep -F '/opt/ScratchBird/libexec/scratchbird-macos-system-install' "$postinstall_script" >/dev/null || fail "pkg_postinstall_helper_missing"
     ! grep -F '@SCRATCHBIRD_VERSION@' "$postinstall_script" >/dev/null || fail "pkg_postinstall_version_token_unresolved"
     if grep -E 'launchctl[[:space:]]+(load|bootstrap|enable|start)' "$postinstall_script" >/dev/null; then
@@ -119,6 +123,7 @@ else
 fi
 
 [[ -d "$runtime_root/bin" ]] || fail "runtime_bin_missing"
+[[ -x "$runtime_root/bin/SBlaunch" ]] || fail "service_launcher_missing"
 [[ -d "$runtime_root/lib" ]] || fail "runtime_lib_missing"
 [[ -d "$config_root" ]] || fail "config_root_missing"
 [[ -d "$runtime_root/share/scratchbird/resources" ]] || fail "resources_missing"
@@ -177,22 +182,28 @@ import sys
 
 root = pathlib.Path(sys.argv[1])
 expected = {
-    "com.scratchbird.sbsrv": "/Library/Application Support/ScratchBird/SBsrv.conf",
-    "com.scratchbird.sbmgr": "/Library/Application Support/ScratchBird/SBmgr.conf",
+    "com.scratchbird.sbsrv": "sbsrv",
+    "com.scratchbird.sbmgr": "sbmgr",
 }
-for label, config in expected.items():
+for label, selector in expected.items():
     payload = plistlib.loads((root / f"{label}.plist").read_bytes())
-    if payload.get("UserName") != "scratchbird":
+    if payload.get("UserName") != "root":
         raise SystemExit(f"launchd_user_mismatch:{label}")
-    if payload.get("GroupName") != "scratchbird":
+    if payload.get("GroupName") != "wheel":
         raise SystemExit(f"launchd_group_mismatch:{label}")
+    if payload.get("InitGroups") is not False:
+        raise SystemExit(f"launchd_init_groups_mismatch:{label}")
     if payload.get("Disabled") is not True:
         raise SystemExit(f"launchd_not_disabled:{label}")
     if payload.get("RunAtLoad") is not False or payload.get("KeepAlive") is not False:
         raise SystemExit(f"launchd_default_activity_mismatch:{label}")
-    arguments = payload.get("ProgramArguments", [])
-    if "--config" not in arguments or config not in arguments:
-        raise SystemExit(f"launchd_config_mismatch:{label}")
+    if payload.get("ProgramArguments") != [
+        "/opt/ScratchBird/bin/SBlaunch", selector
+    ]:
+        raise SystemExit(f"launchd_selector_mismatch:{label}")
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        if not str(payload.get(key, "")).startswith("/var/log/scratchbird/launchd/"):
+            raise SystemExit(f"launchd_log_path_mismatch:{label}:{key}")
 PY
   if command -v plutil >/dev/null 2>&1; then
     while IFS= read -r plist; do

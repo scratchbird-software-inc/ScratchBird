@@ -112,7 +112,8 @@ def main() -> int:
     if profile.get("policy_content_file_count") != resource_summary["policy_content_file_count"]:
         fail("policy_content_count_mismatch")
     expected_executables = {
-        native.platform_executable(name, platform) for name in native.NATIVE_EXECUTABLES
+        native.platform_executable(name, platform)
+        for name in native.native_executables(platform)
     }
     declared_executables = set(profile.get("executables", []))
     if declared_executables != expected_executables:

@@ -285,6 +285,18 @@ class NativeQaBootstrapTest(unittest.TestCase):
                     "linux", identity, "scratchbird"
                 )
 
+    def test_macos_kernel_group_probe_uses_legacy_credential_abi(self) -> None:
+        source = (
+            REPO_ROOT / "project/drivers/tool/cli/bootstrap_os_authority.cpp"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'extern "C" int SbKernelGetGroups(int, gid_t[]) __asm("_getgroups");',
+            source,
+        )
+        self.assertNotIn('__asm("_getgroups$DARWIN_EXTSN")', source)
+        self.assertIn("setgroups(0, nullptr)", source)
+        self.assertIn("ReadCurrentKernelGroupSet", source)
+
     @unittest.skipIf(os.name == "nt", "POSIX identity validation")
     def test_posix_environment_identity_spoof_is_rejected(self) -> None:
         operator = mock.Mock(
@@ -392,8 +404,27 @@ class NativeQaBootstrapTest(unittest.TestCase):
             stack.enter_context(
                 mock.patch.object(self.helper.sys, "platform", "darwin")
             )
+            self.assertEqual(
+                self.helper.require_posix_service_authority(),
+                ("scratchbird", "scratchbird"),
+            )
+
+        with contextlib.ExitStack() as stack:
+            for patcher in identity_patches(
+                [4242, 12, 61, 80], [service_group, admin_group]
+            ):
+                stack.enter_context(patcher)
+            stack.enter_context(
+                mock.patch.object(self.helper.sys, "platform", "darwin")
+            )
             with self.assertRaises(SystemExit):
                 self.helper.require_posix_service_authority()
+
+        helper_source = (
+            REPO_ROOT
+            / "project/examples/native_release_qa/prepare_native_qa_instance.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("MACOS_IMPLICIT_BASELINE_GIDS", helper_source)
 
     def test_os_service_identity_never_becomes_database_principal(self) -> None:
         authority_source = (
@@ -569,11 +600,16 @@ if [[ "${1:-}" == "--expand" ]]; then
   component="$expanded/com.scratchbird.cde.pkg"
   mkdir -p "$component/Scripts"
   : > "$component/Payload"
+  cat > "$component/Scripts/preinstall" <<'PREINSTALL'
+#!/bin/sh
+# BOOTSTRAP.SERVICE_STATE_INVALID
+test -x /opt/ScratchBird/bin/SBlaunch
+PREINSTALL
   cat > "$component/Scripts/postinstall" <<'POSTINSTALL'
 #!/bin/sh
 exec /opt/ScratchBird/libexec/scratchbird-macos-system-install post-install --package-version '0.0.0-nightly'
 POSTINSTALL
-  chmod 755 "$component/Scripts/postinstall"
+  chmod 755 "$component/Scripts/preinstall" "$component/Scripts/postinstall"
 fi
 """,
         )
@@ -594,7 +630,7 @@ for name in INSTALL_MANIFEST.json SHA256SUMS NATIVE_RELEASE_PROFILE.json \\
   MACOS_LAUNCHD_MANIFEST.json; do
   : > "$runtime/share/scratchbird/release/$name"
 done
-for binary in SBsql SBadm SBbak SBsec SBdoc SBcop SBsrv SBgate SBmgr SBParser; do
+for binary in SBlaunch SBsql SBadm SBbak SBsec SBdoc SBcop SBsrv SBgate SBmgr SBParser; do
   cat > "$runtime/bin/$binary" <<'BINARY'
 #!/usr/bin/env bash
 printf 'fixture help\\n'
@@ -630,8 +666,25 @@ case "$action" in
 esac
 HELPER
 chmod 755 "$runtime/libexec/scratchbird-macos-system-install"
-: > "$payload_root/Library/LaunchDaemons/com.scratchbird.sbsrv.plist"
-: > "$payload_root/Library/LaunchDaemons/com.scratchbird.sbmgr.plist"
+for service in com.scratchbird.sbsrv:sbsrv:SBsrv com.scratchbird.sbmgr:sbmgr:SBmgr; do
+  IFS=: read -r label selector stem <<< "$service"
+  cat > "$payload_root/Library/LaunchDaemons/$label.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>$label</string>
+<key>ProgramArguments</key><array><string>/opt/ScratchBird/bin/SBlaunch</string><string>$selector</string></array>
+<key>UserName</key><string>root</string>
+<key>GroupName</key><string>wheel</string>
+<key>InitGroups</key><false/>
+<key>Disabled</key><true/>
+<key>RunAtLoad</key><false/>
+<key>KeepAlive</key><false/>
+<key>StandardOutPath</key><string>/var/log/scratchbird/launchd/$stem.out.log</string>
+<key>StandardErrorPath</key><string>/var/log/scratchbird/launchd/$stem.err.log</string>
+</dict></plist>
+PLIST
+done
 """,
         )
         for name in ("python3", "otool", "plutil", "spctl"):
@@ -656,6 +709,7 @@ chmod 755 "$runtime/libexec/scratchbird-macos-system-install"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         self.assertTrue((self.root / work_root / "pkg-scripts/postinstall").is_file())
+        self.assertTrue((self.root / work_root / "pkg-scripts/preinstall").is_file())
         self.assertIn("smoke_install_macos=passed", result.stdout)
 
     def test_linux_system_payload_materializes_runtime_and_identity(self) -> None:

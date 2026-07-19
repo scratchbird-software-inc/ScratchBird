@@ -1,0 +1,86 @@
+#!/bin/sh
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+# Reject an active or unsafe prior launchd installation before pkg replaces any
+# payload.  The postinstall helper repeats the final-payload checks after the
+# package transaction has completed.
+
+set -eu
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+[ "$(id -u)" -eq 0 ] || fail BOOTSTRAP.OS_AUTHORITY_DENIED
+[ "$(uname -s)" = Darwin ] || fail BOOTSTRAP.OS_AUTHORITY_DENIED
+
+target_volume=${3:-/}
+[ "$target_volume" = / ] || fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID
+
+package_version='@SCRATCHBIRD_VERSION@'
+case "$package_version" in
+    ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._+~-]*)
+        fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID
+        ;;
+esac
+
+require_existing_directory_if_present() {
+    path=$1
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        return 0
+    fi
+    [ -d "$path" ] && [ ! -L "$path" ] || \
+        fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
+    actual=$(stat -f '%Su:%Sg:%Lp' "$path" 2>/dev/null || true)
+    [ "$actual" = root:wheel:755 ] || \
+        fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
+    acl_mode=$(ls -lde "$path" 2>/dev/null | awk 'NR == 1 { print $1 }')
+    case "$acl_mode" in
+        ''|*+*) fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID ;;
+    esac
+}
+
+require_existing_file_if_present() {
+    path=$1
+    mode=$2
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+        return 0
+    fi
+    [ -f "$path" ] && [ ! -L "$path" ] || \
+        fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
+    links=$(stat -f '%l' "$path" 2>/dev/null || true)
+    [ "$links" = 1 ] || fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
+    actual=$(stat -f '%Su:%Sg:%Lp' "$path" 2>/dev/null || true)
+    [ "$actual" = "root:wheel:$mode" ] || \
+        fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
+    acl_mode=$(ls -lde "$path" 2>/dev/null | awk 'NR == 1 { print $1 }')
+    case "$acl_mode" in
+        ''|*+*) fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID ;;
+    esac
+}
+
+require_existing_directory_if_present /opt
+require_existing_directory_if_present /opt/ScratchBird
+require_existing_directory_if_present /opt/ScratchBird/bin
+require_existing_file_if_present /opt/ScratchBird/bin/SBlaunch 755
+require_existing_file_if_present /opt/ScratchBird/libexec/scratchbird-macos-system-install 755
+require_existing_directory_if_present /Library/LaunchDaemons
+require_existing_file_if_present /Library/LaunchDaemons/com.scratchbird.sbsrv.plist 644
+require_existing_file_if_present /Library/LaunchDaemons/com.scratchbird.sbmgr.plist 644
+
+[ -x /bin/launchctl ] || fail BOOTSTRAP.SERVICE_STATE_INVALID
+/bin/launchctl print system >/dev/null 2>&1 || fail BOOTSTRAP.SERVICE_STATE_INVALID
+for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
+    if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+        fail BOOTSTRAP.SERVICE_STATE_INVALID
+    else
+        launchctl_status=$?
+        [ "$launchctl_status" -eq 113 ] || fail BOOTSTRAP.SERVICE_STATE_INVALID
+    fi
+done
+
+exit 0

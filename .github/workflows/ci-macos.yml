@@ -309,6 +309,12 @@ jobs:
           python3 project/tools/release/verify_public_release_bundle.py build/native-release-macos/output/macos
           python3 project/tools/release/verify_native_release_bundle.py \
             build/native-release-macos/output/macos --platform macos
+          credential_probe_source="build/public-release-macos/output/macos/bin/sb_bootstrap_os_authority_tests"
+          test -x "$credential_probe_source"
+          mkdir -p "build/macos-credential-probe/${{ matrix.arch }}"
+          cp "$credential_probe_source" \
+            "build/macos-credential-probe/${{ matrix.arch }}/sb_bootstrap_os_authority_tests"
+          chmod 0755 "build/macos-credential-probe/${{ matrix.arch }}/sb_bootstrap_os_authority_tests"
           cmake -E remove_directory build/public-release-macos/output/macos
 
       - name: Build macOS installers
@@ -345,6 +351,7 @@ jobs:
             "/Library/Application Support/ScratchBird" \
             /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
             /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+            /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
             /var/lib/scratchbird \
             /var/log/scratchbird \
             /var/run/scratchbird; do
@@ -374,14 +381,15 @@ jobs:
             else
               cleanup_status=1
             fi
-            for label in com.scratchbird.sbsrv com.scratchbird.sbmgr; do
+            for label in com.scratchbird.sbsrv com.scratchbird.sbmgr com.scratchbird.credential-probe; do
               if launchctl print "system/$label" >/dev/null 2>&1; then
                 sudo launchctl bootout "system/$label" || cleanup_status=1
               fi
             done
             sudo rm -f \
               /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
-              /Library/LaunchDaemons/com.scratchbird.sbmgr.plist || cleanup_status=1
+              /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+              /Library/LaunchDaemons/com.scratchbird.credential-probe.plist || cleanup_status=1
             sudo rm -rf \
               /opt/ScratchBird \
               "/Library/Application Support/ScratchBird" \
@@ -401,6 +409,7 @@ jobs:
               "/Library/Application Support/ScratchBird" \
               /Library/LaunchDaemons/com.scratchbird.sbsrv.plist \
               /Library/LaunchDaemons/com.scratchbird.sbmgr.plist \
+              /Library/LaunchDaemons/com.scratchbird.credential-probe.plist \
               /var/lib/scratchbird \
               /var/log/scratchbird \
               /var/run/scratchbird; do
@@ -413,6 +422,7 @@ jobs:
             sudo dscl . -read /Groups/scratchbird >/dev/null 2>&1 && cleanup_status=1
             launchctl print system/com.scratchbird.sbsrv >/dev/null 2>&1 && cleanup_status=1
             launchctl print system/com.scratchbird.sbmgr >/dev/null 2>&1 && cleanup_status=1
+            launchctl print system/com.scratchbird.credential-probe >/dev/null 2>&1 && cleanup_status=1
             pkgutil --pkg-info com.scratchbird.cde >/dev/null 2>&1 && cleanup_status=1
             if [ "$cleanup_status" -eq 0 ]; then
               {
@@ -453,10 +463,24 @@ jobs:
           import sys
 
           root = pathlib.Path(sys.argv[1])
-          for label in ("com.scratchbird.sbsrv", "com.scratchbird.sbmgr"):
+          expected_services = {
+              "com.scratchbird.sbsrv": ("sbsrv", "SBsrv"),
+              "com.scratchbird.sbmgr": ("sbmgr", "SBmgr"),
+          }
+          for label, (selector, binary) in expected_services.items():
               data = plistlib.loads((root / f"{label}.plist").read_bytes())
-              if data.get("UserName") != "scratchbird" or data.get("GroupName") != "scratchbird":
-                  raise SystemExit(f"macos_system_launchd_identity_mismatch:{label}")
+              if data.get("UserName") != "root" or data.get("GroupName") != "wheel":
+                  raise SystemExit(f"macos_system_launchd_bootstrap_identity_mismatch:{label}")
+              if data.get("InitGroups") is not False:
+                  raise SystemExit(f"macos_system_launchd_initgroups_mismatch:{label}")
+              if data.get("ProgramArguments") != ["/opt/ScratchBird/bin/SBlaunch", selector]:
+                  raise SystemExit(f"macos_system_launchd_launcher_mismatch:{label}")
+              if data.get("WorkingDirectory") != "/var/lib/scratchbird":
+                  raise SystemExit(f"macos_system_launchd_working_directory_mismatch:{label}")
+              if data.get("StandardOutPath") != f"/var/log/scratchbird/launchd/{binary}.out.log":
+                  raise SystemExit(f"macos_system_launchd_stdout_mismatch:{label}")
+              if data.get("StandardErrorPath") != f"/var/log/scratchbird/launchd/{binary}.err.log":
+                  raise SystemExit(f"macos_system_launchd_stderr_mismatch:{label}")
               if data.get("Disabled") is not True:
                   raise SystemExit(f"macos_system_launchd_not_disabled:{label}")
               if data.get("RunAtLoad") is not False or data.get("KeepAlive") is not False:
@@ -468,6 +492,26 @@ jobs:
               exit 1
             fi
           done
+          credential_probe="$GITHUB_WORKSPACE/build/macos-credential-probe/${{ matrix.arch }}/sb_bootstrap_os_authority_tests"
+          test -x "$credential_probe"
+          sudo "$credential_probe" \
+            --verify-installed-service-identity \
+            "/Library/Application Support/ScratchBird/SBbootstrap.profile" \
+            > "$proof_root/installed-service-identity.txt" \
+            2> "$proof_root/installed-service-identity.stderr.txt"
+          test ! -s "$proof_root/installed-service-identity.stderr.txt"
+          grep -Fx "installed_service_identity_assumption=passed" \
+            "$proof_root/installed-service-identity.txt"
+          grep -Fx "effective_user=scratchbird" \
+            "$proof_root/installed-service-identity.txt"
+          grep -Fx "effective_group=scratchbird" \
+            "$proof_root/installed-service-identity.txt"
+          grep -Fx "bootstrap_authority_regain=refused" \
+            "$proof_root/installed-service-identity.txt"
+          project/tools/installers/smoke_macos_launchd_credential.sh \
+            "$credential_probe" \
+            "/Library/Application Support/ScratchBird/SBbootstrap.profile" \
+            "$proof_root/launchd-credential"
           pkgutil --pkg-info com.scratchbird.cde > "$proof_root/pkg-receipt.txt"
           sudo cat /var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json \
             > "$proof_root/MACOS_SYSTEM_INSTALL_STATE.json"

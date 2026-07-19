@@ -164,14 +164,20 @@ compatibility symlink.
 
 The package creates or verifies the local `scratchbird` group and the hidden,
 non-login `scratchbird` service identity. It prepares data under
-`/var/lib/scratchbird`, logs under `/var/log/scratchbird`, and server,
-listener, and manager runtime/control paths under `/var/run/scratchbird`, with
-mode `0750` and explicit ownership. It creates no database or security sidecar.
-The launchd definitions specify `UserName=scratchbird` and
-`GroupName=scratchbird`; only `SBsrv` and optional `SBmgr` are top-level jobs.
-Both jobs remain disabled, unloaded, and `RunAtLoad=false` after installation.
-`SBsrv` owns the shared `SBgate`, which owns the standalone native `SBParser`.
-The sole native default listener port is 3092.
+`/var/lib/scratchbird`, root-controlled launchd logs under
+`/var/log/scratchbird/launchd`, service-owned runtime logs under
+`/var/log/scratchbird/runtime`, and server, listener, and manager
+runtime/control paths under `/var/run/scratchbird`, with explicit ownership and
+mode `0750`. It creates no database or security sidecar. The launchd
+definitions start the fixed `/opt/ScratchBird/bin/SBlaunch` selector interface
+as `root:wheel` with `InitGroups=false`; they never execute a
+product binary or operator-supplied argument directly. The launcher clears its
+actual kernel supplementary-group credential, permanently drops to
+`scratchbird:scratchbird`, validates that authority cannot be regained, and
+then executes only the selected `SBsrv` or optional `SBmgr` target with a clean
+environment. Both jobs remain disabled, unloaded, and `RunAtLoad=false` after
+installation. `SBsrv` owns the shared `SBgate`, which owns the standalone
+native `SBParser`. The sole native default listener port is 3092.
 
 Apple reserves UIDs 0 through 500 for the operating system and recommends a
 locally unique UID for each daemon. The lifecycle helper therefore allocates
@@ -181,11 +187,15 @@ existing `scratchbird` user record unless its nonzero UID is unique and remains 
 that range. Explicit membership of the service user in any other local group,
 and nesting of the `scratchbird` group inside any other local group, are
 forbidden. The transitive `admin` membership check remains an additional
-fail-closed guard. The resolved numeric group inventory must contain only the
-primary `scratchbird` GID plus Apple's unavoidable computed `everyone` (12) and
-`localaccounts` (61) baselines. The package never adds a human account to the
-service group. Root alone authorizes explicit create-time bootstrap; the
-numeric service identity is used only for ownership and process execution.
+fail-closed guard. macOS directory-service group listings can include
+host-computed memberships that are not a process credential; they are neither
+allowlisted nor used as an execution policy. Instead, the installer validates
+the explicit local name/GUID/nesting records, and hosted package smoke starts a
+temporary fixed-selector launchd probe that proves the final process has only
+the `scratchbird` group credential and cannot read host-group canaries or regain
+root. The package never adds a human account to the service group. Root alone
+authorizes explicit create-time bootstrap; the numeric service identity is used
+only for ownership and process execution.
 
 The packaged launchd jobs pass the canonical configuration paths explicitly,
 so service operation does not depend on implicit discovery. Interactive
@@ -227,8 +237,9 @@ Rules:
   dynamic-library audit, system-package evidence, support-matrix metadata, and
   signing-state metadata.
 - macOS launchd installs only the top-level `SBsrv` and optional `SBmgr`
-  services. `SBsrv` owns `SBgate`, and `SBgate` owns `SBParser`; neither child
-  component is installed as an independent service.
+  services, through the fixed-selector `SBlaunch` credential boundary. `SBsrv`
+  owns `SBgate`, and `SBgate` owns `SBParser`; neither child component is
+  installed as an independent service.
 - macOS smoke tests record fresh install, upgrade overlay, uninstall/removal,
   and config-preservation proof for extracted QA payloads.
 - macOS universal artifacts are optional QA artifacts assembled only after both

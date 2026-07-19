@@ -89,9 +89,27 @@ MACOS_SUPPORT_MATRIX = {
         "runtime_state": "/var/run/scratchbird",
     },
 }
+MACOS_SERVICE_LAUNCHER = "/opt/ScratchBird/bin/SBlaunch"
+MACOS_SERVICE_PROCESS_GROUP_POLICY = (
+    "launchd_host_computed_groups_cleared_before_scratchbird_product_exec"
+)
 MACOS_LAUNCHD_SERVICES = (
-    ("com.scratchbird.sbsrv", "SBsrv", "SBsrv.conf"),
-    ("com.scratchbird.sbmgr", "SBmgr", "SBmgr.conf"),
+    (
+        "com.scratchbird.sbsrv",
+        "sbsrv",
+        "SBsrv",
+        "SBsrv.conf",
+        "/var/log/scratchbird/launchd/SBsrv.out.log",
+        "/var/log/scratchbird/launchd/SBsrv.err.log",
+    ),
+    (
+        "com.scratchbird.sbmgr",
+        "sbmgr",
+        "SBmgr",
+        "SBmgr.conf",
+        "/var/log/scratchbird/launchd/SBmgr.out.log",
+        "/var/log/scratchbird/launchd/SBmgr.err.log",
+    ),
 )
 MACOS_ASSET_ROOT = Path(__file__).resolve().parent / "macos"
 MACOS_SYSTEM_ASSETS = {
@@ -108,7 +126,7 @@ MACOS_SYSTEM_ASSETS = {
 MACOS_SYSTEM_PROFILE_ASSET = "MACOS_SYSTEM_INSTALL_PROFILE.json"
 MACOS_CONFIG_ROOT = "/Library/Application Support/ScratchBird"
 MACOS_CONFIG_DEFAULTS_REL = "opt/ScratchBird/share/scratchbird/config-defaults"
-MACOS_PKG_SCRIPTS = ("postinstall.in",)
+MACOS_PKG_SCRIPTS = ("preinstall.in", "postinstall.in")
 MACOS_NATIVE_CONFIGS = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -805,7 +823,7 @@ def write_macos_system_install_profile(
 def write_macos_system_launchd_manifest(root: Path) -> Path:
     launchd_root = root / "Library" / "LaunchDaemons"
     rows: list[dict[str, Any]] = []
-    for label, binary, config in MACOS_LAUNCHD_SERVICES:
+    for label, selector, binary, config, stdout_path, stderr_path in MACOS_LAUNCHD_SERVICES:
         plist_path = launchd_root / f"{label}.plist"
         if not plist_path.is_file():
             fail(f"macos_system_launchd_asset_missing:{plist_path}")
@@ -817,28 +835,33 @@ def write_macos_system_launchd_manifest(root: Path) -> Path:
             fail(f"macos_system_launchd_label_mismatch:{plist_path.name}")
         arguments = payload.get("ProgramArguments")
         expected_config = f"{MACOS_CONFIG_ROOT}/{config}"
+        if arguments != [MACOS_SERVICE_LAUNCHER, selector]:
+            fail(f"macos_system_launchd_selector_mismatch:{plist_path.name}")
         if (
-            not isinstance(arguments, list)
-            or "--config" not in arguments
-            or expected_config not in arguments
-        ):
-            fail(f"macos_system_launchd_config_mismatch:{plist_path.name}")
-        if (
-            payload.get("UserName") != "scratchbird"
-            or payload.get("GroupName") != "scratchbird"
+            payload.get("UserName") != "root"
+            or payload.get("GroupName") != "wheel"
+            or payload.get("InitGroups") is not False
             or payload.get("RunAtLoad") is not False
             or payload.get("KeepAlive") is not False
             or payload.get("Disabled") is not True
+            or payload.get("StandardOutPath") != stdout_path
+            or payload.get("StandardErrorPath") != stderr_path
         ):
             fail(f"macos_system_launchd_policy_mismatch:{plist_path.name}")
         rows.append(
             {
                 "label": label,
+                "launcher": MACOS_SERVICE_LAUNCHER,
+                "selector": selector,
                 "binary": binary,
                 "config": expected_config,
                 "plist": f"/Library/LaunchDaemons/{plist_path.name}",
-                "user": "scratchbird",
-                "group": "scratchbird",
+                "launchd_bootstrap_identity": "root:wheel",
+                "launchd_init_groups": False,
+                "final_product_identity": "scratchbird:scratchbird",
+                "final_supplementary_groups": [],
+                "stdout": stdout_path,
+                "stderr": stderr_path,
                 "run_at_load": False,
                 "disabled": True,
             }
@@ -905,7 +928,9 @@ def stage_macos_system_install_tree(
             "control_dir = runtime/control": (
                 "control_dir = /var/run/scratchbird/sb_server/control"
             ),
-            "log_file = stderr": "log_file = /var/log/scratchbird/SBsrv.log",
+            "log_file = stderr": (
+                "log_file = /var/log/scratchbird/runtime/SBsrv.log"
+            ),
             "default_path = data/default.sbdb": (
                 "default_path = /var/lib/scratchbird/data/default.sbdb"
             ),
@@ -954,7 +979,7 @@ def stage_macos_system_install_tree(
                 "manager.control_dir = /var/run/scratchbird/manager/control"
             ),
             "manager.log.path = stderr": (
-                "manager.log.path = /var/log/scratchbird/SBmgr.log"
+                "manager.log.path = /var/log/scratchbird/runtime/SBmgr.log"
             ),
             "manager.owner.database_path = data/default.sbdb": (
                 "manager.owner.database_path = /var/lib/scratchbird/data/"
@@ -1005,6 +1030,10 @@ def stage_macos_system_install_tree(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         target.chmod(0o755 if source_name.endswith(".sh") else 0o644)
+
+    launcher = system_root / "opt" / "ScratchBird" / "bin" / "SBlaunch"
+    if launcher.is_symlink() or not launcher.is_file() or launcher.stat().st_size <= 0:
+        fail("macos_system_service_launcher_missing")
 
     write_macos_system_install_profile(system_root, version, build_id)
     write_macos_system_launchd_manifest(system_root)
@@ -1087,12 +1116,13 @@ def tar_bytes_from_dir(
     mode: str = "w:gz",
     *,
     normalize_ownership: bool = False,
+    archive_format: int = tarfile.PAX_FORMAT,
 ) -> bytes:
     temp = tempfile.NamedTemporaryFile(delete=False)
     temp.close()
     temp_path = Path(temp.name)
     try:
-        with tarfile.open(temp_path, mode, format=tarfile.PAX_FORMAT) as archive:
+        with tarfile.open(temp_path, mode, format=archive_format) as archive:
             for path in sorted(root.rglob("*")):
                 archive.add(
                     path,
@@ -1209,8 +1239,19 @@ exit 0
     )
 
     deb = output_root / f"scratchbird_{sanitize_version(version).replace('-', '+')}_amd64.deb"
-    control_tar = tar_bytes_from_dir(control_root, normalize_ownership=True)
-    data_tar = tar_bytes_from_dir(payload_root, normalize_ownership=True)
+    # Debian's dpkg reader rejects POSIX PAX extended headers (typeflag "x").
+    # GNU tar retains long-path support while keeping both DEB members readable
+    # by dpkg. Other installer archives retain tar_bytes_from_dir's PAX default.
+    control_tar = tar_bytes_from_dir(
+        control_root,
+        normalize_ownership=True,
+        archive_format=tarfile.GNU_FORMAT,
+    )
+    data_tar = tar_bytes_from_dir(
+        payload_root,
+        normalize_ownership=True,
+        archive_format=tarfile.GNU_FORMAT,
+    )
     with deb.open("wb") as handle:
         handle.write(b"!<arch>\n")
         handle.write(ar_member("debian-binary", b"2.0\n"))
@@ -1823,6 +1864,16 @@ def write_macos_system_package_evidence(
             "default_enablement": "disabled",
             "default_activity": "not_started",
             "run_at_load": False,
+            "launchd_init_groups": False,
+            "launchd_bootstrap_identity": "root:wheel",
+            "service_launcher": MACOS_SERVICE_LAUNCHER,
+            "service_launcher_interface": (
+                "fixed_selector_only_no_forwarded_arguments"
+            ),
+            "final_product_identity": "scratchbird:scratchbird",
+            "final_supplementary_groups": [],
+            "launchd_standard_log_root": "/var/log/scratchbird/launchd",
+            "service_runtime_log_root": "/var/log/scratchbird/runtime",
             "top_level_process": "SBsrv",
             "child_process_ownership": (
                 "SBsrv_to_shared_SBgate_to_standalone_SBParser"
@@ -1839,9 +1890,7 @@ def write_macos_system_package_evidence(
                 "no_database_or_security_authority"
             ),
             "uid_policy": "first_locally_unused_uid_501_through_59999",
-            "resolved_effective_group_policy": (
-                "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
-            ),
+            "resolved_effective_group_policy": MACOS_SERVICE_PROCESS_GROUP_POLICY,
             "create_time_os_authorization": "root_only",
             "human_service_group_membership_mutation": False,
         },

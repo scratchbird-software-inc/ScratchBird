@@ -95,7 +95,9 @@ def native_profile(
                 "platform": platform,
                 "native_parser": native_parser,
                 "emulation_components": "excluded",
-                "executables": sorted(f"{name}{suffix}" for name in native.NATIVE_EXECUTABLES),
+                "executables": sorted(
+                    f"{name}{suffix}" for name in native.native_executables(platform)
+                ),
                 "libraries": sorted(libraries),
                 "runtime_dependencies": (
                     [llvm_runtime["runtime_library"]]
@@ -246,7 +248,7 @@ def native_archive(
     files = {
         **{
             f"opt/ScratchBird/bin/{name}{suffix}": executable_data
-            for name in native.NATIVE_EXECUTABLES
+            for name in native.native_executables(platform)
             if name != omit_component
         },
         **libraries,

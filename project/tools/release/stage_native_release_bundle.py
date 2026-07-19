@@ -54,6 +54,18 @@ NATIVE_EXECUTABLES = (
     "SBcop",
 )
 
+# SBlaunch is a macOS-only privilege-drop boundary for launchd.  It is not a
+# server, listener, manager, parser, or emulation component and must never
+# expand the Linux or Windows native release contract.
+PLATFORM_NATIVE_EXECUTABLES = {
+    "macos": ("SBlaunch",),
+}
+
+
+def native_executables(platform: str) -> tuple[str, ...]:
+    return NATIVE_EXECUTABLES + PLATFORM_NATIVE_EXECUTABLES.get(platform, ())
+
+
 NATIVE_CONFIGS = (
     "SBsrv.conf",
     "SBgate.conf",
@@ -1129,7 +1141,7 @@ def stage(
     (output_root / "lib").mkdir(parents=True)
 
     copied_bins: list[str] = []
-    for name in NATIVE_EXECUTABLES:
+    for name in native_executables(platform):
         file_name = platform_executable(name, platform)
         copy_file(source_root / "bin" / file_name, output_root / "bin" / file_name)
         copied_bins.append(file_name)

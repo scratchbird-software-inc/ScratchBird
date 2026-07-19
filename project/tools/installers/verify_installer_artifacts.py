@@ -248,9 +248,26 @@ def main() -> int:
                     or identity.get("create_time_os_authorization") != "root_only"
                     or identity.get("human_service_group_membership_mutation") is not False
                     or identity.get("resolved_effective_group_policy")
-                    != "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only"
+                    != (
+                        "launchd_host_computed_groups_cleared_before_"
+                        "scratchbird_product_exec"
+                    )
                 ):
                     fail("macos_system_service_authority_scope_invalid")
+                service = sidecar_data.get("service")
+                if (
+                    not isinstance(service, dict)
+                    or service.get("launchd_init_groups") is not False
+                    or service.get("launchd_bootstrap_identity") != "root:wheel"
+                    or service.get("service_launcher")
+                    != "/opt/ScratchBird/bin/SBlaunch"
+                    or service.get("service_launcher_interface")
+                    != "fixed_selector_only_no_forwarded_arguments"
+                    or service.get("final_product_identity")
+                    != "scratchbird:scratchbird"
+                    or service.get("final_supplementary_groups") != []
+                ):
+                    fail("macos_system_launcher_contract_invalid")
     scan(root)
     print(f"verify_installer_artifacts=passed:{root}")
     return 0

@@ -45,6 +45,7 @@ REQUIRED_WORKFLOWS = {
         "make_macos_universal.py",
         "verify_installer_artifacts.py",
         "smoke_install_macos.sh",
+        "smoke_macos_launchd_credential.sh",
     ),
     "verify-installers.yml": (
         "workflow_dispatch:",
@@ -53,6 +54,7 @@ REQUIRED_WORKFLOWS = {
         "smoke_install_linux.sh",
         "smoke_install_windows.ps1",
         "smoke_install_macos.sh",
+        "smoke_macos_launchd_credential.sh",
         "make_macos_universal.py",
         "public-release-macos",
     ),
@@ -242,6 +244,55 @@ def check_macos_nonmember_probe(
     )
     for token in required_tokens:
         require_token(block, token, rel)
+
+
+def check_macos_launchd_credential_probe(
+    text: str,
+    rel: str,
+    job_name: str,
+    repo_root: Path,
+) -> None:
+    """Require a hosted proof of the final launchd process credential."""
+
+    block = workflow_job_block(text, job_name, rel)
+    required_tokens = (
+        "sb_bootstrap_os_authority_tests",
+        "build/macos-credential-probe/${{ matrix.arch }}",
+        "--verify-installed-service-identity",
+        "installed-service-identity.txt",
+        "launchd-credential",
+        "smoke_macos_launchd_credential.sh",
+        "com.scratchbird.credential-probe",
+        "macos_system_launchd_bootstrap_identity_mismatch",
+        "macos_system_launchd_initgroups_mismatch",
+        "macos_system_launchd_launcher_mismatch",
+        "macos_system_launchd_working_directory_mismatch",
+        "macos_system_launchd_stdout_mismatch",
+        "macos_system_launchd_stderr_mismatch",
+    )
+    for token in required_tokens:
+        require_token(block, token, rel)
+    if 'data.get("UserName") != "scratchbird"' in block:
+        fail(f"macos_stale_direct_service_identity_forbidden:{rel}:{job_name}")
+
+    credential_smoke = (
+        repo_root
+        / "project"
+        / "tools"
+        / "installers"
+        / "smoke_macos_launchd_credential.sh"
+    )
+    if not credential_smoke.is_file():
+        fail("macos_launchd_credential_smoke_missing")
+    smoke_text = credential_smoke.read_text(encoding="utf-8")
+    for token in (
+        "credential-probe",
+        "launchctl bootstrap system",
+        "launchd_service_process_credential=passed",
+        "host_computed_authority_canaries=refused",
+        "bootstrap_authority_regain=refused",
+    ):
+        require_token(smoke_text, token, credential_smoke.name)
 
 
 def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> None:
@@ -536,6 +587,9 @@ def main() -> int:
             )
             check_macos_real128_build_dependency(text, name, "public-release-macos")
             check_macos_nonmember_probe(text, name, "public-release-macos")
+            check_macos_launchd_credential_probe(
+                text, name, "public-release-macos", repo_root
+            )
             check_native_release_stage(
                 text,
                 name,
@@ -567,6 +621,9 @@ def main() -> int:
             check_linux_privileged_bootstrap_smoke(text, name)
             check_macos_system_installer_failure_diagnostics(text, name)
             check_macos_nonmember_probe(text, name, "macos-installers")
+            check_macos_launchd_credential_probe(
+                text, name, "macos-installers", repo_root
+            )
             check_macos_real128_build_dependency(text, name, "macos-installers")
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")

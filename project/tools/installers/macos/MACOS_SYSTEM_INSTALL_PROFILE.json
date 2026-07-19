@@ -30,8 +30,20 @@
     {
       "group": "scratchbird",
       "mode": "0750",
-      "owner": "scratchbird",
+      "owner": "root",
       "path": "/var/log/scratchbird"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "root",
+      "path": "/var/log/scratchbird/launchd"
+    },
+    {
+      "group": "scratchbird",
+      "mode": "0750",
+      "owner": "scratchbird",
+      "path": "/var/log/scratchbird/runtime"
     },
     {
       "group": "scratchbird",
@@ -70,8 +82,10 @@
   "lifecycle": {
     "helper": "/opt/ScratchBird/libexec/scratchbird-macos-system-install",
     "install_evidence": "/var/lib/scratchbird/install/MACOS_SYSTEM_INSTALL_STATE.json",
+    "package_preinstall": "preinstall",
     "package_postinstall": "postinstall",
-    "package_scripts_load_or_enable_services": false
+    "package_scripts_load_or_enable_services": false,
+    "loaded_launchd_jobs_are_rejected_before_payload_replacement": true
   },
   "native_default_port": 3092,
   "os_identity": {
@@ -81,7 +95,7 @@
     "service_administrator_group_membership": "forbidden",
     "service_administrator_membership_validation": "direct local record, direct nested-group GUID, and transitive dseditgroup checkmember must all deny membership",
     "service_explicit_supplementary_group_membership": "forbidden_except_scratchbird",
-    "service_resolved_effective_group_set": "primary_scratchbird_plus_macos_implicit_gid_12_and_61_only",
+    "service_resolved_effective_group_set": "launchd_host_computed_groups_cleared_before_scratchbird_product_exec",
     "service_group_nested_in_other_local_group": "forbidden",
     "service_implicit_baseline_groups": "macos_computed_everyone_and_localaccounts_are_not_explicit_membership",
     "service_hidden": true,
@@ -101,11 +115,19 @@
   "service": {
     "default_activity": "not_started",
     "default_enablement": "disabled",
+    "final_product_identity": "scratchbird:scratchbird",
+    "final_supplementary_groups": [],
+    "launchd_bootstrap_identity": "root:wheel",
+    "launchd_init_groups": false,
     "launchd_labels": [
       "com.scratchbird.sbsrv",
       "com.scratchbird.sbmgr"
     ],
-    "run_at_load": false
+    "launchd_standard_log_root": "/var/log/scratchbird/launchd",
+    "run_at_load": false,
+    "service_launcher": "/opt/ScratchBird/bin/SBlaunch",
+    "service_launcher_interface": "fixed_selector_only_no_forwarded_arguments",
+    "service_runtime_log_root": "/var/log/scratchbird/runtime"
   },
   "topology": {
     "manager": "optional_SBmgr_before_listener",
@@ -116,6 +138,8 @@
   "upgrade_policy": {
     "configuration": "copy_defaults_only_when_missing",
     "data": "preserve",
+    "legacy_packaged_log_defaults": "migrate_exact_prior_packaged_log_paths_only",
+    "loaded_launchd_job": "reject_before_payload_replacement_and_recheck_postinstall",
     "service_state": "do_not_load_enable_or_start"
   }
 }

@@ -82,6 +82,13 @@ REQUIRED_EXECUTABLES = (
     *REQUIRED_PARSER_EXECUTABLES,
 )
 
+# SBlaunch is a macOS-only fixed-selector privilege-drop boundary.  It is
+# included in that platform's payload but is not a cross-platform native
+# topology component.
+PLATFORM_REQUIRED_EXECUTABLES = {
+    "macos": ("SBlaunch",),
+}
+
 def static_library_candidates(library_name: str) -> dict[str, tuple[str, ...]]:
     return {
         "linux": (f"lib/lib{library_name}.a",),
@@ -160,7 +167,10 @@ def main() -> int:
             )
 
     executable_suffix = ".exe" if args.platform == "windows" else ""
-    for name in REQUIRED_EXECUTABLES:
+    for name in (
+        REQUIRED_EXECUTABLES
+        + PLATFORM_REQUIRED_EXECUTABLES.get(args.platform, ())
+    ):
         rel = f"bin/{name}{executable_suffix}"
         path = root / rel
         if not path.is_file():
