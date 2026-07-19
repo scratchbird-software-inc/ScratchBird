@@ -2357,6 +2357,15 @@ if(NOT WIN32)
 endif()
 
 add_test(
+  NAME windows_wix_global_tool_visibility_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/installers/windows/verify_windows_system_installer.py
+)
+set_tests_properties(windows_wix_global_tool_visibility_gate PROPERTIES
+  LABELS "public_release_correctness;installers;windows;msi;wix;workflow;fail_closed"
+)
+
+add_test(
   NAME nightly_release_bundle_test
   COMMAND ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/nightly_release_bundle_test.py

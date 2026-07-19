@@ -442,6 +442,63 @@ def main() -> int:
         ),
         "workflow",
     )
+    windows_job_marker = "  windows-installers:\n"
+    windows_job_start = workflow.find(windows_job_marker)
+    require(windows_job_start >= 0, "workflow_windows_installers_job_missing")
+    build_installers_marker = "      - name: Build installers\n"
+    build_installers_start = workflow.find(
+        build_installers_marker,
+        windows_job_start + len(windows_job_marker),
+    )
+    require(build_installers_start >= 0, "workflow_build_installers_step_missing")
+    build_installers_end = workflow.find(
+        "\n      - name:", build_installers_start + len(build_installers_marker)
+    )
+    if build_installers_end < 0:
+        build_installers_end = len(workflow)
+    build_installers_step = workflow[build_installers_start:build_installers_end]
+    wix_visibility_tokens = (
+        'wix_tool_root="$(cygpath -u "$SB_WIX_TOOL_ROOT")"',
+        'wix_global_tool="$wix_tool_root/wix.exe"',
+        'test -f "$wix_global_tool"',
+        '"$wix_global_tool" --version',
+        'export PATH="$(dirname "$wix_global_tool"):$PATH"',
+        "command -v wix >/dev/null",
+    )
+    require_tokens(
+        build_installers_step,
+        wix_visibility_tokens,
+        "workflow_wix_global_tool_visibility",
+    )
+    require(
+        '"SB_WIX_TOOL_ROOT=$toolRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
+        in workflow,
+        "workflow_wix_tool_root_environment_missing",
+    )
+    builder_command = "python project/tools/installers/build_installers.py"
+    require(
+        builder_command in build_installers_step,
+        "workflow_wix_builder_command_missing",
+    )
+    builder_command_offset = build_installers_step.index(builder_command)
+    for token in wix_visibility_tokens:
+        require(
+            build_installers_step.index(token) < builder_command_offset,
+            f"workflow_wix_visibility_after_builder:{token}",
+        )
+    require(
+        "--require-msi" in build_installers_step,
+        "workflow_wix_msi_requirement_missing",
+    )
+    require_tokens(
+        builder,
+        (
+            'wix_bin = shutil.which("wix")',
+            "if require_msi:",
+            'fail("wix_not_found")',
+        ),
+        "builder_wix_fail_closed",
+    )
     require(
         'Filter "scratchbird-windows-*.zip"' not in workflow,
         "workflow_msi_fallback_present",

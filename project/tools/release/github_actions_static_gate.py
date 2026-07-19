@@ -434,6 +434,30 @@ def check_windows_llvm_release_dependency(text: str, rel: str, job_name: str) ->
     check_ctest_label_contract(text, rel, job_name, "public-release-windows")
 
 
+def check_windows_wix_cross_shell_path(text: str, rel: str, job_name: str) -> None:
+    """Require an explicit WiX handoff from PowerShell to the MSYS build shell."""
+
+    block = workflow_job_block(text, job_name, rel)
+    for token in (
+        "dotnet tool install --global wix --version 4.0.6",
+        '$toolRoot = Join-Path $env:USERPROFILE ".dotnet\\tools"',
+        '$wix = Join-Path $toolRoot "wix.exe"',
+        "Test-Path -LiteralPath $wix -PathType Leaf",
+        '"SB_WIX_TOOL_ROOT=$toolRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append',
+        '& $wix extension add -g "WixToolset.Util.wixext/4.0.6"',
+        'wix_tool_root="$(cygpath -u "$SB_WIX_TOOL_ROOT")"',
+        'wix_global_tool="$wix_tool_root/wix.exe"',
+        'test -f "$wix_global_tool"',
+        '"$wix_global_tool" --version',
+        'export PATH="$(dirname "$wix_global_tool"):$PATH"',
+        "command -v wix >/dev/null",
+        "--require-msi",
+    ):
+        require_token(block, token, rel)
+    if "$env:GITHUB_PATH" in block:
+        fail(f"windows_wix_generic_path_handoff_forbidden:{rel}:{job_name}")
+
+
 def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
     if re.search(r"(?m)^permissions:\s*\n\s+contents:\s+read\s*$", text) is None:
         fail(f"nightly_default_permissions_not_read_only:{rel}")
@@ -702,6 +726,7 @@ def main() -> int:
             )
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")
+            check_windows_wix_cross_shell_path(text, name, "windows-installers")
             check_ctest_label_contract(
                 text, name, "macos-installers", "public-release-macos"
             )
