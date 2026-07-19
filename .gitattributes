@@ -19,3 +19,9 @@ packaging/**/*.a -diff -text
 
 project/resources/seed-packs/initial-resource-pack/resources/i18n/sbsql-language-resource-pack/** text eol=lf
 project/drivers/adaptor/scratchbird-dbeaver-driver/plugins/org.jkiss.dbeaver.ext.scratchbird/resources/** text eol=lf
+
+# The public reference-acquisition registry binds exact SHA-256 values for the
+# permitted metadata files.  Keep every checkout byte-identical to the
+# registered LF payloads; otherwise a Windows core.autocrlf checkout would
+# turn the integrity check into a platform-dependent result.
+project/tests/reference_regression/reference_release_acquisition/** text eol=lf

@@ -15,6 +15,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 
@@ -96,6 +97,55 @@ def build_source_archive(source_root: Path) -> tuple[tuple[Path, ...], tuple[Pat
     return tuple(allowed), forbidden
 
 
+def require_registered_metadata_lf_checkout() -> None:
+    """Require Git to preserve the hash-bound metadata bytes on Windows.
+
+    The fixture below deliberately has no Git metadata because it exercises a
+    source archive.  This separate assertion applies only to a repository
+    checkout, where Git attributes control whether an autocrlf checkout would
+    corrupt the exact bytes bound by the public registry.
+    """
+
+    if not (REPO_ROOT / ".git").exists():
+        return
+    registered = public_reference_acquisition_metadata_relative_paths()
+    result = subprocess.run(
+        ["git", "check-attr", "-z", "text", "eol", "--", *registered],
+        cwd=REPO_ROOT,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    require(
+        result.returncode == 0,
+        "cannot inspect registered metadata checkout attributes: "
+        + result.stderr.decode("utf-8", errors="replace").strip(),
+    )
+    fields = result.stdout.split(b"\0")
+    if fields and not fields[-1]:
+        fields.pop()
+    require(
+        len(fields) == len(registered) * 2 * 3,
+        "registered metadata checkout attribute output is malformed",
+    )
+    attributes: dict[tuple[str, str], str] = {}
+    for index in range(0, len(fields), 3):
+        path, attribute, value = (
+            field.decode("utf-8", errors="surrogateescape")
+            for field in fields[index : index + 3]
+        )
+        attributes[(path, attribute)] = value
+    for relative in registered:
+        require(
+            attributes.get((relative, "text")) == "set",
+            f"registered metadata must be text in a checkout: {relative}",
+        )
+        require(
+            attributes.get((relative, "eol")) == "lf",
+            f"registered metadata must use LF in a checkout: {relative}",
+        )
+
+
 def require_invalid_registered_metadata_fails(
     source_root: Path, work_root: Path, relative: str, replacement: str
 ) -> None:
@@ -146,6 +196,7 @@ def main() -> int:
         shutil.rmtree(work_root)
     source_root = work_root / "source-archive"
     stage_root = work_root / "public-export"
+    require_registered_metadata_lf_checkout()
     allowed, forbidden = build_source_archive(source_root)
 
     require(
