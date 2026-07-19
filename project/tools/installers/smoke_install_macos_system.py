@@ -340,6 +340,7 @@ def validate_helper_static(helper: Path) -> None:
         "SERVICE_UID_MIN=501",
         "SERVICE_UID_MAX_EXCLUSIVE=60000",
         "BOOTSTRAP.MACOS_IDENTITY_VALIDATION_STAGE=",
+        "BOOTSTRAP.MACOS_SERVICE_RESOLVED_GROUP_IDS=",
         "identity_record_validation",
         "service_supplementary_group_validation",
         "service_admin_membership_validation",

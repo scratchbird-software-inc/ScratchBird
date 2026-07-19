@@ -217,20 +217,33 @@ ensure_service_is_not_admin() {
 
 ensure_service_resolved_group_set_is_least_authority() {
     required_gid=$1
-    resolved_group_ids=$(id -G "$SERVICE_USER" 2>/dev/null) || \
+    if resolved_group_ids=$(id -G "$SERVICE_USER" 2>/dev/null); then
+        :
+    else
+        diagnostic "BOOTSTRAP.MACOS_SERVICE_RESOLVED_GROUP_IDS=unavailable"
         fail BOOTSTRAP.GROUP_INPUT_INVALID
+    fi
     required_group_seen=false
     for effective_gid in $resolved_group_ids; do
         case "$effective_gid" in
-            ''|*[!0123456789]*) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
+            ''|*[!0123456789]*)
+                diagnostic "BOOTSTRAP.MACOS_SERVICE_RESOLVED_GROUP_IDS=$resolved_group_ids"
+                fail BOOTSTRAP.GROUP_INPUT_INVALID
+                ;;
         esac
         case "$effective_gid" in
             "$required_gid") required_group_seen=true ;;
             12|61) ;;
-            *) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
+            *)
+                diagnostic "BOOTSTRAP.MACOS_SERVICE_RESOLVED_GROUP_IDS=$resolved_group_ids"
+                fail BOOTSTRAP.GROUP_INPUT_INVALID
+                ;;
         esac
     done
-    [ "$required_group_seen" = true ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
+    if [ "$required_group_seen" != true ]; then
+        diagnostic "BOOTSTRAP.MACOS_SERVICE_RESOLVED_GROUP_IDS=$resolved_group_ids"
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    fi
 }
 
 create_service_user() {
