@@ -347,7 +347,10 @@ def validate_helper_static(helper: Path) -> None:
         "GroupMembers",
         "NestedGroups",
         "/Groups/admin",
-        'dseditgroup -n . -o checkmember',
+        'LC_ALL=C dseditgroup -n . -o checkmember',
+        "effective_admin_membership_status=$?",
+        '"no $SERVICE_USER is NOT a member of admin"',
+        "67) ;;",
         'id -G "$SERVICE_USER"',
         "12|61",
         "dscl . -create",
@@ -385,6 +388,106 @@ def validate_helper_static(helper: Path) -> None:
     for forbidden_port in (3050, 3090, 3392):
         if str(forbidden_port) in text:
             fail(f"lifecycle_forbidden_native_port:{forbidden_port}")
+
+
+def run_checkmember_negative_status_smoke(
+    helper: Path,
+    work_root: Path,
+) -> dict[str, str]:
+    """Execute the actual admin-membership helper with deterministic tools.
+
+    macOS returns status 67 for a negative ``dseditgroup checkmember``
+    predicate.  The fixture keeps this system-only branch executable on every
+    POSIX release runner, while taking the shell function directly from the
+    packaged helper rather than maintaining a second implementation.
+    """
+
+    helper_text = helper.read_text(encoding="utf-8")
+    function_start = helper_text.find("ensure_service_is_not_admin() {")
+    next_function = helper_text.find(
+        "\nensure_service_resolved_group_set_is_least_authority() {",
+        function_start,
+    )
+    if function_start < 0 or next_function < 0:
+        fail("checkmember_helper_function_missing")
+    function_text = helper_text[function_start:next_function].rstrip()
+
+    fixture_root = work_root / "checkmember-negative-status"
+    fixture_bin = fixture_root / "bin"
+    fixture_bin.mkdir(parents=True)
+    dscl = fixture_bin / "dscl"
+    dscl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    dscl.chmod(0o755)
+    dseditgroup = fixture_bin / "dseditgroup"
+    dseditgroup.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"${SB_CHECKMEMBER_OUTPUT:-}\"\n"
+        "exit \"${SB_CHECKMEMBER_STATUS:?}\"\n",
+        encoding="utf-8",
+    )
+    dseditgroup.chmod(0o755)
+
+    harness = fixture_root / "checkmember-harness.sh"
+    harness.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "SERVICE_USER=scratchbird\n"
+        "fail() {\n"
+        "    printf '%s\\n' \"$1\" >&2\n"
+        "    exit 1\n"
+        "}\n"
+        "local_group_has_member() {\n"
+        "    return 1\n"
+        "}\n\n"
+        f"{function_text}\n"
+        "ensure_service_is_not_admin 00000000-0000-0000-0000-000000000000\n",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+
+    def run_case(
+        name: str,
+        output: str,
+        status: int,
+        expected_success: bool,
+    ) -> None:
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fixture_bin}{os.pathsep}{environment['PATH']}"
+        environment["SB_CHECKMEMBER_OUTPUT"] = output
+        environment["SB_CHECKMEMBER_STATUS"] = str(status)
+        result = subprocess.run(
+            ["/bin/sh", str(harness)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=environment,
+        )
+        if expected_success:
+            if result.returncode != 0:
+                fail(
+                    "checkmember_negative_status_rejected:"
+                    f"{name}:{result.returncode}:{result.stderr.strip()}"
+                )
+            if result.stderr:
+                fail(f"checkmember_negative_status_diagnostic:{name}")
+            return
+        if result.returncode == 0:
+            fail(f"checkmember_invalid_response_accepted:{name}")
+        if result.stderr != "BOOTSTRAP.GROUP_INPUT_INVALID\n":
+            fail(f"checkmember_invalid_response_diagnostic:{name}")
+
+    negative = "no scratchbird is NOT a member of admin"
+    run_case("negative_status_67", negative, 67, True)
+    run_case("positive_membership", "yes scratchbird is a member of admin", 0, False)
+    run_case("negative_wrong_status", negative, 0, False)
+    run_case("malformed_negative", "no scratchbird", 67, False)
+    run_case("lookup_failure", "Group not found", 64, False)
+    return {
+        "negative_status_67": "accepted",
+        "positive_membership": "rejected",
+        "malformed_and_lookup_failures": "rejected",
+    }
 
 
 def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
@@ -867,6 +970,10 @@ def main() -> int:
         "pkg_scripts": validate_pkg_scripts(asset_root),
     }
     validate_helper_static(helper)
+    proof["checkmember_negative_status"] = run_checkmember_negative_status_smoke(
+        helper,
+        work_root,
+    )
     proof["builder_integration"] = validate_builder_integration(
         repo_root,
         work_root,

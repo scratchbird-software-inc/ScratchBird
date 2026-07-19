@@ -496,13 +496,32 @@ jobs:
           service_hidden="$(sudo dscl . -read /Users/scratchbird IsHidden | awk 'NR == 1 { print $2 }')"
           service_password="$(sudo dscl . -read /Users/scratchbird Password | awk 'NR == 1 { print $2 }')"
           host_user="$(id -un)"
-          sudo dseditgroup -n . -o checkmember -m "$host_user" scratchbird \
-            > "$proof_root/host-user-group-membership.txt"
+          if sudo env LC_ALL=C dseditgroup -n . -o checkmember -m "$host_user" scratchbird \
+            > "$proof_root/host-user-group-membership.txt" \
+            2> "$proof_root/host-user-group-membership.stderr.txt"; then
+            host_user_membership_status=0
+          else
+            host_user_membership_status=$?
+          fi
+          printf '%s\n' "$host_user_membership_status" \
+            > "$proof_root/host-user-group-membership-status.txt"
+          if [ "$host_user_membership_status" -ne 67 ]; then
+            echo "Unexpected hosted-runner service-group membership status: $host_user_membership_status" >&2
+            cat "$proof_root/host-user-group-membership.txt" >&2 || true
+            cat "$proof_root/host-user-group-membership.stderr.txt" >&2 || true
+            exit 1
+          fi
           if grep -Eq '^yes([[:space:]]|$)' "$proof_root/host-user-group-membership.txt"; then
             echo "System package granted the hosted runner user service-group membership." >&2
             exit 1
           fi
-          grep -Eq '^no([[:space:]]|$)' "$proof_root/host-user-group-membership.txt"
+          if ! grep -Fx "no $host_user is NOT a member of scratchbird" \
+            "$proof_root/host-user-group-membership.txt"; then
+            echo "Hosted-runner service-group non-membership response was malformed." >&2
+            cat "$proof_root/host-user-group-membership.txt" >&2 || true
+            cat "$proof_root/host-user-group-membership.stderr.txt" >&2 || true
+            exit 1
+          fi
           test "$service_shell" = /usr/bin/false
           test "$service_home" = /var/lib/scratchbird
           test "$service_hidden" = 1

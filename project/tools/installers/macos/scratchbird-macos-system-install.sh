@@ -190,15 +190,24 @@ ensure_service_is_not_admin() {
             fail BOOTSTRAP.GROUP_INPUT_INVALID
         fi
     done
-    effective_admin_membership=$(dseditgroup -n . -o checkmember \
-        -m "$SERVICE_USER" admin 2>/dev/null) || \
-        fail BOOTSTRAP.GROUP_INPUT_INVALID
-    set -- $effective_admin_membership
-    case "${1:-}" in
-        yes) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
-        no) ;;
+    # macOS dseditgroup uses status 67 for a valid false checkmember
+    # predicate.  Capture it in an if-condition so set -e does not mistake
+    # the least-authority result for a directory-service failure.  Both the
+    # documented false status and the complete C-locale response are required;
+    # every other status or response fails closed.
+    if effective_admin_membership=$(LC_ALL=C dseditgroup -n . -o checkmember \
+        -m "$SERVICE_USER" admin 2>/dev/null); then
+        effective_admin_membership_status=0
+    else
+        effective_admin_membership_status=$?
+    fi
+    case "$effective_admin_membership_status" in
+        67) ;;
         *) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
     esac
+    [ "$effective_admin_membership" = \
+        "no $SERVICE_USER is NOT a member of admin" ] || \
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
 }
 
 ensure_service_resolved_group_set_is_least_authority() {

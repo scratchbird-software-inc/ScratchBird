@@ -223,6 +223,27 @@ def check_macos_system_installer_failure_diagnostics(text: str, rel: str) -> Non
         require_token(block, token, rel)
 
 
+def check_macos_nonmember_probe(
+    text: str,
+    rel: str,
+    job_name: str,
+) -> None:
+    """Keep the macOS false checkmember predicate explicit and fail-closed."""
+
+    block = workflow_job_block(text, job_name, rel)
+    required_tokens = (
+        'sudo env LC_ALL=C dseditgroup -n . -o checkmember -m "$host_user" scratchbird',
+        "host_user_membership_status=$?",
+        "host-user-group-membership-status.txt",
+        "host-user-group-membership.stderr.txt",
+        '[ "$host_user_membership_status" -ne 67 ]',
+        'grep -Fx "no $host_user is NOT a member of scratchbird"',
+        "Hosted-runner service-group non-membership response was malformed.",
+    )
+    for token in required_tokens:
+        require_token(block, token, rel)
+
+
 def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> None:
     block = workflow_job_block(text, job_name, rel)
     required_patterns = {
@@ -514,6 +535,7 @@ def main() -> int:
                 text, name, "public-release-macos", "SB_MACOS_CI_ENABLED"
             )
             check_macos_real128_build_dependency(text, name, "public-release-macos")
+            check_macos_nonmember_probe(text, name, "public-release-macos")
             check_native_release_stage(
                 text,
                 name,
@@ -544,6 +566,7 @@ def main() -> int:
             check_installer_main_push_policy(text, name)
             check_linux_privileged_bootstrap_smoke(text, name)
             check_macos_system_installer_failure_diagnostics(text, name)
+            check_macos_nonmember_probe(text, name, "macos-installers")
             check_macos_real128_build_dependency(text, name, "macos-installers")
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")

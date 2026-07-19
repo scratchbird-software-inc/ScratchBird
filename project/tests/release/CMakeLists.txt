@@ -2344,6 +2344,18 @@ set_tests_properties(macos_universal_llvm_profile_test PROPERTIES
   LABELS "public_release_correctness;llvm_runtime_library;installers;macos;universal;archive_safety;fail_closed"
 )
 
+if(NOT WIN32)
+  add_test(
+    NAME macos_system_installer_smoke
+    COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/installers/smoke_install_macos_system.py
+            --work-root ${CMAKE_CURRENT_BINARY_DIR}/macos_system_installer_smoke
+  )
+  set_tests_properties(macos_system_installer_smoke PROPERTIES
+    LABELS "public_release_correctness;installers;macos;identity;fail_closed"
+  )
+endif()
+
 add_test(
   NAME nightly_release_bundle_test
   COMMAND ${Python3_EXECUTABLE}
