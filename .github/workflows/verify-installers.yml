@@ -798,6 +798,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Homebrew LLVM runtime for universal smoke
+        run: |
+          brew install llvm
+          llvm_runtime="$(brew --prefix llvm)/lib/libLLVM.dylib"
+          test -f "$llvm_runtime"
+          python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$llvm_runtime"
+
       - name: Download per-architecture macOS installers
         uses: actions/download-artifact@v4
         with:

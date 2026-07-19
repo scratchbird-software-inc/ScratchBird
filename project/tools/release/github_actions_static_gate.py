@@ -343,6 +343,33 @@ def check_macos_real128_build_dependency(text: str, rel: str, job_name: str) -> 
             fail(f"macos_real128_dependency_missing:{rel}:{job_name}:{label}")
 
 
+def check_macos_universal_smoke_llvm_runtime(
+    text: str,
+    rel: str,
+    job_name: str,
+) -> None:
+    """Require the universal smoke host to supply its selected LLVM runtime.
+
+    A universal macOS archive intentionally records one external Homebrew LLVM
+    runtime path per architecture.  The smoke script resolves the map for the
+    host architecture and performs a real ``ctypes.CDLL`` load, so this QA job
+    must provision that host's LLVM package instead of skipping the runtime
+    contract or hard-coding the other architecture's prefix.
+    """
+
+    block = workflow_job_block(text, job_name, rel)
+    required_tokens = (
+        "Install Homebrew LLVM runtime for universal smoke",
+        "brew install llvm",
+        'llvm_runtime="$(brew --prefix llvm)/lib/libLLVM.dylib"',
+        'test -f "$llvm_runtime"',
+        "ctypes.CDLL(sys.argv[1])",
+        "smoke_install_macos.sh",
+    )
+    for token in required_tokens:
+        require_token(block, token, rel)
+
+
 def check_ctest_label_contract(
     text: str,
     rel: str,
@@ -627,6 +654,9 @@ def main() -> int:
             check_macos_launchd_credential_probe(
                 text, name, "public-release-macos", repo_root
             )
+            check_macos_universal_smoke_llvm_runtime(
+                text, name, "macos-universal-artifact"
+            )
             check_native_release_stage(
                 text,
                 name,
@@ -667,6 +697,9 @@ def main() -> int:
                 text, name, "macos-installers", repo_root
             )
             check_macos_real128_build_dependency(text, name, "macos-installers")
+            check_macos_universal_smoke_llvm_runtime(
+                text, name, "macos-universal-installers"
+            )
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")
             check_ctest_label_contract(
