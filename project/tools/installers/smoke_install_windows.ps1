@@ -205,17 +205,15 @@ function Assert-InstalledWindowsSystem {
 }
 
 # Windows Installer administrative images still use legacy MAX_PATH handling.
-# Keep the extraction root independent of the caller's checkout/workspace depth
-# and leave sufficient room for the longest packaged resource path.
+# Keep the extraction root independent of the caller's checkout/workspace depth,
+# private to the runner/user, and short enough for the longest packaged resource
+# path.
 $MaximumMsiAdministrativeExtractRootLength = 40
 
 function New-ShortMsiAdministrativeExtractionRoot {
   $candidateBases = @(
     $env:RUNNER_TEMP,
-    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::CommonDocuments),
-    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile),
-    [IO.Path]::GetPathRoot($WorkRoot),
-    [IO.Path]::GetTempPath()
+    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)
   )
 
   foreach ($base in $candidateBases) {
@@ -228,7 +226,7 @@ function New-ShortMsiAdministrativeExtractionRoot {
       continue
     }
     for ($attempt = 0; $attempt -lt 8; $attempt++) {
-      $candidate = Join-Path $base ("sbx-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+      $candidate = Join-Path $base ("s" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
       if ($candidate.Length -gt $MaximumMsiAdministrativeExtractRootLength) {
         break
       }

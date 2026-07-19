@@ -423,7 +423,7 @@ def main() -> int:
         (
             "function New-ShortMsiAdministrativeExtractionRoot",
             "$env:RUNNER_TEMP",
-            "[System.Environment+SpecialFolder]::CommonDocuments",
+            "[System.Environment+SpecialFolder]::UserProfile",
             "$payloadRoot = New-ShortMsiAdministrativeExtractionRoot",
             'TARGETDIR=`"$payloadRoot`"',
             'Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json"',
@@ -434,6 +434,11 @@ def main() -> int:
     require(
         '$payloadRoot = Join-Path $WorkRoot "administrative-extract"' not in smoke,
         "administrative_extract_deep_work_root",
+    )
+    require(
+        "CommonDocuments" not in smoke
+        and "[IO.Path]::GetPathRoot($WorkRoot)" not in smoke,
+        "administrative_extract_shared_root_forbidden",
     )
 
     require_tokens(
