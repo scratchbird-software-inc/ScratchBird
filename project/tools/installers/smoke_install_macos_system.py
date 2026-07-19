@@ -395,6 +395,34 @@ def validate_helper_static(helper: Path) -> None:
         "SERVICE_UID_MAX_EXCLUSIVE=60000",
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
         "BOOTSTRAP.MACOS_IDENTITY_VALIDATION_STAGE=",
+        "BOOTSTRAP.MACOS_INSTALL_VALIDATION_STAGE=",
+        "install_validation_stage=argument_validation",
+        "log_system_installer_diagnostic()",
+        "report_unclassified_install_failure()",
+        "installer_failure_reported=false",
+        "trap 'report_unclassified_install_failure \"$?\"' 0",
+        "/usr/bin/logger -t scratchbird-installer",
+        '"scratchbird-installer stage=$install_validation_stage code=$diagnostic_code"',
+        "BOOTSTRAP.MACOS_INSTALL_STAGE_UNCLASSIFIED_FAILURE",
+        "service_state_validation",
+        "service_identity_validation",
+        "directory_configuration",
+        "default_configuration_content",
+        "default_configuration_symlink_validation",
+        "default_configuration_migration",
+        "default_configuration_permissions",
+        "root_service_authority_validation",
+        "root_opt_directory_validation",
+        "root_scratchbird_directory_normalization",
+        "root_bin_directory_normalization",
+        "root_sblaunch_normalization",
+        "root_sbsrv_normalization",
+        "root_sbmgr_normalization",
+        "launchd_directory_validation",
+        "launchd_sbsrv_definition_validation",
+        "launchd_sbmgr_definition_validation",
+        "install_evidence_write",
+        "pre_remove_configuration_preservation",
         "identity_record_validation",
         "service_supplementary_group_validation",
         "service_admin_membership_validation",
@@ -419,6 +447,10 @@ def validate_helper_static(helper: Path) -> None:
         "migrate_legacy_packaged_log_defaults",
         "launchd_host_computed_groups_cleared_before_scratchbird_product_exec",
         "dscl . -create",
+        "/usr/bin/uuidgen",
+        'GeneratedUID "$generated_uid"',
+        "created_service_user_generated_uid=$generated_uid",
+        '[ "$user_generated_uid" != "$created_service_user_generated_uid" ]',
         "dseditgroup -o edit",
         '"/Library/Application Support/ScratchBird"',
         "/var/run/scratchbird/sb_server/control",
@@ -607,6 +639,370 @@ def run_checkmember_negative_status_smoke(
     }
 
 
+def run_service_user_creation_smoke(
+    helper: Path,
+    work_root: Path,
+) -> dict[str, str]:
+    """Exercise the packaged raw-dscl creation sequence with a fake directory.
+
+    The system helper must write a GeneratedUID while it builds a fresh hidden
+    service account, preserve that generated value for its immediate readback
+    validation, and remove the incomplete account if that attribute write
+    fails.  This executes the exact helper function so the hosted package
+    cannot regress to an underspecified raw ``dscl`` record.
+    """
+
+    helper_text = helper.read_text(encoding="utf-8")
+    function_start = helper_text.find("create_service_user() {")
+    next_function = helper_text.find(
+        "\nensure_service_identity() {",
+        function_start,
+    )
+    if function_start < 0 or next_function < 0:
+        fail("service_user_creation_helper_function_missing")
+    function_text = helper_text[function_start:next_function].rstrip()
+    if function_text.count("/usr/bin/uuidgen") != 1:
+        fail("service_user_creation_uuidgen_contract_missing")
+
+    fixture_root = work_root / "service-user-creation"
+    fixture_bin = fixture_root / "bin"
+    fixture_bin.mkdir(parents=True)
+    generated_uid = "01234567-89ab-cdef-0123-456789abcdef"
+    uuidgen = fixture_bin / "uuidgen"
+    uuidgen.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' '{generated_uid}'\n",
+        encoding="utf-8",
+    )
+    uuidgen.chmod(0o755)
+    function_text = function_text.replace("/usr/bin/uuidgen", str(uuidgen))
+    dscl = fixture_bin / "dscl"
+    dscl.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf '%s|' \"$@\" >> \"${SB_DSCL_LOG:?}\"\n"
+        "printf '\\n' >> \"${SB_DSCL_LOG:?}\"\n"
+        "if [ \"$1\" = . ] && [ \"$2\" = -list ] && "
+        "[ \"${3:-}\" = /Users ] && [ \"${4:-}\" = UniqueID ]; then\n"
+        "    printf '%s\\n' 'root 0' 'daemon 1'\n"
+        "    exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = . ] && [ \"$2\" = -create ] && "
+        "[ \"${3:-}\" = /Users/scratchbird ] && "
+        "[ \"${4:-}\" = GeneratedUID ] && "
+        "[ \"${SB_FAIL_GENERATED_UID_CREATE:-0}\" = 1 ]; then\n"
+        "    exit 1\n"
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    dscl.chmod(0o755)
+
+    harness = fixture_root / "service-user-creation-harness.sh"
+    harness.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "SERVICE_USER=scratchbird\n"
+        "SERVICE_UID_MIN=501\n"
+        "SERVICE_UID_MAX_EXCLUSIVE=60000\n"
+        "SERVICE_HOME=/var/lib/scratchbird\n"
+        "NON_LOGIN_SHELL=/usr/bin/false\n"
+        "fail() {\n"
+        "    printf '%s\\n' \"$1\" >&2\n"
+        "    exit 1\n"
+        "}\n\n"
+        f"{function_text}\n"
+        "create_service_user 700\n"
+        "printf 'generated_uid=%s\\n' \"$created_service_user_generated_uid\"\n",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+
+    def run_case(name: str, fail_generated_uid_create: bool) -> list[str]:
+        log_path = fixture_root / f"{name}.dscl.log"
+        environment = os.environ.copy()
+        environment["PATH"] = f"{fixture_bin}{os.pathsep}{environment['PATH']}"
+        environment["SB_DSCL_LOG"] = str(log_path)
+        environment["SB_FAIL_GENERATED_UID_CREATE"] = (
+            "1" if fail_generated_uid_create else "0"
+        )
+        result = subprocess.run(
+            ["/bin/sh", str(harness)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=environment,
+        )
+        commands = log_path.read_text(encoding="utf-8").splitlines()
+        if fail_generated_uid_create:
+            if result.returncode == 0:
+                fail("service_user_generated_uid_create_accepted")
+            if result.stdout:
+                fail("service_user_generated_uid_failure_stdout")
+            if result.stderr != "BOOTSTRAP.GROUP_CREATE_FAILED\n":
+                fail("service_user_generated_uid_failure_diagnostic")
+            if not commands or commands[-1] != ".|-delete|/Users/scratchbird|":
+                fail("service_user_generated_uid_failure_cleanup_missing")
+            generated_uid_index = next(
+                (
+                    index
+                    for index, command in enumerate(commands)
+                    if command.startswith(
+                        ".|-create|/Users/scratchbird|GeneratedUID|"
+                    )
+                ),
+                None,
+            )
+            if generated_uid_index is None:
+                fail("service_user_generated_uid_failure_write_missing")
+            if any(
+                "|PrimaryGroupID|" in command
+                or "|NFSHomeDirectory|" in command
+                or "|UserShell|" in command
+                or "|IsHidden|" in command
+                or "|Password|" in command
+                for command in commands[generated_uid_index + 1 :]
+            ):
+                fail("service_user_generated_uid_failure_continued_after_write")
+            return commands
+
+        if result.returncode != 0:
+            fail(
+                "service_user_generated_uid_create_rejected:"
+                f"{result.returncode}:{result.stderr.strip()}"
+            )
+        if result.stderr:
+            fail("service_user_generated_uid_create_diagnostic")
+        if result.stdout != f"generated_uid={generated_uid}\n":
+            fail("service_user_generated_uid_output_invalid")
+        generated_uid_commands = [
+            command
+            for command in commands
+            if command.startswith(
+                ".|-create|/Users/scratchbird|GeneratedUID|"
+            )
+        ]
+        if generated_uid_commands != [
+            f".|-create|/Users/scratchbird|GeneratedUID|{generated_uid}|"
+        ]:
+            fail("service_user_generated_uid_write_mismatch")
+        if ".|-delete|/Users/scratchbird|" in commands:
+            fail("service_user_generated_uid_unexpected_cleanup")
+        unique_id_command = ".|-create|/Users/scratchbird|UniqueID|501|"
+        generated_uid_command = (
+            f".|-create|/Users/scratchbird|GeneratedUID|{generated_uid}|"
+        )
+        primary_group_command = ".|-create|/Users/scratchbird|PrimaryGroupID|700|"
+        try:
+            unique_id_index = commands.index(unique_id_command)
+            generated_uid_index = commands.index(generated_uid_command)
+            primary_group_index = commands.index(primary_group_command)
+        except ValueError:
+            fail("service_user_generated_uid_attribute_order_missing")
+        if not unique_id_index < generated_uid_index < primary_group_index:
+            fail("service_user_generated_uid_attribute_order_invalid")
+        return commands
+
+    successful_commands = run_case("success", False)
+    if successful_commands[-1] != ".|-create|/Users/scratchbird|Password|*|":
+        fail("service_user_creation_attribute_sequence_incomplete")
+    run_case("generated-uid-create-failure", True)
+    return {
+        "generated_uid_creation": "passed",
+        "generated_uid_readback_value": generated_uid,
+        "generated_uid_failure_cleanup": "passed",
+    }
+
+
+def run_system_installer_diagnostic_smoke(
+    helper: Path,
+    work_root: Path,
+) -> dict[str, str]:
+    """Prove the packaged helper logs only fixed system-install diagnostics."""
+
+    helper_text = helper.read_text(encoding="utf-8")
+    function_start = helper_text.find("diagnostic() {")
+    next_block = helper_text.find("\nwhile [ \"$#\" -gt 0 ]; do", function_start)
+    if function_start < 0 or next_block < 0:
+        fail("system_diagnostic_helper_functions_missing")
+    function_text = helper_text[function_start:next_block].rstrip()
+    if function_text.count("/usr/bin/logger") != 2:
+        fail("system_diagnostic_logger_contract_missing")
+
+    fixture_root = work_root / "system-installer-diagnostic"
+    fixture_bin = fixture_root / "bin"
+    fixture_bin.mkdir(parents=True)
+    logger = fixture_bin / "logger"
+    logger.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf '%s|' \"$@\" >> \"${SB_LOGGER_LOG:?}\"\n"
+        "printf '\\n' >> \"${SB_LOGGER_LOG:?}\"\n"
+        "exit \"${SB_LOGGER_STATUS:-0}\"\n",
+        encoding="utf-8",
+    )
+    logger.chmod(0o755)
+    function_text = function_text.replace("/usr/bin/logger", str(logger))
+
+    harness = fixture_root / "system-installer-diagnostic-harness.sh"
+    harness.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "ACTION=${SB_ACTION:-post-install}\n"
+        "install_root=${SB_INSTALL_ROOT:-/}\n"
+        "identity_mode=${SB_IDENTITY_MODE:-system}\n"
+        "identity_validation_stage=${SB_IDENTITY_VALIDATION_STAGE:-}\n"
+        "install_validation_stage=${SB_INSTALL_VALIDATION_STAGE:-launchd_sbmgr_definition_validation}\n"
+        "installer_failure_reported=false\n\n"
+        f"{function_text}\n"
+        "case ${SB_DIAGNOSTIC_CASE:?} in\n"
+        "    fail)\n"
+        "        trap 'report_unclassified_install_failure \"$?\"' 0\n"
+        "        fail \"${SB_DIAGNOSTIC_CODE:-BOOTSTRAP.DIRECTORY_PERMISSION_INVALID}\"\n"
+        "        ;;\n"
+        "    raw-log)\n"
+        "        log_system_installer_diagnostic \"${SB_DIAGNOSTIC_CODE:?}\"\n"
+        "        ;;\n"
+        "    bare-failure)\n"
+        "        trap 'report_unclassified_install_failure \"$?\"' 0\n"
+        "        false\n"
+        "        ;;\n"
+        "    *)\n"
+        "        exit 64\n"
+        "        ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    harness.chmod(0o755)
+
+    def run_case(
+        name: str,
+        diagnostic_case: str,
+        *,
+        code: str = "BOOTSTRAP.DIRECTORY_PERMISSION_INVALID",
+        stage: str = "launchd_sbmgr_definition_validation",
+        identity_mode: str = "system",
+        logger_status: int = 0,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        log_path = fixture_root / f"{name}.logger.log"
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "SB_LOGGER_LOG": str(log_path),
+                "SB_LOGGER_STATUS": str(logger_status),
+                "SB_DIAGNOSTIC_CASE": diagnostic_case,
+                "SB_DIAGNOSTIC_CODE": code,
+                "SB_INSTALL_VALIDATION_STAGE": stage,
+                "SB_IDENTITY_MODE": identity_mode,
+            }
+        )
+        result = subprocess.run(
+            ["/bin/sh", str(harness)],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=environment,
+        )
+        logs = (
+            log_path.read_text(encoding="utf-8").splitlines()
+            if log_path.exists()
+            else []
+        )
+        return result, logs
+
+    stage = "launchd_sbmgr_definition_validation"
+    code = "BOOTSTRAP.DIRECTORY_PERMISSION_INVALID"
+    expected_log = (
+        "-t|scratchbird-installer|"
+        f"scratchbird-installer stage={stage} code={code}|"
+    )
+    allowed, allowed_logs = run_case("allowed", "fail")
+    if allowed.returncode != 1:
+        fail("system_diagnostic_allowed_failure_status")
+    if allowed.stdout:
+        fail("system_diagnostic_allowed_failure_stdout")
+    if allowed.stderr != (
+        f"{code}\nBOOTSTRAP.MACOS_INSTALL_VALIDATION_STAGE={stage}\n"
+    ):
+        fail("system_diagnostic_allowed_failure_stderr")
+    if allowed_logs != [expected_log]:
+        fail("system_diagnostic_allowed_failure_log")
+
+    fixture, fixture_logs = run_case(
+        "fixture",
+        "fail",
+        identity_mode="fixture",
+    )
+    if fixture.returncode != 1 or fixture.stdout:
+        fail("system_diagnostic_fixture_failure_status")
+    if fixture.stderr != f"{code}\n" or fixture_logs:
+        fail("system_diagnostic_fixture_failure_logged")
+
+    untrusted_code, untrusted_code_logs = run_case(
+        "untrusted-code",
+        "raw-log",
+        code="BOOTSTRAP.UNTRUSTED_/private/input",
+    )
+    if (
+        untrusted_code.returncode != 0
+        or untrusted_code.stdout
+        or untrusted_code.stderr
+        or untrusted_code_logs
+    ):
+        fail("system_diagnostic_untrusted_code_logged")
+
+    untrusted_stage, untrusted_stage_logs = run_case(
+        "untrusted-stage",
+        "raw-log",
+        stage="untrusted_/private/input",
+    )
+    if (
+        untrusted_stage.returncode != 0
+        or untrusted_stage.stdout
+        or untrusted_stage.stderr
+        or untrusted_stage_logs
+    ):
+        fail("system_diagnostic_untrusted_stage_logged")
+
+    logger_failure, logger_failure_logs = run_case(
+        "logger-failure",
+        "fail",
+        logger_status=1,
+    )
+    if logger_failure.returncode != 1 or logger_failure.stdout:
+        fail("system_diagnostic_logger_failure_status")
+    if logger_failure.stderr != allowed.stderr:
+        fail("system_diagnostic_logger_failure_stderr")
+    if logger_failure_logs != [expected_log]:
+        fail("system_diagnostic_logger_failure_log")
+
+    fallback, fallback_logs = run_case("fallback", "bare-failure")
+    fallback_code = "BOOTSTRAP.MACOS_INSTALL_STAGE_UNCLASSIFIED_FAILURE"
+    expected_fallback_log = (
+        "-t|scratchbird-installer|"
+        f"scratchbird-installer stage={stage} code={fallback_code}|"
+    )
+    if fallback.returncode != 1 or fallback.stdout or fallback.stderr:
+        fail("system_diagnostic_unclassified_failure_status")
+    if fallback_logs != [expected_fallback_log]:
+        fail("system_diagnostic_unclassified_failure_log")
+
+    for line in [*allowed_logs, *logger_failure_logs, *fallback_logs]:
+        for forbidden in ("/private/", "untrusted", "60000", "0.0.0"):
+            if forbidden in line:
+                fail("system_diagnostic_sensitive_value_logged")
+    return {
+        "allowed_fixed_code_and_stage": "passed",
+        "fixture_mode_silent": "passed",
+        "untrusted_values_suppressed": "passed",
+        "logger_failure_non_interference": "passed",
+        "unclassified_set_e_failure_fallback": "passed",
+        "fail_trap_no_duplicate": "passed",
+    }
+
+
 def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
     preinstall = asset_root / "pkg-scripts" / "preinstall.in"
     postinstall = asset_root / "pkg-scripts" / "postinstall.in"
@@ -629,7 +1025,12 @@ def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
     required = (
         "/opt/ScratchBird/libexec/scratchbird-macos-system-install",
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+        "postinstall_stage=postinstall_wrapper_validation",
+        "log_postinstall_diagnostic()",
+        "/usr/bin/logger -t scratchbird-installer",
+        '"scratchbird-installer stage=$postinstall_stage code=$1"',
         "fail() {",
+        "fail BOOTSTRAP.OS_AUTHORITY_DENIED",
         "require_no_extended_acl",
         "require_root_executable",
         "root:wheel:755",
@@ -857,6 +1258,14 @@ def validate_builder_integration(
     )
     if not staged_helper.is_file() or not os.access(staged_helper, os.X_OK):
         fail("builder_lifecycle_helper_not_staged")
+    service_user_creation = run_service_user_creation_smoke(
+        staged_helper,
+        work_root,
+    )
+    diagnostic_logging = run_system_installer_diagnostic_smoke(
+        staged_helper,
+        work_root,
+    )
     staged_launcher = system_root / "opt" / "ScratchBird" / "bin" / "SBlaunch"
     if not staged_launcher.is_file() or staged_launcher.stat().st_size <= 0:
         fail("builder_service_launcher_not_staged")
@@ -959,6 +1368,8 @@ def validate_builder_integration(
         "pkgbuild_command_contract": True,
         "system_package_evidence": True,
         "launchd_system_assets_staged": True,
+        "service_user_creation": service_user_creation,
+        "diagnostic_logging": diagnostic_logging,
         "native_default_port": NATIVE_PORT,
     }
 

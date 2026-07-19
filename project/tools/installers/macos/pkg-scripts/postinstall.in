@@ -6,21 +6,40 @@ set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-fail() {
+postinstall_stage=postinstall_wrapper_validation
+
+log_postinstall_diagnostic() {
+    case "$1" in
+        BOOTSTRAP.OS_AUTHORITY_DENIED|BOOTSTRAP.SERVICE_STATE_INVALID|\
+        BOOTSTRAP.GROUP_CREATE_FAILED|BOOTSTRAP.GROUP_INPUT_INVALID|\
+        BOOTSTRAP.DIRECTORY_PERMISSION_INVALID|\
+        BOOTSTRAP.INSTALL_DEFAULTS_INVALID)
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+    if [ -x /usr/bin/logger ]; then
+        /usr/bin/logger -t scratchbird-installer \
+            "scratchbird-installer stage=$postinstall_stage code=$1" \
+            >/dev/null 2>&1 || true
+    fi
+}
+
+diagnostic() {
     printf '%s\n' "$1" >&2
+    log_postinstall_diagnostic "$1"
+}
+
+fail() {
+    diagnostic "$1"
     exit 1
 }
 
-if [ "$(id -u)" -ne 0 ]; then
-    printf '%s\n' BOOTSTRAP.OS_AUTHORITY_DENIED >&2
-    exit 1
-fi
+[ "$(id -u)" -eq 0 ] || fail BOOTSTRAP.OS_AUTHORITY_DENIED
 
 target_volume=${3:-/}
-if [ "$target_volume" != / ]; then
-    printf '%s\n' BOOTSTRAP.INSTALL_DEFAULTS_INVALID >&2
-    exit 1
-fi
+[ "$target_volume" = / ] || fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID
 
 require_no_extended_acl() {
     path=$1
@@ -64,4 +83,5 @@ exec "$helper" post-install \
     --identity-mode system \
     --root / \
     --package-format pkg \
-    --package-version '@SCRATCHBIRD_VERSION@'
+    --package-version '@SCRATCHBIRD_VERSION@' || \
+    fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID

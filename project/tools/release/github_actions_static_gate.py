@@ -208,18 +208,23 @@ def check_linux_privileged_bootstrap_smoke(text: str, rel: str) -> None:
         require_token(block, token, rel)
 
 
-def check_macos_system_installer_failure_diagnostics(text: str, rel: str) -> None:
+def check_macos_system_installer_failure_diagnostics(
+    text: str,
+    rel: str,
+    job_name: str,
+) -> None:
     """Keep real pkg postinstall failures diagnosable from the smoke proof."""
 
-    block = workflow_job_block(text, "macos-installers", rel)
+    block = workflow_job_block(text, job_name, rel)
     required_tokens = (
-        "Smoke system package install and cleanup",
         'installer -verboseR -pkg "$package" -target /',
         "installer_status=${PIPESTATUS[0]}",
         "sudo tail -n 400 /var/log/install.log",
         "system-installer-install.log",
         "sudo log show --style syslog --last 5m",
         "system-installer-unified.log",
+        'eventMessage CONTAINS[c] "scratchbird-installer"',
+        "system-installer-stage.log",
     )
     for token in required_tokens:
         require_token(block, token, rel)
@@ -585,6 +590,9 @@ def main() -> int:
             check_main_push_ci_policy(
                 text, name, "public-release-macos", "SB_MACOS_CI_ENABLED"
             )
+            check_macos_system_installer_failure_diagnostics(
+                text, name, "public-release-macos"
+            )
             check_macos_real128_build_dependency(text, name, "public-release-macos")
             check_macos_nonmember_probe(text, name, "public-release-macos")
             check_macos_launchd_credential_probe(
@@ -619,7 +627,9 @@ def main() -> int:
         elif name == "verify-installers.yml":
             check_installer_main_push_policy(text, name)
             check_linux_privileged_bootstrap_smoke(text, name)
-            check_macos_system_installer_failure_diagnostics(text, name)
+            check_macos_system_installer_failure_diagnostics(
+                text, name, "macos-installers"
+            )
             check_macos_nonmember_probe(text, name, "macos-installers")
             check_macos_launchd_credential_probe(
                 text, name, "macos-installers", repo_root

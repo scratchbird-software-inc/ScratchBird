@@ -451,8 +451,22 @@ jobs:
           trap cleanup_on_exit EXIT
 
           project/tools/installers/smoke_install_macos.sh "$package" "$proof_root"
-          sudo installer -pkg "$package" -target / \
+          set +e
+          sudo installer -verboseR -pkg "$package" -target / \
             2>&1 | tee "$proof_root/system-installer.txt"
+          installer_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$installer_status" -ne 0 ]; then
+            sudo tail -n 400 /var/log/install.log \
+              > "$proof_root/system-installer-install.log" 2>&1 || true
+            sudo log show --style syslog --last 5m \
+              --predicate 'eventMessage CONTAINS[c] "scratchbird"' \
+              > "$proof_root/system-installer-unified.log" 2>&1 || true
+            sudo log show --style syslog --last 5m \
+              --predicate 'eventMessage CONTAINS[c] "scratchbird-installer"' \
+              > "$proof_root/system-installer-stage.log" 2>&1 || true
+            exit "$installer_status"
+          fi
           python3 project/tools/release/verify_native_installed_payload.py \
             /opt/ScratchBird \
             --config-root "/Library/Application Support/ScratchBird" \

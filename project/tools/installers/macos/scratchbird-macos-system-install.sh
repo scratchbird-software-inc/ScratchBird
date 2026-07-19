@@ -32,9 +32,75 @@ identity_mode=system
 package_version=unknown
 package_format=pkg
 identity_validation_stage=
+install_validation_stage=argument_validation
+installer_failure_reported=false
 
 diagnostic() {
     printf '%s\n' "$1" >&2
+}
+
+is_system_post_install() {
+    [ "$ACTION" = post-install ] && \
+    [ "$identity_mode" = system ] && \
+    [ "$install_root" = / ]
+}
+
+is_known_install_validation_stage() {
+    case "$1" in
+        argument_validation|service_state_validation|service_identity_validation|\
+        directory_configuration|default_configuration_content|\
+        default_configuration_symlink_validation|\
+        default_configuration_migration|default_configuration_permissions|\
+        root_service_authority_validation|root_opt_directory_validation|\
+        root_scratchbird_directory_normalization|\
+        root_bin_directory_normalization|root_sblaunch_normalization|\
+        root_sbsrv_normalization|root_sbmgr_normalization|\
+        launchd_directory_validation|launchd_sbsrv_definition_validation|\
+        launchd_sbmgr_definition_validation|install_evidence_write|\
+        pre_remove_configuration_preservation)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_known_install_diagnostic_code() {
+    case "$1" in
+        BOOTSTRAP.OS_AUTHORITY_DENIED|BOOTSTRAP.SERVICE_STATE_INVALID|\
+        BOOTSTRAP.GROUP_CREATE_FAILED|BOOTSTRAP.GROUP_INPUT_INVALID|\
+        BOOTSTRAP.DIRECTORY_PERMISSION_INVALID|\
+        BOOTSTRAP.INSTALL_DEFAULTS_INVALID|\
+        BOOTSTRAP.MACOS_INSTALL_STAGE_UNCLASSIFIED_FAILURE)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+log_system_installer_diagnostic() {
+    diagnostic_code=$1
+    is_system_post_install || return 0
+    is_known_install_diagnostic_code "$diagnostic_code" || return 0
+    is_known_install_validation_stage "$install_validation_stage" || return 0
+    [ -x /usr/bin/logger ] || return 0
+    /usr/bin/logger -t scratchbird-installer \
+        "scratchbird-installer stage=$install_validation_stage code=$diagnostic_code" \
+        >/dev/null 2>&1 || true
+}
+
+report_unclassified_install_failure() {
+    exit_status=$1
+    trap - 0
+    if [ "$exit_status" -ne 0 ] && \
+       [ "$installer_failure_reported" != true ]; then
+        log_system_installer_diagnostic \
+            BOOTSTRAP.MACOS_INSTALL_STAGE_UNCLASSIFIED_FAILURE
+    fi
+    exit "$exit_status"
 }
 
 fail() {
@@ -43,6 +109,12 @@ fail() {
         [ -n "$identity_validation_stage" ]; then
         diagnostic "BOOTSTRAP.MACOS_IDENTITY_VALIDATION_STAGE=$identity_validation_stage"
     fi
+    if is_system_post_install && \
+       is_known_install_validation_stage "$install_validation_stage"; then
+        diagnostic "BOOTSTRAP.MACOS_INSTALL_VALIDATION_STAGE=$install_validation_stage"
+    fi
+    log_system_installer_diagnostic "$1"
+    installer_failure_reported=true
     exit "${2:-1}"
 }
 
@@ -103,6 +175,9 @@ case "$package_format" in
         fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID 2
         ;;
 esac
+
+trap 'report_unclassified_install_failure "$?"' 0
+
 root_path() {
     if [ "$install_root" = / ]; then
         printf '%s\n' "$1"
@@ -291,10 +366,26 @@ create_service_user() {
     [ "$next_uid" -lt "$SERVICE_UID_MAX_EXCLUSIVE" ] || \
         fail BOOTSTRAP.GROUP_CREATE_FAILED
 
+    generated_uid=$(/usr/bin/uuidgen 2>/dev/null) || \
+        fail BOOTSTRAP.GROUP_CREATE_FAILED
+    case "$generated_uid" in
+        ????????-????-????-????-????????????) ;;
+        *) fail BOOTSTRAP.GROUP_CREATE_FAILED ;;
+    esac
+    generated_uid_hex=$(printf '%s' "$generated_uid" | tr -d '-')
+    case "$generated_uid_hex" in
+        ????????????????????????????????) ;;
+        *) fail BOOTSTRAP.GROUP_CREATE_FAILED ;;
+    esac
+    case "$generated_uid_hex" in
+        *[!0123456789ABCDEFabcdef]*) fail BOOTSTRAP.GROUP_CREATE_FAILED ;;
+    esac
+
     if ! {
         dscl . -create "/Users/$SERVICE_USER" >/dev/null 2>&1 &&
         dscl . -create "/Users/$SERVICE_USER" RealName 'ScratchBird service account' >/dev/null 2>&1 &&
         dscl . -create "/Users/$SERVICE_USER" UniqueID "$next_uid" >/dev/null 2>&1 &&
+        dscl . -create "/Users/$SERVICE_USER" GeneratedUID "$generated_uid" >/dev/null 2>&1 &&
         dscl . -create "/Users/$SERVICE_USER" PrimaryGroupID "$group_gid" >/dev/null 2>&1 &&
         dscl . -create "/Users/$SERVICE_USER" NFSHomeDirectory "$SERVICE_HOME" >/dev/null 2>&1 &&
         dscl . -create "/Users/$SERVICE_USER" UserShell "$NON_LOGIN_SHELL" >/dev/null 2>&1 &&
@@ -304,10 +395,12 @@ create_service_user() {
         dscl . -delete "/Users/$SERVICE_USER" >/dev/null 2>&1 || true
         fail BOOTSTRAP.GROUP_CREATE_FAILED
     fi
+    created_service_user_generated_uid=$generated_uid
 }
 
 ensure_service_identity() {
     identity_validation_stage=identity_record_validation
+    created_service_user_generated_uid=
     require_system_authority
     command -v dscl >/dev/null 2>&1 || fail BOOTSTRAP.GROUP_CREATE_FAILED
     command -v dseditgroup >/dev/null 2>&1 || fail BOOTSTRAP.GROUP_CREATE_FAILED
@@ -348,6 +441,10 @@ ensure_service_identity() {
     case "$user_generated_uid" in
         ''|*[!0123456789ABCDEFabcdef-]*) fail BOOTSTRAP.GROUP_INPUT_INVALID ;;
     esac
+    if [ -n "$created_service_user_generated_uid" ] && \
+       [ "$user_generated_uid" != "$created_service_user_generated_uid" ]; then
+        fail BOOTSTRAP.GROUP_INPUT_INVALID
+    fi
     [ "$user_uid" -ne 0 ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_uid" -ge "$SERVICE_UID_MIN" ] || fail BOOTSTRAP.GROUP_INPUT_INVALID
     [ "$user_uid" -lt "$SERVICE_UID_MAX_EXCLUSIVE" ] || \
@@ -496,12 +593,19 @@ normalize_root_executable() {
 
 validate_root_service_launcher_path() {
     [ "$identity_mode" = system ] || return 0
+    install_validation_stage=root_service_authority_validation
     require_system_authority
+    install_validation_stage=root_opt_directory_validation
     require_existing_root_directory /opt
+    install_validation_stage=root_scratchbird_directory_normalization
     normalize_root_directory /opt/ScratchBird
+    install_validation_stage=root_bin_directory_normalization
     normalize_root_directory /opt/ScratchBird/bin
+    install_validation_stage=root_sblaunch_normalization
     normalize_root_executable /opt/ScratchBird/bin/SBlaunch
+    install_validation_stage=root_sbsrv_normalization
     normalize_root_executable /opt/ScratchBird/bin/SBsrv
+    install_validation_stage=root_sbmgr_normalization
     normalize_root_executable /opt/ScratchBird/bin/SBmgr
 }
 
@@ -552,11 +656,14 @@ validate_launchd_service_definition() {
 
 validate_launchd_service_definitions() {
     [ "$identity_mode" = system ] || return 0
+    install_validation_stage=launchd_directory_validation
     require_existing_root_directory /Library/LaunchDaemons
+    install_validation_stage=launchd_sbsrv_definition_validation
     validate_launchd_service_definition \
         com.scratchbird.sbsrv sbsrv \
         /var/log/scratchbird/launchd/SBsrv.out.log \
         /var/log/scratchbird/launchd/SBsrv.err.log
+    install_validation_stage=launchd_sbmgr_definition_validation
     validate_launchd_service_definition \
         com.scratchbird.sbmgr sbmgr \
         /var/log/scratchbird/launchd/SBmgr.out.log \
@@ -648,6 +755,7 @@ install_default_configuration() {
     [ ! -L "$defaults_root" ] || fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID
     [ ! -L "$config_root" ] || fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
 
+    install_validation_stage=default_configuration_content
     found_default=false
     for source in "$defaults_root"/*; do
         [ -f "$source" ] || continue
@@ -670,11 +778,14 @@ install_default_configuration() {
         fi
     done
     [ "$found_default" = true ] || fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID
+    install_validation_stage=default_configuration_symlink_validation
     if find "$config_root" -xdev -type l -print -quit | grep -q .; then
         fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
     fi
+    install_validation_stage=default_configuration_migration
     migrate_legacy_packaged_log_defaults "$config_root"
 
+    install_validation_stage=default_configuration_permissions
     if [ "$identity_mode" = fixture ]; then
         find "$config_root" -xdev -type d -exec chmod 0750 {} +
         find "$config_root" -xdev -type f -exec chmod 0640 {} +
@@ -764,21 +875,28 @@ write_install_evidence() {
 case "$ACTION" in
     post-install)
         if [ "$identity_mode" = system ]; then
+            install_validation_stage=service_state_validation
             ensure_services_not_loaded
+            install_validation_stage=service_identity_validation
             ensure_service_identity
         fi
+        install_validation_stage=directory_configuration
         configure_directories
         install_default_configuration
         validate_root_service_launcher_path
         validate_launchd_service_definitions
         write_fixture_identity_evidence
+        install_validation_stage=install_evidence_write
         write_install_evidence
+        install_validation_stage=
         ;;
     pre-remove)
         if [ "$identity_mode" = system ]; then
             require_system_authority
         fi
+        install_validation_stage=pre_remove_configuration_preservation
         preserve_configuration
+        install_validation_stage=
         ;;
     *)
         fail BOOTSTRAP.INSTALL_DEFAULTS_INVALID 2
