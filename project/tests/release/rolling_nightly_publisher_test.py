@@ -120,6 +120,7 @@ class FakeRunner:
         self.fail_create_once = False
         self.fail_push_after_update_once = False
         self.tag_visibility_misses_after_push = 0
+        self.initial_release_payloads: list[dict] = []
         self.origin_url = "https://github.com/scratchbird-software-inc/ScratchBird" + GIT_SUFFIX
         self._canonical_patch_count = 0
         self._tag_visibility_misses = 0
@@ -170,8 +171,6 @@ class FakeRunner:
             return self.run_git(command[1:], check=check)
         if command[0] != "gh":
             return self.result(1, stderr="unexpected binary", check=check)
-        if command[1:3] == ["release", "create"]:
-            return self.release_create(command[3:], check=check)
         if command[1:3] == ["release", "upload"]:
             return self.release_upload(command[3:], check=check)
         if command[1:3] == ["release", "edit"]:
@@ -205,26 +204,25 @@ class FakeRunner:
             return self.result(check=check)
         return self.result(1, stderr="unexpected git command", check=check)
 
-    def release_create(self, args: list[str], *, check: bool) -> publisher.CommandResult:
+    def release_create_api(self, payload: dict, *, check: bool) -> publisher.CommandResult:
         if self.fail_create_once:
             self.fail_create_once = False
             return self.result(1, stderr="injected release create failure", check=check)
         if self.release is not None:
             return self.result(1, stderr="release exists", check=check)
-        title = args[args.index("--title") + 1]
-        notes = Path(args[args.index("--notes-file") + 1]).read_text(encoding="utf-8")
+        self.initial_release_payloads.append(payload)
         self.release = {
             "id": 7,
             "tag_name": self.tag,
-            "name": title,
-            "body": notes,
-            "draft": True,
-            "prerelease": True,
+            "name": payload["name"],
+            "body": payload["body"],
+            "draft": payload["draft"],
+            "prerelease": payload["prerelease"],
             "immutable": False,
-            "target_commitish": self.remote_tag_sha,
+            "target_commitish": payload["target_commitish"],
             "assets": [],
         }
-        return self.result(check=check)
+        return self.result(stdout=json.dumps(self.release), check=check)
 
     def release_upload(self, args: list[str], *, check: bool) -> publisher.CommandResult:
         assert self.release is not None
@@ -284,6 +282,12 @@ class FakeRunner:
                 stdout=json.dumps({"object": {"type": "commit", "sha": self.remote_tag_sha}}),
                 check=check,
             )
+        if endpoint.endswith("/releases") and method == "POST":
+            if "--input" not in args:
+                return self.result(1, stderr="missing release payload", check=check)
+            payload_path = Path(args[args.index("--input") + 1])
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            return self.release_create_api(payload, check=check)
         if re.search(r"/releases/[0-9]+$", endpoint) and method == "DELETE":
             if self.release is None or int(endpoint.rsplit("/", 1)[1]) != self.release["id"]:
                 return self.result(1, stderr="HTTP 404 release", check=check)
@@ -357,6 +361,20 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertFalse(runner.release["draft"])
             self.assertTrue(runner.release["prerelease"])
             self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            self.assertEqual(
+                [
+                    {
+                        "body": "Native ScratchBird; no emulation.\n",
+                        "draft": True,
+                        "make_latest": "false",
+                        "name": "ScratchBird Native Nightly Builds",
+                        "prerelease": True,
+                        "tag_name": "nightly",
+                        "target_commitish": self.revision,
+                    }
+                ],
+                runner.initial_release_payloads,
+            )
             flattened = [token for command in runner.commands for token in command]
             self.assertNotIn("delete", flattened)
             self.assertNotIn("--clobber", flattened)
@@ -399,7 +417,10 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             create_index = next(
                 index
                 for index, command in enumerate(runner.commands)
-                if command[:3] == ["gh", "release", "create"]
+                if command[:2] == ["gh", "api"]
+                and "--method" in command
+                and command[command.index("--method") + 1] == "POST"
+                and any(value.endswith("/releases") for value in command)
             )
             actual_push_index = next(
                 index

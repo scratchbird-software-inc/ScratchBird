@@ -636,9 +636,13 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "verify_canonical_inventory(assets, exact=True)",
         "wait_for_tag_target(self.target_sha)",
         "tag_visibility_timeout",
+        "create_initial_draft_release",
+        '"target_commitish": self.target_sha',
+        '"make_latest": "false"',
+        "Content-Type: application/json",
         "fully_verified_native_portable_and_system_installer_artifacts",
         "REQUIRED_ARTIFACT_VERIFICATION",
-        '"--draft"',
+        '"draft": True',
         'f"--draft={',
         "draft=False,",
         "rolling_release_immutable_or_state_unknown",
@@ -648,6 +652,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         require_token(publisher_text, token, publisher_tool.name)
     if "--clobber" in publisher_text:
         fail(f"nightly_publisher_clobber_forbidden:{publisher_tool.name}")
+    if re.search(r'"release",\s*"create"', publisher_text):
+        fail(f"nightly_publisher_cli_create_forbidden:{publisher_tool.name}")
     if re.search(r"\bgh\s+release\s+delete\s+", publisher_text):
         fail(f"nightly_publisher_release_delete_forbidden:{publisher_tool.name}")
 

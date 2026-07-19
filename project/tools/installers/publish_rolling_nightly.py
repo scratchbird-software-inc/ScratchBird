@@ -326,10 +326,9 @@ class RollingPublisher:
         """Wait for GitHub's API to resolve the just-pushed lightweight tag.
 
         A successful ``git push`` can precede visibility of that ref to the
-        GitHub Release API.  Keep ``--verify-tag`` as the release-creation
-        guard, but wait for the API to observe the exact expected target
-        rather than treating that short propagation window as a publication
-        failure.
+        GitHub Release API. Wait for the API to observe the exact expected
+        target before creating a draft release, rather than treating that
+        short propagation window as a publication failure.
         """
 
         last_observed = "absent"
@@ -346,6 +345,53 @@ class RollingPublisher:
             f"expected={target_sha}:last_observed={last_observed}:"
             f"attempts={TAG_VISIBILITY_ATTEMPTS}"
         )
+
+    def create_initial_draft_release(self) -> dict[str, Any]:
+        """Create the first draft through the documented REST endpoint.
+
+        ``gh release create --verify-tag`` returned a false 404 for the
+        platform-scoped tags even after ``get_tag_sha`` resolved the exact
+        lightweight tag.  The REST endpoint accepts the already-verified tag
+        and an explicit target SHA, while preserving the same draft-first
+        publication and rollback protocol.
+        """
+
+        try:
+            notes = self.notes_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PublishError(f"initial_release_notes_read_failed:{exc}") from exc
+        payload = {
+            "tag_name": self.contract.tag,
+            "target_commitish": self.target_sha,
+            "name": self.title,
+            "body": notes,
+            "draft": True,
+            "prerelease": True,
+            "make_latest": "false",
+        }
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", delete=False
+        ) as handle:
+            json.dump(payload, handle, sort_keys=True)
+            payload_path = Path(handle.name)
+        try:
+            result = self.api(
+                f"repos/{self.repository}/releases",
+                "--method",
+                "POST",
+                "-H",
+                "Content-Type: application/json",
+                "--input",
+                str(payload_path),
+            )
+        finally:
+            payload_path.unlink(missing_ok=True)
+        release = self.parse_json(result, "initial_release_create")
+        if release.get("tag_name") != self.contract.tag:
+            raise PublishError("initial_release_tag_mismatch")
+        if release.get("draft") is not True or release.get("prerelease") is not True:
+            raise PublishError("initial_release_not_draft_prerelease")
+        return release
 
     def verify_origin_repository(self) -> None:
         result = self.git("remote", "get-url", "origin")
@@ -592,24 +638,7 @@ class RollingPublisher:
                 self.update_tag(self.target_sha)
                 tag_moved = True
                 self.wait_for_tag_target(self.target_sha)
-                self.gh(
-                    "release",
-                    "create",
-                    self.contract.tag,
-                    "--repo",
-                    self.repository,
-                    "--title",
-                    self.title,
-                    "--notes-file",
-                    str(self.notes_file),
-                    "--draft",
-                    "--prerelease",
-                    "--latest=false",
-                    "--verify-tag",
-                )
-                release = self.get_release()
-                if release is None:
-                    raise PublishError("first_release_disappeared_after_creation")
+                release = self.create_initial_draft_release()
                 if release.get("immutable") is not False or release.get("draft") is not True:
                     raise PublishError("first_release_not_mutable_draft")
                 created = True
