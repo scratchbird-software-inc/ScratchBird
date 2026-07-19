@@ -31,9 +31,17 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: bytes) -> list[publisher.LocalAsset]:
+def write_bundle(
+    root: Path,
+    revision: str,
+    run_id: str,
+    attempt: str,
+    marker: bytes,
+    scope: str = "all",
+) -> list[publisher.LocalAsset]:
     root.mkdir(parents=True)
-    packages = {
+    contract = publisher.get_release_contract(scope)
+    all_packages = {
         "scratchbird-nightly-linux-x86_64.tar.gz": b"linux-" + marker,
         "scratchbird-nightly-linux-x86_64.deb": b"linux-deb-" + marker,
         "scratchbird-nightly-linux-x86_64.rpm": b"linux-rpm-" + marker,
@@ -46,6 +54,9 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
         "scratchbird-nightly-macos-arm64.pkg": b"mac-arm-pkg-" + marker,
         "scratchbird-nightly-macos-universal.tar.gz": b"mac-universal-" + marker,
     }
+    packages = {
+        name: data for name, data in all_packages.items() if name in contract.package_names
+    }
     rows = []
     for name, data in packages.items():
         (root / name).write_bytes(data)
@@ -56,14 +67,18 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
                 "architecture": "test",
                 "format": Path(name).suffix.lstrip("."),
                 "source_name": f"source-{name}",
-                "verification": publisher.REQUIRED_ARTIFACT_VERIFICATION[name],
+                "verification": contract.verification_by_name[name],
                 "bytes": len(data),
                 "sha256": sha(data),
             }
         )
     manifest = {
         "schema_id": "scratchbird.native_nightly_release.v1",
-        "release_tag": "nightly",
+        "release_scope": contract.scope,
+        "release_tag": contract.tag,
+        "included_platforms": (
+            ["linux", "windows", "macos"] if scope == "all" else [scope]
+        ),
         "source_revision": revision,
         "github_run_id": run_id,
         "github_run_attempt": attempt,
@@ -79,18 +94,19 @@ def write_bundle(root: Path, revision: str, run_id: str, attempt: str, marker: b
         "emulation_layers_included": False,
         "artifacts": rows,
     }
-    manifest_path = root / "scratchbird-nightly-manifest.json"
+    manifest_path = root / contract.manifest_name
     manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
     checksum_paths = sorted(path for path in root.iterdir())
-    (root / "scratchbird-nightly-SHA256SUMS").write_text(
+    (root / contract.checksum_name).write_text(
         "".join(f"{publisher.sha256_file(path)}  {path.name}\n" for path in checksum_paths),
         encoding="utf-8",
     )
-    return publisher.load_local_assets(root, revision, run_id, attempt)
+    return publisher.load_local_assets(root, revision, run_id, attempt, scope)
 
 
 class FakeRunner:
     def __init__(self) -> None:
+        self.tag = "nightly"
         self.release: dict | None = None
         self.remote_tag_sha: str | None = None
         self.local_tag_sha: str | None = None
@@ -127,7 +143,7 @@ class FakeRunner:
         self.remote_tag_sha = "b" * 40
         self.release = {
             "id": 7,
-            "tag_name": "nightly",
+            "tag_name": self.tag,
             "name": "Old nightly",
             "body": "old notes",
             "draft": False,
@@ -172,10 +188,12 @@ class FakeRunner:
             self.local_tag_sha = args[3]
             return self.result(check=check)
         if args and args[0] == "push":
-            if ":refs/tags/nightly" in args:
+            if f":refs/tags/{self.tag}" in args:
                 self.remote_tag_sha = None
             elif "--dry-run" not in args:
-                refspec = next(value for value in args if value.endswith(":refs/tags/nightly"))
+                refspec = next(
+                    value for value in args if value.endswith(f":refs/tags/{self.tag}")
+                )
                 self.remote_tag_sha = refspec.split(":", 1)[0]
                 if self.fail_push_after_update_once:
                     self.fail_push_after_update_once = False
@@ -193,7 +211,7 @@ class FakeRunner:
         notes = Path(args[args.index("--notes-file") + 1]).read_text(encoding="utf-8")
         self.release = {
             "id": 7,
-            "tag_name": "nightly",
+            "tag_name": self.tag,
             "name": title,
             "body": notes,
             "draft": True,
@@ -248,11 +266,11 @@ class FakeRunner:
     def api(self, args: list[str], *, check: bool) -> publisher.CommandResult:
         endpoint = next((value for value in args if value.startswith("repos/")), "")
         method = args[args.index("--method") + 1] if "--method" in args else "GET"
-        if endpoint.endswith("/releases/tags/nightly"):
+        if endpoint.endswith(f"/releases/tags/{self.tag}"):
             if self.release is None:
                 return self.result(1, stderr="HTTP 404 Not Found", check=check)
             return self.result(stdout=json.dumps(self.release), check=check)
-        if endpoint.endswith("/git/ref/tags/nightly"):
+        if endpoint.endswith(f"/git/ref/tags/{self.tag}"):
             if self.remote_tag_sha is None:
                 return self.result(1, stderr="HTTP 404 Not Found", check=check)
             return self.result(
@@ -295,7 +313,13 @@ class RollingNightlyPublisherTest(unittest.TestCase):
     run_id = "42"
     attempt = "1"
 
-    def make_publisher(self, runner: FakeRunner, notes: Path) -> publisher.RollingPublisher:
+    def make_publisher(
+        self,
+        runner: FakeRunner,
+        notes: Path,
+        scope: str = "all",
+    ) -> publisher.RollingPublisher:
+        runner.tag = publisher.get_release_contract(scope).tag
         return publisher.RollingPublisher(
             runner,
             repository="scratchbird-software-inc/ScratchBird",
@@ -305,6 +329,7 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             title="ScratchBird Native Nightly Builds",
             notes_file=notes,
             checkout_root=notes.parent,
+            release_scope=scope,
         )
 
     @staticmethod
@@ -345,6 +370,43 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertEqual(
                 ["scratchbird-nightly-manifest.json", "scratchbird-nightly-SHA256SUMS"],
                 canonical_renames[-2:],
+            )
+
+    def test_linux_scope_publishes_only_its_contract_to_its_own_tag(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-publish-") as temp:
+            root = Path(temp)
+            contract = publisher.get_release_contract("linux")
+            assets = write_bundle(
+                root / "assets",
+                self.revision,
+                self.run_id,
+                self.attempt,
+                b"linux",
+                "linux",
+            )
+            notes = root / "notes.md"
+            notes.write_text("Linux-only native nightly.\n", encoding="utf-8")
+            runner = FakeRunner()
+            self.make_publisher(runner, notes, "linux").publish(assets)
+            self.assertEqual(contract.tag, runner.tag)
+            self.assertEqual(self.revision, runner.remote_tag_sha)
+            self.assertIsNotNone(runner.release)
+            assert runner.release is not None
+            self.assertEqual(contract.tag, runner.release["tag_name"])
+            self.assertEqual(contract.canonical_asset_names, self.names(runner))
+            self.assertTrue(
+                any(
+                    f"refs/tags/{contract.tag}" in value
+                    for command in runner.commands
+                    for value in command
+                )
+            )
+            self.assertFalse(
+                any(
+                    value.endswith(":refs/tags/nightly")
+                    for command in runner.commands
+                    for value in command
+                )
             )
 
     def test_existing_release_is_updated_in_place_and_stale_assets_removed(self) -> None:

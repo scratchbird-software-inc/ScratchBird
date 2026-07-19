@@ -11,6 +11,7 @@ import io
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import struct
 import sys
 import tarfile
@@ -435,7 +436,14 @@ def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
 class NightlyReleaseBundleTest(unittest.TestCase):
     revision = "a" * 40
 
-    def create(self, input_root: Path, output_root: Path, *, version: str = "1.2.3-nightly") -> Path:
+    def create(
+        self,
+        input_root: Path,
+        output_root: Path,
+        *,
+        version: str = "1.2.3-nightly",
+        release_scope: str = "all",
+    ) -> Path:
         return bundle.create_bundle(
             input_root,
             output_root,
@@ -443,7 +451,21 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             self.revision,
             "42",
             "1",
+            release_scope,
         )
+
+    @staticmethod
+    def make_scope_fixture(
+        input_root: Path,
+        scope: str,
+        version: str = "1.2.3-nightly",
+    ) -> None:
+        make_fixture(input_root, version=version)
+        contract = bundle.get_release_contract(scope)
+        allowed = {bundle.ARTIFACT_ROOTS[key] for key in contract.artifact_roots}
+        for path in input_root.iterdir():
+            if path.name not in allowed:
+                shutil.rmtree(path)
 
     def test_native_flat_bundle_excludes_internal_and_smoke_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-bundle-") as temp:
@@ -473,6 +495,8 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 (output_root / "scratchbird-nightly-macos-arm64.tar.gz").read_bytes(),
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("all", manifest["release_scope"])
+            self.assertEqual("nightly", manifest["release_tag"])
             self.assertEqual("scratchbird_native_no_emulation", manifest["distribution_surface"])
             self.assertEqual("SBSQL", manifest["native_parser"])
             self.assertEqual(
@@ -522,6 +546,50 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             sums = bundle.parse_sha256sums(output_root / "scratchbird-nightly-SHA256SUMS")
             for name, expected_digest in sums.items():
                 self.assertEqual(expected_digest, bundle.sha256_file(output_root / name))
+
+    def test_platform_scoped_bundles_have_exact_isolated_inventories(self) -> None:
+        expected_platforms = {
+            "linux": ["linux"],
+            "windows": ["windows"],
+            "macos": ["macos"],
+        }
+        with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-bundle-") as temp:
+            root = Path(temp)
+            for scope, platforms in expected_platforms.items():
+                input_root = root / f"input-{scope}"
+                output_root = root / f"output-{scope}"
+                self.make_scope_fixture(input_root, scope)
+                manifest_path = self.create(
+                    input_root,
+                    output_root,
+                    release_scope=scope,
+                )
+                contract = bundle.get_release_contract(scope)
+                self.assertEqual(
+                    contract.canonical_asset_names,
+                    {path.name for path in output_root.iterdir()},
+                )
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(scope, manifest["release_scope"])
+                self.assertEqual(contract.tag, manifest["release_tag"])
+                self.assertEqual(platforms, manifest["included_platforms"])
+                self.assertEqual(
+                    set(contract.package_names),
+                    {row["name"] for row in manifest["artifacts"]},
+                )
+                sums = bundle.parse_sha256sums(output_root / contract.checksum_name)
+                self.assertEqual(
+                    set(contract.package_names) | {contract.manifest_name},
+                    set(sums),
+                )
+
+    def test_platform_scope_rejects_cross_platform_artifact_roots(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-root-isolation-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            with self.assertRaisesRegex(bundle.BundleError, "unexpected_artifact_roots"):
+                self.create(input_root, root / "output", release_scope="linux")
 
     def test_verified_system_installers_are_public_release_assets(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-system-installers-") as temp:

@@ -26,11 +26,15 @@ import tempfile
 from typing import Any
 import zipfile
 
+TOOL_ROOT = Path(__file__).resolve().parent
+if str(TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOL_ROOT))
+
+from nightly_release_contract import RELEASE_CONTRACTS, ReleaseContract, get_release_contract
+
 
 INSTALLER_MANIFEST = "INSTALLER_ARTIFACT_MANIFEST.json"
 UNIVERSAL_MANIFEST = "MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json"
-RELEASE_MANIFEST = "scratchbird-nightly-manifest.json"
-RELEASE_CHECKSUMS = "scratchbird-nightly-SHA256SUMS"
 SCHEMA_ID = "scratchbird.native_nightly_release.v1"
 PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
 NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")
@@ -499,13 +503,13 @@ def copy_package(
     }
 
 
-def scan_output(root: Path) -> None:
+def scan_output(root: Path, checksum_name: str) -> None:
     for path in sorted(item for item in root.iterdir() if item.is_file()):
         if path.is_symlink():
             fail(f"output_symlink_forbidden:{path.name}")
         if path.stat().st_size > 2 * 1024 * 1024:
             continue
-        if path.suffix.lower() not in {".json", ".txt"} and path.name != RELEASE_CHECKSUMS:
+        if path.suffix.lower() not in {".json", ".txt"} and path.name != checksum_name:
             continue
         try:
             text = path.read_text(encoding="utf-8")
@@ -523,6 +527,7 @@ def create_bundle(
     source_revision: str,
     github_run_id: str,
     github_run_attempt: str,
+    release_scope: str = "all",
 ) -> Path:
     if input_root.is_symlink() or output_root.is_symlink():
         fail("input_output_symlink_forbidden")
@@ -536,29 +541,39 @@ def create_bundle(
         fail("source_revision_invalid")
     if not github_run_id.isdigit() or not github_run_attempt.isdigit():
         fail("github_run_identity_invalid")
+    try:
+        contract = get_release_contract(release_scope)
+    except ValueError as exc:
+        fail(str(exc))
     expected_version = sanitize_version(version)
     ensure_safe_tree(input_root)
 
     roots: dict[str, Path] = {}
-    for key, dirname in ARTIFACT_ROOTS.items():
+    for key in contract.artifact_roots:
+        dirname = ARTIFACT_ROOTS[key]
         path = input_root / dirname
         if not path.is_dir():
             fail(f"artifact_root_missing:{dirname}")
         roots[key] = path
     unexpected = sorted(
-        path.name for path in input_root.iterdir() if path.name not in ARTIFACT_ROOTS.values()
+        path.name
+        for path in input_root.iterdir()
+        if path.name not in {ARTIFACT_ROOTS[key] for key in contract.artifact_roots}
     )
     if unexpected:
         fail(f"unexpected_artifact_roots:{','.join(unexpected)}")
 
     verified: dict[str, dict[str, Path]] = {}
-    verify_platforms = {
+    verify_platforms_all = {
         "linux": ("linux", github_run_id),
         "windows": ("windows", github_run_id),
         "macos-x86_64": ("macos", f"{github_run_id}-x86_64"),
         "macos-arm64": ("macos", f"{github_run_id}-arm64"),
     }
-    for key, (platform, expected_build_id) in verify_platforms.items():
+    for key in contract.artifact_roots:
+        if key == "macos-universal":
+            continue
+        platform, expected_build_id = verify_platforms_all[key]
         _, verified[key] = verify_installer_root(
             roots[key], platform, expected_version, expected_build_id
         )
@@ -567,7 +582,10 @@ def create_bundle(
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
     records: list[dict[str, Any]] = []
-    for root_key, platform, arch, package_format, pattern, canonical, verification, verification_record in PACKAGE_RULES:
+    selected_rules = tuple(
+        rule for rule in PACKAGE_RULES if rule[0] in contract.artifact_roots
+    )
+    for root_key, platform, arch, package_format, pattern, canonical, verification, verification_record in selected_rules:
         source = select_package(root_key, verified[root_key], pattern, True)
         if verification == "portable_archive":
             verify_native_payload_archive(source, platform, arch)
@@ -587,28 +605,62 @@ def create_bundle(
             )
         )
 
-    universal_source = verify_universal_root(
-        roots["macos-universal"], expected_version, f"{github_run_id}-universal"
-    )
-    verify_native_payload_archive(universal_source, "macos", "universal")
-    records.append(
-        copy_package(
-            universal_source,
-            output_root,
-            "scratchbird-nightly-macos-universal.tar.gz",
-            "macos",
-            "universal",
-            "tar.gz",
-            "exact_native_payload_extraction",
+    if "macos-universal" in contract.artifact_roots:
+        universal_source = verify_universal_root(
+            roots["macos-universal"], expected_version, f"{github_run_id}-universal"
         )
-    )
+        verify_native_payload_archive(universal_source, "macos", "universal")
+        records.append(
+            copy_package(
+                universal_source,
+                output_root,
+                "scratchbird-nightly-macos-universal.tar.gz",
+                "macos",
+                "universal",
+                "tar.gz",
+                "exact_native_payload_extraction",
+            )
+        )
     records.sort(key=lambda row: row["name"])
+    record_names = tuple(record["name"] for record in records)
+    if record_names != tuple(sorted(contract.package_names)):
+        fail(
+            "release_contract_package_inventory_mismatch:"
+            f"expected={sorted(contract.package_names)}:actual={list(record_names)}"
+        )
+
+    llvm_runtime = {
+        "linux": {
+            "delivery": "system-package",
+            "minimum_major": 23,
+            "packages": ["libllvm23", "llvm-libs >= 23"],
+            "portable_archive_requires_preinstallation": True,
+        },
+        "windows": {
+            "delivery": "bundled",
+            "minimum_major": 22,
+            "dll_and_non_system_import_closure_included": True,
+        },
+        "macos": {
+            "delivery": "external-homebrew",
+            "minimum_major": 22,
+            "formula": "llvm",
+            "homebrew_prefix_relative_path": "lib/libLLVM.dylib",
+        },
+    }
+    included_platforms = (
+        ("linux", "windows", "macos")
+        if contract.scope == "all"
+        else (contract.scope,)
+    )
 
     manifest = {
         "schema_id": SCHEMA_ID,
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "channel": "nightly",
-        "release_tag": "nightly",
+        "release_scope": contract.scope,
+        "release_tag": contract.tag,
+        "included_platforms": list(included_platforms),
         "version": expected_version,
         "source_revision": source_revision.lower(),
         "github_run_id": github_run_id,
@@ -624,44 +676,31 @@ def create_bundle(
         "emulation_layers_included": False,
         "public_asset_policy": PUBLIC_ASSET_POLICY,
         "internal_only_artifact_classes": ["build_recipes", "install_smoke_proof"],
-        "llvm_runtime": {
-            "linux": {
-                "delivery": "system-package",
-                "minimum_major": 23,
-                "packages": ["libllvm23", "llvm-libs >= 23"],
-                "portable_archive_requires_preinstallation": True,
-            },
-            "windows": {
-                "delivery": "bundled",
-                "minimum_major": 22,
-                "dll_and_non_system_import_closure_included": True,
-            },
-            "macos": {
-                "delivery": "external-homebrew",
-                "minimum_major": 22,
-                "formula": "llvm",
-                "homebrew_prefix_relative_path": "lib/libLLVM.dylib",
-            },
-        },
-        "macos_release_policy": "qa_unsigned_unnotarized_unless_signing_state_says_payload_signed",
-        "macos_signing_state": {
-            "x86_64": load_json(verified["macos-x86_64"]["MACOS_SIGNING_STATE.json"])["status"],
-            "arm64": load_json(verified["macos-arm64"]["MACOS_SIGNING_STATE.json"])["status"],
-        },
+        "llvm_runtime": {platform: llvm_runtime[platform] for platform in included_platforms},
         "artifacts": records,
     }
-    manifest_path = output_root / RELEASE_MANIFEST
+    if "macos" in included_platforms:
+        manifest["macos_release_policy"] = "qa_unsigned_unnotarized_unless_signing_state_says_payload_signed"
+        manifest["macos_signing_state"] = {
+            "x86_64": load_json(verified["macos-x86_64"]["MACOS_SIGNING_STATE.json"])["status"],
+            "arm64": load_json(verified["macos-arm64"]["MACOS_SIGNING_STATE.json"])["status"],
+        }
+    manifest_path = output_root / contract.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    checksum_files = sorted(path for path in output_root.iterdir() if path.is_file() and path.name != RELEASE_CHECKSUMS)
-    (output_root / RELEASE_CHECKSUMS).write_text(
+    checksum_files = sorted(
+        path for path in output_root.iterdir() if path.is_file() and path.name != contract.checksum_name
+    )
+    (output_root / contract.checksum_name).write_text(
         "".join(f"{sha256_file(path)}  {path.name}\n" for path in checksum_files),
         encoding="utf-8",
     )
-    if parse_sha256sums(output_root / RELEASE_CHECKSUMS) != {path.name: sha256_file(path) for path in checksum_files}:
+    if parse_sha256sums(output_root / contract.checksum_name) != {
+        path.name: sha256_file(path) for path in checksum_files
+    }:
         fail("release_checksum_self_verification_failed")
-    scan_output(output_root)
-    expected_count = len(PACKAGE_RULES) + 3
+    scan_output(output_root, contract.checksum_name)
+    expected_count = len(contract.package_names) + 2
     actual_count = sum(1 for path in output_root.iterdir() if path.is_file())
     if actual_count != expected_count:
         fail(f"release_asset_count:expected={expected_count}:actual={actual_count}")
@@ -676,6 +715,7 @@ def main() -> int:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--github-run-id", required=True)
     parser.add_argument("--github-run-attempt", required=True)
+    parser.add_argument("--release-scope", choices=tuple(RELEASE_CONTRACTS), default="all")
     args = parser.parse_args()
     try:
         manifest = create_bundle(
@@ -685,6 +725,7 @@ def main() -> int:
             args.source_revision,
             args.github_run_id,
             args.github_run_attempt,
+            args.release_scope,
         )
     except BundleError as exc:
         print(f"create_nightly_release_bundle=fail:{exc}", file=sys.stderr)

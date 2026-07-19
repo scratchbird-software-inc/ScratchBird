@@ -1,0 +1,179 @@
+name: ScratchBird Platform Nightly Publisher
+
+on:
+  workflow_call:
+    inputs:
+      release_scope:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+      source_revision:
+        required: true
+        type: string
+      source_run_id:
+        required: true
+        type: string
+      source_run_attempt:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish verified platform-scoped nightly
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate closed platform publication contract
+        env:
+          SB_RELEASE_SCOPE: ${{ inputs.release_scope }}
+          SB_SOURCE_REVISION: ${{ inputs.source_revision }}
+          SB_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SB_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -euo pipefail
+          case "$SB_RELEASE_SCOPE" in
+            linux|windows|macos) ;;
+            *) echo "Unsupported platform nightly scope: $SB_RELEASE_SCOPE" >&2; exit 1 ;;
+          esac
+          [[ "$SB_SOURCE_REVISION" =~ ^[0-9a-fA-F]{40,64}$ ]]
+          [[ "$SB_SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SB_SOURCE_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+
+      - name: Checkout exact tested source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_revision }}
+
+      - name: Download Linux installer artifact
+        if: ${{ inputs.release_scope == 'linux' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-linux-installers
+          path: platform-artifacts/scratchbird-linux-installers
+
+      - name: Download Windows installer artifact
+        if: ${{ inputs.release_scope == 'windows' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-installers
+          path: platform-artifacts/scratchbird-windows-installers
+
+      - name: Download macOS installer artifacts
+        if: ${{ inputs.release_scope == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: scratchbird-macos-*-installers
+          path: platform-artifacts
+          merge-multiple: false
+
+      - name: Verify downloaded platform installer artifacts
+        env:
+          SB_RELEASE_SCOPE: ${{ inputs.release_scope }}
+        run: |
+          set -euo pipefail
+          resolve_installer_root() {
+            local artifact_dir="$1"
+            test -d "$artifact_dir"
+            mapfile -t manifests < <(find "$artifact_dir" -type f -name INSTALLER_ARTIFACT_MANIFEST.json | sort)
+            if [ "${#manifests[@]}" -ne 1 ]; then
+              echo "Expected exactly one installer manifest in $artifact_dir; found ${#manifests[@]}." >&2
+              return 1
+            fi
+            dirname "${manifests[0]}"
+          }
+          case "$SB_RELEASE_SCOPE" in
+            linux)
+              root="$(resolve_installer_root platform-artifacts/scratchbird-linux-installers)"
+              python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$root"
+              ;;
+            windows)
+              root="$(resolve_installer_root platform-artifacts/scratchbird-windows-installers)"
+              python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$root" --require-msi
+              ;;
+            macos)
+              x86_root="$(resolve_installer_root platform-artifacts/scratchbird-macos-x86_64-installers)"
+              arm_root="$(resolve_installer_root platform-artifacts/scratchbird-macos-arm64-installers)"
+              python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$x86_root"
+              python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$arm_root"
+              mapfile -t universal_manifests < <(find platform-artifacts/scratchbird-macos-universal-installers -type f -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json | sort)
+              test "${#universal_manifests[@]}" -eq 1
+              ;;
+          esac
+
+      - name: Create exact native-only platform release bundle
+        env:
+          SB_RELEASE_SCOPE: ${{ inputs.release_scope }}
+          SB_NIGHTLY_VERSION: ${{ inputs.version }}
+          SB_SOURCE_REVISION: ${{ inputs.source_revision }}
+          SB_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SB_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 project/tools/installers/create_nightly_release_bundle.py \
+            --input-root platform-artifacts \
+            --output-root platform-release-assets \
+            --version "$SB_NIGHTLY_VERSION" \
+            --source-revision "$SB_SOURCE_REVISION" \
+            --github-run-id "$SB_SOURCE_RUN_ID" \
+            --github-run-attempt "$SB_SOURCE_RUN_ATTEMPT" \
+            --release-scope "$SB_RELEASE_SCOPE"
+          checksum="platform-release-assets/scratchbird-nightly-$SB_RELEASE_SCOPE-SHA256SUMS"
+          (
+            cd platform-release-assets
+            sha256sum --check --strict "$(basename "$checksum")"
+          )
+
+      - name: Write platform-scoped native nightly release notes
+        env:
+          SB_RELEASE_SCOPE: ${{ inputs.release_scope }}
+          SB_NIGHTLY_VERSION: ${{ inputs.version }}
+          SB_SOURCE_REVISION: ${{ inputs.source_revision }}
+          SB_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          case "$SB_RELEASE_SCOPE" in
+            linux) title="ScratchBird Native Linux Nightly Builds" ;;
+            windows) title="ScratchBird Native Windows Nightly Builds" ;;
+            macos) title="ScratchBird Native macOS Nightly Builds" ;;
+          esac
+          {
+            echo "ScratchBird native $SB_RELEASE_SCOPE nightly build for testing."
+            echo
+            echo '- This is a platform-scoped rolling prerelease, not the complete cross-platform `nightly` release.'
+            echo "- Only the independently built, CTest-verified, package-verified, and install-smoke-verified $SB_RELEASE_SCOPE assets in this release are approved for testing."
+            echo "- Native ScratchBird only: SBmgr, SBgate, SBParser using native SBSQL, and SBsrv are included."
+            echo "- No compatibility parser or emulation package is included."
+            echo "- The native ScratchBird listener default is TCP port 3092."
+            echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
+            echo '- The `scratchbird` operating-system identity is a headless service account only; it is not a database or security authority.'
+            echo "- Source commit: $SB_SOURCE_REVISION"
+            echo "- Requested version: $SB_NIGHTLY_VERSION"
+            echo "- Verified workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$SB_SOURCE_RUN_ID"
+            echo
+            echo "Verify downloads with the platform-specific SHA256SUMS asset."
+          } > platform-nightly-release-notes.md
+          printf '%s\n' "$title" > platform-nightly-release-title.txt
+
+      - name: Publish rolling platform prerelease in place
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SB_RELEASE_SCOPE: ${{ inputs.release_scope }}
+          SB_SOURCE_REVISION: ${{ inputs.source_revision }}
+          SB_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SB_SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
+        run: |
+          set -euo pipefail
+          python3 project/tools/installers/publish_rolling_nightly.py \
+            --asset-root platform-release-assets \
+            --repository "$GITHUB_REPOSITORY" \
+            --target-sha "$SB_SOURCE_REVISION" \
+            --github-run-id "$SB_SOURCE_RUN_ID" \
+            --github-run-attempt "$SB_SOURCE_RUN_ATTEMPT" \
+            --release-scope "$SB_RELEASE_SCOPE" \
+            --title "$(cat platform-nightly-release-title.txt)" \
+            --notes-file platform-nightly-release-notes.md \
+            --checkout-root "$GITHUB_WORKSPACE"

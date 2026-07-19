@@ -24,41 +24,23 @@ import sys
 import tempfile
 from typing import Any, Protocol
 
+TOOL_ROOT = Path(__file__).resolve().parent
+if str(TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOL_ROOT))
 
-TAG = "nightly"
-MANIFEST_NAME = "scratchbird-nightly-manifest.json"
-CHECKSUM_NAME = "scratchbird-nightly-SHA256SUMS"
+from nightly_release_contract import RELEASE_CONTRACTS, ReleaseContract, get_release_contract
+
+
+DEFAULT_CONTRACT = get_release_contract("all")
+# Compatibility aliases for the complete, all-platform nightly contract.
+TAG = DEFAULT_CONTRACT.tag
+MANIFEST_NAME = DEFAULT_CONTRACT.manifest_name
+CHECKSUM_NAME = DEFAULT_CONTRACT.checksum_name
 MANIFEST_SCHEMA = "scratchbird.native_nightly_release.v1"
 PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
 API_VERSION = "2026-03-10"
-CANONICAL_ASSET_NAMES = {
-    "scratchbird-nightly-linux-x86_64.tar.gz",
-    "scratchbird-nightly-linux-x86_64.deb",
-    "scratchbird-nightly-linux-x86_64.rpm",
-    "scratchbird-nightly-linux-x86_64-aur.tar.gz",
-    "scratchbird-nightly-windows-x86_64.zip",
-    "scratchbird-nightly-windows-x86_64.msi",
-    "scratchbird-nightly-macos-x86_64.tar.gz",
-    "scratchbird-nightly-macos-x86_64.pkg",
-    "scratchbird-nightly-macos-arm64.tar.gz",
-    "scratchbird-nightly-macos-arm64.pkg",
-    "scratchbird-nightly-macos-universal.tar.gz",
-    MANIFEST_NAME,
-    CHECKSUM_NAME,
-}
-REQUIRED_ARTIFACT_VERIFICATION = {
-    "scratchbird-nightly-linux-x86_64.tar.gz": "exact_native_payload_extraction",
-    "scratchbird-nightly-linux-x86_64.deb": "installer_manifest_and_privileged_deb_smoke",
-    "scratchbird-nightly-linux-x86_64.rpm": "installer_manifest_and_rpm_recipe_verification",
-    "scratchbird-nightly-linux-x86_64-aur.tar.gz": "installer_manifest_and_aur_recipe_verification",
-    "scratchbird-nightly-windows-x86_64.zip": "exact_native_payload_extraction",
-    "scratchbird-nightly-windows-x86_64.msi": "installer_manifest_and_msi_smoke",
-    "scratchbird-nightly-macos-x86_64.tar.gz": "exact_native_payload_extraction",
-    "scratchbird-nightly-macos-x86_64.pkg": "installer_manifest_and_pkg_smoke",
-    "scratchbird-nightly-macos-arm64.tar.gz": "exact_native_payload_extraction",
-    "scratchbird-nightly-macos-arm64.pkg": "installer_manifest_and_pkg_smoke",
-    "scratchbird-nightly-macos-universal.tar.gz": "exact_native_payload_extraction",
-}
+CANONICAL_ASSET_NAMES = DEFAULT_CONTRACT.canonical_asset_names
+REQUIRED_ARTIFACT_VERIFICATION = DEFAULT_CONTRACT.verification_by_name
 NATIVE_COMPONENTS = [
     {"name": "SBmgr", "role": "manager"},
     {"name": "SBgate", "role": "gateway"},
@@ -144,7 +126,17 @@ def parse_checksums(path: Path) -> dict[str, str]:
     return rows
 
 
-def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attempt: str) -> list[LocalAsset]:
+def load_local_assets(
+    asset_root: Path,
+    target_sha: str,
+    run_id: str,
+    run_attempt: str,
+    release_scope: str = "all",
+) -> list[LocalAsset]:
+    try:
+        contract = get_release_contract(release_scope)
+    except ValueError as exc:
+        raise PublishError(str(exc)) from exc
     if asset_root.is_symlink():
         raise PublishError("asset_root_symlink_forbidden")
     root = asset_root.resolve()
@@ -155,8 +147,8 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
             raise PublishError(f"non_regular_release_asset:{path.name}")
         if not path.name.startswith("scratchbird-nightly-"):
             raise PublishError(f"release_asset_name_not_managed:{path.name}")
-    checksums_path = root / CHECKSUM_NAME
-    manifest_path = root / MANIFEST_NAME
+    checksums_path = root / contract.checksum_name
+    manifest_path = root / contract.manifest_name
     if not checksums_path.is_file() or not manifest_path.is_file():
         raise PublishError("release_metadata_missing")
     checksums = parse_checksums(checksums_path)
@@ -174,7 +166,16 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
         raise PublishError("release_manifest_native_parser_mismatch")
     if manifest.get("native_components") != NATIVE_COMPONENTS:
         raise PublishError("release_manifest_native_components_mismatch")
-    if manifest.get("release_tag") != TAG:
+    expected_platforms = (
+        ["linux", "windows", "macos"]
+        if contract.scope == "all"
+        else [contract.scope]
+    )
+    if manifest.get("included_platforms") != expected_platforms:
+        raise PublishError("release_manifest_platform_scope_mismatch")
+    if manifest.get("release_scope") != contract.scope:
+        raise PublishError("release_manifest_scope_mismatch")
+    if manifest.get("release_tag") != contract.tag:
         raise PublishError("release_manifest_tag_mismatch")
     if str(manifest.get("source_revision") or "").lower() != target_sha.lower():
         raise PublishError("release_manifest_revision_mismatch")
@@ -190,10 +191,10 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
     }
     if len(manifest_names) != len(artifact_rows):
         raise PublishError("release_manifest_artifact_names_invalid")
-    expected_package_names = set(checksums) - {MANIFEST_NAME}
+    expected_package_names = set(checksums) - {contract.manifest_name}
     if manifest_names != expected_package_names:
         raise PublishError("release_manifest_checksum_inventory_mismatch")
-    if manifest_names != set(REQUIRED_ARTIFACT_VERIFICATION):
+    if manifest_names != set(contract.package_names):
         raise PublishError("release_manifest_verification_inventory_mismatch")
     for row in artifact_rows:
         if not isinstance(row, dict) or not isinstance(row.get("name"), str):
@@ -206,14 +207,14 @@ def load_local_assets(asset_root: Path, target_sha: str, run_id: str, run_attemp
             raise PublishError(f"release_manifest_size_mismatch:{name}")
         if row.get("sha256") != sha256_file(package_path):
             raise PublishError(f"release_manifest_digest_mismatch:{name}")
-        if row.get("verification") != REQUIRED_ARTIFACT_VERIFICATION[name]:
+        if row.get("verification") != contract.verification_by_name[name]:
             raise PublishError(f"release_manifest_verification_mismatch:{name}")
 
     actual_names = {path.name for path in root.iterdir()}
-    expected_names = set(checksums) | {CHECKSUM_NAME}
-    if expected_names != CANONICAL_ASSET_NAMES:
+    expected_names = set(checksums) | {contract.checksum_name}
+    if expected_names != contract.canonical_asset_names:
         raise PublishError(
-            f"release_canonical_inventory_mismatch:expected={sorted(CANONICAL_ASSET_NAMES)}:"
+            f"release_canonical_inventory_mismatch:expected={sorted(contract.canonical_asset_names)}:"
             f"actual={sorted(expected_names)}"
         )
     if actual_names != expected_names:
@@ -242,6 +243,7 @@ class RollingPublisher:
         title: str,
         notes_file: Path,
         checkout_root: Path,
+        release_scope: str = "all",
         gh_bin: str = "gh",
         git_bin: str = "git",
     ) -> None:
@@ -255,6 +257,10 @@ class RollingPublisher:
             raise PublishError(f"notes_file_missing:{notes_file}")
         if checkout_root.is_symlink() or not checkout_root.is_dir():
             raise PublishError(f"checkout_root_invalid:{checkout_root}")
+        try:
+            self.contract = get_release_contract(release_scope)
+        except ValueError as exc:
+            raise PublishError(str(exc)) from exc
         self.runner = runner
         self.repository = repository
         self.target_sha = target_sha.lower()
@@ -290,7 +296,7 @@ class RollingPublisher:
         return value
 
     def get_release(self, *, allow_missing: bool = False) -> dict[str, Any] | None:
-        endpoint = f"repos/{self.repository}/releases/tags/{TAG}"
+        endpoint = f"repos/{self.repository}/releases/tags/{self.contract.tag}"
         result = self.api(endpoint, check=not allow_missing)
         if result.returncode != 0:
             combined = f"{result.stdout}\n{result.stderr}"
@@ -300,7 +306,7 @@ class RollingPublisher:
         return self.parse_json(result, "release")
 
     def get_tag_sha(self) -> str | None:
-        endpoint = f"repos/{self.repository}/git/ref/tags/{TAG}"
+        endpoint = f"repos/{self.repository}/git/ref/tags/{self.contract.tag}"
         result = self.api(endpoint, check=False)
         if result.returncode != 0:
             combined = f"{result.stdout}\n{result.stderr}"
@@ -346,22 +352,22 @@ class RollingPublisher:
         return indexed
 
     def require_managed_release(self, release: dict[str, Any]) -> None:
-        marker = self.index_assets(release).get(MANIFEST_NAME)
+        marker = self.index_assets(release).get(self.contract.manifest_name)
         if marker is None:
             raise PublishError("existing_nightly_release_unmanaged:manifest_missing")
         with tempfile.TemporaryDirectory(prefix="scratchbird-nightly-managed-proof-") as temp_name:
             self.gh(
                 "release",
                 "download",
-                TAG,
+                self.contract.tag,
                 "--repo",
                 self.repository,
                 "--pattern",
-                MANIFEST_NAME,
+                self.contract.manifest_name,
                 "--dir",
                 temp_name,
             )
-            path = Path(temp_name) / MANIFEST_NAME
+            path = Path(temp_name) / self.contract.manifest_name
             if not path.is_file():
                 raise PublishError("existing_nightly_release_unmanaged:manifest_download_missing")
             if marker.get("state") != "uploaded" or marker.get("size") != path.stat().st_size:
@@ -377,13 +383,20 @@ class RollingPublisher:
         if (
             not isinstance(manifest, dict)
             or manifest.get("schema_id") != MANIFEST_SCHEMA
-            or manifest.get("release_tag") != TAG
+            or manifest.get("release_scope") != self.contract.scope
+            or manifest.get("release_tag") != self.contract.tag
             or manifest.get("distribution_surface") != "scratchbird_native_no_emulation"
             or manifest.get("public_asset_policy")
             != PUBLIC_ASSET_POLICY
             or manifest.get("native_parser") != "SBSQL"
             or manifest.get("emulation_layers_included") is not False
             or manifest.get("native_components") != NATIVE_COMPONENTS
+            or manifest.get("included_platforms")
+            != (
+                ["linux", "windows", "macos"]
+                if self.contract.scope == "all"
+                else [self.contract.scope]
+            )
         ):
             raise PublishError("existing_nightly_release_unmanaged:identity_mismatch")
 
@@ -417,17 +430,17 @@ class RollingPublisher:
         arguments = ["push"]
         if dry_run:
             arguments.append("--dry-run")
-        arguments.extend(("origin", f"{sha}:refs/tags/{TAG}", "--force"))
+        arguments.extend(("origin", f"{sha}:refs/tags/{self.contract.tag}", "--force"))
         self.git(*arguments)
 
     def delete_tag(self) -> None:
-        self.git("push", "origin", f":refs/tags/{TAG}")
+        self.git("push", "origin", f":refs/tags/{self.contract.tag}")
 
     def edit_release(self, *, draft: bool, prerelease: bool, title: str, notes_file: Path, target: str) -> None:
         self.gh(
             "release",
             "edit",
-            TAG,
+            self.contract.tag,
             "--repo",
             self.repository,
             "--title",
@@ -553,7 +566,7 @@ class RollingPublisher:
                 self.gh(
                     "release",
                     "create",
-                    TAG,
+                    self.contract.tag,
                     "--repo",
                     self.repository,
                     "--title",
@@ -580,7 +593,9 @@ class RollingPublisher:
             ordered_assets = sorted(
                 assets,
                 key=lambda asset: (
-                    2 if asset.name == CHECKSUM_NAME else 1 if asset.name == MANIFEST_NAME else 0,
+                    2
+                    if asset.name == self.contract.checksum_name
+                    else 1 if asset.name == self.contract.manifest_name else 0,
                     asset.name,
                 ),
             )
@@ -599,7 +614,7 @@ class RollingPublisher:
                 self.gh(
                     "release",
                     "upload",
-                    TAG,
+                    self.contract.tag,
                     "--repo",
                     self.repository,
                     *(str(path) for path in upload_paths),
@@ -752,6 +767,7 @@ def main() -> int:
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--github-run-id", required=True)
     parser.add_argument("--github-run-attempt", required=True)
+    parser.add_argument("--release-scope", choices=tuple(RELEASE_CONTRACTS), default="all")
     parser.add_argument("--title", default="ScratchBird Native Nightly Builds")
     parser.add_argument("--notes-file", type=Path, required=True)
     parser.add_argument("--checkout-root", type=Path, required=True)
@@ -764,6 +780,7 @@ def main() -> int:
             args.target_sha,
             args.github_run_id,
             args.github_run_attempt,
+            args.release_scope,
         )
         publisher = RollingPublisher(
             SubprocessRunner(),
@@ -774,6 +791,7 @@ def main() -> int:
             title=args.title,
             notes_file=args.notes_file,
             checkout_root=args.checkout_root,
+            release_scope=args.release_scope,
             gh_bin=args.gh_bin,
             git_bin=args.git_bin,
         )
@@ -781,7 +799,11 @@ def main() -> int:
     except PublishError as exc:
         print(f"publish_rolling_nightly=fail:{exc}", file=sys.stderr)
         return 1
-    print(f"publish_rolling_nightly=passed:https://github.com/{args.repository}/releases/tag/{TAG}")
+    contract = get_release_contract(args.release_scope)
+    print(
+        "publish_rolling_nightly=passed:"
+        f"https://github.com/{args.repository}/releases/tag/{contract.tag}"
+    )
     return 0
 
 

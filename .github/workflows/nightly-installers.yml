@@ -145,7 +145,8 @@ jobs:
             --version "$SB_NIGHTLY_VERSION" \
             --source-revision "$GITHUB_SHA" \
             --github-run-id "$GITHUB_RUN_ID" \
-            --github-run-attempt "$GITHUB_RUN_ATTEMPT"
+            --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --release-scope all
           (
             cd nightly-release-assets
             sha256sum --check --strict scratchbird-nightly-SHA256SUMS
@@ -184,6 +185,7 @@ jobs:
             --target-sha "$GITHUB_SHA" \
             --github-run-id "$GITHUB_RUN_ID" \
             --github-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --release-scope all \
             --title "ScratchBird Native Nightly Builds" \
             --notes-file nightly-release-notes.md \
             --checkout-root "$GITHUB_WORKSPACE"

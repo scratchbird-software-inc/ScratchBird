@@ -70,6 +70,37 @@ REQUIRED_WORKFLOWS = {
         "scratchbird-nightly-SHA256SUMS",
         "macos",
     ),
+    "nightly-linux-installers.yml": (
+        "push:",
+        "workflow_dispatch:",
+        "verify-installers.yml",
+        "platform: linux",
+        "publish-platform-nightly.yml",
+        "release_scope: linux",
+    ),
+    "nightly-macos-installers.yml": (
+        "push:",
+        "workflow_dispatch:",
+        "verify-installers.yml",
+        "platform: macos",
+        "publish-platform-nightly.yml",
+        "release_scope: macos",
+    ),
+    "nightly-windows-installers.yml": (
+        "push:",
+        "workflow_dispatch:",
+        "verify-installers.yml",
+        "platform: windows",
+        "publish-platform-nightly.yml",
+        "release_scope: windows",
+    ),
+    "publish-platform-nightly.yml": (
+        "workflow_call:",
+        "contents: write",
+        "create_nightly_release_bundle.py",
+        "publish_rolling_nightly.py",
+        "scratchbird-nightly-$SB_RELEASE_SCOPE-SHA256SUMS",
+    ),
     "release-candidate.yml": (
         "workflow_dispatch:",
         "gh release",
@@ -97,6 +128,15 @@ FORBIDDEN_TOKENS = (
     "docs/specifications",
 )
 
+PUBLICATION_WORKFLOWS = {
+    "release-candidate.yml",
+    "nightly-installers.yml",
+    "nightly-linux-installers.yml",
+    "nightly-macos-installers.yml",
+    "nightly-windows-installers.yml",
+    "publish-platform-nightly.yml",
+}
+
 
 def fail(message: str) -> None:
     print(f"github_actions_static_gate=fail:{message}", file=sys.stderr)
@@ -111,7 +151,7 @@ def require_token(text: str, token: str, rel: str) -> None:
 def check_permissions(text: str, rel: str) -> None:
     if "permissions:" not in text:
         fail(f"missing_permissions:{rel}")
-    if re.search(r"contents:\s+write", text) and "release-candidate" not in rel and "nightly-installers" not in rel:
+    if re.search(r"contents:\s+write", text) and rel not in PUBLICATION_WORKFLOWS:
         fail(f"unexpected_contents_write:{rel}")
     if rel == "webserver-package-export.yml":
         for token in ("contents: write", "gh release", "git tag", "git push origin"):
@@ -178,8 +218,13 @@ def check_installer_upload_missing_files_policy(
         )
 
 
-def check_installer_main_push_policy(text: str, rel: str) -> None:
-    check_push_to_main_trigger(text, rel)
+def check_installer_reusable_policy(text: str, rel: str) -> None:
+    """Keep the build/smoke workflow callable without duplicating push runs."""
+
+    if "workflow_call:" not in text or "workflow_dispatch:" not in text:
+        fail(f"installer_reusable_entrypoints_missing:{rel}")
+    if re.search(r"(?m)^  push:\s*$", text):
+        fail(f"installer_direct_push_trigger_forbidden:{rel}")
     for job_name in (
         "linux-installers",
         "windows-installers",
@@ -187,7 +232,8 @@ def check_installer_main_push_policy(text: str, rel: str) -> None:
         "macos-universal-installers",
     ):
         block = workflow_job_block(text, job_name, rel)
-        require_token(block, "github.event_name == 'push'", rel)
+        if "github.event_name == 'push'" in block:
+            fail(f"installer_push_condition_forbidden:{rel}:{job_name}")
 
 
 def check_linux_privileged_bootstrap_smoke(text: str, rel: str) -> None:
@@ -512,7 +558,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
 
     bundle_tool = repo_root / "project" / "tools" / "installers" / "create_nightly_release_bundle.py"
     publisher_tool = repo_root / "project" / "tools" / "installers" / "publish_rolling_nightly.py"
-    for path in (bundle_tool, publisher_tool):
+    contract_tool = repo_root / "project" / "tools" / "installers" / "nightly_release_contract.py"
+    for path in (bundle_tool, publisher_tool, contract_tool):
         if not path.is_file():
             fail(f"nightly_tool_missing:{path.name}")
     bundle_text = bundle_tool.read_text(encoding="utf-8")
@@ -537,7 +584,9 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "verify_native_installed_payload.py",
         "macos_architecture_mismatch",
         "fully_verified_native_portable_and_system_installer_artifacts",
-        "expected_count = len(PACKAGE_RULES) + 3",
+        "RELEASE_CONTRACTS",
+        "release_scope",
+        "release_contract_package_inventory_mismatch",
         "installer_manifest_sha256_mismatch",
         "package_cardinality",
     ):
@@ -545,9 +594,31 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
     if "workflow_only_package_formats" in bundle_text:
         fail("nightly_system_installer_publication_policy_missing")
 
+    contract_text = contract_tool.read_text(encoding="utf-8")
+    for token in (
+        'scope="all"',
+        'scope="linux"',
+        'scope="windows"',
+        'scope="macos"',
+        'tag="nightly"',
+        'tag="nightly-linux"',
+        'tag="nightly-windows"',
+        'tag="nightly-macos"',
+        "scratchbird-nightly-linux-manifest.json",
+        "scratchbird-nightly-windows-manifest.json",
+        "scratchbird-nightly-macos-manifest.json",
+        "scratchbird-nightly-linux-x86_64.deb",
+        "scratchbird-nightly-windows-x86_64.msi",
+        "scratchbird-nightly-macos-x86_64.pkg",
+        "scratchbird-nightly-macos-arm64.pkg",
+    ):
+        require_token(contract_text, token, contract_tool.name)
+
     publisher_text = publisher_tool.read_text(encoding="utf-8")
     for token in (
-        'TAG = "nightly"',
+        'DEFAULT_CONTRACT = get_release_contract("all")',
+        "release_scope",
+        "self.contract.tag",
         "sb-nightly-incoming-",
         "sb-nightly-backup-",
         "rollback_swaps",
@@ -566,12 +637,6 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "published_tag_revision_mismatch",
         "fully_verified_native_portable_and_system_installer_artifacts",
         "REQUIRED_ARTIFACT_VERIFICATION",
-        "scratchbird-nightly-linux-x86_64.deb",
-        "scratchbird-nightly-linux-x86_64.rpm",
-        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
-        "scratchbird-nightly-windows-x86_64.msi",
-        "scratchbird-nightly-macos-x86_64.pkg",
-        "scratchbird-nightly-macos-arm64.pkg",
         '"--draft"',
         'f"--draft={',
         "draft=False,",
@@ -584,6 +649,86 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         fail(f"nightly_publisher_clobber_forbidden:{publisher_tool.name}")
     if re.search(r"\bgh\s+release\s+delete\s+", publisher_text):
         fail(f"nightly_publisher_release_delete_forbidden:{publisher_tool.name}")
+
+
+def check_platform_nightly_workflow(text: str, rel: str, scope: str) -> None:
+    """Require independent build/publication runs for each native platform."""
+
+    check_push_to_main_trigger(text, rel)
+    expected_group = f"scratchbird-rolling-nightly-{scope}"
+    if re.search(rf"(?m)^\s*group:\s+{re.escape(expected_group)}\s*$", text) is None:
+        fail(f"platform_nightly_concurrency_missing:{rel}:{scope}")
+    gold_block = workflow_job_block(text, "gold-gate", rel)
+    scope_label = {"linux": "Linux", "windows": "Windows", "macos": "macOS"}[scope]
+    for token in (
+        f"{scope_label} native nightly enablement gate",
+        "SB_NIGHTLY_INSTALLERS_ENABLED",
+        '"$SB_EVENT_NAME" = "schedule"',
+        "value=rolling-prerelease",
+        "REQUESTED_VERSION:",
+    ):
+        require_token(gold_block, token, rel)
+    build_block = workflow_job_block(text, "build-installers", rel)
+    for token in (
+        "verify-installers.yml",
+        f"platform: {scope}",
+        "require-msi: true",
+    ):
+        require_token(build_block, token, rel)
+    if "platform: all" in build_block:
+        fail(f"platform_nightly_combined_build_forbidden:{rel}:{scope}")
+    publish_block = workflow_job_block(text, "publish-nightly", rel)
+    for token in (
+        "contents: write",
+        "success()",
+        "github.ref == 'refs/heads/main'",
+        "publish-platform-nightly.yml",
+        f"release_scope: {scope}",
+        "source_revision: ${{ github.sha }}",
+        "source_run_id: ${{ github.run_id }}",
+        "source_run_attempt: ${{ github.run_attempt }}",
+    ):
+        require_token(publish_block, token, rel)
+
+
+def check_platform_nightly_publisher(text: str, rel: str) -> None:
+    """Keep platform publication exact, scoped, and independent of other OSes."""
+
+    if "workflow_call:" not in text:
+        fail(f"platform_publisher_not_reusable:{rel}")
+    if "workflow_dispatch:" in text or re.search(r"(?m)^  push:\s*$", text):
+        fail(f"platform_publisher_direct_trigger_forbidden:{rel}")
+    if re.search(r"(?m)^permissions:\s*\n\s+contents:\s+write\s*$", text) is None:
+        fail(f"platform_publisher_write_permission_missing:{rel}")
+    for token in (
+        "release_scope:",
+        "source_revision:",
+        "source_run_id:",
+        "source_run_attempt:",
+        "linux|windows|macos",
+        "actions/download-artifact@v4",
+        "name: scratchbird-linux-installers",
+        "name: scratchbird-windows-installers",
+        "pattern: scratchbird-macos-*-installers",
+        "merge-multiple: false",
+        "verify_installer_artifacts.py",
+        "create_nightly_release_bundle.py",
+        '--release-scope "$SB_RELEASE_SCOPE"',
+        "scratchbird-nightly-$SB_RELEASE_SCOPE-SHA256SUMS",
+        "publish_rolling_nightly.py",
+        "headless service account only",
+        "native ScratchBird listener default is TCP port 3092",
+        'not the complete cross-platform `nightly` release',
+    ):
+        require_token(text, token, rel)
+    for pattern, label in (
+        (r"\bgh\s+release\s+delete\s+", "release_delete"),
+        (r"gh\s+release\s+upload[^\n]*--clobber", "release_upload_clobber"),
+        (r"pattern:\s+scratchbird-\*\s*$", "broad_artifact_download"),
+        (r"scratchbird-[^\s]*-install-smoke", "smoke_artifact_download"),
+    ):
+        if re.search(pattern, text, re.MULTILINE):
+            fail(f"platform_nightly_unsafe_publication_forbidden:{rel}:{label}")
 
 
 def check_native_release_stage(
@@ -708,7 +853,7 @@ def main() -> int:
                 text, name, "public-release-windows", "windows", False
             )
         elif name == "verify-installers.yml":
-            check_installer_main_push_policy(text, name)
+            check_installer_reusable_policy(text, name)
             check_linux_privileged_bootstrap_smoke(text, name)
             check_macos_system_installer_failure_diagnostics(
                 text, name, "macos-installers"
@@ -758,6 +903,14 @@ def main() -> int:
                 )
         elif name == "nightly-installers.yml":
             check_nightly_publisher(text, name, repo_root)
+        elif name == "nightly-linux-installers.yml":
+            check_platform_nightly_workflow(text, name, "linux")
+        elif name == "nightly-macos-installers.yml":
+            check_platform_nightly_workflow(text, name, "macos")
+        elif name == "nightly-windows-installers.yml":
+            check_platform_nightly_workflow(text, name, "windows")
+        elif name == "publish-platform-nightly.yml":
+            check_platform_nightly_publisher(text, name)
         for token in FORBIDDEN_TOKENS:
             if token in text:
                 fail(f"forbidden_token:{name}:{token}")

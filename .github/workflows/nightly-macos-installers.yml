@@ -1,0 +1,100 @@
+name: ScratchBird macOS Nightly Installers
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "31 6 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version suffix for generated macOS nightly installers
+        required: true
+        default: 0.0.0-nightly
+      publish-mode:
+        description: Publication mode
+        required: true
+        default: artifacts-only
+        type: choice
+        options:
+          - artifacts-only
+          - rolling-prerelease
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scratchbird-rolling-nightly-macos
+  cancel-in-progress: false
+
+jobs:
+  gold-gate:
+    name: macOS native nightly enablement gate
+    runs-on: ubuntu-24.04
+    outputs:
+      enabled: ${{ steps.enabled.outputs.value }}
+      version: ${{ steps.version.outputs.value }}
+      publish-mode: ${{ steps.publish.outputs.value }}
+    steps:
+      - name: Check scheduled-nightly enablement
+        id: enabled
+        env:
+          SB_EVENT_NAME: ${{ github.event_name }}
+          SB_NIGHTLY_ENABLED: ${{ vars.SB_NIGHTLY_INSTALLERS_ENABLED }}
+        run: |
+          if [ "$SB_EVENT_NAME" = "schedule" ] && [ "$SB_NIGHTLY_ENABLED" != "true" ]; then
+            echo "Scheduled nightly installers are disabled until SB_NIGHTLY_INSTALLERS_ENABLED is true."
+            echo "value=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "value=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve version
+        id: version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version || '0.0.0-nightly' }}
+        run: |
+          if [[ ! "$REQUESTED_VERSION" =~ ^[0-9A-Za-z.+~_-]+$ ]]; then
+            echo "Nightly version contains unsupported characters." >&2
+            exit 1
+          fi
+          echo "value=$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve publish mode
+        id: publish
+        env:
+          SB_EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_MODE: ${{ inputs['publish-mode'] || 'artifacts-only' }}
+        run: |
+          if [ "$SB_EVENT_NAME" = "schedule" ]; then
+            echo "value=rolling-prerelease" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$REQUESTED_MODE" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-installers:
+    name: Build and verify macOS nightly installers
+    needs: gold-gate
+    if: ${{ needs.gold-gate.outputs.enabled == 'true' }}
+    uses: ./.github/workflows/verify-installers.yml
+    with:
+      platform: macos
+      version: ${{ needs.gold-gate.outputs.version }}
+      require-msi: true
+
+  publish-nightly:
+    name: Publish macOS rolling nightly prerelease
+    needs:
+      - gold-gate
+      - build-installers
+    if: ${{ success() && github.ref == 'refs/heads/main' && needs.gold-gate.outputs.enabled == 'true' && needs.gold-gate.outputs.publish-mode == 'rolling-prerelease' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/publish-platform-nightly.yml
+    with:
+      release_scope: macos
+      version: ${{ needs.gold-gate.outputs.version }}
+      source_revision: ${{ github.sha }}
+      source_run_id: ${{ github.run_id }}
+      source_run_attempt: ${{ github.run_attempt }}

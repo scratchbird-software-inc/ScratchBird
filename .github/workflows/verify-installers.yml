@@ -1,9 +1,6 @@
 name: ScratchBird Installer Verification
 
 on:
-  push:
-    branches:
-      - main
   workflow_call:
     inputs:
       platform:
@@ -54,7 +51,7 @@ concurrency:
 jobs:
   linux-installers:
     name: Linux installers
-    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == '' }}
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' || inputs.platform == '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -226,7 +223,7 @@ jobs:
 
   windows-installers:
     name: Windows installers
-    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == '' }}
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' || inputs.platform == '' }}
     runs-on: windows-2022
     timeout-minutes: 300
 
@@ -398,7 +395,7 @@ jobs:
 
   macos-installers:
     name: macOS installers (${{ matrix.arch }})
-    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '' }}
+    if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 300
 
@@ -802,7 +799,7 @@ jobs:
   macos-universal-installers:
     name: macOS universal QA installer bundle
     needs: macos-installers
-    if: ${{ success() && (github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '') }}
+    if: ${{ success() && (inputs.platform == 'all' || inputs.platform == 'macos' || inputs.platform == '') }}
     runs-on: macos-15
     timeout-minutes: 60
 
