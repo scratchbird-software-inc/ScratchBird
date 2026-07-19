@@ -228,7 +228,6 @@ std::string HandleLine(std::string_view line, bool* close) {
          "\n";
 }
 
-#ifndef _WIN32
 bool IsXdrOpcode(const std::uint8_t* bytes, std::uint32_t opcode) {
   return bytes[0] == static_cast<std::uint8_t>((opcode >> 24) & 0xffu) &&
          bytes[1] == static_cast<std::uint8_t>((opcode >> 16) & 0xffu) &&
@@ -244,6 +243,14 @@ void AppendXdrU32(std::vector<std::uint8_t>* out, std::uint32_t value) {
 }
 
 bool WriteAll(int fd, std::string_view text) {
+#ifdef _WIN32
+  // The Firebird binary listener is intentionally unavailable on Windows.
+  // Keep the shared parser/presentation implementation buildable while
+  // refusing every transport operation before it can consume or emit bytes.
+  (void)fd;
+  (void)text;
+  return false;
+#else
   std::size_t written = 0;
   while (written < text.size()) {
     const auto rc = ::write(fd, text.data() + written, text.size() - written);
@@ -255,9 +262,16 @@ bool WriteAll(int fd, std::string_view text) {
     return false;
   }
   return true;
+#endif
 }
 
 bool ReadBytes(int fd, std::uint8_t* data, std::size_t size) {
+#ifdef _WIN32
+  (void)fd;
+  (void)data;
+  (void)size;
+  return false;
+#else
   std::size_t read_total = 0;
   while (read_total < size) {
     const auto rc = ::read(fd, data + read_total, size - read_total);
@@ -269,6 +283,7 @@ bool ReadBytes(int fd, std::uint8_t* data, std::size_t size) {
     return false;
   }
   return true;
+#endif
 }
 
 bool ReadXdrU32(int fd, std::uint32_t* value) {
@@ -297,13 +312,15 @@ bool ReadXdrString(int fd, std::vector<std::uint8_t>* value,
 }
 
 bool WriteBytes(int fd, const std::uint8_t* data, std::size_t size) {
+#ifdef _WIN32
+  (void)fd;
+  (void)data;
+  (void)size;
+  return false;
+#else
   std::size_t written = 0;
   while (written < size) {
-#ifndef _WIN32
     const auto rc = ::send(fd, data + written, size - written, MSG_NOSIGNAL);
-#else
-    const auto rc = ::write(fd, data + written, size - written);
-#endif
     if (rc > 0) {
       written += static_cast<std::size_t>(rc);
       continue;
@@ -312,6 +329,7 @@ bool WriteBytes(int fd, const std::uint8_t* data, std::size_t size) {
     return false;
   }
   return true;
+#endif
 }
 
 bool WritePacket(int fd, const std::vector<std::uint8_t>& packet) {
@@ -355,6 +373,11 @@ std::string HexEncodeBytesLocal(const std::vector<std::uint8_t>& data) {
 }
 
 bool ReadLine(int fd, std::string* line) {
+#ifdef _WIN32
+  (void)fd;
+  if (line != nullptr) line->clear();
+  return false;
+#else
   line->clear();
   char ch = 0;
   for (;;) {
@@ -367,6 +390,7 @@ bool ReadLine(int fd, std::string* line) {
     if (rc < 0 && errno == EINTR) continue;
     return !line->empty();
   }
+#endif
 }
 
 struct FirebirdConnectOffer {
@@ -30570,9 +30594,16 @@ bool ReadFirebirdClassicDiscardU32s(int fd, std::uint32_t count) {
 }
 
 std::uint32_t FirebirdReadableByteCount(int fd) {
+#ifdef _WIN32
+  // A Windows build never activates the binary listener.  Do not probe an
+  // arbitrary descriptor as if it were a POSIX socket.
+  (void)fd;
+  return 0;
+#else
   int count = 0;
   if (::ioctl(fd, FIONREAD, &count) != 0 || count < 0) return 0;
   return static_cast<std::uint32_t>(count);
+#endif
 }
 
 std::uint32_t FirebirdClassicSlotMinimumWireBytes(
@@ -33524,6 +33555,13 @@ std::string FirebirdSqlProbeDescribeResponse(
 }
 
 bool PeerStartsWithFirebirdConnect(int fd) {
+#ifdef _WIN32
+  // The Firebird binary worker is deliberately not attached on Windows.
+  // Refuse the probe rather than attempting a socket peek on an unsupported
+  // descriptor type.
+  (void)fd;
+  return false;
+#else
   std::uint8_t prefix[4]{};
   for (;;) {
     const auto rc = ::recv(fd, prefix, sizeof(prefix), MSG_PEEK);
@@ -33539,6 +33577,7 @@ bool PeerStartsWithFirebirdConnect(int fd) {
                         " errno=" + std::to_string(errno));
     return false;
   }
+#endif
 }
 
 int ServeFirebirdBinaryConnect(int fd) {
@@ -40734,7 +40773,6 @@ int ServeFirebirdBinaryConnect(int fd) {
   }
   return 0;
 }
-#endif
 
 } // namespace
 
@@ -41382,16 +41420,10 @@ bool DecodeFirebirdScalarProjectionRows(
     const FirebirdScalarProjectionRoute& route,
     std::vector<FirebirdScalarProjectionWireRow>* rows,
     std::string* diagnostic) {
-#ifdef _WIN32
-  if (!route.recognized()) return true;
-  (void)rows;
-  if (diagnostic != nullptr) {
-    *diagnostic = "firebird_binary_worker_unavailable";
-  }
-  return false;
-#else
+  // This validates an already engine-owned result carrier.  It neither opens
+  // the unsupported Windows binary listener nor executes SQL, so it remains
+  // available on every platform.
   return DecodeFirebirdScalarProjectionRowsImpl(route, rows, diagnostic);
-#endif
 }
 
 bool ValidateFirebirdScalarProjectionCompletePacket(

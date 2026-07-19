@@ -62,18 +62,27 @@ case "$package" in
         (cd "$payload_root" && cpio -idm --quiet) < "$payload_file"
       fi
     fi
-    scripts_file="$(find "$work_root/pkg-expanded" -name Scripts -type f | head -n 1)"
-    [[ -n "$scripts_file" ]] || fail "pkg_scripts_missing"
     pkg_scripts_root="$work_root/pkg-scripts"
     mkdir -p "$pkg_scripts_root"
-    if command -v ditto >/dev/null 2>&1; then
-      ditto -x "$scripts_file" "$pkg_scripts_root"
-    else
-      if gzip -t "$scripts_file" >/dev/null 2>&1; then
-        gzip -dc "$scripts_file" | (cd "$pkg_scripts_root" && cpio -idm --quiet)
+    # pkgutil --expand can expose a component's Scripts member either as the
+    # original compressed archive or as a materialized directory.  Accept both
+    # representations, but in every case require the package postinstall hook.
+    scripts_directory="$(find "$work_root/pkg-expanded" -name Scripts -type d | head -n 1)"
+    scripts_file="$(find "$work_root/pkg-expanded" -name Scripts -type f | head -n 1)"
+    if [[ -n "$scripts_directory" ]]; then
+      cp -R "$scripts_directory"/. "$pkg_scripts_root"/
+    elif [[ -n "$scripts_file" ]]; then
+      if command -v ditto >/dev/null 2>&1; then
+        ditto -x "$scripts_file" "$pkg_scripts_root"
       else
-        (cd "$pkg_scripts_root" && cpio -idm --quiet) < "$scripts_file"
+        if gzip -t "$scripts_file" >/dev/null 2>&1; then
+          gzip -dc "$scripts_file" | (cd "$pkg_scripts_root" && cpio -idm --quiet)
+        else
+          (cd "$pkg_scripts_root" && cpio -idm --quiet) < "$scripts_file"
+        fi
       fi
+    else
+      fail "pkg_scripts_missing"
     fi
     postinstall_script="$(find "$pkg_scripts_root" -name postinstall -type f | head -n 1)"
     [[ -n "$postinstall_script" ]] || fail "pkg_postinstall_missing"

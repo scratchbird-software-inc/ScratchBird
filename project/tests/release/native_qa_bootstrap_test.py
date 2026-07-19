@@ -543,6 +543,121 @@ class NativeQaBootstrapTest(unittest.TestCase):
         self.assertIn("portable_launchd_root_forbidden", smoke)
         self.assertIn("execution_mode=foreground_only", smoke)
 
+    @unittest.skipIf(os.name == "nt", "requires a POSIX shell fixture")
+    def test_macos_pkg_smoke_accepts_expanded_scripts_directory(self) -> None:
+        """pkgutil may materialize Scripts as a directory instead of an archive."""
+
+        smoke = REPO_ROOT / "project/tools/installers/smoke_install_macos.sh"
+        tools = self.root / "macos-pkg-smoke-tools"
+        tools.mkdir()
+
+        def write_tool(name: str, content: str) -> None:
+            path = tools / name
+            path.write_text(content, encoding="utf-8")
+            path.chmod(0o755)
+
+        write_tool(
+            "uname",
+            "#!/usr/bin/env bash\nprintf 'Darwin\\n'\n",
+        )
+        write_tool(
+            "pkgutil",
+            """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--expand" ]]; then
+  expanded="${3:?missing expansion root}"
+  component="$expanded/com.scratchbird.cde.pkg"
+  mkdir -p "$component/Scripts"
+  : > "$component/Payload"
+  cat > "$component/Scripts/postinstall" <<'POSTINSTALL'
+#!/bin/sh
+exec /opt/ScratchBird/libexec/scratchbird-macos-system-install post-install --package-version '0.0.0-nightly'
+POSTINSTALL
+  chmod 755 "$component/Scripts/postinstall"
+fi
+""",
+        )
+        write_tool(
+            "ditto",
+            """#!/usr/bin/env bash
+set -euo pipefail
+[[ "${1:-}" == "-x" ]] || exit 1
+payload_root="${3:?missing payload root}"
+runtime="$payload_root/opt/ScratchBird"
+mkdir -p "$runtime/bin" "$runtime/lib" \\
+  "$runtime/libexec" "$runtime/share/scratchbird/resources" \\
+  "$runtime/share/scratchbird/config-defaults" \\
+  "$runtime/share/scratchbird/release" \\
+  "$payload_root/Library/LaunchDaemons"
+for name in INSTALL_MANIFEST.json SHA256SUMS NATIVE_RELEASE_PROFILE.json \\
+  MACOS_SUPPORT_MATRIX.json MACOS_SYSTEM_INSTALL_PROFILE.json \\
+  MACOS_LAUNCHD_MANIFEST.json; do
+  : > "$runtime/share/scratchbird/release/$name"
+done
+for binary in SBsql SBadm SBbak SBsec SBdoc SBcop SBsrv SBgate SBmgr SBParser; do
+  cat > "$runtime/bin/$binary" <<'BINARY'
+#!/usr/bin/env bash
+printf 'fixture help\\n'
+BINARY
+  chmod 755 "$runtime/bin/$binary"
+done
+cat > "$runtime/libexec/scratchbird-macos-system-install" <<'HELPER'
+#!/usr/bin/env bash
+set -euo pipefail
+action="${1:?missing lifecycle action}"
+shift
+root=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --root)
+      root="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+case "$action" in
+  post-install)
+    mkdir -p "$root/Library/Application Support/ScratchBird"
+    ;;
+  pre-remove)
+    mkdir -p "$root/var/lib/scratchbird/install/config-preserve"
+    cp "$root/Library/Application Support/ScratchBird/local-preserve.conf" \\
+      "$root/var/lib/scratchbird/install/config-preserve/local-preserve.conf"
+    ;;
+esac
+HELPER
+chmod 755 "$runtime/libexec/scratchbird-macos-system-install"
+: > "$payload_root/Library/LaunchDaemons/com.scratchbird.sbsrv.plist"
+: > "$payload_root/Library/LaunchDaemons/com.scratchbird.sbmgr.plist"
+""",
+        )
+        for name in ("python3", "otool", "plutil", "spctl"):
+            write_tool(name, "#!/usr/bin/env bash\nexit 0\n")
+
+        package = self.root / "expanded-scripts.pkg"
+        package.write_bytes(b"fixture pkg\n")
+        work_root = self.root / "expanded-scripts-smoke"
+        environment = os.environ.copy()
+        environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
+        result = subprocess.run(
+            [str(smoke), str(package), str(work_root)],
+            cwd=REPO_ROOT,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertTrue((work_root / "pkg-scripts/postinstall").is_file())
+        self.assertIn("smoke_install_macos=passed", result.stdout)
+
     def test_linux_system_payload_materializes_runtime_and_identity(self) -> None:
         builder_path = REPO_ROOT / "project/tools/installers/build_installers.py"
         builder_spec = importlib.util.spec_from_file_location(
