@@ -451,6 +451,8 @@ def validate_helper_static(helper: Path) -> None:
         'GeneratedUID "$generated_uid"',
         "created_service_user_generated_uid=$generated_uid",
         '[ "$user_generated_uid" != "$created_service_user_generated_uid" ]',
+        '[ "$identity_mode" = fixture ] || return 0',
+        '[ -d "$config_root" ] || return 0',
         "dseditgroup -o edit",
         '"/Library/Application Support/ScratchBird"',
         "/var/run/scratchbird/sb_server/control",
@@ -461,6 +463,12 @@ def validate_helper_static(helper: Path) -> None:
     for fragment in required:
         if fragment not in text:
             fail(f"lifecycle_contract_missing:{fragment}")
+    for obsolete_noop in (
+        '[ "$identity_mode" = fixture ] || return\n',
+        '[ -d "$config_root" ] || return\n',
+    ):
+        if obsolete_noop in text:
+            fail(f"lifecycle_noop_returns_failure:{obsolete_noop.strip()}")
     for forbidden in (
         "SUDO_USER",
         "${USER",
@@ -1003,6 +1011,96 @@ def run_system_installer_diagnostic_smoke(
     }
 
 
+def run_optional_lifecycle_noop_smoke(
+    helper: Path,
+    work_root: Path,
+) -> dict[str, str]:
+    """Prove optional lifecycle helpers succeed when they intentionally no-op.
+
+    The system package invokes ``write_fixture_identity_evidence`` after the
+    launchd checks.  Returning the failed status of its fixture-mode predicate
+    under ``set -e`` aborts a valid macOS installation.  Likewise, pre-remove
+    must succeed if no configuration root exists yet.  Execute both exact
+    packaged helper functions in their no-op mode so neither branch can regress
+    to a bare ``return``.
+    """
+
+    helper_text = helper.read_text(encoding="utf-8")
+    fixture_start = helper_text.find("write_fixture_identity_evidence() {")
+    preserve_start = helper_text.find(
+        "\npreserve_configuration() {",
+        fixture_start,
+    )
+    evidence_start = helper_text.find(
+        "\nwrite_install_evidence() {",
+        preserve_start,
+    )
+    if fixture_start < 0 or preserve_start < 0 or evidence_start < 0:
+        fail("optional_lifecycle_noop_helper_functions_missing")
+    fixture_function = helper_text[fixture_start:preserve_start].rstrip()
+    preserve_function = helper_text[preserve_start:evidence_start].strip()
+
+    fixture_root = work_root / "optional-lifecycle-noop"
+    fixture_root.mkdir(parents=True)
+
+    fixture_identity_harness = fixture_root / "fixture-identity-noop.sh"
+    fixture_identity_harness.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "identity_mode=system\n\n"
+        f"{fixture_function}\n"
+        "write_fixture_identity_evidence\n"
+        "printf '%s\\n' fixture_identity_system_noop=passed\n",
+        encoding="utf-8",
+    )
+    fixture_identity_harness.chmod(0o755)
+
+    missing_config_harness = fixture_root / "missing-config-noop.sh"
+    missing_config_harness.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "identity_mode=fixture\n"
+        "install_root=${SB_OPTIONAL_FIXTURE_ROOT:?}\n"
+        "root_path() {\n"
+        "    printf '%s%s\\n' \"$install_root\" \"$1\"\n"
+        "}\n\n"
+        f"{preserve_function}\n"
+        "preserve_configuration\n"
+        "printf '%s\\n' missing_config_pre_remove_noop=passed\n",
+        encoding="utf-8",
+    )
+    missing_config_harness.chmod(0o755)
+
+    fixture_identity = run(["/bin/sh", str(fixture_identity_harness)])
+    if (
+        fixture_identity.returncode != 0
+        or fixture_identity.stdout != "fixture_identity_system_noop=passed\n"
+        or fixture_identity.stderr
+    ):
+        fail("optional_lifecycle_fixture_identity_noop_failed")
+
+    environment = os.environ.copy()
+    environment["SB_OPTIONAL_FIXTURE_ROOT"] = str(fixture_root / "missing")
+    missing_config = subprocess.run(
+        ["/bin/sh", str(missing_config_harness)],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=environment,
+    )
+    if (
+        missing_config.returncode != 0
+        or missing_config.stdout != "missing_config_pre_remove_noop=passed\n"
+        or missing_config.stderr
+    ):
+        fail("optional_lifecycle_missing_config_noop_failed")
+    return {
+        "fixture_identity_system_noop": "passed",
+        "missing_config_pre_remove_noop": "passed",
+    }
+
+
 def validate_pkg_scripts(asset_root: Path) -> dict[str, Any]:
     preinstall = asset_root / "pkg-scripts" / "preinstall.in"
     postinstall = asset_root / "pkg-scripts" / "postinstall.in"
@@ -1266,6 +1364,10 @@ def validate_builder_integration(
         staged_helper,
         work_root,
     )
+    optional_lifecycle_noops = run_optional_lifecycle_noop_smoke(
+        staged_helper,
+        work_root,
+    )
     staged_launcher = system_root / "opt" / "ScratchBird" / "bin" / "SBlaunch"
     if not staged_launcher.is_file() or staged_launcher.stat().st_size <= 0:
         fail("builder_service_launcher_not_staged")
@@ -1370,6 +1472,7 @@ def validate_builder_integration(
         "launchd_system_assets_staged": True,
         "service_user_creation": service_user_creation,
         "diagnostic_logging": diagnostic_logging,
+        "optional_lifecycle_noops": optional_lifecycle_noops,
         "native_default_port": NATIVE_PORT,
     }
 

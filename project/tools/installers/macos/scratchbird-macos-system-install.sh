@@ -798,7 +798,7 @@ install_default_configuration() {
 }
 
 write_fixture_identity_evidence() {
-    [ "$identity_mode" = fixture ] || return
+    [ "$identity_mode" = fixture ] || return 0
     fixture_root=$(root_path /var/lib/scratchbird/install/fixture-identities)
     install -d -m 0750 "$fixture_root"
     umask 027
@@ -812,7 +812,7 @@ write_fixture_identity_evidence() {
 preserve_configuration() {
     config_root=$(root_path "/Library/Application Support/ScratchBird")
     preserve_root=$(root_path /var/lib/scratchbird/install/config-preserve)
-    [ -d "$config_root" ] || return
+    [ -d "$config_root" ] || return 0
     [ ! -L "$config_root" ] || fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
     [ ! -L "$preserve_root" ] || fail BOOTSTRAP.DIRECTORY_PERMISSION_INVALID
     rm -rf -- "$preserve_root"
