@@ -467,7 +467,7 @@ jobs:
               > "$proof_root/system-installer-stage.log" 2>&1 || true
             exit "$installer_status"
           fi
-          python3 project/tools/release/verify_native_installed_payload.py \
+          sudo "$(command -v python3)" project/tools/release/verify_native_installed_payload.py \
             /opt/ScratchBird \
             --config-root "/Library/Application Support/ScratchBird" \
             --expected-architecture "${{ matrix.arch }}"

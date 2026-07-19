@@ -230,6 +230,32 @@ def check_macos_system_installer_failure_diagnostics(
         require_token(block, token, rel)
 
 
+def check_macos_system_payload_verifier_authority(
+    text: str,
+    rel: str,
+    job_name: str,
+) -> None:
+    """Require the system-payload verifier to retain root read authority.
+
+    The macOS package deliberately protects its configuration root as
+    ``root:scratchbird`` mode ``0750``.  The hosted verifier must use the
+    existing package-install sudo authority, rather than loosening that
+    installed security boundary merely for a test read.
+    """
+
+    block = workflow_job_block(text, job_name, rel)
+    privileged_verifier = (
+        'sudo "$(command -v python3)" '
+        "project/tools/release/verify_native_installed_payload.py"
+    )
+    require_token(block, privileged_verifier, rel)
+    unprivileged_verifier = (
+        "          python3 project/tools/release/verify_native_installed_payload.py"
+    )
+    if unprivileged_verifier in block:
+        fail(f"macos_system_payload_verifier_not_privileged:{rel}:{job_name}")
+
+
 def check_macos_nonmember_probe(
     text: str,
     rel: str,
@@ -593,6 +619,9 @@ def main() -> int:
             check_macos_system_installer_failure_diagnostics(
                 text, name, "public-release-macos"
             )
+            check_macos_system_payload_verifier_authority(
+                text, name, "public-release-macos"
+            )
             check_macos_real128_build_dependency(text, name, "public-release-macos")
             check_macos_nonmember_probe(text, name, "public-release-macos")
             check_macos_launchd_credential_probe(
@@ -628,6 +657,9 @@ def main() -> int:
             check_installer_main_push_policy(text, name)
             check_linux_privileged_bootstrap_smoke(text, name)
             check_macos_system_installer_failure_diagnostics(
+                text, name, "macos-installers"
+            )
+            check_macos_system_payload_verifier_authority(
                 text, name, "macos-installers"
             )
             check_macos_nonmember_probe(text, name, "macos-installers")
