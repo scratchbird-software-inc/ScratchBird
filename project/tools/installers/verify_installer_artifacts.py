@@ -16,6 +16,8 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import zipfile
+import xml.etree.ElementTree as ET
 
 
 MANIFEST_NAME = "INSTALLER_ARTIFACT_MANIFEST.json"
@@ -43,12 +45,26 @@ MACOS_REQUIRED_SIDECARS = (
 )
 WINDOWS_REQUIRED_SIDECARS = (
     "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json",
+    "scratchbird.wxs",
     "scratchbird-windows-lifecycle.wxs",
 )
 LINUX_REQUIRED_SIDECARS = ("LINUX_SYSTEM_PACKAGE_EVIDENCE.json",)
 SERVICE_AUTHORITY_SCOPE = (
     "filesystem_directory_and_process_execution_only_"
     "no_database_or_security_authority"
+)
+WIX_NAMESPACE = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+WIX_DATA_NAMESPACE = {
+    "w": "http://wixtoolset.org/schemas/v4/windowsinstallerdata"
+}
+WIX_PDB_DATA_ENTRY = "wix-wid.xml"
+WINDOWS_LIFECYCLE_ACTIONS = (
+    "ScratchBirdPostInstall",
+    "ScratchBirdPreRemove",
+)
+WINDOWS_LIFECYCLE_SETTERS = (
+    "SetScratchBirdPostInstall",
+    "SetScratchBirdPreRemove",
 )
 
 
@@ -89,6 +105,199 @@ def scan(root: Path) -> None:
                 fail(f"forbidden_text_fragment:{rel}:{fragment}")
 
 
+def verify_windows_msi_lifecycle_wiring(root: Path) -> None:
+    """Verify that the emitted WiX sources link the lifecycle into the MSI.
+
+    WiX drops unreferenced Fragment sections even when their .wxs file is
+    supplied on the command line. Checking the emitted sources before the
+    smoke step prevents an MSI that merely ships the lifecycle helper without
+    ever executing it.
+    """
+
+    try:
+        package_tree = ET.parse(root / "scratchbird.wxs")
+        lifecycle_tree = ET.parse(root / "scratchbird-windows-lifecycle.wxs")
+    except (OSError, ET.ParseError) as exc:
+        fail(f"windows_msi_lifecycle_wix_invalid:{exc}")
+
+    package_refs = {
+        row.get("Id")
+        for row in package_tree.findall(".//w:CustomActionRef", WIX_NAMESPACE)
+    }
+    if not set(WINDOWS_LIFECYCLE_ACTIONS).issubset(package_refs):
+        fail("windows_msi_lifecycle_fragment_unlinked")
+
+    fragments = lifecycle_tree.findall(".//w:Fragment", WIX_NAMESPACE)
+    if len(fragments) != 1:
+        fail("windows_msi_lifecycle_fragment_split")
+    lifecycle_actions = {
+        row.get("Id")
+        for row in lifecycle_tree.findall(".//w:CustomAction", WIX_NAMESPACE)
+    }
+    if not set(WINDOWS_LIFECYCLE_ACTIONS).issubset(lifecycle_actions):
+        fail("windows_msi_lifecycle_actions_missing")
+    scheduled_actions = {
+        row.get("Action")
+        for row in lifecycle_tree.findall(
+            ".//w:InstallExecuteSequence/w:Custom", WIX_NAMESPACE
+        )
+    }
+    if not set(WINDOWS_LIFECYCLE_ACTIONS).issubset(scheduled_actions):
+        fail("windows_msi_lifecycle_schedule_missing")
+
+
+def wix_table_rows(tree: ET.Element, table_name: str) -> list[list[str]]:
+    table = tree.find(f'w:table[@name="{table_name}"]', WIX_DATA_NAMESPACE)
+    if table is None:
+        return []
+    return [
+        [field.text or "" for field in row.findall("w:field", WIX_DATA_NAMESPACE)]
+        for row in table.findall("w:row", WIX_DATA_NAMESPACE)
+    ]
+
+
+def read_wix_linked_database(pdb_path: Path) -> ET.Element:
+    try:
+        with zipfile.ZipFile(pdb_path) as archive:
+            data = archive.read(WIX_PDB_DATA_ENTRY)
+        tree = ET.fromstring(data)
+    except (OSError, KeyError, zipfile.BadZipFile, ET.ParseError) as exc:
+        fail(f"windows_msi_lifecycle_pdb_invalid:{exc}")
+    if tree.tag != (
+        "{http://wixtoolset.org/schemas/v4/windowsinstallerdata}"
+        "windowsInstallerData"
+    ):
+        fail("windows_msi_lifecycle_pdb_root_invalid")
+    return tree
+
+
+def unique_wix_action_row(
+    rows: list[list[str]], action: str, table_name: str
+) -> list[str]:
+    matches = [row for row in rows if row and row[0] == action]
+    if len(matches) != 1:
+        fail(f"windows_msi_lifecycle_{table_name}_cardinality:{action}")
+    return matches[0]
+
+
+def parse_wix_integer(field: str, action: str, column: str) -> int:
+    try:
+        return int(field)
+    except ValueError:
+        fail(f"windows_msi_lifecycle_{column}_invalid:{action}:{field}")
+
+
+def normalized_condition(value: str) -> str:
+    return "".join(value.split())
+
+
+def verify_windows_material_msi_lifecycle(root: Path, msi_rel: str) -> None:
+    """Verify the linked MSI table model recorded in WiX's PDB.
+
+    The PDB's wix-wid.xml records the post-link Windows Installer database,
+    unlike wix-ir.json, which may still include unlinked source fragments.
+    This is a read-only gate; the later Windows smoke independently verifies
+    the installed group, service, configuration, and uninstall behavior.
+    """
+
+    msi_path = root / msi_rel
+    pdb_path = msi_path.with_suffix(".wixpdb")
+    if not pdb_path.is_file():
+        fail(f"windows_msi_lifecycle_pdb_missing:{pdb_path.name}")
+    tree = read_wix_linked_database(pdb_path)
+    custom_actions = wix_table_rows(tree, "CustomAction")
+    sequences = wix_table_rows(tree, "InstallExecuteSequence")
+    admin_sequences = wix_table_rows(tree, "AdminExecuteSequence")
+
+    for action in WINDOWS_LIFECYCLE_ACTIONS:
+        row = unique_wix_action_row(custom_actions, action, "custom_action")
+        if len(row) < 4:
+            fail(f"windows_msi_lifecycle_custom_action_columns:{action}")
+        if parse_wix_integer(row[1], action, "custom_action_type") != 11265:
+            fail(f"windows_msi_lifecycle_custom_action_type:{action}")
+        if row[2] != "Wix4UtilCA_X64" or row[3] != "WixQuietExec":
+            fail(f"windows_msi_lifecycle_custom_action_binding:{action}")
+
+    expected_setter_actions = {
+        "SetScratchBirdPostInstall": ("ScratchBirdPostInstall", "PostInstall"),
+        "SetScratchBirdPreRemove": ("ScratchBirdPreRemove", "PreRemove"),
+    }
+    for setter, (action_property, lifecycle_action) in expected_setter_actions.items():
+        row = unique_wix_action_row(custom_actions, setter, "custom_action")
+        if len(row) < 4:
+            fail(f"windows_msi_lifecycle_setter_columns:{setter}")
+        if parse_wix_integer(row[1], setter, "setter_type") != 51:
+            fail(f"windows_msi_lifecycle_setter_type:{setter}")
+        if row[2] != action_property:
+            fail(f"windows_msi_lifecycle_setter_property:{setter}")
+        command = row[3]
+        required_command_tokens = (
+            "powershell.exe",
+            "scratchbird-windows-system-install.ps1",
+            f"-Action {lifecycle_action}",
+            "[INSTALLFOLDER].",
+            "[CommonAppDataFolder]ScratchBird",
+        )
+        if any(
+            token.casefold() not in command.casefold()
+            for token in required_command_tokens
+        ):
+            fail(f"windows_msi_lifecycle_setter_command:{setter}")
+
+    sequence_actions = (
+        "InstallInitialize",
+        "InstallFiles",
+        "InstallFinalize",
+        "RemoveFiles",
+        *WINDOWS_LIFECYCLE_SETTERS,
+        *WINDOWS_LIFECYCLE_ACTIONS,
+    )
+    sequence_rows = {
+        action: unique_wix_action_row(sequences, action, "sequence")
+        for action in sequence_actions
+    }
+    sequence_order: dict[str, int] = {}
+    for action, row in sequence_rows.items():
+        if len(row) < 3:
+            fail(f"windows_msi_lifecycle_sequence_columns:{action}")
+        sequence_order[action] = parse_wix_integer(row[2], action, "sequence")
+
+    post_condition = normalized_condition('NOT (REMOVE~="ALL")')
+    pre_condition = normalized_condition(
+        'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+    )
+    for action in (
+        "SetScratchBirdPostInstall",
+        "ScratchBirdPostInstall",
+    ):
+        if normalized_condition(sequence_rows[action][1]) != post_condition:
+            fail(f"windows_msi_lifecycle_post_condition:{action}")
+    for action in (
+        "SetScratchBirdPreRemove",
+        "ScratchBirdPreRemove",
+    ):
+        if normalized_condition(sequence_rows[action][1]) != pre_condition:
+            fail(f"windows_msi_lifecycle_pre_condition:{action}")
+
+    if not (
+        sequence_order["InstallFiles"]
+        < sequence_order["SetScratchBirdPostInstall"]
+        < sequence_order["ScratchBirdPostInstall"]
+        < sequence_order["InstallFinalize"]
+    ):
+        fail("windows_msi_lifecycle_post_sequence_order")
+    if not (
+        sequence_order["InstallInitialize"]
+        < sequence_order["SetScratchBirdPreRemove"]
+        < sequence_order["ScratchBirdPreRemove"]
+        < sequence_order["RemoveFiles"]
+    ):
+        fail("windows_msi_lifecycle_pre_sequence_order")
+    admin_actions = {row[0] for row in admin_sequences if row}
+    if admin_actions.intersection(WINDOWS_LIFECYCLE_ACTIONS):
+        fail("windows_msi_lifecycle_admin_sequence_forbidden")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
@@ -99,7 +308,6 @@ def main() -> int:
         help="Require a material MSI in addition to the portable Windows ZIP.",
     )
     args = parser.parse_args()
-
     root = args.artifact_root.resolve()
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -116,11 +324,16 @@ def main() -> int:
     for suffix in REQUIRED_SUFFIXES[args.platform]:
         if not any(isinstance(path, str) and path.endswith(suffix) for path in paths):
             fail(f"required_artifact_missing:{suffix}")
+    windows_msi_paths = sorted(
+        path
+        for path in paths
+        if isinstance(path, str) and path.endswith(".msi")
+    )
     if args.platform == "windows" and args.require_msi:
-        if not any(
-            isinstance(path, str) and path.endswith(".msi") for path in paths
-        ):
+        if not windows_msi_paths:
             fail("required_artifact_missing:.msi")
+        if len(windows_msi_paths) != 1:
+            fail("windows_msi_cardinality")
     for row in artifacts:
         if not isinstance(row, dict):
             fail("manifest_row_not_object")
@@ -205,6 +418,14 @@ def main() -> int:
             or identity.get("human_service_group_membership_mutation") is not False
         ):
             fail("windows_system_service_authority_scope_invalid")
+        verify_windows_msi_lifecycle_wiring(root)
+        if args.require_msi:
+            pdb_rel = (
+                Path(windows_msi_paths[0]).with_suffix(".wixpdb").as_posix()
+            )
+            if pdb_rel not in paths:
+                fail(f"windows_msi_lifecycle_pdb_unmanifested:{pdb_rel}")
+            verify_windows_material_msi_lifecycle(root, windows_msi_paths[0])
     if args.platform == "macos":
         macos_block = data.get("macos")
         if not isinstance(macos_block, dict):

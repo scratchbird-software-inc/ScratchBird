@@ -1679,6 +1679,13 @@ def make_wix_msi(payload_root: Path, output_root: Path, version: str, require_ms
   <Package Name="{PRODUCT_NAME}" Manufacturer="{MANUFACTURER}" Version="{windows_msi_version(version)}" UpgradeCode="{WINDOWS_UPGRADE_CODE}" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer ScratchBird build is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <!--
+      Passing a separate WiX source file is not sufficient to link its
+      Fragment. These references include the lifecycle custom actions and
+      their InstallExecuteSequence in the material MSI.
+    -->
+    <CustomActionRef Id="ScratchBirdPostInstall" />
+    <CustomActionRef Id="ScratchBirdPreRemove" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="ScratchBird">
 {directory_xml}
@@ -1712,6 +1719,8 @@ def make_wix_msi(payload_root: Path, output_root: Path, version: str, require_ms
         ],
         cwd=output_root,
     )
+    if not msi.with_suffix(".wixpdb").is_file():
+        fail("windows_wix_pdb_missing")
     return [msi, wxs, lifecycle_wxs]
 
 

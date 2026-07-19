@@ -17,14 +17,24 @@ import tempfile
 import unittest
 from unittest import mock
 import xml.etree.ElementTree as ET
+import zipfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 BUILDER_PATH = REPO_ROOT / "project" / "tools" / "installers" / "build_installers.py"
+ARTIFACT_VERIFIER_PATH = (
+    REPO_ROOT / "project" / "tools" / "installers" / "verify_installer_artifacts.py"
+)
 SPEC = importlib.util.spec_from_file_location("scratchbird_build_installers", BUILDER_PATH)
 assert SPEC is not None and SPEC.loader is not None
 installers = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installers)
+ARTIFACT_VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "scratchbird_verify_installer_artifacts", ARTIFACT_VERIFIER_PATH
+)
+assert ARTIFACT_VERIFIER_SPEC is not None and ARTIFACT_VERIFIER_SPEC.loader is not None
+artifact_verifier = importlib.util.module_from_spec(ARTIFACT_VERIFIER_SPEC)
+ARTIFACT_VERIFIER_SPEC.loader.exec_module(artifact_verifier)
 QA_HELPER_PATH = (
     REPO_ROOT
     / "project"
@@ -41,6 +51,88 @@ QA_SPEC.loader.exec_module(qa_helper)
 
 
 class WindowsSystemInstallerTest(unittest.TestCase):
+    def write_lifecycle_wix_pdb(
+        self,
+        path: Path,
+        *,
+        omit_action: str | None = None,
+        post_action_type: int = 11265,
+        post_action_sequence: int = 6599,
+    ) -> None:
+        namespace = "http://wixtoolset.org/schemas/v4/windowsinstallerdata"
+        ET.register_namespace("", namespace)
+        root = ET.Element(f"{{{namespace}}}windowsInstallerData")
+
+        def add_table(name: str, rows: list[list[str]]) -> None:
+            table = ET.SubElement(root, f"{{{namespace}}}table", {"name": name})
+            for values in rows:
+                row = ET.SubElement(table, f"{{{namespace}}}row")
+                for value in values:
+                    field = ET.SubElement(row, f"{{{namespace}}}field")
+                    field.text = value
+
+        post_command = (
+            '"[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe" '
+            '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+            '-File "[INSTALLFOLDER]libexec\\scratchbird-windows-system-install.ps1" '
+            '-Action PostInstall -InstallRoot "[INSTALLFOLDER]." '
+            '-StateRoot "[CommonAppDataFolder]ScratchBird"'
+        )
+        pre_command = post_command.replace("PostInstall", "PreRemove")
+        custom_actions = [
+            [
+                "SetScratchBirdPostInstall",
+                "51",
+                "ScratchBirdPostInstall",
+                post_command,
+            ],
+            [
+                "SetScratchBirdPreRemove",
+                "51",
+                "ScratchBirdPreRemove",
+                pre_command,
+            ],
+            [
+                "ScratchBirdPostInstall",
+                str(post_action_type),
+                "Wix4UtilCA_X64",
+                "WixQuietExec",
+            ],
+            [
+                "ScratchBirdPreRemove",
+                "11265",
+                "Wix4UtilCA_X64",
+                "WixQuietExec",
+            ],
+        ]
+        if omit_action is not None:
+            custom_actions = [row for row in custom_actions if row[0] != omit_action]
+        add_table("CustomAction", custom_actions)
+        post_condition = 'NOT (REMOVE~="ALL")'
+        pre_condition = 'REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE'
+        add_table(
+            "InstallExecuteSequence",
+            [
+                ["InstallInitialize", "", "1500"],
+                ["SetScratchBirdPreRemove", pre_condition, "3498"],
+                ["ScratchBirdPreRemove", pre_condition, "3499"],
+                ["RemoveFiles", "", "3500"],
+                ["InstallFiles", "", "4000"],
+                ["SetScratchBirdPostInstall", post_condition, "6598"],
+                [
+                    "ScratchBirdPostInstall",
+                    post_condition,
+                    str(post_action_sequence),
+                ],
+                ["InstallFinalize", "", "6600"],
+            ],
+        )
+        add_table("AdminExecuteSequence", [])
+        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "wix-wid.xml", ET.tostring(root, encoding="utf-8")
+            )
+
     def make_portable(self, root: Path) -> Path:
         portable = root / "portable"
         runtime = portable / "opt" / "ScratchBird"
@@ -239,6 +331,12 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             self.assertNotIn("ScratchBirdWindowsLifecycleComponents", main)
             self.assertIn(str(system / "bin" / "SBsrv.exe"), main)
             self.assertNotIn(str(portable / "opt"), main)
+            self.assertIn(
+                '<CustomActionRef Id="ScratchBirdPostInstall" />', main
+            )
+            self.assertIn(
+                '<CustomActionRef Id="ScratchBirdPreRemove" />', main
+            )
             self.assertNotIn("SB_INSTALLER_USER", lifecycle)
             self.assertNotIn("InstallerUser", lifecycle)
             self.assertIn('Execute="deferred"', lifecycle)
@@ -251,8 +349,45 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertIn("NOT UPGRADINGPRODUCTCODE", lifecycle)
             self.assertNotIn("@SCRATCHBIRD_VERSION@", lifecycle)
+            self.assertEqual(lifecycle.count("<Fragment"), 1)
+            self.assertIn("<InstallExecuteSequence>", lifecycle)
+            self.assertIn('Action="ScratchBirdPostInstall"', lifecycle)
+            self.assertIn('Action="ScratchBirdPreRemove"', lifecycle)
             ET.fromstring(main)
             ET.fromstring(lifecycle)
+
+    def test_material_wix_pdb_lifecycle_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            msi = root / "scratchbird-windows-1.2.3.msi"
+            msi.write_bytes(b"fixture-msi")
+            pdb = msi.with_suffix(".wixpdb")
+
+            self.write_lifecycle_wix_pdb(pdb)
+            artifact_verifier.verify_windows_material_msi_lifecycle(
+                root, msi.name
+            )
+
+            with self.subTest("missing custom action"):
+                self.write_lifecycle_wix_pdb(
+                    pdb, omit_action="ScratchBirdPostInstall"
+                )
+                with self.assertRaises(SystemExit):
+                    artifact_verifier.verify_windows_material_msi_lifecycle(
+                        root, msi.name
+                    )
+            with self.subTest("incorrect custom action type"):
+                self.write_lifecycle_wix_pdb(pdb, post_action_type=1)
+                with self.assertRaises(SystemExit):
+                    artifact_verifier.verify_windows_material_msi_lifecycle(
+                        root, msi.name
+                    )
+            with self.subTest("incorrect post-install ordering"):
+                self.write_lifecycle_wix_pdb(pdb, post_action_sequence=6601)
+                with self.assertRaises(SystemExit):
+                    artifact_verifier.verify_windows_material_msi_lifecycle(
+                        root, msi.name
+                    )
 
     @unittest.skipUnless(
         os.name == "nt" and shutil.which("wix"),
@@ -277,6 +412,13 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             )
             self.assertTrue(
                 (output / "scratchbird-windows-1.2.3-nightly.msi").is_file()
+            )
+            self.assertTrue(
+                (output / "scratchbird-windows-1.2.3-nightly.wixpdb").is_file()
+            )
+            artifact_verifier.verify_windows_material_msi_lifecycle(
+                output,
+                "scratchbird-windows-1.2.3-nightly.msi",
             )
 
     def test_windows_evidence_requires_actual_msi_smoke(self) -> None:

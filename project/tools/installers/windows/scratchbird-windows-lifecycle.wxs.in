@@ -7,6 +7,12 @@
   filesystem service group by the installer.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    Keep the custom actions and their schedule in one Fragment. The package
+    author references these actions explicitly, which pulls this complete
+    fragment into the linked MSI. Separate unreferenced fragments are not
+    included merely because this source file is passed to `wix build`.
+  -->
   <Fragment>
     <SetProperty
       Id="ScratchBirdPostInstall"
@@ -37,9 +43,7 @@
       Impersonate="no"
       Return="check"
       HideTarget="yes" />
-  </Fragment>
 
-  <Fragment>
     <InstallExecuteSequence>
       <Custom
         Action="ScratchBirdPostInstall"

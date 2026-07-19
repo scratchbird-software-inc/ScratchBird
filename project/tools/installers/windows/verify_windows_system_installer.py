@@ -19,6 +19,7 @@ LIFECYCLE = ROOT / "scratchbird-windows-system-install.ps1"
 WIX = ROOT / "scratchbird-windows-lifecycle.wxs.in"
 SMOKE = ROOT.parent / "smoke_install_windows.ps1"
 BUILDER = ROOT.parent / "build_installers.py"
+ARTIFACT_VERIFIER = ROOT.parent / "verify_installer_artifacts.py"
 WORKFLOW = ROOT.parents[3] / ".github" / "workflows" / "verify-installers.yml"
 
 
@@ -38,7 +39,15 @@ def require_tokens(text: str, tokens: tuple[str, ...], prefix: str) -> None:
 
 
 def main() -> int:
-    for path in (PROFILE, LIFECYCLE, WIX, SMOKE, BUILDER, WORKFLOW):
+    for path in (
+        PROFILE,
+        LIFECYCLE,
+        WIX,
+        SMOKE,
+        BUILDER,
+        ARTIFACT_VERIFIER,
+        WORKFLOW,
+    ):
         require(path.is_file(), f"asset_missing:{path.name}")
 
     profile_text = PROFILE.read_text(encoding="utf-8")
@@ -47,6 +56,7 @@ def main() -> int:
     wix = WIX.read_text(encoding="utf-8")
     smoke = SMOKE.read_text(encoding="utf-8")
     builder = BUILDER.read_text(encoding="utf-8")
+    artifact_verifier = ARTIFACT_VERIFIER.read_text(encoding="utf-8")
     workflow = WORKFLOW.read_text(encoding="utf-8")
     combined = profile_text + lifecycle + wix
 
@@ -379,6 +389,10 @@ def main() -> int:
         "SB_INSTALLER_USER" not in wix and "InstallerUser" not in wix,
         "wix_installer_user_surface_forbidden",
     )
+    require(
+        wix.count("<Fragment") == 1,
+        "wix_lifecycle_fragment_split",
+    )
 
     require_tokens(
         smoke,
@@ -454,6 +468,10 @@ def main() -> int:
             "def write_windows_system_install_profile(",
             "def write_windows_system_package_evidence(",
             "def materialize_windows_wix_lifecycle(",
+            '<CustomActionRef Id="ScratchBirdPostInstall" />',
+            '<CustomActionRef Id="ScratchBirdPreRemove" />',
+            'msi.with_suffix(".wixpdb").is_file()',
+            "windows_wix_pdb_missing",
             "WINDOWS_NATIVE_CONFIGS = (",
             '"SBbootstrap.profile"',
             '"windows-system-payload"',
@@ -466,6 +484,23 @@ def main() -> int:
             "@SCRATCHBIRD_INSTALL_ROOT@",
         ),
         "builder",
+    )
+    require_tokens(
+        artifact_verifier,
+        (
+            "zipfile.ZipFile",
+            'WIX_PDB_DATA_ENTRY = "wix-wid.xml"',
+            "def verify_windows_material_msi_lifecycle(",
+            "ScratchBirdPostInstall",
+            "ScratchBirdPreRemove",
+            "SetScratchBirdPostInstall",
+            "SetScratchBirdPreRemove",
+            "windows_msi_lifecycle_pdb_unmanifested",
+            "windows_msi_lifecycle_post_sequence_order",
+            "windows_msi_lifecycle_pre_sequence_order",
+            "windows_msi_lifecycle_admin_sequence_forbidden",
+        ),
+        "artifact_lifecycle",
     )
     require_tokens(
         workflow,
