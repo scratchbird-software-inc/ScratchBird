@@ -16,7 +16,7 @@
   <Fragment>
     <SetProperty
       Id="ScratchBirdPostInstall"
-      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PostInstall -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
       Before="ScratchBirdPostInstall"
       Sequence="execute"
       Condition="NOT (REMOVE~=&quot;ALL&quot;)" />
@@ -31,7 +31,7 @@
 
     <SetProperty
       Id="ScratchBirdPreRemove"
-      Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PreRemove -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
+      Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]libexec\scratchbird-windows-system-install.ps1&quot; -Action PreRemove -InstallRoot &quot;[INSTALLFOLDER].&quot; -StateRoot &quot;[CommonAppDataFolder]ScratchBird&quot; -PackageVersion &quot;@SCRATCHBIRD_VERSION@&quot; -PackageFormat msi"
       Before="ScratchBirdPreRemove"
       Sequence="execute"
       Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />

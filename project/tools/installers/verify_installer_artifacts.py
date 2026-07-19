@@ -232,6 +232,7 @@ def verify_windows_material_msi_lifecycle(root: Path, msi_rel: str) -> None:
             fail(f"windows_msi_lifecycle_setter_property:{setter}")
         command = row[3]
         required_command_tokens = (
+            "[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe",
             "powershell.exe",
             "scratchbird-windows-system-install.ps1",
             f"-Action {lifecycle_action}",
@@ -243,6 +244,11 @@ def verify_windows_material_msi_lifecycle(root: Path, msi_rel: str) -> None:
             for token in required_command_tokens
         ):
             fail(f"windows_msi_lifecycle_setter_command:{setter}")
+        if (
+            "[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe".casefold()
+            in command.casefold()
+        ):
+            fail(f"windows_msi_lifecycle_setter_powerShell_bitness:{setter}")
 
     sequence_actions = (
         "InstallInitialize",

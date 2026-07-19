@@ -381,6 +381,16 @@ def main() -> int:
             in set_properties.get(action_id, ""),
             f"wix_install_root_trailing_separator_guard:{action_id}",
         )
+        require(
+            '"[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe"'
+            in set_properties.get(action_id, ""),
+            f"wix_lifecycle_64bit_powershell_required:{action_id}",
+        )
+        require(
+            '"[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe"'
+            not in set_properties.get(action_id, ""),
+            f"wix_lifecycle_32bit_powershell_forbidden:{action_id}",
+        )
     require(
         "REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" in wix,
         "wix_upgrade_remove_guard",
@@ -495,6 +505,8 @@ def main() -> int:
             "ScratchBirdPreRemove",
             "SetScratchBirdPostInstall",
             "SetScratchBirdPreRemove",
+            "System64Folder",
+            "windows_msi_lifecycle_setter_powerShell_bitness",
             "windows_msi_lifecycle_pdb_unmanifested",
             "windows_msi_lifecycle_post_sequence_order",
             "windows_msi_lifecycle_pre_sequence_order",

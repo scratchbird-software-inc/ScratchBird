@@ -58,6 +58,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
         omit_action: str | None = None,
         post_action_type: int = 11265,
         post_action_sequence: int = 6599,
+        powershell_folder: str = "System64Folder",
     ) -> None:
         namespace = "http://wixtoolset.org/schemas/v4/windowsinstallerdata"
         ET.register_namespace("", namespace)
@@ -72,7 +73,7 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                     field.text = value
 
         post_command = (
-            '"[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe" '
+            f'"[{powershell_folder}]WindowsPowerShell\\v1.0\\powershell.exe" '
             '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
             '-File "[INSTALLFOLDER]libexec\\scratchbird-windows-system-install.ps1" '
             '-Action PostInstall -InstallRoot "[INSTALLFOLDER]." '
@@ -342,6 +343,14 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             self.assertIn('Execute="deferred"', lifecycle)
             self.assertIn('Impersonate="no"', lifecycle)
             self.assertIn(
+                '[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe',
+                lifecycle,
+            )
+            self.assertNotIn(
+                '[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe',
+                lifecycle,
+            )
+            self.assertIn(
                 '-InstallRoot &quot;[INSTALLFOLDER].&quot;', lifecycle
             )
             self.assertNotIn(
@@ -384,6 +393,14 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                     )
             with self.subTest("incorrect post-install ordering"):
                 self.write_lifecycle_wix_pdb(pdb, post_action_sequence=6601)
+                with self.assertRaises(SystemExit):
+                    artifact_verifier.verify_windows_material_msi_lifecycle(
+                        root, msi.name
+                    )
+            with self.subTest("32-bit PowerShell is forbidden"):
+                self.write_lifecycle_wix_pdb(
+                    pdb, powershell_folder="SystemFolder"
+                )
                 with self.assertRaises(SystemExit):
                     artifact_verifier.verify_windows_material_msi_lifecycle(
                         root, msi.name
