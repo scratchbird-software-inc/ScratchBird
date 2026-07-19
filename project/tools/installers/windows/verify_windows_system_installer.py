@@ -311,6 +311,7 @@ def main() -> int:
             "Rollback-CreatedService",
             "function Ensure-SBsrvService",
             'SERVICE_IDENTITY.QUERY_EXISTING',
+            'SERVICE_IDENTITY.ASSERT_EXISTING',
             'SERVICE_IDENTITY.CREATE',
             'SERVICE_IDENTITY.DESCRIPTION',
             'SERVICE_IDENTITY.SIDTYPE',
@@ -349,6 +350,10 @@ def main() -> int:
     require(
         "New-LocalUser" not in lifecycle and "net user" not in lifecycle,
         "local_password_account_created",
+    )
+    require(
+        "password=" not in lifecycle,
+        "virtual_service_account_password_argument",
     )
 
     try:

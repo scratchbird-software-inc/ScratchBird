@@ -632,6 +632,16 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "service_local_sam_group_membership = $false", lifecycle
         )
 
+    def test_virtual_service_account_create_has_no_password_argument(self) -> None:
+        lifecycle = (
+            REPO_ROOT
+            / "project/tools/installers/windows/"
+            "scratchbird-windows-system-install.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"obj= $ServiceAccount"', lifecycle)
+        self.assertIn('SERVICE_IDENTITY.ASSERT_EXISTING', lifecycle)
+        self.assertNotIn("password=", lifecycle)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -228,7 +228,9 @@ function Ensure-SBsrvService {
     $sc = Join-Path $env:SystemRoot "System32\sc.exe"
     $script:LifecyclePhase = "SERVICE_IDENTITY.CREATE"
     $command = Get-ExpectedServiceCommand
-    Invoke-NativeQuiet $sc @("create", $ServiceName, "binPath= $command", "start= demand", "obj= $ServiceAccount", "password= ", "DisplayName= $ServiceDisplayName") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
+    # A virtual NT SERVICE account requires a null password.  Do not pass an
+    # empty password option, because SCM treats it as a supplied password.
+    Invoke-NativeQuiet $sc @("create", $ServiceName, "binPath= $command", "start= demand", "obj= $ServiceAccount", "DisplayName= $ServiceDisplayName") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
     $script:ServiceCreatedByThisRun = $true
     $script:LifecyclePhase = "SERVICE_IDENTITY.DESCRIPTION"
     Invoke-NativeQuiet $sc @("description", $ServiceName, "ScratchBird native SBsrv owner for shared SBgate and standalone SBParser") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
