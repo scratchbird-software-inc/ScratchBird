@@ -203,89 +203,143 @@ function Assert-InstalledWindowsSystem {
     service_sid = $serviceSid
   }
 }
+
+# Windows Installer administrative images still use legacy MAX_PATH handling.
+# Keep the extraction root independent of the caller's checkout/workspace depth
+# and leave sufficient room for the longest packaged resource path.
+$MaximumMsiAdministrativeExtractRootLength = 40
+
+function New-ShortMsiAdministrativeExtractionRoot {
+  $candidateBases = @(
+    $env:RUNNER_TEMP,
+    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::CommonDocuments),
+    [Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile),
+    [IO.Path]::GetPathRoot($WorkRoot),
+    [IO.Path]::GetTempPath()
+  )
+
+  foreach ($base in $candidateBases) {
+    if ([string]::IsNullOrWhiteSpace($base)) {
+      continue
+    }
+    try {
+      $base = [IO.Path]::GetFullPath($base)
+    } catch {
+      continue
+    }
+    for ($attempt = 0; $attempt -lt 8; $attempt++) {
+      $candidate = Join-Path $base ("sbx-" + [Guid]::NewGuid().ToString("N").Substring(0, 8))
+      if ($candidate.Length -gt $MaximumMsiAdministrativeExtractRootLength) {
+        break
+      }
+      try {
+        New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
+        return $candidate
+      } catch {
+        continue
+      }
+    }
+  }
+
+  throw "unable to allocate a short MSI administrative extraction root"
+}
+
 if (Test-Path $WorkRoot) {
   Remove-Item -Recurse -Force $WorkRoot
 }
 New-Item -ItemType Directory -Force -Path $WorkRoot | Out-Null
 
 $isMsi = $PackagePath.EndsWith(".msi", [System.StringComparison]::OrdinalIgnoreCase)
-if ($isMsi) {
-  $payloadRoot = Join-Path $WorkRoot "administrative-extract"
-  New-Item -ItemType Directory -Force -Path $payloadRoot | Out-Null
-  $administrativeLog = Join-Path $WorkRoot "msi-administrative-extract.log"
-  Invoke-Msi @(
-    "/a",
-    "`"$PackagePath`"",
-    "/qn",
-    "/norestart",
-    "TARGETDIR=`"$payloadRoot`"",
-    "/l*v",
-    "`"$administrativeLog`""
-  ) "msiexec administrative extraction failed"
-  @{
-    schema_id = "scratchbird.windows_msi_administrative_extract.v1"
-    status = "passed"
-    lifecycle_executed = $false
-    purpose = "payload inspection only"
-  } | ConvertTo-Json | Set-Content (Join-Path $WorkRoot "administrative-extract-proof.json")
-} else {
-  $payloadRoot = Join-Path $WorkRoot "portable-zip"
-  Expand-Archive -Path $PackagePath -DestinationPath $payloadRoot -Force
-}
+function Invoke-PackagePayloadInspection {
+  param([bool] $IsMsi, [string] $WorkRoot)
 
-$manifest = Get-ChildItem -Path $payloadRoot -Recurse -Filter "INSTALL_MANIFEST.json" | Select-Object -First 1
-if (-not $manifest) {
-  throw "missing INSTALL_MANIFEST.json"
-}
-
-$binDir = Get-ChildItem -Path $payloadRoot -Recurse -Directory | Where-Object { $_.FullName -match "ScratchBird.*bin$" } | Select-Object -First 1
-if (-not $binDir) {
-  throw "missing ScratchBird bin directory"
-}
-
-python project/tools/release/verify_native_installed_payload.py $payloadRoot
-if ($LASTEXITCODE -ne 0) {
-  throw "native installed payload verification failed: $LASTEXITCODE"
-}
-
-$savedPath = $env:PATH
-$env:PATH = "$($binDir.FullName);$env:SystemRoot\System32;$env:SystemRoot"
-try {
-  $nativeProfile = Get-ChildItem -Path $WorkRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" | Select-Object -First 1
-  if (-not $nativeProfile) {
-    throw "missing NATIVE_RELEASE_PROFILE.json"
-  }
-  $profile = Get-Content $nativeProfile.FullName -Raw | ConvertFrom-Json
-  if ($profile.llvm_runtime.delivery -ne "bundled") {
-    throw "Windows LLVM runtime delivery is not bundled"
-  }
-  $llvmPath = Join-Path $binDir.FullName $profile.llvm_runtime.runtime_library
-  if (-not (Test-Path $llvmPath)) {
-    throw "missing bundled LLVM runtime: $llvmPath"
-  }
-  $llvmHandle = [System.Runtime.InteropServices.NativeLibrary]::Load($llvmPath)
+  $administrativeExtractRoot = $null
   try {
-    "llvm_runtime_library=$($profile.llvm_runtime.runtime_library)`nllvm_runtime_load=passed" | Set-Content (Join-Path $WorkRoot "llvm-runtime-load.txt")
+    if ($IsMsi) {
+      $payloadRoot = New-ShortMsiAdministrativeExtractionRoot
+      $administrativeExtractRoot = $payloadRoot
+      $administrativeLog = Join-Path $WorkRoot "msi-administrative-extract.log"
+      Invoke-Msi @(
+        "/a",
+        "`"$PackagePath`"",
+        "/qn",
+        "/norestart",
+        "TARGETDIR=`"$payloadRoot`"",
+        "/l*v",
+        "`"$administrativeLog`""
+      ) "msiexec administrative extraction failed"
+      @{
+        schema_id = "scratchbird.windows_msi_administrative_extract.v1"
+        status = "passed"
+        lifecycle_executed = $false
+        purpose = "payload inspection only"
+      } | ConvertTo-Json | Set-Content (Join-Path $WorkRoot "administrative-extract-proof.json")
+    } else {
+      $payloadRoot = Join-Path $WorkRoot "portable-zip"
+      Expand-Archive -Path $PackagePath -DestinationPath $payloadRoot -Force
+    }
+
+    $manifest = Get-ChildItem -Path $payloadRoot -Recurse -Filter "INSTALL_MANIFEST.json" | Select-Object -First 1
+    if (-not $manifest) {
+      throw "missing INSTALL_MANIFEST.json"
+    }
+
+    $binDir = Get-ChildItem -Path $payloadRoot -Recurse -Directory | Where-Object { $_.FullName -match "ScratchBird.*bin$" } | Select-Object -First 1
+    if (-not $binDir) {
+      throw "missing ScratchBird bin directory"
+    }
+
+    python project/tools/release/verify_native_installed_payload.py $payloadRoot
+    if ($LASTEXITCODE -ne 0) {
+      throw "native installed payload verification failed: $LASTEXITCODE"
+    }
+
+    $savedPath = $env:PATH
+    $env:PATH = "$($binDir.FullName);$env:SystemRoot\System32;$env:SystemRoot"
+    try {
+      $nativeProfile = Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" | Select-Object -First 1
+      if (-not $nativeProfile) {
+        throw "missing NATIVE_RELEASE_PROFILE.json"
+      }
+      $profile = Get-Content $nativeProfile.FullName -Raw | ConvertFrom-Json
+      if ($profile.llvm_runtime.delivery -ne "bundled") {
+        throw "Windows LLVM runtime delivery is not bundled"
+      }
+      $llvmPath = Join-Path $binDir.FullName $profile.llvm_runtime.runtime_library
+      if (-not (Test-Path $llvmPath)) {
+        throw "missing bundled LLVM runtime: $llvmPath"
+      }
+      $llvmHandle = [System.Runtime.InteropServices.NativeLibrary]::Load($llvmPath)
+      try {
+        "llvm_runtime_library=$($profile.llvm_runtime.runtime_library)`nllvm_runtime_load=passed" | Set-Content (Join-Path $WorkRoot "llvm-runtime-load.txt")
+      } finally {
+        [System.Runtime.InteropServices.NativeLibrary]::Free($llvmHandle)
+      }
+      foreach ($binary in @("SBsql", "SBadm", "SBbak", "SBsec", "SBdoc", "SBcop", "SBsrv", "SBgate", "SBmgr", "SBParser")) {
+        $executable = Join-Path $binDir.FullName "$binary.exe"
+        if (-not (Test-Path $executable)) {
+          throw "missing native executable: $binary"
+        }
+        $outputPath = Join-Path $WorkRoot "$binary.help.txt"
+        $errorPath = Join-Path $WorkRoot "$binary.help.err.txt"
+        $process = Start-Process -FilePath $executable -ArgumentList @("--help") -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath
+        $status = $process.ExitCode
+        $outputBytes = (Get-Item $outputPath).Length + (Get-Item $errorPath).Length
+        if ($status -notin @(0, 1, 2) -or $outputBytes -eq 0) {
+          throw "native binary launch failed: $binary status=$status"
+        }
+      }
+    } finally {
+      $env:PATH = $savedPath
+    }
   } finally {
-    [System.Runtime.InteropServices.NativeLibrary]::Free($llvmHandle)
-  }
-  foreach ($binary in @("SBsql", "SBadm", "SBbak", "SBsec", "SBdoc", "SBcop", "SBsrv", "SBgate", "SBmgr", "SBParser")) {
-    $executable = Join-Path $binDir.FullName "$binary.exe"
-    if (-not (Test-Path $executable)) {
-      throw "missing native executable: $binary"
-    }
-    $outputPath = Join-Path $WorkRoot "$binary.help.txt"
-    $errorPath = Join-Path $WorkRoot "$binary.help.err.txt"
-    $process = Start-Process -FilePath $executable -ArgumentList @("--help") -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outputPath -RedirectStandardError $errorPath
-    $status = $process.ExitCode
-    $outputBytes = (Get-Item $outputPath).Length + (Get-Item $errorPath).Length
-    if ($status -notin @(0, 1, 2) -or $outputBytes -eq 0) {
-      throw "native binary launch failed: $binary status=$status"
+    if ($null -ne $administrativeExtractRoot -and (Test-Path -LiteralPath $administrativeExtractRoot)) {
+      Remove-Item -LiteralPath $administrativeExtractRoot -Recurse -Force
     }
   }
-} finally {
-  $env:PATH = $savedPath
 }
+
+Invoke-PackagePayloadInspection -IsMsi $isMsi -WorkRoot $WorkRoot
 
 if (-not $isMsi) {
   Write-Output "smoke_install_windows=passed:portable-zip:$WorkRoot"

@@ -409,6 +409,32 @@ def main() -> int:
         smoke.index('"/a"') < smoke.index('"/i"'),
         "administrative_extract_not_separate",
     )
+    administrative_root_limit = re.search(
+        r"(?m)^\$MaximumMsiAdministrativeExtractRootLength\s*=\s*(\d+)\s*$",
+        smoke,
+    )
+    require(
+        administrative_root_limit is not None
+        and int(administrative_root_limit.group(1)) <= 40,
+        "administrative_extract_root_length_limit",
+    )
+    require_tokens(
+        smoke,
+        (
+            "function New-ShortMsiAdministrativeExtractionRoot",
+            "$env:RUNNER_TEMP",
+            "[System.Environment+SpecialFolder]::CommonDocuments",
+            "$payloadRoot = New-ShortMsiAdministrativeExtractionRoot",
+            'TARGETDIR=`"$payloadRoot`"',
+            'Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json"',
+            "Remove-Item -LiteralPath $administrativeExtractRoot -Recurse -Force",
+        ),
+        "smoke_administrative_extract_path",
+    )
+    require(
+        '$payloadRoot = Join-Path $WorkRoot "administrative-extract"' not in smoke,
+        "administrative_extract_deep_work_root",
+    )
 
     require_tokens(
         builder,
