@@ -287,7 +287,29 @@ function Invoke-PackagePayloadInspection {
       throw "missing ScratchBird bin directory"
     }
 
-    python project/tools/release/verify_native_installed_payload.py $payloadRoot
+    $nativeProfiles = @(Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" -File)
+    if ($nativeProfiles.Count -ne 1) {
+      throw "native profile cardinality is invalid: $($nativeProfiles.Count)"
+    }
+    $nativeProfile = $nativeProfiles[0]
+
+    if ($IsMsi) {
+      $runtimeRoot = $nativeProfile.Directory.Parent.Parent.Parent
+      if ($null -eq $runtimeRoot -or -not (Test-Path -LiteralPath $runtimeRoot.FullName -PathType Container)) {
+        throw "MSI administrative image runtime root is invalid"
+      }
+      $portableConfigRoot = Join-Path $runtimeRoot.FullName "etc\scratchbird"
+      if (Test-Path -LiteralPath $portableConfigRoot -PathType Container) {
+        throw "MSI administrative image retains portable etc config tree"
+      }
+      $configDefaultsRoot = Join-Path $runtimeRoot.FullName "share\scratchbird\config-defaults"
+      if (-not (Test-Path -LiteralPath $configDefaultsRoot -PathType Container)) {
+        throw "MSI administrative image config defaults are missing"
+      }
+      python project/tools/release/verify_native_installed_payload.py $payloadRoot --config-root $configDefaultsRoot
+    } else {
+      python project/tools/release/verify_native_installed_payload.py $payloadRoot
+    }
     if ($LASTEXITCODE -ne 0) {
       throw "native installed payload verification failed: $LASTEXITCODE"
     }
@@ -295,10 +317,6 @@ function Invoke-PackagePayloadInspection {
     $savedPath = $env:PATH
     $env:PATH = "$($binDir.FullName);$env:SystemRoot\System32;$env:SystemRoot"
     try {
-      $nativeProfile = Get-ChildItem -Path $payloadRoot -Recurse -Filter "NATIVE_RELEASE_PROFILE.json" | Select-Object -First 1
-      if (-not $nativeProfile) {
-        throw "missing NATIVE_RELEASE_PROFILE.json"
-      }
       $profile = Get-Content $nativeProfile.FullName -Raw | ConvertFrom-Json
       if ($profile.llvm_runtime.delivery -ne "bundled") {
         throw "Windows LLVM runtime delivery is not bundled"
