@@ -382,6 +382,49 @@ def fail(message: str) -> None:
     raise RuntimeError(message)
 
 
+def check_required_source_entries_tracked(repo_root: Path) -> None:
+    """Reject local-only placeholders for required public-export roots.
+
+    A source archive intentionally has no Git metadata, so this check applies
+    only when the caller is operating on a repository checkout.  It prevents
+    ignored local directories from making the export gate pass locally while a
+    clean hosted checkout lacks the same required public inputs.
+    """
+    if not (repo_root / dot_git()).exists():
+        return
+
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--", *sorted(REQUIRED_TOP_LEVEL)],
+            cwd=repo_root,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        fail(f"cannot inspect required public export entries with git: {exc}")
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        fail("cannot inspect required public export entries with git: " + detail)
+
+    tracked_paths = {
+        entry.decode("utf-8", errors="surrogateescape")
+        for entry in result.stdout.split(b"\0")
+        if entry
+    }
+    missing = [
+        name
+        for name in sorted(REQUIRED_TOP_LEVEL)
+        if name not in tracked_paths
+        and not any(path.startswith(name + "/") for path in tracked_paths)
+    ]
+    if missing:
+        fail(
+            "required public export entries have no tracked source payload: "
+            + ", ".join(missing)
+        )
+
+
 def check_package_shape(stage_root: Path) -> None:
     check_reference_acquisition_export_boundary(stage_root)
 
@@ -717,6 +760,7 @@ def main() -> int:
     cleanup_manifest_path = staging_root / "public-export-cleanup-manifest.json"
 
     try:
+        check_required_source_entries_tracked(repo_root)
         copy_public_tree(repo_root, stage_root)
         check_package_shape(stage_root)
         scan_private_references(stage_root)

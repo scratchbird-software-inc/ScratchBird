@@ -1,8 +1,8 @@
 # Public release staging scope.
 #
 # At this stage, only the public documentation tree, public project tree, and
-# root release metadata files are trackable. Top-level build, output, tool,
-# scratch, and artifact directories are local preparation artifacts.
+# explicitly allowlisted root release entries are trackable. Top-level build,
+# output, tool, scratch, and artifact directories are local preparation artifacts.
 /*
 !/docs/
 !/project/
@@ -19,6 +19,14 @@
 !/THIRD_PARTY_NOTICES.md
 !/SBOM.json
 !/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
+# Required public-export roots retain only their tracked README placeholders;
+# release gates create any data artifacts in staging.
+!/LICENSES/
+/LICENSES/*
+!/LICENSES/README.md
+!/data/
+/data/*
+!/data/README.md
 !/public_contract_snapshot
 !/public_input_snapshot
 !/public_execution_plan/

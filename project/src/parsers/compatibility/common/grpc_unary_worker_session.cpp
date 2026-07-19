@@ -22,6 +22,8 @@
 namespace scratchbird::parser::compatibility {
 namespace {
 
+#ifndef _WIN32
+
 constexpr std::string_view kHttp2Preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 constexpr std::uint8_t kFrameData = 0x00;
 constexpr std::uint8_t kFrameHeaders = 0x01;
@@ -204,6 +206,8 @@ bool SendGrpcResponse(int fd,
   return WriteFrame(fd, kFrameHeaders, kFlagEndHeaders | kFlagEndStream, stream_id,
                     ResponseTrailers("0", ""));
 }
+
+#endif
 
 } // namespace
 
