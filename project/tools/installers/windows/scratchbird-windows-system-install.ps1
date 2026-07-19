@@ -28,6 +28,7 @@ $ServiceName = "scratchbird"
 $ServiceDisplayName = "ScratchBird Native Database Server"
 $ServiceAccount = "NT SERVICE\scratchbird"
 $GroupName = "ScratchBird"
+$GroupDescription = "ScratchBird filesystem operations group; no database or security authority"
 $EvidenceName = "WINDOWS_SYSTEM_INSTALL_STATE.json"
 $AllowedActions = @("PostInstall", "PreRemove", "Verify")
 $ServiceCreatedByThisRun = $false
@@ -110,6 +111,34 @@ function Ensure-Directory {
   Assert-NotReparsePoint $Path
 }
 
+function Get-SystemNetExecutable {
+  $systemDirectory = [Environment]::SystemDirectory
+  if ([string]::IsNullOrWhiteSpace($systemDirectory) -or -not [IO.Path]::IsPathRooted($systemDirectory)) {
+    throw [InvalidOperationException]::new()
+  }
+  $canonicalSystemDirectory = [IO.Path]::GetFullPath($systemDirectory).TrimEnd("\")
+  $candidate = Join-Path $canonicalSystemDirectory "net.exe"
+  if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+    throw [InvalidOperationException]::new()
+  }
+  $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+  if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw [InvalidOperationException]::new()
+  }
+  $canonicalCandidate = [IO.Path]::GetFullPath($item.FullName)
+  if (-not [string]::Equals(
+      [IO.Path]::GetDirectoryName($canonicalCandidate),
+      $canonicalSystemDirectory,
+      [StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals(
+        [IO.Path]::GetFileName($canonicalCandidate),
+        "net.exe",
+        [StringComparison]::OrdinalIgnoreCase)) {
+    throw [InvalidOperationException]::new()
+  }
+  return $canonicalCandidate
+}
+
 function Get-LocalScratchBirdGroup {
   $rows = @(Get-CimInstance -ClassName Win32_Group -Filter "Name='ScratchBird' AND LocalAccount=TRUE")
   if ($rows.Count -ne 1) {
@@ -130,12 +159,14 @@ function Ensure-LocalScratchBirdGroup {
   }
   if ($rows.Count -eq 0) {
     try {
-      $computer = [ADSI]("WinNT://{0},computer" -f $env:COMPUTERNAME)
-      $group = $computer.Create("group", $GroupName)
-      $group.Description = "ScratchBird filesystem operations group; no database or security authority"
-      $group.SetInfo()
+      $net = Get-SystemNetExecutable
+      & $net "localgroup" $GroupName "/add" "/comment:$GroupDescription" 1>$null 2>$null
+      $nativeStatus = [int]$LASTEXITCODE
+      if ($nativeStatus -ne 0) {
+        Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED.NET_CREATE_EXIT_$nativeStatus"
+      }
     } catch {
-      Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED"
+      Fail-Code "BOOTSTRAP.GROUP_CREATE_FAILED.NET_CREATE"
     }
   } elseif ($rows.Count -ne 1) {
     Fail-Code "BOOTSTRAP.GROUP_INPUT_INVALID"

@@ -281,6 +281,10 @@ def main() -> int:
             "Win32_Group",
             "LocalAccount=TRUE",
             "[int]$row.SIDType -ne 4",
+            "function Get-SystemNetExecutable",
+            "[Environment]::SystemDirectory",
+            '"localgroup" $GroupName "/add"',
+            "BOOTSTRAP.GROUP_CREATE_FAILED.NET_CREATE_EXIT_",
             "NT SERVICE\\scratchbird",
             '"start= demand"',
             '@("sidtype", $ServiceName, "restricted")',
@@ -321,6 +325,7 @@ def main() -> int:
         "InstallerUser",
         "GROUP_MEMBERSHIP_REQUIRED",
         ".Add((\"WinNT://",
+        '.Create("group", $GroupName)',
     ):
         require(forbidden not in lifecycle, f"lifecycle_forbidden:{forbidden}")
 
