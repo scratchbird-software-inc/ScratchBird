@@ -216,25 +216,32 @@ function Assert-ServiceRecord {
 }
 
 function Ensure-SBsrvService {
+  $script:LifecyclePhase = "SERVICE_IDENTITY.QUERY_EXISTING"
   $existing = Get-ServiceRecord
   $preexisting = $null -ne $existing
   $previousStartMode = if ($preexisting) { [string]$existing.StartMode } else { "absent" }
   $previousState = if ($preexisting) { [string]$existing.State } else { "absent" }
   if ($preexisting) {
+    $script:LifecyclePhase = "SERVICE_IDENTITY.ASSERT_EXISTING"
     Assert-ServiceRecord $existing
   } else {
     $sc = Join-Path $env:SystemRoot "System32\sc.exe"
+    $script:LifecyclePhase = "SERVICE_IDENTITY.CREATE"
     $command = Get-ExpectedServiceCommand
     Invoke-NativeQuiet $sc @("create", $ServiceName, "binPath= $command", "start= demand", "obj= $ServiceAccount", "password= ", "DisplayName= $ServiceDisplayName") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
     $script:ServiceCreatedByThisRun = $true
+    $script:LifecyclePhase = "SERVICE_IDENTITY.DESCRIPTION"
     Invoke-NativeQuiet $sc @("description", $ServiceName, "ScratchBird native SBsrv owner for shared SBgate and standalone SBParser") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
   }
   $sc = Join-Path $env:SystemRoot "System32\sc.exe"
+  $script:LifecyclePhase = "SERVICE_IDENTITY.SIDTYPE"
   Invoke-NativeQuiet $sc @("sidtype", $ServiceName, "restricted") "BOOTSTRAP.DIRECTORY_PERMISSION_INVALID"
+  $script:LifecyclePhase = "SERVICE_IDENTITY.QUERY_RESULT"
   $service = Get-ServiceRecord
   if ($null -eq $service) {
     Fail-Code "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
   }
+  $script:LifecyclePhase = "SERVICE_IDENTITY.ASSERT_RESULT"
   Assert-ServiceRecord $service -RequireFreshDefaults:(-not $preexisting)
   return [ordered]@{
     preexisting = $preexisting
