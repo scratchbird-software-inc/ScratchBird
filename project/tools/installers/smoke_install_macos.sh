@@ -26,6 +26,9 @@ fi
 
 rm -rf "$work_root"
 mkdir -p "$work_root"
+# The lifecycle helper refuses ambiguous fixture roots.  Normalize the caller
+# supplied work directory once so every later fixture invocation is absolute.
+work_root="$(cd "$work_root" && pwd -P)"
 
 system_install="${SB_MACOS_SMOKE_INSTALL_SYSTEM:-false}"
 require_signed="${SB_MACOS_REQUIRE_SIGNED:-false}"

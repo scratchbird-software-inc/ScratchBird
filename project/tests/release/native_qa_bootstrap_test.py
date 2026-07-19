@@ -639,12 +639,12 @@ chmod 755 "$runtime/libexec/scratchbird-macos-system-install"
 
         package = self.root / "expanded-scripts.pkg"
         package.write_bytes(b"fixture pkg\n")
-        work_root = self.root / "expanded-scripts-smoke"
+        work_root = Path("expanded-scripts-smoke")
         environment = os.environ.copy()
         environment["PATH"] = f"{tools}{os.pathsep}{environment['PATH']}"
         result = subprocess.run(
             [str(smoke), str(package), str(work_root)],
-            cwd=REPO_ROOT,
+            cwd=self.root,
             env=environment,
             text=True,
             capture_output=True,
@@ -655,7 +655,7 @@ chmod 755 "$runtime/libexec/scratchbird-macos-system-install"
             0,
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
-        self.assertTrue((work_root / "pkg-scripts/postinstall").is_file())
+        self.assertTrue((self.root / work_root / "pkg-scripts/postinstall").is_file())
         self.assertIn("smoke_install_macos=passed", result.stdout)
 
     def test_linux_system_payload_materializes_runtime_and_identity(self) -> None:
