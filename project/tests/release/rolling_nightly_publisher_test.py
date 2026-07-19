@@ -14,6 +14,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -118,8 +119,10 @@ class FakeRunner:
         self.fail_edit_once = False
         self.fail_create_once = False
         self.fail_push_after_update_once = False
+        self.tag_visibility_misses_after_push = 0
         self.origin_url = "https://github.com/scratchbird-software-inc/ScratchBird" + GIT_SUFFIX
         self._canonical_patch_count = 0
+        self._tag_visibility_misses = 0
 
     def result(self, returncode: int = 0, stdout: str = "", stderr: str = "", *, check: bool) -> publisher.CommandResult:
         value = publisher.CommandResult(returncode, stdout, stderr)
@@ -195,6 +198,7 @@ class FakeRunner:
                     value for value in args if value.endswith(f":refs/tags/{self.tag}")
                 )
                 self.remote_tag_sha = refspec.split(":", 1)[0]
+                self._tag_visibility_misses = self.tag_visibility_misses_after_push
                 if self.fail_push_after_update_once:
                     self.fail_push_after_update_once = False
                     return self.result(1, stderr="injected post-update push failure", check=check)
@@ -272,6 +276,9 @@ class FakeRunner:
             return self.result(stdout=json.dumps(self.release), check=check)
         if endpoint.endswith(f"/git/ref/tags/{self.tag}"):
             if self.remote_tag_sha is None:
+                return self.result(1, stderr="HTTP 404 Not Found", check=check)
+            if self._tag_visibility_misses > 0:
+                self._tag_visibility_misses -= 1
                 return self.result(1, stderr="HTTP 404 Not Found", check=check)
             return self.result(
                 stdout=json.dumps({"object": {"type": "commit", "sha": self.remote_tag_sha}}),
@@ -371,6 +378,45 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 ["scratchbird-nightly-manifest.json", "scratchbird-nightly-SHA256SUMS"],
                 canonical_renames[-2:],
             )
+
+    def test_first_creation_waits_for_eventual_tag_visibility(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-tag-visibility-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.tag_visibility_misses_after_push = 2
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual(
+                [
+                    mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
+                    mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
+                ],
+                sleep.call_args_list,
+            )
+            create_index = next(
+                index
+                for index, command in enumerate(runner.commands)
+                if command[:3] == ["gh", "release", "create"]
+            )
+            actual_push_index = next(
+                index
+                for index, command in enumerate(runner.commands)
+                if command[0] == "git"
+                and "push" in command
+                and "--dry-run" not in command
+                and any(value.endswith(":refs/tags/nightly") for value in command)
+            )
+            tag_lookups_before_create = [
+                command
+                for command in runner.commands[actual_push_index + 1 : create_index]
+                if command[:2] == ["gh", "api"]
+                and any("/git/ref/tags/nightly" in value for value in command)
+            ]
+            self.assertGreaterEqual(len(tag_lookups_before_create), 3)
+            self.assertIsNotNone(runner.release)
 
     def test_linux_scope_publishes_only_its_contract_to_its_own_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-publish-") as temp:

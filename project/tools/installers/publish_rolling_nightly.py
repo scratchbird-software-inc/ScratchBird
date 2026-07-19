@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Protocol
 
 TOOL_ROOT = Path(__file__).resolve().parent
@@ -39,6 +40,8 @@ CHECKSUM_NAME = DEFAULT_CONTRACT.checksum_name
 MANIFEST_SCHEMA = "scratchbird.native_nightly_release.v1"
 PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
 API_VERSION = "2026-03-10"
+TAG_VISIBILITY_ATTEMPTS = 15
+TAG_VISIBILITY_DELAY_SECONDS = 2.0
 CANONICAL_ASSET_NAMES = DEFAULT_CONTRACT.canonical_asset_names
 REQUIRED_ARTIFACT_VERIFICATION = DEFAULT_CONTRACT.verification_by_name
 NATIVE_COMPONENTS = [
@@ -319,6 +322,31 @@ class RollingPublisher:
             raise PublishError("nightly_tag_not_lightweight_commit")
         return str(obj["sha"]).lower()
 
+    def wait_for_tag_target(self, target_sha: str) -> str:
+        """Wait for GitHub's API to resolve the just-pushed lightweight tag.
+
+        A successful ``git push`` can precede visibility of that ref to the
+        GitHub Release API.  Keep ``--verify-tag`` as the release-creation
+        guard, but wait for the API to observe the exact expected target
+        rather than treating that short propagation window as a publication
+        failure.
+        """
+
+        last_observed = "absent"
+        for attempt in range(TAG_VISIBILITY_ATTEMPTS):
+            observed = self.get_tag_sha()
+            if observed == target_sha:
+                return observed
+            if observed is not None:
+                last_observed = observed
+            if attempt + 1 < TAG_VISIBILITY_ATTEMPTS:
+                time.sleep(TAG_VISIBILITY_DELAY_SECONDS)
+        raise PublishError(
+            "tag_visibility_timeout:"
+            f"expected={target_sha}:last_observed={last_observed}:"
+            f"attempts={TAG_VISIBILITY_ATTEMPTS}"
+        )
+
     def verify_origin_repository(self) -> None:
         result = self.git("remote", "get-url", "origin")
         remote = result.stdout.strip()
@@ -563,6 +591,7 @@ class RollingPublisher:
                 tag_update_attempted = True
                 self.update_tag(self.target_sha)
                 tag_moved = True
+                self.wait_for_tag_target(self.target_sha)
                 self.gh(
                     "release",
                     "create",
@@ -679,6 +708,7 @@ class RollingPublisher:
                 tag_update_attempted = True
                 self.update_tag(self.target_sha)
                 tag_moved = True
+                self.wait_for_tag_target(self.target_sha)
             self.edit_release(
                 draft=False,
                 prerelease=True,
@@ -689,12 +719,7 @@ class RollingPublisher:
             published = self.verify_canonical_inventory(assets, exact=True)
             if published.get("draft") is not False or published.get("prerelease") is not True:
                 raise PublishError("published_release_state_mismatch")
-            published_tag_sha = self.get_tag_sha()
-            if published_tag_sha != self.target_sha:
-                raise PublishError(
-                    "published_tag_revision_mismatch:"
-                    f"expected={self.target_sha}:actual={published_tag_sha}"
-                )
+            self.wait_for_tag_target(self.target_sha)
             committed = True
         except Exception as exc:
             recovery_errors: list[str] = []
