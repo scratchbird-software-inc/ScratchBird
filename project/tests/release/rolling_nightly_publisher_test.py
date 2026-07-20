@@ -130,6 +130,7 @@ class FakeRunner:
         self.created_target_commitish_override: str | None = None
         self.fail_push_after_update_once = False
         self.mutate_tag_before_lease_push_once: str | None = None
+        self.mutate_legacy_draft_to_other_run_on_get: int | None = None
         self.tag_visibility_misses_after_push = 0
         self.release_lookup_transient_failures = 0
         self.release_lookup_hidden = False
@@ -437,6 +438,13 @@ class FakeRunner:
             if release is None:
                 return self.result(1, stderr="HTTP 404 release", check=check)
             if method == "GET":
+                if self.mutate_legacy_draft_to_other_run_on_get == release_id:
+                    self.mutate_legacy_draft_to_other_run_on_get = None
+                    release["body"] = (
+                        "<!-- scratchbird-rolling-nightly-managed:"
+                        "schema=v2;scope=all;tag=nightly;"
+                        f"source={'c' * 40};run_id=99;predecessor_tag=absent -->"
+                    )
                 if self.release_lookup_transient_failures > 0:
                     self.release_lookup_transient_failures -= 1
                     return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
@@ -1000,6 +1008,33 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertLess(preflight_index, first_real_tag_push_index)
             self.assertLess(first_real_tag_push_index, legacy_delete_index)
 
+    def test_changed_legacy_draft_is_never_deleted_after_refetch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-legacy-change-race-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            legacy = runner.add_legacy_draft(source="b" * 40, run_id="17")
+            runner.mutate_legacy_draft_to_other_run_on_get = legacy["id"]
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "legacy_draft_changed_before_cleanup",
+            ):
+                self.make_publisher(runner, notes).publish(assets)
+            changed = runner.find_release(legacy["id"])
+            self.assertIs(changed, legacy)
+            self.assertIn("run_id=99", changed["body"])
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] == "DELETE"
+                    and any(f"releases/{legacy['id']}" in value for value in command)
+                    for command in runner.commands
+                )
+            )
+
     def test_foreign_same_tag_draft_is_refused_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-foreign-draft-") as temp:
             root = Path(temp)
@@ -1281,6 +1316,73 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 self.make_publisher(runner, notes).publish(assets)
             self.assertIsNone(runner.release)
             self.assertIsNone(runner.remote_tag_sha)
+
+    def test_fresh_draft_recovery_never_deletes_another_run_marker(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-own-draft-change-race-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            # Let an incoming artifact exist before the later upload failure.
+            # Recovery must leave that artifact untouched once the draft's
+            # marker changes to another run between failure and cleanup.
+            runner.fail_upload_after = 2
+            rolling = self.make_publisher(runner, notes)
+            original_lookup = rolling.get_release_by_id
+            mutated = False
+
+            def mutate_before_recovery_lookup(
+                release_id: int, *, allow_missing: bool = False
+            ) -> dict | None:
+                nonlocal mutated
+                if allow_missing and not mutated and runner.release is not None:
+                    mutated = True
+                    runner.release["body"] = (
+                        "<!-- scratchbird-rolling-nightly-managed:"
+                        "schema=v2;scope=all;tag=nightly;"
+                        f"source={'c' * 40};run_id=99;predecessor_tag=absent -->"
+                    )
+                return original_lookup(release_id, allow_missing=allow_missing)
+
+            with mock.patch.object(
+                rolling,
+                "get_release_by_id",
+                side_effect=mutate_before_recovery_lookup,
+            ):
+                with self.assertRaisesRegex(
+                    publisher.PublishError,
+                    "current_run_draft_cleanup_refused_not_owned",
+                ):
+                    rolling.publish(assets)
+            self.assertTrue(mutated)
+            self.assertIsNotNone(runner.release)
+            assert runner.release is not None
+            self.assertIn("run_id=99", runner.release["body"])
+            self.assertTrue(
+                any(
+                    row["name"].startswith("sb-nightly-incoming-42-1--")
+                    for row in runner.release["assets"]
+                )
+            )
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] == "DELETE"
+                    and any("/releases/7" in value for value in command)
+                    for command in runner.commands
+                )
+            )
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] == "DELETE"
+                    and any("/releases/assets/" in value for value in command)
+                    for command in runner.commands
+                )
+            )
 
     def test_partial_upload_failure_leaves_old_release_and_tag_intact(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-upload-fail-") as temp:

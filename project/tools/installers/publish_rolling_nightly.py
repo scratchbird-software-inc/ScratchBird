@@ -114,6 +114,16 @@ class Swap:
     backup_name: str | None
 
 
+@dataclass(frozen=True)
+class LegacyDraftSnapshot:
+    """The exact pre-marker draft surface authorized for one cleanup DELETE."""
+
+    release_id: int
+    source: str
+    run_id: str
+    fingerprint: str
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -593,9 +603,112 @@ class RollingPublisher:
             is_staging_name(name) for name in names
         )
 
+    def legacy_draft_snapshot(self, release: dict[str, Any]) -> LegacyDraftSnapshot:
+        """Capture the only legacy record shape this publisher may delete.
+
+        Discovery and deletion are separate API reads.  Bind the DELETE to
+        the entire ownership-relevant surface seen at discovery so a concurrent
+        conversion into another run's marker draft cannot be mistaken for the
+        stale record that was originally authorized for cleanup.
+        """
+
+        body = release.get("body")
+        if not isinstance(body, str) or self.has_contract_managed_marker(body):
+            raise PublishError("legacy_draft_snapshot_not_pre_marker")
+        provenance = self.legacy_draft_provenance(body)
+        if provenance is None or not self.is_managed_draft(release):
+            raise PublishError("legacy_draft_snapshot_not_strict_managed")
+        release_id = self.release_id(release)
+        if release.get("immutable") is not False:
+            raise PublishError("legacy_draft_snapshot_immutable_or_state_unknown")
+        target_commitish = release.get("target_commitish")
+        if not isinstance(target_commitish, str):
+            raise PublishError("legacy_draft_snapshot_target_invalid")
+        author = release.get("author")
+        if not isinstance(author, dict) or not isinstance(author.get("login"), str):
+            raise PublishError("legacy_draft_snapshot_author_invalid")
+        assets = release.get("assets")
+        if not isinstance(assets, list):
+            raise PublishError("legacy_draft_snapshot_assets_invalid")
+        asset_surface: list[dict[str, Any]] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                raise PublishError("legacy_draft_snapshot_asset_invalid")
+            asset_id = asset.get("id")
+            name = asset.get("name")
+            state = asset.get("state")
+            size = asset.get("size")
+            digest = asset.get("digest")
+            if (
+                not isinstance(asset_id, int)
+                or isinstance(asset_id, bool)
+                or asset_id <= 0
+                or not isinstance(name, str)
+                or not isinstance(state, str)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size < 0
+                or not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+            ):
+                raise PublishError("legacy_draft_snapshot_asset_surface_invalid")
+            asset_surface.append(
+                {
+                    "id": asset_id,
+                    "name": name,
+                    "state": state,
+                    "size": size,
+                    "digest": digest,
+                }
+            )
+        surface = {
+            "id": release_id,
+            "tag_name": release.get("tag_name"),
+            "name": release.get("name"),
+            "body": body,
+            "draft": release.get("draft"),
+            "prerelease": release.get("prerelease"),
+            "immutable": release.get("immutable"),
+            "target_commitish": target_commitish,
+            "author_login": author["login"],
+            "assets": sorted(asset_surface, key=lambda asset: int(asset["id"])),
+        }
+        encoded = json.dumps(surface, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return LegacyDraftSnapshot(
+            release_id=release_id,
+            source=provenance[0],
+            run_id=provenance[1],
+            fingerprint=hashlib.sha256(encoded).hexdigest(),
+        )
+
+    def delete_observed_legacy_draft(
+        self, snapshot: LegacyDraftSnapshot, release: dict[str, Any]
+    ) -> None:
+        """Delete a stale legacy draft only if it is byte-for-byte unchanged."""
+
+        try:
+            observed = self.legacy_draft_snapshot(release)
+        except PublishError as exc:
+            raise PublishError(
+                f"legacy_draft_changed_before_cleanup:{snapshot.release_id}:{exc}"
+            ) from exc
+        if observed != snapshot:
+            raise PublishError(
+                f"legacy_draft_changed_before_cleanup:{snapshot.release_id}:fingerprint"
+            )
+        self.api(
+            f"repos/{self.repository}/releases/{snapshot.release_id}",
+            "--method",
+            "DELETE",
+        )
+
     def discover_release_state(
         self,
-    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+    ) -> tuple[
+        dict[str, Any] | None,
+        list[LegacyDraftSnapshot],
+        dict[str, Any] | None,
+    ]:
         """Select at most one public release and inventory private siblings.
 
         Release-by-tag is not used here because GitHub intentionally returns
@@ -604,7 +717,7 @@ class RollingPublisher:
         """
 
         public: list[dict[str, Any]] = []
-        legacy_drafts: list[dict[str, Any]] = []
+        legacy_drafts: list[LegacyDraftSnapshot] = []
         resumable_draft: dict[str, Any] | None = None
         for release in self.list_releases():
             if release.get("tag_name") != self.contract.tag:
@@ -638,7 +751,7 @@ class RollingPublisher:
                     # current managed marker before it moves the tag.
                     resumable_draft = release
                 else:
-                    legacy_drafts.append(release)
+                    legacy_drafts.append(self.legacy_draft_snapshot(release))
         if len(public) > 1:
             raise PublishError("same_tag_public_release_duplicate")
         if public and resumable_draft is not None:
@@ -894,9 +1007,32 @@ class RollingPublisher:
         if tag_sha != marker_source:
             raise PublishError("existing_nightly_tag_provenance_mismatch")
 
-    def delete_new_draft_release(self, release: dict[str, Any]) -> None:
-        if release.get("draft") is not True or not self.is_managed_draft(release):
-            raise PublishError("new_release_cleanup_refused_not_draft")
+    def is_current_run_owned_release(self, release: dict[str, Any]) -> bool:
+        """Whether the release metadata still belongs to this workflow run."""
+
+        body = str(release.get("body") or "")
+        author = release.get("author")
+        return (
+            release.get("tag_name") == self.contract.tag
+            and release.get("prerelease") is True
+            and release.get("name") == self.title
+            and isinstance(author, dict)
+            and author.get("login") == MANAGED_RELEASE_AUTHOR
+            and self.has_current_run_marker(body)
+        )
+
+    def is_current_run_owned_draft(self, release: dict[str, Any]) -> bool:
+        return (
+            release.get("draft") is True
+            and self.is_current_run_owned_release(release)
+            and self.is_managed_draft(release)
+        )
+
+    def delete_current_run_draft_release(self, release: dict[str, Any]) -> None:
+        """Delete only the private draft marked for this exact workflow run."""
+
+        if not self.is_current_run_owned_draft(release):
+            raise PublishError("current_run_draft_cleanup_refused_not_owned")
         release_id = self.release_id(release)
         endpoint = f"repos/{self.repository}/releases/{release_id}"
         self.api(endpoint, "--method", "DELETE")
@@ -1378,10 +1514,10 @@ class RollingPublisher:
             # a ref race cannot discard a recoverable draft before a viable
             # replacement transaction is established.
             for legacy in legacy_drafts:
-                stale = self.get_release_by_id(self.release_id(legacy))
+                stale = self.get_release_by_id(legacy.release_id)
                 if stale is None:
                     raise PublishError("legacy_draft_disappeared_before_cleanup")
-                self.delete_new_draft_release(stale)
+                self.delete_observed_legacy_draft(legacy, stale)
 
             if release_id is None:
                 raise PublishError("active_release_id_missing")
@@ -1485,6 +1621,9 @@ class RollingPublisher:
             recovery_errors: list[str] = []
             if not committed:
                 current_release: dict[str, Any] | None = None
+                current_owned = False
+                current_draft_owned = False
+                ownership_lost = False
                 if release_id is not None:
                     try:
                         current_release = self.get_release_by_id(
@@ -1492,19 +1631,34 @@ class RollingPublisher:
                         )
                     except Exception as lookup_exc:
                         recovery_errors.append(f"release_lookup_during_recovery:{lookup_exc}")
-                if current_release is not None and current_release.get("draft") is not True:
-                    try:
-                        self.edit_release_snapshot(current_release, draft_override=True)
-                    except Exception as hide_exc:
-                        recovery_errors.append(f"release_hide_before_rollback:{hide_exc}")
+                if current_release is not None:
+                    current_owned = self.is_current_run_owned_release(current_release)
+                    if not current_owned:
+                        ownership_lost = True
+                        recovery_errors.append("recovery_release_ownership_lost")
+                    elif current_release.get("draft") is not True:
+                        try:
+                            self.edit_release_snapshot(current_release, draft_override=True)
+                            current_draft_owned = True
+                        except Exception as hide_exc:
+                            recovery_errors.append(f"release_hide_before_rollback:{hide_exc}")
+                    else:
+                        current_draft_owned = self.is_current_run_owned_draft(
+                            current_release
+                        )
+                        if not current_draft_owned:
+                            recovery_errors.append(
+                                "recovery_current_draft_surface_not_owned"
+                            )
                 if resumed_existing_draft or irreversible_cleanup_started:
                     # Previous-generation bytes may already be deleted. Keep the
                     # exact current generation private and retryable; never
                     # republish a partial rollback or restore a tag that would
                     # disagree with it.  A resumed draft may already contain a
                     # coherent generation from a prior interrupted attempt.
-                    recovery_errors.append("coherent_draft_retry_required")
-                else:
+                    if current_owned:
+                        recovery_errors.append("coherent_draft_retry_required")
+                elif current_draft_owned:
                     recovery_errors.extend(self.rollback_swaps(swaps))
                 if (
                     original_release is None
@@ -1519,16 +1673,17 @@ class RollingPublisher:
                             else None
                         )
                         if current_release is not None:
-                            assert release_id is not None
-                            self.cleanup_named_prefix(release_id, incoming_prefix)
-                            self.delete_new_draft_release(current_release)
-                        tag_recovery = self.restore_tag_if_transaction_owned(old_tag_sha)
-                        if tag_recovery is not None:
-                            recovery_errors.append(tag_recovery)
+                            self.delete_current_run_draft_release(current_release)
+                        if not ownership_lost:
+                            tag_recovery = self.restore_tag_if_transaction_owned(
+                                old_tag_sha
+                            )
+                            if tag_recovery is not None:
+                                recovery_errors.append(tag_recovery)
                     except Exception as initial_restore_exc:
                         recovery_errors.append(f"initial_release_restore:{initial_restore_exc}")
                 elif not resumed_existing_draft and not irreversible_cleanup_started:
-                    if tag_update_attempted:
+                    if tag_update_attempted and not ownership_lost:
                         try:
                             tag_recovery = self.restore_tag_if_transaction_owned(
                                 old_tag_sha
@@ -1537,12 +1692,17 @@ class RollingPublisher:
                                 recovery_errors.append(tag_recovery)
                         except Exception as restore_exc:
                             recovery_errors.append(f"tag_restore:{restore_exc}")
-                    try:
-                        assert release_id is not None
-                        self.cleanup_named_prefix(release_id, incoming_prefix)
-                    except Exception as cleanup_exc:
-                        recovery_errors.append(f"incoming_cleanup:{cleanup_exc}")
-                    if original_release is not None and not recovery_errors:
+                    if current_draft_owned:
+                        try:
+                            assert release_id is not None
+                            self.cleanup_named_prefix(release_id, incoming_prefix)
+                        except Exception as cleanup_exc:
+                            recovery_errors.append(f"incoming_cleanup:{cleanup_exc}")
+                    if (
+                        original_release is not None
+                        and current_draft_owned
+                        and not recovery_errors
+                    ):
                         recovery_errors.extend(
                             self.restore_release_metadata(original_release)
                         )
