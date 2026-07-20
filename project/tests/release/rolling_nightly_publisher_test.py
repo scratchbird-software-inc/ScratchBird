@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,25 +110,35 @@ class FakeRunner:
     def __init__(self) -> None:
         self.tag = "nightly"
         self.release: dict | None = None
+        self.extra_releases: list[dict] = []
         self.remote_tag_sha: str | None = None
         self.local_tag_sha: str | None = None
         self.next_asset_id = 100
+        self.next_release_id = 20
         self.asset_data: dict[int, bytes] = {}
         self.commands: list[list[str]] = []
+        self.curl_configs: list[str] = []
         self.fail_upload_after: int | None = None
+        self.fail_upload_after_accept_once = False
+        self.fail_upload_starter_once = False
         self.fail_canonical_patch_at: int | None = None
         self.fail_edit_once = False
         self.fail_create_once = False
         self.fail_create_transient_once = False
         self.fail_create_not_found_once = False
         self.fail_create_after_accept_once = False
+        self.created_target_commitish_override: str | None = None
         self.fail_push_after_update_once = False
+        self.mutate_tag_before_lease_push_once: str | None = None
         self.tag_visibility_misses_after_push = 0
         self.release_lookup_transient_failures = 0
+        self.release_lookup_hidden = False
         self.initial_release_payloads: list[dict] = []
+        self.release_patch_payloads: list[dict] = []
         self.origin_url = "https://github.com/scratchbird-software-inc/ScratchBird" + GIT_SUFFIX
         self._canonical_patch_count = 0
         self._tag_visibility_misses = 0
+        self._upload_call_count = 0
 
     def result(self, returncode: int = 0, stdout: str = "", stderr: str = "", *, check: bool) -> publisher.CommandResult:
         value = publisher.CommandResult(returncode, stdout, stderr)
@@ -135,17 +146,59 @@ class FakeRunner:
             raise publisher.PublishError(f"mock_command_failed:{stderr or stdout}")
         return value
 
-    def make_asset(self, name: str, data: bytes) -> dict:
+    def make_asset(self, name: str, data: bytes, *, state: str = "uploaded") -> dict:
         row = {
             "id": self.next_asset_id,
             "name": name,
-            "state": "uploaded",
+            "state": state,
             "size": len(data),
             "digest": f"sha256:{sha(data)}",
         }
         self.asset_data[self.next_asset_id] = data
         self.next_asset_id += 1
         return row
+
+    def all_releases(self) -> list[dict]:
+        values = list(self.extra_releases)
+        if self.release is not None:
+            values.append(self.release)
+        return values
+
+    def find_release(self, release_id: int) -> dict | None:
+        return next(
+            (release for release in self.all_releases() if release["id"] == release_id),
+            None,
+        )
+
+    def remove_release(self, release_id: int) -> bool:
+        release = self.find_release(release_id)
+        if release is None:
+            return False
+        for asset in release["assets"]:
+            self.asset_data.pop(asset["id"], None)
+        if self.release is release:
+            self.release = None
+        else:
+            self.extra_releases.remove(release)
+        return True
+
+    def release_record(self, payload: dict, release_id: int) -> dict:
+        return {
+            "id": release_id,
+            "tag_name": self.tag,
+            "name": payload["name"],
+            "body": payload["body"],
+            "draft": payload["draft"],
+            "prerelease": payload["prerelease"],
+            "immutable": False,
+            "target_commitish": payload["target_commitish"],
+            "author": {"login": "github-actions[bot]"},
+            "upload_url": (
+                "https://uploads.github.com/repos/scratchbird-software-inc/"
+                f"ScratchBird/releases/{release_id}/assets{{?name,label}}"
+            ),
+            "assets": [],
+        }
 
     def seed_release(self, assets: list[publisher.LocalAsset], marker: bytes = b"old", *, immutable: bool = False) -> None:
         self.remote_tag_sha = "b" * 40
@@ -158,6 +211,11 @@ class FakeRunner:
             "prerelease": True,
             "immutable": immutable,
             "target_commitish": self.remote_tag_sha,
+            "author": {"login": "github-actions[bot]"},
+            "upload_url": (
+                "https://uploads.github.com/repos/scratchbird-software-inc/"
+                "ScratchBird/releases/7/assets{?name,label}"
+            ),
             "assets": [
                 self.make_asset(
                     asset.name,
@@ -169,18 +227,71 @@ class FakeRunner:
             ],
         }
 
+    def add_legacy_draft(
+        self,
+        *,
+        source: str,
+        run_id: str,
+        target: str = "main",
+        title: str = "ScratchBird Native Nightly Builds",
+        author_login: str = "github-actions[bot]",
+        primary: bool = False,
+    ) -> dict:
+        """Create a record made by the retired tag-based publisher."""
+
+        release_id = self.next_release_id
+        self.next_release_id += 1
+        staged_name = (
+            "sb-nightly-incoming-99-1--"
+            "scratchbird-nightly-linux-x86_64.tar.gz"
+        )
+        release = {
+            "id": release_id,
+            "tag_name": self.tag,
+            "name": title,
+            "body": (
+                "ScratchBird native nightly build for testing.\n\n"
+                "- Native ScratchBird platform only: SBmgr, SBgate, SBParser using native SBSQL, and SBsrv are included.\n"
+                "- No compatibility parser or emulation packages are included.\n"
+                "- The native ScratchBird listener default is TCP port 3092.\n"
+                "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources.\n"
+                "- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23+, Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22+.\n"
+                "- Public nightly assets include fully verified portable archives and system installer packages.\n"
+                "- DEB, RPM, AUR, PKG, and MSI packages are published for tester installation after their platform verification and install-smoke jobs pass.\n"
+                f"- Source commit: {source}\n"
+                "- Requested version: 0.0.0-nightly\n"
+                "- Workflow run: https://github.com/"
+                "scratchbird-software-inc/ScratchBird/actions/runs/"
+                f"{run_id}\n"
+                "- Linux, Windows, and macOS build, CTest, package verification, and smoke-install jobs completed successfully before publication.\n"
+                "- macOS QA packages are unsigned and unnotarized unless the manifest explicitly records signed payloads.\n\n"
+                "Verify downloads with scratchbird-nightly-SHA256SUMS.\n"
+            ),
+            "draft": True,
+            "prerelease": True,
+            "immutable": False,
+            "target_commitish": target,
+            "author": {"login": author_login},
+            "upload_url": (
+                "https://uploads.github.com/repos/scratchbird-software-inc/"
+                f"ScratchBird/releases/{release_id}/assets{{?name,label}}"
+            ),
+            "assets": [self.make_asset(staged_name, b"legacy-staged")],
+        }
+        if primary:
+            self.release = release
+        else:
+            self.extra_releases.append(release)
+        return release
+
     def run(self, command: list[str], *, check: bool = True) -> publisher.CommandResult:
         self.commands.append(list(command))
         if command[0] == "git":
             return self.run_git(command[1:], check=check)
+        if command[0] == "curl":
+            return self.curl_upload(command[1:], check=check)
         if command[0] != "gh":
             return self.result(1, stderr="unexpected binary", check=check)
-        if command[1:3] == ["release", "upload"]:
-            return self.release_upload(command[3:], check=check)
-        if command[1:3] == ["release", "edit"]:
-            return self.release_edit(command[3:], check=check)
-        if command[1:3] == ["release", "download"]:
-            return self.release_download(command[3:], check=check)
         if command[1] == "api":
             return self.api(command[2:], check=check)
         return self.result(1, stderr="unexpected gh command", check=check)
@@ -194,6 +305,26 @@ class FakeRunner:
             self.local_tag_sha = args[3]
             return self.result(check=check)
         if args and args[0] == "push":
+            lease = next(
+                (
+                    value
+                    for value in args
+                    if value.startswith("--force-with-lease=refs/tags/")
+                ),
+                None,
+            )
+            if lease is not None:
+                expected = lease.rsplit(":", 1)[1] or None
+                if (
+                    "--dry-run" not in args
+                    and self.mutate_tag_before_lease_push_once is not None
+                ):
+                    self.remote_tag_sha = self.mutate_tag_before_lease_push_once
+                    self.mutate_tag_before_lease_push_once = None
+                if self.remote_tag_sha != expected:
+                    return self.result(1, stderr="stale info", check=check)
+            if "--dry-run" in args:
+                return self.result(check=check)
             if f":refs/tags/{self.tag}" in args:
                 self.remote_tag_sha = None
             elif "--dry-run" not in args:
@@ -221,68 +352,63 @@ class FakeRunner:
         if self.release is not None:
             return self.result(1, stderr="release exists", check=check)
         self.initial_release_payloads.append(payload)
-        self.release = {
-            "id": 7,
-            "tag_name": self.tag,
-            "name": payload["name"],
-            "body": payload["body"],
-            "draft": payload["draft"],
-            "prerelease": payload["prerelease"],
-            "immutable": False,
-            "target_commitish": payload["target_commitish"],
-            "assets": [],
-        }
+        self.release = self.release_record(payload, 7)
+        if self.created_target_commitish_override is not None:
+            self.release["target_commitish"] = self.created_target_commitish_override
         if self.fail_create_after_accept_once:
             self.fail_create_after_accept_once = False
             return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
         return self.result(stdout=json.dumps(self.release), check=check)
 
-    def release_upload(self, args: list[str], *, check: bool) -> publisher.CommandResult:
-        assert self.release is not None
-        values = list(args[1:])
-        if "--repo" in values:
-            index = values.index("--repo")
-            del values[index : index + 2]
-        paths = [Path(value) for value in values]
-        uploaded = 0
-        for path in paths:
-            if any(row["name"] == path.name for row in self.release["assets"]):
-                return self.result(1, stderr="asset name collision", check=check)
-            self.release["assets"].append(self.make_asset(path.name, path.read_bytes()))
-            uploaded += 1
-            if self.fail_upload_after is not None and uploaded >= self.fail_upload_after:
-                self.fail_upload_after = None
-                return self.result(1, stderr="injected upload failure", check=check)
-        return self.result(check=check)
-
-    def release_edit(self, args: list[str], *, check: bool) -> publisher.CommandResult:
-        assert self.release is not None
-        if self.fail_edit_once and "--draft=false" in args:
-            self.fail_edit_once = False
-            return self.result(1, stderr="injected edit failure", check=check)
-        self.release["name"] = args[args.index("--title") + 1]
-        self.release["body"] = Path(args[args.index("--notes-file") + 1]).read_text(encoding="utf-8")
-        self.release["draft"] = "--draft=true" in args
-        self.release["prerelease"] = "--prerelease=true" in args
-        self.release["target_commitish"] = args[args.index("--target") + 1]
-        return self.result(check=check)
-
-    def release_download(self, args: list[str], *, check: bool) -> publisher.CommandResult:
-        assert self.release is not None
-        pattern = args[args.index("--pattern") + 1]
-        destination = Path(args[args.index("--dir") + 1])
-        matching = [row for row in self.release["assets"] if row["name"] == pattern]
-        if len(matching) != 1:
-            return self.result(1, stderr="mock release asset missing", check=check)
-        destination.mkdir(parents=True, exist_ok=True)
-        (destination / pattern).write_bytes(self.asset_data[matching[0]["id"]])
-        return self.result(check=check)
+    def curl_upload(self, args: list[str], *, check: bool) -> publisher.CommandResult:
+        config = Path(args[args.index("--config") + 1])
+        self.curl_configs.append(config.read_text(encoding="utf-8"))
+        endpoint = args[-1]
+        parsed = urlparse(endpoint)
+        match = re.fullmatch(r"/repos/[^/]+/[^/]+/releases/([0-9]+)/assets", parsed.path)
+        if match is None:
+            return self.result(1, stderr=f"unexpected upload endpoint {endpoint}", check=check)
+        release = self.find_release(int(match.group(1)))
+        if release is None:
+            return self.result(1, stderr="HTTP 404 release", check=check)
+        names = parse_qs(parsed.query).get("name", [])
+        if len(names) != 1:
+            return self.result(1, stderr="missing upload name", check=check)
+        name = names[0]
+        source = Path(args[args.index("--data-binary") + 1].removeprefix("@"))
+        self._upload_call_count += 1
+        if (
+            self.fail_upload_after is not None
+            and self._upload_call_count >= self.fail_upload_after
+        ):
+            self.fail_upload_after = None
+            return self.result(1, stderr="injected upload failure", check=check)
+        if any(row["name"] == name for row in release["assets"]):
+            return self.result(1, stderr="asset name collision", check=check)
+        if self.fail_upload_starter_once:
+            self.fail_upload_starter_once = False
+            release["assets"].append(self.make_asset(name, b"", state="starter"))
+            return self.result(1, stderr="HTTP 502 Bad Gateway", check=check)
+        row = self.make_asset(name, source.read_bytes())
+        release["assets"].append(row)
+        if self.fail_upload_after_accept_once:
+            self.fail_upload_after_accept_once = False
+            return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
+        return self.result(stdout=json.dumps(row), check=check)
 
     def api(self, args: list[str], *, check: bool) -> publisher.CommandResult:
         endpoint = next((value for value in args if value.startswith("repos/")), "")
         method = args[args.index("--method") + 1] if "--method" in args else "GET"
+        if endpoint.startswith("repos/scratchbird-software-inc/ScratchBird/releases?"):
+            if self.release_lookup_transient_failures > 0:
+                self.release_lookup_transient_failures -= 1
+                return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
+            page = parse_qs(urlparse(endpoint).query).get("page", ["1"])[0]
+            return self.result(
+                stdout=json.dumps(self.all_releases() if page == "1" else []), check=check
+            )
         if endpoint.endswith(f"/releases/tags/{self.tag}"):
-            if self.release is None:
+            if self.release is None or self.release_lookup_hidden:
                 return self.result(1, stderr="HTTP 404 Not Found", check=check)
             if self.release_lookup_transient_failures > 0:
                 self.release_lookup_transient_failures -= 1
@@ -304,20 +430,63 @@ class FakeRunner:
             payload_path = Path(args[args.index("--input") + 1])
             payload = json.loads(payload_path.read_text(encoding="utf-8"))
             return self.release_create_api(payload, check=check)
-        if re.search(r"/releases/[0-9]+$", endpoint) and method == "DELETE":
-            if self.release is None or int(endpoint.rsplit("/", 1)[1]) != self.release["id"]:
+        release_match = re.search(r"/releases/([0-9]+)$", endpoint)
+        if release_match is not None:
+            release_id = int(release_match.group(1))
+            release = self.find_release(release_id)
+            if release is None:
                 return self.result(1, stderr="HTTP 404 release", check=check)
-            self.release = None
-            self.asset_data.clear()
-            return self.result(check=check)
+            if method == "GET":
+                if self.release_lookup_transient_failures > 0:
+                    self.release_lookup_transient_failures -= 1
+                    return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
+                return self.result(stdout=json.dumps(release), check=check)
+            if method == "DELETE":
+                self.remove_release(release_id)
+                return self.result(check=check)
+            if method == "PATCH":
+                payload_path = Path(args[args.index("--input") + 1])
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
+                self.release_patch_payloads.append(dict(payload))
+                if self.fail_edit_once and payload.get("draft") is False:
+                    self.fail_edit_once = False
+                    return self.result(1, stderr="injected edit failure", check=check)
+                release.update(
+                    {
+                        "name": payload["name"],
+                        "body": payload["body"],
+                        "draft": payload["draft"],
+                        "prerelease": payload["prerelease"],
+                        "target_commitish": payload["target_commitish"],
+                    }
+                )
+                return self.result(stdout=json.dumps(release), check=check)
         if "/releases/assets/" in endpoint:
-            assert self.release is not None
             asset_id = int(endpoint.rsplit("/", 1)[1])
-            row = next((item for item in self.release["assets"] if item["id"] == asset_id), None)
+            release = next(
+                (
+                    candidate
+                    for candidate in self.all_releases()
+                    if any(item["id"] == asset_id for item in candidate["assets"])
+                ),
+                None,
+            )
+            row = (
+                next((item for item in release["assets"] if item["id"] == asset_id), None)
+                if release is not None
+                else None
+            )
             if row is None:
                 return self.result(1, stderr="HTTP 404 asset", check=check)
+            if method == "GET":
+                if any("application/octet-stream" in value for value in args):
+                    return self.result(
+                        stdout=self.asset_data[asset_id].decode("utf-8"), check=check
+                    )
+                return self.result(stdout=json.dumps(row), check=check)
             if method == "DELETE":
-                self.release["assets"].remove(row)
+                assert release is not None
+                release["assets"].remove(row)
                 self.asset_data.pop(asset_id, None)
                 return self.result(check=check)
             if method == "PATCH":
@@ -328,7 +497,8 @@ class FakeRunner:
                     if self.fail_canonical_patch_at == self._canonical_patch_count:
                         self.fail_canonical_patch_at = None
                         return self.result(1, stderr="injected canonical rename failure", check=check)
-                if any(item["name"] == new_name and item["id"] != asset_id for item in self.release["assets"]):
+                assert release is not None
+                if any(item["name"] == new_name and item["id"] != asset_id for item in release["assets"]):
                     return self.result(1, stderr="asset rename collision", check=check)
                 row["name"] = new_name
                 return self.result(stdout=json.dumps(row), check=check)
@@ -345,9 +515,11 @@ class RollingNightlyPublisherTest(unittest.TestCase):
         runner: FakeRunner,
         notes: Path,
         scope: str = "all",
+        *,
+        mark_existing: bool = True,
     ) -> publisher.RollingPublisher:
         runner.tag = publisher.get_release_contract(scope).tag
-        return publisher.RollingPublisher(
+        instance = publisher.RollingPublisher(
             runner,
             repository="scratchbird-software-inc/ScratchBird",
             target_sha=self.revision,
@@ -357,7 +529,22 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             notes_file=notes,
             checkout_root=notes.parent,
             release_scope=scope,
+            github_token="test-token",
         )
+        instance._marker_predecessor_tag = runner.remote_tag_sha
+        if (
+            mark_existing
+            and runner.release is not None
+            and "scratchbird-rolling-nightly-managed:" not in runner.release["body"]
+        ):
+            runner.release["body"] = (
+                f"{runner.release['body'].rstrip()}\n\n{instance.release_marker()}\n"
+            )
+            runner.release["target_commitish"] = instance.target_sha
+            if runner.release["draft"] is False:
+                runner.release["name"] = instance.title
+                runner.remote_tag_sha = instance.target_sha
+        return instance
 
     @staticmethod
     def names(runner: FakeRunner) -> set[str]:
@@ -371,7 +558,8 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             notes = root / "notes.md"
             notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
             runner = FakeRunner()
-            self.make_publisher(runner, notes).publish(assets)
+            rolling = self.make_publisher(runner, notes)
+            rolling.publish(assets)
             self.assertEqual(self.revision, runner.remote_tag_sha)
             self.assertIsNotNone(runner.release)
             self.assertFalse(runner.release["draft"])
@@ -380,7 +568,9 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertEqual(
                 [
                     {
-                        "body": "Native ScratchBird; no emulation.\n",
+                        "body": rolling.with_release_marker(
+                            "Native ScratchBird; no emulation.\n"
+                        ),
                         "draft": True,
                         "make_latest": "false",
                         "name": "ScratchBird Native Nightly Builds",
@@ -394,11 +584,37 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             flattened = [token for command in runner.commands for token in command]
             self.assertNotIn("delete", flattened)
             self.assertNotIn("--clobber", flattened)
-            release_commands = [
-                command for command in runner.commands if command[:2] == ["gh", "release"]
+            self.assertFalse(
+                any(command[:2] == ["gh", "release"] for command in runner.commands)
+            )
+            curl_commands = [command for command in runner.commands if command[0] == "curl"]
+            self.assertEqual(len(assets), len(curl_commands))
+            self.assertTrue(all(command[1] == "--disable" for command in curl_commands))
+            self.assertTrue(
+                all(
+                    any("/releases/7/assets?name=" in token for token in command)
+                    for command in curl_commands
+                )
+            )
+            self.assertTrue(
+                all(
+                    "Authorization: Bearer" not in token and "test-token" not in token
+                    for command in curl_commands
+                    for token in command
+                )
+            )
+            self.assertEqual(len(assets), len(runner.curl_configs))
+            self.assertTrue(
+                all('Authorization: Bearer test-token' in config for config in runner.curl_configs)
+            )
+            curl_config_paths = [
+                Path(command[command.index("--config") + 1])
+                for command in curl_commands
             ]
-            self.assertTrue(release_commands)
-            self.assertTrue(all("--repo" in command for command in release_commands))
+            self.assertTrue(all(not path.exists() for path in curl_config_paths))
+            self.assertFalse(
+                any("--location" in command for command in curl_commands)
+            )
             canonical_renames = [
                 command[command.index("-f") + 1].removeprefix("name=")
                 for command in runner.commands
@@ -413,6 +629,144 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 canonical_renames[-2:],
             )
 
+    def test_hidden_tag_lookup_draft_resumes_by_release_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-hidden-draft-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            assert runner.release is not None
+            release_id = runner.release["id"]
+            runner.release["draft"] = True
+            runner.release["name"] = "ScratchBird Native Nightly Builds"
+            runner.release_lookup_hidden = True
+            rolling = self.make_publisher(runner, notes)
+            runner.release["target_commitish"] = "main"
+            rolling.publish(assets)
+            self.assertEqual(release_id, runner.release["id"])
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            self.assertFalse(
+                any(
+                    "/releases/tags/" in token
+                    for command in runner.commands
+                    for token in command
+                )
+            )
+
+    def test_current_marker_draft_refuses_a_third_party_tag_value(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-current-draft-foreign-tag-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            assert runner.release is not None
+            runner.release["draft"] = True
+            runner.release["name"] = "ScratchBird Native Nightly Builds"
+            rolling = self.make_publisher(runner, notes)
+            runner.remote_tag_sha = "c" * 40
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "current_run_draft_tag_provenance_mismatch",
+            ):
+                rolling.publish(assets)
+            self.assertEqual("c" * 40, runner.remote_tag_sha)
+            self.assertTrue(runner.release["draft"])
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            self.assertFalse(
+                any(command[0] == "git" and "push" in command for command in runner.commands)
+            )
+
+    def test_tag_is_reverified_before_resumed_draft_becomes_public(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-final-tag-check-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            assert runner.release is not None
+            runner.release["draft"] = True
+            runner.release["name"] = "ScratchBird Native Nightly Builds"
+            rolling = self.make_publisher(runner, notes)
+            original_wait = rolling.wait_for_tag_target
+            wait_count = 0
+
+            def fail_second_tag_check(target: str) -> str:
+                nonlocal wait_count
+                wait_count += 1
+                if wait_count == 2:
+                    raise publisher.PublishError("injected final tag drift")
+                return original_wait(target)
+
+            with mock.patch.object(
+                rolling,
+                "wait_for_tag_target",
+                side_effect=fail_second_tag_check,
+            ):
+                with self.assertRaisesRegex(
+                    publisher.PublishError,
+                    "injected final tag drift.*coherent_draft_retry_required",
+                ):
+                    rolling.publish(assets)
+            self.assertEqual(2, wait_count)
+            self.assertTrue(runner.release["draft"])
+            self.assertFalse(
+                any(payload["draft"] is False for payload in runner.release_patch_payloads)
+            )
+
+    def test_initial_draft_accepts_github_default_branch_target_response(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-create-main-target-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.created_target_commitish_override = "main"
+            self.make_publisher(runner, notes).publish(assets)
+            assert runner.release is not None
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual(self.revision, runner.remote_tag_sha)
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+
+    def test_lost_upload_response_reconciles_existing_asset_without_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-upload-reconcile-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.fail_upload_after_accept_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            sleep.assert_not_called()
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            curl_commands = [command for command in runner.commands if command[0] == "curl"]
+            self.assertEqual(len(assets), len(curl_commands))
+
+    def test_starter_upload_is_deleted_then_retried_by_release_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-upload-starter-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.fail_upload_starter_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual(
+                [mock.call(publisher.RELEASE_ASSET_UPLOAD_DELAY_SECONDS)],
+                sleep.call_args_list,
+            )
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            self.assertFalse(any(row["state"] == "starter" for row in runner.release["assets"]))
+            curl_commands = [command for command in runner.commands if command[0] == "curl"]
+            self.assertEqual(len(assets) + 1, len(curl_commands))
+
     def test_first_creation_waits_for_eventual_tag_visibility(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-tag-visibility-") as temp:
             root = Path(temp)
@@ -425,6 +779,8 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 self.make_publisher(runner, notes).publish(assets)
             self.assertEqual(
                 [
+                    mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
+                    mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
                     mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
                     mock.call(publisher.TAG_VISIBILITY_DELAY_SECONDS),
                 ],
@@ -487,7 +843,13 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             with mock.patch.object(publisher.time, "sleep") as sleep:
                 self.make_publisher(runner, notes).publish(assets)
             self.assertEqual(
-                [mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS)],
+                [
+                    *(
+                        [mock.call(publisher.INITIAL_RELEASE_VISIBILITY_DELAY_SECONDS)]
+                        * (publisher.INITIAL_RELEASE_VISIBILITY_ATTEMPTS - 1)
+                    ),
+                    mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS),
+                ],
                 sleep.call_args_list,
             )
             self.assertIsNotNone(runner.release)
@@ -513,7 +875,13 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             with mock.patch.object(publisher.time, "sleep") as sleep:
                 self.make_publisher(runner, notes).publish(assets)
             self.assertEqual(
-                [mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS)],
+                [
+                    *(
+                        [mock.call(publisher.INITIAL_RELEASE_VISIBILITY_DELAY_SECONDS)]
+                        * (publisher.INITIAL_RELEASE_VISIBILITY_ATTEMPTS - 1)
+                    ),
+                    mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS),
+                ],
                 sleep.call_args_list,
             )
             self.assertIsNotNone(runner.release)
@@ -540,6 +908,23 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 and any(value.endswith("/releases") for value in command)
             ]
             self.assertEqual(1, len(create_calls))
+
+    def test_lost_create_response_reconciles_current_draft_beside_legacy_siblings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-create-legacy-reconcile-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            legacy = runner.add_legacy_draft(source="b" * 40, run_id="17")
+            runner.fail_create_after_accept_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            sleep.assert_not_called()
+            self.assertIsNone(runner.find_release(legacy["id"]))
+            self.assertIsNotNone(runner.release)
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
 
     def test_linux_scope_publishes_only_its_contract_to_its_own_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-publish-") as temp:
@@ -578,6 +963,126 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 )
             )
 
+    def test_strict_legacy_draft_is_pruned_only_after_tag_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-legacy-prune-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            legacy = runner.add_legacy_draft(source="b" * 40, run_id="17", target="main")
+            self.make_publisher(runner, notes).publish(assets)
+            self.assertIsNone(runner.find_release(legacy["id"]))
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            preflight_index = next(
+                index
+                for index, command in enumerate(runner.commands)
+                if command[0] == "git" and "push" in command and "--dry-run" in command
+            )
+            legacy_delete_index = next(
+                index
+                for index, command in enumerate(runner.commands)
+                if command[:2] == ["gh", "api"]
+                and "--method" in command
+                and command[command.index("--method") + 1] == "DELETE"
+                and any(
+                    f"releases/{legacy['id']}" in value for value in command
+                )
+            )
+            first_real_tag_push_index = next(
+                index
+                for index, command in enumerate(runner.commands)
+                if command[0] == "git"
+                and "push" in command
+                and "--dry-run" not in command
+                and any(value.endswith(":refs/tags/nightly") for value in command)
+            )
+            self.assertLess(preflight_index, first_real_tag_push_index)
+            self.assertLess(first_real_tag_push_index, legacy_delete_index)
+
+    def test_foreign_same_tag_draft_is_refused_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-foreign-draft-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            foreign = runner.add_legacy_draft(
+                source="b" * 40,
+                run_id="17",
+                author_login="untrusted-user",
+            )
+            with self.assertRaisesRegex(publisher.PublishError, "same_tag_draft_unmanaged"):
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertIs(runner.find_release(foreign["id"]), foreign)
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            self.assertFalse(
+                any(
+                    command[0] == "git" and "push" in command
+                    for command in runner.commands
+                )
+            )
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] in {"POST", "PATCH", "DELETE"}
+                    for command in runner.commands
+                )
+            )
+
+    def test_legacy_note_lookalike_with_extra_line_is_refused_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-legacy-lookalike-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            lookalike = runner.add_legacy_draft(source="b" * 40, run_id="17")
+            lookalike["body"] = lookalike["body"].replace(
+                "- Source commit:",
+                "- Unapproved extra provenance line.\n- Source commit:",
+            )
+            with self.assertRaisesRegex(publisher.PublishError, "same_tag_draft_unmanaged"):
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertIs(runner.find_release(lookalike["id"]), lookalike)
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            self.assertFalse(
+                any(command[0] == "git" and "push" in command for command in runner.commands)
+            )
+
+    def test_same_run_legacy_draft_with_branch_target_is_promoted_and_resumed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-legacy-resume-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            legacy = runner.add_legacy_draft(
+                source=self.revision,
+                run_id=self.run_id,
+                target="main",
+                primary=True,
+            )
+            legacy_id = legacy["id"]
+            rolling = self.make_publisher(runner, notes, mark_existing=False)
+            rolling.publish(assets)
+            assert runner.release is not None
+            self.assertEqual(legacy_id, runner.release["id"])
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual(self.revision, runner.release["target_commitish"])
+            self.assertIn(rolling.release_marker(), runner.release["body"])
+            self.assertFalse(runner.initial_release_payloads)
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] == "DELETE"
+                    and any(f"releases/{legacy_id}" in value for value in command)
+                    for command in runner.commands
+                )
+            )
+
     def test_existing_release_is_updated_in_place_and_stale_assets_removed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-replace-") as temp:
             root = Path(temp)
@@ -595,16 +1100,22 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             remote = {row["name"]: row for row in runner.release["assets"]}
             for asset in assets:
                 self.assertEqual(f"sha256:{asset.digest}", remote[asset.name]["digest"])
-            edit_commands = [
-                command for command in runner.commands if command[:3] == ["gh", "release", "edit"]
+            edit_indexes = [
+                index
+                for index, command in enumerate(runner.commands)
+                if command[:2] == ["gh", "api"]
+                and "--method" in command
+                and command[command.index("--method") + 1] == "PATCH"
+                and f"repos/scratchbird-software-inc/ScratchBird/releases/{original_release_id}"
+                in command
             ]
             upload_index = next(
                 index
                 for index, command in enumerate(runner.commands)
-                if command[:3] == ["gh", "release", "upload"]
+                if command[0] == "curl"
             )
-            hidden_index = runner.commands.index(edit_commands[0])
-            published_index = runner.commands.index(edit_commands[-1])
+            hidden_index = edit_indexes[0]
+            published_index = edit_indexes[-1]
             delete_indexes = [
                 index
                 for index, command in enumerate(runner.commands)
@@ -615,12 +1126,16 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                     (value for value in command if value.startswith("repos/")), ""
                 )
             ]
-            self.assertIn("--draft=true", edit_commands[0])
-            self.assertIn("--draft=false", edit_commands[-1])
+            self.assertGreaterEqual(len(edit_indexes), 2)
+            self.assertTrue(runner.release_patch_payloads[0]["draft"])
+            self.assertFalse(runner.release_patch_payloads[-1]["draft"])
             self.assertLess(hidden_index, upload_index)
             self.assertLess(upload_index, published_index)
             self.assertTrue(delete_indexes)
             self.assertLess(max(delete_indexes), published_index)
+            self.assertFalse(
+                any(command[:2] == ["gh", "release"] for command in runner.commands)
+            )
 
     def test_release_create_failure_restores_absent_initial_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-create-fail-") as temp:
@@ -662,6 +1177,64 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertEqual("b" * 40, runner.remote_tag_sha)
             self.assertFalse(any(command[0] == "git" and "push" in command for command in runner.commands))
 
+    def test_lease_race_after_preflight_preserves_foreign_tag_and_legacy_draft(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-lease-race-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            legacy = runner.add_legacy_draft(source="b" * 40, run_id="17")
+            runner.mutate_tag_before_lease_push_once = "c" * 40
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "stale info.*tag_drift_during_recovery",
+            ):
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual("c" * 40, runner.remote_tag_sha)
+            self.assertIsNone(runner.release)
+            self.assertIs(runner.find_release(legacy["id"]), legacy)
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            push_commands = [
+                command
+                for command in runner.commands
+                if command[0] == "git" and "push" in command
+            ]
+            self.assertGreaterEqual(len(push_commands), 2)
+            self.assertTrue(
+                all(
+                    any(value.startswith("--force-with-lease=refs/tags/") for value in command)
+                    for command in push_commands
+                )
+            )
+
+    def test_public_marker_tag_mismatch_is_refused_before_draft_transition(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-public-tag-mismatch-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            rolling = self.make_publisher(runner, notes)
+            runner.remote_tag_sha = "c" * 40
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "existing_nightly_tag_provenance_mismatch",
+            ):
+                rolling.publish(assets)
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual("c" * 40, runner.remote_tag_sha)
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] in {"POST", "PATCH", "DELETE"}
+                    for command in runner.commands
+                )
+            )
+
     def test_unmanaged_existing_nightly_release_is_refused_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-unmanaged-") as temp:
             root = Path(temp)
@@ -675,10 +1248,11 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             )
             runner.release["assets"].remove(manifest)
             runner.asset_data.pop(manifest["id"])
+            rolling = self.make_publisher(runner, notes)
             old_tag = runner.remote_tag_sha
             old_names = self.names(runner)
             with self.assertRaisesRegex(publisher.PublishError, "existing_nightly_release_unmanaged"):
-                self.make_publisher(runner, notes).publish(assets)
+                rolling.publish(assets)
             self.assertEqual(old_tag, runner.remote_tag_sha)
             self.assertEqual(old_names, self.names(runner))
             self.assertFalse(any(command[:3] == ["gh", "release", "edit"] for command in runner.commands))
@@ -716,11 +1290,12 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             notes.write_text("notes\n", encoding="utf-8")
             runner = FakeRunner()
             runner.seed_release(assets)
+            rolling = self.make_publisher(runner, notes)
             old_tag = runner.remote_tag_sha
             old_rows = {row["name"]: row["digest"] for row in runner.release["assets"]}
             runner.fail_upload_after = 1
             with self.assertRaisesRegex(publisher.PublishError, "upload failure"):
-                self.make_publisher(runner, notes).publish(assets)
+                rolling.publish(assets)
             self.assertEqual(old_tag, runner.remote_tag_sha)
             self.assertEqual(old_rows, {row["name"]: row["digest"] for row in runner.release["assets"]})
 
@@ -732,16 +1307,17 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             notes.write_text("notes\n", encoding="utf-8")
             runner = FakeRunner()
             runner.seed_release(assets)
+            rolling = self.make_publisher(runner, notes)
             old_rows = {row["name"]: row["digest"] for row in runner.release["assets"]}
             old_tag = runner.remote_tag_sha
             runner.fail_canonical_patch_at = 2
             with self.assertRaisesRegex(publisher.PublishError, "canonical rename failure"):
-                self.make_publisher(runner, notes).publish(assets)
+                rolling.publish(assets)
             self.assertEqual(old_tag, runner.remote_tag_sha)
             self.assertEqual(old_rows, {row["name"]: row["digest"] for row in runner.release["assets"]})
             self.assertFalse(any(name.startswith("sb-nightly-") for name in self.names(runner)))
             self.assertFalse(runner.release["draft"])
-            self.assertEqual("Old nightly", runner.release["name"])
+            self.assertEqual("ScratchBird Native Nightly Builds", runner.release["name"])
 
     def test_release_publish_failure_leaves_exact_new_generation_draft(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-edit-fail-") as temp:
@@ -759,12 +1335,101 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 self.make_publisher(runner, notes).publish(assets)
             self.assertEqual(self.revision, runner.remote_tag_sha)
             self.assertTrue(runner.release["draft"])
-            self.assertEqual("Old nightly", runner.release["name"])
-            self.assertEqual("old notes", runner.release["body"])
+            self.assertEqual("ScratchBird Native Nightly Builds", runner.release["name"])
+            self.assertIn("new notes", runner.release["body"])
+            self.assertIn("scratchbird-rolling-nightly-managed:", runner.release["body"])
             self.assertEqual({asset.name for asset in assets}, self.names(runner))
             remote = {row["name"]: row for row in runner.release["assets"]}
             for asset in assets:
                 self.assertEqual(f"sha256:{asset.digest}", remote[asset.name]["digest"])
+
+    def test_failed_final_publish_resumes_the_same_current_generation_draft(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-edit-resume-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("new notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            release_id = runner.release["id"]
+            rolling = self.make_publisher(runner, notes)
+            runner.fail_edit_once = True
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "coherent_draft_retry_required",
+            ):
+                rolling.publish(assets)
+            self.assertTrue(runner.release["draft"])
+            rolling.publish(assets)
+            self.assertEqual(release_id, runner.release["id"])
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            self.assertIn(rolling.release_marker(), runner.release["body"])
+
+    def test_resumed_current_draft_survives_a_second_failure_then_publishes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-resumed-failure-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("new notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            rolling = self.make_publisher(runner, notes)
+            runner.fail_edit_once = True
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "coherent_draft_retry_required",
+            ):
+                rolling.publish(assets)
+            release_id = runner.release["id"]
+            runner.fail_upload_after = 1
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "upload failure.*coherent_draft_retry_required",
+            ):
+                rolling.publish(assets)
+            self.assertEqual(release_id, runner.release["id"])
+            self.assertTrue(runner.release["draft"])
+            self.assertEqual(self.revision, runner.remote_tag_sha)
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            rolling.publish(assets)
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+
+    def test_marker_manifest_source_mismatch_refuses_before_mutation(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-marker-source-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            rolling = self.make_publisher(runner, notes)
+            assert runner.release is not None
+            runner.release["body"] = runner.release["body"].replace(
+                f"source={self.revision}",
+                f"source={'b' * 40}",
+            )
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "marker_provenance_mismatch",
+            ):
+                rolling.publish(assets)
+            self.assertFalse(any(command[0] == "curl" for command in runner.commands))
+            self.assertFalse(
+                any(
+                    command[0] == "git" and "push" in command
+                    for command in runner.commands
+                )
+            )
+            self.assertFalse(
+                any(
+                    command[:2] == ["gh", "api"]
+                    and "--method" in command
+                    and command[command.index("--method") + 1] in {"POST", "PATCH", "DELETE"}
+                    for command in runner.commands
+                )
+            )
 
     def test_immutable_release_refuses_before_mutation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-immutable-") as temp:
@@ -777,7 +1442,7 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             command_count = len(runner.commands)
             with self.assertRaisesRegex(publisher.PublishError, "immutable"):
                 self.make_publisher(runner, notes).publish(assets)
-            self.assertEqual(command_count + 3, len(runner.commands))  # origin, release, and tag reads only
+            self.assertEqual(command_count + 4, len(runner.commands))  # origin, list, release, and tag reads only
             self.assertFalse(
                 any(command[0] == "git" and "push" in command for command in runner.commands)
             )

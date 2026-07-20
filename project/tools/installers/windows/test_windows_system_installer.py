@@ -639,6 +639,9 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "scratchbird-windows-system-install.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn("function New-ManagedVirtualService", lifecycle)
+        self.assertIn("OpenSCManagerW", lifecycle)
+        self.assertIn('"ServicesActive"', lifecycle)
+        self.assertIn("PowerShell null-marshalling behavior", lifecycle)
         self.assertIn("CreateServiceW", lifecycle)
         self.assertIn("IntPtr lpPassword", lifecycle)
         self.assertIn("true NULL password pointer", lifecycle)

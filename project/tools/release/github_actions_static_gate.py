@@ -626,14 +626,11 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "release_manifest_native_components_mismatch",
         "existing_nightly_release_unmanaged",
         "existing_nightly_tag_unmanaged",
-        "edit_release_snapshot(release, draft_override=True)",
         "origin_repository_mismatch",
-        '"--repo"',
         "delete_new_draft_release",
         "canonical_asset_inventory_not_exact",
         "irreversible_cleanup_started",
         "coherent_draft_retry_required",
-        "verify_canonical_inventory(assets, exact=True)",
         "wait_for_tag_target(self.target_sha)",
         "tag_visibility_timeout",
         "API_READ_TRANSIENT_ATTEMPTS",
@@ -642,7 +639,6 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "INITIAL_RELEASE_CREATE_ATTEMPTS",
         "is_retryable_initial_release_create_failure",
         "validate_initial_draft_release",
-        "observed = self.get_release(allow_missing=True)",
         "create_initial_draft_release",
         '"target_commitish": self.target_sha',
         '"make_latest": "false"',
@@ -650,19 +646,57 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "fully_verified_native_portable_and_system_installer_artifacts",
         "REQUIRED_ARTIFACT_VERIFICATION",
         '"draft": True',
-        'f"--draft={',
         "draft=False,",
         "rolling_release_immutable_or_state_unknown",
         '"--method", "PATCH"',
         "Never delete backup-prefixed assets",
+        "MANAGED_RELEASE_MARKER_SCHEMA",
+        "MANAGED_RELEASE_AUTHOR",
+        "predecessor_tag",
+        "list_releases",
+        "get_release_by_id",
+        "discover_release_state",
+        "release_marker",
+        "contract_managed_marker_identity",
+        "legacy_draft_provenance",
+        "same_tag_draft_unmanaged",
+        "same_tag_draft_owned_by_other_run",
+        "reconcile_initial_create_response",
+        "patch_release",
+        "release_asset_upload_endpoint",
+        "upload_incoming_asset",
+        "RELEASE_ASSET_UPLOAD_ATTEMPTS",
+        '"--config"',
+        '"--disable"',
+        "Content-Type: application/octet-stream",
+        "os.fchmod(handle.fileno(), 0o600)",
+        "curl_config.unlink(missing_ok=True)",
+        "github_token_invalid_for_curl_config",
+        "marker_provenance_mismatch",
+        "draft_created_this_attempt",
+        "resumed_existing_draft",
+        "verify_canonical_inventory(release_id, assets, exact=True)",
+        "--force-with-lease=refs/tags/",
+        "tag_expected_sha",
+        "restore_tag_if_transaction_owned",
+        "tag_drift_during_recovery",
+        "current_run_draft_tag_provenance_mismatch",
+        "existing_nightly_tag_provenance_mismatch",
+        "published_release_state_mismatch",
     ):
         require_token(publisher_text, token, publisher_tool.name)
     if "--clobber" in publisher_text:
         fail(f"nightly_publisher_clobber_forbidden:{publisher_tool.name}")
-    if re.search(r'"release",\s*"create"', publisher_text):
-        fail(f"nightly_publisher_cli_create_forbidden:{publisher_tool.name}")
-    if re.search(r"\bgh\s+release\s+delete\s+", publisher_text):
-        fail(f"nightly_publisher_release_delete_forbidden:{publisher_tool.name}")
+    for pattern, label in (
+        (r'self[.]gh\(\s*"release"', "gh_release_subcommand"),
+        (r'"release",\s*"(?:upload|edit|download|create|delete)"', "gh_release_operation"),
+        (r"/releases/tags/", "tag_endpoint_for_drafts"),
+        (r"--location(?:-trusted)?", "curl_redirect_following"),
+        (r"--oauth2-bearer", "curl_token_argv"),
+        (r"--force(?!-with-lease)", "unleased_tag_force"),
+    ):
+        if re.search(pattern, publisher_text):
+            fail(f"nightly_publisher_unsafe_release_surface:{publisher_tool.name}:{label}")
 
 
 def check_platform_nightly_workflow(text: str, rel: str, scope: str) -> None:

@@ -262,9 +262,14 @@ namespace ScratchBird.WindowsInstaller
   $failureCode = $null
   try {
     Add-Type -TypeDefinition $nativeSource -ErrorAction Stop
+    # Windows PowerShell binds `$null for a [string] P/Invoke argument as an
+    # empty string.  An empty machine name is permitted for the local SCM, but
+    # an empty database name is ERROR_INVALID_NAME (123).  Pass the documented
+    # active SCM database explicitly so this contract is independent of host
+    # PowerShell null-marshalling behavior.
     $manager = [ScratchBird.WindowsInstaller.ServiceNative]::OpenSCManagerW(
-      $null,
-      $null,
+      [string]::Empty,
+      "ServicesActive",
       [uint32]2
     )
     if ($manager -eq [IntPtr]::Zero) {
