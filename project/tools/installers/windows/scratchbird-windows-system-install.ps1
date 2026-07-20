@@ -430,10 +430,17 @@ function Grant-ServiceRuntimeReadExecute {
   [void]$acl.SetAccessRule($rule)
   Set-Acl -LiteralPath $InstallRoot -AclObject $acl
   $verified = Get-Acl -LiteralPath $InstallRoot
-  $present = @($verified.Access | Where-Object {
+  # The Program Files tree can contain inherited ACEs for identities that a
+  # deferred MSI custom action cannot resolve. Read direct rules as raw SIDs so
+  # verification is limited to the managed service ACE we just installed.
+  $verifiedRules = $verified.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])
+  $present = @($verifiedRules | Where-Object {
     $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
-    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq $ServiceSid.Value -and
-    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadAndExecute) -eq [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    $_.IdentityReference.Value -eq $ServiceSid.Value -and
+    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadAndExecute) -eq [Security.AccessControl.FileSystemRights]::ReadAndExecute -and
+    ($_.InheritanceFlags -band $inheritance) -eq $inheritance -and
+    $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None -and
+    (-not $_.IsInherited)
   })
   if ($present.Count -eq 0) {
     Fail-Code "BOOTSTRAP.DIRECTORY_PERMISSION_INVALID"

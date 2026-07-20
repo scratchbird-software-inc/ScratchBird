@@ -90,8 +90,9 @@ function Assert-ProtectedAcl {
   if (-not $acl.AreAccessRulesProtected) {
     throw "ACL inheritance remains enabled: $Path"
   }
-  $actual = @($acl.Access | ForEach-Object {
-    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+  # Keep the smoke independent of name resolution for unrelated inherited ACEs.
+  $actual = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+    $_.IdentityReference.Value
   })
   foreach ($sid in $RequiredSids) {
     if ($actual -notcontains $sid) {
@@ -102,11 +103,18 @@ function Assert-ProtectedAcl {
 
 function Assert-AclContainsSid {
   param([string] $Path, [string] $RequiredSid)
-  $actual = @((Get-Acl -LiteralPath $Path).Access | ForEach-Object {
-    $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+  $acl = Get-Acl -LiteralPath $Path
+  $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $actual = @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]) | Where-Object {
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+    $_.IdentityReference.Value -eq $RequiredSid -and
+    ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::ReadAndExecute) -eq [Security.AccessControl.FileSystemRights]::ReadAndExecute -and
+    ($_.InheritanceFlags -band $inheritance) -eq $inheritance -and
+    $_.PropagationFlags -eq [Security.AccessControl.PropagationFlags]::None -and
+    (-not $_.IsInherited)
   })
-  if ($actual -notcontains $RequiredSid) {
-    throw "required ACL SID is missing: $Path"
+  if ($actual.Count -eq 0) {
+    throw "required explicit service runtime ACL rule is missing: $Path"
   }
 }
 

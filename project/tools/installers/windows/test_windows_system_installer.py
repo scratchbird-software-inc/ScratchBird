@@ -632,6 +632,47 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "service_local_sam_group_membership = $false", lifecycle
         )
 
+    def test_runtime_acl_checks_are_sid_native(self) -> None:
+        lifecycle = (
+            REPO_ROOT
+            / "project/tools/installers/windows/"
+            "scratchbird-windows-system-install.ps1"
+        ).read_text(encoding="utf-8")
+        runtime_start = lifecycle.index("function Grant-ServiceRuntimeReadExecute")
+        runtime_end = lifecycle.index(
+            "\nfunction Set-ProtectedServiceRegistryAcl", runtime_start
+        )
+        runtime_acl = lifecycle[runtime_start:runtime_end]
+        self.assertIn(
+            "GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])",
+            runtime_acl,
+        )
+        self.assertIn("$_.IdentityReference.Value -eq $ServiceSid.Value", runtime_acl)
+        self.assertIn("InheritanceFlags -band $inheritance", runtime_acl)
+        self.assertIn("PropagationFlags]::None", runtime_acl)
+        self.assertIn("(-not $_.IsInherited)", runtime_acl)
+        self.assertNotIn("IdentityReference.Translate", runtime_acl)
+
+        smoke = (
+            REPO_ROOT / "project/tools/installers/smoke_install_windows.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(
+            smoke.count(
+                "GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])"
+            ),
+            2,
+        )
+        self.assertNotIn("IdentityReference.Translate", smoke)
+        smoke_runtime_start = smoke.index("function Assert-AclContainsSid")
+        smoke_runtime_end = smoke.index("\nfunction ", smoke_runtime_start + 1)
+        smoke_runtime_acl = smoke[smoke_runtime_start:smoke_runtime_end]
+        self.assertIn(
+            "$_.IdentityReference.Value -eq $RequiredSid", smoke_runtime_acl
+        )
+        self.assertIn("InheritanceFlags -band $inheritance", smoke_runtime_acl)
+        self.assertIn("PropagationFlags]::None", smoke_runtime_acl)
+        self.assertIn("(-not $_.IsInherited)", smoke_runtime_acl)
+
     def test_virtual_service_account_is_created_atomically_with_null_password_pointer(self) -> None:
         lifecycle = (
             REPO_ROOT

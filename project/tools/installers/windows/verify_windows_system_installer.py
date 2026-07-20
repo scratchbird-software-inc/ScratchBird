@@ -387,6 +387,33 @@ def main() -> int:
         "service_create_rollback_state_not_recorded_after_atomic_create",
     )
 
+    runtime_acl_match = re.search(
+        r"function Grant-ServiceRuntimeReadExecute\b.*?(?=\nfunction )",
+        lifecycle,
+        flags=re.DOTALL,
+    )
+    require(runtime_acl_match is not None, "runtime_acl_function_missing")
+    runtime_acl = runtime_acl_match.group(0)
+    require(
+        "GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])"
+        in runtime_acl,
+        "runtime_acl_sid_native_read",
+    )
+    require(
+        "IdentityReference.Translate" not in runtime_acl,
+        "runtime_acl_unrelated_identity_translation",
+    )
+    require_tokens(
+        runtime_acl,
+        (
+            "IdentityReference.Value -eq $ServiceSid.Value",
+            "InheritanceFlags -band $inheritance",
+            "PropagationFlags]::None",
+            "(-not $_.IsInherited)",
+        ),
+        "runtime_acl",
+    )
+
     try:
         tree = ET.fromstring(wix)
     except ET.ParseError as exc:
@@ -477,6 +504,32 @@ def main() -> int:
     require(
         "$env:USERNAME" not in smoke and "$env:USERDOMAIN" not in smoke,
         "smoke_ambient_installer_user",
+    )
+    require(
+        smoke.count(
+            "GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])"
+        ) >= 2,
+        "smoke_acl_sid_native_read",
+    )
+    require(
+        "IdentityReference.Translate" not in smoke,
+        "smoke_acl_unrelated_identity_translation",
+    )
+    smoke_runtime_acl_match = re.search(
+        r"function Assert-AclContainsSid\b.*?(?=\nfunction )",
+        smoke,
+        flags=re.DOTALL,
+    )
+    require(smoke_runtime_acl_match is not None, "smoke_runtime_acl_function")
+    require_tokens(
+        smoke_runtime_acl_match.group(0),
+        (
+            "IdentityReference.Value -eq $RequiredSid",
+            "InheritanceFlags -band $inheritance",
+            "PropagationFlags]::None",
+            "(-not $_.IsInherited)",
+        ),
+        "smoke_runtime_acl",
     )
     require(
         smoke.index('"/a"') < smoke.index('"/i"'),
