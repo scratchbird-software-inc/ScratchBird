@@ -289,7 +289,6 @@ def main() -> int:
             "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase",
             "NATIVE_EXIT_$nativeExitCode",
             "NT SERVICE\\scratchbird",
-            '"start=", "demand"',
             '@("sidtype", $ServiceName, "restricted")',
             "ServiceSidType",
             "SetAccessRuleProtection($true, $false)",
@@ -314,18 +313,20 @@ def main() -> int:
             'SERVICE_IDENTITY.QUERY_EXISTING',
             'SERVICE_IDENTITY.ASSERT_EXISTING',
             'SERVICE_IDENTITY.CREATE',
-            'SERVICE_IDENTITY.CONFIGURE_ACCOUNT',
             'SERVICE_IDENTITY.DESCRIPTION',
             'SERVICE_IDENTITY.SIDTYPE',
             'SERVICE_IDENTITY.QUERY_RESULT',
             'SERVICE_IDENTITY.ASSERT_RESULT',
-            "function Set-ManagedVirtualServiceAccount",
-            "ChangeServiceConfigW",
+            "function New-ManagedVirtualService",
+            "CreateServiceW",
             "IntPtr lpPassword",
             "true NULL password pointer",
             "[IntPtr]::Zero",
-            '@("create", $ServiceName',
-            '"type=", "own", "binPath=", $command, "start=", "demand", "DisplayName=", $ServiceDisplayName',
+            "[uint32]0x00000010",
+            "[uint32]0x00000003",
+            "[uint32]0x00000001",
+            "Get-ExpectedServiceCommand",
+            "CREATE_SERVICE_ERROR_$lastError",
             "Assert-ServiceRecord $service -RequireFreshDefaults",
             "& $sc delete $ServiceName",
         ),
@@ -347,8 +348,19 @@ def main() -> int:
         require(forbidden not in lifecycle, f"lifecycle_forbidden:{forbidden}")
 
     require(
-        lifecycle.count('"create", $ServiceName') == 1,
-        "multiple_service_create_paths",
+        lifecycle.count(
+            "[ScratchBird.WindowsInstaller.ServiceNative]::CreateServiceW("
+        )
+        == 1,
+        "managed_virtual_service_create_call_cardinality",
+    )
+    require(
+        '@("create", $ServiceName' not in lifecycle,
+        "sc_create_forbidden_for_virtual_service_account",
+    )
+    require(
+        "ChangeServiceConfigW" not in lifecycle and "OpenServiceW" not in lifecycle,
+        "split_virtual_service_identity_configuration_forbidden",
     )
     require(
         "$env:USERNAME" not in lifecycle
@@ -367,15 +379,10 @@ def main() -> int:
         '"obj= $ServiceAccount"' not in lifecycle,
         "virtual_service_account_sc_create_argument",
     )
-    for forbidden in (
-        '"binPath= $command"',
-        '"start= demand"',
-        '"DisplayName= $ServiceDisplayName"',
-    ):
-        require(
-            forbidden not in lifecycle,
-            f"virtual_service_account_sc_combined_argument:{forbidden}",
-        )
+    require(
+        "New-ManagedVirtualService\n    $script:ServiceCreatedByThisRun" in lifecycle,
+        "service_create_rollback_state_not_recorded_after_atomic_create",
+    )
 
     try:
         tree = ET.fromstring(wix)

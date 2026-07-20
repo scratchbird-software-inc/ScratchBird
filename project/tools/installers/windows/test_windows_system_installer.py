@@ -632,33 +632,34 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             "service_local_sam_group_membership = $false", lifecycle
         )
 
-    def test_virtual_service_account_binding_uses_null_password_pointer(self) -> None:
+    def test_virtual_service_account_is_created_atomically_with_null_password_pointer(self) -> None:
         lifecycle = (
             REPO_ROOT
             / "project/tools/installers/windows/"
             "scratchbird-windows-system-install.ps1"
         ).read_text(encoding="utf-8")
-        self.assertIn("function Set-ManagedVirtualServiceAccount", lifecycle)
-        self.assertIn("ChangeServiceConfigW", lifecycle)
+        self.assertIn("function New-ManagedVirtualService", lifecycle)
+        self.assertIn("CreateServiceW", lifecycle)
         self.assertIn("IntPtr lpPassword", lifecycle)
         self.assertIn("true NULL password pointer", lifecycle)
-        self.assertIn('SERVICE_IDENTITY.CONFIGURE_ACCOUNT', lifecycle)
         self.assertIn("NATIVE_EXIT_$nativeExitCode", lifecycle)
         self.assertIn("[IntPtr]::Zero", lifecycle)
+        self.assertIn("[uint32]0x00000010", lifecycle)
+        self.assertIn("[uint32]0x00000003", lifecycle)
+        self.assertIn("[uint32]0x00000001", lifecycle)
+        self.assertIn("Get-ExpectedServiceCommand", lifecycle)
+        self.assertIn("CREATE_SERVICE_ERROR_$lastError", lifecycle)
         self.assertIn(
-            '"type=", "own", "binPath=", $command, "start=", "demand", "DisplayName=", $ServiceDisplayName',
+            "New-ManagedVirtualService\n    $script:ServiceCreatedByThisRun",
             lifecycle,
         )
-        self.assertLess(
-            lifecycle.index('@("create", $ServiceName'),
-            lifecycle.index('SERVICE_IDENTITY.CONFIGURE_ACCOUNT'),
-        )
         self.assertIn('SERVICE_IDENTITY.ASSERT_EXISTING', lifecycle)
+        self.assertNotIn("ChangeServiceConfigW", lifecycle)
+        self.assertNotIn("OpenServiceW", lifecycle)
+        self.assertNotIn('SERVICE_IDENTITY.CONFIGURE_ACCOUNT', lifecycle)
+        self.assertNotIn('@("create", $ServiceName', lifecycle)
         self.assertNotIn('"obj= $ServiceAccount"', lifecycle)
         self.assertNotIn("password=", lifecycle)
-        self.assertNotIn('"binPath= $command"', lifecycle)
-        self.assertNotIn('"start= demand"', lifecycle)
-        self.assertNotIn('"DisplayName= $ServiceDisplayName"', lifecycle)
 
 
 if __name__ == "__main__":

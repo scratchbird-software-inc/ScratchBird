@@ -216,12 +216,11 @@ function Assert-ServiceRecord {
   }
 }
 
-function Set-ManagedVirtualServiceAccount {
-  # CreateService/ChangeServiceConfig require a true NULL password pointer for a
-  # virtual account.  sc.exe's password option cannot represent that contract
-  # reliably, so bind the account through ChangeServiceConfigW explicitly.
-  # The service is manual and stopped throughout this transition: no process
-  # ever executes under the temporary SCM default identity.
+function New-ManagedVirtualService {
+  # CreateServiceW accepts the virtual account and a true NULL password pointer
+  # in one SCM operation. Do not route this through sc.exe: its text command
+  # line cannot represent the required pointer contract safely. Atomic creation
+  # also means no service record is ever created under the SCM default identity.
   $nativeSource = @'
 using System;
 using System.Runtime.InteropServices;
@@ -237,15 +236,11 @@ namespace ScratchBird.WindowsInstaller
             UInt32 desiredAccess);
 
         [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern IntPtr OpenServiceW(
+        public static extern IntPtr CreateServiceW(
             IntPtr serviceManager,
             string serviceName,
-            UInt32 desiredAccess);
-
-        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool ChangeServiceConfigW(
-            IntPtr service,
+            string displayName,
+            UInt32 desiredAccess,
             UInt32 serviceType,
             UInt32 startType,
             UInt32 errorControl,
@@ -254,8 +249,7 @@ namespace ScratchBird.WindowsInstaller
             IntPtr tagId,
             string dependencies,
             string serviceStartName,
-            IntPtr lpPassword,
-            string displayName);
+            IntPtr lpPassword);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
@@ -271,32 +265,30 @@ namespace ScratchBird.WindowsInstaller
     $manager = [ScratchBird.WindowsInstaller.ServiceNative]::OpenSCManagerW(
       $null,
       $null,
-      [uint32]1
+      [uint32]2
     )
     if ($manager -eq [IntPtr]::Zero) {
-      $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.OPEN_SCM"
+      $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.OPEN_SCM_ERROR_$lastError"
     } else {
-      $service = [ScratchBird.WindowsInstaller.ServiceNative]::OpenServiceW(
+      $service = [ScratchBird.WindowsInstaller.ServiceNative]::CreateServiceW(
         $manager,
         $ServiceName,
-        [uint32]2
+        $ServiceDisplayName,
+        [uint32]2,
+        [uint32]0x00000010,
+        [uint32]0x00000003,
+        [uint32]0x00000001,
+        (Get-ExpectedServiceCommand),
+        $null,
+        [IntPtr]::Zero,
+        $null,
+        $ServiceAccount,
+        [IntPtr]::Zero
       )
       if ($service -eq [IntPtr]::Zero) {
-        $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.OPEN_SERVICE"
-      } elseif (-not [ScratchBird.WindowsInstaller.ServiceNative]::ChangeServiceConfigW(
-          $service,
-          [uint32]::MaxValue,
-          [uint32]::MaxValue,
-          [uint32]::MaxValue,
-          $null,
-          $null,
-          [IntPtr]::Zero,
-          $null,
-          $ServiceAccount,
-          [IntPtr]::Zero,
-          $null
-        )) {
-        $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.CHANGE_CONFIG"
+        $lastError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.CREATE_SERVICE_ERROR_$lastError"
       }
     }
   } catch {
@@ -326,11 +318,8 @@ function Ensure-SBsrvService {
   } else {
     $sc = Join-Path $env:SystemRoot "System32\sc.exe"
     $script:LifecyclePhase = "SERVICE_IDENTITY.CREATE"
-    $command = Get-ExpectedServiceCommand
-    Invoke-NativeQuiet $sc @("create", $ServiceName, "type=", "own", "binPath=", $command, "start=", "demand", "DisplayName=", $ServiceDisplayName) "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
+    New-ManagedVirtualService
     $script:ServiceCreatedByThisRun = $true
-    $script:LifecyclePhase = "SERVICE_IDENTITY.CONFIGURE_ACCOUNT"
-    Set-ManagedVirtualServiceAccount
     $script:LifecyclePhase = "SERVICE_IDENTITY.DESCRIPTION"
     Invoke-NativeQuiet $sc @("description", $ServiceName, "ScratchBird native SBsrv owner for shared SBgate and standalone SBParser") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
   }
