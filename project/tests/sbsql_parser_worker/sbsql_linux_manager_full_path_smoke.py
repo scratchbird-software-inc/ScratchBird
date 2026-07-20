@@ -468,6 +468,13 @@ def main() -> int:
         wait_for_tcp(listener_port)
         management_socket = wait_for_single_management_socket(listener_control)
         require_running(listener, "sb_listener", work)
+        # The TCP readiness probe above is itself accepted by the listener.
+        # It can briefly occupy or recycle a warm worker before the parser
+        # pool has returned to its ready state.  Do not send the rejected
+        # authentication route until an admitted parser worker is available:
+        # this test is specifically asserting the server-side auth handoff,
+        # not an earlier listener-pool refusal.
+        wait_for_listener_pool_ready(management_socket)
 
         manager = subprocess.Popen(
             [
