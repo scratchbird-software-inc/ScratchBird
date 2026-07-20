@@ -18,7 +18,7 @@ LLVM is also mandatory for the release-complete engine:
 - Debian/Ubuntu DEB installations pull `libllvm23`; RPM/AUR packages declare
   `llvm-libs >= 23`. For the portable Linux tarball, install the equivalent
   package so the system loader can resolve the recorded versioned LLVM SONAME.
-- Windows ZIP/MSI payloads already include the selected LLVM DLL and its
+- Windows ZIP payloads already include the selected LLVM DLL and its
   required non-system DLL closure beside the ScratchBird executables.
 - macOS QA tarballs/PKGs do not bundle Homebrew LLVM. Run `brew install llvm`
   before testing and retain the stable `$(brew --prefix llvm)` installation.
@@ -52,9 +52,10 @@ directory. On Windows use `py` or `python` and the corresponding extracted
 paths. The helper finds the sibling `etc/scratchbird` directory automatically;
 `--config-root` can override it.
 
-For an MSI system installation, prepare the exact instance used by the
-installer-registered service. Run this explicit activation command from an
-elevated PowerShell:
+For a manually generated MSI diagnostic installation, prepare the exact instance
+used by the installer-registered service. This flow is not part of the public
+testing releases, which are portable ZIP-only. Run this explicit activation
+command from an elevated PowerShell:
 
 ```powershell
 $ServiceIdentity = "NT SERVICE\scratchbird"
@@ -177,9 +178,11 @@ sudo /opt/ScratchBird/bin/SBsql \
   --policy-seed-pack-root=/opt/ScratchBird/share/scratchbird/resources/policy-packs/default-local-password
 ```
 
-On Windows, open an elevated PowerShell. For the MSI system-service flow, the
-profile must contain exactly `NT SERVICE\scratchbird` and the database target
-is the canonical ProgramData instance:
+On Windows, open an elevated PowerShell only for the manual MSI diagnostic
+system-service flow. The public ZIP-only testing flow uses an extracted private
+instance instead. For the manual flow, the profile must contain exactly
+`NT SERVICE\scratchbird` and the database target is the canonical ProgramData
+instance:
 
 ```powershell
 $Instance = "$env:ProgramData\ScratchBird"

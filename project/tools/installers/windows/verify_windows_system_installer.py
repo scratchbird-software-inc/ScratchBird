@@ -2,7 +2,7 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
-"""Linux-runnable gate for native Windows system-installer assets."""
+"""Linux-runnable gate for manual MSI tooling and ZIP-only Windows releases."""
 
 from __future__ import annotations
 
@@ -613,25 +613,26 @@ def main() -> int:
             "windows_msi_lifecycle_post_sequence_order",
             "windows_msi_lifecycle_pre_sequence_order",
             "windows_msi_lifecycle_admin_sequence_forbidden",
+            "WINDOWS_ZIP_ONLY_FORBIDDEN_SUFFIXES",
+            "windows_zip_only_forbidden_artifact",
+            "windows_zip_only_manifest_package_mode_invalid",
         ),
         "artifact_lifecycle",
     )
     require_tokens(
         workflow,
         (
-            "Set up WiX and utility extension",
-            "wix extension add -g",
-            "dotnet tool install --global wix --version 4.0.6",
-            "WixToolset.Util.wixext/4.0.6",
-            "--require-msi",
-            'throw "No Windows MSI package found"',
+            "Build Windows portable ZIP package",
+            'Filter "scratchbird-windows-*.zip"',
+            'throw "Expected exactly one Windows ZIP package;',
+            "smoke_install_windows.ps1",
         ),
         "workflow",
     )
     windows_job_marker = "  windows-installers:\n"
     windows_job_start = workflow.find(windows_job_marker)
     require(windows_job_start >= 0, "workflow_windows_installers_job_missing")
-    build_installers_marker = "      - name: Build installers\n"
+    build_installers_marker = "      - name: Build Windows portable ZIP package\n"
     build_installers_start = workflow.find(
         build_installers_marker,
         windows_job_start + len(windows_job_marker),
@@ -643,51 +644,40 @@ def main() -> int:
     if build_installers_end < 0:
         build_installers_end = len(workflow)
     build_installers_step = workflow[build_installers_start:build_installers_end]
-    wix_visibility_tokens = (
-        'wix_tool_root="$(cygpath -u "$SB_WIX_TOOL_ROOT")"',
-        'wix_global_tool="$wix_tool_root/wix.exe"',
-        'test -f "$wix_global_tool"',
-        '"$wix_global_tool" --version',
-        'export PATH="$(dirname "$wix_global_tool"):$PATH"',
-        "command -v wix >/dev/null",
-    )
-    require_tokens(
-        build_installers_step,
-        wix_visibility_tokens,
-        "workflow_wix_global_tool_visibility",
-    )
-    require(
-        '"SB_WIX_TOOL_ROOT=$toolRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append'
-        in workflow,
-        "workflow_wix_tool_root_environment_missing",
-    )
     builder_command = "python project/tools/installers/build_installers.py"
     require(
         builder_command in build_installers_step,
-        "workflow_wix_builder_command_missing",
+        "workflow_zip_builder_command_missing",
     )
-    builder_command_offset = build_installers_step.index(builder_command)
-    for token in wix_visibility_tokens:
-        require(
-            build_installers_step.index(token) < builder_command_offset,
-            f"workflow_wix_visibility_after_builder:{token}",
-        )
     require(
-        "--require-msi" in build_installers_step,
-        "workflow_wix_msi_requirement_missing",
+        "--require-native-only" in build_installers_step,
+        "workflow_zip_native_only_requirement_missing",
     )
+    for token in (
+        "Set up WiX and utility extension",
+        "wix extension add -g",
+        "dotnet tool install --global wix",
+        "WixToolset.Util.wixext",
+        "SB_WIX_TOOL_ROOT",
+        "--require-msi",
+        ".msi",
+    ):
+        require(token not in workflow, f"workflow_zip_only_forbidden:{token}")
     require_tokens(
         builder,
         (
             'wix_bin = shutil.which("wix")',
             "if require_msi:",
             'fail("wix_not_found")',
+            "if args.require_msi:",
+            '"package_mode": "portable_zip_only"',
+            '"package_mode": "portable_zip_and_msi"',
         ),
-        "builder_wix_fail_closed",
+        "builder_manual_msi_and_zip_only",
     )
     require(
-        'Filter "scratchbird-windows-*.zip"' not in workflow,
-        "workflow_msi_fallback_present",
+        'Filter "scratchbird-windows-*.zip"' in workflow,
+        "workflow_zip_smoke_missing",
     )
 
     # Database-looking names may appear only in the negative artifact scan.

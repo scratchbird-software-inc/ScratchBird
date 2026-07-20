@@ -43,16 +43,21 @@ def make_installer_fixture(root: Path, platform: str, files: dict[str, bytes]) -
         path = root / rel
         write_bytes(path, data)
         rows.append({"path": rel, "bytes": len(data), "sha256": sha256_file(path)})
-    write_json(
-        root / "INSTALLER_ARTIFACT_MANIFEST.json",
-        {
-            "schema_id": "scratchbird.installer_artifact_manifest.v1",
-            "platform": platform,
-            "version": "1.2.3-beta",
-            "build_id": "test-run",
-            "artifacts": rows,
-        },
-    )
+    manifest = {
+        "schema_id": "scratchbird.installer_artifact_manifest.v1",
+        "platform": platform,
+        "version": "1.2.3-beta",
+        "build_id": "test-run",
+        "artifacts": rows,
+    }
+    if platform == "windows":
+        manifest["windows"] = {
+            "package_mode": "portable_zip_only",
+            "system_installer_included": False,
+            "portable_archive_smoke_required": True,
+            "native_default_port": 3092,
+        }
+    write_json(root / "INSTALLER_ARTIFACT_MANIFEST.json", manifest)
     (root / "SHA256SUMS").write_text(
         "".join(f"{row['sha256']}  {row['path']}\n" for row in rows),
         encoding="utf-8",
@@ -162,6 +167,41 @@ def main() -> int:
         }
         if not required_paths.issubset(paths):
             print(f"manifest_paths_missing:{sorted(required_paths - paths)}", file=sys.stderr)
+            return 1
+
+        reject_input = temp_root / "reject-input"
+        make_installer_fixture(
+            reject_input / "scratchbird-windows-installers",
+            "windows",
+            {
+                "scratchbird-windows-1.2.3-beta.zip": b"windows zip",
+                "scratchbird-windows-1.2.3-beta.msi": b"forbidden msi",
+            },
+        )
+        rejected = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--input-root",
+                str(reject_input),
+                "--output-root",
+                str(temp_root / "reject-output"),
+                "--version",
+                "1.2.3-beta",
+                "--channel",
+                "beta",
+            ],
+            cwd=repo_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if (
+            rejected.returncode == 0
+            or "windows_zip_only_forbidden_artifact" not in rejected.stdout
+        ):
+            print(f"windows_msi_web_export_not_rejected:{rejected.stdout}", file=sys.stderr)
             return 1
     print("web_distribution_bundle_test=passed")
     return 0

@@ -81,7 +81,6 @@ jobs:
     with:
       platform: macos
       version: ${{ needs.gold-gate.outputs.version }}
-      require-msi: true
 
   publish-nightly:
     name: Publish macOS rolling nightly prerelease

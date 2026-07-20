@@ -1919,7 +1919,14 @@ def write_macos_system_package_evidence(
     return path
 
 
-def write_artifact_manifest(output_root: Path, platform: str, version: str, build_id: str | None) -> Path:
+def write_artifact_manifest(
+    output_root: Path,
+    platform: str,
+    version: str,
+    build_id: str | None,
+    *,
+    windows_system_installer: bool = False,
+) -> Path:
     rows = []
     for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
         if path.name == MANIFEST_NAME:
@@ -1935,15 +1942,26 @@ def write_artifact_manifest(output_root: Path, platform: str, version: str, buil
         "artifacts": rows,
     }
     if platform == "windows":
-        manifest["windows"] = {
-            "system_package_evidence_file": (
-                "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json"
-            ),
-            "service_name": "scratchbird",
-            "service_account": r"NT SERVICE\scratchbird",
-            "native_default_port": 3092,
-            "actual_install_smoke_required": True,
-        }
+        if windows_system_installer:
+            manifest["windows"] = {
+                "package_mode": "portable_zip_and_msi",
+                "system_installer_included": True,
+                "portable_archive_smoke_required": True,
+                "system_package_evidence_file": (
+                    "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json"
+                ),
+                "service_name": "scratchbird",
+                "service_account": r"NT SERVICE\scratchbird",
+                "native_default_port": 3092,
+                "actual_install_smoke_required": True,
+            }
+        else:
+            manifest["windows"] = {
+                "package_mode": "portable_zip_only",
+                "system_installer_included": False,
+                "portable_archive_smoke_required": True,
+                "native_default_port": 3092,
+            }
     if platform == "macos":
         manifest["macos"] = {
             "support_matrix": MACOS_SUPPORT_MATRIX,
@@ -1973,9 +1991,19 @@ def main() -> int:
     parser.add_argument("--version", default="0.0.0-nightly")
     parser.add_argument("--build-id")
     parser.add_argument("--require-rpm", action="store_true")
-    parser.add_argument("--require-msi", action="store_true")
+    parser.add_argument(
+        "--require-msi",
+        action="store_true",
+        help=(
+            "Explicitly build and require a Windows MSI in addition to the portable ZIP. "
+            "Manual diagnostic tooling only; automated release workflows are ZIP-only."
+        ),
+    )
     parser.add_argument("--require-native-only", action="store_true")
     args = parser.parse_args()
+
+    if args.require_msi and args.platform != "windows":
+        fail("require_msi_platform_invalid")
 
     artifact_root = args.artifact_root.resolve()
     output_root = args.output_root.resolve()
@@ -2009,27 +2037,28 @@ def main() -> int:
             built.append(make_aur(system_payload_root, output_root, version))
             write_linux_system_package_evidence(output_root, version, args.build_id)
         elif args.platform == "windows":
-            system_payload_root = Path(temp_name) / "windows-system-payload"
             built.append(make_zip(payload_root, output_root, version))
-            stage_windows_system_install_tree(
-                payload_root,
-                system_payload_root,
-                version,
-                args.build_id,
-            )
-            built.extend(
-                make_wix_msi(
+            if args.require_msi:
+                system_payload_root = Path(temp_name) / "windows-system-payload"
+                stage_windows_system_install_tree(
+                    payload_root,
                     system_payload_root,
+                    version,
+                    args.build_id,
+                )
+                built.extend(
+                    make_wix_msi(
+                        system_payload_root,
+                        output_root,
+                        version,
+                        require_msi=True,
+                    )
+                )
+                write_windows_system_package_evidence(
                     output_root,
                     version,
-                    args.require_msi,
+                    args.build_id,
                 )
-            )
-            write_windows_system_package_evidence(
-                output_root,
-                version,
-                args.build_id,
-            )
         else:
             system_payload_root = Path(temp_name) / "macos-system-payload"
             pkg_scripts_root = Path(temp_name) / "macos-pkg-scripts"
@@ -2058,7 +2087,13 @@ def main() -> int:
                 version,
                 args.build_id,
             )
-        manifest = write_artifact_manifest(output_root, args.platform, version, args.build_id)
+        manifest = write_artifact_manifest(
+            output_root,
+            args.platform,
+            version,
+            args.build_id,
+            windows_system_installer=(args.platform == "windows" and args.require_msi),
+        )
     print(f"build_installers=passed:{manifest}")
     return 0
 

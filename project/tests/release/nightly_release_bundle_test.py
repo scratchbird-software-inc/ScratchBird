@@ -312,15 +312,23 @@ def write_installer_artifact(
         path.write_bytes(content)
         rows.append({"path": rel, "bytes": len(content), "sha256": digest(content)})
     rows.sort(key=lambda row: row["path"])
+    manifest = {
+        "schema_id": "scratchbird.installer_artifact_manifest.v1",
+        "platform": platform,
+        "version": version,
+        "build_id": build_id,
+        "artifacts": rows,
+    }
+    if platform == "windows":
+        manifest["windows"] = {
+            "package_mode": "portable_zip_only",
+            "system_installer_included": False,
+            "portable_archive_smoke_required": True,
+            "native_default_port": 3092,
+        }
     (root / "INSTALLER_ARTIFACT_MANIFEST.json").write_text(
         json.dumps(
-            {
-                "schema_id": "scratchbird.installer_artifact_manifest.v1",
-                "platform": platform,
-                "version": version,
-                "build_id": build_id,
-                "artifacts": rows,
-            },
+            manifest,
             indent=2,
             sort_keys=True,
         )
@@ -381,8 +389,6 @@ def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
     )
     windows_files = {
         f"scratchbird-windows-{version}.zip": native_archive("windows", "windows"),
-        f"scratchbird-windows-{version}.msi": b"windows msi",
-        "scratchbird.wxs": b"internal wix source",
     }
     write_installer_artifact(
         input_root / "scratchbird-windows-installers",
@@ -480,7 +486,6 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 "scratchbird-nightly-linux-x86_64.rpm",
                 "scratchbird-nightly-linux-x86_64-aur.tar.gz",
                 "scratchbird-nightly-windows-x86_64.zip",
-                "scratchbird-nightly-windows-x86_64.msi",
                 "scratchbird-nightly-macos-x86_64.tar.gz",
                 "scratchbird-nightly-macos-x86_64.pkg",
                 "scratchbird-nightly-macos-arm64.tar.gz",
@@ -500,7 +505,7 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             self.assertEqual("scratchbird_native_no_emulation", manifest["distribution_surface"])
             self.assertEqual("SBSQL", manifest["native_parser"])
             self.assertEqual(
-                "fully_verified_native_portable_and_system_installer_artifacts",
+                "fully_verified_native_portable_and_platform_system_installer_artifacts",
                 manifest["public_asset_policy"],
             )
             self.assertEqual(
@@ -523,8 +528,8 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 verification["scratchbird-nightly-linux-x86_64-aur.tar.gz"],
             )
             self.assertEqual(
-                "installer_manifest_and_msi_smoke",
-                verification["scratchbird-nightly-windows-x86_64.msi"],
+                "exact_native_payload_extraction",
+                verification["scratchbird-nightly-windows-x86_64.zip"],
             )
             self.assertEqual(
                 "installer_manifest_and_pkg_smoke",
@@ -537,6 +542,10 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             self.assertFalse(manifest["emulation_layers_included"])
             self.assertEqual("system-package", manifest["llvm_runtime"]["linux"]["delivery"])
             self.assertEqual("bundled", manifest["llvm_runtime"]["windows"]["delivery"])
+            self.assertEqual(
+                "portable_zip_only_no_msi",
+                manifest["windows_release_policy"],
+            )
             self.assertEqual(
                 "external-homebrew", manifest["llvm_runtime"]["macos"]["delivery"]
             )
@@ -591,23 +600,24 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(bundle.BundleError, "unexpected_artifact_roots"):
                 self.create(input_root, root / "output", release_scope="linux")
 
-    def test_verified_system_installers_are_public_release_assets(self) -> None:
+    def test_platform_system_installers_and_windows_zip_are_public_release_assets(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-system-installers-") as temp:
             root = Path(temp)
             input_root = root / "input"
             make_fixture(input_root)
             self.create(input_root, root / "output")
             output_names = {path.name for path in (root / "output").iterdir()}
-            self.assertEqual(13, len(output_names))
+            self.assertEqual(12, len(output_names))
             for name in (
                 "scratchbird-nightly-linux-x86_64.deb",
                 "scratchbird-nightly-linux-x86_64.rpm",
                 "scratchbird-nightly-linux-x86_64-aur.tar.gz",
-                "scratchbird-nightly-windows-x86_64.msi",
                 "scratchbird-nightly-macos-x86_64.pkg",
                 "scratchbird-nightly-macos-arm64.pkg",
             ):
                 self.assertIn(name, output_names)
+            self.assertIn("scratchbird-nightly-windows-x86_64.zip", output_names)
+            self.assertFalse(any(name.endswith(".msi") for name in output_names))
 
     def test_canonical_names_are_stable_across_versions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-stable-") as temp:
@@ -642,6 +652,21 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 b"second linux tar",
             )
             with self.assertRaisesRegex(bundle.BundleError, "package_cardinality:linux"):
+                self.create(input_root, root / "output")
+
+    def test_windows_msi_input_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-windows-zip-only-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            add_manifest_file(
+                input_root / "scratchbird-windows-installers",
+                "scratchbird-windows-1.2.3-nightly.msi",
+                b"forbidden msi",
+            )
+            with self.assertRaisesRegex(
+                bundle.BundleError, "windows_zip_only_forbidden_artifact"
+            ):
                 self.create(input_root, root / "output")
 
     def test_non_native_parser_profile_fails_closed(self) -> None:

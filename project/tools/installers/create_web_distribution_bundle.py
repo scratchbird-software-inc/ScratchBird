@@ -204,6 +204,33 @@ def add_installer_manifest(
     platform = str(data.get("platform") or "")
     if platform not in {"linux", "windows", "macos"}:
         fail(f"installer_manifest_platform_invalid:{platform}")
+    if platform == "windows":
+        windows = data.get("windows")
+        if (
+            not isinstance(windows, dict)
+            or windows.get("package_mode") != "portable_zip_only"
+            or windows.get("system_installer_included") is not False
+            or windows.get("portable_archive_smoke_required") is not True
+            or windows.get("native_default_port") != 3092
+        ):
+            fail(f"windows_zip_only_manifest_policy_invalid:{manifest_path}")
+        rows = data.get("artifacts")
+        if not isinstance(rows, list):
+            fail(f"installer_manifest_artifacts_missing:{manifest_path}")
+        artifact_names = []
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+                fail(f"installer_manifest_row_invalid:{manifest_path}")
+            artifact_names.append(row["path"])
+        if sum(name.endswith(".zip") for name in artifact_names) != 1:
+            fail(f"windows_zip_only_zip_cardinality:{manifest_path}")
+        for name in artifact_names:
+            leaf = Path(name).name
+            if (
+                leaf == "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json"
+                or Path(name).suffix.lower() in {".msi", ".wixpdb", ".wxs"}
+            ):
+                fail(f"windows_zip_only_forbidden_artifact:{manifest_path}:{name}")
     arch = arch_segment(platform, manifest_path)
     for source in installer_files(manifest_path, data):
         filename = safe_component(source.name, "installer_file")

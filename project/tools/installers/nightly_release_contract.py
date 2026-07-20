@@ -46,7 +46,6 @@ _LINUX_PACKAGES = (
 )
 _WINDOWS_PACKAGES = (
     ("scratchbird-nightly-windows-x86_64.zip", "exact_native_payload_extraction"),
-    ("scratchbird-nightly-windows-x86_64.msi", "installer_manifest_and_msi_smoke"),
 )
 _MACOS_PACKAGES = (
     ("scratchbird-nightly-macos-x86_64.tar.gz", "exact_native_payload_extraction"),

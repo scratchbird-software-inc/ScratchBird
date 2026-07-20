@@ -11,10 +11,6 @@ on:
         required: false
         type: string
         default: 0.0.0-nightly
-      require-msi:
-        required: false
-        type: boolean
-        default: true
   workflow_dispatch:
     inputs:
       platform:
@@ -31,18 +27,12 @@ on:
         description: Version suffix for generated installers
         required: true
         default: 0.0.0-nightly
-      require-msi:
-        description: Retained for caller compatibility; Windows MSI proof is mandatory
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: read
 
 env:
   SB_INSTALLER_VERSION: ${{ inputs.version || '0.0.0-nightly' }}
-  SB_REQUIRE_MSI: ${{ inputs['require-msi'] }}
 
 concurrency:
   group: installer-verify-${{ github.ref }}-${{ inputs.platform || 'all' }}
@@ -260,18 +250,6 @@ jobs:
             mingw-w64-ucrt-x86_64-proj
             mingw-w64-ucrt-x86_64-gtest
 
-      - name: Set up WiX and utility extension
-        shell: pwsh
-        run: |
-          dotnet tool install --global wix --version 4.0.6
-          $toolRoot = Join-Path $env:USERPROFILE ".dotnet\tools"
-          $wix = Join-Path $toolRoot "wix.exe"
-          if (-not (Test-Path -LiteralPath $wix -PathType Leaf)) {
-            throw "WiX global tool executable was not installed at $wix"
-          }
-          "SB_WIX_TOOL_ROOT=$toolRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          & $wix extension add -g "WixToolset.Util.wixext/4.0.6"
-
       - name: Static release gates
         run: |
           python project/tools/release/public_packaging_history_gate.py
@@ -339,40 +317,30 @@ jobs:
             build/native-release-windows/output/windows --platform windows
           cmake -E remove_directory build/public-release-windows
 
-      - name: Build installers
+      - name: Build Windows portable ZIP package
         run: |
-          # dotnet global tools are installed outside MSYS2's normal PATH.
-          # Resolve the Windows tool path through cygpath before invoking the
-          # Python builder, which intentionally fails closed when WiX is absent.
-          wix_tool_root="$(cygpath -u "$SB_WIX_TOOL_ROOT")"
-          wix_global_tool="$wix_tool_root/wix.exe"
-          test -f "$wix_global_tool"
-          "$wix_global_tool" --version
-          export PATH="$(dirname "$wix_global_tool"):$PATH"
-          command -v wix >/dev/null
           python project/tools/installers/build_installers.py \
             --platform windows \
             --artifact-root build/native-release-windows/output/windows \
             --output-root build/installers/windows \
             --version "$SB_INSTALLER_VERSION" \
             --build-id "${{ github.run_id }}" \
-            --require-native-only \
-            --require-msi
+            --require-native-only
 
       - name: Verify installer artifacts
         run: |
-          python project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root build/installers/windows --require-msi
+          python project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root build/installers/windows
           cmake -E remove_directory build/native-release-windows/output/windows
 
-      - name: Smoke Windows package
+      - name: Smoke Windows portable ZIP package
         shell: pwsh
         run: |
-          $package = Get-ChildItem build/installers/windows -Filter "scratchbird-windows-*.msi" | Select-Object -First 1
-          if (-not $package) {
-            throw "No Windows MSI package found"
+          $packages = @(Get-ChildItem build/installers/windows -Filter "scratchbird-windows-*.zip")
+          if ($packages.Count -ne 1) {
+            throw "Expected exactly one Windows ZIP package; found $($packages.Count)"
           }
           project/tools/installers/smoke_install_windows.ps1 `
-            -PackagePath $package.FullName `
+            -PackagePath $packages[0].FullName `
             -WorkRoot build/install-smoke/windows
 
       - name: Upload Windows installers

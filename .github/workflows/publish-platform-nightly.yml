@@ -92,7 +92,7 @@ jobs:
               ;;
             windows)
               root="$(resolve_installer_root platform-artifacts/scratchbird-windows-installers)"
-              python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$root" --require-msi
+              python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$root"
               ;;
             macos)
               x86_root="$(resolve_installer_root platform-artifacts/scratchbird-macos-x86_64-installers)"
@@ -150,6 +150,9 @@ jobs:
             echo "- The native ScratchBird listener default is TCP port 3092."
             echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
             echo '- The `scratchbird` operating-system identity is a headless service account only; it is not a database or security authority.'
+            if [ "$SB_RELEASE_SCOPE" = "windows" ]; then
+              echo "- Windows testing artifacts are portable ZIP-only. No MSI, service, or system-directory installation is included."
+            fi
             echo "- Source commit: $SB_SOURCE_REVISION"
             echo "- Requested version: $SB_NIGHTLY_VERSION"
             echo "- Verified workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$SB_SOURCE_RUN_ID"

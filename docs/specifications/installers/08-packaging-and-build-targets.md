@@ -14,7 +14,7 @@ dependency.
 | Platform | Arch | Artifact | State |
 | --- | --- | --- | --- |
 | Linux | x86_64, arm64 | native `deb` + `rpm`, element packages + persona metapackages; tarball; (Flatpak/Snap/AppImage for portable) | supported |
-| Windows | x64, arm64 | WiX **Burn** bundle over per-element MSIs / merge modules | supported |
+| Windows | x64, arm64 | public tester portable ZIP; WiX Burn/MSI retained only for local diagnostic investigation | supported (ZIP tester channel) |
 | macOS | universal (x86_64 + arm64) | distribution `.pkg` over component `.pkg`s | supported |
 | Android | arm64 (+ others) | AAR / Maven (driver); engine `.so` via NDK | planned |
 | iOS | arm64 | Swift Package / CocoaPods / XCFramework | planned |
@@ -23,11 +23,21 @@ dependency.
 remain first-class in the catalog and documentation so no platform is locked out;
 they flip to `supported` as each pipeline begins producing signed artifacts.
 
+### Current public Windows testing channel
+
+The public Windows tester channel is temporarily limited to a verified portable
+ZIP. It is extraction-only and creates no MSI product registration, SCM service,
+`%ProgramFiles%` install root, `%ProgramData%` state, operating-system identity,
+database, or security sidecar. WiX/MSI source and local diagnostic tooling remain
+available for the separate installer investigation, but automated build,
+web-export, release-candidate, and rolling-nightly workflows must neither create
+nor publish an MSI until that investigation is explicitly closed.
+
 ## Native packaging technology
 
 | Platform | Coordinator | Service mechanism | Conventions |
 | --- | --- | --- | --- |
-| Windows | WiX Burn bundle (feature tree, repair/update, Add/Remove) | SCM service installed as Manual and stopped under restricted `NT SERVICE\scratchbird` | `%ProgramFiles%\ScratchBird`, `%ProgramData%\ScratchBird` |
+| Windows | public tester portable ZIP; WiX Burn bundle retained only for local diagnostics | public ZIP creates no SCM service or OS identity; manual diagnostic MSI retains the SCM design | extracted directory for ZIP; diagnostic MSI uses `%ProgramFiles%\ScratchBird`, `%ProgramData%\ScratchBird` |
 | macOS | `productbuild` distribution `.pkg` with `choices` | launchd definitions installed disabled, unloaded, and not started under the non-login `scratchbird` identity | `/opt/ScratchBird`, `/Library/Application Support/ScratchBird` |
 | Linux | coordinator over native packages + metapackages; apt/dnf repo as later wrapper | systemd unit installed disabled and not started; postinst creates or verifies the non-login `scratchbird` identity and required directories only | `/var/lib/scratchbird`, `/etc/scratchbird`, journald |
 

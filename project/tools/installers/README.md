@@ -71,6 +71,15 @@ not started. The unit runs only `SBsrv`; SBsrv owns the shared SBgate listener,
 and SBgate owns the standalone native SBParser. The native listener default is
 TCP port 3092.
 
+Windows public testing artifacts are deliberately **portable ZIP-only**. They
+are extracted and run from the chosen directory; they do not create a service,
+an operating-system identity, `%ProgramFiles%`, `%ProgramData%`, a database, or
+security sidecars. The ZIP smoke verifies the extracted native payload, bundled
+LLVM closure, and native executable launch surface. The source tree retains
+WiX/MSI tooling only for an explicit local diagnostic invocation of
+`build_installers.py --require-msi`; no automated build, web export, release
+candidate, or rolling nightly workflow invokes or publishes that path.
+
 Linux system packages create or verify the dedicated, non-login `scratchbird`
 service user and group. They prepare `/var/lib/scratchbird/data`,
 `/var/log/scratchbird`, and the server/listener/manager control and runtime
@@ -262,7 +271,6 @@ Run it from GitHub Actions with:
 - `version`: the package version string
 - `channel`: `beta`, `pre-release`, `release-candidate`, `nightly`, or `qa`
 - `base-url`: the public download host URL to record in the manifest
-- `require-msi`: whether Windows MSI generation is mandatory
 - `retention-days`: temporary GitHub artifact retention window
 
 The workflow output artifact is named `scratchbird-webserver-package-export`.

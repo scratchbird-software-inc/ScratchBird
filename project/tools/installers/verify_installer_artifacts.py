@@ -43,11 +43,19 @@ MACOS_REQUIRED_SIDECARS = (
     "MACOS_SIGNING_STATE.json",
     "MACOS_SYSTEM_PACKAGE_EVIDENCE.json",
 )
-WINDOWS_REQUIRED_SIDECARS = (
+WINDOWS_MSI_REQUIRED_SIDECARS = (
     "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json",
     "scratchbird.wxs",
     "scratchbird-windows-lifecycle.wxs",
 )
+WINDOWS_ZIP_ONLY_FORBIDDEN_NAMES = frozenset(
+    {
+        "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json",
+        "scratchbird.wxs",
+        "scratchbird-windows-lifecycle.wxs",
+    }
+)
+WINDOWS_ZIP_ONLY_FORBIDDEN_SUFFIXES = frozenset({".msi", ".wixpdb", ".wxs"})
 LINUX_REQUIRED_SIDECARS = ("LINUX_SYSTEM_PACKAGE_EVIDENCE.json",)
 SERVICE_AUTHORITY_SCOPE = (
     "filesystem_directory_and_process_execution_only_"
@@ -311,9 +319,14 @@ def main() -> int:
     parser.add_argument(
         "--require-msi",
         action="store_true",
-        help="Require a material MSI in addition to the portable Windows ZIP.",
+        help=(
+            "Verify an explicitly generated Windows MSI in addition to the portable ZIP. "
+            "Manual diagnostic tooling only; automated release workflows are ZIP-only."
+        ),
     )
     args = parser.parse_args()
+    if args.require_msi and args.platform != "windows":
+        fail("require_msi_platform_invalid")
     root = args.artifact_root.resolve()
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -335,11 +348,19 @@ def main() -> int:
         for path in paths
         if isinstance(path, str) and path.endswith(".msi")
     )
-    if args.platform == "windows" and args.require_msi:
-        if not windows_msi_paths:
-            fail("required_artifact_missing:.msi")
-        if len(windows_msi_paths) != 1:
-            fail("windows_msi_cardinality")
+    windows_zip_paths = sorted(
+        path
+        for path in paths
+        if isinstance(path, str) and path.endswith(".zip")
+    )
+    if args.platform == "windows":
+        if len(windows_zip_paths) != 1:
+            fail("windows_zip_cardinality")
+        if args.require_msi:
+            if not windows_msi_paths:
+                fail("required_artifact_missing:.msi")
+            if len(windows_msi_paths) != 1:
+                fail("windows_msi_cardinality")
     for row in artifacts:
         if not isinstance(row, dict):
             fail("manifest_row_not_object")
@@ -377,61 +398,96 @@ def main() -> int:
         windows_block = data.get("windows")
         if not isinstance(windows_block, dict):
             fail("windows_manifest_block_missing")
-        if windows_block.get("service_name") != "scratchbird":
-            fail("windows_service_name_mismatch")
-        if windows_block.get("service_account") != r"NT SERVICE\scratchbird":
-            fail("windows_service_account_mismatch")
         if windows_block.get("native_default_port") != 3092:
             fail("windows_native_port_mismatch")
-        if windows_block.get("actual_install_smoke_required") is not True:
-            fail("windows_actual_install_smoke_not_required")
-        for sidecar in WINDOWS_REQUIRED_SIDECARS:
-            if sidecar not in paths:
-                fail(f"windows_sidecar_missing:{sidecar}")
-        evidence = json.loads(
-            (root / "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        if (
-            evidence.get("native_default_port") != 3092
-            or evidence.get("database_files_created") is not False
-            or evidence.get("security_sidecars_created") is not False
-        ):
-            fail("windows_system_evidence_invalid")
-        service = evidence.get("service")
-        identity = evidence.get("os_identity")
-        if (
-            not isinstance(service, dict)
-            or service.get("name") != "scratchbird"
-            or service.get("account") != r"NT SERVICE\scratchbird"
-            or service.get("default_start_type") != "manual"
-            or service.get("default_activity") != "stopped"
-            or service.get("fresh_install_creates_missing_service") is not True
-            or service.get("creation_mechanism")
-            != "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService"
-            or service.get("parser_or_listener_services_installed") is not False
-            or service.get("manager_service_installed") is not False
-        ):
-            fail("windows_system_service_evidence_invalid")
-        if (
-            not isinstance(identity, dict)
-            or identity.get("service_authority_scope")
-            != SERVICE_AUTHORITY_SCOPE
-            or identity.get("local_sam_group_membership") is not False
-            or identity.get("create_time_os_authorization")
-            != "administrator_only"
-            or identity.get("human_service_group_membership_mutation") is not False
-        ):
-            fail("windows_system_service_authority_scope_invalid")
-        verify_windows_msi_lifecycle_wiring(root)
         if args.require_msi:
+            if windows_block.get("package_mode") != "portable_zip_and_msi":
+                fail("windows_msi_manifest_package_mode_invalid")
+            if windows_block.get("system_installer_included") is not True:
+                fail("windows_msi_manifest_system_installer_missing")
+            if windows_block.get("portable_archive_smoke_required") is not True:
+                fail("windows_portable_archive_smoke_not_required")
+            if windows_block.get("service_name") != "scratchbird":
+                fail("windows_service_name_mismatch")
+            if windows_block.get("service_account") != r"NT SERVICE\scratchbird":
+                fail("windows_service_account_mismatch")
+            if windows_block.get("actual_install_smoke_required") is not True:
+                fail("windows_actual_install_smoke_not_required")
+            for sidecar in WINDOWS_MSI_REQUIRED_SIDECARS:
+                if sidecar not in paths:
+                    fail(f"windows_sidecar_missing:{sidecar}")
+            evidence = json.loads(
+                (root / "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if (
+                evidence.get("native_default_port") != 3092
+                or evidence.get("database_files_created") is not False
+                or evidence.get("security_sidecars_created") is not False
+            ):
+                fail("windows_system_evidence_invalid")
+            service = evidence.get("service")
+            identity = evidence.get("os_identity")
+            if (
+                not isinstance(service, dict)
+                or service.get("name") != "scratchbird"
+                or service.get("account") != r"NT SERVICE\scratchbird"
+                or service.get("default_start_type") != "manual"
+                or service.get("default_activity") != "stopped"
+                or service.get("fresh_install_creates_missing_service") is not True
+                or service.get("creation_mechanism")
+                != "elevated_deferred_msi_lifecycle_helper_Ensure-SBsrvService"
+                or service.get("parser_or_listener_services_installed") is not False
+                or service.get("manager_service_installed") is not False
+            ):
+                fail("windows_system_service_evidence_invalid")
+            if (
+                not isinstance(identity, dict)
+                or identity.get("service_authority_scope")
+                != SERVICE_AUTHORITY_SCOPE
+                or identity.get("local_sam_group_membership") is not False
+                or identity.get("create_time_os_authorization")
+                != "administrator_only"
+                or identity.get("human_service_group_membership_mutation") is not False
+            ):
+                fail("windows_system_service_authority_scope_invalid")
+            verify_windows_msi_lifecycle_wiring(root)
             pdb_rel = (
                 Path(windows_msi_paths[0]).with_suffix(".wixpdb").as_posix()
             )
             if pdb_rel not in paths:
                 fail(f"windows_msi_lifecycle_pdb_unmanifested:{pdb_rel}")
             verify_windows_material_msi_lifecycle(root, windows_msi_paths[0])
+        else:
+            if windows_msi_paths:
+                fail("windows_zip_only_msi_present")
+            if windows_block.get("package_mode") != "portable_zip_only":
+                fail("windows_zip_only_manifest_package_mode_invalid")
+            if windows_block.get("system_installer_included") is not False:
+                fail("windows_zip_only_system_installer_claim")
+            if windows_block.get("portable_archive_smoke_required") is not True:
+                fail("windows_portable_archive_smoke_not_required")
+            actual_paths = {
+                path.relative_to(root).as_posix()
+                for path in root.rglob("*")
+                if path.is_file()
+            }
+            expected_paths = set(paths) | {MANIFEST_NAME, "SHA256SUMS"}
+            unexpected_paths = sorted(actual_paths - expected_paths)
+            if unexpected_paths:
+                fail(
+                    "windows_zip_only_unmanifested_artifact:"
+                    + ",".join(unexpected_paths)
+                )
+            for rel in sorted(actual_paths):
+                name = Path(rel).name
+                if (
+                    name in WINDOWS_ZIP_ONLY_FORBIDDEN_NAMES
+                    or Path(rel).suffix.lower()
+                    in WINDOWS_ZIP_ONLY_FORBIDDEN_SUFFIXES
+                ):
+                    fail(f"windows_zip_only_forbidden_artifact:{rel}")
     if args.platform == "macos":
         macos_block = data.get("macos")
         if not isinstance(macos_block, dict):

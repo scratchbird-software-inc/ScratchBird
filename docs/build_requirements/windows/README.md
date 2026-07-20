@@ -57,5 +57,11 @@ native public release evidence passes.
 Dynamic LLVM is a mandatory installed runtime. The release build embeds only
 the configured LLVM DLL basename. Native staging explicitly copies that DLL
 from the MSYS2 UCRT64 runtime and recursively closes its non-system imports;
-the ZIP/MSI verifier fails if the declared LLVM DLL is absent. Testers do not
+the ZIP verifier fails if the declared LLVM DLL is absent. Testers do not
 need a separate LLVM installation for the packaged Windows build.
+
+Current public testing releases are portable ZIP-only. They do not install an
+MSI, service, `%ProgramFiles%` tree, or `%ProgramData%` state. WiX/MSI tooling
+remains an explicit local diagnostic path and is intentionally excluded from
+automated build, release-candidate, web-export, and nightly workflows until its
+separate investigation is complete.

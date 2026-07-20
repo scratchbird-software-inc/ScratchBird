@@ -515,13 +515,23 @@ class WindowsSystemInstallerTest(unittest.TestCase):
             self.assertTrue(
                 (output / "scratchbird-windows-1.2.3-nightly.zip").is_file()
             )
-            self.assertTrue((output / "scratchbird.wxs").is_file())
-            self.assertTrue(
-                (output / "scratchbird-windows-lifecycle.wxs").is_file()
+            self.assertFalse((output / "scratchbird.wxs").exists())
+            self.assertFalse(
+                (output / "scratchbird-windows-lifecycle.wxs").exists()
             )
-            self.assertTrue(
-                (output / "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json").is_file()
+            self.assertFalse(
+                (output / "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json").exists()
             )
+            self.assertFalse(any(output.glob("*.msi")))
+            manifest = json.loads(
+                (output / "INSTALLER_ARTIFACT_MANIFEST.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual("portable_zip_only", manifest["windows"]["package_mode"])
+            self.assertFalse(manifest["windows"]["system_installer_included"])
+            self.assertTrue(manifest["windows"]["portable_archive_smoke_required"])
+            self.assertEqual(3092, manifest["windows"]["native_default_port"])
             verify = subprocess.run(
                 [
                     sys.executable,
@@ -544,6 +554,30 @@ class WindowsSystemInstallerTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(verify.returncode, 0, verify.stdout)
+            (output / "unexpected.msi").write_bytes(b"must-not-be-published")
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    str(
+                        REPO_ROOT
+                        / "project"
+                        / "tools"
+                        / "installers"
+                        / "verify_installer_artifacts.py"
+                    ),
+                    "--platform",
+                    "windows",
+                    "--artifact-root",
+                    str(output),
+                ],
+                cwd=REPO_ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("windows_zip_only", rejected.stdout)
 
     def test_system_tree_rejects_non_native_config_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

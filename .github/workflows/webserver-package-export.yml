@@ -32,11 +32,6 @@ on:
         description: Public webserver base URL recorded in the manifest
         required: true
         default: https://downloads.scratchbird.com
-      require-msi:
-        description: Require WiX MSI generation on Windows
-        required: true
-        default: false
-        type: boolean
       retention-days:
         description: GitHub artifact retention days
         required: true
@@ -56,7 +51,6 @@ jobs:
     with:
       platform: ${{ inputs.platform }}
       version: ${{ inputs.version }}
-      require-msi: ${{ inputs.require-msi }}
 
   package-webserver-export:
     name: Create webserver upload bundle

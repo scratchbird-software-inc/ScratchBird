@@ -36,7 +36,7 @@ from nightly_release_contract import RELEASE_CONTRACTS, ReleaseContract, get_rel
 INSTALLER_MANIFEST = "INSTALLER_ARTIFACT_MANIFEST.json"
 UNIVERSAL_MANIFEST = "MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json"
 SCHEMA_ID = "scratchbird.native_nightly_release.v1"
-PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
+PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_platform_system_installer_artifacts"
 NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")
 NATIVE_EXECUTABLES = (
     "SBsrv",
@@ -91,11 +91,6 @@ PACKAGE_RULES = (
         "windows", "windows", "x86_64", "zip", "scratchbird-windows-*.zip",
         "scratchbird-nightly-windows-x86_64.zip", "portable_archive",
         "exact_native_payload_extraction",
-    ),
-    (
-        "windows", "windows", "x86_64", "msi", "scratchbird-windows-*.msi",
-        "scratchbird-nightly-windows-x86_64.msi", "system_installer",
-        "installer_manifest_and_msi_smoke",
     ),
     (
         "macos-x86_64", "macos", "x86_64", "tar.gz", "scratchbird-macos-*.tar.gz",
@@ -252,6 +247,23 @@ def verify_installer_root(
     sums = parse_sha256sums(artifact_root / "SHA256SUMS")
     if sums != expected_sums:
         fail(f"installer_sha256sums_manifest_mismatch:{root.name}")
+    if expected_platform == "windows":
+        windows = data.get("windows")
+        if (
+            not isinstance(windows, dict)
+            or windows.get("package_mode") != "portable_zip_only"
+            or windows.get("system_installer_included") is not False
+            or windows.get("portable_archive_smoke_required") is not True
+            or windows.get("native_default_port") != 3092
+        ):
+            fail(f"windows_zip_only_manifest_policy_invalid:{root.name}")
+        for rel_name in verified:
+            name = Path(rel_name).name
+            if (
+                name == "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json"
+                or Path(rel_name).suffix.lower() in {".msi", ".wixpdb", ".wxs"}
+            ):
+                fail(f"windows_zip_only_forbidden_artifact:{root.name}:{rel_name}")
     if expected_platform == "macos":
         for sidecar in ("MACOS_DYNAMIC_LIBRARY_AUDIT.json", "MACOS_SIGNING_STATE.json"):
             if sidecar not in verified:
@@ -685,6 +697,8 @@ def create_bundle(
             "x86_64": load_json(verified["macos-x86_64"]["MACOS_SIGNING_STATE.json"])["status"],
             "arm64": load_json(verified["macos-arm64"]["MACOS_SIGNING_STATE.json"])["status"],
         }
+    if "windows" in included_platforms:
+        manifest["windows_release_policy"] = "portable_zip_only_no_msi"
     manifest_path = output_root / contract.manifest_name
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

@@ -17,11 +17,6 @@ on:
         options:
           - artifacts-only
           - rolling-prerelease
-      require-msi:
-        description: Retained for compatibility; Windows MSI proof is mandatory
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -38,7 +33,6 @@ jobs:
       enabled: ${{ steps.enabled.outputs.value }}
       version: ${{ steps.version.outputs.value }}
       publish-mode: ${{ steps.publish.outputs.value }}
-      require-msi: ${{ steps.msi.outputs.value }}
     steps:
       - name: Check scheduled-nightly enablement
         id: enabled
@@ -76,10 +70,6 @@ jobs:
             echo "value=$REQUESTED_MODE" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Resolve MSI policy
-        id: msi
-        run: echo "value=true" >> "$GITHUB_OUTPUT"
-
   build-installers:
     name: Build and verify nightly installers
     needs: gold-gate
@@ -89,7 +79,6 @@ jobs:
     with:
       platform: all
       version: ${{ needs.gold-gate.outputs.version }}
-      require-msi: ${{ needs.gold-gate.outputs.require-msi == 'true' }}
 
   publish-nightly:
     name: Publish rolling nightly prerelease
@@ -128,7 +117,7 @@ jobs:
           macos_x86_root="$(resolve_installer_root nightly-artifacts/scratchbird-macos-x86_64-installers)"
           macos_arm_root="$(resolve_installer_root nightly-artifacts/scratchbird-macos-arm64-installers)"
           python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
-          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root" --require-msi
+          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
           python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_x86_root"
           python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_arm_root"
           mapfile -t universal_manifests < <(find nightly-artifacts/scratchbird-macos-universal-installers -type f -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json | sort)
@@ -164,8 +153,8 @@ jobs:
             echo "- The native ScratchBird listener default is TCP port 3092."
             echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
             echo "- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23+, Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22+."
-            echo "- Public nightly assets include fully verified portable archives and system installer packages."
-            echo "- DEB, RPM, AUR, PKG, and MSI packages are published for tester installation after their platform verification and install-smoke jobs pass."
+            echo "- Public nightly assets include fully verified portable archives and the platform system installer packages that are currently published."
+            echo "- DEB, RPM, AUR, and PKG packages are published after their platform verification and install-smoke jobs pass. Windows is ZIP-only for this testing release; no MSI is generated or published."
             echo "- Source commit: $GITHUB_SHA"
             echo "- Requested version: $SB_NIGHTLY_VERSION"
             echo "- Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

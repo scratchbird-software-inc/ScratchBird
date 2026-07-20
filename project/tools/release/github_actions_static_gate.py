@@ -480,28 +480,30 @@ def check_windows_llvm_release_dependency(text: str, rel: str, job_name: str) ->
     check_ctest_label_contract(text, rel, job_name, "public-release-windows")
 
 
-def check_windows_wix_cross_shell_path(text: str, rel: str, job_name: str) -> None:
-    """Require an explicit WiX handoff from PowerShell to the MSYS build shell."""
+def check_windows_zip_only_release_path(text: str, rel: str, job_name: str) -> None:
+    """Require the automated Windows release path to build and smoke only ZIP."""
 
     block = workflow_job_block(text, job_name, rel)
     for token in (
-        "dotnet tool install --global wix --version 4.0.6",
-        '$toolRoot = Join-Path $env:USERPROFILE ".dotnet\\tools"',
-        '$wix = Join-Path $toolRoot "wix.exe"',
-        "Test-Path -LiteralPath $wix -PathType Leaf",
-        '"SB_WIX_TOOL_ROOT=$toolRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append',
-        '& $wix extension add -g "WixToolset.Util.wixext/4.0.6"',
-        'wix_tool_root="$(cygpath -u "$SB_WIX_TOOL_ROOT")"',
-        'wix_global_tool="$wix_tool_root/wix.exe"',
-        'test -f "$wix_global_tool"',
-        '"$wix_global_tool" --version',
-        'export PATH="$(dirname "$wix_global_tool"):$PATH"',
-        "command -v wix >/dev/null",
-        "--require-msi",
+        "Build Windows portable ZIP package",
+        "build_installers.py",
+        "verify_installer_artifacts.py --platform windows",
+        'Filter "scratchbird-windows-*.zip"',
+        "Expected exactly one Windows ZIP package",
+        "smoke_install_windows.ps1",
     ):
         require_token(block, token, rel)
-    if "$env:GITHUB_PATH" in block:
-        fail(f"windows_wix_generic_path_handoff_forbidden:{rel}:{job_name}")
+    for token in (
+        "Set up WiX and utility extension",
+        "wix extension add -g",
+        "dotnet tool install --global wix",
+        "WixToolset.Util.wixext",
+        "SB_WIX_TOOL_ROOT",
+        "--require-msi",
+        ".msi",
+    ):
+        if token in block:
+            fail(f"windows_zip_only_forbidden_token:{rel}:{job_name}:{token}")
 
 
 def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
@@ -541,8 +543,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "native ScratchBird listener default is TCP port 3092",
         "default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources",
         "LLVM is mandatory",
-        "fully verified portable archives and system installer packages",
-        "DEB, RPM, AUR, PKG, and MSI packages are published for tester installation",
+        "fully verified portable archives and the platform system installer packages that are currently published",
+        "DEB, RPM, AUR, and PKG packages are published after their platform verification and install-smoke jobs pass. Windows is ZIP-only for this testing release; no MSI is generated or published.",
         '--checkout-root "$GITHUB_WORKSPACE"',
     ):
         require_token(publish_block, token, rel)
@@ -575,7 +577,6 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "scratchbird-nightly-linux-x86_64.rpm",
         "scratchbird-nightly-linux-x86_64-aur.tar.gz",
         "scratchbird-nightly-windows-x86_64.zip",
-        "scratchbird-nightly-windows-x86_64.msi",
         "scratchbird-nightly-macos-x86_64.tar.gz",
         "scratchbird-nightly-macos-x86_64.pkg",
         "scratchbird-nightly-macos-arm64.tar.gz",
@@ -583,7 +584,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "scratchbird-nightly-macos-universal.tar.gz",
         "verify_native_installed_payload.py",
         "macos_architecture_mismatch",
-        "fully_verified_native_portable_and_system_installer_artifacts",
+        "fully_verified_native_portable_and_platform_system_installer_artifacts",
+        "windows_release_policy",
         "RELEASE_CONTRACTS",
         "release_scope",
         "release_contract_package_inventory_mismatch",
@@ -593,6 +595,8 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         require_token(bundle_text, token, bundle_tool.name)
     if "workflow_only_package_formats" in bundle_text:
         fail("nightly_system_installer_publication_policy_missing")
+    if "scratchbird-nightly-windows-x86_64.msi" in bundle_text:
+        fail("nightly_windows_msi_bundle_contract_forbidden")
 
     contract_text = contract_tool.read_text(encoding="utf-8")
     for token in (
@@ -608,11 +612,13 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "scratchbird-nightly-windows-manifest.json",
         "scratchbird-nightly-macos-manifest.json",
         "scratchbird-nightly-linux-x86_64.deb",
-        "scratchbird-nightly-windows-x86_64.msi",
+        "scratchbird-nightly-windows-x86_64.zip",
         "scratchbird-nightly-macos-x86_64.pkg",
         "scratchbird-nightly-macos-arm64.pkg",
     ):
         require_token(contract_text, token, contract_tool.name)
+    if "scratchbird-nightly-windows-x86_64.msi" in contract_text:
+        fail("nightly_windows_msi_contract_forbidden")
 
     publisher_text = publisher_tool.read_text(encoding="utf-8")
     for token in (
@@ -650,7 +656,7 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         '"target_commitish": self.target_sha',
         '"make_latest": "false"',
         "Content-Type: application/json",
-        "fully_verified_native_portable_and_system_installer_artifacts",
+        "fully_verified_native_portable_and_platform_system_installer_artifacts",
         "REQUIRED_ARTIFACT_VERIFICATION",
         '"draft": True',
         "draft=False,",
@@ -727,9 +733,10 @@ def check_platform_nightly_workflow(text: str, rel: str, scope: str) -> None:
     for token in (
         "verify-installers.yml",
         f"platform: {scope}",
-        "require-msi: true",
     ):
         require_token(build_block, token, rel)
+    if "require-msi" in build_block:
+        fail(f"platform_nightly_windows_msi_request_forbidden:{rel}:{scope}")
     if "platform: all" in build_block:
         fail(f"platform_nightly_combined_build_forbidden:{rel}:{scope}")
     publish_block = workflow_job_block(text, "publish-nightly", rel)
@@ -926,7 +933,7 @@ def main() -> int:
             )
             check_linux_release_dependencies(text, name, "linux-installers")
             check_windows_llvm_release_dependency(text, name, "windows-installers")
-            check_windows_wix_cross_shell_path(text, name, "windows-installers")
+            check_windows_zip_only_release_path(text, name, "windows-installers")
             check_ctest_label_contract(
                 text, name, "macos-installers", "public-release-macos"
             )

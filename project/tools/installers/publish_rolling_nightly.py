@@ -38,7 +38,10 @@ TAG = DEFAULT_CONTRACT.tag
 MANIFEST_NAME = DEFAULT_CONTRACT.manifest_name
 CHECKSUM_NAME = DEFAULT_CONTRACT.checksum_name
 MANIFEST_SCHEMA = "scratchbird.native_nightly_release.v1"
-PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artifacts"
+PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_platform_system_installer_artifacts"
+LEGACY_PUBLIC_ASSET_POLICIES = frozenset(
+    {"fully_verified_native_portable_and_system_installer_artifacts"}
+)
 API_VERSION = "2026-03-10"
 TAG_VISIBILITY_ATTEMPTS = 15
 TAG_VISIBILITY_DELAY_SECONDS = 2.0
@@ -198,6 +201,10 @@ def load_local_assets(
     )
     if manifest.get("included_platforms") != expected_platforms:
         raise PublishError("release_manifest_platform_scope_mismatch")
+    if "windows" in expected_platforms and manifest.get(
+        "windows_release_policy"
+    ) != "portable_zip_only_no_msi":
+        raise PublishError("release_manifest_windows_zip_only_policy_mismatch")
     if manifest.get("release_scope") != contract.scope:
         raise PublishError("release_manifest_scope_mismatch")
     if manifest.get("release_tag") != contract.tag:
@@ -986,7 +993,7 @@ class RollingPublisher:
             or manifest.get("release_tag") != self.contract.tag
             or manifest.get("distribution_surface") != "scratchbird_native_no_emulation"
             or manifest.get("public_asset_policy")
-            != PUBLIC_ASSET_POLICY
+            not in (PUBLIC_ASSET_POLICY, *LEGACY_PUBLIC_ASSET_POLICIES)
             or manifest.get("native_parser") != "SBSQL"
             or manifest.get("emulation_layers_included") is not False
             or manifest.get("native_components") != NATIVE_COMPONENTS
@@ -995,6 +1002,12 @@ class RollingPublisher:
                 ["linux", "windows", "macos"]
                 if self.contract.scope == "all"
                 else [self.contract.scope]
+            )
+            or (
+                manifest.get("public_asset_policy") == PUBLIC_ASSET_POLICY
+                and self.contract.scope in {"all", "windows"}
+                and manifest.get("windows_release_policy")
+                != "portable_zip_only_no_msi"
             )
         ):
             raise PublishError("existing_nightly_release_unmanaged:identity_mismatch")

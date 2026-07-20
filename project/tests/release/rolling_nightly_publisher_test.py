@@ -54,7 +54,6 @@ def write_bundle(
         "scratchbird-nightly-linux-x86_64.rpm": b"linux-rpm-" + marker,
         "scratchbird-nightly-linux-x86_64-aur.tar.gz": b"linux-aur-" + marker,
         "scratchbird-nightly-windows-x86_64.zip": b"windows-" + marker,
-        "scratchbird-nightly-windows-x86_64.msi": b"windows-msi-" + marker,
         "scratchbird-nightly-macos-x86_64.tar.gz": b"mac-x86-" + marker,
         "scratchbird-nightly-macos-x86_64.pkg": b"mac-x86-pkg-" + marker,
         "scratchbird-nightly-macos-arm64.tar.gz": b"mac-" + marker,
@@ -90,7 +89,7 @@ def write_bundle(
         "github_run_id": run_id,
         "github_run_attempt": attempt,
         "distribution_surface": "scratchbird_native_no_emulation",
-        "public_asset_policy": "fully_verified_native_portable_and_system_installer_artifacts",
+        "public_asset_policy": "fully_verified_native_portable_and_platform_system_installer_artifacts",
         "native_parser": "SBSQL",
         "native_components": [
             {"name": "SBmgr", "role": "manager"},
@@ -101,6 +100,8 @@ def write_bundle(
         "emulation_layers_included": False,
         "artifacts": rows,
     }
+    if scope in {"all", "windows"}:
+        manifest["windows_release_policy"] = "portable_zip_only_no_msi"
     manifest_path = root / contract.manifest_name
     manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
     checksum_paths = sorted(path for path in root.iterdir())
@@ -1175,6 +1176,36 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             self.assertFalse(
                 any(command[:2] == ["gh", "release"] for command in runner.commands)
             )
+
+    def test_pre_zip_only_policy_release_is_migrated_in_place(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-policy-migrate-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("new notes\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.seed_release(assets)
+            assert runner.release is not None
+            manifest_asset = next(
+                row
+                for row in runner.release["assets"]
+                if row["name"] == "scratchbird-nightly-manifest.json"
+            )
+            manifest_id = int(manifest_asset["id"])
+            manifest = json.loads(runner.asset_data[manifest_id].decode("utf-8"))
+            manifest["public_asset_policy"] = (
+                "fully_verified_native_portable_and_system_installer_artifacts"
+            )
+            manifest.pop("windows_release_policy", None)
+            previous = (json.dumps(manifest, sort_keys=True) + "\n").encode("utf-8")
+            runner.asset_data[manifest_id] = previous
+            manifest_asset["size"] = len(previous)
+            manifest_asset["digest"] = f"sha256:{sha(previous)}"
+
+            self.make_publisher(runner, notes).publish(assets)
+
+            self.assertFalse(runner.release["draft"])
+            self.assertEqual({asset.name for asset in assets}, self.names(runner))
 
     def test_release_create_failure_restores_absent_initial_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-create-fail-") as temp:

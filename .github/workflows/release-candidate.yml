@@ -16,11 +16,6 @@ on:
         required: true
         default: true
         type: boolean
-      require-msi:
-        description: Retained for compatibility; Windows MSI proof is mandatory
-        required: true
-        default: true
-        type: boolean
 
 permissions:
   contents: write
@@ -36,7 +31,6 @@ jobs:
     with:
       platform: all
       version: ${{ inputs.version }}
-      require-msi: true
 
   publish:
     name: Publish draft release candidate
@@ -70,7 +64,7 @@ jobs:
           macos_x86_root="$(resolve_installer_root release-artifacts/scratchbird-macos-x86_64-installers)"
           macos_arm_root="$(resolve_installer_root release-artifacts/scratchbird-macos-arm64-installers)"
           python3 project/tools/installers/verify_installer_artifacts.py --platform linux --artifact-root "$linux_root"
-          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root" --require-msi
+          python3 project/tools/installers/verify_installer_artifacts.py --platform windows --artifact-root "$windows_root"
           python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_x86_root"
           python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root "$macos_arm_root"
           mapfile -t universal_manifests < <(find release-artifacts/scratchbird-macos-universal-installers -type f -name MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json | sort)
@@ -159,5 +153,5 @@ jobs:
           test "$(find release-candidate-assets -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq "${#assets[@]}"
           gh release create "$SB_RC_TAG" "${assets[@]}" \
             --title "ScratchBird $SB_RC_VERSION" \
-            --notes "Native-only release candidate generated from $GITHUB_SHA. Public assets are the verified portable archives; DEB, RPM, AUR, PKG, MSI, and smoke proofs remain workflow artifacts." \
+            --notes "Native-only release candidate generated from $GITHUB_SHA. Public assets are the verified portable archives; DEB, RPM, AUR, PKG, and smoke proofs remain workflow artifacts. Windows testing artifacts are ZIP-only; no MSI is generated or published." \
             "${release_flags[@]}"

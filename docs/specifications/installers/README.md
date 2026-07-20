@@ -33,7 +33,7 @@ deployments of the open-source engine.
 | Principle | Statement |
 | --- | --- |
 | One catalog, many frontends | Components are defined once in the platform-agnostic element catalog (02). Every installer is a frontend that renders that catalog in the platform's native idiom. Components are never described twice. |
-| Native first | Native installers (MSI, `.pkg`, `deb`/`rpm`) are primary. Package-manager channels (winget, Homebrew, apt/dnf repos) are later thin wrappers over the same payloads. |
+| Native first | Native installers (`.pkg`, `deb`/`rpm`, and the Windows MSI design) are primary. The current public Windows tester channel is deliberately portable ZIP-only while MSI diagnostics are investigated. Package-manager channels (winget, Homebrew, apt/dnf repos) are later thin wrappers over the same payloads. |
 | Fat offline | Installers carry all payloads for the platform; component selection chooses what to *place*, never what to download. Air-gap and enterprise friendly. |
 | Per-machine default | Installs are per-machine by default (required for services and system-wide driver registration), with a per-user fallback where no elevation is available. |
 | Late, single elevation | The selection and configuration UI runs unprivileged; elevation is requested once, at commit, after the user reviews the summary. |
