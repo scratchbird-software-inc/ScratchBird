@@ -42,6 +42,8 @@ PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_system_installer_artif
 API_VERSION = "2026-03-10"
 TAG_VISIBILITY_ATTEMPTS = 15
 TAG_VISIBILITY_DELAY_SECONDS = 2.0
+API_READ_TRANSIENT_ATTEMPTS = 30
+API_READ_TRANSIENT_DELAY_SECONDS = 5.0
 CANONICAL_ASSET_NAMES = DEFAULT_CONTRACT.canonical_asset_names
 REQUIRED_ARTIFACT_VERIFICATION = DEFAULT_CONTRACT.verification_by_name
 NATIVE_COMPONENTS = [
@@ -285,8 +287,40 @@ class RollingPublisher:
             [self.git_bin, "-C", str(self.checkout_root), *arguments], check=check
         )
 
+    @staticmethod
+    def is_transient_api_failure(result: CommandResult) -> bool:
+        detail = f"{result.stdout}\n{result.stderr}"
+        return re.search(r"\b(?:429|500|502|503|504)\b", detail) is not None
+
     def api(self, endpoint: str, *arguments: str, check: bool = True) -> CommandResult:
-        return self.gh("api", *self.api_headers, endpoint, *arguments, check=check)
+        method = "GET"
+        if "--method" in arguments:
+            method = arguments[arguments.index("--method") + 1].upper()
+        attempts = API_READ_TRANSIENT_ATTEMPTS if method == "GET" else 1
+        command = [self.gh_bin, "api", *self.api_headers, endpoint, *arguments]
+        for attempt in range(attempts):
+            result = self.gh(
+                "api", *self.api_headers, endpoint, *arguments, check=False
+            )
+            if result.returncode == 0:
+                return result
+            transient = method == "GET" and self.is_transient_api_failure(result)
+            if transient and attempt + 1 < attempts:
+                time.sleep(API_READ_TRANSIENT_DELAY_SECONDS)
+                continue
+            detail = (result.stderr or result.stdout).strip()
+            if transient:
+                raise PublishError(
+                    "github_api_read_transient_timeout:"
+                    f"endpoint={endpoint}:attempts={attempts}:"
+                    f"exit={result.returncode}:{detail}"
+                )
+            if check:
+                raise PublishError(
+                    f"command_failed:{command[0]}:exit={result.returncode}:{detail}"
+                )
+            return result
+        raise PublishError(f"github_api_read_retry_unreachable:{endpoint}")
 
     @staticmethod
     def parse_json(result: CommandResult, context: str) -> dict[str, Any]:

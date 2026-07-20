@@ -118,8 +118,10 @@ class FakeRunner:
         self.fail_canonical_patch_at: int | None = None
         self.fail_edit_once = False
         self.fail_create_once = False
+        self.fail_create_transient_once = False
         self.fail_push_after_update_once = False
         self.tag_visibility_misses_after_push = 0
+        self.release_lookup_transient_failures = 0
         self.initial_release_payloads: list[dict] = []
         self.origin_url = "https://github.com/scratchbird-software-inc/ScratchBird" + GIT_SUFFIX
         self._canonical_patch_count = 0
@@ -205,6 +207,9 @@ class FakeRunner:
         return self.result(1, stderr="unexpected git command", check=check)
 
     def release_create_api(self, payload: dict, *, check: bool) -> publisher.CommandResult:
+        if self.fail_create_transient_once:
+            self.fail_create_transient_once = False
+            return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
         if self.fail_create_once:
             self.fail_create_once = False
             return self.result(1, stderr="injected release create failure", check=check)
@@ -271,6 +276,9 @@ class FakeRunner:
         if endpoint.endswith(f"/releases/tags/{self.tag}"):
             if self.release is None:
                 return self.result(1, stderr="HTTP 404 Not Found", check=check)
+            if self.release_lookup_transient_failures > 0:
+                self.release_lookup_transient_failures -= 1
+                return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
             return self.result(stdout=json.dumps(self.release), check=check)
         if endpoint.endswith(f"/git/ref/tags/{self.tag}"):
             if self.remote_tag_sha is None:
@@ -438,6 +446,42 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             ]
             self.assertGreaterEqual(len(tag_lookups_before_create), 3)
             self.assertIsNotNone(runner.release)
+
+    def test_initial_creation_retries_transient_release_lookup(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-release-lookup-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.release_lookup_transient_failures = 2
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual(
+                [
+                    mock.call(publisher.API_READ_TRANSIENT_DELAY_SECONDS),
+                    mock.call(publisher.API_READ_TRANSIENT_DELAY_SECONDS),
+                ],
+                sleep.call_args_list,
+            )
+            self.assertIsNotNone(runner.release)
+            assert runner.release is not None
+            self.assertFalse(runner.release["draft"])
+
+    def test_transient_release_create_is_not_retried(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-create-transient-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.fail_create_transient_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                with self.assertRaisesRegex(publisher.PublishError, "HTTP 503"):
+                    self.make_publisher(runner, notes).publish(assets)
+            sleep.assert_not_called()
+            self.assertIsNone(runner.release)
+            self.assertIsNone(runner.remote_tag_sha)
 
     def test_linux_scope_publishes_only_its_contract_to_its_own_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-publish-") as temp:
