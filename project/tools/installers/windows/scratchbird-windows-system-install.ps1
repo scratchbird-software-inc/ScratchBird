@@ -57,9 +57,10 @@ function Fail-Code {
 function Invoke-NativeQuiet {
   param([string] $FilePath, [string[]] $Arguments, [string] $FailureCode)
   & $FilePath @Arguments 1>$null 2>$null
-  if ($LASTEXITCODE -ne 0) {
+  $nativeExitCode = [int]$LASTEXITCODE
+  if ($nativeExitCode -ne 0) {
     if ($FailureCode -eq "BOOTSTRAP.INSTALL_DEFAULTS_INVALID") {
-      Fail-Code "${FailureCode}.$script:LifecyclePhase"
+      Fail-Code "${FailureCode}.$script:LifecyclePhase.NATIVE_EXIT_$nativeExitCode"
     }
     Fail-Code $FailureCode
   }
@@ -215,6 +216,104 @@ function Assert-ServiceRecord {
   }
 }
 
+function Set-ManagedVirtualServiceAccount {
+  # CreateService/ChangeServiceConfig require a true NULL password pointer for a
+  # virtual account.  sc.exe's password option cannot represent that contract
+  # reliably, so bind the account through ChangeServiceConfigW explicitly.
+  # The service is manual and stopped throughout this transition: no process
+  # ever executes under the temporary SCM default identity.
+  $nativeSource = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace ScratchBird.WindowsInstaller
+{
+    public static class ServiceNative
+    {
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr OpenSCManagerW(
+            string machineName,
+            string databaseName,
+            UInt32 desiredAccess);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr OpenServiceW(
+            IntPtr serviceManager,
+            string serviceName,
+            UInt32 desiredAccess);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool ChangeServiceConfigW(
+            IntPtr service,
+            UInt32 serviceType,
+            UInt32 startType,
+            UInt32 errorControl,
+            string binaryPathName,
+            string loadOrderGroup,
+            IntPtr tagId,
+            string dependencies,
+            string serviceStartName,
+            IntPtr lpPassword,
+            string displayName);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool CloseServiceHandle(IntPtr serviceHandle);
+    }
+}
+'@
+  $manager = [IntPtr]::Zero
+  $service = [IntPtr]::Zero
+  $failureCode = $null
+  try {
+    Add-Type -TypeDefinition $nativeSource -ErrorAction Stop
+    $manager = [ScratchBird.WindowsInstaller.ServiceNative]::OpenSCManagerW(
+      $null,
+      $null,
+      [uint32]1
+    )
+    if ($manager -eq [IntPtr]::Zero) {
+      $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.OPEN_SCM"
+    } else {
+      $service = [ScratchBird.WindowsInstaller.ServiceNative]::OpenServiceW(
+        $manager,
+        $ServiceName,
+        [uint32]2
+      )
+      if ($service -eq [IntPtr]::Zero) {
+        $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.OPEN_SERVICE"
+      } elseif (-not [ScratchBird.WindowsInstaller.ServiceNative]::ChangeServiceConfigW(
+          $service,
+          [uint32]::MaxValue,
+          [uint32]::MaxValue,
+          [uint32]::MaxValue,
+          $null,
+          $null,
+          [IntPtr]::Zero,
+          $null,
+          $ServiceAccount,
+          [IntPtr]::Zero,
+          $null
+        )) {
+        $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.CHANGE_CONFIG"
+      }
+    }
+  } catch {
+    $failureCode = "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$script:LifecyclePhase.NATIVE_BINDING"
+  } finally {
+    if ($service -ne [IntPtr]::Zero) {
+      [void][ScratchBird.WindowsInstaller.ServiceNative]::CloseServiceHandle($service)
+    }
+    if ($manager -ne [IntPtr]::Zero) {
+      [void][ScratchBird.WindowsInstaller.ServiceNative]::CloseServiceHandle($manager)
+    }
+  }
+  if ($null -ne $failureCode) {
+    Fail-Code $failureCode
+  }
+}
+
 function Ensure-SBsrvService {
   $script:LifecyclePhase = "SERVICE_IDENTITY.QUERY_EXISTING"
   $existing = Get-ServiceRecord
@@ -228,10 +327,10 @@ function Ensure-SBsrvService {
     $sc = Join-Path $env:SystemRoot "System32\sc.exe"
     $script:LifecyclePhase = "SERVICE_IDENTITY.CREATE"
     $command = Get-ExpectedServiceCommand
-    # A virtual NT SERVICE account requires a null password.  Do not pass an
-    # empty password option, because SCM treats it as a supplied password.
-    Invoke-NativeQuiet $sc @("create", $ServiceName, "binPath= $command", "start= demand", "obj= $ServiceAccount", "DisplayName= $ServiceDisplayName") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
+    Invoke-NativeQuiet $sc @("create", $ServiceName, "type=", "own", "binPath=", $command, "start=", "demand", "DisplayName=", $ServiceDisplayName) "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
     $script:ServiceCreatedByThisRun = $true
+    $script:LifecyclePhase = "SERVICE_IDENTITY.CONFIGURE_ACCOUNT"
+    Set-ManagedVirtualServiceAccount
     $script:LifecyclePhase = "SERVICE_IDENTITY.DESCRIPTION"
     Invoke-NativeQuiet $sc @("description", $ServiceName, "ScratchBird native SBsrv owner for shared SBgate and standalone SBParser") "BOOTSTRAP.INSTALL_DEFAULTS_INVALID"
   }

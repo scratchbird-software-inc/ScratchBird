@@ -287,8 +287,9 @@ def main() -> int:
             "BOOTSTRAP.GROUP_CREATE_FAILED.NET_CREATE_EXIT_",
             '$LifecyclePhase = "PRECHECK"',
             "BOOTSTRAP.INSTALL_DEFAULTS_INVALID.$LifecyclePhase",
+            "NATIVE_EXIT_$nativeExitCode",
             "NT SERVICE\\scratchbird",
-            '"start= demand"',
+            '"start=", "demand"',
             '@("sidtype", $ServiceName, "restricted")',
             "ServiceSidType",
             "SetAccessRuleProtection($true, $false)",
@@ -313,11 +314,18 @@ def main() -> int:
             'SERVICE_IDENTITY.QUERY_EXISTING',
             'SERVICE_IDENTITY.ASSERT_EXISTING',
             'SERVICE_IDENTITY.CREATE',
+            'SERVICE_IDENTITY.CONFIGURE_ACCOUNT',
             'SERVICE_IDENTITY.DESCRIPTION',
             'SERVICE_IDENTITY.SIDTYPE',
             'SERVICE_IDENTITY.QUERY_RESULT',
             'SERVICE_IDENTITY.ASSERT_RESULT',
+            "function Set-ManagedVirtualServiceAccount",
+            "ChangeServiceConfigW",
+            "IntPtr lpPassword",
+            "true NULL password pointer",
+            "[IntPtr]::Zero",
             '@("create", $ServiceName',
+            '"type=", "own", "binPath=", $command, "start=", "demand", "DisplayName=", $ServiceDisplayName',
             "Assert-ServiceRecord $service -RequireFreshDefaults",
             "& $sc delete $ServiceName",
         ),
@@ -355,6 +363,19 @@ def main() -> int:
         "password=" not in lifecycle,
         "virtual_service_account_password_argument",
     )
+    require(
+        '"obj= $ServiceAccount"' not in lifecycle,
+        "virtual_service_account_sc_create_argument",
+    )
+    for forbidden in (
+        '"binPath= $command"',
+        '"start= demand"',
+        '"DisplayName= $ServiceDisplayName"',
+    ):
+        require(
+            forbidden not in lifecycle,
+            f"virtual_service_account_sc_combined_argument:{forbidden}",
+        )
 
     try:
         tree = ET.fromstring(wix)
