@@ -119,6 +119,8 @@ class FakeRunner:
         self.fail_edit_once = False
         self.fail_create_once = False
         self.fail_create_transient_once = False
+        self.fail_create_not_found_once = False
+        self.fail_create_after_accept_once = False
         self.fail_push_after_update_once = False
         self.tag_visibility_misses_after_push = 0
         self.release_lookup_transient_failures = 0
@@ -210,6 +212,9 @@ class FakeRunner:
         if self.fail_create_transient_once:
             self.fail_create_transient_once = False
             return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
+        if self.fail_create_not_found_once:
+            self.fail_create_not_found_once = False
+            return self.result(1, stderr="HTTP 404 Not Found", check=check)
         if self.fail_create_once:
             self.fail_create_once = False
             return self.result(1, stderr="injected release create failure", check=check)
@@ -227,6 +232,9 @@ class FakeRunner:
             "target_commitish": payload["target_commitish"],
             "assets": [],
         }
+        if self.fail_create_after_accept_once:
+            self.fail_create_after_accept_once = False
+            return self.result(1, stderr="HTTP 503 Service Unavailable", check=check)
         return self.result(stdout=json.dumps(self.release), check=check)
 
     def release_upload(self, args: list[str], *, check: bool) -> publisher.CommandResult:
@@ -468,7 +476,33 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             assert runner.release is not None
             self.assertFalse(runner.release["draft"])
 
-    def test_transient_release_create_is_not_retried(self) -> None:
+    def test_initial_release_create_retries_reconciled_not_found(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-create-not-found-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.fail_create_not_found_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual(
+                [mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS)],
+                sleep.call_args_list,
+            )
+            self.assertIsNotNone(runner.release)
+            self.assertEqual(self.revision, runner.remote_tag_sha)
+            create_calls = [
+                command
+                for command in runner.commands
+                if command[:2] == ["gh", "api"]
+                and "--method" in command
+                and command[command.index("--method") + 1] == "POST"
+                and any(value.endswith("/releases") for value in command)
+            ]
+            self.assertEqual(2, len(create_calls))
+
+    def test_initial_release_create_retries_reconciled_transient_failure(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-create-transient-") as temp:
             root = Path(temp)
             assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
@@ -477,11 +511,35 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             runner = FakeRunner()
             runner.fail_create_transient_once = True
             with mock.patch.object(publisher.time, "sleep") as sleep:
-                with self.assertRaisesRegex(publisher.PublishError, "HTTP 503"):
-                    self.make_publisher(runner, notes).publish(assets)
+                self.make_publisher(runner, notes).publish(assets)
+            self.assertEqual(
+                [mock.call(publisher.INITIAL_RELEASE_CREATE_DELAY_SECONDS)],
+                sleep.call_args_list,
+            )
+            self.assertIsNotNone(runner.release)
+            self.assertEqual(self.revision, runner.remote_tag_sha)
+
+    def test_initial_release_create_reconciles_accepted_response_without_retry(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-create-reconcile-") as temp:
+            root = Path(temp)
+            assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
+            notes = root / "notes.md"
+            notes.write_text("Native ScratchBird; no emulation.\n", encoding="utf-8")
+            runner = FakeRunner()
+            runner.fail_create_after_accept_once = True
+            with mock.patch.object(publisher.time, "sleep") as sleep:
+                self.make_publisher(runner, notes).publish(assets)
             sleep.assert_not_called()
-            self.assertIsNone(runner.release)
-            self.assertIsNone(runner.remote_tag_sha)
+            self.assertIsNotNone(runner.release)
+            create_calls = [
+                command
+                for command in runner.commands
+                if command[:2] == ["gh", "api"]
+                and "--method" in command
+                and command[command.index("--method") + 1] == "POST"
+                and any(value.endswith("/releases") for value in command)
+            ]
+            self.assertEqual(1, len(create_calls))
 
     def test_linux_scope_publishes_only_its_contract_to_its_own_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-platform-nightly-publish-") as temp:

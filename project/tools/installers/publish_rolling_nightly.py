@@ -44,6 +44,8 @@ TAG_VISIBILITY_ATTEMPTS = 15
 TAG_VISIBILITY_DELAY_SECONDS = 2.0
 API_READ_TRANSIENT_ATTEMPTS = 30
 API_READ_TRANSIENT_DELAY_SECONDS = 5.0
+INITIAL_RELEASE_CREATE_ATTEMPTS = 4
+INITIAL_RELEASE_CREATE_DELAY_SECONDS = 5.0
 CANONICAL_ASSET_NAMES = DEFAULT_CONTRACT.canonical_asset_names
 REQUIRED_ARTIFACT_VERIFICATION = DEFAULT_CONTRACT.verification_by_name
 NATIVE_COMPONENTS = [
@@ -277,7 +279,12 @@ class RollingPublisher:
         self.checkout_root = checkout_root.resolve()
         self.gh_bin = gh_bin
         self.git_bin = git_bin
-        self.api_headers = ["-H", f"X-GitHub-Api-Version: {API_VERSION}"]
+        self.api_headers = [
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            f"X-GitHub-Api-Version: {API_VERSION}",
+        ]
 
     def gh(self, *arguments: str, check: bool = True) -> CommandResult:
         return self.runner.run([self.gh_bin, *arguments], check=check)
@@ -356,6 +363,27 @@ class RollingPublisher:
             raise PublishError("nightly_tag_not_lightweight_commit")
         return str(obj["sha"]).lower()
 
+    @staticmethod
+    def is_retryable_initial_release_create_failure(result: CommandResult) -> bool:
+        """Return whether an initial-create response can be reconciled safely.
+
+        Generic non-GET API calls remain single-attempt operations.  A failed
+        first release creation is the one exception because GitHub can return
+        a false 404/5xx during an incident after accepting or rejecting the
+        request.  The caller reconciles the release record before it retries,
+        so it never sends another create request while a draft already exists.
+        """
+
+        detail = f"{result.stdout}\n{result.stderr}"
+        return re.search(r"\b(?:404|429|500|502|503|504)\b", detail) is not None
+
+    def validate_initial_draft_release(self, release: dict[str, Any]) -> dict[str, Any]:
+        if release.get("tag_name") != self.contract.tag:
+            raise PublishError("initial_release_tag_mismatch")
+        if release.get("draft") is not True or release.get("prerelease") is not True:
+            raise PublishError("initial_release_not_draft_prerelease")
+        return release
+
     def wait_for_tag_target(self, target_sha: str) -> str:
         """Wait for GitHub's API to resolve the just-pushed lightweight tag.
 
@@ -409,23 +437,42 @@ class RollingPublisher:
             json.dump(payload, handle, sort_keys=True)
             payload_path = Path(handle.name)
         try:
-            result = self.api(
-                f"repos/{self.repository}/releases",
-                "--method",
-                "POST",
-                "-H",
-                "Content-Type: application/json",
-                "--input",
-                str(payload_path),
-            )
+            for attempt in range(INITIAL_RELEASE_CREATE_ATTEMPTS):
+                result = self.api(
+                    f"repos/{self.repository}/releases",
+                    "--method",
+                    "POST",
+                    "-H",
+                    "Content-Type: application/json",
+                    "--input",
+                    str(payload_path),
+                    check=False,
+                )
+                if result.returncode == 0:
+                    return self.validate_initial_draft_release(
+                        self.parse_json(result, "initial_release_create")
+                    )
+
+                # Reconcile before considering another POST.  A release that
+                # appeared after a failed response is the authoritative draft
+                # and makes retrying the create operation unsafe.
+                observed = self.get_release(allow_missing=True)
+                if observed is not None:
+                    return self.validate_initial_draft_release(observed)
+
+                detail = (result.stderr or result.stdout).strip()
+                if (
+                    not self.is_retryable_initial_release_create_failure(result)
+                    or attempt + 1 >= INITIAL_RELEASE_CREATE_ATTEMPTS
+                ):
+                    raise PublishError(
+                        "initial_release_create_failed:"
+                        f"attempts={attempt + 1}:exit={result.returncode}:{detail}"
+                    )
+                time.sleep(INITIAL_RELEASE_CREATE_DELAY_SECONDS)
         finally:
             payload_path.unlink(missing_ok=True)
-        release = self.parse_json(result, "initial_release_create")
-        if release.get("tag_name") != self.contract.tag:
-            raise PublishError("initial_release_tag_mismatch")
-        if release.get("draft") is not True or release.get("prerelease") is not True:
-            raise PublishError("initial_release_not_draft_prerelease")
-        return release
+        raise PublishError("initial_release_create_retry_unreachable")
 
     def verify_origin_repository(self) -> None:
         result = self.git("remote", "get-url", "origin")
