@@ -40,18 +40,13 @@ class ReleaseContract:
 
 _LINUX_PACKAGES = (
     ("scratchbird-nightly-linux-x86_64.tar.gz", "exact_native_payload_extraction"),
-    ("scratchbird-nightly-linux-x86_64.deb", "installer_manifest_and_privileged_deb_smoke"),
-    ("scratchbird-nightly-linux-x86_64.rpm", "installer_manifest_and_rpm_recipe_verification"),
-    ("scratchbird-nightly-linux-x86_64-aur.tar.gz", "installer_manifest_and_aur_recipe_verification"),
 )
 _WINDOWS_PACKAGES = (
     ("scratchbird-nightly-windows-x86_64.zip", "exact_native_payload_extraction"),
 )
 _MACOS_PACKAGES = (
     ("scratchbird-nightly-macos-x86_64.tar.gz", "exact_native_payload_extraction"),
-    ("scratchbird-nightly-macos-x86_64.pkg", "installer_manifest_and_pkg_smoke"),
     ("scratchbird-nightly-macos-arm64.tar.gz", "exact_native_payload_extraction"),
-    ("scratchbird-nightly-macos-arm64.pkg", "installer_manifest_and_pkg_smoke"),
     ("scratchbird-nightly-macos-universal.tar.gz", "exact_native_payload_extraction"),
 )
 

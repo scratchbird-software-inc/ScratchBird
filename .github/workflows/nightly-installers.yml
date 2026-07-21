@@ -93,12 +93,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download installer artifacts
+      - name: Download Linux installer artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: scratchbird-*-installers
-          path: nightly-artifacts
-          merge-multiple: false
+          name: scratchbird-linux-installers
+          path: nightly-artifacts/scratchbird-linux-installers
+
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-installers
+          path: nightly-artifacts/scratchbird-windows-installers
+
+      - name: Download macOS x86_64 installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-x86_64-installers
+          path: nightly-artifacts/scratchbird-macos-x86_64-installers
+
+      - name: Download macOS arm64 installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-arm64-installers
+          path: nightly-artifacts/scratchbird-macos-arm64-installers
+
+      - name: Download macOS universal installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-universal-installers
+          path: nightly-artifacts/scratchbird-macos-universal-installers
 
       - name: Verify downloaded installers
         run: |
@@ -153,8 +176,8 @@ jobs:
             echo "- The native ScratchBird listener default is TCP port 3092."
             echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
             echo "- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23+, Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22+."
-            echo "- Public nightly assets include fully verified portable archives and the platform system installer packages that are currently published."
-            echo "- DEB, RPM, AUR, and PKG packages are published after their platform verification and install-smoke jobs pass. Windows is ZIP-only for this testing release; no MSI is generated or published."
+            echo "- Public nightly assets are exact manifest-derived portable archives only: Linux tar.gz, Windows ZIP, and macOS tar.gz."
+            echo "- DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and are not downloadable nightly assets."
             echo "- Source commit: $GITHUB_SHA"
             echo "- Requested version: $SB_NIGHTLY_VERSION"
             echo "- Workflow run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

@@ -138,13 +138,20 @@ jobs:
             build/native-release-linux/output/linux --platform linux
           cmake -E remove_directory build/public-release-linux/output/linux
 
-      - name: Upload Linux staged output
+      - name: Stage Linux textual build proof
+        if: always()
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/public-release-linux/Testing \
+            --output-root build/failure-proofs/linux
+
+      - name: Upload Linux build proof
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: scratchbird-linux-public-output
-          path: |
-            build/native-release-linux/output/linux
-            build/public-release-linux/Testing
+          # Failure diagnostics only; this root is generated from bounded
+          # text evidence and cannot contain a staged executable payload.
+          name: scratchbird-linux-build-proof
+          path: build/failure-proofs/linux
           if-no-files-found: warn
           retention-days: 14

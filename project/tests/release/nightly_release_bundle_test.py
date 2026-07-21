@@ -26,6 +26,15 @@ SPEC = importlib.util.spec_from_file_location("create_nightly_release_bundle", S
 assert SPEC is not None and SPEC.loader is not None
 bundle = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(bundle)
+INSTALLER_VERIFIER_SCRIPT = (
+    REPO_ROOT / "project" / "tools" / "installers" / "verify_installer_artifacts.py"
+)
+INSTALLER_VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "verify_installer_artifacts", INSTALLER_VERIFIER_SCRIPT
+)
+assert INSTALLER_VERIFIER_SPEC is not None and INSTALLER_VERIFIER_SPEC.loader is not None
+installer_verifier = importlib.util.module_from_spec(INSTALLER_VERIFIER_SPEC)
+INSTALLER_VERIFIER_SPEC.loader.exec_module(installer_verifier)
 sys.path.insert(0, str(REPO_ROOT / "project" / "tools" / "release"))
 import stage_native_release_bundle as native  # noqa: E402
 
@@ -34,12 +43,37 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+NATIVE_PROFILE_ARCHIVE_PATH = (
+    "opt/ScratchBird/share/scratchbird/release/NATIVE_RELEASE_PROFILE.json"
+)
+
+
+def native_profile_digest_from_archive(content: bytes) -> str | None:
+    """Return the raw staged profile hash when *content* is a native archive."""
+
+    try:
+        with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+            member = archive.getmember(NATIVE_PROFILE_ARCHIVE_PATH)
+            handle = archive.extractfile(member)
+            if handle is None:
+                raise AssertionError("native profile unreadable")
+            return digest(handle.read())
+    except (KeyError, tarfile.TarError):
+        pass
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            return digest(archive.read(NATIVE_PROFILE_ARCHIVE_PATH))
+    except (KeyError, zipfile.BadZipFile):
+        return None
+
+
 def native_profile(
     platform: str,
     *,
     native_parser: str = "SBSQL",
     resource_counts: dict[str, int],
     policy_count: int,
+    nonresource_inventory: list[dict[str, str]],
     architecture: str | None = None,
     omit_library_role: str | None = None,
 ) -> bytes:
@@ -101,7 +135,7 @@ def native_profile(
                 ),
                 "libraries": sorted(libraries),
                 "runtime_dependencies": (
-                    [llvm_runtime["runtime_library"]]
+                    sorted(native.WINDOWS_NATIVE_RUNTIME_NAMES)
                     if platform == "windows"
                     else []
                 ),
@@ -113,6 +147,7 @@ def native_profile(
                 "native_share_subtrees": list(native.NATIVE_SHARE_SUBTREES),
                 "resource_artifact_counts": resource_counts,
                 "policy_content_file_count": policy_count,
+                "native_share_nonresource_inventory": nonresource_inventory,
             },
             sort_keys=True,
         )
@@ -120,7 +155,9 @@ def native_profile(
     ).encode()
 
 
-def native_resource_fixture(marker: str) -> tuple[dict[str, bytes], dict[str, int], int]:
+def native_resource_fixture(
+    marker: str,
+) -> tuple[dict[str, bytes], dict[str, int], int, list[dict[str, str]]]:
     seed_prefix = "resources/seed-packs/initial-resource-pack/"
     policy_prefix = "resources/policy-packs/default-local-password/"
     seed_manifest = seed_prefix + "RESOURCE_SEED_MANIFEST.csv"
@@ -134,8 +171,18 @@ def native_resource_fixture(marker: str) -> tuple[dict[str, bytes], dict[str, in
         resources[rel] = (f'{{"fixture":"{marker}:{rel}"}}\n').encode()
     for rel in native.REQUIRED_RESOURCE_DIRS:
         resources[f"{rel}/.fixture-resource"] = f"{marker}:{rel}\n".encode()
-    for rel in native.REQUIRED_OPERABILITY_FILES:
-        resources[rel] = f"{marker}:{rel}\n".encode()
+    # The native installed-payload verifier binds docs/examples to exact
+    # public source files.  In particular, this fixture must carry the one
+    # approved non-payload filename containing the generic `driver` token:
+    # examples/core_beta_qa/driver_route_smoke.sh.  Copying the canonical
+    # inventory makes the archive valid before the installer admission layer
+    # decides whether that path is the narrow reviewed exception.
+    nonresource_inventory: list[dict[str, str]] = []
+    for rel, source_rel in sorted(native.NATIVE_SHARE_NONRESOURCE_SOURCE_FILES.items()):
+        source = native.PUBLIC_REPO_ROOT / source_rel
+        value = source.read_bytes()
+        resources[rel] = value
+        nonresource_inventory.append({"path": rel, "sha256": digest(value)})
 
     policy_rows = []
     aggregate = bytearray()
@@ -173,7 +220,12 @@ def native_resource_fixture(marker: str) -> tuple[dict[str, bytes], dict[str, in
         + "".join(f"{rel},{content_hash},{size}\n" for rel, content_hash, size in seed_rows)
     ).encode()
     resources[seed_manifest] = b"seed_family,source_pattern\nfixture,resources/**/*\n"
-    return resources, dict(sorted(family_counts.items())), len(policy_rows)
+    return (
+        resources,
+        dict(sorted(family_counts.items())),
+        len(policy_rows),
+        nonresource_inventory,
+    )
 
 
 def native_config_fixture(name: str, marker: str) -> bytes:
@@ -225,6 +277,7 @@ def native_archive(
     architecture: str | None = None,
     profile_architecture: str | None = None,
     extra_binary: str | None = None,
+    extra_path: str | None = None,
     omit_library_role: str | None = None,
 ) -> bytes:
     suffix = ".exe" if platform == "windows" else ""
@@ -240,9 +293,17 @@ def native_archive(
         name = candidates[0]
         directory = "bin" if name.endswith(".dll") else "lib"
         libraries[f"opt/ScratchBird/{directory}/{name}"] = f"{marker}:{name}".encode()
-    resource_files, resource_counts, policy_count = native_resource_fixture(marker)
+    (
+        resource_files,
+        resource_counts,
+        policy_count,
+        nonresource_inventory,
+    ) = native_resource_fixture(marker)
     runtime_files = (
-        {"opt/ScratchBird/bin/libLLVM-22.dll": b"bundled llvm runtime"}
+        {
+            f"opt/ScratchBird/bin/{name}": f"bundled runtime:{name}".encode()
+            for name in native.WINDOWS_NATIVE_RUNTIME_NAMES
+        }
         if platform == "windows"
         else {}
     )
@@ -267,12 +328,37 @@ def native_archive(
             native_parser=native_parser,
             resource_counts=resource_counts,
             policy_count=policy_count,
+            nonresource_inventory=nonresource_inventory,
             architecture=profile_architecture or architecture,
             omit_library_role=omit_library_role,
         ),
     }
     if extra_binary is not None:
         files[f"opt/ScratchBird/bin/{extra_binary}{suffix}"] = b"forbidden compatibility binary"
+    if extra_path is not None:
+        files[extra_path] = b"forbidden neutral payload"
+    payload_rows = [
+        {"path": name, "bytes": len(data), "sha256": digest(data)}
+        for name, data in sorted(files.items())
+    ]
+    install_manifest_path = (
+        "opt/ScratchBird/share/scratchbird/release/INSTALL_MANIFEST.json"
+    )
+    sums_path = "opt/ScratchBird/share/scratchbird/release/SHA256SUMS"
+    files[install_manifest_path] = (
+        json.dumps(
+            {
+                "schema_id": "scratchbird.installer_payload_manifest.v1",
+                "platform": platform,
+                "files": payload_rows,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode()
+    files[sums_path] = "".join(
+        f"{row['sha256']}  {row['path']}\n" for row in payload_rows
+    ).encode()
     stream = io.BytesIO()
     if platform == "windows":
         with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -306,17 +392,32 @@ def write_installer_artifact(
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
     rows = []
+    profile_digests: set[str] = set()
     for rel, content in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
         rows.append({"path": rel, "bytes": len(content), "sha256": digest(content)})
+        profile_digest = native_profile_digest_from_archive(content)
+        if profile_digest is not None:
+            profile_digests.add(profile_digest)
     rows.sort(key=lambda row: row["path"])
+    if len(profile_digests) != 1:
+        raise AssertionError(
+            f"fixture native profile digest cardinality: {sorted(profile_digests)}"
+        )
     manifest = {
         "schema_id": "scratchbird.installer_artifact_manifest.v1",
         "platform": platform,
         "version": version,
         "build_id": build_id,
+        "native_server_admission": {
+            **bundle.native_admission.NATIVE_SERVER_ADMISSION,
+            "native_release_profile_sha256": next(iter(profile_digests)),
+        },
+        "publication_surface": bundle.PUBLICATION_SURFACE_SCHEMA,
+        "publication_policy": bundle.PUBLICATION_SURFACE_POLICY,
+        "excluded_package_formats": bundle.PUBLIC_EXCLUDED_PACKAGE_FORMATS,
         "artifacts": rows,
     }
     if platform == "windows":
@@ -326,6 +427,8 @@ def write_installer_artifact(
             "portable_archive_smoke_required": True,
             "native_default_port": 3092,
         }
+    if platform == "macos":
+        manifest["macos_signing_status"] = "qa_unsigned_not_for_public_signed_release"
     (root / "INSTALLER_ARTIFACT_MANIFEST.json").write_text(
         json.dumps(
             manifest,
@@ -365,6 +468,25 @@ def replace_manifest_file(root: Path, rel: str, content: bytes) -> None:
         raise AssertionError(f"fixture manifest cardinality for {rel}: {len(matching)}")
     matching[0]["bytes"] = len(content)
     matching[0]["sha256"] = digest(content)
+    profile_digest = native_profile_digest_from_archive(content)
+    if profile_digest is not None:
+        manifest["native_server_admission"][
+            "native_release_profile_sha256"
+        ] = profile_digest
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (root / "SHA256SUMS").write_text(
+        "".join(f"{row['sha256']}  {row['path']}\n" for row in manifest["artifacts"]),
+        encoding="utf-8",
+    )
+
+
+def remove_manifest_file(root: Path, rel: str) -> None:
+    (root / rel).unlink()
+    manifest_path = root / "INSTALLER_ARTIFACT_MANIFEST.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["artifacts"] = [
+        row for row in manifest["artifacts"] if row.get("path") != rel
+    ]
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (root / "SHA256SUMS").write_text(
         "".join(f"{row['sha256']}  {row['path']}\n" for row in manifest["artifacts"]),
@@ -373,17 +495,13 @@ def replace_manifest_file(root: Path, rel: str, content: bytes) -> None:
 
 
 def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
+    linux_payload = native_archive("linux", "linux")
     write_installer_artifact(
         input_root / "scratchbird-linux-installers",
         "linux",
         version,
         {
-            f"scratchbird-linux-{version}.tar.gz": native_archive("linux", "linux"),
-            f"scratchbird_{version.replace('-', '+')}_amd64.deb": b"linux deb",
-            "scratchbird-1.2.3-1.nightly.x86_64.rpm": b"linux rpm",
-            f"scratchbird-aur-{version}.tar.gz": b"linux aur",
-            "rpm-build/SPECS/scratchbird.spec": b"internal rpm spec",
-            "aur/scratchbird/PKGBUILD": b"internal aur recipe",
+            f"scratchbird-linux-{version}.tar.gz": linux_payload,
         },
         "42",
     )
@@ -398,17 +516,13 @@ def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
         "42",
     )
     for arch in ("x86_64", "arm64"):
+        macos_payload = native_archive("macos", f"mac-{arch}", architecture=arch)
         write_installer_artifact(
             input_root / f"scratchbird-macos-{arch}-installers",
             "macos",
             version,
             {
-                f"scratchbird-macos-{version}.tar.gz": native_archive(
-                    "macos", f"mac-{arch}", architecture=arch
-                ),
-                f"scratchbird-macos-{version}.pkg": f"mac pkg {arch}".encode(),
-                "MACOS_DYNAMIC_LIBRARY_AUDIT.json": b'{"rows":[{"status":"checked"}]}\n',
-                "MACOS_SIGNING_STATE.json": b'{"status":"qa_unsigned_not_for_public_signed_release"}\n',
+                f"scratchbird-macos-{version}.tar.gz": macos_payload,
             },
             f"42-{arch}",
         )
@@ -423,6 +537,12 @@ def make_fixture(input_root: Path, version: str = "1.2.3-nightly") -> None:
                 "schema_id": "scratchbird.macos_universal_artifact_manifest.v1",
                 "version": f"{version}-universal",
                 "build_id": "42-universal",
+                "native_server_admission": {
+                    **bundle.native_admission.NATIVE_SERVER_ADMISSION,
+                    "native_release_profile_sha256": native_profile_digest_from_archive(
+                        universal_data
+                    ),
+                },
                 "artifact": {
                     "path": universal_name,
                     "bytes": len(universal_data),
@@ -482,14 +602,9 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             manifest_path = self.create(input_root, output_root)
             expected = {
                 "scratchbird-nightly-linux-x86_64.tar.gz",
-                "scratchbird-nightly-linux-x86_64.deb",
-                "scratchbird-nightly-linux-x86_64.rpm",
-                "scratchbird-nightly-linux-x86_64-aur.tar.gz",
                 "scratchbird-nightly-windows-x86_64.zip",
                 "scratchbird-nightly-macos-x86_64.tar.gz",
-                "scratchbird-nightly-macos-x86_64.pkg",
                 "scratchbird-nightly-macos-arm64.tar.gz",
-                "scratchbird-nightly-macos-arm64.pkg",
                 "scratchbird-nightly-macos-universal.tar.gz",
                 "scratchbird-nightly-manifest.json",
                 "scratchbird-nightly-SHA256SUMS",
@@ -505,35 +620,31 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             self.assertEqual("scratchbird_native_no_emulation", manifest["distribution_surface"])
             self.assertEqual("SBSQL", manifest["native_parser"])
             self.assertEqual(
-                "fully_verified_native_portable_and_platform_system_installer_artifacts",
+                "exact_manifest_derived_native_portable_archives_only",
                 manifest["public_asset_policy"],
             )
             self.assertEqual(
-                ["build_recipes", "install_smoke_proof"],
+                [
+                    "build_recipes",
+                    "install_smoke_proof",
+                    "system_installer_packages",
+                ],
                 manifest["internal_only_artifact_classes"],
             )
             verification = {
                 row["name"]: row["verification"] for row in manifest["artifacts"]
             }
             self.assertEqual(
-                "installer_manifest_and_privileged_deb_smoke",
-                verification["scratchbird-nightly-linux-x86_64.deb"],
-            )
-            self.assertEqual(
-                "installer_manifest_and_rpm_recipe_verification",
-                verification["scratchbird-nightly-linux-x86_64.rpm"],
-            )
-            self.assertEqual(
-                "installer_manifest_and_aur_recipe_verification",
-                verification["scratchbird-nightly-linux-x86_64-aur.tar.gz"],
-            )
-            self.assertEqual(
                 "exact_native_payload_extraction",
                 verification["scratchbird-nightly-windows-x86_64.zip"],
             )
             self.assertEqual(
-                "installer_manifest_and_pkg_smoke",
-                verification["scratchbird-nightly-macos-x86_64.pkg"],
+                "exact_native_payload_extraction",
+                verification["scratchbird-nightly-linux-x86_64.tar.gz"],
+            )
+            self.assertEqual(
+                "exact_native_payload_extraction",
+                verification["scratchbird-nightly-macos-x86_64.tar.gz"],
             )
             self.assertEqual(
                 ["SBmgr", "SBgate", "SBParser", "SBsrv"],
@@ -550,7 +661,10 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 "external-homebrew", manifest["llvm_runtime"]["macos"]["delivery"]
             )
             output_text = "\n".join(path.name for path in output_root.iterdir())
-            for forbidden in ("smoke", "PKGBUILD", ".wxs", ".spec", "rpm-build"):
+            for forbidden in (
+                "smoke", "PKGBUILD", ".wxs", ".spec", "rpm-build",
+                ".deb", ".rpm", ".pkg", "aur",
+            ):
                 self.assertNotIn(forbidden, output_text)
             sums = bundle.parse_sha256sums(output_root / "scratchbird-nightly-SHA256SUMS")
             for name, expected_digest in sums.items():
@@ -600,24 +714,128 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(bundle.BundleError, "unexpected_artifact_roots"):
                 self.create(input_root, root / "output", release_scope="linux")
 
-    def test_platform_system_installers_and_windows_zip_are_public_release_assets(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="sb-nightly-system-installers-") as temp:
+    def test_public_release_contains_only_portable_archives(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-portable-only-") as temp:
             root = Path(temp)
             input_root = root / "input"
             make_fixture(input_root)
             self.create(input_root, root / "output")
             output_names = {path.name for path in (root / "output").iterdir()}
-            self.assertEqual(12, len(output_names))
-            for name in (
-                "scratchbird-nightly-linux-x86_64.deb",
-                "scratchbird-nightly-linux-x86_64.rpm",
-                "scratchbird-nightly-linux-x86_64-aur.tar.gz",
-                "scratchbird-nightly-macos-x86_64.pkg",
-                "scratchbird-nightly-macos-arm64.pkg",
-            ):
-                self.assertIn(name, output_names)
+            self.assertEqual(7, len(output_names))
             self.assertIn("scratchbird-nightly-windows-x86_64.zip", output_names)
-            self.assertFalse(any(name.endswith(".msi") for name in output_names))
+            self.assertFalse(
+                any(
+                    name.endswith((".msi", ".deb", ".rpm", ".pkg"))
+                    or "aur" in name
+                    for name in output_names
+                )
+            )
+
+    def test_approved_driver_route_example_is_admitted_from_portable_archive(self) -> None:
+        """The one reviewed example name must not widen generic driver admission."""
+
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-driver-example-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            self.make_scope_fixture(input_root, "linux")
+            source_archive = (
+                input_root
+                / "scratchbird-linux-installers"
+                / "scratchbird-linux-1.2.3-nightly.tar.gz"
+            )
+            expected_path = (
+                "opt/ScratchBird/share/scratchbird/examples/core_beta_qa/"
+                "driver_route_smoke.sh"
+            )
+            with tarfile.open(source_archive, "r:gz") as archive:
+                self.assertIsNotNone(archive.getmember(expected_path))
+
+            manifest_path = self.create(
+                input_root,
+                root / "output",
+                release_scope="linux",
+            )
+            self.assertTrue(manifest_path.is_file())
+            self.assertTrue(
+                (root / "output" / "scratchbird-nightly-linux-x86_64.tar.gz").is_file()
+            )
+
+    def test_materialized_public_root_drops_internal_builder_evidence(self) -> None:
+        """Only the admitted portable archive and its new inventory may upload."""
+
+        with tempfile.TemporaryDirectory(prefix="sb-installer-public-root-") as temp:
+            root = Path(temp)
+            raw_root = root / "raw"
+            version = "1.2.3-nightly"
+            write_installer_artifact(
+                raw_root,
+                "linux",
+                version,
+                {
+                    f"scratchbird-linux-{version}.tar.gz": native_archive(
+                        "linux", "materialize"
+                    ),
+                },
+                "42",
+            )
+            add_manifest_file(
+                raw_root,
+                "internal-build-evidence.json",
+                b'{"internal_only":true}\n',
+            )
+            raw_manifest_path = raw_root / "INSTALLER_ARTIFACT_MANIFEST.json"
+            raw_manifest = json.loads(raw_manifest_path.read_text(encoding="utf-8"))
+            for field in (
+                "publication_surface",
+                "publication_policy",
+                "excluded_package_formats",
+            ):
+                raw_manifest.pop(field)
+            raw_manifest_path.write_text(
+                json.dumps(raw_manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+            raw_files = installer_verifier.artifact_file_rows(
+                raw_root, raw_manifest["artifacts"]
+            )
+            installer_verifier.verify_manifest_checksums(raw_root, raw_files)
+            public_root = root / "public"
+            installer_verifier.materialize_publication_root(
+                raw_root,
+                public_root,
+                raw_manifest,
+                raw_files,
+                "linux",
+            )
+
+            self.assertEqual(
+                {
+                    f"scratchbird-linux-{version}.tar.gz",
+                    "INSTALLER_ARTIFACT_MANIFEST.json",
+                    "SHA256SUMS",
+                },
+                {path.name for path in public_root.iterdir()},
+            )
+            public_manifest = json.loads(
+                (public_root / "INSTALLER_ARTIFACT_MANIFEST.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            public_files = installer_verifier.artifact_file_rows(
+                public_root, public_manifest["artifacts"]
+            )
+            installer_verifier.verify_manifest_checksums(public_root, public_files)
+            installer_verifier.require_publication_manifest(
+                public_root, public_manifest, public_files, "linux"
+            )
+            installer_verifier.verify_native_admission_packages(
+                public_root,
+                public_manifest,
+                public_files,
+                "linux",
+                "x86_64",
+            )
 
     def test_canonical_names_are_stable_across_versions(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-stable-") as temp:
@@ -641,6 +859,80 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(bundle.BundleError, "installer_manifest_(size|sha256)_mismatch"):
                 self.create(input_root, root / "output")
 
+    def test_missing_native_server_admission_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-missing-admission-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            manifest_path = (
+                input_root
+                / "scratchbird-linux-installers"
+                / "INSTALLER_ARTIFACT_MANIFEST.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest.pop("native_server_admission")
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(bundle.BundleError, "native_server_admission_missing"):
+                self.create(input_root, root / "output")
+
+    def test_tampered_native_server_admission_digest_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-admission-digest-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            manifest_path = (
+                input_root
+                / "scratchbird-linux-installers"
+                / "INSTALLER_ARTIFACT_MANIFEST.json"
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["native_server_admission"]["native_release_profile_sha256"] = "0" * 64
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                bundle.BundleError, "native_server_admission_profile_digest_mismatch"
+            ):
+                self.create(input_root, root / "output")
+
+    def test_public_installer_root_rejects_system_package(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-system-package-reject-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            add_manifest_file(
+                input_root / "scratchbird-linux-installers",
+                "scratchbird-linux-1.2.3-nightly.deb",
+                b"internal-only-deb",
+            )
+            with self.assertRaisesRegex(
+                bundle.BundleError, "installer_publication_system_package_forbidden"
+            ):
+                self.create(input_root, root / "output")
+
+    def test_public_installer_root_rejects_unmanifested_neutral_file_and_empty_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-root-completeness-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            linux_root = input_root / "scratchbird-linux-installers"
+            (linux_root / "neutral-helper.bin").write_bytes(b"hidden")
+            with self.assertRaisesRegex(
+                bundle.BundleError, "installer_publication_tree_mismatch"
+            ):
+                self.create(input_root, root / "output")
+
+            (linux_root / "neutral-helper.bin").unlink()
+            (linux_root / "unused").mkdir()
+            with self.assertRaisesRegex(
+                bundle.BundleError, "installer_publication_directory_mismatch"
+            ):
+                self.create(input_root, root / "output")
+
     def test_multiple_package_candidates_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-collision-") as temp:
             root = Path(temp)
@@ -651,7 +943,9 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 "scratchbird-linux-second.tar.gz",
                 b"second linux tar",
             )
-            with self.assertRaisesRegex(bundle.BundleError, "package_cardinality:linux"):
+            with self.assertRaisesRegex(
+                bundle.BundleError, "installer_publication_package_cardinality"
+            ):
                 self.create(input_root, root / "output")
 
     def test_windows_msi_input_fails_closed(self) -> None:
@@ -665,7 +959,7 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 b"forbidden msi",
             )
             with self.assertRaisesRegex(
-                bundle.BundleError, "windows_zip_only_forbidden_artifact"
+                bundle.BundleError, "installer_publication_system_package_forbidden"
             ):
                 self.create(input_root, root / "output")
 
@@ -732,6 +1026,65 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             with self.assertRaisesRegex(bundle.BundleError, "installed_bin_set_mismatch"):
                 self.create(input_root, root / "output")
 
+    def test_hidden_driver_and_dbeaver_payloads_fail_closed(self) -> None:
+        for identity in ("scratchbird_client", "dbeaver"):
+            with self.subTest(identity=identity), tempfile.TemporaryDirectory(
+                prefix="sb-nightly-client-boundary-"
+            ) as temp:
+                root = Path(temp)
+                input_root = root / "input"
+                make_fixture(input_root)
+                replace_manifest_file(
+                    input_root / "scratchbird-linux-installers",
+                    "scratchbird-linux-1.2.3-nightly.tar.gz",
+                    native_archive("linux", identity, extra_binary=identity),
+                )
+                with self.assertRaisesRegex(
+                    bundle.BundleError, "native_admission_client_payload_forbidden"
+                ):
+                    self.create(input_root, root / "output")
+
+    def test_only_the_exact_driver_route_example_is_exempted(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-driver-exception-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            replace_manifest_file(
+                input_root / "scratchbird-linux-installers",
+                "scratchbird-linux-1.2.3-nightly.tar.gz",
+                native_archive(
+                    "linux",
+                    "unapproved-driver-name",
+                    extra_path=(
+                        "opt/ScratchBird/share/scratchbird/examples/core_beta_qa/"
+                        "driver_helper.sh"
+                    ),
+                ),
+            )
+            with self.assertRaisesRegex(
+                bundle.BundleError, "native_admission_client_payload_forbidden"
+            ):
+                self.create(input_root, root / "output")
+
+    def test_neutral_payload_outside_native_layout_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-neutral-payload-") as temp:
+            root = Path(temp)
+            input_root = root / "input"
+            make_fixture(input_root)
+            replace_manifest_file(
+                input_root / "scratchbird-linux-installers",
+                "scratchbird-linux-1.2.3-nightly.tar.gz",
+                native_archive(
+                    "linux",
+                    "neutral-outside-layout",
+                    extra_path="opt/ScratchBird/extensions/enginehelper.bin",
+                ),
+            )
+            with self.assertRaisesRegex(
+                bundle.BundleError, "native_admission_payload_layout_(directory_)?forbidden"
+            ):
+                self.create(input_root, root / "output")
+
     def test_macos_artifact_directory_architecture_swap_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-mac-arch-") as temp:
             root = Path(temp)
@@ -769,6 +1122,9 @@ class NightlyReleaseBundleTest(unittest.TestCase):
             artifact_path.write_bytes(replacement)
             manifest["artifact"]["bytes"] = len(replacement)
             manifest["artifact"]["sha256"] = digest(replacement)
+            manifest["native_server_admission"]["native_release_profile_sha256"] = (
+                native_profile_digest_from_archive(replacement)
+            )
             manifest_path.write_text(
                 json.dumps(manifest, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
@@ -802,7 +1158,9 @@ class NightlyReleaseBundleTest(unittest.TestCase):
                 "scratchbird-linux-1.2.3-nightly.tar.gz",
                 archive_with_symlink(),
             )
-            with self.assertRaisesRegex(bundle.BundleError, "archive_link_or_device_forbidden"):
+            with self.assertRaisesRegex(
+                bundle.BundleError, "native_admission_archive_special_entry"
+            ):
                 self.create(input_root, root / "output")
 
 

@@ -7,13 +7,15 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Stage beta driver, adapter, and tool artifact manifests.
+"""Create a non-publishable source-provenance snapshot for driver source.
 
-The lane-native builders produce language-specific outputs under
-``build/drivers``. This release staging step creates the public
-``build/output`` artifact directories expected by the beta driver release
-verifiers and records source hashes, SBOM metadata, license metadata, version,
-and source commit data for every in-scope lane.
+This utility does not build, package, install, or test a driver, adaptor, or
+tool.  Its output is intentionally incompatible with every release verifier:
+it is source metadata only and must never be uploaded as a driver release.
+
+Real driver/adaptor/MCP publication is reserved for the completed-component
+nightly route, which must build an installable payload and prove an installed
+live ScratchBird route before it can publish anything.
 """
 
 from __future__ import annotations
@@ -28,7 +30,19 @@ from typing import Any, Iterable
 
 
 DBEAVER_COMPONENT_ID = "adaptor:scratchbird-dbeaver-driver"
-REPORT_NAME = "driver_beta_artifact_stage.json"
+DBEAVER_ALIASES = frozenset(
+    {
+        "adaptor:dbeaver",
+        DBEAVER_COMPONENT_ID,
+        "scratchbird-dbeaver-driver",
+        "dbeaver",
+    }
+)
+REPORT_NAME = "driver_beta_metadata_snapshot.json"
+METADATA_SNAPSHOT_NAME = "METADATA_SNAPSHOT.json"
+SOURCE_METADATA_NAME = "source_metadata.json"
+SOURCE_INVENTORY_NAME = "source_inventory.json"
+SOURCE_CHECKSUMS_NAME = "SOURCE_METADATA_SHA256SUMS"
 
 
 def repo_root_from_script() -> Path:
@@ -40,16 +54,33 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
-def output_dir_for(row: dict[str, str], output_root: Path) -> Path:
+def ascii_lower(value: str) -> str:
+    return "".join(
+        character.lower() if "A" <= character <= "Z" else character
+        for character in value
+    )
+
+
+def is_dbeaver_identity(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = ascii_lower(value.strip())
+    return normalized in DBEAVER_ALIASES or "dbeaver" in normalized
+
+
+def row_is_dbeaver(row: dict[str, str]) -> bool:
+    return any(
+        is_dbeaver_identity(row.get(field, ""))
+        for field in ("component_id", "category", "name", "driver_family", "source_path")
+    )
+
+
+def metadata_dir_for(row: dict[str, str], output_root: Path) -> Path:
     category = row["category"].strip()
     name = row["name"].strip()
-    if category == "driver":
-        return output_root / "drivers" / name
-    if category == "adaptor":
-        return output_root / "adapters" / name
-    if category == "tool":
-        return output_root / "tools" / name
-    raise ValueError(f"unknown category {category!r}")
+    if category not in {"driver", "adaptor", "tool"}:
+        raise ValueError(f"unknown category {category!r}")
+    return output_root / "components" / category / name
 
 
 def git_text(repo_root: Path, *args: str) -> str:
@@ -111,40 +142,57 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def write_output_release_metadata(
-    repo_root: Path,
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def reject_release_shaped_output(repo_root: Path, output_root: Path) -> None:
+    release_root = (repo_root / "build" / "output").resolve()
+    if is_within(output_root, release_root):
+        raise ValueError(
+            "metadata snapshot output must not be build/output or a descendant; "
+            "that location is reserved for verified release payloads"
+        )
+
+
+def write_snapshot_metadata(
     output_root: Path,
-    staged: list[dict[str, Any]],
+    snapshots: list[dict[str, Any]],
     source_commit: str,
     dirty: bool,
 ) -> None:
-    promoted_paths = [entry["artifact_dir"] for entry in staged]
-    manifest = {
-        "schema_id": "scratchbird_driver_beta_output_manifest_v1",
-        "release_state": "beta_driver_tool_adapter_output_stage",
+    snapshot = {
+        "schema_id": "scratchbird.driver_source_metadata_snapshot.v1",
+        "release_eligible": False,
+        "must_not_publish": True,
         "source_commit": source_commit,
         "source_tree_dirty": dirty,
         "dbeaver_excluded": True,
-        "promoted_paths": promoted_paths,
         "components": [
             {
                 "component_id": entry["component_id"],
-                "path": entry["artifact_dir"],
+                "metadata_dir": entry["metadata_dir"],
                 "source_sha256": entry["source_sha256"],
                 "source_file_count": entry["source_file_count"],
             }
-            for entry in staged
+            for entry in snapshots
         ],
     }
-    write_json(output_root / "RELEASE_MANIFEST.json", manifest)
-    sha_lines = []
+    write_json(output_root / METADATA_SNAPSHOT_NAME, snapshot)
+    checksum_entries = []
     for path in sorted(output_root.iterdir()):
-        if path.is_file() and path.name != "SHA256SUMS":
-            sha_lines.append(f"{hash_file(path)}  {path.name}")
-    (output_root / "SHA256SUMS").write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
+        if path.is_file() and path.name != SOURCE_CHECKSUMS_NAME:
+            checksum_entries.append(f"{hash_file(path)}  {path.name}")
+    (output_root / SOURCE_CHECKSUMS_NAME).write_text(
+        "\n".join(checksum_entries) + "\n", encoding="utf-8"
+    )
 
 
-def stage_component(
+def snapshot_component(
     repo_root: Path,
     output_root: Path,
     row: dict[str, str],
@@ -153,17 +201,17 @@ def stage_component(
 ) -> dict[str, Any]:
     component_id = row["component_id"].strip()
     source_path = repo_root / row["source_path"].strip()
-    artifact_dir = output_dir_for(row, output_root)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    metadata_dir = metadata_dir_for(row, output_root)
+    metadata_dir.mkdir(parents=True, exist_ok=True)
     source_hash, source_files = source_digest(source_path)
-    manifest = {
-        "artifact_schema": "scratchbird_driver_beta_artifact_v1",
+    metadata = {
+        "schema_id": "scratchbird.driver_source_metadata.v1",
+        "release_eligible": False,
+        "must_not_publish": True,
         "component_id": component_id,
         "category": row["category"].strip(),
         "name": row["name"].strip(),
         "driver_family": row["driver_family"].strip(),
-        "version": "0.1.0-beta.2",
-        "license": "MPL-2.0",
         "source_commit": source_commit,
         "source_tree_dirty": dirty,
         "source_path": row["source_path"].strip(),
@@ -176,24 +224,25 @@ def stage_component(
         "driver_local_sblr_uuid_authority": "untrusted_hint_only",
         "transaction_authority": "engine_mga_only",
     }
-    sbom = {
-        "sbom_schema": "scratchbird_driver_beta_sbom_v1",
+    inventory = {
+        "schema_id": "scratchbird.driver_source_inventory.v1",
+        "release_eligible": False,
+        "must_not_publish": True,
         "component_id": component_id,
         "source_files": source_files,
     }
-    write_json(artifact_dir / "artifact_manifest.json", manifest)
-    write_json(artifact_dir / "SBOM.json", sbom)
-    (artifact_dir / "LICENSE.txt").write_text("SPDX-License-Identifier: MPL-2.0\n", encoding="utf-8")
-    (artifact_dir / "VERSION.txt").write_text("0.1.0-beta.2\n", encoding="utf-8")
-    (artifact_dir / "SOURCE_COMMIT.txt").write_text(source_commit + "\n", encoding="utf-8")
-    sha_lines = []
-    for path in sorted(artifact_dir.iterdir()):
-        if path.is_file() and path.name != "SHA256SUMS":
-            sha_lines.append(f"{hash_file(path)}  {path.name}")
-    (artifact_dir / "SHA256SUMS").write_text("\n".join(sha_lines) + "\n", encoding="utf-8")
+    write_json(metadata_dir / SOURCE_METADATA_NAME, metadata)
+    write_json(metadata_dir / SOURCE_INVENTORY_NAME, inventory)
+    checksum_entries = []
+    for path in sorted(metadata_dir.iterdir()):
+        if path.is_file() and path.name != SOURCE_CHECKSUMS_NAME:
+            checksum_entries.append(f"{hash_file(path)}  {path.name}")
+    (metadata_dir / SOURCE_CHECKSUMS_NAME).write_text(
+        "\n".join(checksum_entries) + "\n", encoding="utf-8"
+    )
     return {
         "component_id": component_id,
-        "artifact_dir": artifact_dir.relative_to(repo_root).as_posix(),
+        "metadata_dir": metadata_dir.relative_to(output_root).as_posix(),
         "source_sha256": source_hash,
         "source_file_count": len(source_files),
     }
@@ -202,37 +251,66 @@ def stage_component(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", type=Path, default=repo_root_from_script())
-    parser.add_argument("--output-root", type=Path, default=Path("build/output"))
+    parser.add_argument(
+        "--metadata-only",
+        action="store_true",
+        help="acknowledge that this command writes non-publishable source metadata only",
+    )
+    parser.add_argument(
+        "--output-root",
+        type=Path,
+        default=Path("build/reports/driver-beta-metadata"),
+    )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
+
+    if not args.metadata_only:
+        parser.error(
+            "--metadata-only is required: this command cannot stage a driver release"
+        )
 
     repo_root = args.repo_root.resolve()
     output_root = args.output_root
     if not output_root.is_absolute():
         output_root = repo_root / output_root
+    output_root = output_root.resolve()
+    try:
+        reject_release_shaped_output(repo_root, output_root)
+    except ValueError as exc:
+        parser.error(str(exc))
+
     manifest_rows = read_csv(repo_root / "project" / "drivers" / "DriverPackageManifest.csv")
     source_commit = git_text(repo_root, "rev-parse", "HEAD")
     dirty = bool(git_text(repo_root, "status", "--porcelain"))
-    staged = []
+    snapshots = []
     for row in manifest_rows:
-        if row.get("component_id", "").strip() == DBEAVER_COMPONENT_ID:
+        if row_is_dbeaver(row):
             continue
-        staged.append(stage_component(repo_root, output_root, row, source_commit, dirty))
-    write_output_release_metadata(repo_root, output_root, staged, source_commit, dirty)
+        snapshots.append(snapshot_component(repo_root, output_root, row, source_commit, dirty))
+    write_snapshot_metadata(output_root, snapshots, source_commit, dirty)
     report = {
         "command": "stage_driver_beta_artifacts.py",
-        "status": "pass",
-        "output_root": output_root.relative_to(repo_root).as_posix(),
+        "result": "metadata_snapshot",
+        "release_eligible": False,
+        "must_not_publish": True,
+        "output_root": output_root.relative_to(repo_root).as_posix()
+        if is_within(output_root, repo_root)
+        else str(output_root),
         "source_commit": source_commit,
         "source_tree_dirty": dirty,
-        "staged_components": len(staged),
+        "snapshotted_components": len(snapshots),
         "dbeaver_excluded": True,
-        "artifacts": staged,
+        "components": snapshots,
     }
     report_path = args.report or repo_root / "build" / "reports" / REPORT_NAME
+    if not report_path.is_absolute():
+        report_path = repo_root / report_path
     report_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(report_path, report)
-    print(f"stage_driver_beta_artifacts=pass staged={len(staged)}")
+    print(
+        "stage_driver_beta_artifacts=metadata_snapshot "
+        f"components={len(snapshots)} release_eligible=false"
+    )
     return 0
 
 

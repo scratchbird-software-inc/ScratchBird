@@ -65,11 +65,12 @@ python3 project/tools/installers/build_installers.py \
 
 The Linux portable tarball remains an extraction-only payload: it does not
 create users, groups, system directories, service definitions, databases, or
-security sidecars. DEB, RPM, and AUR packages derive from a separate
-system-install payload and install `scratchbird-sbsrv.service` disabled and
-not started. The unit runs only `SBsrv`; SBsrv owns the shared SBgate listener,
-and SBgate owns the standalone native SBParser. The native listener default is
-TCP port 3092.
+security sidecars. DEB, RPM, and AUR outputs exist only for an explicit
+internal `--include-system-packages` diagnostic build; they are never copied
+into a public installer root, web export, release candidate, or nightly
+release. The unit runs only `SBsrv`; SBsrv owns the shared SBgate listener, and
+SBgate owns the standalone native SBParser. The native listener default is TCP
+port 3092.
 
 Windows public testing artifacts are deliberately **portable ZIP-only**. They
 are extracted and run from the chosen directory; they do not create a service,
@@ -77,10 +78,12 @@ an operating-system identity, `%ProgramFiles%`, `%ProgramData%`, a database, or
 security sidecars. The ZIP smoke verifies the extracted native payload, bundled
 LLVM closure, and native executable launch surface. The source tree retains
 WiX/MSI tooling only for an explicit local diagnostic invocation of
-`build_installers.py --require-msi`; no automated build, web export, release
-candidate, or rolling nightly workflow invokes or publishes that path.
+`build_installers.py --include-system-packages --require-msi`; no automated
+build, web export, release candidate, or rolling nightly workflow invokes or
+publishes that path.
 
-Linux system packages create or verify the dedicated, non-login `scratchbird`
+Internal-only Linux system-package diagnostics create or verify the dedicated,
+non-login `scratchbird`
 service user and group. They prepare `/var/lib/scratchbird/data`,
 `/var/log/scratchbird`, and the server/listener/manager control and runtime
 directories below `/run/scratchbird`, all with mode `0750` and explicit
@@ -159,8 +162,10 @@ project/tools/installers/smoke_install_macos.sh \
 
 The macOS portable tarball keeps its extraction-only `etc/scratchbird` layout
 and performs no host identity or directory mutation. It contains no launchd
-plist or launchd manifest and is foreground-only. The `.pkg` is built from a
-separate system payload. Only that system payload carries launchd definitions.
+plist or launchd manifest and is foreground-only. A `.pkg` can be built only
+from a separate internal `--include-system-packages` diagnostic payload. It is
+never a public tester asset; only that internal system payload carries launchd
+definitions.
 It stores pristine copies of all five native
 configuration inputs (`SBsrv.conf`, `SBgate.conf`, `SBmgr.conf`,
 `SBParser.conf`, and `SBbootstrap.profile`) below
@@ -221,14 +226,14 @@ python3 project/tools/installers/smoke_install_macos_system.py \
   --work-root build/install-smoke/macos-system
 ```
 
-When both per-architecture macOS tarballs have passed verification, a universal
-QA tarball can be assembled on a macOS runner:
+When both exact per-architecture public tarball roots have passed verification,
+a universal QA tarball can be assembled on a macOS runner:
 
 ```bash
 python3 project/tools/installers/make_macos_universal.py \
-  --x86-tar build/installers/macos-x86_64/scratchbird-macos-0.0.0-nightly.tar.gz \
-  --arm-tar build/installers/macos-arm64/scratchbird-macos-0.0.0-nightly.tar.gz \
-  --output-root build/installers/macos-universal \
+  --x86-tar build/public-installers/macos-x86_64/scratchbird-macos-0.0.0-nightly.tar.gz \
+  --arm-tar build/public-installers/macos-arm64/scratchbird-macos-0.0.0-nightly.tar.gz \
+  --output-root build/public-installers/macos-universal \
   --version 0.0.0-nightly-universal
 ```
 
@@ -239,12 +244,16 @@ Rules:
   installer recipes only, but the broad proof output must first pass through
   `stage_native_release_bundle.py`; installer builders use only the resulting
   `build/native-release-*/output/*` tree with `--require-native-only`.
-- Generated installers must carry manifests, checksums, and proof sidecars.
+- Raw builder output may carry manifests, checksums, and internal proof
+  sidecars. Before any public upload, `verify_installer_artifacts.py
+  --materialize-public-root` produces an exact root containing only the
+  approved portable archive, `INSTALLER_ARTIFACT_MANIFEST.json`, and
+  `SHA256SUMS`.
 - macOS portable tarballs must be foreground-only and contain no launchd plist
-  or launchd manifest. macOS system PKGs carry the launchd plists and
-  system-install profile; the installer artifact set also carries the
+  or launchd manifest. Internal macOS system PKG diagnostics carry the launchd
+  plists and system-install profile; their raw builder output can also carry
   dynamic-library audit, system-package evidence, support-matrix metadata, and
-  signing-state metadata.
+  signing-state metadata. Those files are not public portable-root assets.
 - macOS launchd installs only the top-level `SBsrv` and optional `SBmgr`
   services, through the fixed-selector `SBlaunch` credential boundary. `SBsrv`
   owns `SBgate`, and `SBgate` owns `SBParser`; neither child component is

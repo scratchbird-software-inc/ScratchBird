@@ -36,6 +36,102 @@ def regular_names(root: Path) -> set[str]:
     return names
 
 
+def directory_names(root: Path) -> set[str]:
+    """Return a closed directory inventory, rejecting files and links."""
+
+    if not root.is_dir():
+        fail(f"directory_missing:{root}")
+    names: set[str] = set()
+    for path in root.iterdir():
+        if path.is_symlink() or not path.is_dir():
+            fail(f"non_directory_payload_entry:{path}")
+        names.add(path.name)
+    return names
+
+
+def require_exact_directory_set(root: Path, expected: set[str], label: str) -> None:
+    actual = directory_names(root)
+    if actual != expected:
+        fail(
+            f"{label}_directory_set_mismatch:"
+            f"missing={sorted(expected - actual)}:"
+            f"unexpected={sorted(actual - expected)}"
+        )
+
+
+def require_regular_tree(payload_root: Path) -> None:
+    """Reject links and non-file/non-directory entries anywhere in a payload."""
+
+    if not payload_root.is_dir():
+        fail(f"payload_root_missing:{payload_root}")
+    for path in payload_root.rglob("*"):
+        if path.is_symlink() or not (path.is_file() or path.is_dir()):
+            fail(f"payload_entry_type_forbidden:{path}")
+
+
+def require_payload_envelope(
+    payload_root: Path,
+    runtime_root: Path,
+    platform: str,
+    system_payload: bool,
+) -> None:
+    """Require the entire extracted payload to have a named, closed layout.
+
+    `runtime_root` checks alone are insufficient: an archive may carry a
+    second client subtree beside the legitimate native runtime.  Directly
+    installed system roots are supported as a distinct exact form; otherwise
+    the portable payload must use the canonical ``opt/ScratchBird`` envelope.
+    """
+
+    try:
+        runtime_relative = runtime_root.relative_to(payload_root)
+    except ValueError:
+        fail(f"runtime_root_outside_payload:{runtime_root}")
+    if runtime_relative == Path("."):
+        return
+
+    allowed_relatives = {Path("opt") / "ScratchBird"}
+    if platform == "windows":
+        # Administrative MSI extraction commonly retains this Windows
+        # directory envelope; it remains exact rather than wildcarded.
+        allowed_relatives.add(Path("Program Files") / "ScratchBird")
+    if runtime_relative not in allowed_relatives:
+        fail(f"installed_runtime_location_forbidden:{runtime_relative.as_posix()}")
+
+    if runtime_relative == Path("opt") / "ScratchBird":
+        expected_top = {"opt", "etc"}
+        if system_payload and platform == "linux":
+            expected_top.add("usr")
+        elif system_payload and platform == "macos":
+            expected_top = {"opt", "Library"}
+        require_exact_directory_set(payload_root, expected_top, "installed_payload_root")
+        require_exact_directory_set(payload_root / "opt", {"ScratchBird"}, "installed_opt")
+        if "etc" in expected_top:
+            require_exact_directory_set(
+                payload_root / "etc", {"scratchbird"}, "installed_etc"
+            )
+        if "usr" in expected_top:
+            require_exact_directory_set(payload_root / "usr", {"lib"}, "installed_usr")
+            require_exact_directory_set(
+                payload_root / "usr" / "lib",
+                {"scratchbird", "systemd", "sysusers.d", "tmpfiles.d"},
+                "installed_usr_lib",
+            )
+        if "Library" in expected_top:
+            require_exact_directory_set(
+                payload_root / "Library", {"LaunchDaemons"}, "installed_library"
+            )
+        return
+
+    # Windows administrative images retain a single Program Files envelope.
+    require_exact_directory_set(
+        payload_root, {"Program Files"}, "installed_payload_root"
+    )
+    require_exact_directory_set(
+        payload_root / "Program Files", {"ScratchBird"}, "installed_program_files"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("payload_root", type=Path)
@@ -53,6 +149,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     payload_root = args.payload_root.resolve()
+    require_regular_tree(payload_root)
     profiles = list(payload_root.rglob("NATIVE_RELEASE_PROFILE.json"))
     profile_path = exactly_one(profiles, "native_profile")
     try:
@@ -105,12 +202,47 @@ def main() -> int:
         fail("share_subtree_contract_mismatch")
 
     runtime_root = profile_path.parents[3]
+    release_root = runtime_root / "share" / "scratchbird" / "release"
+    system_profile_by_platform = {
+        "windows": "WINDOWS_SYSTEM_INSTALL_PROFILE.json",
+        "macos": "MACOS_SYSTEM_INSTALL_PROFILE.json",
+    }
+    system_profile = system_profile_by_platform.get(platform)
+    system_payload = system_profile is not None and (release_root / system_profile).is_file()
+    require_payload_envelope(payload_root, runtime_root, platform, system_payload)
+    expected_runtime_directories = {"bin", "lib", "share"}
+    if system_payload:
+        expected_runtime_directories.add("libexec")
+    require_exact_directory_set(
+        runtime_root, expected_runtime_directories, "installed_runtime_root"
+    )
+    require_exact_directory_set(
+        runtime_root / "share", {"scratchbird"}, "installed_share"
+    )
+    if system_payload:
+        expected_libexec = {
+            "windows": {"scratchbird-windows-system-install.ps1"},
+            "macos": {"scratchbird-macos-system-install"},
+        }[platform]
+        actual_libexec = regular_names(runtime_root / "libexec")
+        if actual_libexec != expected_libexec:
+            fail(
+                "installed_system_libexec_set_mismatch:"
+                f"missing={sorted(expected_libexec - actual_libexec)}:"
+                f"unexpected={sorted(actual_libexec - expected_libexec)}"
+            )
     resource_summary = native.require_operational_resources(runtime_root / "share")
-    native.require_native_share_layout(runtime_root / "share")
+    nonresource_inventory = native.require_native_share_layout(
+        runtime_root / "share",
+        allow_installed_release_metadata=True,
+        allow_system_configuration_defaults=system_payload,
+    )
     if profile.get("resource_artifact_counts") != resource_summary["resource_artifact_counts"]:
         fail("resource_artifact_counts_mismatch")
     if profile.get("policy_content_file_count") != resource_summary["policy_content_file_count"]:
         fail("policy_content_count_mismatch")
+    if profile.get("native_share_nonresource_inventory") != nonresource_inventory:
+        fail("nonresource_inventory_contract_mismatch")
     expected_executables = {
         native.platform_executable(name, platform)
         for name in native.native_executables(platform)
@@ -122,6 +254,8 @@ def main() -> int:
     runtime_dependencies = set(profile.get("runtime_dependencies", []))
     if any(not native.safe_runtime_dependency_name(name) for name in runtime_dependencies):
         fail("declared_runtime_dependency_forbidden")
+    if platform == "windows":
+        native.require_windows_runtime_inventory(runtime_dependencies)
     llvm_runtime_library = str(llvm_runtime["runtime_library"])
     if platform == "windows" and llvm_runtime_library not in runtime_dependencies:
         fail("windows_llvm_runtime_not_bundled")
@@ -137,7 +271,7 @@ def main() -> int:
         name
         for candidates in native.REQUIRED_LIBRARY_CANDIDATES[platform].values()
         for name in candidates
-    } | native.OPTIONAL_NATIVE_LIBRARY_NAMES
+    }
     if (declared_bin_libraries | declared_libraries) - allowed_library_names:
         fail("declared_non_native_library_forbidden")
     declared_library_names = declared_bin_libraries | declared_libraries

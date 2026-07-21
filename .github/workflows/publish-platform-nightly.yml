@@ -25,6 +25,7 @@ permissions:
 jobs:
   publish:
     name: Publish verified platform-scoped nightly
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Validate closed platform publication contract
@@ -42,11 +43,15 @@ jobs:
           [[ "$SB_SOURCE_REVISION" =~ ^[0-9a-fA-F]{40,64}$ ]]
           [[ "$SB_SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$SB_SOURCE_RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$SB_SOURCE_REVISION" = "$GITHUB_SHA"
+          test "$SB_SOURCE_RUN_ID" = "$GITHUB_RUN_ID"
+          test "$SB_SOURCE_RUN_ATTEMPT" = "$GITHUB_RUN_ATTEMPT"
 
       - name: Checkout exact tested source revision
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_revision }}
+          ref: ${{ github.sha }}
 
       - name: Download Linux installer artifact
         if: ${{ inputs.release_scope == 'linux' }}
@@ -62,13 +67,26 @@ jobs:
           name: scratchbird-windows-installers
           path: platform-artifacts/scratchbird-windows-installers
 
-      - name: Download macOS installer artifacts
+      - name: Download macOS x86_64 installer artifact
         if: ${{ inputs.release_scope == 'macos' }}
         uses: actions/download-artifact@v4
         with:
-          pattern: scratchbird-macos-*-installers
-          path: platform-artifacts
-          merge-multiple: false
+          name: scratchbird-macos-x86_64-installers
+          path: platform-artifacts/scratchbird-macos-x86_64-installers
+
+      - name: Download macOS arm64 installer artifact
+        if: ${{ inputs.release_scope == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-arm64-installers
+          path: platform-artifacts/scratchbird-macos-arm64-installers
+
+      - name: Download macOS universal installer artifact
+        if: ${{ inputs.release_scope == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-universal-installers
+          path: platform-artifacts/scratchbird-macos-universal-installers
 
       - name: Verify downloaded platform installer artifacts
         env:
@@ -150,6 +168,7 @@ jobs:
             echo "- The native ScratchBird listener default is TCP port 3092."
             echo "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources."
             echo '- The `scratchbird` operating-system identity is a headless service account only; it is not a database or security authority.'
+            echo "- Public assets are exact manifest-derived portable archives only; DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and not downloadable."
             if [ "$SB_RELEASE_SCOPE" = "windows" ]; then
               echo "- Windows testing artifacts are portable ZIP-only. No MSI, service, or system-directory installation is included."
             fi

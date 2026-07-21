@@ -32,6 +32,14 @@ import zipfile
 
 
 MANIFEST_NAME = "INSTALLER_ARTIFACT_MANIFEST.json"
+NATIVE_SERVER_ADMISSION = {
+    "schema_id": "scratchbird.installer_native_server_admission.v1",
+    "distribution_surface": "scratchbird_native_no_emulation",
+    "admission_controller": "native_server_only",
+    "client_artifacts_permitted": False,
+    "admitted_driver_adaptor_mcp_components": [],
+    "dbeaver_hard_excluded": True,
+}
 PRODUCT_NAME = "ScratchBird"
 MANUFACTURER = "ScratchBird Software Inc."
 WINDOWS_UPGRADE_CODE = "8F28B062-0620-4D2A-8D4C-8D3E19ED4012"
@@ -299,7 +307,7 @@ def require_staged_output(
     artifact_root: Path,
     platform: str,
     require_native_only: bool = False,
-) -> None:
+) -> str | None:
     if not artifact_root.is_dir():
         fail(f"artifact_root_not_found:{artifact_root}")
     manifest = artifact_root / "STANDALONE_OUTPUT_MANIFEST.json"
@@ -319,9 +327,42 @@ def require_staged_output(
         native_profile = artifact_root / "NATIVE_RELEASE_PROFILE.json"
         if not native_profile.is_file():
             fail(f"native_only_profile_missing:{native_profile}")
+        try:
+            native_profile_data = json.loads(native_profile.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            fail(f"native_only_profile_invalid:{exc}")
+        if not isinstance(native_profile_data, dict):
+            fail("native_only_profile_not_object")
+        native_verifier = (
+            Path(__file__).resolve().parents[1]
+            / "release"
+            / "verify_native_release_bundle.py"
+        )
+        if not native_verifier.is_file():
+            fail(f"native_only_verifier_missing:{native_verifier}")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(native_verifier),
+                str(artifact_root),
+                "--platform",
+                platform,
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0:
+            print(result.stdout, end="")
+            fail("native_only_release_bundle_verification_failed")
+        native_profile_digest = sha256_file(native_profile)
+    else:
+        native_profile_digest = None
     for rel in ("bin", "lib", "etc/scratchbird", "share/scratchbird/resources"):
         if not (artifact_root / rel).exists():
             fail(f"staged_output_missing:{rel}")
+    return native_profile_digest
 
 
 def copytree_contents(source: Path, dest: Path) -> None:
@@ -1926,6 +1967,8 @@ def write_artifact_manifest(
     build_id: str | None,
     *,
     windows_system_installer: bool = False,
+    macos_system_installer: bool = False,
+    native_profile_digest: str | None = None,
 ) -> Path:
     rows = []
     for path in sorted(item for item in output_root.rglob("*") if item.is_file()):
@@ -1941,6 +1984,11 @@ def write_artifact_manifest(
         "build_id": build_id,
         "artifacts": rows,
     }
+    if native_profile_digest is not None:
+        manifest["native_server_admission"] = {
+            **NATIVE_SERVER_ADMISSION,
+            "native_release_profile_sha256": native_profile_digest,
+        }
     if platform == "windows":
         if windows_system_installer:
             manifest["windows"] = {
@@ -1967,12 +2015,25 @@ def write_artifact_manifest(
             "support_matrix": MACOS_SUPPORT_MATRIX,
             "signing_state_file": "MACOS_SIGNING_STATE.json",
             "dynamic_library_audit_file": "MACOS_DYNAMIC_LIBRARY_AUDIT.json",
-            "system_package_launchd_manifest_file": (
-                "opt/ScratchBird/share/scratchbird/release/"
-                "MACOS_LAUNCHD_MANIFEST.json"
+            "package_mode": (
+                "portable_tar_and_pkg"
+                if macos_system_installer
+                else "portable_tar_only"
             ),
-            "system_package_evidence_file": "MACOS_SYSTEM_PACKAGE_EVIDENCE.json",
+            "system_installer_included": macos_system_installer,
         }
+        if macos_system_installer:
+            manifest["macos"].update(
+                {
+                    "system_package_launchd_manifest_file": (
+                        "opt/ScratchBird/share/scratchbird/release/"
+                        "MACOS_LAUNCHD_MANIFEST.json"
+                    ),
+                    "system_package_evidence_file": (
+                        "MACOS_SYSTEM_PACKAGE_EVIDENCE.json"
+                    ),
+                }
+            )
     path = output_root / MANIFEST_NAME
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (output_root / "SHA256SUMS").write_text(
@@ -1990,6 +2051,15 @@ def main() -> int:
     parser.add_argument("--output-root", type=Path, required=True)
     parser.add_argument("--version", default="0.0.0-nightly")
     parser.add_argument("--build-id")
+    parser.add_argument(
+        "--include-system-packages",
+        action="store_true",
+        help=(
+            "Build internal DEB/AUR/RPM, PKG, or MSI system-package outputs in "
+            "addition to the portable archive. These outputs are never public "
+            "nightly release assets."
+        ),
+    )
     parser.add_argument("--require-rpm", action="store_true")
     parser.add_argument(
         "--require-msi",
@@ -2002,13 +2072,19 @@ def main() -> int:
     parser.add_argument("--require-native-only", action="store_true")
     args = parser.parse_args()
 
+    if args.require_rpm and args.platform != "linux":
+        fail("require_rpm_platform_invalid")
+    if args.require_rpm and not args.include_system_packages:
+        fail("require_rpm_requires_include_system_packages")
     if args.require_msi and args.platform != "windows":
         fail("require_msi_platform_invalid")
+    if args.require_msi and not args.include_system_packages:
+        fail("require_msi_requires_include_system_packages")
 
     artifact_root = args.artifact_root.resolve()
     output_root = args.output_root.resolve()
     version = sanitize_version(args.version)
-    require_staged_output(
+    native_profile_digest = require_staged_output(
         artifact_root,
         args.platform,
         require_native_only=args.require_native_only,
@@ -2022,20 +2098,35 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="scratchbird-installer-") as temp_name:
         payload_root = Path(temp_name) / "payload"
         stage_install_tree(artifact_root, payload_root, args.platform, version, args.build_id)
+        if native_profile_digest is not None:
+            payload_profile = (
+                payload_root
+                / "opt"
+                / "ScratchBird"
+                / "share"
+                / "scratchbird"
+                / "release"
+                / "NATIVE_RELEASE_PROFILE.json"
+            )
+            if not payload_profile.is_file() or sha256_file(payload_profile) != native_profile_digest:
+                fail("native_only_profile_copy_digest_mismatch")
         built: list[Path] = []
         if args.platform == "linux":
-            system_payload_root = Path(temp_name) / "system-payload"
             built.append(make_tarball(payload_root, output_root, version, "linux"))
-            stage_linux_system_install_tree(
-                payload_root,
-                system_payload_root,
-                version,
-                args.build_id,
-            )
-            built.append(make_deb(system_payload_root, output_root, version))
-            built.extend(make_rpm(system_payload_root, output_root, version, args.require_rpm))
-            built.append(make_aur(system_payload_root, output_root, version))
-            write_linux_system_package_evidence(output_root, version, args.build_id)
+            if args.include_system_packages:
+                system_payload_root = Path(temp_name) / "system-payload"
+                stage_linux_system_install_tree(
+                    payload_root,
+                    system_payload_root,
+                    version,
+                    args.build_id,
+                )
+                built.append(make_deb(system_payload_root, output_root, version))
+                built.extend(
+                    make_rpm(system_payload_root, output_root, version, args.require_rpm)
+                )
+                built.append(make_aur(system_payload_root, output_root, version))
+                write_linux_system_package_evidence(output_root, version, args.build_id)
         elif args.platform == "windows":
             built.append(make_zip(payload_root, output_root, version))
             if args.require_msi:
@@ -2060,39 +2151,45 @@ def main() -> int:
                     args.build_id,
                 )
         else:
-            system_payload_root = Path(temp_name) / "macos-system-payload"
-            pkg_scripts_root = Path(temp_name) / "macos-pkg-scripts"
             signing_state = maybe_sign_macos_payload(payload_root)
             write_macos_dynamic_library_audit(payload_root, output_root)
             built.append(make_tarball(payload_root, output_root, version, "macos"))
-            stage_macos_system_install_tree(
-                payload_root,
-                system_payload_root,
-                version,
-                args.build_id,
-            )
-            materialize_macos_pkg_scripts(pkg_scripts_root, version)
-            built.append(
-                make_macos_pkg(
+            if args.include_system_packages:
+                system_payload_root = Path(temp_name) / "macos-system-payload"
+                pkg_scripts_root = Path(temp_name) / "macos-pkg-scripts"
+                stage_macos_system_install_tree(
+                    payload_root,
                     system_payload_root,
+                    version,
+                    args.build_id,
+                )
+                materialize_macos_pkg_scripts(pkg_scripts_root, version)
+                built.append(
+                    make_macos_pkg(
+                        system_payload_root,
+                        output_root,
+                        version,
+                        signing_state,
+                        pkg_scripts_root,
+                    )
+                )
+            write_macos_signing_state(output_root, signing_state)
+            if args.include_system_packages:
+                write_macos_system_package_evidence(
                     output_root,
                     version,
-                    signing_state,
-                    pkg_scripts_root,
+                    args.build_id,
                 )
-            )
-            write_macos_signing_state(output_root, signing_state)
-            write_macos_system_package_evidence(
-                output_root,
-                version,
-                args.build_id,
-            )
         manifest = write_artifact_manifest(
             output_root,
             args.platform,
             version,
             args.build_id,
             windows_system_installer=(args.platform == "windows" and args.require_msi),
+            macos_system_installer=(
+                args.platform == "macos" and args.include_system_packages
+            ),
+            native_profile_digest=native_profile_digest,
         )
     print(f"build_installers=passed:{manifest}")
     return 0

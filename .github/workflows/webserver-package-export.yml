@@ -47,6 +47,7 @@ concurrency:
 jobs:
   build-packages:
     name: Build and verify packages
+    if: ${{ github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/verify-installers.yml
     with:
       platform: ${{ inputs.platform }}
@@ -55,17 +56,56 @@ jobs:
   package-webserver-export:
     name: Create webserver upload bundle
     needs: build-packages
+    if: ${{ success() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
-      - name: Download package artifacts
+      - name: Require protected-main export context
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Download Linux installer artifact
+        if: ${{ inputs.platform == 'all' || inputs.platform == 'linux' }}
         uses: actions/download-artifact@v4
         with:
-          path: package-artifacts
+          name: scratchbird-linux-installers
+          path: package-artifacts/scratchbird-linux-installers
+
+      - name: Download Windows installer artifact
+        if: ${{ inputs.platform == 'all' || inputs.platform == 'windows' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-installers
+          path: package-artifacts/scratchbird-windows-installers
+
+      - name: Download macOS x86_64 installer artifact
+        if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-x86_64-installers
+          path: package-artifacts/scratchbird-macos-x86_64-installers
+
+      - name: Download macOS arm64 installer artifact
+        if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-arm64-installers
+          path: package-artifacts/scratchbird-macos-arm64-installers
+
+      - name: Download macOS universal installer artifact
+        if: ${{ inputs.platform == 'all' || inputs.platform == 'macos' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-universal-installers
+          path: package-artifacts/scratchbird-macos-universal-installers
 
       - name: Verify downloaded installer manifests
         run: |

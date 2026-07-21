@@ -15,9 +15,20 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
+import shutil
 import sys
+import tempfile
+from typing import Any
 import zipfile
 import xml.etree.ElementTree as ET
+
+
+TOOL_ROOT = Path(__file__).resolve().parent
+if str(TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOL_ROOT))
+
+import installer_native_admission as native_admission
 
 
 MANIFEST_NAME = "INSTALLER_ARTIFACT_MANIFEST.json"
@@ -33,15 +44,24 @@ FORBIDDEN_TEXT = (
     "packaging/",
 )
 REQUIRED_SUFFIXES = {
-    "linux": (".tar.gz", ".deb"),
+    "linux": (".tar.gz",),
     "windows": (".zip",),
-    "macos": (".tar.gz", ".pkg"),
+    "macos": (".tar.gz",),
+}
+PUBLICATION_SURFACE_SCHEMA = "scratchbird.public_native_installer_artifact.v1"
+PUBLICATION_SURFACE_POLICY = (
+    "exact_manifest_derived_directly_recursive_verifiable_native_server_payloads_only"
+)
+EXCLUDED_PUBLIC_PACKAGE_FORMATS = ("rpm", "pkg", "deb", "aur", "msi")
+PUBLIC_PACKAGE_PATTERNS = {
+    "linux": ("scratchbird-linux-*.tar.gz",),
+    "windows": ("scratchbird-windows-*.zip",),
+    "macos": ("scratchbird-macos-*.tar.gz",),
 }
 
 MACOS_REQUIRED_SIDECARS = (
     "MACOS_DYNAMIC_LIBRARY_AUDIT.json",
     "MACOS_SIGNING_STATE.json",
-    "MACOS_SYSTEM_PACKAGE_EVIDENCE.json",
 )
 WINDOWS_MSI_REQUIRED_SIDECARS = (
     "WINDOWS_SYSTEM_PACKAGE_EVIDENCE.json",
@@ -56,7 +76,6 @@ WINDOWS_ZIP_ONLY_FORBIDDEN_NAMES = frozenset(
     }
 )
 WINDOWS_ZIP_ONLY_FORBIDDEN_SUFFIXES = frozenset({".msi", ".wixpdb", ".wxs"})
-LINUX_REQUIRED_SIDECARS = ("LINUX_SYSTEM_PACKAGE_EVIDENCE.json",)
 SERVICE_AUTHORITY_SCOPE = (
     "filesystem_directory_and_process_execution_only_"
     "no_database_or_security_authority"
@@ -74,6 +93,281 @@ WINDOWS_LIFECYCLE_SETTERS = (
     "SetScratchBirdPostInstall",
     "SetScratchBirdPreRemove",
 )
+
+
+def native_admission_call(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+    try:
+        return callable_(*args, **kwargs)
+    except native_admission.NativeAdmissionError as exc:
+        fail(str(exc))
+
+
+def artifact_file_rows(
+    root: Path,
+    artifacts: list[Any],
+) -> dict[str, Path]:
+    """Verify manifest rows and reject hidden client paths before package use."""
+
+    files: dict[str, Path] = {}
+    for row in artifacts:
+        if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"}:
+            fail("manifest_row_not_object")
+        rel = row.get("path")
+        if not isinstance(rel, str):
+            fail("manifest_row_path_invalid")
+        relative = native_admission_call(
+            native_admission.safe_relative_path, rel, "installer_manifest"
+        )
+        rel = relative.as_posix()
+        if rel in files:
+            fail(f"manifest_row_path_duplicate:{rel}")
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            fail(f"manifest_file_missing:{rel}")
+        if row.get("bytes") != path.stat().st_size:
+            fail(f"manifest_size_mismatch:{rel}")
+        if row.get("sha256") != sha256_file(path):
+            fail(f"manifest_sha256_mismatch:{rel}")
+        files[rel] = path
+    return files
+
+
+def verify_manifest_checksums(root: Path, files: dict[str, Path]) -> None:
+    checksum_path = root / "SHA256SUMS"
+    if not checksum_path.is_file() or checksum_path.is_symlink():
+        fail("sha256sums_missing")
+    try:
+        lines = checksum_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        fail(f"sha256sums_unreadable:{exc}")
+    actual: dict[str, str] = {}
+    for line in lines:
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None:
+            fail(f"sha256sums_row_invalid:{line}")
+        digest, relative = match.groups()
+        relative_path = native_admission_call(
+            native_admission.safe_relative_path, relative, "sha256sums"
+        )
+        normalized = relative_path.as_posix()
+        if normalized in actual:
+            fail(f"sha256sums_duplicate:{normalized}")
+        actual[normalized] = digest
+    expected = {relative: sha256_file(path) for relative, path in files.items()}
+    if actual != expected:
+        fail("sha256sums_manifest_mismatch")
+
+
+def select_manifest_package(
+    files: dict[str, Path],
+    pattern: str,
+    context: str,
+) -> tuple[str, Path]:
+    matches = sorted(
+        (rel, path)
+        for rel, path in files.items()
+        if "/" not in rel and Path(rel).match(pattern)
+    )
+    if len(matches) != 1:
+        fail(f"native_admission_package_cardinality:{context}:{pattern}:{len(matches)}")
+    return matches[0]
+
+
+def platform_architecture(platform: str, root: Path, supplied: str | None) -> str:
+    if supplied is not None:
+        return supplied
+    if platform in {"linux", "windows"}:
+        return "x86_64"
+    name = root.name.casefold()
+    if "arm64" in name:
+        return "arm64"
+    if "x86_64" in name or "x64" in name or "intel" in name:
+        return "x86_64"
+    fail("native_admission_macos_architecture_required")
+
+
+def verify_native_admission_packages(
+    root: Path,
+    data: dict[str, Any],
+    files: dict[str, Path],
+    platform: str,
+    architecture: str,
+) -> None:
+    admission, profile_digest = native_admission_call(
+        native_admission.require_native_server_admission,
+        data.get("native_server_admission"),
+        f"installer:{root.name}",
+    )
+    native_admission_call(
+        native_admission.scan_native_only_tree, root, f"installer_root:{root.name}"
+    )
+    if platform == "linux":
+        rel, path = select_manifest_package(files, "scratchbird-linux-*.tar.gz", "linux:portable")
+        native_admission_call(
+            native_admission.verify_portable_native_payload,
+            path, profile_digest, platform, architecture,
+        )
+        return
+    if platform == "windows":
+        rel, path = select_manifest_package(files, "scratchbird-windows-*.zip", "windows:zip")
+        native_admission_call(
+            native_admission.verify_portable_native_payload,
+            path, profile_digest, platform, architecture,
+        )
+        return
+    rel, path = select_manifest_package(files, "scratchbird-macos-*.tar.gz", "macos:portable")
+    native_admission_call(
+        native_admission.verify_portable_native_payload,
+        path, profile_digest, platform, architecture,
+    )
+
+
+def publication_package_rows(
+    files: dict[str, Path],
+    platform: str,
+) -> dict[str, Path]:
+    """Return the exact portable package set admitted to tester downloads."""
+
+    selected: dict[str, Path] = {}
+    for pattern in PUBLIC_PACKAGE_PATTERNS[platform]:
+        relative, path = select_manifest_package(
+            files, pattern, f"public:{platform}:{pattern}"
+        )
+        selected[relative] = path
+    return selected
+
+
+def assert_exact_publication_tree(root: Path, files: dict[str, Path]) -> None:
+    """Require an artifact root to contain only its manifest-derived files."""
+
+    expected_files = set(files) | {MANIFEST_NAME, "SHA256SUMS"}
+    actual_files = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        fail(
+            "public_installer_artifact_tree_mismatch:"
+            f"missing={sorted(expected_files - actual_files)}:"
+            f"unexpected={sorted(actual_files - expected_files)}"
+        )
+    expected_dirs: set[str] = set()
+    for relative in expected_files:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_dirs.add(parent.as_posix())
+            parent = parent.parent
+    actual_dirs = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_dir()
+    }
+    if actual_dirs != expected_dirs:
+        fail(
+            "public_installer_artifact_directory_mismatch:"
+            f"missing={sorted(expected_dirs - actual_dirs)}:"
+            f"unexpected={sorted(actual_dirs - expected_dirs)}"
+        )
+
+
+def require_publication_manifest(
+    root: Path,
+    data: dict[str, Any],
+    files: dict[str, Path],
+    platform: str,
+) -> None:
+    if data.get("publication_surface") != PUBLICATION_SURFACE_SCHEMA:
+        fail(f"public_installer_artifact_surface_missing:{root}")
+    if data.get("publication_policy") != PUBLICATION_SURFACE_POLICY:
+        fail(f"public_installer_artifact_policy_invalid:{root}")
+    if data.get("excluded_package_formats") != list(EXCLUDED_PUBLIC_PACKAGE_FORMATS):
+        fail(f"public_installer_artifact_exclusion_invalid:{root}")
+    selected = publication_package_rows(files, platform)
+    if set(files) != set(selected):
+        fail(
+            "public_installer_artifact_manifest_set_invalid:"
+            f"expected={sorted(selected)}:actual={sorted(files)}"
+        )
+    assert_exact_publication_tree(root, files)
+
+
+def materialize_publication_root(
+    source_root: Path,
+    output_root: Path,
+    data: dict[str, Any],
+    files: dict[str, Path],
+    platform: str,
+) -> Path:
+    """Write a clean, exact tester-downloadable installer artifact directory.
+
+    Builder directories deliberately retain internal recipes, smoke evidence,
+    and package-manager output.  They must never be uploaded wholesale.  This
+    function copies only the recursively verified portable package plus an
+    exact new manifest/checksum pair, so an unmanifested neutral binary and
+    every system-package format are absent before the upload step begins.
+    """
+
+    if output_root.is_symlink() or output_root.exists():
+        fail(f"public_installer_output_root_not_empty:{output_root}")
+    if output_root.resolve() == source_root.resolve() or source_root.resolve() in output_root.resolve().parents:
+        fail("public_installer_output_overlap")
+    selected = publication_package_rows(files, platform)
+    parent = output_root.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{output_root.name}.public-", dir=parent
+    ) as temp_name:
+        staging = Path(temp_name) / "artifact"
+        staging.mkdir()
+        rows: list[dict[str, Any]] = []
+        for relative, source in sorted(selected.items()):
+            target = staging / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            rows.append(
+                {
+                    "path": relative,
+                    "bytes": target.stat().st_size,
+                    "sha256": sha256_file(target),
+                }
+            )
+        rows.sort(key=lambda row: str(row["path"]))
+        manifest: dict[str, Any] = {
+            "schema_id": "scratchbird.installer_artifact_manifest.v1",
+            "platform": platform,
+            "version": data.get("version"),
+            "build_id": data.get("build_id"),
+            "native_server_admission": data.get("native_server_admission"),
+            "publication_surface": PUBLICATION_SURFACE_SCHEMA,
+            "publication_policy": PUBLICATION_SURFACE_POLICY,
+            "excluded_package_formats": list(EXCLUDED_PUBLIC_PACKAGE_FORMATS),
+            "artifacts": rows,
+        }
+        if platform == "windows":
+            manifest["windows"] = data.get("windows")
+        if platform == "macos":
+            signing = files.get("MACOS_SIGNING_STATE.json")
+            if signing is None:
+                fail("public_installer_macos_signing_state_missing")
+            try:
+                status = json.loads(signing.read_text(encoding="utf-8")).get("status")
+            except (OSError, json.JSONDecodeError) as exc:
+                fail(f"public_installer_macos_signing_state_invalid:{exc}")
+            if status not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
+                fail(f"public_installer_macos_signing_state_invalid:{status}")
+            manifest["macos_signing_status"] = status
+        (staging / MANIFEST_NAME).write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (staging / "SHA256SUMS").write_text(
+            "".join(f"{row['sha256']}  {row['path']}\n" for row in rows),
+            encoding="utf-8",
+        )
+        output_root.parent.mkdir(parents=True, exist_ok=True)
+        staging.rename(output_root)
+    return output_root
 
 
 def fail(message: str) -> None:
@@ -317,6 +611,14 @@ def main() -> int:
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--platform", choices=("linux", "windows", "macos"), required=True)
     parser.add_argument(
+        "--architecture",
+        choices=("x86_64", "arm64", "universal"),
+        help=(
+            "Target architecture for native payload admission. Linux and Windows "
+            "default to x86_64; macOS is inferred only from an exact artifact-root name."
+        ),
+    )
+    parser.add_argument(
         "--require-msi",
         action="store_true",
         help=(
@@ -324,14 +626,26 @@ def main() -> int:
             "Manual diagnostic tooling only; automated release workflows are ZIP-only."
         ),
     )
+    parser.add_argument(
+        "--materialize-public-root",
+        type=Path,
+        help=(
+            "Write a clean tester-downloadable artifact root containing only "
+            "the exact admitted portable package, manifest, and SHA256SUMS."
+        ),
+    )
     args = parser.parse_args()
     if args.require_msi and args.platform != "windows":
         fail("require_msi_platform_invalid")
     root = args.artifact_root.resolve()
+    architecture = platform_architecture(args.platform, root, args.architecture)
     manifest_path = root / MANIFEST_NAME
     if not manifest_path.is_file():
         fail(f"missing_manifest:{manifest_path}")
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"manifest_json_invalid:{exc}")
     if data.get("schema_id") != "scratchbird.installer_artifact_manifest.v1":
         fail("manifest_schema_mismatch")
     if data.get("platform") != args.platform:
@@ -339,7 +653,17 @@ def main() -> int:
     artifacts = data.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         fail("manifest_artifacts_missing")
-    paths = {row.get("path") for row in artifacts if isinstance(row, dict)}
+    files = artifact_file_rows(root, artifacts)
+    verify_manifest_checksums(root, files)
+    admission, profile_digest = native_admission_call(
+        native_admission.require_native_server_admission,
+        data.get("native_server_admission"),
+        f"installer:{root.name}",
+    )
+    publication_only = data.get("publication_surface") == PUBLICATION_SURFACE_SCHEMA
+    if publication_only:
+        require_publication_manifest(root, data, files, args.platform)
+    paths = set(files)
     for suffix in REQUIRED_SUFFIXES[args.platform]:
         if not any(isinstance(path, str) and path.endswith(suffix) for path in paths):
             fail(f"required_artifact_missing:{suffix}")
@@ -361,23 +685,11 @@ def main() -> int:
                 fail("required_artifact_missing:.msi")
             if len(windows_msi_paths) != 1:
                 fail("windows_msi_cardinality")
-    for row in artifacts:
-        if not isinstance(row, dict):
-            fail("manifest_row_not_object")
-        rel = row.get("path")
-        if not isinstance(rel, str):
-            fail("manifest_row_path_invalid")
-        path = root / rel
-        if not path.is_file():
-            fail(f"manifest_file_missing:{rel}")
-        if row.get("bytes") != path.stat().st_size:
-            fail(f"manifest_size_mismatch:{rel}")
-        if row.get("sha256") != sha256_file(path):
-            fail(f"manifest_sha256_mismatch:{rel}")
-    if args.platform == "linux":
-        for sidecar in LINUX_REQUIRED_SIDECARS:
-            if sidecar not in paths:
-                fail(f"linux_sidecar_missing:{sidecar}")
+    # System-package evidence is an optional internal-build concern.  The
+    # portable public path must neither require nor carry it.  When an
+    # explicit internal build elects to emit it, still validate its authority
+    # claims rather than treating the JSON as a release admission proof.
+    if args.platform == "linux" and "LINUX_SYSTEM_PACKAGE_EVIDENCE.json" in paths:
         evidence = json.loads(
             (root / "LINUX_SYSTEM_PACKAGE_EVIDENCE.json").read_text(
                 encoding="utf-8"
@@ -488,7 +800,7 @@ def main() -> int:
                     in WINDOWS_ZIP_ONLY_FORBIDDEN_SUFFIXES
                 ):
                     fail(f"windows_zip_only_forbidden_artifact:{rel}")
-    if args.platform == "macos":
+    if args.platform == "macos" and not publication_only:
         macos_block = data.get("macos")
         if not isinstance(macos_block, dict):
             fail("macos_manifest_block_missing")
@@ -512,46 +824,54 @@ def main() -> int:
                 status = sidecar_data.get("status")
                 if status not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
                     fail(f"macos_signing_state_invalid:{status}")
-            if sidecar == "MACOS_SYSTEM_PACKAGE_EVIDENCE.json":
-                if sidecar_data.get("schema_id") != (
-                    "scratchbird.macos_system_package_evidence.v1"
-                ):
-                    fail("macos_system_package_evidence_schema_mismatch")
-                if sidecar_data.get("native_default_port") != 3092:
-                    fail("macos_system_package_evidence_native_port_mismatch")
-                if sidecar_data.get("database_files_created") is not False:
-                    fail("macos_system_package_evidence_database_creation")
-                if sidecar_data.get("security_sidecars_created") is not False:
-                    fail("macos_system_package_evidence_security_sidecar_creation")
-                identity = sidecar_data.get("os_identity")
-                if (
-                    not isinstance(identity, dict)
-                    or identity.get("service_authority_scope")
-                    != SERVICE_AUTHORITY_SCOPE
-                    or identity.get("create_time_os_authorization") != "root_only"
-                    or identity.get("human_service_group_membership_mutation") is not False
-                    or identity.get("resolved_effective_group_policy")
-                    != (
-                        "launchd_host_computed_groups_cleared_before_"
-                        "scratchbird_product_exec"
-                    )
-                ):
-                    fail("macos_system_service_authority_scope_invalid")
-                service = sidecar_data.get("service")
-                if (
-                    not isinstance(service, dict)
-                    or service.get("launchd_init_groups") is not False
-                    or service.get("launchd_bootstrap_identity") != "root:wheel"
-                    or service.get("service_launcher")
-                    != "/opt/ScratchBird/bin/SBlaunch"
-                    or service.get("service_launcher_interface")
-                    != "fixed_selector_only_no_forwarded_arguments"
-                    or service.get("final_product_identity")
-                    != "scratchbird:scratchbird"
-                    or service.get("final_supplementary_groups") != []
-                ):
-                    fail("macos_system_launcher_contract_invalid")
+    if args.platform == "macos" and publication_only:
+        status = data.get("macos_signing_status")
+        if status not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
+            fail(f"public_installer_macos_signing_status_invalid:{status}")
+    # Verify every tester-downloadable payload against the manifest-bound
+    # native admission. System-package formats are intentionally not accepted
+    # on this public path.
+    verify_native_admission_packages(
+        root,
+        data,
+        files,
+        args.platform,
+        architecture,
+    )
     scan(root)
+    if args.materialize_public_root is not None:
+        public_root = materialize_publication_root(
+            root,
+            args.materialize_public_root.resolve(),
+            data,
+            files,
+            args.platform,
+        )
+        public_manifest_path = public_root / MANIFEST_NAME
+        public_data = json.loads(public_manifest_path.read_text(encoding="utf-8"))
+        public_rows = public_data.get("artifacts")
+        if not isinstance(public_rows, list):
+            fail("public_installer_manifest_artifacts_missing")
+        public_files = artifact_file_rows(public_root, public_rows)
+        verify_manifest_checksums(public_root, public_files)
+        require_publication_manifest(
+            public_root, public_data, public_files, args.platform
+        )
+        public_admission, public_profile_digest = native_admission_call(
+            native_admission.require_native_server_admission,
+            public_data.get("native_server_admission"),
+            f"public_installer:{public_root.name}",
+        )
+        del public_admission
+        verify_native_admission_packages(
+            public_root,
+            public_data,
+            public_files,
+            args.platform,
+            architecture,
+        )
+        if public_profile_digest != profile_digest:
+            fail("public_installer_profile_digest_mismatch")
     print(f"verify_installer_artifacts=passed:{root}")
     return 0
 

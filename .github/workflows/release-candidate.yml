@@ -27,6 +27,7 @@ concurrency:
 jobs:
   build-installers:
     name: Build release-candidate installers
+    if: ${{ github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/verify-installers.yml
     with:
       platform: all
@@ -35,17 +36,49 @@ jobs:
   publish:
     name: Publish draft release candidate
     needs: build-installers
+    if: ${{ success() && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
 
-      - name: Download installer artifacts
+      - name: Require protected-main release context
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Download Linux installer artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: scratchbird-*-installers
-          path: release-artifacts
-          merge-multiple: false
+          name: scratchbird-linux-installers
+          path: release-artifacts/scratchbird-linux-installers
+
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-windows-installers
+          path: release-artifacts/scratchbird-windows-installers
+
+      - name: Download macOS x86_64 installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-x86_64-installers
+          path: release-artifacts/scratchbird-macos-x86_64-installers
+
+      - name: Download macOS arm64 installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-arm64-installers
+          path: release-artifacts/scratchbird-macos-arm64-installers
+
+      - name: Download macOS universal installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-universal-installers
+          path: release-artifacts/scratchbird-macos-universal-installers
 
       - name: Verify downloaded installers
         run: |
@@ -153,5 +186,5 @@ jobs:
           test "$(find release-candidate-assets -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq "${#assets[@]}"
           gh release create "$SB_RC_TAG" "${assets[@]}" \
             --title "ScratchBird $SB_RC_VERSION" \
-            --notes "Native-only release candidate generated from $GITHUB_SHA. Public assets are the verified portable archives; DEB, RPM, AUR, PKG, and smoke proofs remain workflow artifacts. Windows testing artifacts are ZIP-only; no MSI is generated or published." \
+            --notes "Native-only release candidate generated from $GITHUB_SHA. Public assets are exact manifest-derived portable archives only; DEB, AUR, RPM, PKG, and MSI system-installer formats remain internal build outputs and are not downloadable release assets." \
             "${release_flags[@]}"

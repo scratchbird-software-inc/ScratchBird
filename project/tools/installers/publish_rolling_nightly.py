@@ -38,10 +38,7 @@ TAG = DEFAULT_CONTRACT.tag
 MANIFEST_NAME = DEFAULT_CONTRACT.manifest_name
 CHECKSUM_NAME = DEFAULT_CONTRACT.checksum_name
 MANIFEST_SCHEMA = "scratchbird.native_nightly_release.v1"
-PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_platform_system_installer_artifacts"
-LEGACY_PUBLIC_ASSET_POLICIES = frozenset(
-    {"fully_verified_native_portable_and_system_installer_artifacts"}
-)
+PUBLIC_ASSET_POLICY = "exact_manifest_derived_native_portable_archives_only"
 API_VERSION = "2026-03-10"
 TAG_VISIBILITY_ATTEMPTS = 15
 TAG_VISIBILITY_DELAY_SECONDS = 2.0
@@ -458,8 +455,8 @@ class RollingPublisher:
                 r"- The native ScratchBird listener default is TCP port 3092[.]\n"
                 r"- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources[.]\n"
                 r"- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23[+], Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22[+][.]\n"
-                r"- Public nightly assets include fully verified portable archives and system installer packages[.]\n"
-                r"- DEB, RPM, AUR, PKG, and MSI packages are published for tester installation after their platform verification and install-smoke jobs pass[.]\n"
+                r"- Public nightly assets are exact manifest-derived portable archives only: Linux tar[.]gz, Windows ZIP, and macOS tar[.]gz[.]\n"
+                r"- DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and are not downloadable nightly assets[.]\n"
                 rf"- Source commit: {source}\n"
                 rf"- Requested version: {version}\n"
                 rf"- Workflow run: https://github[.]com/{repository}/actions/runs/{run_id}\n"
@@ -478,6 +475,7 @@ class RollingPublisher:
                 r"- The native ScratchBird listener default is TCP port 3092[.]\n"
                 r"- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources[.]\n"
                 r"- The `scratchbird` operating-system identity is a headless service account only; it is not a database or security authority[.]\n"
+                r"- Public assets are exact manifest-derived portable archives only; DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and not downloadable[.]\n"
                 rf"- Source commit: {source}\n"
                 rf"- Requested version: {version}\n"
                 rf"- Verified workflow run: https://github[.]com/{repository}/actions/runs/{run_id}\n"
@@ -992,8 +990,7 @@ class RollingPublisher:
             or manifest.get("release_scope") != self.contract.scope
             or manifest.get("release_tag") != self.contract.tag
             or manifest.get("distribution_surface") != "scratchbird_native_no_emulation"
-            or manifest.get("public_asset_policy")
-            not in (PUBLIC_ASSET_POLICY, *LEGACY_PUBLIC_ASSET_POLICIES)
+            or manifest.get("public_asset_policy") != PUBLIC_ASSET_POLICY
             or manifest.get("native_parser") != "SBSQL"
             or manifest.get("emulation_layers_included") is not False
             or manifest.get("native_components") != NATIVE_COMPONENTS
@@ -1004,8 +1001,7 @@ class RollingPublisher:
                 else [self.contract.scope]
             )
             or (
-                manifest.get("public_asset_policy") == PUBLIC_ASSET_POLICY
-                and self.contract.scope in {"all", "windows"}
+                self.contract.scope in {"all", "windows"}
                 and manifest.get("windows_release_policy")
                 != "portable_zip_only_no_msi"
             )

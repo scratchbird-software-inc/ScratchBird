@@ -14,6 +14,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -90,6 +91,15 @@ class DriverReleaseGateFoundationTests(unittest.TestCase):
         (self.repo / "project" / "drivers").mkdir(parents=True)
         (self.repo / "project" / "drivers" / "driver" / "python").mkdir(parents=True)
         (self.repo / "project" / "drivers" / "adaptor" / "scratchbird-dbeaver-driver").mkdir(parents=True)
+        fixture_relative = Path(
+            "project/tests/conformance/drivers/fixtures/live_driver_test_server/manifest.json"
+        )
+        fixture_source = REPO_ROOT / fixture_relative
+        if not fixture_source.is_file():
+            self.fail(f"missing public live-driver fixture manifest: {fixture_source}")
+        fixture_target = self.repo / fixture_relative
+        fixture_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture_source, fixture_target)
         write_csv(
             self.repo / "project" / "drivers" / "DriverPackageManifest.csv",
             [
@@ -166,6 +176,63 @@ class DriverReleaseGateFoundationTests(unittest.TestCase):
         self.assertEqual(report["status"], "pass")
         self.assertEqual(report["summary"]["in_scope_components"], 1)
 
+    def test_inventory_excludes_dbeaver_alias_from_scope_and_rejects_noncanonical_row(self) -> None:
+        write_csv(
+            self.repo / "project" / "drivers" / "DriverPackageManifest.csv",
+            [
+                manifest_row(
+                    "driver:python",
+                    "driver",
+                    "python",
+                    "python",
+                    "project/drivers/driver/python",
+                ),
+                manifest_row(
+                    "ADAPTOR:DBEAVER",
+                    "adaptor",
+                    "neutral-name",
+                    "DBeaver",
+                    "project/drivers/adaptor/scratchbird-dbeaver-driver",
+                ),
+            ],
+            MANIFEST_FIELDS,
+        )
+        write_csv(
+            self.workplan / "LANE_COMPLETION_MATRIX.csv",
+            [
+                {
+                    "component_id": "driver:python",
+                    "category": "driver",
+                    "name": "python",
+                    "source_path": "project/drivers/driver/python",
+                    "workplan_path": "private-controller/drivers/python",
+                    "release_scope": "in_scope_required",
+                    "completion_policy": "no_deferral_full_implementation_required",
+                    "required_shared_gates": "BETA-DTA-GATE-003;BETA-DTA-GATE-010",
+                    "status": "implemented_and_proven",
+                },
+                {
+                    "component_id": "ADAPTOR:DBEAVER",
+                    "category": "adaptor",
+                    "name": "neutral-name",
+                    "source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+                    "workplan_path": "private-controller/drivers/neutral-name",
+                    "release_scope": "separate_controller_explicit_user_exception",
+                    "completion_policy": "not_part_of_this_beta_controller",
+                    "required_shared_gates": "BETA-DTA-GATE-001",
+                    "status": "separate_controller",
+                },
+            ],
+        )
+
+        result = self.run_gate("project/tools/release/verify_driver_lane_inventory.py")
+        self.assertNotEqual(result.returncode, 0)
+        report = self.read_report()
+        self.assertEqual(report["summary"]["in_scope_components"], 1)
+        self.assertTrue(
+            any("noncanonical_component_id" in issue for issue in report["issues"])
+        )
+
     def test_no_deferral_gate_rejects_not_started_rows(self) -> None:
         write_csv(
             self.workplan / "TRACKER.csv",
@@ -181,7 +248,7 @@ class DriverReleaseGateFoundationTests(unittest.TestCase):
         self.assertEqual(report["status"], "fail")
         self.assertTrue(any("not_started" in issue for issue in report["issues"]))
 
-    def test_release_verifier_rejects_dbeaver_output(self) -> None:
+    def test_release_verifier_is_quarantined_and_rejects_dbeaver_output(self) -> None:
         output_root = self.root / "out"
         (output_root / "drivers" / "python").mkdir(parents=True)
         (output_root / "adapters" / "scratchbird-dbeaver-driver").mkdir(parents=True)
@@ -216,7 +283,47 @@ class DriverReleaseGateFoundationTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         report = self.read_report()
+        self.assertEqual(report["status"], "fail")
+        self.assertTrue(
+            any("legacy_driver_release_quarantined" in issue for issue in report["issues"])
+        )
         self.assertTrue(any("dbeaver_output_present" in issue for issue in report["issues"]))
+
+    def test_release_verifier_rejects_case_variant_dbeaver_metadata(self) -> None:
+        output_root = self.root / "out"
+        metadata = output_root / "adapters" / "neutral-name" / "package_manifest.json"
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text(
+            '{"component_id": "ADAPTOR:DBEAVER", "asset": "neutral"}\n',
+            encoding="utf-8",
+        )
+        result = self.run_gate(
+            "project/tools/release/verify_driver_beta_release.py",
+            str(output_root),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        report = self.read_report()
+        self.assertTrue(
+            any(
+                "dbeaver_output_present:adapters/neutral-name/package_manifest.json:content"
+                == issue
+                for issue in report["issues"]
+            )
+        )
+
+    def test_release_artifact_manifest_gate_is_quarantined(self) -> None:
+        output_root = self.root / "out"
+        (output_root / "drivers" / "python").mkdir(parents=True)
+        result = self.run_gate(
+            "project/tools/release/driver_release_artifact_manifest_gate.py",
+            str(output_root),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        report = self.read_report()
+        self.assertEqual(report["status"], "fail")
+        self.assertTrue(
+            any("legacy_driver_release_quarantined" in issue for issue in report["issues"])
+        )
 
     def test_toolchain_probe_uses_matrix_lane_tokens(self) -> None:
         write_csv(

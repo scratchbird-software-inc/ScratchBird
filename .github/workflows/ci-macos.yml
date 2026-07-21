@@ -16,6 +16,11 @@ on:
           - all
           - x86_64
           - arm64
+      include_system_packages:
+        description: Build and smoke internal-only PKG diagnostics; never publish the PKG
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +41,7 @@ jobs:
       HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
       SB_MACOS_CTEST_INCLUDE_LABEL: "public_release_correctness|engine_listener_enterprise"
       SB_MACOS_CTEST_EXCLUDE_LABEL: "linux_proof|linux_source_proof|mingw_cross_compile|windows|freebsd|bsd"
+      SB_INCLUDE_SYSTEM_PACKAGES: ${{ inputs.include_system_packages && 'true' || 'false' }}
 
     strategy:
       fail-fast: false
@@ -322,17 +328,26 @@ jobs:
         env:
           SB_MACOS_SIGNING_MODE: qa-unsigned
         run: |
-          python3 project/tools/installers/build_installers.py \
-            --platform macos \
-            --artifact-root build/native-release-macos/output/macos \
-            --output-root build/installers/macos-${{ matrix.arch }} \
-            --version "0.0.0-ci-${{ github.run_id }}-${{ matrix.arch }}" \
-            --build-id "${{ github.run_id }}-${{ matrix.arch }}" \
+          installer_args=(
+            --platform macos
+            --artifact-root build/native-release-macos/output/macos
+            --output-root build/installers/macos-${{ matrix.arch }}
+            --version "0.0.0-ci-${{ github.run_id }}-${{ matrix.arch }}"
+            --build-id "${{ github.run_id }}-${{ matrix.arch }}"
             --require-native-only
+          )
+          if [ "$SB_INCLUDE_SYSTEM_PACKAGES" = "true" ]; then
+            installer_args+=(--include-system-packages)
+          fi
+          python3 project/tools/installers/build_installers.py "${installer_args[@]}"
 
       - name: Verify macOS installer artifacts
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
-        run: python3 project/tools/installers/verify_installer_artifacts.py --platform macos --artifact-root build/installers/macos-${{ matrix.arch }}
+        run: >-
+          python3 project/tools/installers/verify_installer_artifacts.py
+          --platform macos
+          --architecture "${{ matrix.arch }}"
+          --artifact-root build/installers/macos-${{ matrix.arch }}
 
       - name: Smoke macOS tarball
         if: ${{ steps.arch_filter.outputs.run == 'true' }}
@@ -341,7 +356,7 @@ jobs:
           project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-${{ matrix.arch }}-tar
 
       - name: Smoke macOS system package install and cleanup
-        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        if: ${{ steps.arch_filter.outputs.run == 'true' && inputs.include_system_packages == true }}
         run: |
           set -euo pipefail
           package="$(ls build/installers/macos-${{ matrix.arch }}/scratchbird-macos-*.pkg | head -n 1)"
@@ -594,32 +609,50 @@ jobs:
             echo "launchd_default_state=disabled_not_loaded"
           } > "$proof_root/macos-system-identity.txt"
 
-      - name: Collect macOS proof logs
+      - name: Stage macOS textual build proof
         if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         run: |
-          mkdir -p build/macos-proof/${{ matrix.arch }}/logs
-          cp -R build/public-release-macos/Testing build/macos-proof/${{ matrix.arch }}/Testing || true
-          cp -R build/ctest-chunks/macos-${{ matrix.arch }} build/macos-proof/${{ matrix.arch }}/ctest-chunks || true
-          log show --last 5m --style compact > build/macos-proof/${{ matrix.arch }}/logs/system-log-last-5m.txt || true
+          log_input="build/macos-log-input/${{ matrix.arch }}"
+          mkdir -p "$log_input"
+          log show --last 5m --style compact > "$log_input/system-log-last-5m.txt" || true
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/public-release-macos/Testing \
+            --source build/ctest-chunks/macos-${{ matrix.arch }} \
+            --source "$log_input" \
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-build
 
-      - name: Upload macOS staged output
+      - name: Upload macOS build proof
         uses: actions/upload-artifact@v4
         if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         with:
-          name: scratchbird-macos-${{ matrix.arch }}-public-output
-          path: |
-            build/native-release-macos/output/macos
-            build/macos-proof/${{ matrix.arch }}
+          name: scratchbird-macos-${{ matrix.arch }}-build-proof
+          path: build/failure-proofs/macos-${{ matrix.arch }}-build
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Materialize exact public macOS portable artifact
+        if: ${{ steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          python3 project/tools/installers/verify_installer_artifacts.py \
+            --platform macos \
+            --architecture "${{ matrix.arch }}" \
+            --artifact-root build/installers/macos-${{ matrix.arch }} \
+            --materialize-public-root build/public-installers/macos-${{ matrix.arch }}
+
+      - name: Stage macOS textual install-smoke proof
+        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        run: |
+          python3 project/tools/release/stage_textual_failure_proof.py \
+            --source build/install-smoke \
+            --output-root build/failure-proofs/macos-${{ matrix.arch }}-installers
+
       - name: Upload macOS installers
         uses: actions/upload-artifact@v4
-        if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
+        if: ${{ success() && steps.arch_filter.outputs.run == 'true' }}
         with:
           name: scratchbird-macos-${{ matrix.arch }}-installers
-          path: build/installers/macos-${{ matrix.arch }}
-          if-no-files-found: warn
+          path: build/public-installers/macos-${{ matrix.arch }}
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload macOS install smoke proof
@@ -627,7 +660,7 @@ jobs:
         if: ${{ always() && steps.arch_filter.outputs.run == 'true' }}
         with:
           name: scratchbird-macos-${{ matrix.arch }}-install-smoke
-          path: build/install-smoke
+          path: build/failure-proofs/macos-${{ matrix.arch }}-installers
           if-no-files-found: warn
           retention-days: 14
 
@@ -649,35 +682,59 @@ jobs:
           test -f "$llvm_runtime"
           python3 -c 'import ctypes, sys; ctypes.CDLL(sys.argv[1])' "$llvm_runtime"
 
-      - name: Download per-architecture macOS installers
+      - name: Download macOS x86_64 installer artifact
         uses: actions/download-artifact@v4
         with:
-          pattern: scratchbird-macos-*-installers
-          path: build/universal-input
+          name: scratchbird-macos-x86_64-installers
+          path: build/universal-input/scratchbird-macos-x86_64-installers
+
+      - name: Download macOS arm64 installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: scratchbird-macos-arm64-installers
+          path: build/universal-input/scratchbird-macos-arm64-installers
 
       - name: Assemble universal QA tarball
         run: |
-          x86_tar="$(find build/universal-input -path '*x86_64*' -name 'scratchbird-macos-*.tar.gz' | head -n 1)"
-          arm_tar="$(find build/universal-input -path '*arm64*' -name 'scratchbird-macos-*.tar.gz' | head -n 1)"
-          test -n "$x86_tar"
-          test -n "$arm_tar"
+          x86_tars=()
+          while IFS= read -r candidate; do
+            x86_tars+=("$candidate")
+          done < <(
+            find build/universal-input \
+              -type f \
+              -path '*/scratchbird-macos-x86_64-installers/scratchbird-macos-*.tar.gz' \
+              -print | sort
+          )
+          arm_tars=()
+          while IFS= read -r candidate; do
+            arm_tars+=("$candidate")
+          done < <(
+            find build/universal-input \
+              -type f \
+              -path '*/scratchbird-macos-arm64-installers/scratchbird-macos-*.tar.gz' \
+              -print | sort
+          )
+          test "${#x86_tars[@]}" -eq 1
+          test "${#arm_tars[@]}" -eq 1
+          x86_tar="${x86_tars[0]}"
+          arm_tar="${arm_tars[0]}"
           python3 project/tools/installers/make_macos_universal.py \
             --x86-tar "$x86_tar" \
             --arm-tar "$arm_tar" \
-            --output-root build/installers/macos-universal \
+            --output-root build/public-installers/macos-universal \
             --version "0.0.0-ci-${{ github.run_id }}-universal" \
             --build-id "${{ github.run_id }}-universal"
 
       - name: Smoke universal tarball
         run: |
-          archive="$(ls build/installers/macos-universal/scratchbird-macos-universal-*.tar.gz | head -n 1)"
+          archive="$(ls build/public-installers/macos-universal/scratchbird-macos-universal-*.tar.gz | head -n 1)"
           project/tools/installers/smoke_install_macos.sh "$archive" build/install-smoke/macos-universal-tar
 
       - name: Upload universal macOS QA artifact
         uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: scratchbird-macos-universal-installers
-          path: build/installers/macos-universal
+          path: build/public-installers/macos-universal
           if-no-files-found: error
           retention-days: 14

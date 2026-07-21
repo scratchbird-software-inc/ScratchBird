@@ -50,14 +50,9 @@ def write_bundle(
     contract = publisher.get_release_contract(scope)
     all_packages = {
         "scratchbird-nightly-linux-x86_64.tar.gz": b"linux-" + marker,
-        "scratchbird-nightly-linux-x86_64.deb": b"linux-deb-" + marker,
-        "scratchbird-nightly-linux-x86_64.rpm": b"linux-rpm-" + marker,
-        "scratchbird-nightly-linux-x86_64-aur.tar.gz": b"linux-aur-" + marker,
         "scratchbird-nightly-windows-x86_64.zip": b"windows-" + marker,
         "scratchbird-nightly-macos-x86_64.tar.gz": b"mac-x86-" + marker,
-        "scratchbird-nightly-macos-x86_64.pkg": b"mac-x86-pkg-" + marker,
         "scratchbird-nightly-macos-arm64.tar.gz": b"mac-" + marker,
-        "scratchbird-nightly-macos-arm64.pkg": b"mac-arm-pkg-" + marker,
         "scratchbird-nightly-macos-universal.tar.gz": b"mac-universal-" + marker,
     }
     packages = {
@@ -89,7 +84,7 @@ def write_bundle(
         "github_run_id": run_id,
         "github_run_attempt": attempt,
         "distribution_surface": "scratchbird_native_no_emulation",
-        "public_asset_policy": "fully_verified_native_portable_and_platform_system_installer_artifacts",
+        "public_asset_policy": "exact_manifest_derived_native_portable_archives_only",
         "native_parser": "SBSQL",
         "native_components": [
             {"name": "SBmgr", "role": "manager"},
@@ -262,8 +257,8 @@ class FakeRunner:
                 "- The native ScratchBird listener default is TCP port 3092.\n"
                 "- Includes the default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources.\n"
                 "- LLVM is mandatory: Linux portable archives require libllvm23/llvm-libs 23+, Windows archives bundle the LLVM DLL closure, and macOS QA archives require Homebrew llvm 22+.\n"
-                "- Public nightly assets include fully verified portable archives and system installer packages.\n"
-                "- DEB, RPM, AUR, PKG, and MSI packages are published for tester installation after their platform verification and install-smoke jobs pass.\n"
+                "- Public nightly assets are exact manifest-derived portable archives only: Linux tar.gz, Windows ZIP, and macOS tar.gz.\n"
+                "- DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and are not downloadable nightly assets.\n"
                 f"- Source commit: {source}\n"
                 "- Requested version: 0.0.0-nightly\n"
                 "- Workflow run: https://github.com/"
@@ -1177,8 +1172,8 @@ class RollingNightlyPublisherTest(unittest.TestCase):
                 any(command[:2] == ["gh", "release"] for command in runner.commands)
             )
 
-    def test_pre_zip_only_policy_release_is_migrated_in_place(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="sb-nightly-policy-migrate-") as temp:
+    def test_legacy_system_installer_policy_release_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="sb-nightly-policy-refuse-") as temp:
             root = Path(temp)
             assets = write_bundle(root / "assets", self.revision, self.run_id, self.attempt, b"new")
             notes = root / "notes.md"
@@ -1202,10 +1197,11 @@ class RollingNightlyPublisherTest(unittest.TestCase):
             manifest_asset["size"] = len(previous)
             manifest_asset["digest"] = f"sha256:{sha(previous)}"
 
-            self.make_publisher(runner, notes).publish(assets)
-
-            self.assertFalse(runner.release["draft"])
-            self.assertEqual({asset.name for asset in assets}, self.names(runner))
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                "existing_nightly_release_unmanaged:identity_mismatch",
+            ):
+                self.make_publisher(runner, notes).publish(assets)
 
     def test_release_create_failure_restores_absent_initial_tag(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sb-nightly-create-fail-") as temp:

@@ -27,6 +27,7 @@ from driver_release_common import (
     load_manifest,
     load_workplan_csv,
     reject_recorded_private_path,
+    row_is_dbeaver,
     report_status,
     resolve_repo_root,
     resolve_workplan_root,
@@ -94,7 +95,11 @@ def check_lane_rows(
                     f"{lane_row.get(field, '').strip()}!="
                     f"{manifest_row.get(field, '').strip()}"
                 )
-        if component == DBEAVER_COMPONENT_ID:
+        if row_is_dbeaver(manifest_row):
+            if component != DBEAVER_COMPONENT_ID:
+                issues.append(
+                    f"lane_matrix:dbeaver:noncanonical_component_id:{component}"
+                )
             if not lane_row.get("release_scope", "").startswith("separate_controller"):
                 issues.append("lane_matrix:dbeaver:not_marked_separate_controller")
             if lane_row.get("completion_policy", "").strip() != "not_part_of_this_beta_controller":
@@ -117,11 +122,11 @@ def build_report(repo_root: Path, workplan_root: Path) -> dict[str, Any]:
     issues = check_manifest_rows(repo_root, manifest_rows)
     issues.extend(check_lane_rows(manifest_rows, lane_rows))
     in_scope_rows = in_scope_manifest_rows(manifest_rows)
-    dbeaver_rows = [
-        row for row in manifest_rows if row.get("component_id", "").strip() == DBEAVER_COMPONENT_ID
-    ]
+    dbeaver_rows = [row for row in manifest_rows if row_is_dbeaver(row)]
     if len(dbeaver_rows) != 1:
         issues.append(f"manifest:{DBEAVER_NAME}:expected_one_explicit_exclusion")
+    elif dbeaver_rows[0].get("component_id", "").strip() != DBEAVER_COMPONENT_ID:
+        issues.append("manifest:dbeaver:noncanonical_component_id")
     return {
         "command": "verify_driver_lane_inventory.py",
         "gate_id": "BETA-DTA-GATE-001",

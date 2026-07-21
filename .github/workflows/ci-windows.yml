@@ -115,23 +115,33 @@ jobs:
       - name: Stage and verify native-only SB bundle
         shell: bash
         run: |
+          runtime_search_root="$(cygpath -w "${MINGW_PREFIX:-/ucrt64}/bin")"
+          test -d "$runtime_search_root"
           python project/tools/release/stage_native_release_bundle.py \
             --source-root build/public-release-windows/output/windows \
             --output-root build/native-release-windows/output/windows \
             --platform windows \
-            --runtime-search-root "${MINGW_PREFIX:-/ucrt64}/bin"
+            --runtime-search-root "$runtime_search_root"
           python project/tools/release/verify_public_release_bundle.py build/native-release-windows/output/windows
           python project/tools/release/verify_native_release_bundle.py \
             build/native-release-windows/output/windows --platform windows
           cmake -E remove_directory build/public-release-windows/output/windows
 
-      - name: Upload Windows staged output
+      - name: Stage Windows textual build proof
+        if: always()
+        shell: bash
+        run: |
+          python project/tools/release/stage_textual_failure_proof.py \
+            --source build/public-release-windows/Testing \
+            --output-root build/failure-proofs/windows
+
+      - name: Upload Windows build proof
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: scratchbird-windows-public-output
-          path: |
-            build/native-release-windows/output/windows
-            build/public-release-windows/Testing
+          # Failure diagnostics only; this root is generated from bounded
+          # text evidence and cannot contain a staged executable payload.
+          name: scratchbird-windows-build-proof
+          path: build/failure-proofs/windows
           if-no-files-found: warn
           retention-days: 14

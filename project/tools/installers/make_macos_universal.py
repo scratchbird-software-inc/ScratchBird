@@ -16,12 +16,20 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from typing import Any
+
+
+TOOL_ROOT = Path(__file__).resolve().parent
+if str(TOOL_ROOT) not in sys.path:
+    sys.path.insert(0, str(TOOL_ROOT))
+
+import installer_native_admission as native_admission
 
 
 METADATA_NAMES = {
@@ -36,6 +44,14 @@ METADATA_NAMES = {
 NATIVE_PROFILE_RELATIVE_PATH = Path(
     "opt/ScratchBird/share/scratchbird/release/NATIVE_RELEASE_PROFILE.json"
 )
+NATIVE_SERVER_ADMISSION = {
+    "schema_id": "scratchbird.installer_native_server_admission.v1",
+    "distribution_surface": "scratchbird_native_no_emulation",
+    "admission_controller": "native_server_only",
+    "client_artifacts_permitted": False,
+    "admitted_driver_adaptor_mcp_components": [],
+    "dbeaver_hard_excluded": True,
+}
 
 
 def fail(message: str) -> None:
@@ -82,6 +98,7 @@ def extract_tarball(tarball: Path, target: Path) -> None:
                 if (
                     relative.is_absolute()
                     or "\\" in raw_name
+                    or re.match(r"^[A-Za-z]:", raw_name) is not None
                     or any(part in {"", ".", ".."} for part in relative.parts)
                 ):
                     fail(f"archive_path_unsafe:{tarball.name}:{member.name}")
@@ -272,7 +289,15 @@ def make_tarball(payload_root: Path, output_root: Path, version: str) -> Path:
     return output
 
 
-def write_manifest(output_root: Path, tarball: Path, x86_tar: Path, arm_tar: Path, version: str, build_id: str | None) -> Path:
+def write_manifest(
+    output_root: Path,
+    tarball: Path,
+    x86_tar: Path,
+    arm_tar: Path,
+    version: str,
+    build_id: str | None,
+    native_profile_digest: str,
+) -> Path:
     payload = {
         "schema_id": "scratchbird.macos_universal_artifact_manifest.v1",
         "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -289,10 +314,41 @@ def write_manifest(output_root: Path, tarball: Path, x86_tar: Path, arm_tar: Pat
             "architectures": ["x86_64", "arm64"],
             "status": "qa_universal_after_per_architecture_artifacts_verify",
         },
+        "native_server_admission": {
+            **NATIVE_SERVER_ADMISSION,
+            "native_release_profile_sha256": native_profile_digest,
+        },
     }
     path = output_root / "MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def assert_exact_publication_root(output_root: Path, tarball: Path, manifest: Path) -> None:
+    """Reject stale or unmanifested files before a universal archive is uploaded."""
+
+    expected_files = {tarball.name, manifest.name}
+    actual_files = {
+        path.relative_to(output_root).as_posix()
+        for path in output_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        fail(
+            "universal_publication_tree_mismatch:"
+            f"missing={sorted(expected_files - actual_files)}:"
+            f"unexpected={sorted(actual_files - expected_files)}"
+        )
+    actual_dirs = {
+        path.relative_to(output_root).as_posix()
+        for path in output_root.rglob("*")
+        if path.is_dir()
+    }
+    if actual_dirs:
+        fail(
+            "universal_publication_directory_mismatch:"
+            f"unexpected={sorted(actual_dirs)}"
+        )
 
 
 def assemble(x86_root: Path, arm_root: Path, universal_root: Path) -> None:
@@ -329,7 +385,15 @@ def main() -> int:
     args = parser.parse_args()
 
     output_root = args.output_root.resolve()
-    output_root.mkdir(parents=True, exist_ok=True)
+    if output_root.exists():
+        if (
+            not output_root.is_dir()
+            or output_root.is_symlink()
+            or any(output_root.iterdir())
+        ):
+            fail(f"output_root_not_empty:{output_root}")
+    else:
+        output_root.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="scratchbird-macos-universal-") as temp:
         temp_root = Path(temp)
         x86_root = temp_root / "x86_64"
@@ -340,8 +404,34 @@ def main() -> int:
         assemble(x86_root, arm_root, universal_root)
         reconcile_native_profile(x86_root, arm_root, universal_root)
         rewrite_payload_metadata(universal_root, args.version, args.build_id)
+        native_profile_digest = sha256_file(
+            universal_root / NATIVE_PROFILE_RELATIVE_PATH
+        )
         tarball = make_tarball(universal_root, output_root, args.version)
-    manifest = write_manifest(output_root, tarball, args.x86_tar.resolve(), args.arm_tar.resolve(), args.version, args.build_id)
+    manifest = write_manifest(
+        output_root,
+        tarball,
+        args.x86_tar.resolve(),
+        args.arm_tar.resolve(),
+        args.version,
+        args.build_id,
+        native_profile_digest,
+    )
+    # Re-open the generated universal archive and run the same recursively
+    # bound native-payload admission used by public nightly assembly.  The
+    # per-architecture inputs were verified before this job, but lipo and the
+    # metadata rewrite are a distinct transformation and must not inherit
+    # their admission by assertion alone.
+    try:
+        native_admission.verify_portable_native_payload(
+            tarball,
+            native_profile_digest,
+            "macos",
+            "universal",
+        )
+    except native_admission.NativeAdmissionError as exc:
+        fail(f"universal_native_payload_reverification_failed:{exc}")
+    assert_exact_publication_root(output_root, tarball, manifest)
     print(f"make_macos_universal=passed:{manifest}")
     return 0
 

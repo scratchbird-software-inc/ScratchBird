@@ -7,11 +7,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Shared helpers for beta driver release gates.
+"""Shared helpers for quarantined beta driver-release gates.
 
 Public release helpers do not infer private coordination directories. When a
 controller needs external planning matrices, the caller must pass
 ``--workplan-root`` or set ``SB_DRIVER_BETA_WORKPLAN_ROOT`` explicitly.
+
+These legacy helpers have no public driver/adaptor/MCP publication authority.
 """
 
 from __future__ import annotations
@@ -32,6 +34,18 @@ WORKPLAN_DIR_NAME = "beta-driver-tool-adapter-release-implementation-closure"
 WORKPLAN_ROOT_ENV = "SB_DRIVER_BETA_WORKPLAN_ROOT"
 DBEAVER_COMPONENT_ID = "adaptor:scratchbird-dbeaver-driver"
 DBEAVER_NAME = "scratchbird-dbeaver-driver"
+DBEAVER_ALIASES = frozenset(
+    {
+        "adaptor:dbeaver",
+        "adaptor:scratchbird-dbeaver-driver",
+        "scratchbird-dbeaver-driver",
+        "dbeaver",
+    }
+)
+LEGACY_DRIVER_RELEASE_QUARANTINE = (
+    "legacy_driver_release_quarantined:"
+    "completed_component_nightly_controller_required"
+)
 
 INCOMPLETE_STATUSES = {
     "",
@@ -205,7 +219,11 @@ def unique_index(rows: Iterable[dict[str, str]], field: str, context: str) -> tu
 
 
 def in_scope_manifest_rows(rows: Iterable[dict[str, str]]) -> list[dict[str, str]]:
-    return [row for row in rows if row.get("component_id", "").strip() != DBEAVER_COMPONENT_ID]
+    return [
+        row
+        for row in rows
+        if not row_is_dbeaver(row)
+    ]
 
 
 def component_label(row: dict[str, str]) -> str:
@@ -229,17 +247,105 @@ def map_expected_output(expected: str, output_root: Path, repo_root: Path) -> Pa
     return repo_root / path
 
 
+def ascii_lower(value: str) -> str:
+    """Normalize only ASCII case, matching the public admission contract."""
+
+    return "".join(
+        character.lower() if "A" <= character <= "Z" else character
+        for character in value
+    )
+
+
+def is_dbeaver_identity(value: object) -> bool:
+    """Reject every normalized DBeaver alias and derivative artifact name."""
+
+    if not isinstance(value, str):
+        return False
+    normalized = ascii_lower(value.strip())
+    return normalized in DBEAVER_ALIASES or "dbeaver" in normalized
+
+
+def row_is_dbeaver(row: dict[str, str]) -> bool:
+    """Identify DBeaver rows even when one manifest field uses an alias.
+
+    A driver/adaptor manifest is untrusted release input.  Matching only its
+    canonical component ID would let an alternate spelling in the name,
+    driver family, or source path re-enter the legacy release candidate set.
+    Every identity-bearing field therefore participates in the exclusion.
+    """
+
+    return any(
+        is_dbeaver_identity(row.get(field, ""))
+        for field in (
+            "component_id",
+            "category",
+            "name",
+            "driver_family",
+            "source_path",
+        )
+    )
+
+
 def dbeaver_output_hits(output_root: Path) -> list[str]:
+    """Return path or text evidence of a DBeaver payload in an output tree."""
+
     if not output_root.exists():
         return []
-    hits: list[str] = []
+    hits: set[str] = set()
     for path in output_root.rglob("*"):
-        if DBEAVER_NAME in path.as_posix():
-            try:
-                hits.append(path.relative_to(output_root).as_posix())
-            except ValueError:
-                hits.append(path.as_posix())
-    return hits
+        try:
+            relative = path.relative_to(output_root).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+        if is_dbeaver_identity(relative):
+            hits.add(relative)
+            continue
+        if (
+            not path.is_file()
+            or path.is_symlink()
+            or path.stat().st_size > 2 * 1024 * 1024
+            or path.suffix.lower()
+            not in {".json", ".md", ".txt", ".xml", ".csv", ".yaml", ".yml"}
+        ):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if is_dbeaver_identity(text):
+            hits.add(f"{relative}:content")
+    return sorted(hits)
+
+
+def legacy_driver_release_quarantine_report(
+    command: str,
+    gate_id: str,
+    output_root: Path,
+) -> dict[str, Any]:
+    """Fail legacy driver-release gates before any package can be approved.
+
+    The historic beta helpers have no completed-component admission controller,
+    immutable scope ledger, or independent audit.  They therefore cannot be
+    an alternate route into a release.  The future completed-component nightly
+    controller is the sole allowed publisher; until it exists, no legacy gate
+    can return a passing release result.
+    """
+
+    issues = [LEGACY_DRIVER_RELEASE_QUARANTINE]
+    issues.extend(
+        f"dbeaver_output_present:{hit}" for hit in dbeaver_output_hits(output_root)
+    )
+    return {
+        "command": command,
+        "gate_id": gate_id,
+        "status": "fail",
+        "summary": {
+            "output_root_exists": output_root.exists(),
+            "completed_controller_admission": "unavailable",
+            "publication_permitted": False,
+        },
+        "issues": issues,
+    }
 
 
 def command_exists(command: str) -> bool:

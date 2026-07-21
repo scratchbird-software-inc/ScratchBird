@@ -64,7 +64,11 @@ REQUIRED_WORKFLOWS = {
         "SB_NIGHTLY_INSTALLERS_ENABLED",
         "build_installers.py",
         "verify_installer_artifacts.py",
-        "pattern: scratchbird-*-installers",
+        "name: scratchbird-linux-installers",
+        "name: scratchbird-windows-installers",
+        "name: scratchbird-macos-x86_64-installers",
+        "name: scratchbird-macos-arm64-installers",
+        "name: scratchbird-macos-universal-installers",
         "create_nightly_release_bundle.py",
         "publish_rolling_nightly.py",
         "scratchbird-nightly-SHA256SUMS",
@@ -113,6 +117,11 @@ REQUIRED_WORKFLOWS = {
         "contents: read",
         "verify-installers.yml",
         "create_web_distribution_bundle.py",
+        "name: scratchbird-linux-installers",
+        "name: scratchbird-windows-installers",
+        "name: scratchbird-macos-x86_64-installers",
+        "name: scratchbird-macos-arm64-installers",
+        "name: scratchbird-macos-universal-installers",
         "scratchbird-webserver-package-export",
         "Create webserver upload bundle",
     ),
@@ -137,6 +146,27 @@ PUBLICATION_WORKFLOWS = {
     "publish-platform-nightly.yml",
 }
 
+# Public distribution is intentionally native-server-only until a separate
+# completed-component controller exists.  A driver/adaptor/MCP cannot be made
+# public merely by adding a workflow that bypasses the quarantined legacy
+# gates or by routing it through the web-export workflow.
+PUBLIC_DISTRIBUTION_WORKFLOWS = PUBLICATION_WORKFLOWS | {
+    "webserver-package-export.yml",
+}
+FORBIDDEN_UNADMITTED_COMPONENT_PUBLICATION_TOKENS = (
+    "stage_driver_beta_artifacts.py",
+    "verify_driver_beta_release.py",
+    "driver_release_artifact_manifest_gate.py",
+    "promote_prerelease_bundle.py",
+    "verify_prerelease_packaging_bundle.py",
+    "project/drivers/driver/",
+    "project/drivers/adaptor/",
+    "project/drivers/adapter/",
+    "project/ai/",
+    "libscratchbird_client",
+    "scratchbird_mojo_client_bridge",
+)
+
 
 def fail(message: str) -> None:
     print(f"github_actions_static_gate=fail:{message}", file=sys.stderr)
@@ -157,6 +187,138 @@ def check_permissions(text: str, rel: str) -> None:
         for token in ("contents: write", "gh release", "git tag", "git push origin"):
             if token in text:
                 fail(f"webserver_export_publication_token_forbidden:{token}")
+
+
+def check_workflow_inventory(workflow_root: Path) -> None:
+    """Fail when a new workflow is added outside the reviewed inventory."""
+
+    actual = {
+        path.name
+        for pattern in ("*.yml", "*.yaml")
+        for path in workflow_root.glob(pattern)
+        if path.is_file()
+    }
+    expected = set(REQUIRED_WORKFLOWS)
+    unexpected = sorted(actual - expected)
+    if unexpected:
+        fail(f"workflow_inventory_unreviewed:{','.join(unexpected)}")
+
+
+def check_unadmitted_component_publication(text: str, rel: str) -> None:
+    """Keep client release routes closed until explicit component admission."""
+
+    if rel not in PUBLIC_DISTRIBUTION_WORKFLOWS:
+        return
+    for token in FORBIDDEN_UNADMITTED_COMPONENT_PUBLICATION_TOKENS:
+        if token in text:
+            fail(f"unadmitted_component_publication_token:{rel}:{token}")
+
+
+def check_portable_only_public_workflow(text: str, rel: str) -> None:
+    """Forbid retired receipt/system-package publication switches in CI."""
+
+    if rel not in PUBLIC_DISTRIBUTION_WORKFLOWS | {
+        "verify-installers.yml",
+        "ci-macos.yml",
+    }:
+        return
+    for token in (
+        "--write-native-admission-receipts",
+        "--require-rpm",
+    ):
+        if token in text:
+            fail(f"portable_only_public_workflow_forbidden:{rel}:{token}")
+
+
+def check_failure_uploads_are_textual(text: str, rel: str) -> None:
+    """Keep ``always()`` diagnostics from publishing raw payload bytes.
+
+    Installer smoke work roots contain extracted binaries.  A failure upload
+    may carry only the separately materialized textual-proof root; the same
+    rule closes direct staged-native output uploads from ordinary platform CI.
+    """
+
+    # Split the workflow into complete steps before looking for uploads.  A
+    # prior expression began at the first ``- name`` before an upload and
+    # searched forward for ``uses: upload-artifact``.  That accidentally
+    # associated a staging step's raw build path with the following textual
+    # proof upload.  Each candidate here is exactly one YAML step instead.
+    for candidate in re.finditer(
+        r"(?ms)^      - name: [^\n]+\n(?:(?!^      - name:).)*", text
+    ):
+        step = candidate.group(0)
+        if "uses: actions/upload-artifact@v4" not in step:
+            continue
+        if "always()" not in step:
+            continue
+        for forbidden in (
+            "build/native-release-",
+            "build/installers/",
+            "build/install-smoke",
+        ):
+            if forbidden in step:
+                fail(f"raw_binary_failure_upload_forbidden:{rel}:{forbidden}")
+        if re.search(r"build/public-release-[^/\s]+/output/", step):
+            fail(f"raw_binary_failure_upload_forbidden:{rel}:public-release-output")
+        if "path: build/failure-proofs/" not in step:
+            fail(f"textual_failure_upload_root_missing:{rel}")
+
+
+def check_webserver_export_native_boundary(text: str, rel: str) -> None:
+    """Require the web route to consume only reviewed installer artifacts."""
+
+    block = workflow_job_block(text, "package-webserver-export", rel)
+    for token in (
+        "actions/download-artifact@v4",
+        "name: scratchbird-linux-installers",
+        "name: scratchbird-windows-installers",
+        "name: scratchbird-macos-x86_64-installers",
+        "name: scratchbird-macos-arm64-installers",
+        "name: scratchbird-macos-universal-installers",
+        "path: package-artifacts/scratchbird-linux-installers",
+        "path: package-artifacts/scratchbird-windows-installers",
+        "path: package-artifacts/scratchbird-macos-x86_64-installers",
+        "path: package-artifacts/scratchbird-macos-arm64-installers",
+        "path: package-artifacts/scratchbird-macos-universal-installers",
+        "Verify downloaded installer manifests",
+        "verify_installer_artifacts.py",
+        "create_web_distribution_bundle.py",
+    ):
+        require_token(block, token, rel)
+    if "pattern:" in block or "merge-multiple:" in block:
+        fail(f"webserver_export_broad_artifact_download_forbidden:{rel}")
+    for candidate in re.finditer(
+        r"(?ms)^      - name: [^\n]+\n(?:(?!^      - name:).)*", block
+    ):
+        step = candidate.group(0)
+        if "uses: actions/download-artifact@v4" not in step:
+            continue
+        if "name: scratchbird-" not in step or "path: package-artifacts/scratchbird-" not in step:
+            fail(f"webserver_export_unscoped_artifact_download:{rel}")
+
+
+def check_main_only_public_dispatch(
+    text: str,
+    rel: str,
+    build_job: str,
+    publish_job: str,
+    context_step: str,
+) -> None:
+    """Require manually dispatched public distribution routes to stay on main."""
+
+    build_block = workflow_job_block(text, build_job, rel)
+    publish_block = workflow_job_block(text, publish_job, rel)
+    for block, label in ((build_block, build_job), (publish_block, publish_job)):
+        require_token(block, "github.ref == 'refs/heads/main'", rel)
+        if "if:" not in block:
+            fail(f"public_dispatch_main_guard_missing:{rel}:{label}")
+    for token in (
+        context_step,
+        'test "$GITHUB_REF" = "refs/heads/main"',
+        'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+        "ref: ${{ github.sha }}",
+    ):
+        require_token(publish_block, token, rel)
 
 
 def workflow_job_block(text: str, job_name: str, rel: str) -> str:
@@ -197,25 +359,77 @@ def check_main_push_ci_policy(
     require_token(block, expected_condition, rel)
 
 
-def check_installer_upload_missing_files_policy(
+def check_public_installer_materialization(
     text: str,
     rel: str,
     job_name: str,
+    platform: str,
     step_name: str,
-    artifact_path: str,
+    public_artifact_path: str,
 ) -> None:
+    """Require uploads to consume an exact clean portable publication root."""
+
     block = workflow_job_block(text, job_name, rel)
-    pattern = rf"""(?ms)^      - name: {re.escape(step_name)}\s*
-        uses: actions/upload-artifact@v4\s*
-        if: always\(\)\s*
-        with:\s*
-        .*?^          path: {re.escape(artifact_path)}\s*
-          if-no-files-found: warn\s*$"""
-    if re.search(pattern, block) is None:
+    require_token(block, "verify_installer_artifacts.py", rel)
+    require_token(block, f"--platform {platform}", rel)
+    require_token(
+        block, f"--materialize-public-root {public_artifact_path}", rel
+    )
+    step = re.search(
+        rf"(?ms)^      - name: {re.escape(step_name)}\s*\n.*?(?=^      - name:|\Z)",
+        block,
+    )
+    if step is None:
         fail(
-            "installer_upload_missing_files_policy_invalid:"
+            "public_installer_upload_step_missing:"
             f"{rel}:{job_name}:{step_name}"
         )
+    upload = step.group(0)
+    for token in (
+        "uses: actions/upload-artifact@v4",
+        f"path: {public_artifact_path}",
+        "if-no-files-found: error",
+    ):
+        require_token(upload, token, rel)
+    if "success()" not in upload or "always()" in upload:
+        fail(f"public_installer_upload_condition_invalid:{rel}:{job_name}:{step_name}")
+    if "path: build/installers/" in upload:
+        fail(f"raw_installer_upload_forbidden:{rel}:{job_name}:{step_name}")
+
+
+def check_public_universal_materialization(
+    text: str,
+    rel: str,
+    job_name: str,
+    public_artifact_path: str,
+) -> None:
+    """Universal macOS output must be written directly to its clean root."""
+
+    block = workflow_job_block(text, job_name, rel)
+    for token in (
+        "make_macos_universal.py",
+        f"--output-root {public_artifact_path}",
+        "x86_tars=()",
+        "arm_tars=()",
+        'test "${#x86_tars[@]}" -eq 1',
+        'test "${#arm_tars[@]}" -eq 1',
+    ):
+        require_token(block, token, rel)
+    step = re.search(
+        r"(?ms)^      - name: Upload universal macOS QA artifact\s*\n.*?(?=^      - name:|\Z)",
+        block,
+    )
+    if step is None:
+        fail(f"public_universal_upload_step_missing:{rel}:{job_name}")
+    upload = step.group(0)
+    for token in (
+        "uses: actions/upload-artifact@v4",
+        f"path: {public_artifact_path}",
+        "if-no-files-found: error",
+    ):
+        require_token(upload, token, rel)
+    if "success()" not in upload or "always()" in upload:
+        fail(f"public_universal_upload_condition_invalid:{rel}:{job_name}")
 
 
 def check_installer_reusable_policy(text: str, rel: str) -> None:
@@ -532,8 +746,11 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "contents: write",
         "success()",
         "github.ref == 'refs/heads/main'",
-        "pattern: scratchbird-*-installers",
-        "merge-multiple: false",
+        "name: scratchbird-linux-installers",
+        "name: scratchbird-windows-installers",
+        "name: scratchbird-macos-x86_64-installers",
+        "name: scratchbird-macos-arm64-installers",
+        "name: scratchbird-macos-universal-installers",
         "create_nightly_release_bundle.py",
         "sha256sum --check --strict",
         "publish_rolling_nightly.py",
@@ -543,11 +760,13 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "native ScratchBird listener default is TCP port 3092",
         "default local-password policy pack plus charset, collation, timezone, and native SBSQL language resources",
         "LLVM is mandatory",
-        "fully verified portable archives and the platform system installer packages that are currently published",
-        "DEB, RPM, AUR, and PKG packages are published after their platform verification and install-smoke jobs pass. Windows is ZIP-only for this testing release; no MSI is generated or published.",
+        "Public nightly assets are exact manifest-derived portable archives only: Linux tar.gz, Windows ZIP, and macOS tar.gz.",
+        "DEB, AUR, RPM, PKG, and MSI system-installer formats are internal-only and are not downloadable nightly assets.",
         '--checkout-root "$GITHUB_WORKSPACE"',
     ):
         require_token(publish_block, token, rel)
+    if "pattern:" in publish_block or "merge-multiple:" in publish_block:
+        fail(f"nightly_exact_artifact_download_required:{rel}")
     for pattern, label in (
         (r"\bgh\s+release\s+delete\s+", "release_delete"),
         (r"gh\s+release\s+upload[^\n]*--clobber", "release_upload_clobber"),
@@ -573,18 +792,18 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         'NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")',
         "emulation_layers_included",
         "scratchbird-nightly-linux-x86_64.tar.gz",
-        "scratchbird-nightly-linux-x86_64.deb",
-        "scratchbird-nightly-linux-x86_64.rpm",
-        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
         "scratchbird-nightly-windows-x86_64.zip",
         "scratchbird-nightly-macos-x86_64.tar.gz",
-        "scratchbird-nightly-macos-x86_64.pkg",
         "scratchbird-nightly-macos-arm64.tar.gz",
-        "scratchbird-nightly-macos-arm64.pkg",
         "scratchbird-nightly-macos-universal.tar.gz",
         "verify_native_installed_payload.py",
         "macos_architecture_mismatch",
-        "fully_verified_native_portable_and_platform_system_installer_artifacts",
+        "exact_manifest_derived_native_portable_archives_only",
+        "PUBLIC_EXCLUDED_PACKAGE_FORMATS",
+        "installer_publication_tree_mismatch",
+        "installer_publication_directory_mismatch",
+        "installer_publication_manifest_set_invalid",
+        "public_system_package_verification_forbidden",
         "windows_release_policy",
         "RELEASE_CONTRACTS",
         "release_scope",
@@ -593,10 +812,16 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "package_cardinality",
     ):
         require_token(bundle_text, token, bundle_tool.name)
-    if "workflow_only_package_formats" in bundle_text:
-        fail("nightly_system_installer_publication_policy_missing")
-    if "scratchbird-nightly-windows-x86_64.msi" in bundle_text:
-        fail("nightly_windows_msi_bundle_contract_forbidden")
+    for forbidden in (
+        "scratchbird-nightly-linux-x86_64.deb",
+        "scratchbird-nightly-linux-x86_64.rpm",
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
+        "scratchbird-nightly-macos-x86_64.pkg",
+        "scratchbird-nightly-macos-arm64.pkg",
+        "scratchbird-nightly-windows-x86_64.msi",
+    ):
+        if forbidden in bundle_text:
+            fail(f"nightly_system_installer_bundle_contract_forbidden:{forbidden}")
 
     contract_text = contract_tool.read_text(encoding="utf-8")
     for token in (
@@ -611,14 +836,23 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         "scratchbird-nightly-linux-manifest.json",
         "scratchbird-nightly-windows-manifest.json",
         "scratchbird-nightly-macos-manifest.json",
-        "scratchbird-nightly-linux-x86_64.deb",
         "scratchbird-nightly-windows-x86_64.zip",
-        "scratchbird-nightly-macos-x86_64.pkg",
-        "scratchbird-nightly-macos-arm64.pkg",
+        "scratchbird-nightly-linux-x86_64.tar.gz",
+        "scratchbird-nightly-macos-x86_64.tar.gz",
+        "scratchbird-nightly-macos-arm64.tar.gz",
+        "scratchbird-nightly-macos-universal.tar.gz",
     ):
         require_token(contract_text, token, contract_tool.name)
-    if "scratchbird-nightly-windows-x86_64.msi" in contract_text:
-        fail("nightly_windows_msi_contract_forbidden")
+    for forbidden in (
+        "scratchbird-nightly-linux-x86_64.deb",
+        "scratchbird-nightly-linux-x86_64.rpm",
+        "scratchbird-nightly-linux-x86_64-aur.tar.gz",
+        "scratchbird-nightly-macos-x86_64.pkg",
+        "scratchbird-nightly-macos-arm64.pkg",
+        "scratchbird-nightly-windows-x86_64.msi",
+    ):
+        if forbidden in contract_text:
+            fail(f"nightly_system_installer_contract_forbidden:{forbidden}")
 
     publisher_text = publisher_tool.read_text(encoding="utf-8")
     for token in (
@@ -656,7 +890,7 @@ def check_nightly_publisher(text: str, rel: str, repo_root: Path) -> None:
         '"target_commitish": self.target_sha',
         '"make_latest": "false"',
         "Content-Type: application/json",
-        "fully_verified_native_portable_and_platform_system_installer_artifacts",
+        "exact manifest-derived portable archives only",
         "REQUIRED_ARTIFACT_VERIFICATION",
         '"draft": True',
         "draft=False,",
@@ -768,11 +1002,18 @@ def check_platform_nightly_publisher(text: str, rel: str) -> None:
         "source_run_id:",
         "source_run_attempt:",
         "linux|windows|macos",
+        "github.ref == 'refs/heads/main'",
+        'test "$GITHUB_REF" = "refs/heads/main"',
+        'test "$SB_SOURCE_REVISION" = "$GITHUB_SHA"',
+        'test "$SB_SOURCE_RUN_ID" = "$GITHUB_RUN_ID"',
+        'test "$SB_SOURCE_RUN_ATTEMPT" = "$GITHUB_RUN_ATTEMPT"',
+        "ref: ${{ github.sha }}",
         "actions/download-artifact@v4",
         "name: scratchbird-linux-installers",
         "name: scratchbird-windows-installers",
-        "pattern: scratchbird-macos-*-installers",
-        "merge-multiple: false",
+        "name: scratchbird-macos-x86_64-installers",
+        "name: scratchbird-macos-arm64-installers",
+        "name: scratchbird-macos-universal-installers",
         "verify_installer_artifacts.py",
         "create_nightly_release_bundle.py",
         '--release-scope "$SB_RELEASE_SCOPE"',
@@ -783,6 +1024,8 @@ def check_platform_nightly_publisher(text: str, rel: str) -> None:
         'not the complete cross-platform `nightly` release',
     ):
         require_token(text, token, rel)
+    if "pattern:" in text or "merge-multiple:" in text:
+        fail(f"platform_nightly_exact_artifact_download_required:{rel}")
     for pattern, label in (
         (r"\bgh\s+release\s+delete\s+", "release_delete"),
         (r"gh\s+release\s+upload[^\n]*--clobber", "release_upload_clobber"),
@@ -816,6 +1059,7 @@ def check_native_release_stage(
         require_token(block, token, rel)
     if platform == "windows":
         require_token(block, "--runtime-search-root", rel)
+        require_token(block, "cygpath -w", rel)
     if require_installer:
         require_token(block, "--require-native-only", rel)
         if not retain_native_proof_artifacts:
@@ -852,6 +1096,97 @@ def check_mkdtemp_header_contract(repo_root: Path) -> None:
             )
 
 
+def check_native_installer_admission_contract(repo_root: Path) -> None:
+    """Keep the portable-only public admission boundary fail-closed."""
+
+    bundle = repo_root / "project/tools/installers/create_nightly_release_bundle.py"
+    verifier = repo_root / "project/tools/installers/verify_installer_artifacts.py"
+    admission = repo_root / "project/tools/installers/installer_native_admission.py"
+    universal = repo_root / "project/tools/installers/make_macos_universal.py"
+    failure_proof = repo_root / "project/tools/release/stage_textual_failure_proof.py"
+    failure_proof_test = repo_root / "project/tests/release/textual_failure_proof_test.py"
+    release_cmake = repo_root / "project/tests/release/CMakeLists.txt"
+    for path in (
+        bundle,
+        verifier,
+        admission,
+        universal,
+        failure_proof,
+        failure_proof_test,
+        release_cmake,
+    ):
+        if not path.is_file():
+            fail(f"native_installer_admission_tool_missing:{path.name}")
+    required = {
+        bundle: (
+            "installer_native_admission as native_admission",
+            "verify_selected_package_native_admission",
+            "PUBLIC_EXCLUDED_PACKAGE_FORMATS",
+            "installer_publication_tree_mismatch",
+            "installer_publication_directory_mismatch",
+            "installer_publication_manifest_set_invalid",
+            "public_system_package_verification_forbidden",
+        ),
+        verifier: (
+            "verify_native_admission_packages",
+            "--materialize-public-root",
+            "materialize_publication_root",
+            "assert_exact_publication_tree",
+            "PUBLICATION_SURFACE_SCHEMA",
+        ),
+        admission: (
+            "NATIVE_POLICY",
+            "CLIENT_IDENTITY_MARKERS",
+            "APPROVED_NONPAYLOAD_CLIENT_MARKER_PATHS",
+            "driver_route_smoke.sh",
+            "verify_portable_native_payload",
+            "native_admission_client_payload_forbidden",
+            "validate_payload_layout",
+            "verify_declared_installed_payload",
+            "native_admission_payload_layout_forbidden",
+            "native_admission_payload_install_manifest_tree_mismatch",
+        ),
+        universal: (
+            "assert_exact_publication_root",
+            "verify_portable_native_payload",
+            "universal_native_payload_reverification_failed",
+        ),
+        failure_proof: (
+            "utf8_text_only_no_extracted_payload_or_binary_tree",
+            "PAYLOAD_PATH_COMPONENTS",
+            "FAILURE_PROOF_MANIFEST.json",
+        ),
+        failure_proof_test: (
+            "result.log",
+            "\\x7fELF",
+            "archive",
+            "extract",
+            "symlink",
+            "oversized.log",
+            "MAX_TEXTUAL_PROOF_BYTES",
+        ),
+    }
+    for path, tokens in required.items():
+        source = path.read_text(encoding="utf-8")
+        for token in tokens:
+            require_token(source, token, path.name)
+    for path in (bundle, verifier, admission):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in (
+            "native_admission_receipt",
+            "receipt_for_opaque_system_package",
+            "validate_opaque_system_package_receipt",
+            "--write-native-admission-receipts",
+        ):
+            if forbidden in source:
+                fail(f"native_installer_stale_receipt_path_forbidden:{path.name}:{forbidden}")
+    require_token(
+        release_cmake.read_text(encoding="utf-8"),
+        "textual_failure_proof_test.py",
+        release_cmake.name,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[3])
@@ -862,12 +1197,17 @@ def main() -> int:
     if not workflow_root.is_dir():
         fail("workflow_root_missing")
     check_mkdtemp_header_contract(repo_root)
+    check_native_installer_admission_contract(repo_root)
+    check_workflow_inventory(workflow_root)
     for name, tokens in REQUIRED_WORKFLOWS.items():
         path = workflow_root / name
         if not path.is_file():
             fail(f"workflow_missing:{name}")
         text = path.read_text(encoding="utf-8")
         check_permissions(text, name)
+        check_unadmitted_component_publication(text, name)
+        check_portable_only_public_workflow(text, name)
+        check_failure_uploads_are_textual(text, name)
         for token in tokens:
             require_token(text, token, name)
         if name == "ci-macos.yml":
@@ -895,6 +1235,20 @@ def main() -> int:
                 "macos",
                 True,
                 retain_native_proof_artifacts=True,
+            )
+            check_public_installer_materialization(
+                text,
+                name,
+                "public-release-macos",
+                "macos",
+                "Upload macOS installers",
+                "build/public-installers/macos-${{ matrix.arch }}",
+            )
+            check_public_universal_materialization(
+                text,
+                name,
+                "macos-universal-artifact",
+                "build/public-installers/macos-universal",
             )
         elif name == "ci-linux.yml":
             check_main_push_ci_policy(
@@ -946,23 +1300,35 @@ def main() -> int:
             check_native_release_stage(
                 text, name, "macos-installers", "macos", True
             )
-            for job_name, step_name, artifact_path in (
-                ("linux-installers", "Upload Linux installers", "build/installers/linux"),
+            for job_name, platform, step_name, artifact_path in (
                 (
                     "linux-installers",
-                    "Upload Linux install smoke proof",
-                    "build/install-smoke/linux",
+                    "linux",
+                    "Upload Linux installers",
+                    "build/public-installers/linux",
                 ),
-                ("windows-installers", "Upload Windows installers", "build/installers/windows"),
+                (
+                    "windows-installers",
+                    "windows",
+                    "Upload Windows installers",
+                    "build/public-installers/windows",
+                ),
                 (
                     "macos-installers",
+                    "macos",
                     "Upload macOS installers",
-                    "build/installers/macos-${{ matrix.arch }}",
+                    "build/public-installers/macos-${{ matrix.arch }}",
                 ),
             ):
-                check_installer_upload_missing_files_policy(
-                    text, name, job_name, step_name, artifact_path
+                check_public_installer_materialization(
+                    text, name, job_name, platform, step_name, artifact_path
                 )
+            check_public_universal_materialization(
+                text,
+                name,
+                "macos-universal-installers",
+                "build/public-installers/macos-universal",
+            )
         elif name == "nightly-installers.yml":
             check_nightly_publisher(text, name, repo_root)
         elif name == "nightly-linux-installers.yml":
@@ -973,6 +1339,23 @@ def main() -> int:
             check_platform_nightly_workflow(text, name, "windows")
         elif name == "publish-platform-nightly.yml":
             check_platform_nightly_publisher(text, name)
+        elif name == "release-candidate.yml":
+            check_main_only_public_dispatch(
+                text,
+                name,
+                "build-installers",
+                "publish",
+                "Require protected-main release context",
+            )
+        elif name == "webserver-package-export.yml":
+            check_webserver_export_native_boundary(text, name)
+            check_main_only_public_dispatch(
+                text,
+                name,
+                "build-packages",
+                "package-webserver-export",
+                "Require protected-main export context",
+            )
         for token in FORBIDDEN_TOKENS:
             if token in text:
                 fail(f"forbidden_token:{name}:{token}")

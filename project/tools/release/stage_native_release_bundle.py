@@ -18,8 +18,10 @@ import json
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 
 
 PROFILE_SCHEMA = "scratchbird.native_release_profile.v1"
@@ -124,6 +126,138 @@ NATIVE_SHARE_SUBTREES = (
 
 NATIVE_DOC_SUBTREES = {"public_api", "release"}
 NATIVE_EXAMPLE_SUBTREES = {"core_beta_qa", "native_release_qa"}
+NATIVE_SHARE_TOP_LEVELS = {"resources", "docs", "examples"}
+
+# Native-server releases deliberately do not carry an unadmitted client
+# surface.  The output is assembled from a few broad resource/document/example
+# directories, so a bin/lib allowlist alone is insufficient: a client archive
+# or renamed native library could otherwise be hidden under share/.  Keep this
+# policy local to the native bundle and apply it recursively to both staged and
+# installed payloads.
+NATIVE_SHARE_CLIENT_COMPONENTS = frozenset(
+    {
+        "driver",
+        "drivers",
+        "adapter",
+        "adapters",
+        "adaptor",
+        "adaptors",
+        "mcp",
+        "mcps",
+    }
+)
+NATIVE_SHARE_CLIENT_NAME_FRAGMENTS = (
+    "dbeaver",
+    "scratchbird_client",
+    "scratchbird_odbc",
+    "scratchbird_mojo_client_bridge",
+)
+NATIVE_SHARE_FORBIDDEN_SUFFIXES = (
+    ".a",
+    ".apk",
+    ".appx",
+    ".appxbundle",
+    ".cab",
+    ".class",
+    ".dll",
+    ".dmg",
+    ".dylib",
+    ".egg",
+    ".exe",
+    ".gem",
+    ".ipa",
+    ".jar",
+    ".lib",
+    ".msi",
+    ".msix",
+    ".msixbundle",
+    ".node",
+    ".nupkg",
+    ".o",
+    ".obj",
+    ".pdb",
+    ".pkg",
+    ".pyc",
+    ".snap",
+    ".so",
+    ".wasm",
+    ".whl",
+)
+NATIVE_SHARE_ARCHIVE_SUFFIXES = (
+    ".7z",
+    ".bz2",
+    ".deb",
+    ".gz",
+    ".rar",
+    ".rpm",
+    ".tar",
+    ".tar.bz2",
+    ".tar.gz",
+    ".tar.xz",
+    ".tbz",
+    ".tbz2",
+    ".tgz",
+    ".txz",
+    ".xz",
+    ".zip",
+    ".zst",
+)
+NATIVE_SHARE_TIMEZONE_ARCHIVE_PREFIX = (
+    "resources/seed-packs/initial-resource-pack/resources/timezones/"
+)
+NATIVE_SHARE_TIMEZONE_ARCHIVE_SEED_PREFIX = "resources/timezones/"
+NATIVE_SHARE_TIMEZONE_ARCHIVE_NAME = re.compile(
+    r"(?:tzcode|tzdata)[0-9]{4}[a-z][.]tar[.]gz$"
+)
+NATIVE_SHARE_EXECUTABLE_PATHS = frozenset(
+    {
+        "examples/core_beta_qa/admin_lifecycle_smoke.sh",
+        "examples/core_beta_qa/driver_route_smoke.sh",
+        "examples/core_beta_qa/embedded_public_abi_smoke.sh",
+    }
+)
+# The docs/examples portion of a native release is deliberately closed.  The
+# resource trees have their own seed/policy manifests, but these human-facing
+# trees used to be copied wholesale.  That allowed an unfinished client source
+# module to hide under a neutral filename in an otherwise approved subtree.
+# Each output file is tied to its canonical public-repository source; adding a
+# new release document or example therefore requires an explicit inventory
+# edit rather than silently widening the shipped surface.
+PUBLIC_REPO_ROOT = Path(__file__).resolve().parents[3]
+NATIVE_SHARE_NONRESOURCE_SOURCE_FILES = {
+    "docs/public_api/CORE_BETA_PUBLIC_API_ABI_MANIFEST.json": (
+        "project/docs/public_api/CORE_BETA_PUBLIC_API_ABI_MANIFEST.json"
+    ),
+    "docs/public_api/CORE_BETA_PUBLIC_API_ABI.md": (
+        "project/docs/public_api/CORE_BETA_PUBLIC_API_ABI.md"
+    ),
+    "docs/release/PUBLIC_SUPPORT_MAINTENANCE_POLICY.md": (
+        "project/docs/release/PUBLIC_SUPPORT_MAINTENANCE_POLICY.md"
+    ),
+    "examples/core_beta_qa/README.md": "project/examples/core_beta_qa/README.md",
+    "examples/core_beta_qa/admin_lifecycle_smoke.sh": (
+        "project/examples/core_beta_qa/admin_lifecycle_smoke.sh"
+    ),
+    "examples/core_beta_qa/driver_route_smoke.sh": (
+        "project/examples/core_beta_qa/driver_route_smoke.sh"
+    ),
+    "examples/core_beta_qa/embedded_public_abi_smoke.sh": (
+        "project/examples/core_beta_qa/embedded_public_abi_smoke.sh"
+    ),
+    "examples/core_beta_qa/manifest.json": "project/examples/core_beta_qa/manifest.json",
+    "examples/native_release_qa/README.md": (
+        "project/examples/native_release_qa/README.md"
+    ),
+    "examples/native_release_qa/prepare_native_qa_instance.py": (
+        "project/examples/native_release_qa/prepare_native_qa_instance.py"
+    ),
+}
+# The QA script is an operational test helper, not a distributable driver.
+# It is the only native-share path whose filename uses the otherwise forbidden
+# generic `driver` token.
+NATIVE_SHARE_NONPAYLOAD_CLIENT_TOKEN_EXCEPTIONS = frozenset(
+    {"examples/core_beta_qa/driver_route_smoke.sh"}
+)
 
 REQUIRED_CONFIG_TOKENS = {
     "SBsrv.conf": (
@@ -288,20 +422,33 @@ REQUIRED_LIBRARY_CANDIDATES = {
     },
 }
 
-OPTIONAL_NATIVE_LIBRARY_NAMES = {
-    "libSBcore.dll.a",
-    "SBcore.lib",
-    "libscratchbird_client.a",
-    "scratchbird_client.lib",
-    "libscratchbird_odbc.so",
-    "libscratchbird_odbc.dylib",
-    "scratchbird_odbc.dll",
-    "libscratchbird_odbc.dll.a",
-    "scratchbird_odbc.lib",
-    "libscratchbird_mojo_client_bridge.so",
-    "libscratchbird_mojo_client_bridge.dylib",
-    "scratchbird_mojo_client_bridge.dll",
-}
+# A native-server archive contains only the engine/parser libraries listed in
+# REQUIRED_LIBRARY_CANDIDATES.  In particular, it must never carry an
+# incomplete client driver, adaptor, or MCP bridge merely because that library
+# happened to be present in a broad build-output directory.  Client payloads
+# have their own completed-component release family and are admitted there
+# only after their independent completion evidence exists.
+FORBIDDEN_CLIENT_LIBRARY_NAME_FRAGMENTS = (
+    "scratchbird_client",
+    "scratchbird_odbc",
+    "scratchbird_mojo_client_bridge",
+    "dbeaver",
+)
+
+
+def forbidden_client_library_name(name: str) -> bool:
+    """Return whether *name* identifies a non-server client payload.
+
+    This check is deliberately independent of an extension: it protects the
+    source staging boundary as well as the Windows dynamic-DLL closure.
+    """
+
+    lowered = name.lower()
+    if any(fragment in lowered for fragment in FORBIDDEN_CLIENT_LIBRARY_NAME_FRAGMENTS):
+        return True
+    if lowered.startswith(("scratchbird_", "libscratchbird_")):
+        return True
+    return re.search(r"(?:^|[_-])(driver|adaptor|adapter|mcp)(?:[_-]|[.]|$)", lowered) is not None
 
 WINDOWS_SYSTEM_DLLS = {
     "advapi32.dll",
@@ -357,6 +504,122 @@ FORBIDDEN_RUNTIME_NAME_FRAGMENTS = (
     "influx",
     "milvus",
     "vitess",
+)
+
+# This is an explicit, reviewed UCRT64 closure captured from the last known
+# successful native Windows release run.  It is intentionally an exact-name
+# policy instead of a filename pattern: a new dependency must fail staging
+# until its provider, reason, and import parent are reviewed here.  No
+# ScratchBird client driver, adaptor, or MCP library can become a bundled
+# runtime merely by using an unrecognised DLL basename.
+WINDOWS_NATIVE_RUNTIME_POLICY = {
+    "libllvm-22.dll": {
+        "name": "libLLVM-22.dll",
+        "provider": "MSYS2 UCRT64 LLVM 22",
+        "rationale": "configured native compiler runtime",
+        "allowed_parents": frozenset({"release-required-runtime"}),
+    },
+    "libcrypto-3-x64.dll": {
+        "name": "libcrypto-3-x64.dll",
+        "provider": "MSYS2 UCRT64 OpenSSL 3",
+        "rationale": "native TLS and cryptography runtime",
+        "allowed_parents": frozenset({"native-binary", "libssl-3-x64.dll"}),
+    },
+    "libffi-8.dll": {
+        "name": "libffi-8.dll",
+        "provider": "MSYS2 UCRT64 libffi",
+        "rationale": "LLVM and OpenSSL foreign-function runtime",
+        "allowed_parents": frozenset({"libllvm-22.dll", "libcrypto-3-x64.dll"}),
+    },
+    "libgcc_s_seh-1.dll": {
+        "name": "libgcc_s_seh-1.dll",
+        "provider": "MSYS2 UCRT64 GCC",
+        "rationale": "native C++ exception runtime",
+        "allowed_parents": frozenset(
+            {
+                "native-binary",
+                "libffi-8.dll",
+                "libicuuc78.dll",
+                "libquadmath-0.dll",
+                "libstdc++-6.dll",
+            }
+        ),
+    },
+    "libiconv-2.dll": {
+        "name": "libiconv-2.dll",
+        "provider": "MSYS2 UCRT64 libiconv",
+        "rationale": "XML runtime character conversion",
+        "allowed_parents": frozenset({"libxml2-16.dll"}),
+    },
+    "libicudt78.dll": {
+        "name": "libicudt78.dll",
+        "provider": "MSYS2 UCRT64 ICU 78",
+        "rationale": "native collation and timezone data runtime",
+        "allowed_parents": frozenset({"libiconv-2.dll", "libicuuc78.dll"}),
+    },
+    "libicuuc78.dll": {
+        "name": "libicuuc78.dll",
+        "provider": "MSYS2 UCRT64 ICU 78",
+        "rationale": "native Unicode runtime",
+        "allowed_parents": frozenset({"native-binary", "libicudt78.dll"}),
+    },
+    "libquadmath-0.dll": {
+        "name": "libquadmath-0.dll",
+        "provider": "MSYS2 UCRT64 GCC",
+        "rationale": "native REAL128 runtime support",
+        "allowed_parents": frozenset({"native-binary"}),
+    },
+    "libssl-3-x64.dll": {
+        "name": "libssl-3-x64.dll",
+        "provider": "MSYS2 UCRT64 OpenSSL 3",
+        "rationale": "native TLS runtime",
+        "allowed_parents": frozenset({"native-binary"}),
+    },
+    "libstdc++-6.dll": {
+        "name": "libstdc++-6.dll",
+        "provider": "MSYS2 UCRT64 GCC",
+        "rationale": "native C++ standard library runtime",
+        "allowed_parents": frozenset(
+            {"native-binary", "libllvm-22.dll", "libicuuc78.dll"}
+        ),
+    },
+    "libwinpthread-1.dll": {
+        "name": "libwinpthread-1.dll",
+        "provider": "MSYS2 UCRT64 GCC",
+        "rationale": "native threading runtime",
+        "allowed_parents": frozenset(
+            {
+                "native-binary",
+                "libgcc_s_seh-1.dll",
+                "libicuuc78.dll",
+                "libllvm-22.dll",
+                "libstdc++-6.dll",
+            }
+        ),
+    },
+    "libxml2-16.dll": {
+        "name": "libxml2-16.dll",
+        "provider": "MSYS2 UCRT64 libxml2",
+        "rationale": "LLVM XML runtime",
+        "allowed_parents": frozenset({"libllvm-22.dll"}),
+    },
+    "libzstd.dll": {
+        "name": "libzstd.dll",
+        "provider": "MSYS2 UCRT64 zstd",
+        "rationale": "LLVM compression runtime",
+        "allowed_parents": frozenset({"libllvm-22.dll"}),
+    },
+    "zlib1.dll": {
+        "name": "zlib1.dll",
+        "provider": "MSYS2 UCRT64 zlib",
+        "rationale": "LLVM, XML, and zstd compression runtime",
+        "allowed_parents": frozenset(
+            {"libllvm-22.dll", "libxml2-16.dll", "libzstd.dll"}
+        ),
+    },
+}
+WINDOWS_NATIVE_RUNTIME_NAMES = frozenset(
+    str(policy["name"]) for policy in WINDOWS_NATIVE_RUNTIME_POLICY.values()
 )
 
 LLVM_MINIMUM_MAJOR = {
@@ -881,9 +1144,56 @@ def safe_runtime_dependency_name(name: str) -> bool:
         Path(name).name == name
         and lowered.endswith(".dll")
         and not any(fragment in lowered for fragment in FORBIDDEN_RUNTIME_NAME_FRAGMENTS)
+        and not forbidden_client_library_name(name)
         and not lowered.startswith("sbp_")
         and not lowered.startswith("sbu_")
     )
+
+
+def windows_native_binary_name(name: str) -> bool:
+    """Return whether *name* is an exact native executable or engine DLL."""
+
+    expected = {
+        platform_executable(executable, "windows").lower()
+        for executable in native_executables("windows")
+    }
+    expected.update(
+        candidate.lower()
+        for candidates in REQUIRED_LIBRARY_CANDIDATES["windows"].values()
+        for candidate in candidates
+        if candidate.lower().endswith(".dll")
+    )
+    return name.lower() in expected
+
+
+def admitted_windows_runtime_dependency(name: str, parent: str) -> str:
+    """Return canonical DLL name only when its reviewed edge is permitted."""
+
+    if not safe_runtime_dependency_name(name):
+        fail(f"windows_runtime_dependency_forbidden:{name}")
+    policy = WINDOWS_NATIVE_RUNTIME_POLICY.get(name.lower())
+    if policy is None:
+        fail(f"windows_runtime_dependency_not_admitted:{name}")
+    parent_key = "native-binary" if windows_native_binary_name(parent) else parent.lower()
+    allowed_parents = policy["allowed_parents"]
+    if parent_key not in allowed_parents:
+        fail(
+            "windows_runtime_dependency_parent_not_admitted:"
+            f"{parent}:{name}"
+        )
+    return str(policy["name"])
+
+
+def require_windows_runtime_inventory(runtime_dependencies: set[str]) -> None:
+    """Require the complete reviewed Windows native runtime set."""
+
+    actual = set(runtime_dependencies)
+    if actual != WINDOWS_NATIVE_RUNTIME_NAMES:
+        fail(
+            "windows_runtime_dependency_inventory_mismatch:"
+            f"missing={sorted(WINDOWS_NATIVE_RUNTIME_NAMES - actual)}:"
+            f"unexpected={sorted(actual - WINDOWS_NATIVE_RUNTIME_NAMES)}"
+        )
 
 
 def require_llvm_runtime_contract(
@@ -921,8 +1231,7 @@ def require_llvm_runtime_contract(
     elif platform == "windows":
         if (
             not safe_runtime_dependency_name(runtime_library)
-            or "llvm" not in runtime_library.lower()
-            or not re.fullmatch(r"(?i)libLLVM-[0-9]+(?:[^/]*)[.]dll", runtime_library)
+            or runtime_library.lower() != "libllvm-22.dll"
         ):
             fail(f"windows_llvm_runtime_dll_invalid:{runtime_library}")
     elif platform == "macos":
@@ -998,12 +1307,14 @@ def stage_windows_runtime_dependencies(
     roots = (output_root / "bin", *search_roots)
     copied: set[str] = set()
     for dependency in required_dependencies:
-        if not safe_runtime_dependency_name(dependency):
-            fail(f"windows_runtime_dependency_forbidden:{dependency}")
-        source = locate_case_insensitive(dependency, search_roots)
+        canonical = admitted_windows_runtime_dependency(
+            dependency,
+            "release-required-runtime",
+        )
+        source = locate_case_insensitive(canonical, search_roots)
         if source is None:
-            fail(f"windows_required_runtime_dependency_unresolved:{dependency}")
-        destination = output_root / "bin" / source.name
+            fail(f"windows_required_runtime_dependency_unresolved:{canonical}")
+        destination = output_root / "bin" / canonical
         copy_file(source, destination)
         copied.add(destination.name)
 
@@ -1029,16 +1340,27 @@ def stage_windows_runtime_dependencies(
         for dependency in sorted(parse_pe_dependencies(result.stdout)):
             if windows_system_dll(dependency):
                 continue
-            if not safe_runtime_dependency_name(dependency):
-                fail(f"windows_runtime_dependency_forbidden:{dependency}")
-            existing = locate_case_insensitive(dependency, (output_root / "bin",))
+            if windows_native_binary_name(dependency):
+                existing_native = locate_case_insensitive(
+                    dependency,
+                    (output_root / "bin",),
+                )
+                if existing_native is None:
+                    fail(
+                        "windows_native_dependency_unresolved:"
+                        f"{binary.name}:{dependency}"
+                    )
+                queue.append(existing_native)
+                continue
+            canonical = admitted_windows_runtime_dependency(dependency, binary.name)
+            existing = locate_case_insensitive(canonical, (output_root / "bin",))
             if existing is not None:
                 queue.append(existing)
                 continue
-            source = locate_case_insensitive(dependency, roots)
+            source = locate_case_insensitive(canonical, roots)
             if source is None:
-                fail(f"windows_runtime_dependency_unresolved:{binary.name}:{dependency}")
-            destination = output_root / "bin" / source.name
+                fail(f"windows_runtime_dependency_unresolved:{binary.name}:{canonical}")
+            destination = output_root / "bin" / canonical
             copy_file(source, destination)
             copied.add(destination.name)
             queue.append(destination)
@@ -1091,8 +1413,348 @@ def require_operational_resources(share_root: Path) -> dict[str, object]:
     }
 
 
-def require_native_share_layout(share_root: Path) -> None:
+def native_share_nonresource_inventory(share_root: Path) -> list[dict[str, str]]:
+    """Validate and return the exact docs/examples inventory for native releases.
+
+    Unlike resource data, these files are not governed by a seed-pack index.
+    Bind them to the canonical public repository files so a broad directory
+    copy cannot add or substitute a platform-agnostic driver/adaptor/MCP
+    source module under a neutral name.
+    """
+
     scratchbird_root = share_root / "scratchbird"
+    actual_files: set[str] = set()
+    actual_directories: set[str] = set()
+    for top_level in ("docs", "examples"):
+        root = scratchbird_root / top_level
+        if not root.is_dir() or root.is_symlink():
+            fail(f"native_share_nonresource_root_missing:{top_level}")
+        actual_directories.add(top_level)
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(scratchbird_root).as_posix()
+            if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                fail(f"native_share_nonresource_entry_forbidden:{relative}")
+            if path.is_dir():
+                actual_directories.add(relative)
+            else:
+                actual_files.add(relative)
+
+    expected_files = set(NATIVE_SHARE_NONRESOURCE_SOURCE_FILES)
+    if actual_files != expected_files:
+        fail(
+            "native_share_nonresource_file_set_mismatch:"
+            f"missing={sorted(expected_files - actual_files)}:"
+            f"unexpected={sorted(actual_files - expected_files)}"
+        )
+    expected_directories = {
+        parent.as_posix()
+        for relative in expected_files
+        for parent in Path(relative).parents
+        if parent != Path(".")
+    }
+    if actual_directories != expected_directories:
+        fail(
+            "native_share_nonresource_directory_set_mismatch:"
+            f"missing={sorted(expected_directories - actual_directories)}:"
+            f"unexpected={sorted(actual_directories - expected_directories)}"
+        )
+
+    inventory: list[dict[str, str]] = []
+    for relative, source_relative in sorted(NATIVE_SHARE_NONRESOURCE_SOURCE_FILES.items()):
+        staged = scratchbird_root / relative
+        canonical = PUBLIC_REPO_ROOT / source_relative
+        require_regular_file(canonical, f"native_share_canonical_source:{relative}")
+        staged_digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+        canonical_digest = hashlib.sha256(canonical.read_bytes()).hexdigest()
+        if staged_digest != canonical_digest:
+            fail(f"native_share_nonresource_hash_mismatch:{relative}")
+        inventory.append({"path": relative, "sha256": staged_digest})
+    return inventory
+
+
+def native_share_path_has_client_identity(
+    relative: Path,
+    *,
+    allow_nonpayload_exception: bool = True,
+) -> bool:
+    """Return whether a share-relative path identifies a client component.
+
+    This intentionally examines every path component instead of only the leaf
+    name.  A `resources/adaptor/...` or `docs/dbeaver/...` subtree is still a
+    release payload, even when its individual file names are neutral.
+    """
+
+    normalized = relative.as_posix().casefold()
+    if (
+        allow_nonpayload_exception
+        and normalized in NATIVE_SHARE_NONPAYLOAD_CLIENT_TOKEN_EXCEPTIONS
+    ):
+        return False
+    for part in relative.parts:
+        lowered = part.casefold()
+        normalized_part = re.sub(r"[-.]", "_", lowered)
+        if "dbeaver" in lowered or any(
+            fragment in normalized_part
+            for fragment in NATIVE_SHARE_CLIENT_NAME_FRAGMENTS
+        ):
+            return True
+        tokens = [token for token in re.split(r"[._-]+", lowered) if token]
+        if any(token in NATIVE_SHARE_CLIENT_COMPONENTS for token in tokens):
+            return True
+    return False
+
+
+def native_share_payload_magic(header: bytes) -> str | None:
+    """Return a recognized executable, library, or package magic class."""
+
+    if header.startswith(b"\x7fELF"):
+        return "elf"
+    if header.startswith(b"MZ"):
+        return "pe"
+    if header[:4] in {
+        b"\xce\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xce",
+        b"\xcf\xfa\xed\xfe",
+        b"\xfe\xed\xfa\xcf",
+        b"\xca\xfe\xba\xbe",
+        b"\xbe\xba\xfe\xca",
+        b"\xca\xfe\xba\xbf",
+        b"\xbf\xba\xfe\xca",
+    }:
+        return "macho"
+    if header.startswith(b"!<arch>\n"):
+        return "static_archive"
+    if header.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "zip_archive"
+    if header.startswith(b"\x1f\x8b"):
+        return "gzip_archive"
+    if header.startswith(b"BZh"):
+        return "bzip2_archive"
+    if header.startswith(b"\xfd7zXZ\x00"):
+        return "xz_archive"
+    if header.startswith(b"(\xb5/\xfd"):
+        return "zstd_archive"
+    if header.startswith(b"7z\xbc\xaf'\x1c"):
+        return "seven_zip_archive"
+    if header.startswith(b"Rar!\x1a\x07"):
+        return "rar_archive"
+    if header.startswith(b"MSCF"):
+        return "cabinet_archive"
+    if header.startswith(b"\x00asm"):
+        return "wasm"
+    return None
+
+
+def native_share_executable_magic(path: Path) -> str | None:
+    """Return a recognized executable/archive payload class, if present."""
+
+    with path.open("rb") as handle:
+        return native_share_payload_magic(handle.read(8))
+
+
+def native_share_forbidden_payload_suffix(relative_text: str) -> bool:
+    """Return whether a path name advertises a binary/library/package payload."""
+
+    lowered = relative_text.casefold()
+    leaf = Path(lowered).name
+    return (
+        lowered.endswith(NATIVE_SHARE_FORBIDDEN_SUFFIXES)
+        or ".so." in leaf
+        or ".dylib." in leaf
+    )
+
+
+def native_share_declared_timezone_archives(scratchbird_root: Path) -> set[str]:
+    """Return only the exact tzcode/tzdata archives declared by the seed index.
+
+    Every supported release route validates the seed index before calling the
+    share policy.  This narrow lookup ties the sole compressed-archive
+    exception to its manifest declarations instead of allowing a whole
+    timezone subtree to become an opaque package bypass.
+    """
+
+    seed_root = (
+        scratchbird_root
+        / "resources"
+        / "seed-packs"
+        / "initial-resource-pack"
+    )
+    artifact_index = require_regular_file(
+        seed_root / "RESOURCE_SEED_ARTIFACTS.csv",
+        "native_share_resource_artifact_index",
+    )
+    with artifact_index.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        if reader.fieldnames != [
+            "canonical_path",
+            "content_hash",
+            "content_size_bytes",
+        ]:
+            fail("native_share_resource_artifact_index_header_invalid")
+        rows = list(reader)
+
+    declared: set[str] = set()
+    for row in rows:
+        relative = row.get("canonical_path")
+        if not isinstance(relative, str):
+            fail("native_share_resource_artifact_index_path_invalid")
+        safe_relative_path(seed_root, relative, "native_share_resource_artifact")
+        if not relative.startswith(NATIVE_SHARE_TIMEZONE_ARCHIVE_SEED_PREFIX):
+            continue
+        name = Path(relative).name
+        if NATIVE_SHARE_TIMEZONE_ARCHIVE_NAME.fullmatch(name):
+            declared.add(
+                "resources/seed-packs/initial-resource-pack/" + relative
+            )
+    return declared
+
+
+def native_share_safe_archive_member_path(member_name: str) -> Path:
+    """Return a safe normalized relative member path or fail closed."""
+
+    normalized = member_name.rstrip("/")
+    if (
+        not normalized
+        or "\x00" in normalized
+        or "\\" in normalized
+        or normalized.startswith("/")
+        or re.match(r"^[A-Za-z]:", normalized) is not None
+    ):
+        fail(f"native_share_archive_member_path_unsafe:{member_name}")
+    parts = normalized.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        fail(f"native_share_archive_member_path_unsafe:{member_name}")
+    return Path(*parts)
+
+
+def require_native_share_timezone_archive(
+    path: Path,
+    relative_text: str,
+) -> None:
+    """Inspect every member of an admitted timezone source archive.
+
+    The source archives are data inputs, not a general package delivery route.
+    Do not extract them: validate member names, entry types, modes, suffixes,
+    identities, and header magic while streaming the member headers.
+    """
+
+    executable_mask = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    try:
+        archive = tarfile.open(path, mode="r:gz")
+    except (OSError, tarfile.TarError) as exc:
+        fail(f"native_share_timezone_archive_invalid:{relative_text}:{exc}")
+    with archive:
+        for member in archive:
+            member_relative = native_share_safe_archive_member_path(member.name)
+            member_text = member_relative.as_posix()
+            member_label = f"{relative_text}:{member_text}"
+            if native_share_path_has_client_identity(
+                member_relative,
+                allow_nonpayload_exception=False,
+            ):
+                fail(f"native_share_archive_member_client_forbidden:{member_label}")
+            if native_share_forbidden_payload_suffix(member_text) or member_text.casefold().endswith(
+                NATIVE_SHARE_ARCHIVE_SUFFIXES
+            ):
+                fail(f"native_share_archive_member_suffix_forbidden:{member_label}")
+            if member.mode & executable_mask:
+                fail(f"native_share_archive_member_executable_forbidden:{member_label}")
+            if member.isdir():
+                continue
+            if not member.isfile():
+                fail(f"native_share_archive_member_type_forbidden:{member_label}")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                fail(f"native_share_archive_member_unreadable:{member_label}")
+            with extracted:
+                payload_kind = native_share_payload_magic(extracted.read(8))
+            if payload_kind is not None:
+                fail(
+                    "native_share_archive_member_payload_forbidden:"
+                    f"{payload_kind}:{member_label}"
+                )
+
+
+def require_native_share_payload_policy(share_root: Path) -> None:
+    """Reject every client payload or hidden executable under native share/.
+
+    Resource data is necessarily recursive, so this policy combines explicit
+    client identity checks with format and executable-bit checks.  It prevents
+    an unfinished driver/adaptor/MCP from bypassing the bin/lib allowlist by
+    being copied through a broad shared-resource subtree under a neutral name.
+    """
+
+    scratchbird_root = share_root / "scratchbird"
+    if not scratchbird_root.is_dir():
+        fail(f"native_share_root_missing:{scratchbird_root}")
+    declared_timezone_archives = native_share_declared_timezone_archives(
+        scratchbird_root
+    )
+    executable_mask = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    for path in sorted(scratchbird_root.rglob("*")):
+        relative = path.relative_to(scratchbird_root)
+        relative_text = relative.as_posix()
+        if path.is_symlink():
+            fail(f"native_share_symlink_forbidden:{relative_text}")
+        if not path.is_file() and not path.is_dir():
+            fail(f"native_share_entry_type_forbidden:{relative_text}")
+        if "__pycache__" in relative.parts:
+            fail(f"native_share_cache_forbidden:{relative_text}")
+        if native_share_path_has_client_identity(relative):
+            fail(f"native_share_client_payload_forbidden:{relative_text}")
+        lowered = relative_text.casefold()
+        if native_share_forbidden_payload_suffix(relative_text):
+            fail(f"native_share_client_file_suffix_forbidden:{relative_text}")
+        allowed_timezone_archive = relative_text in declared_timezone_archives
+        if lowered.endswith(NATIVE_SHARE_ARCHIVE_SUFFIXES):
+            if not allowed_timezone_archive:
+                fail(f"native_share_archive_location_forbidden:{relative_text}")
+        if not path.is_file():
+            continue
+        if (
+            path.stat().st_mode & executable_mask
+            and relative_text not in NATIVE_SHARE_EXECUTABLE_PATHS
+        ):
+            fail(f"native_share_executable_bit_forbidden:{relative_text}")
+        if allowed_timezone_archive:
+            require_native_share_timezone_archive(path, relative_text)
+            continue
+        payload_kind = native_share_executable_magic(path)
+        if payload_kind is not None:
+            fail(
+                "native_share_executable_payload_forbidden:"
+                f"{payload_kind}:{relative_text}"
+            )
+
+
+def require_native_share_layout(
+    share_root: Path,
+    *,
+    allow_installed_release_metadata: bool = False,
+    allow_system_configuration_defaults: bool = False,
+) -> list[dict[str, str]]:
+    scratchbird_root = share_root / "scratchbird"
+    if not scratchbird_root.is_dir():
+        fail(f"native_share_root_missing:{scratchbird_root}")
+    expected_top_levels = set(NATIVE_SHARE_TOP_LEVELS)
+    if allow_installed_release_metadata:
+        # The portable staging tree has no release/ directory.  Installer
+        # assembly creates it solely for native manifests and checksums, so it
+        # is admitted only for extracted installed payload verification.
+        expected_top_levels.add("release")
+    if allow_system_configuration_defaults:
+        # An explicitly internal system package may relocate the pristine
+        # native configuration files beneath the runtime tree.  This is an
+        # exact, named exception; it must not turn the native share root into
+        # an arbitrary extension point.
+        expected_top_levels.add("config-defaults")
+    actual_top_levels = {entry.name for entry in scratchbird_root.iterdir()}
+    if actual_top_levels != expected_top_levels:
+        fail(
+            "native_share_top_level_set_mismatch:"
+            f"missing={sorted(expected_top_levels - actual_top_levels)}:"
+            f"unexpected={sorted(actual_top_levels - expected_top_levels)}"
+        )
     for parent_name, expected in (
         ("docs", NATIVE_DOC_SUBTREES),
         ("examples", NATIVE_EXAMPLE_SUBTREES),
@@ -1107,6 +1769,23 @@ def require_native_share_layout(share_root: Path) -> None:
                 f"missing={sorted(expected - actual)}:"
                 f"unexpected={sorted(actual - expected)}"
             )
+    if allow_system_configuration_defaults:
+        config_defaults = scratchbird_root / "config-defaults"
+        actual_configs = {
+            entry.name for entry in config_defaults.iterdir()
+            if entry.is_file() and not entry.is_symlink()
+        }
+        if actual_configs != set(NATIVE_CONFIGS):
+            fail(
+                "native_system_config_defaults_set_mismatch:"
+                f"missing={sorted(set(NATIVE_CONFIGS) - actual_configs)}:"
+                f"unexpected={sorted(actual_configs - set(NATIVE_CONFIGS))}"
+            )
+        for entry in config_defaults.iterdir():
+            if entry.is_symlink() or not entry.is_file():
+                fail(f"native_system_config_defaults_entry_forbidden:{entry}")
+    require_native_share_payload_policy(share_root)
+    return native_share_nonresource_inventory(share_root)
 
 
 def stage(
@@ -1153,18 +1832,6 @@ def stage(
         copy_file(source, output_root / destination_dir / source.name)
         copied_libraries.append(f"{destination_dir}/{source.name}")
 
-    for source_dir in (source_root / "lib", source_root / "bin"):
-        if not source_dir.is_dir():
-            continue
-        for source in sorted(source_dir.iterdir()):
-            if source.name not in OPTIONAL_NATIVE_LIBRARY_NAMES or not source.is_file():
-                continue
-            destination_dir = "bin" if source_dir.name == "bin" else "lib"
-            destination = output_root / destination_dir / source.name
-            if not destination.exists():
-                copy_file(source, destination)
-                copied_libraries.append(f"{destination_dir}/{source.name}")
-
     config_root = source_root / "etc" / "scratchbird"
     for file_name in NATIVE_CONFIGS:
         copy_file(
@@ -1186,7 +1853,7 @@ def stage(
         output_root,
         platform,
     )
-    require_native_share_layout(output_root / "share")
+    nonresource_inventory = require_native_share_layout(output_root / "share")
 
     runtime_dependencies: list[str] = []
     if platform == "windows":
@@ -1195,6 +1862,7 @@ def stage(
             tuple(path.resolve() for path in runtime_search_roots),
             (str(llvm_runtime["runtime_library"]),),
         )
+        require_windows_runtime_inventory(set(runtime_dependencies))
     elif runtime_search_roots:
         fail(f"runtime_search_root_unsupported_for_platform:{platform}")
 
@@ -1241,6 +1909,7 @@ def stage(
         "required_resource_files": list(REQUIRED_RESOURCE_FILES),
         "required_operability_files": list(REQUIRED_OPERABILITY_FILES),
         "native_share_subtrees": list(NATIVE_SHARE_SUBTREES),
+        "native_share_nonresource_inventory": nonresource_inventory,
         **source_resource_summary,
     }
     (output_root / "NATIVE_RELEASE_PROFILE.json").write_text(

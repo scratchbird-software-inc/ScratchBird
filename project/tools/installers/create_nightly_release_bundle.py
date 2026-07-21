@@ -31,12 +31,25 @@ if str(TOOL_ROOT) not in sys.path:
     sys.path.insert(0, str(TOOL_ROOT))
 
 from nightly_release_contract import RELEASE_CONTRACTS, ReleaseContract, get_release_contract
+import installer_native_admission as native_admission
 
 
 INSTALLER_MANIFEST = "INSTALLER_ARTIFACT_MANIFEST.json"
 UNIVERSAL_MANIFEST = "MACOS_UNIVERSAL_ARTIFACT_MANIFEST.json"
 SCHEMA_ID = "scratchbird.native_nightly_release.v1"
-PUBLIC_ASSET_POLICY = "fully_verified_native_portable_and_platform_system_installer_artifacts"
+PUBLIC_ASSET_POLICY = (
+    "exact_manifest_derived_native_portable_archives_only"
+)
+PUBLICATION_SURFACE_SCHEMA = "scratchbird.public_native_installer_artifact.v1"
+PUBLICATION_SURFACE_POLICY = (
+    "exact_manifest_derived_directly_recursive_verifiable_native_server_payloads_only"
+)
+PUBLIC_EXCLUDED_PACKAGE_FORMATS = ["rpm", "pkg", "deb", "aur", "msi"]
+PUBLIC_PACKAGE_PATTERNS = {
+    "linux": ("scratchbird-linux-*.tar.gz",),
+    "windows": ("scratchbird-windows-*.zip",),
+    "macos": ("scratchbird-macos-*.tar.gz",),
+}
 NATIVE_COMPONENTS = ("SBmgr", "SBgate", "SBParser", "SBsrv")
 NATIVE_EXECUTABLES = (
     "SBsrv",
@@ -60,32 +73,15 @@ ARTIFACT_ROOTS = {
     "macos-universal": "scratchbird-macos-universal-installers",
 }
 
-# Every selected file is first integrity-bound to the platform installer
-# manifest from this exact reusable-workflow run.  Portable archives are also
-# extracted and validated here.  Native system installers are validated by
-# their platform job (installer verifier plus the applicable install-smoke or
-# package-recipe check) before the reusable workflow can succeed and make the
-# artifact available to this job.
+# Every selected file comes from the clean, exact manifest-derived publication
+# directory emitted by the reusable workflow.  Public tester artifacts are
+# portable archives only; package-manager formats stay internal until their
+# separately specified provenance authority exists.
 PACKAGE_RULES = (
     (
         "linux", "linux", "x86_64", "tar.gz", "scratchbird-linux-*.tar.gz",
         "scratchbird-nightly-linux-x86_64.tar.gz", "portable_archive",
         "exact_native_payload_extraction",
-    ),
-    (
-        "linux", "linux", "x86_64", "deb", "scratchbird_*.deb",
-        "scratchbird-nightly-linux-x86_64.deb", "system_installer",
-        "installer_manifest_and_privileged_deb_smoke",
-    ),
-    (
-        "linux", "linux", "x86_64", "rpm", "scratchbird-*.x86_64.rpm",
-        "scratchbird-nightly-linux-x86_64.rpm", "system_installer",
-        "installer_manifest_and_rpm_recipe_verification",
-    ),
-    (
-        "linux", "linux", "x86_64", "aur.tar.gz", "scratchbird-aur-*.tar.gz",
-        "scratchbird-nightly-linux-x86_64-aur.tar.gz", "system_installer",
-        "installer_manifest_and_aur_recipe_verification",
     ),
     (
         "windows", "windows", "x86_64", "zip", "scratchbird-windows-*.zip",
@@ -98,19 +94,9 @@ PACKAGE_RULES = (
         "exact_native_payload_extraction",
     ),
     (
-        "macos-x86_64", "macos", "x86_64", "pkg", "scratchbird-macos-*.pkg",
-        "scratchbird-nightly-macos-x86_64.pkg", "system_installer",
-        "installer_manifest_and_pkg_smoke",
-    ),
-    (
         "macos-arm64", "macos", "arm64", "tar.gz", "scratchbird-macos-*.tar.gz",
         "scratchbird-nightly-macos-arm64.tar.gz", "portable_archive",
         "exact_native_payload_extraction",
-    ),
-    (
-        "macos-arm64", "macos", "arm64", "pkg", "scratchbird-macos-*.pkg",
-        "scratchbird-nightly-macos-arm64.pkg", "system_installer",
-        "installer_manifest_and_pkg_smoke",
     ),
 )
 
@@ -132,6 +118,15 @@ class BundleError(RuntimeError):
 
 def fail(message: str) -> None:
     raise BundleError(message)
+
+
+def native_admission_call(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+    """Translate shared admission errors into this CLI's stable failure type."""
+
+    try:
+        return callable_(*args, **kwargs)
+    except native_admission.NativeAdmissionError as exc:
+        fail(str(exc))
 
 
 def sha256_file(path: Path) -> str:
@@ -159,8 +154,17 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def safe_relative(value: str, context: str) -> Path:
     path = Path(value)
-    if not value or path.is_absolute() or "\\" in value or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        not value
+        or path.is_absolute()
+        or "\\" in value
+        or re.match(r"^[A-Za-z]:", value) is not None
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         fail(f"unsafe_relative_path:{context}:{value}")
+    native_admission_call(
+        native_admission.reject_client_payload_identity, path.as_posix(), context
+    )
     return path
 
 
@@ -205,6 +209,8 @@ def verify_installer_root(
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     manifest_path = require_single(root, INSTALLER_MANIFEST)
     artifact_root = manifest_path.parent
+    if artifact_root != root:
+        fail(f"installer_manifest_root_invalid:{root.name}:{artifact_root.relative_to(root).as_posix()}")
     data = load_json(manifest_path)
     if data.get("schema_id") != "scratchbird.installer_artifact_manifest.v1":
         fail(f"installer_manifest_schema:{root.name}")
@@ -218,17 +224,37 @@ def verify_installer_root(
     rows = data.get("artifacts")
     if not isinstance(rows, list) or not rows:
         fail(f"installer_manifest_artifacts_missing:{root.name}")
+    native_admission_call(
+        native_admission.require_native_server_admission,
+        data.get("native_server_admission"), root.name
+    )
+    if data.get("publication_surface") != PUBLICATION_SURFACE_SCHEMA:
+        fail(f"installer_publication_surface_missing:{root.name}")
+    if data.get("publication_policy") != PUBLICATION_SURFACE_POLICY:
+        fail(f"installer_publication_policy_invalid:{root.name}")
+    if data.get("excluded_package_formats") != PUBLIC_EXCLUDED_PACKAGE_FORMATS:
+        fail(f"installer_publication_exclusion_invalid:{root.name}")
+    # Reject client payloads even when they are not selected by a package
+    # glob.  A native release cannot carry a hidden driver/adaptor/MCP in a
+    # side path or an unmanifested sibling.
+    native_admission_call(
+        native_admission.scan_native_only_tree, root, f"installer_root:{root.name}"
+    )
 
     verified: dict[str, Path] = {}
     expected_sums: dict[str, str] = {}
     for row in rows:
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or set(row) != {"path", "bytes", "sha256"}:
             fail(f"installer_manifest_row_not_object:{root.name}")
         rel_value = row.get("path")
         if not isinstance(rel_value, str):
             fail(f"installer_manifest_path_invalid:{root.name}")
         rel = safe_relative(rel_value, "installer_manifest")
         rel_name = rel.as_posix()
+        native_admission_call(
+            native_admission.reject_client_payload_identity,
+            rel_name, f"installer_manifest:{root.name}"
+        )
         if rel_name in verified:
             fail(f"installer_manifest_path_duplicate:{root.name}:{rel_name}")
         source = artifact_root / rel
@@ -247,6 +273,65 @@ def verify_installer_root(
     sums = parse_sha256sums(artifact_root / "SHA256SUMS")
     if sums != expected_sums:
         fail(f"installer_sha256sums_manifest_mismatch:{root.name}")
+    expected_paths = set(verified) | {INSTALLER_MANIFEST, "SHA256SUMS"}
+    actual_paths = {
+        path.relative_to(artifact_root).as_posix()
+        for path in artifact_root.rglob("*")
+        if path.is_file()
+    }
+    if actual_paths != expected_paths:
+        fail(
+            "installer_publication_tree_mismatch:"
+            f"{root.name}:missing={sorted(expected_paths - actual_paths)}:"
+            f"unexpected={sorted(actual_paths - expected_paths)}"
+        )
+    expected_dirs: set[str] = set()
+    for relative in expected_paths:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_dirs.add(parent.as_posix())
+            parent = parent.parent
+    actual_dirs = {
+        path.relative_to(artifact_root).as_posix()
+        for path in artifact_root.rglob("*")
+        if path.is_dir()
+    }
+    if actual_dirs != expected_dirs:
+        fail(
+            "installer_publication_directory_mismatch:"
+            f"{root.name}:missing={sorted(expected_dirs - actual_dirs)}:"
+            f"unexpected={sorted(actual_dirs - expected_dirs)}"
+        )
+    forbidden_package_files = sorted(
+        relative
+        for relative in verified
+        if relative.endswith((".deb", ".rpm", ".pkg", ".msi"))
+        or Path(relative).name.startswith("scratchbird-aur-")
+    )
+    if forbidden_package_files:
+        fail(
+            "installer_publication_system_package_forbidden:"
+            f"{root.name}:{','.join(forbidden_package_files)}"
+        )
+    selected_public_files: set[str] = set()
+    for pattern in PUBLIC_PACKAGE_PATTERNS[expected_platform]:
+        matches = sorted(
+            relative
+            for relative in verified
+            if "/" not in relative and Path(relative).match(pattern)
+        )
+        if len(matches) != 1:
+            fail(
+                "installer_publication_package_cardinality:"
+                f"{root.name}:{pattern}:actual={len(matches)}"
+            )
+        selected_public_files.add(matches[0])
+    if set(verified) != selected_public_files:
+        fail(
+            "installer_publication_manifest_set_invalid:"
+            f"{root.name}:expected={sorted(selected_public_files)}:"
+            f"actual={sorted(verified)}"
+        )
     if expected_platform == "windows":
         windows = data.get("windows")
         if (
@@ -265,15 +350,9 @@ def verify_installer_root(
             ):
                 fail(f"windows_zip_only_forbidden_artifact:{root.name}:{rel_name}")
     if expected_platform == "macos":
-        for sidecar in ("MACOS_DYNAMIC_LIBRARY_AUDIT.json", "MACOS_SIGNING_STATE.json"):
-            if sidecar not in verified:
-                fail(f"macos_sidecar_missing:{root.name}:{sidecar}")
-        audit = load_json(verified["MACOS_DYNAMIC_LIBRARY_AUDIT.json"])
-        if not isinstance(audit.get("rows"), list) or not audit["rows"]:
-            fail(f"macos_dynamic_library_audit_empty:{root.name}")
-        signing = load_json(verified["MACOS_SIGNING_STATE.json"])
-        if signing.get("status") not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
-            fail(f"macos_signing_state_invalid:{root.name}:{signing.get('status')}")
+        status = data.get("macos_signing_status")
+        if status not in {"qa_unsigned_not_for_public_signed_release", "payload_signed"}:
+            fail(f"macos_signing_state_invalid:{root.name}:{status}")
     return data, verified
 
 
@@ -291,6 +370,26 @@ def select_package(
     if len(matches) > 1 or (required and len(matches) != 1):
         fail(f"package_cardinality:{root_name}:{pattern}:expected={'1' if required else '0_or_1'}:actual={len(matches)}")
     return matches[0] if matches else None
+
+
+def verify_selected_package_native_admission(
+    source: Path,
+    native_profile_digest: str,
+    platform: str,
+    architecture: str,
+    package_format: str,
+    verification: str,
+) -> None:
+    """Verify the bytes that will become a public native release asset."""
+
+    if verification != "portable_archive" or package_format not in {"tar.gz", "zip"}:
+        fail(f"public_system_package_verification_forbidden:{source.name}")
+    verify_native_payload_archive(
+        source,
+        platform,
+        architecture,
+        native_profile_digest,
+    )
 
 
 def validate_archive_name(value: str, context: str) -> str:
@@ -425,7 +524,22 @@ def verify_macos_architecture(payload_root: Path, expected_architectures: set[st
             )
 
 
-def verify_native_payload_archive(path: Path, platform: str, architecture: str) -> None:
+def verify_native_payload_archive(
+    path: Path,
+    platform: str,
+    architecture: str,
+    native_profile_digest: str,
+) -> None:
+    # The shared admission verifier binds the profile in the actual archive to
+    # the installer manifest and scans every recursively extracted path before
+    # the legacy architecture-specific check below runs.
+    native_admission_call(
+        native_admission.verify_portable_native_payload,
+        path,
+        native_profile_digest,
+        platform,
+        architecture,
+    )
     verifier = Path(__file__).resolve().parents[1] / "release" / "verify_native_installed_payload.py"
     if not verifier.is_file():
         fail(f"native_payload_verifier_missing:{verifier.name}")
@@ -452,11 +566,24 @@ def verify_native_payload_archive(path: Path, platform: str, architecture: str) 
             verify_macos_architecture(payload_root, expected, path.name)
 
 
-def verify_universal_root(root: Path, expected_version: str, expected_build_id: str) -> Path:
+def verify_universal_root(
+    root: Path,
+    expected_version: str,
+    expected_build_id: str,
+) -> tuple[Path, dict[str, Any], str]:
     manifest_path = require_single(root, UNIVERSAL_MANIFEST)
+    if manifest_path.parent != root:
+        fail(f"macos_universal_manifest_root_invalid:{root.name}")
+    native_admission_call(
+        native_admission.scan_native_only_tree, root, f"universal_root:{root.name}"
+    )
     data = load_json(manifest_path)
     if data.get("schema_id") != "scratchbird.macos_universal_artifact_manifest.v1":
         fail("macos_universal_manifest_schema")
+    admission, profile_digest = native_admission_call(
+        native_admission.require_native_server_admission,
+        data.get("native_server_admission"), root.name
+    )
     universal_version = data.get("version")
     expected_universal_version = sanitize_version(f"{expected_version}-universal")
     if not isinstance(universal_version, str) or sanitize_version(universal_version) != expected_universal_version:
@@ -464,12 +591,18 @@ def verify_universal_root(root: Path, expected_version: str, expected_build_id: 
     if data.get("build_id") != expected_build_id:
         fail(f"macos_universal_build_id_mismatch:{data.get('build_id')}:{expected_build_id}")
     artifact = data.get("artifact")
-    if not isinstance(artifact, dict):
+    if not isinstance(artifact, dict) or set(artifact) != {
+        "path", "bytes", "sha256", "architectures", "status"
+    }:
         fail("macos_universal_artifact_missing")
     rel_value = artifact.get("path")
     if not isinstance(rel_value, str):
         fail("macos_universal_artifact_path_invalid")
     rel = safe_relative(rel_value, "macos_universal_artifact")
+    native_admission_call(
+        native_admission.reject_client_payload_identity,
+        rel.as_posix(), "macos_universal_artifact"
+    )
     source = manifest_path.parent / rel
     if not source.is_file() or source.is_symlink():
         fail(f"macos_universal_file_missing:{rel.as_posix()}")
@@ -487,7 +620,36 @@ def verify_universal_root(root: Path, expected_version: str, expected_build_id: 
         fail("macos_universal_architectures_mismatch")
     if artifact.get("status") != "qa_universal_after_per_architecture_artifacts_verify":
         fail("macos_universal_status_mismatch")
-    return source
+    expected_files = {UNIVERSAL_MANIFEST, rel.as_posix()}
+    actual_files = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    if actual_files != expected_files:
+        fail(
+            "macos_universal_publication_tree_mismatch:"
+            f"missing={sorted(expected_files - actual_files)}:"
+            f"unexpected={sorted(actual_files - expected_files)}"
+        )
+    expected_dirs: set[str] = set()
+    for relative in expected_files:
+        parent = Path(relative).parent
+        while parent != Path("."):
+            expected_dirs.add(parent.as_posix())
+            parent = parent.parent
+    actual_dirs = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_dir()
+    }
+    if actual_dirs != expected_dirs:
+        fail(
+            "macos_universal_publication_directory_mismatch:"
+            f"missing={sorted(expected_dirs - actual_dirs)}:"
+            f"unexpected={sorted(actual_dirs - expected_dirs)}"
+        )
+    return source, admission, profile_digest
 
 
 def copy_package(
@@ -498,6 +660,7 @@ def copy_package(
     architecture: str,
     package_format: str,
     verification: str,
+    native_profile_digest: str,
 ) -> dict[str, Any]:
     target = output_root / canonical_name
     if target.exists():
@@ -510,6 +673,7 @@ def copy_package(
         "format": package_format,
         "source_name": source.name,
         "verification": verification,
+        "native_release_profile_sha256": native_profile_digest,
         "bytes": target.stat().st_size,
         "sha256": sha256_file(target),
     }
@@ -576,6 +740,8 @@ def create_bundle(
         fail(f"unexpected_artifact_roots:{','.join(unexpected)}")
 
     verified: dict[str, dict[str, Path]] = {}
+    installer_manifests: dict[str, dict[str, Any]] = {}
+    installer_admissions: dict[str, tuple[dict[str, Any], str]] = {}
     verify_platforms_all = {
         "linux": ("linux", github_run_id),
         "windows": ("windows", github_run_id),
@@ -586,25 +752,36 @@ def create_bundle(
         if key == "macos-universal":
             continue
         platform, expected_build_id = verify_platforms_all[key]
-        _, verified[key] = verify_installer_root(
+        installer_manifest, verified[key] = verify_installer_root(
             roots[key], platform, expected_version, expected_build_id
+        )
+        installer_manifests[key] = installer_manifest
+        installer_admissions[key] = native_admission_call(
+            native_admission.require_native_server_admission,
+            installer_manifest.get("native_server_admission"), key
         )
 
     if output_root.exists():
         shutil.rmtree(output_root)
     output_root.mkdir(parents=True)
     records: list[dict[str, Any]] = []
+    universal_profile_digest: str | None = None
     selected_rules = tuple(
         rule for rule in PACKAGE_RULES if rule[0] in contract.artifact_roots
     )
     for root_key, platform, arch, package_format, pattern, canonical, verification, verification_record in selected_rules:
         source = select_package(root_key, verified[root_key], pattern, True)
-        if verification == "portable_archive":
-            verify_native_payload_archive(source, platform, arch)
-        elif verification == "system_installer":
-            pass
-        else:
-            fail(f"package_verification_mode_invalid:{canonical}:{verification}")
+        if source is None:
+            fail(f"package_missing_after_selection:{canonical}")
+        native_profile_digest = installer_admissions[root_key][1]
+        verify_selected_package_native_admission(
+            source,
+            native_profile_digest,
+            platform,
+            arch,
+            package_format,
+            verification,
+        )
         records.append(
             copy_package(
                 source,
@@ -614,14 +791,20 @@ def create_bundle(
                 arch,
                 package_format,
                 verification_record,
+                native_profile_digest,
             )
         )
 
     if "macos-universal" in contract.artifact_roots:
-        universal_source = verify_universal_root(
+        universal_source, _universal_admission, universal_profile_digest = verify_universal_root(
             roots["macos-universal"], expected_version, f"{github_run_id}-universal"
         )
-        verify_native_payload_archive(universal_source, "macos", "universal")
+        verify_native_payload_archive(
+            universal_source,
+            "macos",
+            "universal",
+            universal_profile_digest,
+        )
         records.append(
             copy_package(
                 universal_source,
@@ -631,6 +814,7 @@ def create_bundle(
                 "universal",
                 "tar.gz",
                 "exact_native_payload_extraction",
+                universal_profile_digest,
             )
         )
     records.sort(key=lambda row: row["name"])
@@ -687,15 +871,39 @@ def create_bundle(
         ],
         "emulation_layers_included": False,
         "public_asset_policy": PUBLIC_ASSET_POLICY,
-        "internal_only_artifact_classes": ["build_recipes", "install_smoke_proof"],
+        "native_server_admission_policy": native_admission.NATIVE_POLICY,
+        "native_server_admissions": {
+            **{
+                key: {
+                    "native_release_profile_sha256": installer_admissions[key][1],
+                    "verification": "exact_manifest_bound_recursive_native_portable_payload",
+                }
+                for key in sorted(installer_admissions)
+            },
+            **(
+                {
+                    "macos-universal": {
+                        "native_release_profile_sha256": universal_profile_digest,
+                        "verification": "manifest_bound_recursive_native_payload",
+                    }
+                }
+                if universal_profile_digest is not None
+                else {}
+            ),
+        },
+        "internal_only_artifact_classes": [
+            "build_recipes",
+            "install_smoke_proof",
+            "system_installer_packages",
+        ],
         "llvm_runtime": {platform: llvm_runtime[platform] for platform in included_platforms},
         "artifacts": records,
     }
     if "macos" in included_platforms:
         manifest["macos_release_policy"] = "qa_unsigned_unnotarized_unless_signing_state_says_payload_signed"
         manifest["macos_signing_state"] = {
-            "x86_64": load_json(verified["macos-x86_64"]["MACOS_SIGNING_STATE.json"])["status"],
-            "arm64": load_json(verified["macos-arm64"]["MACOS_SIGNING_STATE.json"])["status"],
+            "x86_64": installer_manifests["macos-x86_64"]["macos_signing_status"],
+            "arm64": installer_manifests["macos-arm64"]["macos_signing_status"],
         }
     if "windows" in included_platforms:
         manifest["windows_release_policy"] = "portable_zip_only_no_msi"

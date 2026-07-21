@@ -2323,7 +2323,17 @@ add_test(
           --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
 )
 set_tests_properties(web_distribution_bundle_test PROPERTIES
-  LABELS "public_release_correctness;web_distribution_bundle_test;PCR-GATE-160;PCR-160;installers;webserver_export;artifact_manifest;checksums;no_github_release;fail_closed"
+  LABELS "public_release_correctness;web_distribution_bundle_test;PCR-GATE-160;PCR-160;installers;webserver_export;artifact_manifest;checksums;native_server_only;no_client_payload;dbeaver_excluded;no_github_release;fail_closed"
+)
+
+add_test(
+  NAME prerelease_bundle_client_boundary_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/prerelease_bundle_client_boundary_test.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+)
+set_tests_properties(prerelease_bundle_client_boundary_test PROPERTIES
+  LABELS "public_release_correctness;prerelease_bundle;manual_route;native_server_only;no_client_payload;dbeaver_excluded;fail_closed"
 )
 
 add_test(
@@ -2375,6 +2385,15 @@ set_tests_properties(nightly_release_bundle_test PROPERTIES
 )
 
 add_test(
+  NAME textual_failure_proof_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/textual_failure_proof_test.py
+)
+set_tests_properties(textual_failure_proof_test PROPERTIES
+  LABELS "public_release_correctness;installers;github_actions;failure_proof;no_binary_payload;fail_closed"
+)
+
+add_test(
   NAME native_release_bundle_test
   COMMAND ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/native_release_bundle_test.py
@@ -2401,6 +2420,15 @@ add_test(
 )
 set_tests_properties(rolling_nightly_publisher_test PROPERTIES
   LABELS "public_release_correctness;nightly_release;github_release;publication;fail_closed"
+)
+
+add_test(
+  NAME stage_driver_beta_artifacts_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/stage_driver_beta_artifacts_test.py
+)
+set_tests_properties(stage_driver_beta_artifacts_test PROPERTIES
+  LABELS "driver_release;metadata_snapshot;fail_closed"
 )
 
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
