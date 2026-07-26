@@ -1894,10 +1894,11 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   using api = scratchbird::engine::internal_api::EngineValueState;
 
   CanonicalSetOperationAllResult result;
-  const auto refuse = [&](std::string detail) {
+  const auto refuse = [&](std::string detail,
+                          std::string diagnostic_code =
+                              "QOW-DIAG-QRY-016-ALL-REFUSAL-V1") {
     result.diagnostic.ok = false;
-    result.diagnostic.diagnostic_code =
-        "QOW-DIAG-QRY-016-ALL-REFUSAL-V1";
+    result.diagnostic.diagnostic_code = std::move(diagnostic_code);
     result.diagnostic.detail = std::move(detail);
     result.output_batch = {};
     result.left_input_row_count = 0;
@@ -1984,9 +1985,14 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
 
+  // QOW-SOURCE-QRY-016-ARITY-V1
+  // Arity is decided from the three already-bound descriptor vectors, never
+  // from the first physical row. Empty operands therefore retain the same
+  // exact refusal behavior as populated operands.
   if (request.left_batch.columns.size() != request.right_batch.columns.size() ||
       request.left_batch.columns.size() != request.result_columns.size()) {
-    return refuse("set-operation input and result arity differ");
+    return refuse("set-operation input and result arity differ",
+                  "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
     const auto& left = request.left_batch.columns[column];
