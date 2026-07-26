@@ -25,6 +25,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_qry_004_node_abi_v1 PROPERTIES
     LABELS "qow_closure;QOW-201;QOW-LEAF-QRY-004-NODE-ABI;development_candidate"
   )
+  # QOW-CMAKE-QRY-004-ACCESS-V1
+  add_executable(qow_qry_004_access_test_v1 qow_qry_004_access.cpp)
+  target_compile_features(qow_qry_004_access_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_004_access_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_qry_004_access_v1
+    COMMAND qow_qry_004_access_test_v1)
+  set_tests_properties(qow_qry_004_access_v1 PROPERTIES
+    LABELS "qow_closure;QOW-203;QOW-LEAF-QRY-004-ACCESS;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)

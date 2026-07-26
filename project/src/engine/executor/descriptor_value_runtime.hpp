@@ -665,6 +665,75 @@ enum class CanonicalMgaSecurityDecision : std::uint8_t {
   kIndeterminate,
 };
 
+enum class CanonicalScanCandidateSource : std::uint8_t {
+  kRelationPage = 1,
+  kIndexEntry,
+};
+
+struct CanonicalScanCandidateEvidence {
+  std::string candidate_uuid;
+  std::string record_uuid;
+  std::string relation_uuid;
+  std::string visibility_decision_uuid;
+  std::uint64_t row_version_id = 0;
+  std::uint64_t candidate_generation = 0;
+  std::uint64_t observed_generation = 0;
+  CanonicalScanCandidateSource source =
+      CanonicalScanCandidateSource::kRelationPage;
+  CanonicalMgaVisibilityDecision visibility =
+      CanonicalMgaVisibilityDecision::kIndeterminate;
+  CanonicalMgaSecurityDecision security_decision =
+      CanonicalMgaSecurityDecision::kIndeterminate;
+  scratchbird::engine::internal_api::EngineSqlTruthValue residual_truth =
+      scratchbird::engine::internal_api::EngineSqlTruthValue::unspecified;
+  bool locator_identity_matches = false;
+};
+
+struct CanonicalScanAccessRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  std::string available_implementation_id;
+  std::string relation_uuid;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::uint64_t selected_descriptor_generation = 0;
+  std::uint64_t current_descriptor_generation = 0;
+  std::vector<CanonicalScanCandidateEvidence> candidates;
+  std::size_t maximum_candidate_count = 1048576;
+};
+
+struct CanonicalScanAccessCounters {
+  std::size_t candidate_count = 0;
+  std::size_t visibility_recheck_count = 0;
+  std::size_t invisible_filtered_count = 0;
+  std::size_t stale_index_filtered_count = 0;
+  std::size_t security_filtered_count = 0;
+  std::size_t residual_filtered_count = 0;
+  std::size_t emitted_count = 0;
+};
+
+struct CanonicalScanAccessAuthorityEvidence {
+  bool engine_mga_snapshot_bound = false;
+  bool visibility_rechecks_complete = false;
+  bool owns_transaction_finality = false;
+  bool owns_recovery = false;
+  bool owns_parser_execution = false;
+  bool index_or_cache_is_visibility_authority = false;
+  bool wal_is_visibility_or_recovery_authority = false;
+};
+
+struct CanonicalScanAccessResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<std::string> accepted_record_uuids;
+  std::vector<std::uint64_t> accepted_row_version_ids;
+  CanonicalScanAccessCounters counters;
+  CanonicalScanAccessAuthorityEvidence authority;
+  bool replan_required = false;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalRecursiveCteMgaIterationEvidence {
   std::size_t iteration_ordinal = 0;
   std::uint64_t local_transaction_id = 0;
@@ -1057,6 +1126,8 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
+    const CanonicalScanAccessRequest& request);
 CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     const CanonicalInt64SumStateRequest& request);
 CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
