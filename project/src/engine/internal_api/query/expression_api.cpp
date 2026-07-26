@@ -8,6 +8,8 @@
 
 #include "query/expression_api.hpp"
 
+#include "datatype_operations.hpp"
+
 #include <cctype>
 #include <cstddef>
 #include <string_view>
@@ -18,7 +20,6 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "datatype_advanced_family.hpp"
 #include "datatype_document.hpp"
-#include "datatype_operations.hpp"
 #include "domain_support/domain_store.hpp"
 #include "security/security_model.hpp"
 
@@ -78,6 +79,64 @@ EngineTypedValue QowPropagateSqlNullAfterScalarV1(
   computed_value.is_null = true;
   computed_value.state = EngineValueState::sql_null;
   return computed_value;
+}
+
+// QOW-SOURCE-QRY-008-COERCE-V1
+bool QowApplyCanonicalDescriptorCoercionV1(
+    const EngineTypedValue& input_value,
+    const EngineDescriptor& target_descriptor,
+    const bool explicit_cast,
+    EngineTypedValue* output_value,
+    std::string* cast_category,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (output_value == nullptr || cast_category == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  *output_value = EngineTypedValue{};
+  output_value->state = EngineValueState::error;
+  cast_category->clear();
+  refusal_detail->clear();
+  if (!QowCanonicalDescriptorIdentityV1(input_value.descriptor) ||
+      !QowCanonicalDescriptorIdentityV1(target_descriptor) ||
+      input_value.descriptor.descriptor_kind != "scalar" ||
+      target_descriptor.descriptor_kind != "scalar" ||
+      (input_value.isSqlNull() &&
+       !QowCanonicalSqlNullStateV1(input_value))) {
+    *refusal_detail = "canonical coercion descriptors or value state are invalid";
+    return false;
+  }
+  const auto source_type = dt::CanonicalTypeIdFromStableName(
+      input_value.descriptor.canonical_type_name);
+  const auto target_type = dt::CanonicalTypeIdFromStableName(
+      target_descriptor.canonical_type_name);
+  if (source_type == dt::CanonicalTypeId::unknown ||
+      target_type == dt::CanonicalTypeId::unknown) {
+    *refusal_detail = "canonical coercion type is unknown";
+    return false;
+  }
+  dt::DatatypeCastRequest request;
+  request.value.type_id = source_type;
+  request.value.encoded_value = input_value.encoded_value;
+  request.value.is_null = input_value.isSqlNull();
+  request.target_type_id = target_type;
+  request.explicit_cast = explicit_cast;
+  const auto cast = dt::CastDatatypeValue(request);
+  if (!cast.ok()) {
+    *refusal_detail = cast.diagnostic.diagnostic_code.empty()
+                          ? "canonical descriptor coercion refused"
+                          : cast.diagnostic.diagnostic_code;
+    return false;
+  }
+  output_value->descriptor = target_descriptor;
+  output_value->encoded_value = cast.value.encoded_value;
+  output_value->binary_value.clear();
+  output_value->is_null = cast.value.is_null;
+  output_value->state = cast.value.is_null ? EngineValueState::sql_null
+                                           : EngineValueState::value;
+  *cast_category = dt::DatatypeCastCategoryName(cast.category);
+  return true;
 }
 
 }  // namespace scratchbird::engine::internal_api
@@ -432,6 +491,40 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
         request.context,
         "query.cast_value",
         MakeInvalidRequestDiagnostic("query.cast_value", "target_descriptor_required"));
+  }
+  const bool domain_descriptor_route =
+      !DomainUuidFromDescriptor(input.descriptor).empty() ||
+      !DomainUuidFromDescriptor(target).empty();
+  const bool canonical_descriptor_route =
+      !domain_descriptor_route &&
+      (!input.descriptor.descriptor_uuid.canonical.empty() ||
+       !target.descriptor_uuid.canonical.empty());
+  if (canonical_descriptor_route) {
+    EngineTypedValue coerced;
+    std::string category;
+    std::string refusal_detail;
+    if (!QowApplyCanonicalDescriptorCoercionV1(
+            input, target, request.explicit_cast, &coerced, &category,
+            &refusal_detail)) {
+      return ApiFailure<EngineCastValueResult>(
+          request.context,
+          "query.cast_value",
+          MakeEngineApiDiagnostic(
+              "QOW-DIAG-QRY-008-COERCE-REFUSAL-V1",
+              "engine.query.typed_scalar_coercion_refused",
+              std::move(refusal_detail)));
+    }
+    auto result =
+        ApiSuccess<EngineCastValueResult>(request.context, "query.cast_value");
+    result.value = std::move(coerced);
+    result.cast_category = std::move(category);
+    result.result_shape.result_kind = "typed_value";
+    result.result_shape.columns.push_back(result.value.descriptor);
+    result.evidence.push_back({"datatype_cast", result.cast_category});
+    result.evidence.push_back(
+        {"canonical_descriptor_identity",
+         result.value.descriptor.descriptor_uuid.canonical});
+    return result;
   }
   dt::DatatypeCastRequest cast_request;
   cast_request.value.type_id = TypeFromDescriptor(input.descriptor);

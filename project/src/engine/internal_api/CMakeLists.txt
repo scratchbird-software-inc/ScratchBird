@@ -7,6 +7,18 @@
 # SPDX-License-Identifier: MPL-2.0
 
 if(SB_BUILD_QOW_CLOSURE_TESTS)
+  if(NOT TARGET sb_core_platform)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../core/platform
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_core_platform
+    )
+  endif()
+  if(NOT TARGET sb_core_datatypes)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_core_datatypes
+    )
+  endif()
   # QOW-CMAKE-QRY-002-V1
   add_library(sb_qow_relational_dag_contract STATIC query/plan_api.cpp)
   target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
@@ -18,6 +30,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   # QOW-CMAKE-QRY-008-DESC-V1
   # QOW-CMAKE-QRY-008-NULL-V1
+  # QOW-CMAKE-QRY-008-COERCE-V1
   add_library(sb_qow_typed_scalar_descriptor_contract STATIC
     query/expression_api.cpp
   )
@@ -29,6 +42,10 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   target_include_directories(sb_qow_typed_scalar_descriptor_contract PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
+  )
+  target_link_libraries(sb_qow_typed_scalar_descriptor_contract PUBLIC
+    sb_core_datatypes
   )
   set(SB_QOW_INTERNAL_API_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
