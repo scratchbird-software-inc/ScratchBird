@@ -435,7 +435,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool operator_expression =
         expression.expression_kind == NativeExpressionAstKind::kUnary ||
         expression.expression_kind == NativeExpressionAstKind::kBinary;
-    if (operator_expression != !expression.operator_name.empty()) {
+    if ((operator_expression && expression.operator_name.empty()) ||
+        (!operator_expression && !function_call &&
+         !expression.operator_name.empty())) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                             "operator identity state does not match the expression kind");
       return RefusedBoundAst(std::move(bound));
