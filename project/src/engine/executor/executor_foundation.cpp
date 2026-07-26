@@ -1198,6 +1198,122 @@ CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
   return result;
 }
 
+// QOW-SOURCE-QRY-012-KEY-V1
+// Evaluate already-bound composite int64 equality keys for every physical row
+// pair.  Terms combine through SQL AND: FALSE dominates UNKNOWN, and only all
+// non-NULL equal terms produce TRUE.  Full route/input validation precedes the
+// bounded comparison matrix.
+CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
+    const CanonicalCompositeJoinKeyRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalCompositeJoinKeyResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-KEY-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.pair_truth_values.clear();
+    result.pair_count = 0;
+    return result;
+  };
+  if (request.key_terms.empty() || request.maximum_key_term_count == 0 ||
+      request.key_terms.size() > request.maximum_key_term_count ||
+      request.maximum_key_comparisons == 0) {
+    return refuse("composite join key term resource contract is invalid");
+  }
+  const auto left_count = request.left_batch.rows.size();
+  const auto right_count = request.right_batch.rows.size();
+  if (left_count != 0 &&
+      right_count > std::numeric_limits<std::size_t>::max() / left_count) {
+    return refuse("join pair cardinality overflowed");
+  }
+  const auto pair_count = left_count * right_count;
+  if (pair_count != 0 &&
+      request.key_terms.size() >
+          request.maximum_key_comparisons / pair_count) {
+    return refuse("composite join key comparison bound was exceeded");
+  }
+
+  CanonicalDescriptorInnerJoinRequest route;
+  route.physical_dag = request.physical_dag;
+  route.selected_physical_node_id = request.selected_physical_node_id;
+  route.left_batch = request.left_batch;
+  route.right_batch = request.right_batch;
+  route.pair_truth_values.assign(
+      pair_count, api::EngineSqlTruthValue::false_value);
+  const auto route_validation = ExecuteCanonicalDescriptorInnerJoin(route);
+  if (!route_validation.diagnostic.ok) {
+    return refuse(route_validation.diagnostic.diagnostic_code + ":" +
+                  route_validation.diagnostic.detail);
+  }
+
+  std::set<std::pair<std::uint32_t, std::uint32_t>> bound_term_handles;
+  for (const auto& term : request.key_terms) {
+    if (term.left_column >= request.left_batch.columns.size() ||
+        term.right_column >= request.right_batch.columns.size()) {
+      return refuse("composite join key column is outside its input schema");
+    }
+    const auto& left_column = request.left_batch.columns[term.left_column];
+    const auto& right_column = request.right_batch.columns[term.right_column];
+    if (term.left_expression_descriptor_id == 0 ||
+        term.right_expression_descriptor_id == 0 ||
+        term.left_expression_descriptor_id != left_column.descriptor_id ||
+        term.right_expression_descriptor_id != right_column.descriptor_id ||
+        left_column.descriptor.canonical_type_name != "int64" ||
+        right_column.descriptor.canonical_type_name != "int64") {
+      return refuse("composite join key is not bound compatible int64");
+    }
+    if (!bound_term_handles
+             .emplace(term.left_expression_descriptor_id,
+                      term.right_expression_descriptor_id)
+             .second) {
+      return refuse("composite join key repeats a bound term");
+    }
+  }
+
+  std::vector<api::EngineSqlTruthValue> pair_truth_values;
+  pair_truth_values.reserve(pair_count);
+  for (const auto& left_row : request.left_batch.rows) {
+    for (const auto& right_row : request.right_batch.rows) {
+      bool saw_unknown = false;
+      bool saw_false = false;
+      for (const auto& term : request.key_terms) {
+        const auto& left_value = left_row.values[term.left_column];
+        const auto& right_value = right_row.values[term.right_column];
+        if (left_value.state == api::EngineValueState::sql_null ||
+            right_value.state == api::EngineValueState::sql_null) {
+          saw_unknown = true;
+          continue;
+        }
+        const auto left_decoded = DecodeInt64Value(left_value);
+        const auto right_decoded = DecodeInt64Value(right_value);
+        if (!left_decoded.ok() || !right_decoded.ok()) {
+          return refuse("composite join key operand encoding is invalid");
+        }
+        if (left_decoded.value != right_decoded.value) {
+          saw_false = true;
+          break;
+        }
+      }
+      pair_truth_values.push_back(
+          saw_false
+              ? api::EngineSqlTruthValue::false_value
+              : (saw_unknown ? api::EngineSqlTruthValue::unknown
+                             : api::EngineSqlTruthValue::true_value));
+    }
+  }
+
+  result.diagnostic = {};
+  result.pair_truth_values = std::move(pair_truth_values);
+  result.pair_count = pair_count;
+  result.selected_plan_uuid = route_validation.selected_plan_uuid;
+  result.executed_physical_node_id =
+      route_validation.executed_physical_node_id;
+  result.causal_counter_id = route_validation.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }
