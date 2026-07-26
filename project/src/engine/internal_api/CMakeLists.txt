@@ -6,6 +6,20 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  # QOW-CMAKE-QRY-002-V1
+  add_library(sb_qow_relational_dag_contract STATIC query/plan_api.cpp)
+  target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
+  target_compile_definitions(sb_qow_relational_dag_contract PRIVATE
+    SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_qow_relational_dag_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  set(SB_QOW_INTERNAL_API_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
+
 if(NOT TARGET sb_core_platform)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/platform ${CMAKE_CURRENT_BINARY_DIR}/core_platform)
 endif()

@@ -8,6 +8,7 @@
 
 #include "query/plan_api.hpp"
 
+#ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/descriptor_api.hpp"
@@ -27,11 +28,13 @@
 #include "optimizer_plan_cache.hpp"
 #include "physical_plan.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#endif
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -40,10 +43,146 @@
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+
+RelationalDagValidationResult ValidateTypedRelationalDag(
+    const TypedRelationalDag& dag,
+    const RelationalDagLimits& limits) {
+  RelationalDagValidationResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string field_id) {
+    result.accepted = false;
+    result.issues.push_back(
+        {std::move(diagnostic_id), node_id, std::move(field_id)});
+    return result;
+  };
+  const auto known_kind = [](const RelationalDagNodeKind kind) {
+    switch (kind) {
+      case RelationalDagNodeKind::kScan:
+      case RelationalDagNodeKind::kFilter:
+      case RelationalDagNodeKind::kProject:
+      case RelationalDagNodeKind::kJoin:
+      case RelationalDagNodeKind::kAggregate:
+      case RelationalDagNodeKind::kSort:
+      case RelationalDagNodeKind::kLimit:
+      case RelationalDagNodeKind::kWindow:
+      case RelationalDagNodeKind::kSetOperation:
+      case RelationalDagNodeKind::kSubquery:
+      case RelationalDagNodeKind::kCte:
+      case RelationalDagNodeKind::kRecursiveCte:
+      case RelationalDagNodeKind::kValues:
+      case RelationalDagNodeKind::kPivot:
+      case RelationalDagNodeKind::kUnpivot:
+      case RelationalDagNodeKind::kMatchRecognize:
+      case RelationalDagNodeKind::kTableFunctionInvoke: return true;
+    }
+    return false;
+  };
+
+  if (dag.wire_version != 1) {
+    return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0, "wire_version");
+  }
+  if (dag.package_root != RelationalPackageRoot::kQueryExecute) {
+    return refuse("QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL", 0,
+                  "package_root");
+  }
+  if (limits.maximum_nodes == 0 || limits.maximum_depth == 0 ||
+      limits.maximum_fanout == 0 || dag.nodes.empty() ||
+      dag.nodes.size() > limits.maximum_nodes) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "node_count");
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
+  std::unordered_map<std::uint32_t, std::size_t> incoming_reference_count;
+  for (const auto& node : dag.nodes) {
+    if (node.node_id == 0 || !known_kind(node.node_kind) ||
+        !nodes_by_id.emplace(node.node_id, &node).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "node_id_or_kind");
+    }
+    if (node.input_node_ids.size() > limits.maximum_fanout) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", node.node_id,
+                    "input_node_ids");
+    }
+    std::unordered_set<std::uint32_t> descriptor_ids;
+    for (const auto descriptor_id : node.output_descriptor_ids) {
+      if (descriptor_id == 0 || !descriptor_ids.insert(descriptor_id).second) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "output_descriptor_ids");
+      }
+    }
+  }
+  if (dag.root_node_id == 0 ||
+      nodes_by_id.find(dag.root_node_id) == nodes_by_id.end()) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", dag.root_node_id,
+                  "root_node_id");
+  }
+
+  for (const auto& node : dag.nodes) {
+    for (const auto input_id : node.input_node_ids) {
+      if (input_id == 0 || nodes_by_id.find(input_id) == nodes_by_id.end()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "input_node_ids");
+      }
+      ++incoming_reference_count[input_id];
+    }
+  }
+  for (const auto& [node_id, reference_count] : incoming_reference_count) {
+    if (reference_count > 1 && !nodes_by_id.at(node_id)->shareable) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node_id,
+                    "shareable");
+    }
+  }
+
+  std::unordered_map<std::uint32_t, std::uint8_t> visit_state;
+  std::unordered_set<std::uint32_t> reachable;
+  std::uint32_t failing_node_id = 0;
+  std::string failing_field;
+  std::function<bool(std::uint32_t, std::size_t)> visit =
+      [&](const std::uint32_t node_id, const std::size_t depth) {
+        if (depth > limits.maximum_depth) {
+          failing_node_id = node_id;
+          failing_field = "maximum_depth";
+          return false;
+        }
+        result.maximum_observed_depth =
+            std::max(result.maximum_observed_depth, depth);
+        const auto state = visit_state[node_id];
+        if (state == 1) {
+          failing_node_id = node_id;
+          failing_field = "cycle";
+          return false;
+        }
+        if (state == 2) return true;
+        visit_state[node_id] = 1;
+        reachable.insert(node_id);
+        for (const auto input_id : nodes_by_id.at(node_id)->input_node_ids) {
+          if (!visit(input_id, depth + 1)) return false;
+        }
+        visit_state[node_id] = 2;
+        return true;
+      };
+  if (!visit(dag.root_node_id, 1)) {
+    const auto diagnostic_id = failing_field == "maximum_depth"
+                                   ? "SBLR.PLAN_TREE.RESOURCE_LIMIT"
+                                   : "SBLR.PLAN_TREE.INVALID_HANDLE";
+    return refuse(diagnostic_id, failing_node_id, failing_field);
+  }
+  if (reachable.size() != dag.nodes.size()) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0, "orphan_node");
+  }
+
+  result.accepted = true;
+  result.validated_node_count = reachable.size();
+  return result;
+}
+
+#ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 namespace {
 
 namespace exec = scratchbird::engine::executor;
@@ -7769,5 +7908,7 @@ EnginePlanOperationResult EnginePlanOperation(const EnginePlanOperationRequest& 
                               lookup.evidence);
   return result;
 }
+
+#endif
 
 }  // namespace scratchbird::engine::internal_api

@@ -12,10 +12,79 @@
 #include "catalog/sys_information_projection.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+
+enum class RelationalPackageRoot : std::uint8_t {
+  kQueryExecute = 1,
+};
+
+enum class RelationalDagNodeKind : std::uint8_t {
+  kScan = 1,
+  kFilter,
+  kProject,
+  kJoin,
+  kAggregate,
+  kSort,
+  kLimit,
+  kWindow,
+  kSetOperation,
+  kSubquery,
+  kCte,
+  kRecursiveCte,
+  kValues,
+  kPivot,
+  kUnpivot,
+  kMatchRecognize,
+  kTableFunctionInvoke,
+};
+
+struct RelationalDagNode {
+  std::uint32_t node_id{0};
+  RelationalDagNodeKind node_kind{RelationalDagNodeKind::kValues};
+  std::vector<std::uint32_t> input_node_ids;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  bool shareable{false};
+};
+
+struct TypedRelationalDag {
+  std::uint16_t wire_version{1};
+  RelationalPackageRoot package_root{RelationalPackageRoot::kQueryExecute};
+  std::uint32_t root_node_id{0};
+  std::vector<RelationalDagNode> nodes;
+};
+
+struct RelationalDagLimits {
+  std::size_t maximum_nodes{131072};
+  std::size_t maximum_depth{256};
+  std::size_t maximum_fanout{1024};
+};
+
+struct RelationalDagValidationIssue {
+  std::string diagnostic_id;
+  std::uint32_t node_id{0};
+  std::string field_id;
+};
+
+struct RelationalDagValidationResult {
+  bool accepted{false};
+  std::size_t validated_node_count{0};
+  std::size_t maximum_observed_depth{0};
+  std::vector<RelationalDagValidationIssue> issues;
+};
+
+struct EngineTypedRelationalPlanRequest : EngineApiRequest {
+  bool execute{false};
+  TypedRelationalDag relational_dag;
+};
+
+// QOW-SOURCE-QRY-002-V1
+RelationalDagValidationResult ValidateTypedRelationalDag(
+    const TypedRelationalDag& dag,
+    const RelationalDagLimits& limits = {});
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PLAN_API
 struct EngineQueryRelation {

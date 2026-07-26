@@ -33,6 +33,21 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-001-BINDING;development_candidate"
   )
 
+  if(NOT TARGET sb_qow_relational_dag_contract)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/engine/internal_api"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_internal_api"
+    )
+  endif()
+  # QOW-CMAKE-QRY-002-V1
+  add_executable(qow_qry_002_test_v1 qow_qry_002.cpp)
+  target_compile_features(qow_qry_002_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_002_test_v1 PRIVATE sb_qow_relational_dag_contract)
+  add_test(NAME qow_qry_002_v1 COMMAND qow_qry_002_test_v1)
+  set_tests_properties(qow_qry_002_v1 PROPERTIES
+    LABELS "qow_closure;QOW-103;QOW-LEAF-QRY-002;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()
