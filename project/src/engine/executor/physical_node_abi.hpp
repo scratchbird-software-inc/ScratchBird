@@ -67,6 +67,15 @@ struct PhysicalNodeRecord {
   std::vector<std::uint32_t> output_descriptor_ids;
   bool shareable{false};
   std::uint64_t causal_counter_id{0};
+  std::string selected_alternative_uuid;
+  std::string executor_capability_uuid;
+  std::uint32_t executor_capability_abi_version{0};
+  std::string cost_vector_uuid;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+  std::uint64_t memory_bytes_required{0};
+  std::uint64_t spill_bytes_expected{0};
+  bool engine_capability_validated{false};
 };
 
 struct TypedPhysicalNodeDag {
@@ -77,6 +86,28 @@ struct TypedPhysicalNodeDag {
   std::uint64_t statement_snapshot_id{0};
   std::vector<PhysicalAdmissionEvidence> admission_evidence;
   std::vector<PhysicalNodeRecord> nodes;
+  std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::string capability_snapshot_uuid;
+  std::string resource_snapshot_uuid;
+  std::string statistics_snapshot_uuid;
+  std::string route_snapshot_uuid;
+  std::uint64_t catalog_generation{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t policy_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::uint64_t statistics_generation{0};
+  std::uint64_t route_epoch{0};
+  std::uint64_t route_generation{0};
+  std::uint64_t memory_budget_bytes{0};
+  bool spill_allowed{false};
+  bool optimizer_published{false};
+  bool immutable_node_identity_validated{false};
+  bool capability_validated_before_access{false};
+  bool data_access_observed{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
 };
 
 struct PhysicalNodeAbiLimits {
@@ -135,7 +166,7 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
     });
   };
 
-  if (dag.abi_version != 1) {
+  if (dag.abi_version != 1 && dag.abi_version != 2) {
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-VERSION", 0,
                   "abi_version");
   }
@@ -147,19 +178,51 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                   "mga_statement_context");
   }
+  const bool optimizer_publication_v2 = dag.abi_version == 2;
+  if (optimizer_publication_v2 &&
+      (!canonical_uuid(dag.bound_sblr_tree_uuid) ||
+       !canonical_uuid(dag.catalog_epoch_uuid) ||
+       !canonical_uuid(dag.security_context_uuid) ||
+       !canonical_uuid(dag.capability_snapshot_uuid) ||
+       !canonical_uuid(dag.resource_snapshot_uuid) ||
+       !canonical_uuid(dag.statistics_snapshot_uuid) ||
+       !canonical_uuid(dag.route_snapshot_uuid) ||
+       dag.catalog_generation == 0 || dag.security_epoch == 0 ||
+       dag.policy_epoch == 0 || dag.resource_epoch == 0 ||
+       dag.statistics_generation == 0 || dag.route_epoch == 0 ||
+       dag.route_generation == 0 || dag.memory_budget_bytes == 0 ||
+       !dag.optimizer_published ||
+       !dag.immutable_node_identity_validated ||
+       !dag.capability_validated_before_access || dag.data_access_observed ||
+       dag.parser_execution_authority_claimed ||
+       dag.transaction_finality_authority_claimed)) {
+    return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION", 0,
+                  "optimizer_publication_scope");
+  }
   constexpr std::size_t kAdmissionStageCount = 8;
   if (dag.admission_evidence.size() != kAdmissionStageCount) {
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                   "admission_evidence");
   }
   std::unordered_set<std::string> admission_evidence_uuids;
+  std::vector<std::string_view> expected_publication_evidence;
+  if (optimizer_publication_v2) {
+    expected_publication_evidence = {
+        dag.bound_sblr_tree_uuid, dag.catalog_epoch_uuid,
+        dag.security_context_uuid, dag.catalog_epoch_uuid,
+        dag.capability_snapshot_uuid, dag.resource_snapshot_uuid,
+        dag.statistics_snapshot_uuid, dag.route_snapshot_uuid};
+  }
   for (std::size_t index = 0; index < kAdmissionStageCount; ++index) {
     const auto expected =
         static_cast<PhysicalAdmissionStage>(index + 1);
     const auto& evidence = dag.admission_evidence[index];
     if (evidence.stage != expected ||
         !canonical_uuid(evidence.evidence_uuid) ||
-        !admission_evidence_uuids.insert(evidence.evidence_uuid).second) {
+        (optimizer_publication_v2
+             ? evidence.evidence_uuid != expected_publication_evidence[index]
+             : !admission_evidence_uuids.insert(evidence.evidence_uuid)
+                    .second)) {
       return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                     "admission_order_or_evidence");
     }
@@ -182,6 +245,32 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
         !nodes_by_id.emplace(node.physical_node_id, &node).second) {
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.physical_node_id,
                     "physical_node_record");
+    }
+    if (optimizer_publication_v2) {
+      std::unordered_set<std::string> required_properties;
+      std::unordered_set<std::string> delivered_properties;
+      const auto valid_properties = [&](const auto& properties,
+                                        auto* unique) {
+        return std::ranges::all_of(properties, [&](const auto& property_uuid) {
+          return canonical_uuid(property_uuid) &&
+                 unique->insert(property_uuid).second;
+        });
+      };
+      if (!canonical_uuid(node.selected_alternative_uuid) ||
+          !canonical_uuid(node.executor_capability_uuid) ||
+          node.executor_capability_abi_version != 1 ||
+          !canonical_uuid(node.cost_vector_uuid) ||
+          !valid_properties(node.required_property_uuids,
+                            &required_properties) ||
+          !valid_properties(node.delivered_property_uuids,
+                            &delivered_properties) ||
+          node.memory_bytes_required > dag.memory_budget_bytes ||
+          (!dag.spill_allowed && node.spill_bytes_expected != 0) ||
+          !node.engine_capability_validated) {
+        return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+                      node.physical_node_id,
+                      "selected_node_capability_contract");
+      }
     }
     if (node.input_physical_node_ids.size() > limits.maximum_fanout) {
       return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", node.physical_node_id,

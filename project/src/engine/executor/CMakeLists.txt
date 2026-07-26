@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # QOW-CMAKE-QRY-004-NODE-ABI-V1
+# QOW-CMAKE-OPT-016-V1
 add_library(sb_qow_physical_node_abi INTERFACE)
 target_compile_features(sb_qow_physical_node_abi INTERFACE cxx_std_20)
 target_include_directories(sb_qow_physical_node_abi INTERFACE

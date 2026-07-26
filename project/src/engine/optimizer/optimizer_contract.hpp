@@ -11,6 +11,7 @@
 #include "canonical_candidate_legality.hpp"
 #include "cost_model.hpp"
 #include "logical_plan.hpp"
+#include "../executor/physical_node_abi.hpp"
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 #include "access_path.hpp"
 #include "access_path_full.hpp"
@@ -209,6 +210,11 @@ struct CanonicalOptimizerSearchResult {
   std::uint64_t search_step_count{0};
   std::uint64_t pruned_plan_count{0};
   std::uint64_t selected_scalar_score{0};
+  std::string bound_sblr_tree_uuid;
+  std::string statistics_snapshot_uuid;
+  std::uint64_t statistics_generation{0};
+  std::string model_family_id;
+  std::string calibration_profile_uuid;
   std::string selected_plan_signature;
   std::vector<CanonicalOptimizerMemoGroup> memo_groups;
   std::vector<CanonicalOptimizerSelectedAlternative> selected_alternatives;
@@ -224,6 +230,79 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
         alternatives,
     const std::vector<CanonicalOptimizerSearchCandidateInput>& candidates,
     const CanonicalOptimizerSearchPolicy& policy);
+
+struct CanonicalExecutorCapabilityRecord {
+  std::string capability_uuid;
+  std::uint32_t capability_abi_version{0};
+  std::string implementation_id;
+  scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind
+      logical_node_kind{
+          scratchbird::engine::planner::CanonicalLogicalRelationalNodeKind::
+              kValues};
+  scratchbird::engine::executor::PhysicalNodeKind physical_node_kind{
+      scratchbird::engine::executor::PhysicalNodeKind::kValues};
+  std::size_t minimum_input_count{0};
+  std::size_t maximum_input_count{0};
+  std::vector<scratchbird::engine::planner::CanonicalLogicalPropertyKind>
+      supported_property_kinds;
+  std::uint64_t maximum_memory_bytes{0};
+  bool spill_supported{false};
+  bool storage_read_capable{false};
+  bool mga_visibility_capable{false};
+  bool available{false};
+  std::string refusal_diagnostic_id;
+  bool engine_owned{false};
+  bool cluster_capability_claimed{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct CanonicalExecutorCapabilityCatalog {
+  std::uint16_t abi_version{1};
+  std::string capability_snapshot_uuid;
+  std::uint64_t policy_epoch{0};
+  std::vector<CanonicalExecutorCapabilityRecord> capabilities;
+  bool engine_owned{false};
+  bool cluster_catalog_claimed{false};
+  bool parser_capability_authority_claimed{false};
+};
+
+struct CanonicalOptimizerPhysicalPublicationIdentity {
+  std::string selected_plan_uuid;
+  std::uint64_t first_causal_counter_id{0};
+  bool engine_owned{false};
+  bool data_access_observed{false};
+  bool parser_publication_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct CanonicalOptimizerPhysicalPublicationIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string alternative_uuid;
+  std::string capability_uuid;
+  std::string field_id;
+};
+
+struct CanonicalOptimizerPhysicalPublicationResult {
+  bool accepted{false};
+  bool published{false};
+  bool immutable_node_identity_validated{false};
+  bool capability_validated_before_access{false};
+  bool data_access_allowed{false};
+  scratchbird::engine::executor::TypedPhysicalNodeDag physical_dag;
+  std::vector<CanonicalOptimizerPhysicalPublicationIssue> issues;
+};
+
+// QOW-SOURCE-OPT-016-V1
+CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog&
+        alternatives,
+    const CanonicalOptimizerSearchResult& search,
+    const CanonicalExecutorCapabilityCatalog& capability_catalog,
+    const CanonicalOptimizerPhysicalPublicationIdentity& identity);
 
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 // SEARCH_KEY: SB_OPTIMIZER_CONTRACT

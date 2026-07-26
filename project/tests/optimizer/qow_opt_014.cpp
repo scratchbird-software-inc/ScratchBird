@@ -75,8 +75,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   graph.root_logical_node_id = 4;
   graph.result_descriptor_ids = {104};
   graph.nodes = {
-      Node(1, plan::CanonicalLogicalRelationalNodeKind::kValues, {}, 101,
-           "values.literal-table.v1"),
+      Node(1, plan::CanonicalLogicalRelationalNodeKind::kRelationSource, {},
+           101, "relation.source.v1"),
       Node(2, plan::CanonicalLogicalRelationalNodeKind::kValues, {}, 102,
            "values.literal-table.v1"),
       Node(3, plan::CanonicalLogicalRelationalNodeKind::kJoin, {1, 2}, 103,
@@ -84,6 +84,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
       Node(4, plan::CanonicalLogicalRelationalNodeKind::kProject, {3}, 104,
            "project.bound-expressions.v1"),
   };
+  graph.nodes[0].required_object_uuids = {Uuid(9)};
 
   auto& properties = request.logical_properties;
   properties.bound_sblr_tree_uuid = Uuid(1);
@@ -95,6 +96,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   request.catalog.snapshot_uuid = Uuid(2);
   request.catalog.catalog_epoch_uuid = Uuid(2);
   request.catalog.catalog_generation = 31;
+  request.catalog.object_uuids = {Uuid(9)};
   request.catalog.descriptor_ids = {101, 102, 103, 104};
   request.catalog.engine_owned = true;
 
@@ -102,6 +104,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   request.security.security_epoch = 32;
   request.security.policy_epoch = 33;
   request.security.catalog_generation = 31;
+  request.security.authorized_object_uuids = {Uuid(9)};
   request.security.engine_owned = true;
 
   request.mga.local_transaction_id = 701;
@@ -116,6 +119,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   request.policy_capability.capability_snapshot_uuid = Uuid(5);
   request.policy_capability.capability_abi_version = 1;
   request.policy_capability.supported_node_kinds = {
+      plan::CanonicalLogicalRelationalNodeKind::kRelationSource,
       plan::CanonicalLogicalRelationalNodeKind::kValues,
       plan::CanonicalLogicalRelationalNodeKind::kJoin,
       plan::CanonicalLogicalRelationalNodeKind::kProject,
@@ -146,7 +150,19 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
     estimate.statistics_generation = 35;
     estimate.admitted_at_monotonic_ns = 700'000;
     if (node.node_kind ==
-        plan::CanonicalLogicalRelationalNodeKind::kValues) {
+        plan::CanonicalLogicalRelationalNodeKind::kRelationSource) {
+      estimate.object_uuid = Uuid(9);
+      estimate.state = opt::CanonicalOptimizerStatisticState::kKnown;
+      estimate.source = opt::CanonicalOptimizerStatisticSource::kCatalogExact;
+      estimate.collected_at_monotonic_ns = 650'000;
+      estimate.maximum_age_ns = 100'000;
+      estimate.confidence = opt::CostConfidence::kExact;
+      estimate.row_count_present = true;
+      estimate.row_count = 10;
+      estimate.page_count_present = true;
+      estimate.page_count = 1;
+    } else if (node.node_kind ==
+               plan::CanonicalLogicalRelationalNodeKind::kValues) {
       estimate.state = opt::CanonicalOptimizerStatisticState::kNotApplicable;
       estimate.source = opt::CanonicalOptimizerStatisticSource::kUnavailable;
       estimate.confidence = opt::CostConfidence::kUnknown;
@@ -177,7 +193,7 @@ plan::CanonicalPhysicalAlternativeCatalog Alternatives() {
   catalog.local_transaction_id = 701;
   catalog.statement_snapshot_id = 699;
   catalog.alternatives = {
-      Alternative(1, 1, "values.materialize.v1", 101),
+      Alternative(1, 1, "scan.heap.v1", 101),
       Alternative(2, 2, "values.materialize.v1", 102),
       Alternative(3, 3, "join.hash.v1", 103),
       Alternative(4, 3, "join.merge.v1", 103),
@@ -204,6 +220,7 @@ opt::CanonicalOptimizerSearchCandidateInput Candidate(
   candidate.cost_terms.cpu_units = score;
   candidate.cost_terms.page_read_sequential_units = ordinal;
   candidate.cost_terms.memory_bytes_required = 100 + ordinal;
+  if (ordinal == 1) candidate.cost_terms.mga_visibility_checks_expected = 1;
   candidate.cost_terms.confidence = opt::CostConfidence::kExact;
   candidate.semantic_preserving = true;
   candidate.derived_from_admitted_statistics = true;
@@ -404,6 +421,7 @@ bool ValidateAtomicRefusals() {
 
 }  // namespace
 
+#ifndef QOW_OPT_014_FIXTURE_ONLY
 // QOW-TEST-OPT-014-V1
 int main() {
   bool passed = true;
@@ -412,3 +430,4 @@ int main() {
   passed &= ValidateAtomicRefusals();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+#endif

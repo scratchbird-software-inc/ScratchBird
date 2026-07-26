@@ -496,7 +496,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
           admission_request.statistics.statistics_generation ||
       admission.route_epoch != admission_request.route.route_epoch ||
       admission.route_generation !=
-          admission_request.route.route_generation) {
+          admission_request.route.route_generation ||
+      admission_request.logical_graph.nodes.empty()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1", 0, {},
                   "optimizer_admission_scope");
   }
@@ -884,11 +885,506 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   result.physical_dag_published = false;
   result.data_access_allowed = false;
   result.selected_scalar_score = selected.scalar_score;
+  result.bound_sblr_tree_uuid = admission.bound_sblr_tree_uuid;
+  result.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
+  result.statistics_generation = admission.statistics_generation;
+  result.model_family_id = "relational.local.v1";
+  result.calibration_profile_uuid = *calibration_profile_uuid;
   result.selected_plan_signature = selected.signature;
   result.trace.push_back(
       {result.search_step_count, "memo.plan.selected.v1", 0,
        selected.selected.size(), result.pruned_plan_count,
        selected.signature});
+  return result;
+}
+
+// QOW-SOURCE-OPT-016-V1
+CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const planner::CanonicalPhysicalAlternativeCatalog& alternatives,
+    const CanonicalOptimizerSearchResult& search,
+    const CanonicalExecutorCapabilityCatalog& capability_catalog,
+    const CanonicalOptimizerPhysicalPublicationIdentity& identity) {
+  namespace executor = scratchbird::engine::executor;
+  CanonicalOptimizerPhysicalPublicationResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t logical_node_id,
+                          std::string alternative_uuid,
+                          std::string capability_uuid,
+                          std::string field_id) {
+    result = {};
+    result.issues.push_back(
+        {std::move(diagnostic_id), logical_node_id,
+         std::move(alternative_uuid), std::move(capability_uuid),
+         std::move(field_id)});
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto stable_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
+  const auto diagnostic_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 160 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-';
+           });
+  };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* out) {
+    if (out == nullptr ||
+        std::numeric_limits<std::uint64_t>::max() - left < right) {
+      return false;
+    }
+    *out = left + right;
+    return true;
+  };
+  const auto physical_kind = [](const auto logical_kind)
+      -> std::optional<executor::PhysicalNodeKind> {
+    using LogicalKind = planner::CanonicalLogicalRelationalNodeKind;
+    using PhysicalKind = executor::PhysicalNodeKind;
+    switch (logical_kind) {
+      case LogicalKind::kRelationSource: return PhysicalKind::kScan;
+      case LogicalKind::kFilter: return PhysicalKind::kFilter;
+      case LogicalKind::kProject: return PhysicalKind::kProject;
+      case LogicalKind::kJoin: return PhysicalKind::kJoin;
+      case LogicalKind::kAggregate: return PhysicalKind::kAggregate;
+      case LogicalKind::kSort: return PhysicalKind::kSort;
+      case LogicalKind::kLimit: return PhysicalKind::kLimit;
+      case LogicalKind::kWindow: return PhysicalKind::kWindow;
+      case LogicalKind::kSetOperation: return PhysicalKind::kSetOperation;
+      case LogicalKind::kSubquery: return PhysicalKind::kSubquery;
+      case LogicalKind::kCte: return PhysicalKind::kCte;
+      case LogicalKind::kRecursiveCte: return PhysicalKind::kRecursiveCte;
+      case LogicalKind::kValues: return PhysicalKind::kValues;
+      case LogicalKind::kPivot: return PhysicalKind::kPivot;
+      case LogicalKind::kUnpivot: return PhysicalKind::kUnpivot;
+      case LogicalKind::kMatchRecognize:
+        return PhysicalKind::kMatchRecognize;
+      case LogicalKind::kTableFunctionInvoke:
+        return PhysicalKind::kTableFunctionInvoke;
+      default: return std::nullopt;
+    }
+  };
+
+  if (!admission.admitted || !admission.planning_allowed ||
+      admission.data_access_allowed || !admission.issues.empty() ||
+      admission.evidence.size() != 8 ||
+      admission.bound_sblr_tree_uuid !=
+          admission_request.logical_graph.bound_sblr_tree_uuid ||
+      admission.catalog_epoch_uuid !=
+          admission_request.logical_graph.catalog_epoch_uuid ||
+      admission.security_context_uuid !=
+          admission_request.logical_graph.security_context_uuid ||
+      admission.capability_snapshot_uuid !=
+          admission_request.policy_capability.capability_snapshot_uuid ||
+      admission.resource_snapshot_uuid !=
+          admission_request.resource.resource_snapshot_uuid ||
+      admission.statistics_snapshot_uuid !=
+          admission_request.statistics.statistics_snapshot_uuid ||
+      admission.route_snapshot_uuid !=
+          admission_request.route.route_snapshot_uuid ||
+      admission.local_transaction_id !=
+          admission_request.logical_graph.local_transaction_id ||
+      admission.statement_snapshot_id !=
+          admission_request.logical_graph.statement_snapshot_id ||
+      admission.catalog_generation !=
+          admission_request.catalog.catalog_generation ||
+      admission.security_epoch != admission_request.security.security_epoch ||
+      admission.policy_epoch != admission_request.security.policy_epoch ||
+      admission.resource_epoch != admission_request.resource.resource_epoch ||
+      admission.statistics_generation !=
+          admission_request.statistics.statistics_generation ||
+      admission.route_epoch != admission_request.route.route_epoch ||
+      admission.route_generation !=
+          admission_request.route.route_generation) {
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-ADMISSION-V1", 0, {}, {},
+                  "optimizer_admission_scope");
+  }
+  for (std::size_t index = 0; index < admission.evidence.size(); ++index) {
+    if (admission.evidence[index].stage !=
+        static_cast<CanonicalOptimizerAdmissionStage>(index + 1)) {
+      return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-ADMISSION-V1", 0, {}, {},
+                    "optimizer_admission_order");
+    }
+  }
+  if (!search.accepted || !search.selected || !search.issues.empty() ||
+      !search.resource_bounded || !search.deterministic ||
+      search.physical_dag_published || search.data_access_allowed ||
+      search.bound_sblr_tree_uuid != admission.bound_sblr_tree_uuid ||
+      search.statistics_snapshot_uuid !=
+          admission.statistics_snapshot_uuid ||
+      search.statistics_generation != admission.statistics_generation ||
+      search.model_family_id != "relational.local.v1" ||
+      !canonical_uuid(search.calibration_profile_uuid) ||
+      search.memo_group_count != admission_request.logical_graph.nodes.size() ||
+      search.memo_groups.size() != admission_request.logical_graph.nodes.size() ||
+      search.selected_alternatives.size() !=
+          admission_request.logical_graph.nodes.size()) {
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1", 0, {}, {},
+                  "selected_search_result");
+  }
+  if (!identity.engine_owned || identity.data_access_observed ||
+      identity.parser_publication_authority_claimed ||
+      identity.transaction_finality_authority_claimed ||
+      !canonical_uuid(identity.selected_plan_uuid) ||
+      identity.selected_plan_uuid == admission.bound_sblr_tree_uuid ||
+      identity.selected_plan_uuid == admission.statistics_snapshot_uuid ||
+      identity.first_causal_counter_id == 0) {
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1", 0, {}, {},
+                  "physical_publication_identity");
+  }
+  std::uint64_t final_causal_counter = 0;
+  if (!checked_add(identity.first_causal_counter_id,
+                   admission_request.logical_graph.nodes.size() - 1,
+                   &final_causal_counter)) {
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-RESOURCE-V1", 0, {}, {},
+                  "causal_counter_range");
+  }
+  (void)final_causal_counter;
+
+  const auto legality = EvaluateCanonicalRelationalCandidateLegality(
+      admission_request.logical_graph, admission_request.logical_properties,
+      alternatives);
+  if (!legality.accepted || !legality.complete_legal_coverage) {
+    if (!legality.issues.empty()) {
+      const auto& issue = legality.issues.front();
+      return refuse(issue.diagnostic_id, issue.logical_node_id,
+                    issue.alternative_uuid, {}, issue.field_id);
+    }
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-LEGALITY-V1", 0, {}, {},
+                  "selected_alternative_legality");
+  }
+
+  if (capability_catalog.abi_version != 1 ||
+      !capability_catalog.engine_owned ||
+      capability_catalog.cluster_catalog_claimed ||
+      capability_catalog.parser_capability_authority_claimed ||
+      capability_catalog.capability_snapshot_uuid !=
+          admission.capability_snapshot_uuid ||
+      capability_catalog.policy_epoch != admission.policy_epoch ||
+      capability_catalog.capabilities.empty() ||
+      capability_catalog.capabilities.size() >
+          admission_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1", 0, {}, {},
+                  "capability_catalog_scope");
+  }
+
+  std::unordered_map<std::string, const CanonicalExecutorCapabilityRecord*>
+      capabilities_by_uuid;
+  std::unordered_set<std::string> capability_implementations;
+  for (const auto& capability : capability_catalog.capabilities) {
+    const auto expected_kind = physical_kind(capability.logical_node_kind);
+    const auto implementation_key =
+        std::to_string(static_cast<std::uint8_t>(
+            capability.logical_node_kind)) +
+        ":" + capability.implementation_id;
+    std::unordered_set<planner::CanonicalLogicalPropertyKind> property_kinds;
+    if (!canonical_uuid(capability.capability_uuid) ||
+        !capabilities_by_uuid
+             .emplace(capability.capability_uuid, &capability)
+             .second ||
+        capability.capability_abi_version != 1 ||
+        !stable_id(capability.implementation_id) || !expected_kind ||
+        capability.physical_node_kind != *expected_kind ||
+        !capability_implementations.insert(implementation_key).second ||
+        capability.minimum_input_count > capability.maximum_input_count ||
+        capability.maximum_input_count > 1024 ||
+        (capability.available && capability.maximum_memory_bytes == 0) ||
+        !capability.engine_owned ||
+        capability.cluster_capability_claimed ||
+        capability.parser_execution_authority_claimed ||
+        capability.transaction_finality_authority_claimed ||
+        (capability.available &&
+         !capability.refusal_diagnostic_id.empty()) ||
+        (!capability.available &&
+         !diagnostic_id(capability.refusal_diagnostic_id)) ||
+        !std::ranges::all_of(
+            capability.supported_property_kinds,
+            [&](const auto kind) {
+              return kind >= planner::CanonicalLogicalPropertyKind::kOrdering &&
+                     kind <=
+                         planner::CanonicalLogicalPropertyKind::
+                             kExpressionEquivalence &&
+                     property_kinds.insert(kind).second;
+            })) {
+      return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1", 0, {},
+                    capability.capability_uuid,
+                    "capability_record_contract");
+    }
+    if (capability.available &&
+        capability.logical_node_kind ==
+            planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
+        (!capability.storage_read_capable ||
+         !capability.mga_visibility_capable)) {
+      return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1", 0, {},
+                    capability.capability_uuid,
+                    "storage_mga_capability");
+    }
+  }
+
+  std::unordered_map<std::uint32_t,
+                     const planner::CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  std::unordered_map<std::string,
+                     const planner::CanonicalPhysicalAlternativeRecord*>
+      alternatives_by_uuid;
+  std::unordered_map<std::string,
+                     const CanonicalRelationalCandidateLegalityRecord*>
+      legality_by_uuid;
+  std::unordered_map<std::string,
+                     const planner::CanonicalLogicalPropertyRecord*>
+      properties_by_uuid;
+  for (const auto& node : admission_request.logical_graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+  for (const auto& alternative : alternatives.alternatives) {
+    alternatives_by_uuid.emplace(alternative.alternative_uuid, &alternative);
+  }
+  for (const auto& record : legality.candidates) {
+    legality_by_uuid.emplace(record.alternative_uuid, &record);
+  }
+  for (const auto& property : admission_request.logical_properties.properties) {
+    properties_by_uuid.emplace(property.property_uuid, &property);
+  }
+
+  std::vector<const CanonicalOptimizerSelectedAlternative*> selected;
+  selected.reserve(search.selected_alternatives.size());
+  for (const auto& selection : search.selected_alternatives) {
+    selected.push_back(&selection);
+  }
+  std::ranges::sort(selected, {},
+                    &CanonicalOptimizerSelectedAlternative::logical_node_id);
+  std::unordered_set<std::uint32_t> selected_node_ids;
+  std::unordered_set<std::string> selected_alternative_uuids;
+  std::uint64_t selected_score = 0;
+  std::string selected_signature;
+  for (const auto* selection : selected) {
+    const auto node_it = nodes_by_id.find(selection->logical_node_id);
+    const auto alternative_it =
+        alternatives_by_uuid.find(selection->alternative_uuid);
+    const auto legality_it = legality_by_uuid.find(selection->alternative_uuid);
+    if (node_it == nodes_by_id.end() ||
+        alternative_it == alternatives_by_uuid.end() ||
+        legality_it == legality_by_uuid.end() || !legality_it->second->legal ||
+        alternative_it->second->logical_node_id !=
+            selection->logical_node_id ||
+        !selected_node_ids.insert(selection->logical_node_id).second ||
+        !selected_alternative_uuids.insert(selection->alternative_uuid)
+             .second ||
+        selection->cost.terms.calibration_profile_uuid !=
+            search.calibration_profile_uuid ||
+        !canonical_uuid(selection->cost.terms.cost_vector_uuid) ||
+        !canonical_uuid(selection->transformation_uuid) ||
+        !stable_id(selection->transformation_rule_id)) {
+      return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1",
+                    selection->logical_node_id,
+                    selection->alternative_uuid, {},
+                    "selected_alternative_identity");
+    }
+    const auto group_it = std::ranges::find_if(
+        search.memo_groups, [&](const auto& group) {
+          return group.logical_node_id == selection->logical_node_id;
+        });
+    if (group_it == search.memo_groups.end()) {
+      return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1",
+                    selection->logical_node_id,
+                    selection->alternative_uuid, {}, "selected_memo_group");
+    }
+    const auto memo_candidate_it = std::ranges::find_if(
+        group_it->candidates, [&](const auto& candidate) {
+          return candidate.alternative_uuid == selection->alternative_uuid;
+        });
+    if (memo_candidate_it == group_it->candidates.end() ||
+        memo_candidate_it->transformation_uuid !=
+            selection->transformation_uuid ||
+        memo_candidate_it->transformation_rule_id !=
+            selection->transformation_rule_id ||
+        memo_candidate_it->cost.terms.cost_vector_uuid !=
+            selection->cost.terms.cost_vector_uuid ||
+        memo_candidate_it->cost.scalar_score !=
+            selection->cost.scalar_score ||
+        !checked_add(selected_score, selection->cost.scalar_score,
+                     &selected_score)) {
+      return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1",
+                    selection->logical_node_id,
+                    selection->alternative_uuid, {},
+                    "selected_memo_candidate");
+    }
+    selected_signature += std::to_string(selection->logical_node_id) + "=" +
+                          selection->alternative_uuid + ";";
+  }
+  if (selected_node_ids.size() != nodes_by_id.size() ||
+      selected_signature != search.selected_plan_signature ||
+      selected_score != search.selected_scalar_score) {
+    return refuse("QOW-DIAG-OPTIMIZER-PHYSICAL-SELECTION-V1", 0, {}, {},
+                  "complete_selected_plan_identity");
+  }
+
+  std::unordered_map<std::uint32_t, std::size_t> input_reference_count;
+  for (const auto& node : admission_request.logical_graph.nodes) {
+    for (const auto input_id : node.input_logical_node_ids) {
+      ++input_reference_count[input_id];
+    }
+  }
+
+  executor::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
+  dag.selected_plan_uuid = identity.selected_plan_uuid;
+  dag.root_physical_node_id =
+      admission_request.logical_graph.root_logical_node_id;
+  dag.local_transaction_id = admission.local_transaction_id;
+  dag.statement_snapshot_id = admission.statement_snapshot_id;
+  dag.bound_sblr_tree_uuid = admission.bound_sblr_tree_uuid;
+  dag.catalog_epoch_uuid = admission.catalog_epoch_uuid;
+  dag.security_context_uuid = admission.security_context_uuid;
+  dag.capability_snapshot_uuid = admission.capability_snapshot_uuid;
+  dag.resource_snapshot_uuid = admission.resource_snapshot_uuid;
+  dag.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
+  dag.route_snapshot_uuid = admission.route_snapshot_uuid;
+  dag.catalog_generation = admission.catalog_generation;
+  dag.security_epoch = admission.security_epoch;
+  dag.policy_epoch = admission.policy_epoch;
+  dag.resource_epoch = admission.resource_epoch;
+  dag.statistics_generation = admission.statistics_generation;
+  dag.route_epoch = admission.route_epoch;
+  dag.route_generation = admission.route_generation;
+  dag.memory_budget_bytes = admission_request.resource.memory_budget_bytes;
+  dag.spill_allowed = admission_request.resource.spill_allowed;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  dag.admission_evidence = {
+      {executor::PhysicalAdmissionStage::kBoundRequest,
+       admission.bound_sblr_tree_uuid},
+      {executor::PhysicalAdmissionStage::kCatalogEpoch,
+       admission.catalog_epoch_uuid},
+      {executor::PhysicalAdmissionStage::kSecurity,
+       admission.security_context_uuid},
+      {executor::PhysicalAdmissionStage::kMgaStatementBoundary,
+       admission.catalog_epoch_uuid},
+      {executor::PhysicalAdmissionStage::kPolicyCapability,
+       admission.capability_snapshot_uuid},
+      {executor::PhysicalAdmissionStage::kResource,
+       admission.resource_snapshot_uuid},
+      {executor::PhysicalAdmissionStage::kStatisticsProvenance,
+       admission.statistics_snapshot_uuid},
+      {executor::PhysicalAdmissionStage::kCanonicalRoute,
+       admission.route_snapshot_uuid},
+  };
+
+  for (std::size_t index = 0; index < selected.size(); ++index) {
+    const auto& selection = *selected[index];
+    const auto& node = *nodes_by_id.at(selection.logical_node_id);
+    const auto& alternative =
+        *alternatives_by_uuid.at(selection.alternative_uuid);
+    const auto capability_it =
+        capabilities_by_uuid.find(alternative.capability_uuid);
+    if (capability_it == capabilities_by_uuid.end()) {
+      return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
+                    selection.logical_node_id, selection.alternative_uuid,
+                    alternative.capability_uuid, "capability_uuid");
+    }
+    const auto& capability = *capability_it->second;
+    const auto expected_kind = physical_kind(node.node_kind);
+    if (!capability.available || !expected_kind ||
+        capability.logical_node_kind != node.node_kind ||
+        capability.physical_node_kind != *expected_kind ||
+        capability.implementation_id != alternative.implementation_id ||
+        node.input_logical_node_ids.size() < capability.minimum_input_count ||
+        node.input_logical_node_ids.size() > capability.maximum_input_count ||
+        selection.cost.terms.memory_bytes_required >
+            capability.maximum_memory_bytes ||
+        (selection.cost.terms.spill_bytes_expected != 0 &&
+         !capability.spill_supported) ||
+        (node.node_kind ==
+             planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
+         (!capability.storage_read_capable ||
+          !capability.mga_visibility_capable ||
+          selection.cost.terms.mga_visibility_checks_expected == 0))) {
+      return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
+                    selection.logical_node_id, selection.alternative_uuid,
+                    alternative.capability_uuid,
+                    capability.available ? "selected_capability_contract"
+                                         : capability.refusal_diagnostic_id);
+    }
+    const auto supports_property = [&](const std::string& property_uuid) {
+      const auto property_it = properties_by_uuid.find(property_uuid);
+      return property_it != properties_by_uuid.end() &&
+             std::ranges::find(capability.supported_property_kinds,
+                               property_it->second->property_kind) !=
+                 capability.supported_property_kinds.end();
+    };
+    if (!std::ranges::all_of(alternative.required_property_uuids,
+                             supports_property) ||
+        !std::ranges::all_of(alternative.delivered_property_uuids,
+                             supports_property)) {
+      return refuse("QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
+                    selection.logical_node_id, selection.alternative_uuid,
+                    alternative.capability_uuid,
+                    "physical_property_capability");
+    }
+
+    executor::PhysicalNodeRecord physical;
+    physical.physical_node_id = node.logical_node_id;
+    physical.relational_node_id = node.logical_node_id;
+    physical.node_kind = *expected_kind;
+    physical.implementation_id = alternative.implementation_id;
+    physical.input_physical_node_ids.assign(
+        node.input_logical_node_ids.begin(),
+        node.input_logical_node_ids.end());
+    physical.output_descriptor_ids = alternative.output_descriptor_ids;
+    physical.shareable = input_reference_count[node.logical_node_id] > 1;
+    physical.causal_counter_id =
+        identity.first_causal_counter_id + index;
+    physical.selected_alternative_uuid = alternative.alternative_uuid;
+    physical.executor_capability_uuid = capability.capability_uuid;
+    physical.executor_capability_abi_version =
+        capability.capability_abi_version;
+    physical.cost_vector_uuid = selection.cost.terms.cost_vector_uuid;
+    physical.required_property_uuids =
+        alternative.required_property_uuids;
+    physical.delivered_property_uuids =
+        alternative.delivered_property_uuids;
+    physical.memory_bytes_required =
+        selection.cost.terms.memory_bytes_required;
+    physical.spill_bytes_expected =
+        selection.cost.terms.spill_bytes_expected;
+    physical.engine_capability_validated = true;
+    dag.nodes.push_back(std::move(physical));
+  }
+
+  const auto dag_validation = executor::ValidateTypedPhysicalNodeDag(dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id,
+                  static_cast<std::uint32_t>(issue.physical_node_id), {}, {},
+                  issue.field_id);
+  }
+
+  result.accepted = true;
+  result.published = true;
+  result.immutable_node_identity_validated = true;
+  result.capability_validated_before_access = true;
+  result.data_access_allowed = false;
+  result.physical_dag = std::move(dag);
   return result;
 }
 
