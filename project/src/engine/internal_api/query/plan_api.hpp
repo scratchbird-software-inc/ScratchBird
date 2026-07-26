@@ -113,6 +113,43 @@ struct RelationalValuesRowRecord {
   std::vector<std::uint32_t> expression_ids;
 };
 
+enum class RelationalPropertyKind : std::uint8_t {
+  kOrdering = 1,
+  kGrouping,
+  kPartitioning,
+  kWindow,
+  kExpressionEquivalence,
+};
+
+enum class RelationalPropertySortDirection : std::uint8_t {
+  kAscending = 1,
+  kDescending,
+};
+
+enum class RelationalPropertyNullPlacement : std::uint8_t {
+  kNullsFirst = 1,
+  kNullsLast,
+};
+
+struct RelationalPropertyOrderingTerm {
+  std::uint32_t expression_id{0};
+  RelationalPropertySortDirection direction{
+      RelationalPropertySortDirection::kAscending};
+  RelationalPropertyNullPlacement null_placement{
+      RelationalPropertyNullPlacement::kNullsLast};
+  std::string collation_uuid;
+};
+
+struct RelationalPropertyRecord {
+  std::string property_uuid;
+  RelationalPropertyKind property_kind{RelationalPropertyKind::kOrdering};
+  std::uint32_t origin_node_id{0};
+  std::vector<std::uint32_t> expression_ids;
+  std::vector<RelationalPropertyOrderingTerm> ordering_terms;
+  std::vector<std::string> dependency_property_uuids;
+  std::string window_frame_descriptor_uuid;
+};
+
 struct RelationalDagNode {
   std::uint32_t node_id{0};
   RelationalDagNodeKind node_kind{RelationalDagNodeKind::kValues};
@@ -120,16 +157,25 @@ struct RelationalDagNode {
   std::vector<std::uint32_t> output_descriptor_ids;
   bool shareable{false};
   std::vector<std::uint32_t> values_row_ids;
+  std::vector<std::uint32_t> bound_expression_ids;
+  std::vector<std::string> required_object_uuids;
+  std::string semantic_variant_id;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
 };
 
 struct TypedRelationalDag {
   std::uint16_t wire_version{1};
   RelationalPackageRoot package_root{RelationalPackageRoot::kQueryExecute};
+  std::string bound_sblr_tree_uuid;
+  std::string bound_catalog_epoch_uuid;
+  std::string bound_security_context_uuid;
   std::uint32_t root_node_id{0};
   std::vector<RelationalTypeDescriptor> descriptors;
   std::vector<RelationalExpressionRecord> expressions;
   std::vector<RelationalOutputRecord> outputs;
   std::vector<RelationalValuesRowRecord> values_rows;
+  std::vector<RelationalPropertyRecord> properties;
   std::vector<RelationalDagNode> nodes;
 };
 
@@ -138,6 +184,7 @@ struct RelationalDagLimits {
   std::size_t maximum_depth{256};
   std::size_t maximum_fanout{1024};
   std::size_t maximum_records{524288};
+  std::size_t maximum_property_references{1048576};
 };
 
 struct RelationalDagValidationIssue {

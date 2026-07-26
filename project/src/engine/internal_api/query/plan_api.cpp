@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/plan_api.hpp"
+#include "query/canonical_relational_bridge.hpp"
 
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 #include "api_diagnostics.hpp"
@@ -21,7 +22,6 @@
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "executor_foundation.hpp"
-#include "logical_plan.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "metric_registry.hpp"
 #include "optimizer_contract.hpp"
@@ -114,7 +114,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return true;
   };
 
-  if (dag.wire_version != 1) {
+  if (dag.wire_version != 1 && dag.wire_version != 2) {
     return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0, "wire_version");
   }
   if (dag.package_root != RelationalPackageRoot::kQueryExecute) {
@@ -123,14 +123,36 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
   if (limits.maximum_nodes == 0 || limits.maximum_depth == 0 ||
       limits.maximum_fanout == 0 || limits.maximum_records == 0 ||
+      limits.maximum_property_references == 0 ||
       dag.nodes.empty() ||
       dag.nodes.size() > limits.maximum_nodes) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "node_count");
   }
   const auto record_count = dag.descriptors.size() + dag.expressions.size() +
-                            dag.outputs.size() + dag.values_rows.size();
+                            dag.outputs.size() + dag.values_rows.size() +
+                            dag.properties.size();
   if (record_count > limits.maximum_records) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
+  }
+  const bool planning_wire = dag.wire_version == 2;
+  std::size_t planning_reference_count = 0;
+  const auto add_planning_references = [&](const std::size_t count) {
+    if (count > limits.maximum_property_references -
+                    planning_reference_count) {
+      return false;
+    }
+    planning_reference_count += count;
+    return true;
+  };
+  const bool any_planning_scope = !dag.bound_sblr_tree_uuid.empty() ||
+                                  !dag.bound_catalog_epoch_uuid.empty() ||
+                                  !dag.bound_security_context_uuid.empty();
+  if ((planning_wire || any_planning_scope) &&
+      (!canonical_uuid(dag.bound_sblr_tree_uuid) ||
+       !canonical_uuid(dag.bound_catalog_epoch_uuid) ||
+       !canonical_uuid(dag.bound_security_context_uuid))) {
+    return refuse("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1", 0,
+                  "typed_planning_scope");
   }
 
   std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
@@ -288,6 +310,58 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                       "output_descriptor_ids");
       }
     }
+    const bool has_planning_fields = !node.bound_expression_ids.empty() ||
+                                     !node.required_object_uuids.empty() ||
+                                     !node.semantic_variant_id.empty() ||
+                                     !node.required_property_uuids.empty() ||
+                                     !node.delivered_property_uuids.empty();
+    if (!add_planning_references(node.bound_expression_ids.size()) ||
+        !add_planning_references(node.required_object_uuids.size()) ||
+        !add_planning_references(node.required_property_uuids.size()) ||
+        !add_planning_references(node.delivered_property_uuids.size())) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", node.node_id,
+                    "planning_reference_count");
+    }
+    if (planning_wire && node.semantic_variant_id.empty()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "semantic_variant_id");
+    }
+    if (!planning_wire && has_planning_fields) {
+      return refuse("SBLR.PLAN_TREE.INVALID_VERSION", node.node_id,
+                    "planning_fields_require_wire_v2");
+    }
+    std::unordered_set<std::uint32_t> bound_expression_ids;
+    for (const auto expression_id : node.bound_expression_ids) {
+      if (expression_id == 0 ||
+          !expressions_by_id.contains(expression_id) ||
+          !bound_expression_ids.insert(expression_id).second) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "bound_expression_ids");
+      }
+    }
+    std::unordered_set<std::string> required_object_uuids;
+    for (const auto& object_uuid : node.required_object_uuids) {
+      if (!canonical_uuid(object_uuid) ||
+          !required_object_uuids.insert(object_uuid).second) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "required_object_uuids");
+      }
+    }
+    std::unordered_set<std::string> node_property_references;
+    for (const auto& property_uuid : node.required_property_uuids) {
+      if (!canonical_uuid(property_uuid) ||
+          !node_property_references.insert("r:" + property_uuid).second) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
+                      "required_property_uuids");
+      }
+    }
+    for (const auto& property_uuid : node.delivered_property_uuids) {
+      if (!canonical_uuid(property_uuid) ||
+          !node_property_references.insert("d:" + property_uuid).second) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
+                      "delivered_property_uuids");
+      }
+    }
   }
   if (dag.root_node_id == 0 ||
       nodes_by_id.find(dag.root_node_id) == nodes_by_id.end()) {
@@ -370,6 +444,90 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
   }
 
+  std::unordered_map<std::string, const RelationalPropertyRecord*>
+      properties_by_uuid;
+  for (const auto& property : dag.properties) {
+    if (!add_planning_references(property.expression_ids.size()) ||
+        !add_planning_references(property.ordering_terms.size()) ||
+        !add_planning_references(
+            property.dependency_property_uuids.size())) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    property.origin_node_id, "planning_reference_count");
+    }
+    if (!planning_wire || !canonical_uuid(property.property_uuid) ||
+        property.property_kind < RelationalPropertyKind::kOrdering ||
+        property.property_kind >
+            RelationalPropertyKind::kExpressionEquivalence ||
+        property.origin_node_id == 0 ||
+        !nodes_by_id.contains(property.origin_node_id) ||
+        !properties_by_uuid.emplace(property.property_uuid, &property).second) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1",
+                    property.origin_node_id, "property_record");
+    }
+    std::unordered_set<std::uint32_t> property_expression_ids;
+    for (const auto expression_id : property.expression_ids) {
+      if (expression_id == 0 || !expressions_by_id.contains(expression_id) ||
+          !property_expression_ids.insert(expression_id).second) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-EXPRESSION-V1",
+                      property.origin_node_id, "expression_ids");
+      }
+    }
+    for (const auto& term : property.ordering_terms) {
+      if (term.expression_id == 0 ||
+          !expressions_by_id.contains(term.expression_id) ||
+          !property_expression_ids.insert(term.expression_id).second ||
+          (term.direction != RelationalPropertySortDirection::kAscending &&
+           term.direction != RelationalPropertySortDirection::kDescending) ||
+          (term.null_placement !=
+               RelationalPropertyNullPlacement::kNullsFirst &&
+           term.null_placement !=
+               RelationalPropertyNullPlacement::kNullsLast) ||
+          (!term.collation_uuid.empty() &&
+           !canonical_uuid(term.collation_uuid))) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-ORDERING-V1",
+                      property.origin_node_id, "ordering_terms");
+      }
+    }
+    std::unordered_set<std::string> dependencies;
+    for (const auto& dependency_uuid : property.dependency_property_uuids) {
+      if (!canonical_uuid(dependency_uuid) ||
+          !dependencies.insert(dependency_uuid).second ||
+          dependency_uuid == property.property_uuid) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                      property.origin_node_id,
+                      "dependency_property_uuids");
+      }
+    }
+    if (!property.window_frame_descriptor_uuid.empty() &&
+        !canonical_uuid(property.window_frame_descriptor_uuid)) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+                    property.origin_node_id,
+                    "window_frame_descriptor_uuid");
+    }
+  }
+  for (const auto& property : dag.properties) {
+    for (const auto& dependency_uuid : property.dependency_property_uuids) {
+      if (!properties_by_uuid.contains(dependency_uuid)) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                      property.origin_node_id, "unknown_property_dependency");
+      }
+    }
+  }
+  for (const auto& node : dag.nodes) {
+    for (const auto& property_uuid : node.required_property_uuids) {
+      if (!properties_by_uuid.contains(property_uuid)) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
+                      "required_property_uuids");
+      }
+    }
+    for (const auto& property_uuid : node.delivered_property_uuids) {
+      if (!properties_by_uuid.contains(property_uuid)) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
+                      "delivered_property_uuids");
+      }
+    }
+  }
+
   for (const auto& node : dag.nodes) {
     for (const auto input_id : node.input_node_ids) {
       if (input_id == 0 || nodes_by_id.find(input_id) == nodes_by_id.end()) {
@@ -426,6 +584,114 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
 
   result.accepted = true;
   result.validated_node_count = reachable.size();
+  return result;
+}
+
+// QOW-SOURCE-302-PROPERTY-BRIDGE-V1
+CanonicalRelationalBridgeResult
+PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
+    const TypedRelationalDag& dag,
+    const CanonicalRelationalPlanningScope& engine_scope) {
+  namespace plan = scratchbird::engine::planner;
+  CanonicalRelationalBridgeResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string field_id) {
+    result.accepted = false;
+    result.data_access_allowed = false;
+    result.logical_graph = {};
+    result.property_catalog = {};
+    result.issues.push_back({std::move(diagnostic_id), node_id,
+                             std::move(field_id)});
+    return result;
+  };
+  const auto validation = ValidateTypedRelationalDag(dag);
+  if (!validation.accepted) {
+    const auto& issue = validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.node_id, issue.field_id);
+  }
+  if (dag.wire_version != 2 ||
+      !engine_scope.metadata_snapshot_engine_owned ||
+      !engine_scope.authorization_context_engine_owned ||
+      dag.bound_catalog_epoch_uuid != engine_scope.catalog_epoch_uuid ||
+      dag.bound_security_context_uuid != engine_scope.security_context_uuid ||
+      engine_scope.local_transaction_id == 0 ||
+      engine_scope.statement_snapshot_id == 0) {
+    return refuse("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1", 0,
+                  "engine_owned_planning_scope");
+  }
+
+  plan::CanonicalLogicalRelationalGraph graph;
+  graph.bound_sblr_tree_uuid = dag.bound_sblr_tree_uuid;
+  graph.catalog_epoch_uuid = engine_scope.catalog_epoch_uuid;
+  graph.security_context_uuid = engine_scope.security_context_uuid;
+  graph.local_transaction_id = engine_scope.local_transaction_id;
+  graph.statement_snapshot_id = engine_scope.statement_snapshot_id;
+  graph.root_logical_node_id = dag.root_node_id;
+  for (const auto& node : dag.nodes) {
+    plan::CanonicalLogicalRelationalNode logical_node;
+    logical_node.logical_node_id = node.node_id;
+    logical_node.node_kind =
+        static_cast<plan::CanonicalLogicalRelationalNodeKind>(node.node_kind);
+    logical_node.input_logical_node_ids = node.input_node_ids;
+    logical_node.output_descriptor_ids = node.output_descriptor_ids;
+    logical_node.bound_expression_ids = node.bound_expression_ids;
+    logical_node.origin_relational_node_ids = {node.node_id};
+    logical_node.required_object_uuids = node.required_object_uuids;
+    logical_node.semantic_variant_id = node.semantic_variant_id;
+    logical_node.shareable = node.shareable;
+    graph.nodes.push_back(std::move(logical_node));
+    if (node.node_id == dag.root_node_id) {
+      graph.result_descriptor_ids = node.output_descriptor_ids;
+    }
+  }
+
+  plan::CanonicalLogicalPropertyCatalog catalog;
+  catalog.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+  catalog.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+  catalog.security_context_uuid = graph.security_context_uuid;
+  catalog.local_transaction_id = graph.local_transaction_id;
+  catalog.statement_snapshot_id = graph.statement_snapshot_id;
+  for (const auto& property : dag.properties) {
+    plan::CanonicalLogicalPropertyRecord logical_property;
+    logical_property.property_uuid = property.property_uuid;
+    logical_property.property_kind =
+        static_cast<plan::CanonicalLogicalPropertyKind>(
+            property.property_kind);
+    logical_property.origin_logical_node_id = property.origin_node_id;
+    logical_property.expression_ids = property.expression_ids;
+    for (const auto& term : property.ordering_terms) {
+      logical_property.ordering_terms.push_back(
+          {term.expression_id,
+           static_cast<plan::CanonicalLogicalPropertySortDirection>(
+               term.direction),
+           static_cast<plan::CanonicalLogicalPropertyNullPlacement>(
+               term.null_placement),
+           term.collation_uuid});
+    }
+    logical_property.dependency_property_uuids =
+        property.dependency_property_uuids;
+    logical_property.window_frame_descriptor_uuid =
+        property.window_frame_descriptor_uuid;
+    logical_property.populated_from_bound_sblr = true;
+    catalog.properties.push_back(std::move(logical_property));
+  }
+  std::vector<plan::CanonicalLogicalNodePropertyBinding> bindings;
+  bindings.reserve(dag.nodes.size());
+  for (const auto& node : dag.nodes) {
+    bindings.push_back({node.node_id, node.required_property_uuids,
+                        node.delivered_property_uuids});
+  }
+  auto populated = plan::PopulateCanonicalLogicalPropertiesFromBoundSblr(
+      std::move(graph), std::move(catalog), bindings);
+  if (!populated.accepted) {
+    const auto& issue = populated.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, issue.field_id);
+  }
+  result.accepted = true;
+  result.data_access_allowed = false;
+  result.logical_graph = std::move(populated.logical_graph);
+  result.property_catalog = std::move(populated.property_catalog);
   return result;
 }
 

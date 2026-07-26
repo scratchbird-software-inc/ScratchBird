@@ -45,6 +45,13 @@ api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.local_transaction_id = 37;
+  context.snapshot_visible_through_local_transaction_id = 35;
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000303";
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7110-8000-000000000304";
   return context;
 }
 
@@ -54,7 +61,13 @@ sblr::SblrOperationEnvelope QueryEnvelope() {
   envelope.result_shape = "query_execute_result";
   envelope.requires_transaction_context = true;
   envelope.operands = {
-      {"uint16", "relational_wire_version", "1"},
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000000300"},
+      {"uuid", "relational_catalog_epoch_uuid",
+       "019f0000-0000-7100-8000-000000000303"},
+      {"uuid", "relational_security_context_uuid",
+       "019f0000-0000-7110-8000-000000000304"},
       {"uint32", "relational_root_node_id", "1"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7200-8000-000000000301|"
@@ -63,6 +76,8 @@ sblr::SblrOperationEnvelope QueryEnvelope() {
       {"relational_output_v1", "1", "1|1|1|1|0|636f6c756d6e5f31"},
       {"relational_values_row_v1", "1", "1"},
       {"relational_node_v1", "1", "13|0|-|1|1"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-"},
   };
   return envelope;
 }
@@ -101,6 +116,11 @@ bool ValidateCanonicalDispatchSeam() {
                     "canonical query envelope was not validated");
   passed &= Require(result.accepted && result.dispatched_to_api,
                     "validated typed DAG did not reach the API dispatch seam");
+  passed &= Require(result.logical_graph_populated &&
+                        result.logical_properties_populated &&
+                        result.logical_node_count == 1 &&
+                        result.logical_property_count == 0,
+                    "typed DAG did not populate the canonical logical graph");
   passed &= Require(!result.api_result.ok,
                     "QRY-003 synthesized query execution success");
   passed &= Require(
@@ -114,7 +134,7 @@ bool ValidateCanonicalDispatchSeam() {
 
 bool ValidateDagAndTransportRefusal() {
   auto dangling = QueryEnvelope();
-  dangling.operands.back().value = "3|0|99|1|-";
+  dangling.operands[9].value = "3|0|99|1|-";
   auto dangling_result = sblr::DispatchSblrOperation(
       {Context(), std::move(dangling), {}});
 
@@ -124,7 +144,7 @@ bool ValidateDagAndTransportRefusal() {
       {Context(), std::move(unknown), {}});
 
   auto malformed_expression = QueryEnvelope();
-  malformed_expression.operands[3].value = "1|-|1|-|-|1|-|not_hex";
+  malformed_expression.operands[6].value = "1|-|1|-|-|1|-|not_hex";
   auto malformed_expression_result = sblr::DispatchSblrOperation(
       {Context(), std::move(malformed_expression), {}});
 

@@ -28,6 +28,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   target_include_directories(sb_qow_relational_dag_contract PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../planner
   )
   # QOW-CMAKE-QRY-008-DESC-V1
   # QOW-CMAKE-QRY-008-NULL-V1

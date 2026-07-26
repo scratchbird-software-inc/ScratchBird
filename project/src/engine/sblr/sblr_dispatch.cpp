@@ -9,6 +9,7 @@
 #include "sblr_dispatch.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "query/canonical_relational_bridge.hpp"
 #include "query/plan_api.hpp"
 
 #ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
@@ -142,6 +143,10 @@ struct TypedPlanOperationDecodeResult {
 
 struct CanonicalQueryRouteResult {
   bool graph_validated{false};
+  bool logical_graph_populated{false};
+  bool logical_properties_populated{false};
+  std::size_t logical_node_count{0};
+  std::size_t logical_property_count{0};
   api::EngineApiResult api_result;
 };
 
@@ -312,6 +317,91 @@ bool ParseRelationalHandleList(std::string_view encoded,
   return true;
 }
 
+bool ParseRelationalStringList(std::string_view encoded,
+                               std::vector<std::string>* values) {
+  if (values == nullptr || encoded.empty()) return false;
+  values->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start,
+        separator == std::string_view::npos ? encoded.size() - start
+                                            : separator - start);
+    if (token.empty()) return false;
+    values->emplace_back(token);
+    if (values->size() > 524288) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
+bool ParseRelationalOrderingTerms(
+    std::string_view encoded,
+    std::vector<api::RelationalPropertyOrderingTerm>* terms) {
+  if (terms == nullptr || encoded.empty()) return false;
+  terms->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start,
+        separator == std::string_view::npos ? encoded.size() - start
+                                            : separator - start);
+    std::array<std::string_view, 4> fields{};
+    std::size_t field_start = 0;
+    bool fields_valid = true;
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      const auto field_separator = token.find(':', field_start);
+      if (index + 1 == fields.size()) {
+        if (field_separator != std::string_view::npos) {
+          fields_valid = false;
+          break;
+        }
+        fields[index] = token.substr(field_start);
+      } else {
+        if (field_separator == std::string_view::npos) {
+          fields_valid = false;
+          break;
+        }
+        fields[index] =
+            token.substr(field_start, field_separator - field_start);
+        field_start = field_separator + 1;
+      }
+    }
+    std::uint64_t expression_id = 0;
+    std::uint64_t direction = 0;
+    std::uint64_t null_placement = 0;
+    if (!fields_valid ||
+        !ParseCanonicalUnsigned(fields[0],
+                                std::numeric_limits<std::uint32_t>::max(),
+                                &expression_id) ||
+        !ParseCanonicalUnsigned(fields[1],
+                                std::numeric_limits<std::uint8_t>::max(),
+                                &direction) ||
+        !ParseCanonicalUnsigned(fields[2],
+                                std::numeric_limits<std::uint8_t>::max(),
+                                &null_placement)) {
+      return false;
+    }
+    api::RelationalPropertyOrderingTerm term;
+    term.expression_id = static_cast<std::uint32_t>(expression_id);
+    term.direction =
+        static_cast<api::RelationalPropertySortDirection>(direction);
+    term.null_placement =
+        static_cast<api::RelationalPropertyNullPlacement>(null_placement);
+    if (fields[3] != "-") term.collation_uuid = fields[3];
+    terms->push_back(std::move(term));
+    if (terms->size() > 524288) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
 // QOW-ROUTE-STAGE-QRY-003-V1
 TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     const SblrDispatchRequest& dispatch_request) {
@@ -335,6 +425,9 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
 
   bool wire_version_present = false;
   bool root_node_present = false;
+  bool bound_sblr_tree_present = false;
+  bool bound_catalog_epoch_present = false;
+  bool bound_security_context_present = false;
   for (const auto& operand : dispatch_request.envelope.operands) {
     if (operand.type == "uint16" &&
         operand.name == "relational_wire_version") {
@@ -355,6 +448,40 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.wire_version =
           static_cast<std::uint16_t>(wire_version);
       wire_version_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      if (bound_sblr_tree_present || operand.value.empty()) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or empty bound SBLR tree identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.bound_sblr_tree_uuid = operand.value;
+      bound_sblr_tree_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_catalog_epoch_uuid") {
+      if (bound_catalog_epoch_present || operand.value.empty()) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or empty catalog epoch identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.bound_catalog_epoch_uuid = operand.value;
+      bound_catalog_epoch_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_security_context_uuid") {
+      if (bound_security_context_present || operand.value.empty()) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or empty security context identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.bound_security_context_uuid =
+          operand.value;
+      bound_security_context_present = true;
       continue;
     }
     if (operand.type == "uint32" &&
@@ -418,6 +545,43 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         return decoded;
       }
       decoded.request.relational_dag.nodes.push_back(std::move(node));
+      continue;
+    }
+    if (operand.type == "relational_node_binding_v1") {
+      if (operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational node binding transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t node_id = 0;
+      std::array<std::string_view, 5> fields{};
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !SplitRelationalFields(operand.value, &fields)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational node binding record";
+        return decoded;
+      }
+      const auto node = std::ranges::find_if(
+          decoded.request.relational_dag.nodes, [&](const auto& candidate) {
+            return candidate.node_id == node_id;
+          });
+      if (node == decoded.request.relational_dag.nodes.end() ||
+          !node->semantic_variant_id.empty() ||
+          !DecodeCanonicalHex(fields[0], &node->semantic_variant_id) ||
+          !ParseRelationalHandleList(fields[1],
+                                     &node->bound_expression_ids) ||
+          !ParseRelationalStringList(fields[2],
+                                     &node->required_object_uuids) ||
+          !ParseRelationalStringList(fields[3],
+                                     &node->required_property_uuids) ||
+          !ParseRelationalStringList(fields[4],
+                                     &node->delivered_property_uuids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "invalid or out-of-order relational node binding";
+        return decoded;
+      }
       continue;
     }
     if (operand.type == "relational_descriptor_v1") {
@@ -593,6 +757,49 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.values_rows.push_back(std::move(row));
       continue;
     }
+    if (operand.type == "relational_property_v1") {
+      if (decoded.request.relational_dag.properties.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational property transport limit exceeded";
+        return decoded;
+      }
+      std::array<std::string_view, 6> fields{};
+      std::uint64_t property_kind = 0;
+      std::uint64_t origin_node_id = 0;
+      if (operand.name.empty() ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(),
+              &property_kind) ||
+          !ParseCanonicalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &origin_node_id)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1";
+        decoded.detail = "malformed relational property record";
+        return decoded;
+      }
+      api::RelationalPropertyRecord property;
+      property.property_uuid = operand.name;
+      property.property_kind =
+          static_cast<api::RelationalPropertyKind>(property_kind);
+      property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
+      if (!ParseRelationalHandleList(fields[2], &property.expression_ids) ||
+          !ParseRelationalOrderingTerms(fields[3],
+                                        &property.ordering_terms) ||
+          !ParseRelationalStringList(
+              fields[4], &property.dependency_property_uuids)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1";
+        decoded.detail = "malformed relational property fields";
+        return decoded;
+      }
+      if (fields[5] != "-") {
+        property.window_frame_descriptor_uuid = fields[5];
+      }
+      decoded.request.relational_dag.properties.push_back(
+          std::move(property));
+      continue;
+    }
 
     decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
     decoded.detail = "unknown query.execute operand";
@@ -607,6 +814,13 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   if (!root_node_present) {
     decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
     decoded.detail = "relational_root_node_id operand is required";
+    return decoded;
+  }
+  if (decoded.request.relational_dag.wire_version == 2 &&
+      (!bound_sblr_tree_present || !bound_catalog_epoch_present ||
+       !bound_security_context_present)) {
+    decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+    decoded.detail = "wire v2 requires complete logical planning scope";
     return decoded;
   }
   decoded.ok = true;
@@ -657,11 +871,40 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   }
 
   routed.graph_validated = true;
+  api::CanonicalRelationalPlanningScope planning_scope;
+  planning_scope.catalog_epoch_uuid =
+      request.context.statement_metadata_snapshot_uuid.canonical;
+  planning_scope.security_context_uuid =
+      request.context.authorization_context.authority_uuid.canonical;
+  planning_scope.local_transaction_id =
+      request.context.local_transaction_id;
+  planning_scope.statement_snapshot_id =
+      request.context.snapshot_visible_through_local_transaction_id;
+  planning_scope.metadata_snapshot_engine_owned =
+      request.context.statement_metadata_snapshot_engine_owned;
+  planning_scope.authorization_context_engine_owned =
+      request.context.authorization_context.present;
+  const auto logical =
+      api::PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
+          decoded.request.relational_dag, planning_scope);
+  if (!logical.accepted) {
+    const auto& issue = logical.issues.front();
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id, issue.diagnostic_id,
+        issue.field_id + ":node_id=" +
+            std::to_string(issue.logical_node_id));
+    return routed;
+  }
+  routed.logical_graph_populated = true;
+  routed.logical_properties_populated = true;
+  routed.logical_node_count = logical.logical_graph.nodes.size();
+  routed.logical_property_count = logical.property_catalog.properties.size();
   routed.api_result = QueryRouteFailure(
       request.context,
       request.envelope.operation_id,
       "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING",
-      "typed relational DAG validated; physical dispatch is not yet connected");
+      "typed relational DAG populated the canonical logical/property graph; "
+      "physical dispatch is not yet connected");
   return routed;
 }
 
@@ -745,8 +988,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
 
   const auto routed = DispatchTypedPlanOperation(request);
-  result.accepted = routed.graph_validated;
-  result.dispatched_to_api = routed.graph_validated;
+  result.accepted = routed.logical_graph_populated;
+  result.dispatched_to_api = routed.logical_graph_populated;
+  result.logical_graph_populated = routed.logical_graph_populated;
+  result.logical_properties_populated = routed.logical_properties_populated;
+  result.logical_node_count = routed.logical_node_count;
+  result.logical_property_count = routed.logical_property_count;
   result.api_result = routed.api_result;
   result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
   return result;
@@ -779,6 +1026,12 @@ std::string SerializeSblrDispatchResultToJson(
       << (result.envelope_validated ? "true" : "false")
       << ",\"dispatched_to_api\":"
       << (result.dispatched_to_api ? "true" : "false")
+      << ",\"logical_graph_populated\":"
+      << (result.logical_graph_populated ? "true" : "false")
+      << ",\"logical_properties_populated\":"
+      << (result.logical_properties_populated ? "true" : "false")
+      << ",\"logical_node_count\":" << result.logical_node_count
+      << ",\"logical_property_count\":" << result.logical_property_count
       << ",\"api_ok\":" << (result.api_result.ok ? "true" : "false")
       << "}";
   return out.str();
@@ -7330,8 +7583,13 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
 
   if (request.envelope.operation_id == "query.execute") {
     const auto routed = DispatchTypedPlanOperation(request);
-    result.accepted = routed.graph_validated;
-    result.dispatched_to_api = routed.graph_validated;
+    result.accepted = routed.logical_graph_populated;
+    result.dispatched_to_api = routed.logical_graph_populated;
+    result.logical_graph_populated = routed.logical_graph_populated;
+    result.logical_properties_populated =
+        routed.logical_properties_populated;
+    result.logical_node_count = routed.logical_node_count;
+    result.logical_property_count = routed.logical_property_count;
     result.api_result = routed.api_result;
     result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
     return result;
@@ -7828,6 +8086,15 @@ std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) 
   out << "  \"accepted\": " << (result.accepted ? "true" : "false") << ",\n";
   out << "  \"envelope_validated\": " << (result.envelope_validated ? "true" : "false") << ",\n";
   out << "  \"dispatched_to_api\": " << (result.dispatched_to_api ? "true" : "false") << ",\n";
+  out << "  \"logical_graph_populated\": "
+      << (result.logical_graph_populated ? "true" : "false") << ",\n";
+  out << "  \"logical_properties_populated\": "
+      << (result.logical_properties_populated ? "true" : "false")
+      << ",\n";
+  out << "  \"logical_node_count\": " << result.logical_node_count
+      << ",\n";
+  out << "  \"logical_property_count\": " << result.logical_property_count
+      << ",\n";
   out << "  \"api_ok\": " << (result.api_result.ok ? "true" : "false") << ",\n";
   out << "  \"operation_id\": \"" << JsonEscape(result.api_result.operation_id) << "\",\n";
   out << "  \"diagnostics\": [\n";

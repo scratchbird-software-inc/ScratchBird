@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "sblr_engine_envelope.hpp"
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,10 @@ struct SblrDispatchResult {
   bool accepted = false;
   bool envelope_validated = false;
   bool dispatched_to_api = false;
+  bool logical_graph_populated = false;
+  bool logical_properties_populated = false;
+  std::size_t logical_node_count = 0;
+  std::size_t logical_property_count = 0;
   scratchbird::engine::internal_api::EngineApiResult api_result;
   std::vector<SblrEnvelopeDiagnostic> diagnostics;
 };

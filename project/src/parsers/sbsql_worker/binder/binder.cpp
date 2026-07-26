@@ -277,6 +277,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
     BoundNativeRelationalDocument document) {
   document.bound = false;
   document.bound_ast_uuid.clear();
+  document.security_context_uuid.clear();
   document.root_relation_id = 0;
   document.root_scope_id = 0;
   document.descriptors.clear();
@@ -308,6 +309,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   if (!LooksLikeCanonicalUuid(context.catalog_epoch_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires an engine-supplied catalog epoch UUID");
+    return RefusedBoundAst(std::move(bound));
+  }
+  if (!LooksLikeCanonicalUuid(context.security_context_uuid)) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-SCOPE",
+        "binding requires an engine-supplied security context UUID");
     return RefusedBoundAst(std::move(bound));
   }
 
@@ -600,6 +607,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   bound.scopes.push_back(std::move(scope));
 
   bound.bound_ast_uuid = context.bound_ast_uuid;
+  bound.security_context_uuid = context.security_context_uuid;
   bound.root_relation_id = ast.root_relation_id;
   bound.root_scope_id = 1;
   bound.bound = true;

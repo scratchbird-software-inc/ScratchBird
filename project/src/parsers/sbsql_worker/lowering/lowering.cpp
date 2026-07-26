@@ -34726,7 +34726,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
   if (native.root_relation_id == 0 || native.relations.size() != 1 ||
       native.descriptors.empty() || native.expressions.empty() ||
-      native.outputs.empty() || native.values_rows.empty()) {
+      native.outputs.empty() || native.values_rows.empty() ||
+      native.bound_ast_uuid.empty() || native.security_context_uuid.empty() ||
+      native.scopes.size() != 1 ||
+      native.scopes.front().scope_id != native.root_scope_id ||
+      native.scopes.front().catalog_epoch_uuid.empty()) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         "typed relational lowering requires one complete reachable relation root");
@@ -34878,7 +34882,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   envelope.operands.push_back(
-      {"uint16", "relational_wire_version", "1"});
+      {"uint16", "relational_wire_version", "2"});
+  envelope.operands.push_back(
+      {"uuid", "relational_bound_sblr_tree_uuid", native.bound_ast_uuid});
+  envelope.operands.push_back(
+      {"uuid", "relational_catalog_epoch_uuid",
+       native.scopes.front().catalog_epoch_uuid});
+  envelope.operands.push_back(
+      {"uuid", "relational_security_context_uuid",
+       native.security_context_uuid});
   envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
        std::to_string(native.root_relation_id)});
@@ -34938,6 +34950,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
        "13|0|" + JoinCanonicalHandleList(relation.input_relation_ids) + "|" +
            JoinCanonicalHandleList(output_descriptor_ids) + "|" +
            JoinCanonicalHandleList(relation.values_row_ids)});
+  std::vector<std::uint32_t> bound_expression_ids;
+  bound_expression_ids.reserve(native.expressions.size());
+  for (const auto& expression : native.expressions) {
+    bound_expression_ids.push_back(expression.expression_id);
+  }
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", std::to_string(relation.relation_id),
+       EncodeCanonicalHex("values.literal-table.v1") + "|" +
+           JoinCanonicalHandleList(bound_expression_ids) + "|-|-|-"});
   envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;
 }
@@ -36624,7 +36645,11 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   if (envelope.operation_id == "query.execute") {
     bool wire_version_present = false;
     bool root_node_present = false;
+    bool bound_sblr_tree_present = false;
+    bool catalog_epoch_uuid_present = false;
+    bool security_context_uuid_present = false;
     std::size_t relational_node_count = 0;
+    std::size_t relational_node_binding_count = 0;
     std::size_t relational_descriptor_count = 0;
     std::size_t relational_expression_count = 0;
     std::size_t relational_output_count = 0;
@@ -36633,8 +36658,20 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     for (const auto& operand : envelope.operands) {
       if (operand.type == "uint16" &&
           operand.name == "relational_wire_version" &&
-          operand.value == "1" && !wire_version_present) {
+          operand.value == "2" && !wire_version_present) {
         wire_version_present = true;
+      } else if (operand.type == "uuid" &&
+                 operand.name == "relational_bound_sblr_tree_uuid" &&
+                 !operand.value.empty() && !bound_sblr_tree_present) {
+        bound_sblr_tree_present = true;
+      } else if (operand.type == "uuid" &&
+                 operand.name == "relational_catalog_epoch_uuid" &&
+                 !operand.value.empty() && !catalog_epoch_uuid_present) {
+        catalog_epoch_uuid_present = true;
+      } else if (operand.type == "uuid" &&
+                 operand.name == "relational_security_context_uuid" &&
+                 !operand.value.empty() && !security_context_uuid_present) {
+        security_context_uuid_present = true;
       } else if (operand.type == "uint32" &&
                  operand.name == "relational_root_node_id" &&
                  !operand.value.empty() && operand.value != "0" &&
@@ -36644,6 +36681,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                  !operand.name.empty() && operand.name != "0" &&
                  !operand.value.empty()) {
         ++relational_node_count;
+      } else if (operand.type == "relational_node_binding_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_node_binding_count;
       } else if (operand.type == "relational_descriptor_v1" &&
                  !operand.name.empty() && operand.name != "0" &&
                  !operand.value.empty()) {
@@ -36660,6 +36701,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                  !operand.name.empty() && operand.name != "0" &&
                  !operand.value.empty()) {
         ++relational_values_row_count;
+      } else if (operand.type == "relational_property_v1" &&
+                 !operand.name.empty() && !operand.value.empty()) {
+        // Property records are optional for a property-free relational tree.
       } else {
         canonical_operands = false;
       }
@@ -36670,7 +36714,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.engine_api_operation_id != "query.execute" ||
         envelope.result_shape_key != "query_execute_result" ||
         !wire_version_present || !root_node_present ||
+        !bound_sblr_tree_present || !catalog_epoch_uuid_present ||
+        !security_context_uuid_present ||
         relational_node_count == 0 || relational_descriptor_count == 0 ||
+        relational_node_binding_count != relational_node_count ||
         relational_expression_count == 0 || relational_output_count == 0 ||
         relational_values_row_count == 0 || !canonical_operands ||
         envelope.payload.find("operation_id=query.execute\n") ==

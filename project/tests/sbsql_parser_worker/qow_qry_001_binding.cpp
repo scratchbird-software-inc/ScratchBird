@@ -35,6 +35,7 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000101";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000102";
+  context.security_context_uuid = "019f0000-0000-7110-8000-000000000102";
 
   sbsql::NativeDescriptorBindingInput numeric;
   numeric.descriptor_id = 1;
@@ -99,6 +100,9 @@ bool ValidateTypedBinding() {
   passed &= Require(!native.messages.has_errors(), "typed VALUES binding emitted errors");
   passed &= Require(native.bound_ast_uuid == context.bound_ast_uuid,
                     "BoundAST UUID handle differs");
+  passed &= Require(native.security_context_uuid ==
+                        context.security_context_uuid,
+                    "security context UUID handle differs");
   passed &= Require(native.root_relation_id == 1 && native.root_scope_id == 1,
                     "bound root handles differ");
   passed &= Require(native.relations.size() == 1,

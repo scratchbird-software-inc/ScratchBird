@@ -48,6 +48,7 @@ sbsql::NativeRelationalBindingContext ScalarBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000601";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000602";
+  context.security_context_uuid = "019f0000-0000-7110-8000-000000000602";
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000603",
@@ -173,11 +174,23 @@ bool ValidateComposableScalarLowering() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.local_transaction_id = 61;
+  context.snapshot_visible_through_local_transaction_id = 59;
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000602";
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7110-8000-000000000602";
   const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
       lowered.payload, std::move(context));
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
-          dispatched.dispatched_to_api && !dispatched.api_result.ok &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.logical_node_count == 1 &&
+          dispatched.logical_property_count == 0 &&
+          !dispatched.api_result.ok &&
           HasApiDiagnostic(
               dispatched,
               "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING"),

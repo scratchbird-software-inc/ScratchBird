@@ -48,6 +48,7 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000501";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000502";
+  context.security_context_uuid = "019f0000-0000-7110-8000-000000000502";
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000503",
@@ -127,15 +128,20 @@ bool ValidateCanonicalLoweringAndDispatch() {
              operand.value == value;
     });
   };
-  passed &= Require(lowered.operands.size() == 13 &&
+  passed &= Require(lowered.operands.size() == 17 &&
                         lowered.operands[0].type == "uint16" &&
                         lowered.operands[0].name ==
                             "relational_wire_version" &&
-                        lowered.operands[0].value == "1" &&
-                        lowered.operands[1].type == "uint32" &&
+                        lowered.operands[0].value == "2" &&
+                        lowered.operands[1].type == "uuid" &&
                         lowered.operands[1].name ==
+                            "relational_bound_sblr_tree_uuid" &&
+                        lowered.operands[1].value ==
+                            "019f0000-0000-7000-8000-000000000501" &&
+                        lowered.operands[4].type == "uint32" &&
+                        lowered.operands[4].name ==
                             "relational_root_node_id" &&
-                        lowered.operands[1].value == "1" &&
+                        lowered.operands[4].value == "1" &&
                         has_operand("relational_descriptor_v1", "1",
                                     "019f0000-0000-7200-8000-000000000503|"
                                     "019f0000-0000-7300-8000-000000000504|"
@@ -145,7 +151,11 @@ bool ValidateCanonicalLoweringAndDispatch() {
                         has_operand("relational_values_row_v1", "1", "1,2") &&
                         has_operand("relational_values_row_v1", "2", "3,4") &&
                         has_operand("relational_node_v1", "1",
-                                    "13|0|-|1,2|1,2"),
+                                    "13|0|-|1,2|1,2") &&
+                        has_operand(
+                            "relational_node_binding_v1", "1",
+                            "76616c7565732e6c69746572616c2d7461626c652e7631|"
+                            "1,2,3,4|-|-|-"),
                     "typed relation handles were not structurally preserved");
   passed &= Require(
       lowered.payload.find("operation_id=query.execute\n") !=
@@ -166,10 +176,21 @@ bool ValidateCanonicalLoweringAndDispatch() {
   api::EngineRequestContext engine_context;
   engine_context.security_context_present = true;
   engine_context.local_transaction_id = 51;
+  engine_context.snapshot_visible_through_local_transaction_id = 49;
+  engine_context.statement_metadata_snapshot_engine_owned = true;
+  engine_context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000502";
+  engine_context.authorization_context.present = true;
+  engine_context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7110-8000-000000000502";
   const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
       lowered.payload, std::move(engine_context));
   passed &= Require(dispatched.envelope_validated && dispatched.accepted &&
-                        dispatched.dispatched_to_api,
+                        dispatched.dispatched_to_api &&
+                        dispatched.logical_graph_populated &&
+                        dispatched.logical_properties_populated &&
+                        dispatched.logical_node_count == 1 &&
+                        dispatched.logical_property_count == 0,
                     "lowered payload did not reach the canonical typed dispatch seam");
   passed &= Require(
       !dispatched.api_result.ok &&

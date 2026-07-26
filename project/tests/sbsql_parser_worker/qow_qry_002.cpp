@@ -93,7 +93,7 @@ bool ValidateRootRefusal() {
 
 bool ValidateVersionAndKindRefusal() {
   auto version = SharedDag();
-  version.wire_version = 2;
+  version.wire_version = 3;
   const auto version_result = api::ValidateTypedRelationalDag(version);
 
   auto unknown_kind = SharedDag();
