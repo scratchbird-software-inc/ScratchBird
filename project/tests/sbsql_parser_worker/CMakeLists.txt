@@ -176,6 +176,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-017;development_candidate"
   )
 
+  # QOW-CMAKE-IAS-014-V1
+  add_executable(qow_ias_014_test_v1 qow_ias_014.cpp)
+  target_compile_features(qow_ias_014_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_ias_014_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_ias_014_v1 COMMAND qow_ias_014_test_v1)
+  set_tests_properties(qow_ias_014_v1 PROPERTIES
+    LABELS "qow_closure;QOW-202;QOW-LEAF-IAS-014;development_candidate"
+  )
+
   # QOW-CMAKE-QRY-029-V1
   add_executable(qow_qry_029_test_v1 qow_qry_029.cpp)
   target_compile_features(qow_qry_029_test_v1 PRIVATE cxx_std_20)
