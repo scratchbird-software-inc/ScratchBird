@@ -82,6 +82,7 @@ add_library(sb_engine_executor STATIC
   scoring_kernel_executor.cpp
   security_barrier_executor.cpp
   snapshot_safe_result_cache.cpp
+  # QOW-CMAKE-QRY-007-SORT-LIMIT-V1
   sort_limit_executor.cpp
   subquery_executor.cpp
   table_function_executor.cpp
