@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
+  # QOW-CMAKE-OPT-005-V1
   # QOW-CMAKE-OPT-011-V1
   if(NOT TARGET sb_qow_canonical_candidate_legality)
     add_library(sb_qow_canonical_candidate_legality STATIC
@@ -15,7 +16,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
       cxx_std_20
     )
-    target_compile_definitions(sb_qow_canonical_candidate_legality PRIVATE
+    target_compile_definitions(sb_qow_canonical_candidate_legality PUBLIC
       SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1
     )
     target_include_directories(sb_qow_canonical_candidate_legality PUBLIC

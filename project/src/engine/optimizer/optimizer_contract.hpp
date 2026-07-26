@@ -8,22 +8,97 @@
 
 #pragma once
 
-#include "access_path.hpp"
-#include "access_path_full.hpp"
 #include "canonical_candidate_legality.hpp"
 #include "cost_model.hpp"
-#include "join_planner.hpp"
 #include "logical_plan.hpp"
+#ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
+#include "access_path.hpp"
+#include "access_path_full.hpp"
+#include "join_planner.hpp"
 #include "optimizer_feedback.hpp"
 #include "physical_plan.hpp"
 #include "selectivity_model.hpp"
 #include "statistics_catalog.hpp"
+#endif
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace scratchbird::engine::optimizer {
 
+enum class CanonicalOptimizerStatisticState : std::uint8_t {
+  kKnown = 1,
+  kUnknown,
+  kNotApplicable,
+};
+
+enum class CanonicalOptimizerStatisticSource : std::uint8_t {
+  kCatalogExact = 1,
+  kCatalogSample,
+  kUnavailable,
+};
+
+struct CanonicalOptimizerNodeEstimate {
+  std::uint32_t logical_node_id{0};
+  std::string object_uuid;
+  CanonicalOptimizerStatisticState state{
+      CanonicalOptimizerStatisticState::kUnknown};
+  CanonicalOptimizerStatisticSource source{
+      CanonicalOptimizerStatisticSource::kUnavailable};
+  std::string catalog_epoch_uuid;
+  std::string statistics_snapshot_uuid;
+  std::uint64_t statistics_generation{0};
+  std::uint64_t collected_at_monotonic_ns{0};
+  std::uint64_t admitted_at_monotonic_ns{0};
+  std::uint64_t maximum_age_ns{0};
+  CostConfidence confidence{CostConfidence::kUnknown};
+  bool row_count_present{false};
+  std::uint64_t row_count{0};
+  bool page_count_present{false};
+  std::uint64_t page_count{0};
+  bool derived_from_runtime_actuals{false};
+  bool benchmark_clean_authority_claimed{false};
+};
+
+struct CanonicalOptimizerStatisticsSnapshot {
+  std::uint16_t abi_version{1};
+  std::string statistics_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t statistics_generation{0};
+  std::uint64_t admitted_at_monotonic_ns{0};
+  std::vector<CanonicalOptimizerNodeEstimate> node_estimates;
+  bool captured_before_data_access{false};
+  bool data_access_observed{false};
+  bool runtime_actuals_present{false};
+  bool parser_statistics_authority_claimed{false};
+};
+
+struct CanonicalOptimizerStatisticsIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string field_id;
+};
+
+struct CanonicalOptimizerStatisticsAdmissionResult {
+  bool accepted{false};
+  bool degraded_for_unknown_statistics{false};
+  bool benchmark_clean_ready{false};
+  bool data_access_allowed{false};
+  std::size_t known_estimate_count{0};
+  std::size_t unknown_estimate_count{0};
+  std::size_t not_applicable_estimate_count{0};
+  std::vector<CanonicalOptimizerStatisticsIssue> issues;
+};
+
+// SEARCH_KEY: QOW-SOURCE-OPT-005-V1
+CanonicalOptimizerStatisticsAdmissionResult
+AdmitCanonicalOptimizerStatisticsBeforeAccess(
+    const scratchbird::engine::planner::CanonicalLogicalRelationalGraph& graph,
+    const CanonicalOptimizerStatisticsSnapshot& snapshot);
+
+#ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 // SEARCH_KEY: SB_OPTIMIZER_CONTRACT
 struct OptimizerEvidence {
   bool has_usable_index = false;
@@ -81,5 +156,6 @@ OptimizerDecision ChooseIndexAccess(const OptimizerEvidence& evidence);
 OptimizerDecision ChooseJoinOrder(const OptimizerEvidence& evidence);
 OptimizerDecision ChooseAggregateStrategy(const OptimizerEvidence& evidence);
 OptimizerDecision ChooseSpecializedWorkloadAccess(const OptimizerEvidence& evidence);
+#endif
 
 }  // namespace scratchbird::engine::optimizer

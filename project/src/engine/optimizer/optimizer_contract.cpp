@@ -6,11 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#ifdef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
-#include "canonical_candidate_legality.hpp"
-#else
 #include "optimizer_contract.hpp"
-#endif
 
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 #include "join_planner_full.hpp"
@@ -18,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -29,6 +26,167 @@
 
 namespace scratchbird::engine::optimizer {
 namespace planner = scratchbird::engine::planner;
+
+// QOW-SOURCE-OPT-005-V1
+CanonicalOptimizerStatisticsAdmissionResult
+AdmitCanonicalOptimizerStatisticsBeforeAccess(
+    const planner::CanonicalLogicalRelationalGraph& graph,
+    const CanonicalOptimizerStatisticsSnapshot& snapshot) {
+  CanonicalOptimizerStatisticsAdmissionResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t logical_node_id,
+                          std::string field_id) {
+    result.issues.push_back({std::move(diagnostic_id), logical_node_id,
+                             std::move(field_id)});
+    result.accepted = false;
+    result.benchmark_clean_ready = false;
+    result.data_access_allowed = false;
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+
+  const auto graph_validation =
+      planner::ValidateCanonicalLogicalRelationalGraph(graph);
+  if (!graph_validation.accepted) {
+    const auto& issue = graph_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, issue.field_id);
+  }
+  if (snapshot.abi_version != 1) {
+    return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-VERSION-V1", 0,
+                  "abi_version");
+  }
+  if (!canonical_uuid(snapshot.statistics_snapshot_uuid) ||
+      snapshot.statistics_snapshot_uuid == graph.bound_sblr_tree_uuid ||
+      snapshot.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
+      snapshot.statistics_generation == 0 ||
+      snapshot.admitted_at_monotonic_ns == 0) {
+    return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-SCOPE-V1", 0,
+                  "statistics_snapshot_identity");
+  }
+  if (!snapshot.captured_before_data_access || snapshot.data_access_observed ||
+      snapshot.runtime_actuals_present ||
+      snapshot.parser_statistics_authority_claimed) {
+    return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-PHASE-V1", 0,
+                  "pre_access_statistics_boundary");
+  }
+  if (snapshot.node_estimates.size() != graph.nodes.size()) {
+    return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-COVERAGE-V1", 0,
+                  "node_estimate_count");
+  }
+
+  std::unordered_map<std::uint32_t,
+                     const planner::CanonicalLogicalRelationalNode*>
+      nodes;
+  for (const auto& node : graph.nodes) nodes.emplace(node.logical_node_id, &node);
+  std::unordered_set<std::uint32_t> seen_nodes;
+  for (const auto& estimate : snapshot.node_estimates) {
+    const auto node_it = nodes.find(estimate.logical_node_id);
+    if (node_it == nodes.end() ||
+        !seen_nodes.insert(estimate.logical_node_id).second) {
+      return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-COVERAGE-V1",
+                    estimate.logical_node_id, "logical_node_id");
+    }
+    const auto& node = *node_it->second;
+    if (estimate.statistics_snapshot_uuid !=
+            snapshot.statistics_snapshot_uuid ||
+        estimate.catalog_epoch_uuid != snapshot.catalog_epoch_uuid ||
+        estimate.statistics_generation != snapshot.statistics_generation ||
+        estimate.admitted_at_monotonic_ns !=
+            snapshot.admitted_at_monotonic_ns) {
+      return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-SCOPE-V1",
+                    estimate.logical_node_id, "estimate_snapshot_identity");
+    }
+    if (estimate.derived_from_runtime_actuals ||
+        estimate.benchmark_clean_authority_claimed) {
+      return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-AUTHORITY-V1",
+                    estimate.logical_node_id,
+                    "runtime_or_benchmark_authority_claim");
+    }
+
+    switch (estimate.state) {
+      case CanonicalOptimizerStatisticState::kKnown: {
+        const bool catalog_source =
+            estimate.source ==
+                CanonicalOptimizerStatisticSource::kCatalogExact ||
+            estimate.source ==
+                CanonicalOptimizerStatisticSource::kCatalogSample;
+        const bool object_bound =
+            !estimate.object_uuid.empty() &&
+            std::ranges::find(node.required_object_uuids,
+                              estimate.object_uuid) !=
+                node.required_object_uuids.end();
+        const bool fresh =
+            estimate.collected_at_monotonic_ns != 0 &&
+            estimate.collected_at_monotonic_ns <=
+                estimate.admitted_at_monotonic_ns &&
+            estimate.maximum_age_ns != 0 &&
+            estimate.admitted_at_monotonic_ns -
+                    estimate.collected_at_monotonic_ns <=
+                estimate.maximum_age_ns;
+        if (!catalog_source || !object_bound || !fresh ||
+            estimate.confidence == CostConfidence::kUnknown ||
+            estimate.confidence == CostConfidence::kRejected ||
+            (!estimate.row_count_present && !estimate.page_count_present)) {
+          return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-PROVENANCE-V1",
+                        estimate.logical_node_id, "known_estimate");
+        }
+        ++result.known_estimate_count;
+        break;
+      }
+      case CanonicalOptimizerStatisticState::kUnknown:
+        if (estimate.source !=
+                CanonicalOptimizerStatisticSource::kUnavailable ||
+            estimate.confidence != CostConfidence::kUnknown ||
+            estimate.row_count_present || estimate.page_count_present ||
+            estimate.row_count != 0 || estimate.page_count != 0 ||
+            estimate.collected_at_monotonic_ns != 0 ||
+            estimate.maximum_age_ns != 0) {
+          return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-UNKNOWN-V1",
+                        estimate.logical_node_id, "unknown_estimate");
+        }
+        ++result.unknown_estimate_count;
+        result.degraded_for_unknown_statistics = true;
+        break;
+      case CanonicalOptimizerStatisticState::kNotApplicable:
+        if (node.node_kind !=
+                planner::CanonicalLogicalRelationalNodeKind::kValues ||
+            !estimate.object_uuid.empty() ||
+            estimate.source !=
+                CanonicalOptimizerStatisticSource::kUnavailable ||
+            estimate.confidence != CostConfidence::kUnknown ||
+            estimate.row_count_present || estimate.page_count_present ||
+            estimate.collected_at_monotonic_ns != 0 ||
+            estimate.maximum_age_ns != 0) {
+          return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-NOT-APPLICABLE-V1",
+                        estimate.logical_node_id,
+                        "not_applicable_estimate");
+        }
+        ++result.not_applicable_estimate_count;
+        break;
+      default:
+        return refuse("QOW-DIAG-OPTIMIZER-STATISTICS-STATE-V1",
+                      estimate.logical_node_id, "statistic_state");
+    }
+  }
+
+  result.accepted = true;
+  result.benchmark_clean_ready =
+      !result.degraded_for_unknown_statistics &&
+      result.known_estimate_count != 0;
+  result.data_access_allowed = false;
+  return result;
+}
 
 // QOW-SOURCE-OPT-011-V1
 CanonicalRelationalCandidateLegalityResult
