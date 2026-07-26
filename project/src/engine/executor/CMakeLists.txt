@@ -41,6 +41,7 @@ endif()
 
 add_library(sb_engine_executor STATIC
   physical_node_abi.hpp
+  # QOW-CMAKE-QRY-007-AGGREGATE-V1
   aggregate_executor.cpp
   allocator_lifetime_hot_path.cpp
   batch_point_lookup_executor.cpp

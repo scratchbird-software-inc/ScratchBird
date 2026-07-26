@@ -97,6 +97,21 @@ struct CanonicalDescriptorLimitResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalDescriptorCountRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  ExecutorColumnDescriptor count_column;
+};
+
+struct CanonicalDescriptorCountResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct Int64DecodeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::int64_t value = 0;
@@ -191,6 +206,8 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const CanonicalDescriptorFilterRequest& request);
 CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
+CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
+    const CanonicalDescriptorCountRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,
