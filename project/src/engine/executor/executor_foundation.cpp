@@ -11,6 +11,7 @@
 #include "descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -87,6 +88,129 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
   result.selected_plan_uuid = std::move(limited.selected_plan_uuid);
   result.executed_physical_node_id = limited.executed_physical_node_id;
   result.causal_counter_id = limited.causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-STATE-V1
+// Build one descriptor-bound SUM(int64) transition state.  SQL NULL inputs do
+// not transition the numeric value, while every physical row is retained in
+// the transition count.  Validation and overflow complete before state is
+// published to the caller.
+CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
+    const CanonicalInt64SumStateRequest& request) {
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumStateResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-STATE-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.state = {};
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected aggregate node is not the physical root");
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse("SUM state requires one selected aggregate node");
+  }
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr) {
+    return refuse("aggregate input node is unresolved");
+  }
+
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code + ":" +
+                  input_validation.detail);
+  }
+  if (request.value_column >= request.input_batch.columns.size()) {
+    return refuse("aggregate value column is outside the input schema");
+  }
+  const auto& value_column = request.input_batch.columns[request.value_column];
+  if (request.value_expression_descriptor_id == 0 ||
+      request.value_expression_descriptor_id != value_column.descriptor_id ||
+      value_column.descriptor.canonical_type_name != "int64") {
+    return refuse("SUM value expression is not bound int64");
+  }
+  if (selected_node->output_descriptor_ids.size() != 1 ||
+      request.result_column.descriptor_id !=
+          selected_node->output_descriptor_ids.front() ||
+      !request.result_column.nullable ||
+      request.result_column.descriptor.canonical_type_name != "int64") {
+    return refuse("SUM result is not a bound nullable int64 descriptor");
+  }
+  DescriptorBatch result_schema;
+  result_schema.columns = {request.result_column};
+  auto result_validation = ValidateCanonicalDescriptorBatch(
+      result_schema, selected_node->output_descriptor_ids);
+  if (!result_validation.ok) {
+    return refuse(result_validation.diagnostic_code + ":" +
+                  result_validation.detail);
+  }
+  if (request.maximum_transition_count == 0 ||
+      request.input_batch.rows.size() > request.maximum_transition_count) {
+    return refuse("aggregate transition resource bound was exceeded");
+  }
+
+  CanonicalInt64SumAggregateState state;
+  state.value_expression_descriptor_id =
+      request.value_expression_descriptor_id;
+  state.result_column = request.result_column;
+  state.transition_count = request.input_batch.rows.size();
+  for (const auto& row : request.input_batch.rows) {
+    const auto& value = row.values[request.value_column];
+    if (value.state == EngineValueState::sql_null) continue;
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    if ((decoded.value > 0 &&
+         state.accumulated_value >
+             std::numeric_limits<std::int64_t>::max() - decoded.value) ||
+        (decoded.value < 0 &&
+         state.accumulated_value <
+             std::numeric_limits<std::int64_t>::min() - decoded.value)) {
+      return refuse("SUM int64 transition overflowed");
+    }
+    state.accumulated_value += decoded.value;
+    ++state.non_null_count;
+    state.has_value = true;
+  }
+
+  result.diagnostic = {};
+  result.state = std::move(state);
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
   return result;
 }
 

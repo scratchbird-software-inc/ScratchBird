@@ -64,6 +64,7 @@ add_library(sb_engine_executor STATIC
   executor_batch_relational.cpp
   # QOW-CMAKE-QRY-009-V1
   # QOW-CMAKE-QRY-010-FETCH-TOP-PROFILE-V1
+  # QOW-CMAKE-QRY-011-STATE-V1
   executor_foundation.cpp
   executor_operator_metrics.cpp
   # QOW-CMAKE-QRY-007-FILTER-V1

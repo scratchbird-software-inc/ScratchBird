@@ -140,6 +140,33 @@ struct CanonicalDescriptorCountResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalInt64SumAggregateState {
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+  std::uint64_t transition_count = 0;
+  std::uint64_t non_null_count = 0;
+  std::int64_t accumulated_value = 0;
+  bool has_value = false;
+};
+
+struct CanonicalInt64SumStateRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::size_t value_column = 0;
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+  std::size_t maximum_transition_count = 1048576;
+};
+
+struct CanonicalInt64SumStateResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalInt64SumAggregateState state;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorInnerJoinRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -313,6 +340,8 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
+    const CanonicalInt64SumStateRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(

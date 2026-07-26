@@ -250,6 +250,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-204;QOW-LEAF-QRY-010-FETCH-TOP-PROFILE;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-011-STATE-V1
+  add_executable(qow_qry_011_state_test_v1 qow_qry_011_state.cpp)
+  target_compile_features(qow_qry_011_state_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_011_state_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_qry_011_state_v1 COMMAND qow_qry_011_state_test_v1)
+  set_tests_properties(qow_qry_011_state_v1 PROPERTIES
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;development_candidate"
+  )
+
   # QOW-ROUTE-STAGE-QRY-017-V1
   add_executable(qow_qry_017_test_v1 qow_qry_017.cpp)
   target_compile_features(qow_qry_017_test_v1 PRIVATE cxx_std_20)
