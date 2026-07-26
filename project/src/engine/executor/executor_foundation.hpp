@@ -8,8 +8,11 @@
 
 #pragma once
 
+#include "descriptor_value_runtime.hpp"
+
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -47,6 +50,42 @@ enum class Int64ComparisonOperator {
   kNotEqual,
 };
 
+enum class CanonicalWindowRankingFunction : std::uint8_t {
+  row_number = 1,
+  rank,
+  dense_rank,
+  percent_rank,
+  cume_dist,
+  ntile,
+};
+
+struct CanonicalWindowRankingRequest {
+  CanonicalWindowFrameResult frames;
+  CanonicalWindowRankingFunction function =
+      CanonicalWindowRankingFunction::row_number;
+  std::string function_uuid;
+  scratchbird::engine::internal_api::EngineDescriptor output_descriptor;
+  std::optional<scratchbird::engine::internal_api::EngineTypedValue>
+      ntile_bucket_count;
+  std::size_t maximum_output_rows = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowRankingResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalWindowRankingFunction function =
+      CanonicalWindowRankingFunction::row_number;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  bool frame_and_exclusion_validated_then_ignored = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string window_property_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows);
 OperatorDiagnostic ValidateBatch(const Batch& batch);
 std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs);
@@ -72,6 +111,8 @@ Batch AddLagWindow(const Batch& input, std::size_t order_column, std::size_t val
 Batch AddLeadWindow(const Batch& input, std::size_t order_column, std::size_t value_column);
 Batch AddFirstValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column);
 Batch AddLastValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column);
+CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
+    const CanonicalWindowRankingRequest& request);
 Batch MaterializeCte(const Batch& input);
 std::int64_t ScalarSubqueryFirstValue(const Batch& input, std::size_t column);
 Batch SetUnionDistinct(const Batch& left, const Batch& right);

@@ -3132,4 +3132,410 @@ bool ValidateOperatorCatalog(const std::vector<OperatorCatalogEntry>& catalog, s
   return !errors || errors->size() == before;
 }
 
+namespace {
+
+constexpr std::string_view kWindowRowNumberUuid =
+    "019de5fc-2400-7539-bcce-00eef3ae7220";
+constexpr std::string_view kWindowRankUuid =
+    "019de5fc-2400-7b94-870d-0dd789ca70ab";
+constexpr std::string_view kWindowDenseRankUuid =
+    "019de5fc-2400-741d-bef0-f079fd3ba494";
+constexpr std::string_view kWindowPercentRankUuid =
+    "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
+constexpr std::string_view kWindowCumeDistUuid =
+    "019de5fc-2400-721c-be64-2568b64a02b9";
+constexpr std::string_view kWindowNtileUuid =
+    "019de5fc-2400-7047-9474-232ca488c094";
+
+DescriptorRuntimeDiagnostic WindowRankingRefusal(
+    const CanonicalWindowRankingFunction function,
+    std::string detail) {
+  DescriptorRuntimeDiagnostic diagnostic;
+  diagnostic.ok = false;
+  diagnostic.diagnostic_code =
+      function == CanonicalWindowRankingFunction::ntile
+          ? "QOW-DIAG-WINDOW-NTILE"
+          : "QOW-DIAG-WINDOW-RANKING";
+  diagnostic.detail = std::move(detail);
+  return diagnostic;
+}
+
+std::string_view RankingFunctionUuid(
+    const CanonicalWindowRankingFunction function) {
+  switch (function) {
+    case CanonicalWindowRankingFunction::row_number:
+      return kWindowRowNumberUuid;
+    case CanonicalWindowRankingFunction::rank:
+      return kWindowRankUuid;
+    case CanonicalWindowRankingFunction::dense_rank:
+      return kWindowDenseRankUuid;
+    case CanonicalWindowRankingFunction::percent_rank:
+      return kWindowPercentRankUuid;
+    case CanonicalWindowRankingFunction::cume_dist:
+      return kWindowCumeDistUuid;
+    case CanonicalWindowRankingFunction::ntile:
+      return kWindowNtileUuid;
+  }
+  return {};
+}
+
+bool RankingIntegerResult(const CanonicalWindowRankingFunction function) {
+  return function == CanonicalWindowRankingFunction::row_number ||
+         function == CanonicalWindowRankingFunction::rank ||
+         function == CanonicalWindowRankingFunction::dense_rank ||
+         function == CanonicalWindowRankingFunction::ntile;
+}
+
+bool RankingRealType(const scratchbird::core::datatypes::CanonicalTypeId type) {
+  namespace dt = scratchbird::core::datatypes;
+  return type == dt::CanonicalTypeId::bfloat16 ||
+         type == dt::CanonicalTypeId::real16 ||
+         type == dt::CanonicalTypeId::real32 ||
+         type == dt::CanonicalTypeId::real64 ||
+         type == dt::CanonicalTypeId::real128;
+}
+
+bool RankingFrameUnitValid(const CanonicalWindowFrameUnit unit) {
+  switch (unit) {
+    case CanonicalWindowFrameUnit::rows:
+    case CanonicalWindowFrameUnit::range:
+    case CanonicalWindowFrameUnit::groups:
+      return true;
+  }
+  return false;
+}
+
+bool RankingFrameExclusionValid(
+    const CanonicalWindowFrameExclusion exclusion) {
+  switch (exclusion) {
+    case CanonicalWindowFrameExclusion::no_others:
+    case CanonicalWindowFrameExclusion::current_row:
+    case CanonicalWindowFrameExclusion::group:
+    case CanonicalWindowFrameExclusion::ties:
+      return true;
+  }
+  return false;
+}
+
+bool RankingFrameBoundValid(const CanonicalWindowFrameBound& bound) {
+  switch (bound.kind) {
+    case CanonicalWindowFrameBoundKind::unbounded_preceding:
+    case CanonicalWindowFrameBoundKind::current_row:
+    case CanonicalWindowFrameBoundKind::unbounded_following:
+      return !bound.offset.has_value();
+    case CanonicalWindowFrameBoundKind::offset_preceding:
+    case CanonicalWindowFrameBoundKind::offset_following:
+      return bound.offset.has_value();
+  }
+  return false;
+}
+
+bool RankingFrameEvidenceValid(const CanonicalWindowFrameResult& frames) {
+  const auto row_count = frames.ordered_batch.rows.size();
+  if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
+      !frames.empty_state_uses_optional_bounds ||
+      !frames.authority.engine_mga_snapshot_bound ||
+      !IsCanonicalUuid(frames.resolved_frame.frame_descriptor_uuid) ||
+      !IsCanonicalUuid(frames.window_property_uuid) ||
+      !IsCanonicalUuid(frames.selected_plan_uuid) ||
+      !frames.resolved_frame.start.has_value() ||
+      !frames.resolved_frame.end.has_value() ||
+      !RankingFrameUnitValid(frames.resolved_frame.unit) ||
+      !RankingFrameExclusionValid(frames.resolved_frame.exclusion) ||
+      !RankingFrameBoundValid(*frames.resolved_frame.start) ||
+      !RankingFrameBoundValid(*frames.resolved_frame.end) ||
+      frames.executed_physical_node_id == 0 || frames.causal_counter_id == 0 ||
+      frames.row_metadata.size() != row_count ||
+      frames.effective_frames.size() != row_count) {
+    return false;
+  }
+  for (std::size_t row = 0; row < row_count; ++row) {
+    const auto& metadata = frames.row_metadata[row];
+    const auto& frame = frames.effective_frames[row];
+    if (metadata.ordered_row_index != row ||
+        !metadata.partition_id.has_value() ||
+        !metadata.peer_group_id.has_value() ||
+        metadata.partition_begin > row ||
+        metadata.partition_end_exclusive <= row ||
+        metadata.partition_end_exclusive > row_count ||
+        metadata.peer_begin > row || metadata.peer_end_exclusive <= row ||
+        metadata.peer_begin < metadata.partition_begin ||
+        metadata.peer_end_exclusive > metadata.partition_end_exclusive ||
+        frame.ordered_row_index != row ||
+        frame.partition_id != metadata.partition_id ||
+        frame.exclusion_applied !=
+            (frames.resolved_frame.exclusion !=
+             CanonicalWindowFrameExclusion::no_others)) {
+      return false;
+    }
+    if (frame.base_state == CanonicalWindowFrameState::nonempty) {
+      if (!frame.base_begin.has_value() ||
+          !frame.base_end_exclusive.has_value() ||
+          *frame.base_begin < metadata.partition_begin ||
+          *frame.base_end_exclusive > metadata.partition_end_exclusive ||
+          *frame.base_begin >= *frame.base_end_exclusive) {
+        return false;
+      }
+      std::optional<std::size_t> prior;
+      for (const auto member : frame.effective_row_indices) {
+        if (member < *frame.base_begin ||
+            member >= *frame.base_end_exclusive ||
+            (prior.has_value() && member <= *prior)) {
+          return false;
+        }
+        prior = member;
+      }
+      std::vector<std::size_t> expected;
+      for (std::size_t member = *frame.base_begin;
+           member < *frame.base_end_exclusive; ++member) {
+        const bool peer = member >= metadata.peer_begin &&
+                          member < metadata.peer_end_exclusive;
+        bool excluded = false;
+        switch (frames.resolved_frame.exclusion) {
+          case CanonicalWindowFrameExclusion::no_others:
+            break;
+          case CanonicalWindowFrameExclusion::current_row:
+            excluded = member == row;
+            break;
+          case CanonicalWindowFrameExclusion::group:
+            excluded = peer;
+            break;
+          case CanonicalWindowFrameExclusion::ties:
+            excluded = peer && member != row;
+            break;
+        }
+        if (!excluded) expected.push_back(member);
+      }
+      if (frame.effective_row_indices != expected) return false;
+    } else if ((frame.base_state != CanonicalWindowFrameState::empty &&
+                frame.base_state !=
+                    CanonicalWindowFrameState::reversed_to_empty) ||
+               frame.base_begin.has_value() ||
+               frame.base_end_exclusive.has_value() ||
+               !frame.effective_row_indices.empty()) {
+      return false;
+    }
+  }
+  std::size_t row = 0;
+  std::size_t expected_partition_id = 0;
+  while (row < row_count) {
+    const auto partition_begin = row;
+    const auto partition_end =
+        frames.row_metadata[partition_begin].partition_end_exclusive;
+    std::size_t expected_peer_id = 0;
+    while (row < partition_end) {
+      const auto peer_begin = row;
+      const auto peer_end = frames.row_metadata[peer_begin].peer_end_exclusive;
+      for (std::size_t member = peer_begin; member < peer_end; ++member) {
+        const auto& metadata = frames.row_metadata[member];
+        if (*metadata.partition_id != expected_partition_id ||
+            *metadata.peer_group_id != expected_peer_id ||
+            metadata.partition_begin != partition_begin ||
+            metadata.partition_end_exclusive != partition_end ||
+            metadata.peer_begin != peer_begin ||
+            metadata.peer_end_exclusive != peer_end) {
+          return false;
+        }
+      }
+      row = peer_end;
+      ++expected_peer_id;
+    }
+    ++expected_partition_id;
+  }
+  return true;
+}
+
+scratchbird::engine::internal_api::EngineTypedValue RankingInt64Value(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::uint64_t value) {
+  scratchbird::engine::internal_api::EngineTypedValue output;
+  output.descriptor = descriptor;
+  output.encoded_value = std::to_string(value);
+  output.state =
+      scratchbird::engine::internal_api::EngineValueState::value;
+  return output;
+}
+
+std::string ExactRatioText(std::uint64_t numerator,
+                           const std::uint64_t denominator) {
+  if (denominator == 0) return {};
+  std::string output = std::to_string(numerator / denominator);
+  auto remainder = numerator % denominator;
+  if (remainder == 0) return output;
+  output.push_back('.');
+  for (std::size_t digit = 0; digit < 34 && remainder != 0; ++digit) {
+    const auto scaled = static_cast<unsigned __int128>(remainder) * 10;
+    output.push_back(static_cast<char>('0' + scaled / denominator));
+    remainder = static_cast<std::uint64_t>(scaled % denominator);
+  }
+  return output;
+}
+
+std::optional<scratchbird::engine::internal_api::EngineTypedValue>
+RankingRealValue(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor,
+    const std::uint64_t numerator,
+    const std::uint64_t denominator) {
+  namespace dt = scratchbird::core::datatypes;
+  const auto target_type =
+      dt::CanonicalTypeIdFromStableName(descriptor.canonical_type_name);
+  dt::DatatypeCastRequest cast;
+  cast.value.type_id = dt::CanonicalTypeId::decimal_float;
+  cast.value.encoded_value = ExactRatioText(numerator, denominator);
+  cast.target_type_id = target_type;
+  cast.explicit_cast = true;
+  const auto converted = dt::CastDatatypeValue(cast);
+  if (!converted.ok() || converted.value.is_null) return std::nullopt;
+  scratchbird::engine::internal_api::EngineTypedValue output;
+  output.descriptor = descriptor;
+  output.encoded_value = converted.value.encoded_value;
+  output.state =
+      scratchbird::engine::internal_api::EngineValueState::value;
+  return output;
+}
+
+}  // namespace
+
+// QOW-SOURCE-WIN-006-V1
+// Ranking functions consume the exact partition and typed peer ranges created
+// by QOW-401 after QOW-402 has validated the complete frame and exclusion.
+// These six functions intentionally ignore effective-frame extent only after
+// that validation, as required by WINDOW_CORE.
+CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
+    const CanonicalWindowRankingRequest& request) {
+  CanonicalWindowRankingResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic =
+        WindowRankingRefusal(request.function, std::move(detail));
+    return result;
+  };
+  const auto expected_uuid = RankingFunctionUuid(request.function);
+  if (expected_uuid.empty() || request.function_uuid != expected_uuid ||
+      !IsCanonicalUuid(request.function_uuid)) {
+    return refuse("ranking function kind and registry UUID do not match");
+  }
+  if (!RankingFrameEvidenceValid(request.frames)) {
+    return refuse("ranking input is not canonical QOW-402 frame evidence");
+  }
+  if (request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("window ranking attempted to claim engine MGA authority");
+  }
+  const auto row_count = request.frames.ordered_batch.rows.size();
+  if (request.maximum_output_rows == 0 ||
+      row_count > request.maximum_output_rows ||
+      row_count > static_cast<std::size_t>(
+                      std::numeric_limits<std::int64_t>::max())) {
+    return refuse("window ranking output resource bound was exceeded");
+  }
+  if (!IsCanonicalUuid(request.output_descriptor.descriptor_uuid.canonical) ||
+      request.output_descriptor.descriptor_kind != "scalar" ||
+      request.output_descriptor.encoded_descriptor.empty()) {
+    return refuse("ranking output descriptor is missing or malformed");
+  }
+  namespace dt = scratchbird::core::datatypes;
+  const auto output_type = dt::CanonicalTypeIdFromStableName(
+      request.output_descriptor.canonical_type_name);
+  if ((RankingIntegerResult(request.function) &&
+       output_type != dt::CanonicalTypeId::int64) ||
+      (!RankingIntegerResult(request.function) &&
+       !RankingRealType(output_type))) {
+    return refuse("ranking output descriptor has the wrong numeric family");
+  }
+
+  std::uint64_t buckets = 0;
+  if (request.function == CanonicalWindowRankingFunction::ntile) {
+    if (!request.ntile_bucket_count.has_value()) {
+      return refuse("NTILE requires an explicitly present bucket count");
+    }
+    const auto decoded = DecodeInt64Value(*request.ntile_bucket_count);
+    if (!decoded.ok() ||
+        request.ntile_bucket_count->state !=
+            scratchbird::engine::internal_api::EngineValueState::value ||
+        !request.ntile_bucket_count->binary_value.empty() ||
+        decoded.value <= 0) {
+      return refuse("NTILE bucket count must be a positive non-NULL int64");
+    }
+    buckets = static_cast<std::uint64_t>(decoded.value);
+  } else if (request.ntile_bucket_count.has_value()) {
+    return refuse("non-NTILE ranking function carries an NTILE operand");
+  }
+
+  result.values.reserve(row_count);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    const auto& metadata = request.frames.row_metadata[row];
+    const auto partition_rows =
+        metadata.partition_end_exclusive - metadata.partition_begin;
+    const auto partition_position = row - metadata.partition_begin;
+    const auto rank = metadata.peer_begin - metadata.partition_begin + 1;
+    const auto dense_rank = *metadata.peer_group_id + 1;
+    const auto cume_rows =
+        metadata.peer_end_exclusive - metadata.partition_begin;
+    switch (request.function) {
+      case CanonicalWindowRankingFunction::row_number:
+        result.values.push_back(RankingInt64Value(
+            request.output_descriptor, partition_position + 1));
+        break;
+      case CanonicalWindowRankingFunction::rank:
+        result.values.push_back(
+            RankingInt64Value(request.output_descriptor, rank));
+        break;
+      case CanonicalWindowRankingFunction::dense_rank:
+        result.values.push_back(
+            RankingInt64Value(request.output_descriptor, dense_rank));
+        break;
+      case CanonicalWindowRankingFunction::percent_rank: {
+        const auto value = partition_rows <= 1
+                               ? RankingRealValue(request.output_descriptor, 0, 1)
+                               : RankingRealValue(request.output_descriptor,
+                                                  rank - 1,
+                                                  partition_rows - 1);
+        if (!value.has_value()) {
+          return refuse("PERCENT_RANK result conversion failed");
+        }
+        result.values.push_back(*value);
+        break;
+      }
+      case CanonicalWindowRankingFunction::cume_dist: {
+        const auto value = RankingRealValue(request.output_descriptor,
+                                            cume_rows, partition_rows);
+        if (!value.has_value()) {
+          return refuse("CUME_DIST result conversion failed");
+        }
+        result.values.push_back(*value);
+        break;
+      }
+      case CanonicalWindowRankingFunction::ntile: {
+        const auto base_size = partition_rows / buckets;
+        const auto larger_bucket_count = partition_rows % buckets;
+        const auto larger_bucket_size = base_size + 1;
+        const auto larger_rows = larger_bucket_count * larger_bucket_size;
+        std::uint64_t bucket = 0;
+        if (partition_position < larger_rows) {
+          bucket = partition_position / larger_bucket_size + 1;
+        } else {
+          bucket = larger_bucket_count +
+                   (partition_position - larger_rows) / base_size + 1;
+        }
+        result.values.push_back(
+            RankingInt64Value(request.output_descriptor, bucket));
+        break;
+      }
+    }
+  }
+
+  result.diagnostic = {};
+  result.function = request.function;
+  result.frame_and_exclusion_validated_then_ignored = true;
+  result.authority = request.frames.authority;
+  result.window_property_uuid = request.frames.window_property_uuid;
+  result.selected_plan_uuid = request.frames.selected_plan_uuid;
+  result.executed_physical_node_id =
+      request.frames.executed_physical_node_id;
+  result.causal_counter_id = request.frames.causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
