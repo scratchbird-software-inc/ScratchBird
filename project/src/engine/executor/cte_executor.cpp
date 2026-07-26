@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <exception>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -535,6 +536,116 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-014-RESOURCE-V1
+// Charge every anchor and intermediate encoded value payload against the
+// resource admission evidence bound into the selected physical DAG. The
+// shared working executor still owns convergence and row/iteration limits;
+// this wrapper adds one explicit byte grant and reports cleanup on every exit.
+CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
+    const CanonicalRecursiveCteResourceRequest& request) {
+  CanonicalRecursiveCteResourceResult result;
+  result.working_state_cleaned = true;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.working_result.diagnostic.ok = false;
+    result.working_result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-RESOURCE-REFUSAL-V1";
+    result.working_result.diagnostic.detail = std::move(detail);
+    result.working_state_cleaned = true;
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  const auto* selected_node = FindPhysicalNode(
+      request.working_request.physical_dag,
+      request.working_request.selected_physical_node_id);
+  if (request.working_request.selected_physical_node_id == 0 ||
+      request.working_request.selected_physical_node_id !=
+          request.working_request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
+      selected_node->implementation_id !=
+          "cte.recursive.resource-bounded.typed.v1") {
+    return refuse("recursive CTE resource physical profile is not bound");
+  }
+  const auto resource_evidence = std::find_if(
+      request.working_request.physical_dag.admission_evidence.begin(),
+      request.working_request.physical_dag.admission_evidence.end(),
+      [](const PhysicalAdmissionEvidence& evidence) {
+        return evidence.stage == PhysicalAdmissionStage::kResource;
+      });
+  if (request.maximum_materialized_value_bytes == 0 ||
+      request.memory_grant_evidence_uuid.empty() ||
+      resource_evidence ==
+          request.working_request.physical_dag.admission_evidence.end() ||
+      resource_evidence->evidence_uuid !=
+          request.memory_grant_evidence_uuid) {
+    return refuse("recursive CTE memory grant evidence is not bound");
+  }
+
+  const auto batch_bytes = [](const DescriptorBatch& batch) {
+    std::size_t bytes = 0;
+    for (const auto& row : batch.rows) {
+      for (const auto& value : row.values) {
+        if (value.encoded_value.size() >
+            std::numeric_limits<std::size_t>::max() - bytes) {
+          throw std::runtime_error("recursive CTE byte accounting overflow");
+        }
+        bytes += value.encoded_value.size();
+      }
+    }
+    return bytes;
+  };
+
+  auto materialized_bytes = std::make_shared<std::size_t>(0);
+  try {
+    *materialized_bytes = batch_bytes(request.working_request.anchor_batch);
+  } catch (const std::exception& error) {
+    return refuse(error.what());
+  }
+  if (*materialized_bytes > request.maximum_materialized_value_bytes) {
+    return refuse("recursive CTE anchor exceeded the encoded-value byte grant");
+  }
+
+  CanonicalRecursiveCteWorkingRequest working = request.working_request;
+  for (auto& node : working.physical_dag.nodes) {
+    if (node.physical_node_id == working.selected_physical_node_id) {
+      node.implementation_id = "cte.recursive.working.typed.v1";
+      break;
+    }
+  }
+  const auto recursive_step = working.recursive_step;
+  const auto maximum_bytes = request.maximum_materialized_value_bytes;
+  working.recursive_step =
+      [recursive_step, materialized_bytes, maximum_bytes, batch_bytes](
+          const DescriptorBatch& current, const std::size_t iteration) {
+        auto intermediate = recursive_step(current, iteration);
+        const auto bytes = batch_bytes(intermediate);
+        if (bytes > maximum_bytes - *materialized_bytes) {
+          throw std::runtime_error(
+              "recursive CTE encoded-value byte grant was exceeded");
+        }
+        *materialized_bytes += bytes;
+        return intermediate;
+      };
+
+  auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
+  if (!working_result.diagnostic.ok) {
+    return refuse(working_result.diagnostic.diagnostic_code + ":" +
+                  working_result.diagnostic.detail);
+  }
+  result.working_result = std::move(working_result);
+  result.materialized_value_bytes = *materialized_bytes;
+  result.working_state_cleaned = true;
+  result.memory_grant_evidence_uuid = request.memory_grant_evidence_uuid;
   return result;
 }
 

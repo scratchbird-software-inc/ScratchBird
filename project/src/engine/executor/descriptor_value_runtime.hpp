@@ -339,6 +339,19 @@ struct CanonicalRecursiveCteSearchCycleResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalRecursiveCteResourceRequest {
+  CanonicalRecursiveCteWorkingRequest working_request;
+  std::string memory_grant_evidence_uuid;
+  std::size_t maximum_materialized_value_bytes = 0;
+};
+
+struct CanonicalRecursiveCteResourceResult {
+  CanonicalRecursiveCteWorkingResult working_result;
+  std::size_t materialized_value_bytes = 0;
+  bool working_state_cleaned = false;
+  std::string memory_grant_evidence_uuid;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -870,6 +883,8 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
 CanonicalRecursiveCteSearchCycleResult
 ExecuteCanonicalRecursiveCteSearchCycle(
     const CanonicalRecursiveCteSearchCycleRequest& request);
+CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
+    const CanonicalRecursiveCteResourceRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
