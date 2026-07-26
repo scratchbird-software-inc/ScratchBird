@@ -87,6 +87,21 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_qry_030_v1 PROPERTIES
     LABELS "qow_closure;QOW-301;QOW-LEAF-QRY-030;development_candidate"
   )
+  # QOW-CMAKE-IAS-015-V1
+  add_executable(qow_ias_015_test_v1 qow_ias_015.cpp)
+  target_compile_features(qow_ias_015_test_v1 PRIVATE cxx_std_20)
+  target_compile_definitions(qow_ias_015_test_v1 PRIVATE
+    SB_QOW_RULE_PLANNER_SOURCE_FILE="${PROJECT_SOURCE_DIR}/src/engine/planner/rule_planner.cpp"
+    SB_QOW_RULE_PLANNER_HEADER_FILE="${PROJECT_SOURCE_DIR}/src/engine/planner/rule_planner.hpp"
+  )
+  target_link_libraries(qow_ias_015_test_v1 PRIVATE
+    sb_qow_canonical_logical_graph
+  )
+  add_dependencies(qow_ias_015_test_v1 sb_engine_planner)
+  add_test(NAME qow_ias_015_v1 COMMAND qow_ias_015_test_v1)
+  set_tests_properties(qow_ias_015_v1 PROPERTIES
+    LABELS "qow_closure;QOW-301;QOW-LEAF-IAS-015;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
