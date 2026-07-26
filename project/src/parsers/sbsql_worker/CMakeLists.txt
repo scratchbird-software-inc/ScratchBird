@@ -30,6 +30,7 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   expression/reference_variable_compatibility.cpp
   resources/language_resource_contract.cpp
   statement/statement_catalog.cpp
+  # QOW-CMAKE-QRY-001-BINDING-V1
   binder/binder.cpp
   lowering/lowering.cpp
   rendering/rendering.cpp

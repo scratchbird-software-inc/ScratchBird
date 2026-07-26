@@ -8,11 +8,18 @@
 
 #include "binder/binder.hpp"
 
+#include <algorithm>
+#include <functional>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
 namespace scratchbird::parser::sbsql {
 namespace {
 
 bool RequiresDescriptorAuthority(const AstDocument& ast) {
   return ast.statement_binding_contract_key == "binder.statement.public_authority_required" ||
+         ast.native_relational.recognized() ||
          ast.requires_name_resolution;
 }
 
@@ -252,13 +259,293 @@ void PopulateAuthorityMetadata(BoundStatement* bound, const AstDocument& ast) {
   }
 }
 
+void AddBoundAstDiagnostic(BoundNativeRelationalDocument* document,
+                           std::string code,
+                           std::string message,
+                           std::vector<Field> fields = {}) {
+  if (document->messages.has_errors()) return;
+  document->messages.diagnostics.push_back(MakeDiagnostic(
+      std::move(code), "ERROR", std::move(message), "sbp_sbsql.native_binder",
+      std::move(fields)));
+}
+
+bool LooksLikeUuidV7(const std::string_view value) {
+  return LooksLikeCanonicalUuid(value) && value[14] == '7';
+}
+
+BoundNativeRelationalDocument RefusedBoundAst(
+    BoundNativeRelationalDocument document) {
+  document.bound = false;
+  document.bound_ast_uuid.clear();
+  document.root_relation_id = 0;
+  document.root_scope_id = 0;
+  document.descriptors.clear();
+  document.expressions.clear();
+  document.outputs.clear();
+  document.relations.clear();
+  document.scopes.clear();
+  return document;
+}
+
 } // namespace
+
+// QOW-SOURCE-QRY-001-BINDING-V1
+BoundNativeRelationalDocument BindNativeRelationalAst(
+    const NativeRelationalAstDocument& ast,
+    const NativeRelationalBindingContext& context) {
+  BoundNativeRelationalDocument bound;
+  if (!ast.accepted()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "only an accepted typed relational AST can be bound");
+    return RefusedBoundAst(std::move(bound));
+  }
+  if (!LooksLikeUuidV7(context.bound_ast_uuid)) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
+                          "binding requires a non-null UUIDv7 BoundAST identity");
+    return RefusedBoundAst(std::move(bound));
+  }
+  if (!LooksLikeCanonicalUuid(context.catalog_epoch_uuid)) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
+                          "binding requires an engine-supplied catalog epoch UUID");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  std::unordered_map<std::uint32_t, const NativeDescriptorBindingInput*>
+      descriptor_by_id;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (const auto& descriptor : context.descriptors) {
+    if (descriptor.descriptor_id == 0 ||
+        !LooksLikeCanonicalUuid(descriptor.descriptor_uuid) ||
+        !LooksLikeCanonicalUuid(descriptor.type_uuid) ||
+        (descriptor.collation_uuid.has_value() &&
+         !LooksLikeCanonicalUuid(*descriptor.collation_uuid)) ||
+        (descriptor.width_precision_scale.scale.has_value() &&
+         (!descriptor.width_precision_scale.precision.has_value() ||
+          *descriptor.width_precision_scale.scale >
+              *descriptor.width_precision_scale.precision))) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+                            "descriptor binding contains an invalid typed field");
+      return RefusedBoundAst(std::move(bound));
+    }
+    if (!descriptor_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
+        !descriptor_uuids.emplace(descriptor.descriptor_uuid).second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+                            "descriptor IDs and UUID handles must be unique");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+  if (descriptor_by_id.empty()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+                          "typed relational binding requires descriptor handles");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  std::unordered_map<std::uint32_t, const NativeExpressionBindingInput*>
+      expression_binding_by_id;
+  for (const auto& expression_binding : context.expressions) {
+    if (expression_binding.expression_id == 0 ||
+        expression_binding.descriptor_id == 0 ||
+        descriptor_by_id.find(expression_binding.descriptor_id) ==
+            descriptor_by_id.end() ||
+        !expression_binding_by_id
+             .emplace(expression_binding.expression_id, &expression_binding)
+             .second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "expression binding contains a missing or duplicate handle");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const NativeExpressionAstNode*> ast_expression_by_id;
+  for (const auto& expression : ast.expressions) {
+    if (expression.expression_id == 0 ||
+        !ast_expression_by_id.emplace(expression.expression_id, &expression).second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "typed AST expression handles are invalid");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+  if (expression_binding_by_id.size() != ast_expression_by_id.size()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                          "every typed AST expression requires exactly one binding");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  std::unordered_map<std::uint32_t, std::uint8_t> expression_visit_state;
+  std::function<bool(std::uint32_t)> visit_expression =
+      [&](const std::uint32_t expression_id) {
+        const auto state = expression_visit_state[expression_id];
+        if (state == 1) return false;
+        if (state == 2) return true;
+        const auto expression_iterator = ast_expression_by_id.find(expression_id);
+        if (expression_iterator == ast_expression_by_id.end()) return false;
+        expression_visit_state[expression_id] = 1;
+        for (const auto child_id : expression_iterator->second->child_expression_ids) {
+          if (child_id == 0 || !visit_expression(child_id)) return false;
+        }
+        expression_visit_state[expression_id] = 2;
+        return true;
+      };
+  for (const auto& [expression_id, expression] : ast_expression_by_id) {
+    (void)expression;
+    if (!visit_expression(expression_id)) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "expression graph contains a cycle or dangling child");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+
+  std::unordered_set<std::uint32_t> used_descriptor_ids;
+  bound.expressions.reserve(ast.expressions.size());
+  for (const auto& expression : ast.expressions) {
+    const auto binding_iterator =
+        expression_binding_by_id.find(expression.expression_id);
+    if (binding_iterator == expression_binding_by_id.end()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "typed AST expression is missing its descriptor binding");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const auto& expression_binding = *binding_iterator->second;
+    const bool function_call =
+        expression.expression_kind == NativeExpressionAstKind::kFunctionCall;
+    if (function_call != expression_binding.function_uuid.has_value() ||
+        (expression_binding.function_uuid.has_value() &&
+         !LooksLikeCanonicalUuid(*expression_binding.function_uuid))) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "function UUID state does not match the expression kind");
+      return RefusedBoundAst(std::move(bound));
+    }
+    for (const auto child_id : expression.child_expression_ids) {
+      if (child_id == 0 || ast_expression_by_id.find(child_id) == ast_expression_by_id.end()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "expression contains a dangling child handle");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+
+    BoundExpressionAstRecord record;
+    record.expression_id = expression.expression_id;
+    record.expression_kind = expression.expression_kind;
+    record.child_expression_ids = expression.child_expression_ids;
+    record.result_descriptor_id = expression_binding.descriptor_id;
+    record.bound_function_uuid = expression_binding.function_uuid;
+    if (expression.expression_kind == NativeExpressionAstKind::kLiteral ||
+        expression.expression_kind == NativeExpressionAstKind::kParameter) {
+      record.literal_or_parameter_ref = expression.spelling;
+    }
+    used_descriptor_ids.insert(record.result_descriptor_id);
+    bound.expressions.push_back(std::move(record));
+  }
+
+  if (ast.values_rows.empty()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "VALUES relation has no typed row handles");
+    return RefusedBoundAst(std::move(bound));
+  }
+  const auto& first_row = ast.values_rows.front();
+  if (context.outputs.size() != first_row.expression_ids.size()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                          "VALUES output bindings must match the row arity");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  std::unordered_set<std::uint32_t> output_ids;
+  std::unordered_set<std::uint32_t> output_ordinals;
+  bound.outputs.reserve(context.outputs.size());
+  for (const auto& output : context.outputs) {
+    if (output.output_id == 0 || output.ordinal >= first_row.expression_ids.size() ||
+        first_row.expression_ids[output.ordinal] != output.expression_id ||
+        !output_ids.insert(output.output_id).second ||
+        !output_ordinals.insert(output.ordinal).second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                            "output IDs, ordinals, and expression handles must be exact");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const auto expression_binding =
+        expression_binding_by_id.find(output.expression_id);
+    if (expression_binding == expression_binding_by_id.end() ||
+        expression_binding->second->descriptor_id != output.descriptor_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                            "output descriptor does not match its bound expression");
+      return RefusedBoundAst(std::move(bound));
+    }
+    BoundOutputAstRecord record;
+    record.output_id = output.output_id;
+    record.expression_id = output.expression_id;
+    record.output_name_utf8 = output.output_name_utf8;
+    record.descriptor_id = output.descriptor_id;
+    record.visible = output.visible;
+    record.ordinal = output.ordinal;
+    used_descriptor_ids.insert(record.descriptor_id);
+    bound.outputs.push_back(std::move(record));
+  }
+  std::ranges::sort(bound.outputs,
+                    [](const auto& left, const auto& right) {
+                      return left.ordinal < right.ordinal;
+                    });
+
+  if (used_descriptor_ids.size() != descriptor_by_id.size()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+                          "binding context contains an unused descriptor handle");
+    return RefusedBoundAst(std::move(bound));
+  }
+  bound.descriptors.reserve(context.descriptors.size());
+  for (const auto& descriptor : context.descriptors) {
+    BoundDescriptorAstRecord record;
+    record.descriptor_id = descriptor.descriptor_id;
+    record.descriptor_uuid = descriptor.descriptor_uuid;
+    record.type_uuid = descriptor.type_uuid;
+    record.nullability = descriptor.nullability;
+    record.collation_uuid = descriptor.collation_uuid;
+    record.timezone_profile_id = descriptor.timezone_profile_id;
+    record.width_precision_scale = descriptor.width_precision_scale;
+    bound.descriptors.push_back(std::move(record));
+  }
+  std::ranges::sort(bound.descriptors,
+                    [](const auto& left, const auto& right) {
+                      return left.descriptor_id < right.descriptor_id;
+                    });
+
+  if (ast.relations.size() != 1 || ast.root_relation_id == 0 ||
+      ast.relations.front().relation_id != ast.root_relation_id ||
+      ast.relations.front().relation_kind != NativeRelationAstKind::kValues ||
+      !ast.relations.front().input_relation_ids.empty()) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "typed VALUES relation graph is not canonical");
+    return RefusedBoundAst(std::move(bound));
+  }
+  BoundRelationAstRecord relation;
+  relation.relation_id = ast.root_relation_id;
+  relation.relation_kind = NativeRelationAstKind::kValues;
+  relation.input_relation_ids = ast.relations.front().input_relation_ids;
+  relation.bound_object_uuid = std::nullopt;
+  relation.lateral = false;
+  bound.relations.push_back(std::move(relation));
+
+  BoundScopeAstRecord scope;
+  scope.scope_id = 1;
+  scope.parent_scope_id = std::nullopt;
+  scope.visible_relation_ids = {ast.root_relation_id};
+  for (const auto& output : bound.outputs) {
+    if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+  }
+  std::ranges::sort(scope.visible_projection_ids);
+  scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+  bound.scopes.push_back(std::move(scope));
+
+  bound.bound_ast_uuid = context.bound_ast_uuid;
+  bound.root_relation_id = ast.root_relation_id;
+  bound.root_scope_id = 1;
+  bound.bound = true;
+  return bound;
+}
 
 BoundStatement BindAst(const AstDocument& ast,
                        const CstDocument& cst,
                        const ParserConfig& config,
                        const SessionContext& session,
-                       const std::vector<std::string>& resolved_object_uuids) {
+                       const std::vector<std::string>& resolved_object_uuids,
+                       const NativeRelationalBindingContext* native_binding_context) {
   BoundStatement bound;
   bound.parser_api_major = config.parser_api_major;
   bound.protocol_version = config.protocol_version;
@@ -302,6 +589,29 @@ BoundStatement BindAst(const AstDocument& ast,
         "sbp_sbsql.binder",
         {{"statement_surface_id", bound.statement_surface_id},
          {"diagnostic_key", bound.diagnostic_key}}));
+    return bound;
+  }
+  if (ast.native_relational.recognized()) {
+    if (native_binding_context == nullptr || session.catalog_epoch == 0 ||
+        session.descriptor_epoch == 0) {
+      bound.messages.diagnostics.push_back(MakeDiagnostic(
+          "QOW-DIAG-BOUNDAST-SCOPE", "ERROR",
+          "typed relational binding requires engine-supplied descriptor and epoch context",
+          "sbp_sbsql.native_binder"));
+      return bound;
+    }
+    bound.native_relational =
+        BindNativeRelationalAst(ast.native_relational, *native_binding_context);
+    bound.messages.diagnostics.insert(
+        bound.messages.diagnostics.end(),
+        bound.native_relational.messages.diagnostics.begin(),
+        bound.native_relational.messages.diagnostics.end());
+    if (bound.messages.has_errors()) return bound;
+    bound.descriptor_refs.clear();
+    for (const auto& descriptor : bound.native_relational.descriptors) {
+      bound.descriptor_refs.push_back(descriptor.descriptor_uuid);
+    }
+    bound.bound = bound.native_relational.bound;
     return bound;
   }
   if (ast.requires_name_resolution) {

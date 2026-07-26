@@ -24,6 +24,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-101;QOW-LEAF-QRY-001-AST;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-001-BINDING-V1
+  add_executable(qow_qry_001_binding_test_v1 qow_qry_001_binding.cpp)
+  target_compile_features(qow_qry_001_binding_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_qry_001_binding_test_v1 PRIVATE sbl_sbsql_parser_pipeline)
+  add_test(NAME qow_qry_001_binding_v1 COMMAND qow_qry_001_binding_test_v1)
+  set_tests_properties(qow_qry_001_binding_v1 PROPERTIES
+    LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-001-BINDING;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

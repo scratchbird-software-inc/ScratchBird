@@ -11,10 +11,114 @@
 #include "ast/ast.hpp"
 #include "common/common.hpp"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace scratchbird::parser::sbsql {
+
+enum class BoundNullability {
+  kNonNull,
+  kNullable,
+  kUnknown,
+};
+
+struct BoundWidthPrecisionScale {
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+};
+
+struct NativeDescriptorBindingInput {
+  std::uint32_t descriptor_id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  BoundNullability nullability{BoundNullability::kUnknown};
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+  BoundWidthPrecisionScale width_precision_scale;
+};
+
+struct NativeExpressionBindingInput {
+  std::uint32_t expression_id{0};
+  std::uint32_t descriptor_id{0};
+  std::optional<std::string> function_uuid;
+};
+
+struct NativeOutputBindingInput {
+  std::uint32_t output_id{0};
+  std::uint32_t expression_id{0};
+  std::string output_name_utf8;
+  std::uint32_t descriptor_id{0};
+  bool visible{true};
+  std::uint32_t ordinal{0};
+};
+
+struct NativeRelationalBindingContext {
+  std::string bound_ast_uuid;
+  std::string catalog_epoch_uuid;
+  std::vector<NativeDescriptorBindingInput> descriptors;
+  std::vector<NativeExpressionBindingInput> expressions;
+  std::vector<NativeOutputBindingInput> outputs;
+};
+
+struct BoundDescriptorAstRecord {
+  std::uint32_t descriptor_id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  BoundNullability nullability{BoundNullability::kUnknown};
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+  BoundWidthPrecisionScale width_precision_scale;
+};
+
+struct BoundExpressionAstRecord {
+  std::uint32_t expression_id{0};
+  NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
+  std::vector<std::uint32_t> child_expression_ids;
+  std::uint32_t result_descriptor_id{0};
+  std::optional<std::string> bound_function_uuid;
+  std::optional<std::string> literal_or_parameter_ref;
+};
+
+struct BoundOutputAstRecord {
+  std::uint32_t output_id{0};
+  std::uint32_t expression_id{0};
+  std::string output_name_utf8;
+  std::uint32_t descriptor_id{0};
+  bool visible{true};
+  std::uint32_t ordinal{0};
+};
+
+struct BoundRelationAstRecord {
+  std::uint32_t relation_id{0};
+  NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
+  std::vector<std::uint32_t> input_relation_ids;
+  std::optional<std::string> bound_object_uuid;
+  bool lateral{false};
+};
+
+struct BoundScopeAstRecord {
+  std::uint32_t scope_id{0};
+  std::optional<std::uint32_t> parent_scope_id;
+  std::vector<std::uint32_t> visible_relation_ids;
+  std::vector<std::uint32_t> visible_projection_ids;
+  std::string catalog_epoch_uuid;
+};
+
+struct BoundNativeRelationalDocument {
+  bool bound{false};
+  std::string bound_ast_uuid;
+  std::uint32_t root_relation_id{0};
+  std::uint32_t root_scope_id{0};
+  std::vector<BoundDescriptorAstRecord> descriptors;
+  std::vector<BoundExpressionAstRecord> expressions;
+  std::vector<BoundOutputAstRecord> outputs;
+  std::vector<BoundRelationAstRecord> relations;
+  std::vector<BoundScopeAstRecord> scopes;
+  MessageVectorSet messages;
+};
 
 struct BoundStatement {
   bool bound{false};
@@ -70,13 +174,19 @@ struct BoundStatement {
   std::vector<std::string> policy_refs;
   std::vector<std::string> required_rights;
   std::vector<std::string> required_authority_steps;
+  BoundNativeRelationalDocument native_relational;
   MessageVectorSet messages;
 };
+
+BoundNativeRelationalDocument BindNativeRelationalAst(
+    const NativeRelationalAstDocument& ast,
+    const NativeRelationalBindingContext& context);
 
 BoundStatement BindAst(const AstDocument& ast,
                        const CstDocument& cst,
                        const ParserConfig& config,
                        const SessionContext& session,
-                       const std::vector<std::string>& resolved_object_uuids = {});
+                       const std::vector<std::string>& resolved_object_uuids = {},
+                       const NativeRelationalBindingContext* native_binding_context = nullptr);
 
 } // namespace scratchbird::parser::sbsql
