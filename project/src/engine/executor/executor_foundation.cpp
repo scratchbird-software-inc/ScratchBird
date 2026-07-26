@@ -1884,6 +1884,277 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   return result;
 }
 
+// QOW-SOURCE-QRY-016-ALL-V1
+// Execute duplicate-preserving set operations only after the two input
+// descriptor vectors and the result descriptor vector have been bound to one
+// admitted physical set-operation node.  Multiset membership uses decoded
+// typed values; parser text and legacy integer batches are never consulted.
+CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
+    const CanonicalSetOperationAllRequest& request) {
+  using api = scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalSetOperationAllResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-016-ALL-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.left_input_row_count = 0;
+    result.right_input_row_count = 0;
+    result.consumed_right_multiplicity_count = 0;
+    result.implementation_id.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected set-operation node is not the physical root");
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kSetOperation ||
+      selected_node->input_physical_node_ids.size() != 2) {
+    return refuse("ALL requires one selected binary set-operation node");
+  }
+
+  const std::string expected_implementation = [&] {
+    switch (request.operation) {
+      case CanonicalSetOperationKind::kUnion:
+        return std::string("setop.union-all.ordinal.typed.v1");
+      case CanonicalSetOperationKind::kIntersect:
+        return std::string("setop.intersect-all.ordinal.typed.v1");
+      case CanonicalSetOperationKind::kExcept:
+        return std::string("setop.except-all.ordinal.typed.v1");
+    }
+    return std::string{};
+  }();
+  if (expected_implementation.empty() ||
+      selected_node->implementation_id != expected_implementation) {
+    return refuse("set-operation kind and ALL implementation profile drifted");
+  }
+
+  const PhysicalNodeRecord* left_node = nullptr;
+  const PhysicalNodeRecord* right_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[0]) {
+      left_node = &node;
+    }
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[1]) {
+      right_node = &node;
+    }
+  }
+  if (left_node == nullptr || right_node == nullptr) {
+    return refuse("set-operation input node is unresolved");
+  }
+
+  auto validation = ValidateCanonicalDescriptorBatch(
+      request.left_batch, left_node->output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+  validation = ValidateCanonicalDescriptorBatch(
+      request.right_batch, right_node->output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+  DescriptorBatch output_schema;
+  output_schema.columns = request.result_columns;
+  validation = ValidateCanonicalDescriptorBatch(
+      output_schema, selected_node->output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+
+  if (request.left_batch.columns.size() != request.right_batch.columns.size() ||
+      request.left_batch.columns.size() != request.result_columns.size()) {
+    return refuse("set-operation input and result arity differ");
+  }
+  for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
+    const auto& left = request.left_batch.columns[column];
+    const auto& right = request.right_batch.columns[column];
+    const auto& output = request.result_columns[column];
+    if (left.descriptor.descriptor_kind != "scalar" ||
+        right.descriptor.descriptor_kind != "scalar" ||
+        output.descriptor.descriptor_kind != "scalar" ||
+        left.descriptor.canonical_type_name !=
+            right.descriptor.canonical_type_name ||
+        left.descriptor.canonical_type_name !=
+            output.descriptor.canonical_type_name ||
+        left.descriptor.encoded_descriptor !=
+            right.descriptor.encoded_descriptor ||
+        left.descriptor.encoded_descriptor !=
+            output.descriptor.encoded_descriptor ||
+        output.nullable != (left.nullable || right.nullable)) {
+      return refuse("ALL operand descriptors require exact ordinal reconciliation");
+    }
+  }
+  if (request.maximum_output_row_count == 0) {
+    return refuse("set-operation output resource bound is zero");
+  }
+  if (request.operation == CanonicalSetOperationKind::kUnion &&
+      (request.left_batch.rows.size() > request.maximum_output_row_count ||
+       request.right_batch.rows.size() >
+           request.maximum_output_row_count -
+               request.left_batch.rows.size())) {
+    return refuse("UNION ALL output resource bound was exceeded");
+  }
+
+  using RowKey = std::vector<std::string>;
+  const auto typed_row_key = [&](const DescriptorTuple& row,
+                                 RowKey* key,
+                                 std::string* detail) {
+    if (key == nullptr || detail == nullptr) return false;
+    key->clear();
+    key->reserve(row.values.size());
+    for (const auto& value : row.values) {
+      if (value.state == api::sql_null) {
+        key->push_back("null");
+        continue;
+      }
+      const auto& type = value.descriptor.canonical_type_name;
+      if (type == "int64") {
+        const auto decoded = DecodeInt64Value(value);
+        if (!decoded.ok()) {
+          *detail = decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail;
+          return false;
+        }
+        key->push_back("int64:" + std::to_string(decoded.value));
+      } else if (type == "boolean" || type == "bool") {
+        const auto decoded = DecodeBoolValue(value);
+        if (!decoded.ok()) {
+          *detail = decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail;
+          return false;
+        }
+        key->push_back(decoded.value ? "boolean:1" : "boolean:0");
+      } else if (type == "real64" || type == "double" ||
+                 type == "double precision") {
+        const auto decoded = DecodeReal64Value(value);
+        if (!decoded.ok()) {
+          *detail = decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail;
+          return false;
+        }
+        char buffer[128]{};
+        const auto encoded = std::to_chars(
+            std::begin(buffer), std::end(buffer), decoded.value,
+            std::chars_format::general,
+            std::numeric_limits<double>::max_digits10);
+        if (encoded.ec != std::errc{}) {
+          *detail = "real64 set-operation key encoding failed";
+          return false;
+        }
+        key->push_back("real64:" +
+                       std::string(buffer, encoded.ptr));
+      } else {
+        std::string encoded = type + ":" + value.encoded_value + ":";
+        encoded.append(reinterpret_cast<const char*>(value.binary_value.data()),
+                       value.binary_value.size());
+        key->push_back(std::move(encoded));
+      }
+    }
+    return true;
+  };
+  const auto retag_row = [&](const DescriptorTuple& source) {
+    DescriptorTuple output;
+    output.values = source.values;
+    for (std::size_t column = 0; column < output.values.size(); ++column) {
+      output.values[column].descriptor = request.result_columns[column].descriptor;
+    }
+    return output;
+  };
+
+  std::vector<RowKey> left_keys;
+  std::vector<RowKey> right_keys;
+  left_keys.reserve(request.left_batch.rows.size());
+  right_keys.reserve(request.right_batch.rows.size());
+  std::string key_detail;
+  for (const auto& row : request.left_batch.rows) {
+    RowKey key;
+    if (!typed_row_key(row, &key, &key_detail)) {
+      return refuse(std::move(key_detail));
+    }
+    left_keys.push_back(std::move(key));
+  }
+  for (const auto& row : request.right_batch.rows) {
+    RowKey key;
+    if (!typed_row_key(row, &key, &key_detail)) {
+      return refuse(std::move(key_detail));
+    }
+    right_keys.push_back(std::move(key));
+  }
+
+  DescriptorBatch output;
+  output.columns = request.result_columns;
+  std::size_t consumed_right_multiplicity_count = 0;
+  if (request.operation == CanonicalSetOperationKind::kUnion) {
+    output.rows.reserve(left_keys.size() + right_keys.size());
+    for (const auto& row : request.left_batch.rows) {
+      output.rows.push_back(retag_row(row));
+    }
+    for (const auto& row : request.right_batch.rows) {
+      output.rows.push_back(retag_row(row));
+    }
+  } else {
+    std::map<RowKey, std::size_t> right_multiplicity;
+    for (const auto& key : right_keys) ++right_multiplicity[key];
+    for (std::size_t index = 0; index < left_keys.size(); ++index) {
+      auto found = right_multiplicity.find(left_keys[index]);
+      const bool consumes =
+          found != right_multiplicity.end() && found->second != 0;
+      if (consumes) {
+        --found->second;
+        ++consumed_right_multiplicity_count;
+      }
+      const bool emit =
+          request.operation == CanonicalSetOperationKind::kIntersect
+              ? consumes
+              : !consumes;
+      if (emit) output.rows.push_back(retag_row(request.left_batch.rows[index]));
+    }
+  }
+  if (output.rows.size() > request.maximum_output_row_count) {
+    return refuse("set-operation output resource bound was exceeded");
+  }
+  validation = ValidateCanonicalDescriptorBatch(
+      output, selected_node->output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.left_input_row_count = request.left_batch.rows.size();
+  result.right_input_row_count = request.right_batch.rows.size();
+  result.consumed_right_multiplicity_count =
+      consumed_right_multiplicity_count;
+  result.implementation_id = expected_implementation;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }

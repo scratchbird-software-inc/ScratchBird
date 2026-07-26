@@ -693,6 +693,34 @@ struct CanonicalRecursiveCteMgaResult {
   std::string transaction_inventory_evidence_uuid;
 };
 
+enum class CanonicalSetOperationKind : std::uint8_t {
+  kUnion = 1,
+  kIntersect,
+  kExcept,
+};
+
+struct CanonicalSetOperationAllRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch left_batch;
+  DescriptorBatch right_batch;
+  std::vector<ExecutorColumnDescriptor> result_columns;
+  CanonicalSetOperationKind operation = CanonicalSetOperationKind::kUnion;
+  std::size_t maximum_output_row_count = 1048576;
+};
+
+struct CanonicalSetOperationAllResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t left_input_row_count = 0;
+  std::size_t right_input_row_count = 0;
+  std::size_t consumed_right_multiplicity_count = 0;
+  std::string implementation_id;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalJoinMgaCandidateEvidence {
   std::size_t pair_index = 0;
   std::uint64_t local_transaction_id = 0;
@@ -935,6 +963,8 @@ ExecuteCanonicalRecursiveCteCancellation(
     const CanonicalRecursiveCteCancellationRequest& request);
 CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
     const CanonicalRecursiveCteMgaRequest& request);
+CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
+    const CanonicalSetOperationAllRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
