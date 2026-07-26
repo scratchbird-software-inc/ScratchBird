@@ -8,9 +8,12 @@
 
 #include "sblr_dispatch.hpp"
 
+#include "sblr_opcode_registry.hpp"
+#include "query/plan_api.hpp"
+
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
 #include "cluster_provider/cluster_provider.hpp"
 #include "sblr_context_variables.hpp"
-#include "sblr_opcode_registry.hpp"
 #include "sblr_operator_runtime.hpp"
 #include "sblr_procedural_block_runtime.hpp"
 
@@ -76,7 +79,6 @@
 #include "observability/show_api.hpp"
 #include "procedural/procedural_api.hpp"
 #include "query/expression_api.hpp"
-#include "query/plan_api.hpp"
 #include "query/predicate_api.hpp"
 #include "query/projection_api.hpp"
 #include "registry/function_seed_registry.hpp"
@@ -104,8 +106,10 @@
 #include "storage/storage_management_api.hpp"
 #include "transaction/savepoint_api.hpp"
 #include "transaction/transaction_api.hpp"
+#endif
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <chrono>
@@ -119,12 +123,444 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
+
+namespace {
+
+struct TypedPlanOperationDecodeResult {
+  bool ok{false};
+  api::EngineTypedRelationalPlanRequest request;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+struct CanonicalQueryRouteResult {
+  bool graph_validated{false};
+  api::EngineApiResult api_result;
+};
+
+bool ParseCanonicalUnsigned(std::string_view text,
+                            const std::uint64_t maximum,
+                            std::uint64_t* value) {
+  if (value == nullptr || text.empty()) return false;
+  std::uint64_t parsed = 0;
+  const auto [end, error] =
+      std::from_chars(text.data(), text.data() + text.size(), parsed);
+  if (error != std::errc{} || end != text.data() + text.size() ||
+      parsed > maximum) {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
+  const auto object_reference_empty = [](const api::EngineObjectReference& ref) {
+    return ref.uuid.canonical.empty() && ref.object_kind.empty();
+  };
+  const auto identifier_atom_empty = [](const api::EngineIdentifierAtom& atom) {
+    return atom.raw_text.empty() && !atom.was_quoted &&
+           atom.quote_style.empty() && atom.identifier_profile_uuid.empty() &&
+           atom.normalized_lookup_key.empty() &&
+           atom.exact_lookup_key.empty() && !atom.requires_exact_match &&
+           atom.source_span.empty();
+  };
+  const auto& sql_reference = request.sql_object_reference;
+  const auto& bound_identity = request.bound_object_identity;
+  return request.operation_id.empty() &&
+         object_reference_empty(request.target_database) &&
+         object_reference_empty(request.target_schema) &&
+         object_reference_empty(request.target_object) &&
+         request.related_objects.empty() && request.localized_names.empty() &&
+         sql_reference.expected_object_type.empty() &&
+         sql_reference.path_type == "unqualified" &&
+         !sql_reference.no_search_path &&
+         sql_reference.path_components.empty() &&
+         identifier_atom_empty(sql_reference.object_name) &&
+         bound_identity.object_uuid.canonical.empty() &&
+         bound_identity.resolved_object_type.empty() &&
+         bound_identity.resolved_schema_uuid.canonical.empty() &&
+         bound_identity.parent_object_uuid.canonical.empty() &&
+         bound_identity.catalog_generation_id == 0 &&
+         bound_identity.security_epoch == 0 &&
+         bound_identity.resource_epoch == 0 && request.descriptors.empty() &&
+         request.columns.empty() && request.constraints.empty() &&
+         request.indexes.empty() && !request.native_row_packet.present &&
+         request.native_row_packet.version == 0 &&
+         request.native_row_packet.row_count == 0 &&
+         request.native_row_packet.column_count == 0 &&
+         request.native_row_packet.field_order.empty() &&
+         request.native_row_packet.column_type_tags.empty() &&
+         request.native_row_packet.packet_bytes.empty() &&
+         request.native_row_packet.row_offsets.empty() &&
+         request.native_row_packet.row_sizes.empty() && request.rows.empty() &&
+         request.shared_row_field_order.empty() && request.assignments.empty() &&
+         request.predicate.predicate_kind.empty() &&
+         request.predicate.canonical_predicate_envelope.empty() &&
+         request.predicate.bound_values.empty() &&
+         request.projection.canonical_projection_envelopes.empty() &&
+         request.ordering.canonical_ordering_envelopes.empty() &&
+         request.physical_profile.names.empty() &&
+         request.physical_profile.encoded_profiles.empty() &&
+         request.policy_profile.names.empty() &&
+         request.policy_profile.encoded_profiles.empty() &&
+         request.compatibility_profile.names.empty() &&
+         request.compatibility_profile.encoded_profiles.empty() &&
+         request.option_envelopes.empty() &&
+         request.diagnostic_options.empty();
+}
+
+bool SplitRelationalNodeFields(
+    std::string_view encoded,
+    std::array<std::string_view, 4>* fields) {
+  if (fields == nullptr) return false;
+  std::size_t start = 0;
+  for (std::size_t index = 0; index < fields->size(); ++index) {
+    const auto separator = encoded.find('|', start);
+    if (index + 1 == fields->size()) {
+      if (separator != std::string_view::npos) return false;
+      (*fields)[index] = encoded.substr(start);
+      return true;
+    }
+    if (separator == std::string_view::npos) return false;
+    (*fields)[index] = encoded.substr(start, separator - start);
+    start = separator + 1;
+  }
+  return false;
+}
+
+bool ParseRelationalHandleList(std::string_view encoded,
+                               std::vector<std::uint32_t>* handles) {
+  if (handles == nullptr || encoded.empty()) return false;
+  handles->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start,
+        separator == std::string_view::npos ? encoded.size() - start
+                                            : separator - start);
+    std::uint64_t parsed = 0;
+    if (!ParseCanonicalUnsigned(token,
+                                std::numeric_limits<std::uint32_t>::max(),
+                                &parsed)) {
+      return false;
+    }
+    handles->push_back(static_cast<std::uint32_t>(parsed));
+    if (handles->size() > 131072) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
+// QOW-ROUTE-STAGE-QRY-003-V1
+TypedPlanOperationDecodeResult TypedPlanOperationRequest(
+    const SblrDispatchRequest& dispatch_request) {
+  TypedPlanOperationDecodeResult decoded;
+  if (dispatch_request.envelope.result_shape != "query_execute_result") {
+    decoded.diagnostic_id = "SB_DIAG_SBLR_RESULT_SHAPE_MISMATCH";
+    decoded.detail = "query.execute requires query_execute_result";
+    return decoded;
+  }
+  if (!CanonicalQueryApiPayloadEmpty(dispatch_request.api_request)) {
+    decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+    decoded.detail =
+        "out-of-band generic API payload is forbidden for query.execute";
+    return decoded;
+  }
+  decoded.request.context = dispatch_request.context;
+  decoded.request.operation_id = dispatch_request.envelope.operation_id;
+  decoded.request.execute = true;
+  decoded.request.relational_dag.package_root =
+      api::RelationalPackageRoot::kQueryExecute;
+
+  bool wire_version_present = false;
+  bool root_node_present = false;
+  for (const auto& operand : dispatch_request.envelope.operands) {
+    if (operand.type == "uint16" &&
+        operand.name == "relational_wire_version") {
+      if (wire_version_present) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_VERSION";
+        decoded.detail = "duplicate relational_wire_version operand";
+        return decoded;
+      }
+      std::uint64_t wire_version = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.value,
+              std::numeric_limits<std::uint16_t>::max(),
+              &wire_version)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_VERSION";
+        decoded.detail = "malformed relational_wire_version operand";
+        return decoded;
+      }
+      decoded.request.relational_dag.wire_version =
+          static_cast<std::uint16_t>(wire_version);
+      wire_version_present = true;
+      continue;
+    }
+    if (operand.type == "uint32" &&
+        operand.name == "relational_root_node_id") {
+      if (root_node_present) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "duplicate relational_root_node_id operand";
+        return decoded;
+      }
+      std::uint64_t root_node_id = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.value,
+              std::numeric_limits<std::uint32_t>::max(),
+              &root_node_id)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational_root_node_id operand";
+        return decoded;
+      }
+      decoded.request.relational_dag.root_node_id =
+          static_cast<std::uint32_t>(root_node_id);
+      root_node_present = true;
+      continue;
+    }
+    if (operand.type == "relational_node_v1") {
+      if (decoded.request.relational_dag.nodes.size() >= 131072 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational node transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t node_id = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.name,
+              std::numeric_limits<std::uint32_t>::max(),
+              &node_id)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational node id";
+        return decoded;
+      }
+      std::array<std::string_view, 4> fields{};
+      std::uint64_t node_kind = 0;
+      if (!SplitRelationalNodeFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(),
+              &node_kind) ||
+          (fields[1] != "0" && fields[1] != "1")) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational node descriptor";
+        return decoded;
+      }
+      api::RelationalDagNode node;
+      node.node_id = static_cast<std::uint32_t>(node_id);
+      node.node_kind = static_cast<api::RelationalDagNodeKind>(node_kind);
+      node.shareable = fields[1] == "1";
+      if (!ParseRelationalHandleList(fields[2], &node.input_node_ids) ||
+          !ParseRelationalHandleList(fields[3],
+                                     &node.output_descriptor_ids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational node handles";
+        return decoded;
+      }
+      decoded.request.relational_dag.nodes.push_back(std::move(node));
+      continue;
+    }
+
+    decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+    decoded.detail = "unknown query.execute operand";
+    return decoded;
+  }
+
+  if (!wire_version_present) {
+    decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_VERSION";
+    decoded.detail = "relational_wire_version operand is required";
+    return decoded;
+  }
+  if (!root_node_present) {
+    decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+    decoded.detail = "relational_root_node_id operand is required";
+    return decoded;
+  }
+  decoded.ok = true;
+  return decoded;
+}
+
+api::EngineApiResult QueryRouteFailure(
+    const api::EngineRequestContext& context,
+    std::string operation_id,
+    std::string diagnostic_id,
+    std::string detail) {
+  api::EngineApiResult result;
+  result.ok = false;
+  result.operation_id = std::move(operation_id);
+  result.embedded_trust_mode_observed =
+      context.trust_mode == api::EngineTrustMode::embedded_in_process;
+  api::EngineApiDiagnostic diagnostic;
+  diagnostic.code = std::move(diagnostic_id);
+  diagnostic.message_key = "engine.sblr.query_execute.refused";
+  diagnostic.detail = std::move(detail);
+  diagnostic.error = true;
+  result.diagnostics.push_back(std::move(diagnostic));
+  return result;
+}
+
+CanonicalQueryRouteResult DispatchTypedPlanOperation(
+    const SblrDispatchRequest& request) {
+  CanonicalQueryRouteResult routed;
+  const auto decoded = TypedPlanOperationRequest(request);
+  if (!decoded.ok) {
+    routed.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        decoded.diagnostic_id,
+        decoded.detail);
+    return routed;
+  }
+  const auto validation =
+      api::ValidateTypedRelationalDag(decoded.request.relational_dag);
+  if (!validation.accepted) {
+    const auto& issue = validation.issues.front();
+    routed.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        issue.diagnostic_id,
+        issue.field_id + ":node_id=" + std::to_string(issue.node_id));
+    return routed;
+  }
+
+  routed.graph_validated = true;
+  routed.api_result = QueryRouteFailure(
+      request.context,
+      request.envelope.operation_id,
+      "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING",
+      "typed relational DAG validated; physical dispatch is not yet connected");
+  return routed;
+}
+
+SblrEnvelopeDiagnostic QueryRouteDiagnostic(const api::EngineApiResult& result) {
+  if (result.diagnostics.empty()) {
+    return {"SB_SBLR_QUERY_EXECUTE_REFUSED",
+            "canonical query execution was refused",
+            true};
+  }
+  return {result.diagnostics.front().code,
+          result.diagnostics.front().detail,
+          true};
+}
+
+}  // namespace
+
+#ifdef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+
+bool IsClusterOperationId(std::string_view operation_id) {
+  return operation_id.starts_with("cluster.") ||
+         operation_id.starts_with("replication.");
+}
+
+SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
+  SblrDispatchResult result;
+  result.api_result.operation_id = request.envelope.operation_id;
+  const auto envelope_validation = ValidateSblrEnvelope(request.envelope);
+  result.envelope_validated = envelope_validation.ok;
+  if (!envelope_validation.ok) {
+    result.diagnostics = envelope_validation.diagnostics;
+    result.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        "SB_SBLR_DISPATCH_ENVELOPE_REJECTED",
+        "SBLR envelope failed engine validation");
+    return result;
+  }
+
+  const auto opcode_validation =
+      ValidateSblrOpcodeForEnvelope(request.envelope);
+  if (!opcode_validation.ok) {
+    result.diagnostics.push_back({opcode_validation.diagnostic_id,
+                                  opcode_validation.detail,
+                                  true});
+    result.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        opcode_validation.diagnostic_id,
+        opcode_validation.detail);
+    return result;
+  }
+  if (request.envelope.requires_security_context &&
+      !request.context.security_context_present) {
+    result.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED",
+        "security_context_present=false");
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    return result;
+  }
+  if (request.envelope.requires_transaction_context &&
+      request.context.local_transaction_id == 0 &&
+      request.context.transaction_uuid.canonical.empty()) {
+    result.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
+        "transaction_uuid and local_transaction_id are both absent");
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    return result;
+  }
+  if (request.envelope.operation_id != "query.execute") {
+    result.api_result = QueryRouteFailure(
+        request.context,
+        request.envelope.operation_id,
+        "SB_SBLR_DISPATCH_UNKNOWN_OPERATION",
+        "operation has no QOW contract-only dispatch route");
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    return result;
+  }
+
+  const auto routed = DispatchTypedPlanOperation(request);
+  result.accepted = routed.graph_validated;
+  result.dispatched_to_api = routed.graph_validated;
+  result.api_result = routed.api_result;
+  result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+  return result;
+}
+
+SblrDispatchResult DecodeAndDispatchSblrOperation(
+    std::string_view encoded_envelope,
+    api::EngineRequestContext context,
+    api::EngineApiRequest api_request) {
+  const auto decoded = DecodeSblrEnvelope(encoded_envelope);
+  if (!decoded.ok) {
+    SblrDispatchResult result;
+    result.diagnostics = decoded.diagnostics;
+    result.api_result = QueryRouteFailure(
+        context,
+        decoded.envelope.operation_id,
+        "SB_SBLR_DECODE_REJECTED",
+        "encoded envelope failed validation");
+    return result;
+  }
+  return DispatchSblrOperation(
+      {std::move(context), decoded.envelope, std::move(api_request)});
+}
+
+std::string SerializeSblrDispatchResultToJson(
+    const SblrDispatchResult& result) {
+  std::ostringstream out;
+  out << "{\"accepted\":" << (result.accepted ? "true" : "false")
+      << ",\"envelope_validated\":"
+      << (result.envelope_validated ? "true" : "false")
+      << ",\"dispatched_to_api\":"
+      << (result.dispatched_to_api ? "true" : "false")
+      << ",\"api_ok\":" << (result.api_result.ok ? "true" : "false")
+      << "}";
+  return out.str();
+}
+
+#else
+
 namespace functions = scratchbird::engine::functions;
 namespace {
 
@@ -4665,7 +5101,8 @@ bool ParseRelationRowUuid(const std::string& row_uuid,
   return true;
 }
 
-api::EnginePlanOperationRequest TypedPlanOperationRequest(const SblrDispatchRequest& request) {
+api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
+    const SblrDispatchRequest& request) {
   api::EnginePlanOperationRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
@@ -6612,6 +7049,24 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
+  if (request.envelope.operation_id == "query.execute" ||
+      request.envelope.operation_id == "query.plan_operation") {
+    const auto opcode_validation =
+        ValidateSblrOpcodeForEnvelope(request.envelope);
+    if (!opcode_validation.ok) {
+      result.diagnostics.push_back(DispatchDiagnostic(
+          opcode_validation.diagnostic_id,
+          opcode_validation.detail));
+      result.api_result = FailureResult(
+          request.context,
+          request.envelope.operation_id,
+          opcode_validation.diagnostic_id,
+          "engine.sblr.dispatch.registry_refused",
+          opcode_validation.detail);
+      return result;
+    }
+  }
+
   if (const char* expected_opcode = ExpectedOpcodeForOperation(request.envelope.operation_id);
       expected_opcode != nullptr && request.envelope.opcode != expected_opcode) {
     result.diagnostics.push_back(DispatchDiagnostic("SB_SBLR_DISPATCH_OPCODE_MISMATCH",
@@ -6645,6 +7100,15 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                       "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED",
                                       "engine.sblr.dispatch.transaction_context_required",
                                       "transaction_uuid and local_transaction_id are both absent");
+    return result;
+  }
+
+  if (request.envelope.operation_id == "query.execute") {
+    const auto routed = DispatchTypedPlanOperation(request);
+    result.accepted = routed.graph_validated;
+    result.dispatched_to_api = routed.graph_validated;
+    result.api_result = routed.api_result;
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
     return result;
   }
 
@@ -6889,7 +7353,7 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "query.bind_projection") result.api_result = api::EngineBindProjection(TypedRequest<api::EngineBindProjectionRequest>(request));
   else if (op == "query.evaluate_projection") result.api_result = api::EngineEvaluateProjection(TypedEvaluateProjectionRequest(request));
   else if (op == "expression.system_variable_read") result.api_result = EngineReadSystemVariable(request);
-  else if (op == "query.plan_operation") result.api_result = api::EnginePlanOperation(TypedPlanOperationRequest(request));
+  else if (op == "query.plan_operation") result.api_result = api::EnginePlanOperation(TypedLegacyPlanOperationRequest(request));
   else if (op == "security.resolve_authority") result.api_result = api::EngineResolveSecurityAuthority(TypedRequest<api::EngineResolveSecurityAuthorityRequest>(request));
   else if (op == "security.authenticate") result.api_result = api::EngineAuthenticate(TypedRequest<api::EngineAuthenticateRequest>(request));
   else if (op == "security.refresh_context") result.api_result = api::EngineRefreshSecurityContext(TypedRequest<api::EngineRefreshSecurityContextRequest>(request));
@@ -7163,5 +7627,7 @@ std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) 
   out << "}\n";
   return out.str();
 }
+
+#endif
 
 }  // namespace scratchbird::engine::sblr

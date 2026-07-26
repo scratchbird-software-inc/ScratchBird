@@ -313,6 +313,8 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       CanonicalEntry("statement.cancel", "SBLR_STMT_CANCEL", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::management, SblrOpcodeSecurityClass::authenticated, true),
       CanonicalEntry("parameter.bind", "SBLR_PARAMETER_BIND", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::none, SblrOpcodeSecurityClass::authenticated, false),
       CanonicalEntry("result.page", "SBLR_RESULT_PAGE", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
+      // QOW-SOURCE-QRY-003-V1
+      // QOW-ROUTE-STAGE-QRY-003-V1
       CanonicalEntry("query.execute", "SBLR_QUERY_EXECUTE", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("query.explain", "SBLR_QUERY_EXPLAIN", "statement-management", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, true),
       CanonicalEntry("catalog.introspect", "SBLR_CATALOG_INTROSPECT", "catalog-introspect", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::authenticated, true),
@@ -515,7 +517,7 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       Entry("query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.evaluate_projection", "SBLR_QUERY_EVALUATE_PROJECTION", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, true),
-      Entry("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
+      Entry("query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", SblrOpcodeCategory::query, SblrOpcodeSupport::deprecated_refusal, true, false, false, "QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL"),
       Entry("catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented),
       Entry("catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented),
       Entry("catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", SblrOpcodeCategory::catalog, SblrOpcodeSupport::implemented),

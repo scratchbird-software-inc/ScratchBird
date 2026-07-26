@@ -6,6 +6,29 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  # QOW-CMAKE-QRY-003-V1
+  # QOW-ROUTE-STAGE-QRY-003-V1
+  add_library(sb_qow_sblr_query_route_contract STATIC
+    sblr_dispatch.cpp
+    sblr_engine_envelope.cpp
+    sblr_opcode_registry.cpp
+  )
+  target_compile_features(sb_qow_sblr_query_route_contract PUBLIC cxx_std_20)
+  target_compile_definitions(sb_qow_sblr_query_route_contract PRIVATE
+    SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_qow_sblr_query_route_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_qow_sblr_query_route_contract PUBLIC
+    sb_qow_relational_dag_contract
+  )
+  set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
+
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
   dispatch/sblr_family_dispatch_landing_zone.cpp
