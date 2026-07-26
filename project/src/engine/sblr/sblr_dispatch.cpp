@@ -216,9 +216,10 @@ bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
          request.diagnostic_options.empty();
 }
 
-bool SplitRelationalNodeFields(
+template <std::size_t FieldCount>
+bool SplitRelationalFields(
     std::string_view encoded,
-    std::array<std::string_view, 4>* fields) {
+    std::array<std::string_view, FieldCount>* fields) {
   if (fields == nullptr) return false;
   std::size_t start = 0;
   for (std::size_t index = 0; index < fields->size(); ++index) {
@@ -233,6 +234,56 @@ bool SplitRelationalNodeFields(
     start = separator + 1;
   }
   return false;
+}
+
+bool DecodeCanonicalHex(std::string_view encoded, std::string* value) {
+  if (value == nullptr || encoded.size() % 2 != 0) return false;
+  value->clear();
+  value->reserve(encoded.size() / 2);
+  const auto nibble = [](const char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+    return -1;
+  };
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = nibble(encoded[index]);
+    const int low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) return false;
+    value->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+bool DecodeOptionalCanonicalHex(
+    std::string_view encoded,
+    std::optional<std::string>* value) {
+  if (value == nullptr) return false;
+  if (encoded == "-") {
+    value->reset();
+    return true;
+  }
+  std::string decoded;
+  if (!DecodeCanonicalHex(encoded, &decoded)) return false;
+  *value = std::move(decoded);
+  return true;
+}
+
+bool ParseOptionalCanonicalU32(
+    std::string_view encoded,
+    std::optional<std::uint32_t>* value) {
+  if (value == nullptr) return false;
+  if (encoded == "-") {
+    value->reset();
+    return true;
+  }
+  std::uint64_t parsed = 0;
+  if (!ParseCanonicalUnsigned(encoded,
+                              std::numeric_limits<std::uint32_t>::max(),
+                              &parsed)) {
+    return false;
+  }
+  *value = static_cast<std::uint32_t>(parsed);
+  return true;
 }
 
 bool ParseRelationalHandleList(std::string_view encoded,
@@ -343,9 +394,9 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
         decoded.detail = "malformed relational node id";
         return decoded;
       }
-      std::array<std::string_view, 4> fields{};
+      std::array<std::string_view, 5> fields{};
       std::uint64_t node_kind = 0;
-      if (!SplitRelationalNodeFields(operand.value, &fields) ||
+      if (!SplitRelationalFields(operand.value, &fields) ||
           !ParseCanonicalUnsigned(
               fields[0], std::numeric_limits<std::uint8_t>::max(),
               &node_kind) ||
@@ -360,12 +411,186 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       node.shareable = fields[1] == "1";
       if (!ParseRelationalHandleList(fields[2], &node.input_node_ids) ||
           !ParseRelationalHandleList(fields[3],
-                                     &node.output_descriptor_ids)) {
+                                     &node.output_descriptor_ids) ||
+          !ParseRelationalHandleList(fields[4], &node.values_row_ids)) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
         decoded.detail = "malformed relational node handles";
         return decoded;
       }
       decoded.request.relational_dag.nodes.push_back(std::move(node));
+      continue;
+    }
+    if (operand.type == "relational_descriptor_v1") {
+      if (decoded.request.relational_dag.descriptors.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational descriptor transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t descriptor_id = 0;
+      std::array<std::string_view, 8> fields{};
+      std::uint64_t nullability = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[2], std::numeric_limits<std::uint8_t>::max(),
+              &nullability)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational descriptor record";
+        return decoded;
+      }
+      api::RelationalTypeDescriptor descriptor;
+      descriptor.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      descriptor.descriptor_uuid = fields[0];
+      descriptor.type_uuid = fields[1];
+      descriptor.nullability =
+          static_cast<api::RelationalNullability>(nullability);
+      if (fields[3] != "-") descriptor.collation_uuid = std::string(fields[3]);
+      if (!DecodeOptionalCanonicalHex(fields[4],
+                                      &descriptor.timezone_profile_id) ||
+          !ParseOptionalCanonicalU32(fields[5], &descriptor.width) ||
+          !ParseOptionalCanonicalU32(fields[6], &descriptor.precision) ||
+          !ParseOptionalCanonicalU32(fields[7], &descriptor.scale)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational descriptor fields";
+        return decoded;
+      }
+      decoded.request.relational_dag.descriptors.push_back(
+          std::move(descriptor));
+      continue;
+    }
+    if (operand.type == "relational_expression_v1") {
+      if (decoded.request.relational_dag.expressions.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational expression transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t expression_id = 0;
+      std::uint64_t expression_kind = 0;
+      std::uint64_t descriptor_id = 0;
+      std::array<std::string_view, 8> fields{};
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(),
+              &expression_kind) ||
+          !ParseCanonicalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational expression record";
+        return decoded;
+      }
+      api::RelationalExpressionRecord expression;
+      expression.expression_id = static_cast<std::uint32_t>(expression_id);
+      expression.expression_kind =
+          static_cast<api::RelationalExpressionKind>(expression_kind);
+      expression.result_descriptor_id =
+          static_cast<std::uint32_t>(descriptor_id);
+      if (!ParseRelationalHandleList(fields[1],
+                                     &expression.child_expression_ids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational expression children";
+        return decoded;
+      }
+      if (fields[3] != "-") expression.function_uuid = std::string(fields[3]);
+      if (fields[4] != "-") expression.bound_name_uuid = std::string(fields[4]);
+      if (fields[5] != "-") {
+        std::uint64_t literal_kind = 0;
+        if (!ParseCanonicalUnsigned(
+                fields[5], std::numeric_limits<std::uint8_t>::max(),
+                &literal_kind)) {
+          decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+          decoded.detail = "malformed relational literal kind";
+          return decoded;
+        }
+        expression.literal_kind =
+            static_cast<api::RelationalLiteralKind>(literal_kind);
+      }
+      if (!DecodeOptionalCanonicalHex(fields[6], &expression.operator_name) ||
+          !DecodeOptionalCanonicalHex(
+              fields[7], &expression.literal_or_parameter_ref)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational expression typed fields";
+        return decoded;
+      }
+      decoded.request.relational_dag.expressions.push_back(
+          std::move(expression));
+      continue;
+    }
+    if (operand.type == "relational_output_v1") {
+      if (decoded.request.relational_dag.outputs.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational output transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t output_id = 0;
+      std::array<std::string_view, 6> fields{};
+      std::uint64_t node_id = 0;
+      std::uint64_t expression_id = 0;
+      std::uint64_t descriptor_id = 0;
+      std::uint64_t ordinal = 0;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &output_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !ParseCanonicalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          !ParseCanonicalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          (fields[3] != "0" && fields[3] != "1") ||
+          !ParseCanonicalUnsigned(
+              fields[4], std::numeric_limits<std::uint32_t>::max(),
+              &ordinal)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational output record";
+        return decoded;
+      }
+      api::RelationalOutputRecord output;
+      output.output_id = static_cast<std::uint32_t>(output_id);
+      output.relation_node_id = static_cast<std::uint32_t>(node_id);
+      output.expression_id = static_cast<std::uint32_t>(expression_id);
+      output.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      output.visible = fields[3] == "1";
+      output.ordinal = static_cast<std::uint32_t>(ordinal);
+      if (!DecodeCanonicalHex(fields[5], &output.output_name_utf8)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational output name";
+        return decoded;
+      }
+      decoded.request.relational_dag.outputs.push_back(std::move(output));
+      continue;
+    }
+    if (operand.type == "relational_values_row_v1") {
+      if (decoded.request.relational_dag.values_rows.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational VALUES row transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t row_id = 0;
+      api::RelationalValuesRowRecord row;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &row_id) ||
+          !ParseRelationalHandleList(operand.value, &row.expression_ids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational VALUES row record";
+        return decoded;
+      }
+      row.row_id = static_cast<std::uint32_t>(row_id);
+      decoded.request.relational_dag.values_rows.push_back(std::move(row));
       continue;
     }
 

@@ -56,7 +56,13 @@ sblr::SblrOperationEnvelope QueryEnvelope() {
   envelope.operands = {
       {"uint16", "relational_wire_version", "1"},
       {"uint32", "relational_root_node_id", "1"},
-      {"relational_node_v1", "1", "13|0|-|1"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7200-8000-000000000301|"
+       "019f0000-0000-7300-8000-000000000302|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_output_v1", "1", "1|1|1|1|0|636f6c756d6e5f31"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_node_v1", "1", "13|0|-|1|1"},
   };
   return envelope;
 }
@@ -108,7 +114,7 @@ bool ValidateCanonicalDispatchSeam() {
 
 bool ValidateDagAndTransportRefusal() {
   auto dangling = QueryEnvelope();
-  dangling.operands.back().value = "3|0|99|1";
+  dangling.operands.back().value = "3|0|99|1|-";
   auto dangling_result = sblr::DispatchSblrOperation(
       {Context(), std::move(dangling), {}});
 
@@ -116,6 +122,11 @@ bool ValidateDagAndTransportRefusal() {
   unknown.operands.push_back({"text", "silent_default", "forbidden"});
   auto unknown_result = sblr::DispatchSblrOperation(
       {Context(), std::move(unknown), {}});
+
+  auto malformed_expression = QueryEnvelope();
+  malformed_expression.operands[3].value = "1|-|1|-|-|1|-|not_hex";
+  auto malformed_expression_result = sblr::DispatchSblrOperation(
+      {Context(), std::move(malformed_expression), {}});
 
   auto wrong_shape = QueryEnvelope();
   wrong_shape.result_shape = "engine.api.result.v1";
@@ -141,6 +152,11 @@ bool ValidateDagAndTransportRefusal() {
   passed &= Require(HasApiDiagnostic(
                         unknown_result, "SBLR.PLAN_TREE.INVALID_HANDLE"),
                     "unknown-operand diagnostic differs");
+  passed &= Require(
+      !malformed_expression_result.accepted &&
+          HasApiDiagnostic(malformed_expression_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "malformed typed scalar record was accepted");
   passed &= Require(
       !shape_result.accepted &&
           HasApiDiagnostic(shape_result,
