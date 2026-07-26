@@ -119,7 +119,15 @@ bool ValidateCanonicalLoweringAndDispatch() {
                     "typed VALUES did not select the canonical query root");
   passed &= Require(lowered.result_shape_key == "query_execute_result",
                     "canonical query result shape differs");
-  passed &= Require(lowered.operands.size() == 3 &&
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  passed &= Require(lowered.operands.size() == 13 &&
                         lowered.operands[0].type == "uint16" &&
                         lowered.operands[0].name ==
                             "relational_wire_version" &&
@@ -128,9 +136,16 @@ bool ValidateCanonicalLoweringAndDispatch() {
                         lowered.operands[1].name ==
                             "relational_root_node_id" &&
                         lowered.operands[1].value == "1" &&
-                        lowered.operands[2].type == "relational_node_v1" &&
-                        lowered.operands[2].name == "1" &&
-                        lowered.operands[2].value == "13|0|-|1,2",
+                        has_operand("relational_descriptor_v1", "1",
+                                    "019f0000-0000-7200-8000-000000000503|"
+                                    "019f0000-0000-7300-8000-000000000504|"
+                                    "1|-|-|-|-|-") &&
+                        has_operand("relational_expression_v1", "1",
+                                    "1|-|1|-|-|1|-|31") &&
+                        has_operand("relational_values_row_v1", "1", "1,2") &&
+                        has_operand("relational_values_row_v1", "2", "3,4") &&
+                        has_operand("relational_node_v1", "1",
+                                    "13|0|-|1,2|1,2"),
                     "typed relation handles were not structurally preserved");
   passed &= Require(
       lowered.payload.find("operation_id=query.execute\n") !=
@@ -138,7 +153,7 @@ bool ValidateCanonicalLoweringAndDispatch() {
           lowered.payload.find("opcode=SBLR_QUERY_EXECUTE\n") !=
               std::string::npos &&
           lowered.payload.find(
-              "operand=relational_node_v1\t1\t13|0|-|1,2\n") !=
+              "operand=relational_node_v1\t1\t13|0|-|1,2|1,2\n") !=
               std::string::npos &&
           lowered.payload.find("VALUES (1") == std::string::npos &&
           lowered.payload.find("query.plan_operation") == std::string::npos &&
