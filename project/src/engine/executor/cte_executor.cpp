@@ -302,4 +302,240 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
   return result;
 }
 
+// QOW-SOURCE-QRY-014-SEARCH-CYCLE-V1
+// Execute the accepted breadth-first SEARCH profile and one int64 CYCLE key.
+// Parent indices bind every generated row to one current working row, allowing
+// path-local cycle detection. A cycle row is emitted once with a typed TRUE
+// mark and is never placed into the next working relation.
+CanonicalRecursiveCteSearchCycleResult
+ExecuteCanonicalRecursiveCteSearchCycle(
+    const CanonicalRecursiveCteSearchCycleRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalRecursiveCteSearchCycleResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-SEARCH-CYCLE-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  const auto* selected_node = FindPhysicalNode(
+      request.physical_dag, request.selected_physical_node_id);
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
+      selected_node->implementation_id !=
+          "cte.recursive.search-breadth-cycle-int64.typed.v1" ||
+      selected_node->input_physical_node_ids.size() != 2) {
+    return refuse("recursive CTE SEARCH/CYCLE physical profile is not bound");
+  }
+  if (request.search_order !=
+      CanonicalRecursiveCteSearchOrder::kBreadthFirst) {
+    return refuse("recursive CTE SEARCH order is outside the accepted profile");
+  }
+
+  const auto* anchor_node = FindPhysicalNode(
+      request.physical_dag, selected_node->input_physical_node_ids[0]);
+  const auto* recursive_node = FindPhysicalNode(
+      request.physical_dag, selected_node->input_physical_node_ids[1]);
+  if (anchor_node == nullptr || recursive_node == nullptr ||
+      anchor_node->node_kind != PhysicalNodeKind::kValues ||
+      recursive_node->node_kind != PhysicalNodeKind::kCte ||
+      anchor_node->output_descriptor_ids !=
+          recursive_node->output_descriptor_ids) {
+    return refuse("recursive CTE SEARCH/CYCLE inputs are not bound");
+  }
+  std::vector<std::uint32_t> output_descriptor_ids =
+      anchor_node->output_descriptor_ids;
+  output_descriptor_ids.push_back(
+      request.search_sequence_column.descriptor_id);
+  output_descriptor_ids.push_back(request.cycle_mark_column.descriptor_id);
+  if (selected_node->output_descriptor_ids != output_descriptor_ids ||
+      request.cycle_key_column >= request.anchor_batch.columns.size() ||
+      request.cycle_key_expression_descriptor_id == 0 ||
+      request.anchor_batch.columns[request.cycle_key_column].descriptor_id !=
+          request.cycle_key_expression_descriptor_id ||
+      request.anchor_batch.columns[request.cycle_key_column]
+              .descriptor.canonical_type_name != "int64" ||
+      request.search_sequence_column.descriptor_id == 0 ||
+      request.search_sequence_column.nullable ||
+      request.search_sequence_column.descriptor.canonical_type_name !=
+          "int64" ||
+      request.cycle_mark_column.descriptor_id == 0 ||
+      request.cycle_mark_column.nullable ||
+      request.cycle_mark_column.descriptor.canonical_type_name != "boolean") {
+    return refuse("recursive CTE SEARCH/CYCLE descriptors are not exact");
+  }
+
+  const auto anchor_validation = ValidateCanonicalDescriptorBatch(
+      request.anchor_batch, anchor_node->output_descriptor_ids);
+  if (!anchor_validation.ok) {
+    return refuse(anchor_validation.diagnostic_code + ":" +
+                  anchor_validation.detail);
+  }
+  if (!request.recursive_step || request.maximum_iteration_count == 0 ||
+      request.maximum_working_row_count == 0 ||
+      request.maximum_result_row_count == 0 ||
+      request.anchor_batch.rows.size() >
+          request.maximum_working_row_count ||
+      request.anchor_batch.rows.size() > request.maximum_result_row_count) {
+    return refuse("recursive CTE SEARCH/CYCLE resource contract is invalid");
+  }
+
+  const auto key_for_row = [&](const DescriptorTuple& row) {
+    if (request.cycle_key_column >= row.values.size()) {
+      throw std::runtime_error("recursive CTE cycle-key row is ragged");
+    }
+    const auto& value = row.values[request.cycle_key_column];
+    if (value.state == api::EngineValueState::sql_null) {
+      return std::string("null");
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
+                               decoded.diagnostic.detail);
+    }
+    return std::string("int64:") + std::to_string(decoded.value);
+  };
+  const auto sequence_value = [&](const std::uint64_t sequence) {
+    api::EngineTypedValue value;
+    value.descriptor = request.search_sequence_column.descriptor;
+    value.encoded_value = std::to_string(sequence);
+    value.state = api::EngineValueState::value;
+    return value;
+  };
+  const auto cycle_value = [&](const bool cycle) {
+    api::EngineTypedValue value;
+    value.descriptor = request.cycle_mark_column.descriptor;
+    value.encoded_value = cycle ? "true" : "false";
+    value.state = api::EngineValueState::value;
+    return value;
+  };
+
+  DescriptorBatch output;
+  output.columns = request.anchor_batch.columns;
+  output.columns.push_back(request.search_sequence_column);
+  output.columns.push_back(request.cycle_mark_column);
+  DescriptorBatch working = request.anchor_batch;
+  std::vector<std::vector<std::string>> working_paths;
+  std::vector<CanonicalRecursiveCteSearchCycleMetadata> metadata;
+  std::uint64_t sequence = 0;
+  try {
+    working_paths.reserve(working.rows.size());
+    for (const auto& row : working.rows) {
+      const auto key = key_for_row(row);
+      working_paths.push_back({key});
+      DescriptorTuple projected = row;
+      projected.values.push_back(sequence_value(++sequence));
+      projected.values.push_back(cycle_value(false));
+      output.rows.push_back(std::move(projected));
+      metadata.push_back(
+          {output.rows.size() - 1, 0, sequence, false});
+    }
+  } catch (const std::exception& error) {
+    return refuse(error.what());
+  }
+
+  std::size_t iteration = 0;
+  std::size_t cycle_rows = 0;
+  while (!working.rows.empty()) {
+    if (iteration == request.maximum_iteration_count) {
+      return refuse("recursive CTE SEARCH/CYCLE did not converge");
+    }
+    ++iteration;
+    CanonicalRecursiveCteGeneratedBatch generated;
+    try {
+      generated = request.recursive_step(working, iteration);
+    } catch (const std::exception& error) {
+      return refuse(std::string("recursive CTE SEARCH/CYCLE step failed:") +
+                    error.what());
+    } catch (...) {
+      return refuse("recursive CTE SEARCH/CYCLE step failed");
+    }
+    const auto generated_validation = ValidateCanonicalDescriptorBatch(
+        generated.batch, recursive_node->output_descriptor_ids);
+    if (!generated_validation.ok) {
+      return refuse(generated_validation.diagnostic_code + ":" +
+                    generated_validation.detail);
+    }
+    if (generated.parent_working_row_indices.size() !=
+            generated.batch.rows.size() ||
+        generated.batch.rows.size() > request.maximum_result_row_count -
+                                          output.rows.size()) {
+      return refuse("recursive CTE SEARCH/CYCLE parent or result bound failed");
+    }
+
+    DescriptorBatch next_working;
+    next_working.columns = generated.batch.columns;
+    std::vector<std::vector<std::string>> next_paths;
+    try {
+      for (std::size_t row_index = 0;
+           row_index < generated.batch.rows.size(); ++row_index) {
+        const auto parent_index =
+            generated.parent_working_row_indices[row_index];
+        if (parent_index >= working.rows.size() ||
+            parent_index >= working_paths.size()) {
+          return refuse("recursive CTE SEARCH/CYCLE parent is unresolved");
+        }
+        const auto key = key_for_row(generated.batch.rows[row_index]);
+        const auto& parent_path = working_paths[parent_index];
+        const bool cycle =
+            std::find(parent_path.begin(), parent_path.end(), key) !=
+            parent_path.end();
+
+        DescriptorTuple projected = generated.batch.rows[row_index];
+        projected.values.push_back(sequence_value(++sequence));
+        projected.values.push_back(cycle_value(cycle));
+        output.rows.push_back(std::move(projected));
+        metadata.push_back(
+            {output.rows.size() - 1, iteration, sequence, cycle});
+        if (cycle) {
+          ++cycle_rows;
+          continue;
+        }
+        if (next_working.rows.size() ==
+            request.maximum_working_row_count) {
+          return refuse("recursive CTE SEARCH/CYCLE working bound exceeded");
+        }
+        next_working.rows.push_back(generated.batch.rows[row_index]);
+        auto path = parent_path;
+        path.push_back(key);
+        next_paths.push_back(std::move(path));
+      }
+    } catch (const std::exception& error) {
+      return refuse(error.what());
+    }
+    working = std::move(next_working);
+    working_paths = std::move(next_paths);
+  }
+
+  const auto output_validation =
+      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.row_metadata = std::move(metadata);
+  result.recursive_iteration_count = iteration;
+  result.cycle_row_count = cycle_rows;
+  result.converged = true;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
