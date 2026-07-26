@@ -1029,6 +1029,118 @@ struct CanonicalDescriptorOrderTerm {
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
 };
 
+enum class CanonicalAggregateFunction : std::uint8_t {
+  unknown = 0,
+  count,
+  sum,
+  avg,
+  min,
+  max,
+  bool_and,
+  bool_or,
+  array_agg,
+  string_agg,
+  json_agg,
+  json_object_agg,
+  stddev_pop,
+  variance_pop,
+  every,
+  listagg,
+  rank,
+  dense_rank,
+  percent_rank,
+  cume_dist,
+  mode,
+  percentile_cont,
+  percentile_disc,
+  approx_count_distinct,
+  approx_median,
+  approx_percentile_cont,
+  approx_percentile_disc,
+  approx_top_k,
+  stddev,
+  variance,
+  stddev_samp,
+  variance_samp,
+  corr,
+  covar_pop,
+  covar_samp,
+  regr_count,
+  regr_avgx,
+  regr_avgy,
+  regr_intercept,
+  regr_r2,
+  regr_slope,
+  regr_sxx,
+  regr_sxy,
+  regr_syy,
+};
+
+enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
+  unknown = 0,
+  serial,
+  partitioned_combine,
+};
+
+struct CanonicalAggregateRegistryEntry {
+  std::uint16_t abi_version = 0;
+  CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
+  std::string builtin_id;
+  std::string function_uuid;
+  bool executable = false;
+  bool aggregate_as_window = false;
+};
+
+struct CanonicalAggregateDescriptor {
+  std::uint16_t abi_version = 0;
+  CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
+  std::string builtin_id;
+  std::string function_uuid;
+  bool count_star = false;
+};
+
+struct CanonicalAggregateRuntimeRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  CanonicalAggregateDescriptor descriptor;
+  DescriptorBatch input_batch;
+  std::vector<std::size_t> value_columns;
+  std::vector<std::uint32_t> value_expression_descriptor_ids;
+  ExecutorColumnDescriptor result_column;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
+      filter_truth_values;
+  bool distinct = false;
+  std::vector<CanonicalDescriptorOrderTerm> aggregate_order_terms;
+  CanonicalAggregateExecutionStrategy forced_strategy =
+      CanonicalAggregateExecutionStrategy::serial;
+  std::size_t maximum_transition_count = 1048576;
+  std::size_t maximum_distinct_value_count = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalAggregateRuntimeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalAggregateDescriptor descriptor;
+  DescriptorBatch output_batch;
+  CanonicalAggregateExecutionStrategy executed_strategy =
+      CanonicalAggregateExecutionStrategy::unknown;
+  std::size_t input_row_count = 0;
+  std::size_t filtered_row_count = 0;
+  std::size_t transition_count = 0;
+  std::size_t non_null_transition_count = 0;
+  std::size_t distinct_tuple_count = 0;
+  bool every_descriptor_field_consumed = false;
+  bool filter_applied_before_distinct = false;
+  bool shared_state_authority_used = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorOrderComparisonResult {
   DescriptorRuntimeDiagnostic diagnostic;
   int comparison = 0;
@@ -1346,6 +1458,10 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+std::vector<CanonicalAggregateRegistryEntry>
+CanonicalAggregateRuntimeRegistryV1();
+CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
+    const CanonicalAggregateRuntimeRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
