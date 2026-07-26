@@ -172,6 +172,35 @@ struct EngineQueryRelation {
   std::vector<EngineRowValue> rows;
 };
 
+enum class CanonicalSeededSampleMethod : std::uint8_t {
+  kBernoulli = 1,
+  kSystem,
+};
+
+struct CanonicalSeededSampleRequest {
+  std::size_t input_row_count = 0;
+  CanonicalSeededSampleMethod method =
+      CanonicalSeededSampleMethod::kBernoulli;
+  std::uint32_t sample_basis_points = 0;
+  std::uint64_t repeatable_seed = 0;
+  bool repeatable_seed_is_bound = false;
+  std::size_t system_block_row_count = 0;
+  std::size_t maximum_input_row_count = 1048576;
+};
+
+struct CanonicalSeededSampleResult {
+  bool accepted = false;
+  std::string diagnostic_code;
+  std::string detail;
+  std::vector<std::size_t> selected_row_indices;
+  std::size_t examined_unit_count = 0;
+  std::string method_id;
+};
+
+// QOW-SOURCE-QRY-015-V1
+CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
+    const CanonicalSeededSampleRequest& request);
+
 struct EnginePlanOperationRequest : EngineApiRequest {
   bool execute = false;
   std::string query_operation;

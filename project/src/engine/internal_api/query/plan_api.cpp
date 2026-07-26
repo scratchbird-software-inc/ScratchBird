@@ -429,6 +429,86 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   return result;
 }
 
+namespace {
+
+std::uint64_t MixCanonicalSampleUnit(std::uint64_t value) {
+  value += 0x9e3779b97f4a7c15ULL;
+  value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+  value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+  return value ^ (value >> 31U);
+}
+
+}  // namespace
+
+// QOW-SOURCE-QRY-015-V1
+// BERNOULLI hashes every physical row independently. SYSTEM hashes a bounded
+// physical block once and admits or rejects the complete block. Both methods
+// require an explicit repeatable seed, may return zero rows for a nonzero rate,
+// and preserve admitted physical order without prefix truncation.
+CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
+    const CanonicalSeededSampleRequest& request) {
+  CanonicalSeededSampleResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.diagnostic_code = "QOW-DIAG-QRY-015-REFUSAL-V1";
+    result.detail = std::move(detail);
+    return result;
+  };
+
+  if (request.method != CanonicalSeededSampleMethod::kBernoulli &&
+      request.method != CanonicalSeededSampleMethod::kSystem) {
+    return refuse("sample method is outside the accepted profile");
+  }
+  if (!request.repeatable_seed_is_bound ||
+      request.sample_basis_points > 10000 ||
+      request.maximum_input_row_count == 0 ||
+      request.input_row_count > request.maximum_input_row_count) {
+    return refuse("seeded sample descriptor or row bound is invalid");
+  }
+  if (request.method == CanonicalSeededSampleMethod::kSystem &&
+      request.system_block_row_count == 0) {
+    return refuse("SYSTEM sample block size is not bound");
+  }
+
+  const auto selected = [&](const std::size_t unit,
+                            const std::uint64_t method_salt) {
+    if (request.sample_basis_points == 0) return false;
+    if (request.sample_basis_points == 10000) return true;
+    const auto ordinal = static_cast<std::uint64_t>(unit);
+    const auto mixed = MixCanonicalSampleUnit(
+        request.repeatable_seed ^ method_salt ^
+        MixCanonicalSampleUnit(ordinal));
+    return mixed % 10000U < request.sample_basis_points;
+  };
+
+  result.selected_row_indices.reserve(request.input_row_count);
+  if (request.method == CanonicalSeededSampleMethod::kBernoulli) {
+    result.method_id = "bernoulli.seeded-row-hash.v1";
+    result.examined_unit_count = request.input_row_count;
+    for (std::size_t row = 0; row < request.input_row_count; ++row) {
+      if (selected(row, 0xb4e3a7d2190c5f61ULL)) {
+        result.selected_row_indices.push_back(row);
+      }
+    }
+  } else {
+    result.method_id = "system.seeded-block-hash.v1";
+    const auto block_rows = request.system_block_row_count;
+    const auto block_count = request.input_row_count / block_rows +
+                             (request.input_row_count % block_rows != 0);
+    result.examined_unit_count = block_count;
+    for (std::size_t block = 0; block < block_count; ++block) {
+      if (!selected(block, 0x51c9d27e4ab3068fULL)) continue;
+      const auto begin = block * block_rows;
+      const auto end = std::min(request.input_row_count, begin + block_rows);
+      for (std::size_t row = begin; row < end; ++row) {
+        result.selected_row_indices.push_back(row);
+      }
+    }
+  }
+  result.accepted = true;
+  return result;
+}
+
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 namespace {
 
@@ -6687,23 +6767,65 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
                                               ? "bernoulli"
                                               : OptionValue(request, "sample_method:"));
     const double percent = ParseReal64Value(OptionValue(request, "sample_percent:"), 100.0);
+    const double scaled_percent = percent * 100.0;
+    const auto rounded_basis_points =
+        std::isfinite(percent) && percent >= 0.0 && percent <= 100.0
+            ? std::llround(scaled_percent)
+            : -1LL;
+    const std::string seed_text = OptionValue(request, "sample_seed:");
+    const bool seed_is_decimal = !seed_text.empty() &&
+        std::all_of(seed_text.begin(), seed_text.end(), [](const char ch) {
+          return std::isdigit(static_cast<unsigned char>(ch));
+        });
+    const std::string block_rows_text = OptionValue(request, "sample_block_rows:");
+    const bool block_rows_are_decimal = !block_rows_text.empty() &&
+        std::all_of(block_rows_text.begin(), block_rows_text.end(),
+                    [](const char ch) {
+                      return std::isdigit(static_cast<unsigned char>(ch));
+                    });
     if ((method != "bernoulli" && method != "system") ||
-        percent < 0.0 || percent > 100.0 || !std::isfinite(percent)) {
+        percent < 0.0 || percent > 100.0 || !std::isfinite(percent) ||
+        std::fabs(scaled_percent -
+                  static_cast<double>(rounded_basis_points)) > 0.000000001 ||
+        !seed_is_decimal ||
+        (method == "system" && !block_rows_are_decimal)) {
       if (error_detail != nullptr) *error_detail = "query_plan_sample_descriptor_invalid";
       return exec::MakeBatch("query_plan_sample_invalid", {});
     }
     const std::size_t before_count = batch.rows.size();
-    std::size_t keep_count = before_count;
-    if (percent <= 0.0) {
-      keep_count = 0;
-    } else if (percent < 100.0) {
-      keep_count = static_cast<std::size_t>(
-          std::floor((static_cast<double>(before_count) * percent) / 100.0));
-      if (keep_count == 0 && before_count != 0) keep_count = 1;
+    CanonicalSeededSampleRequest sample_request;
+    sample_request.input_row_count = before_count;
+    sample_request.method = method == "bernoulli"
+                                ? CanonicalSeededSampleMethod::kBernoulli
+                                : CanonicalSeededSampleMethod::kSystem;
+    sample_request.sample_basis_points =
+        static_cast<std::uint32_t>(rounded_basis_points);
+    sample_request.repeatable_seed = ParseU64Value(seed_text, 0);
+    sample_request.repeatable_seed_is_bound = seed_is_decimal;
+    sample_request.system_block_row_count =
+        method == "system" ? ParseSizeValue(block_rows_text, 0) : 1;
+    sample_request.maximum_input_row_count =
+        ParseSizeValue(OptionValue(request, "sample_maximum_input_rows:"),
+                       1048576);
+    const auto sample = ExecuteCanonicalSeededSample(sample_request);
+    if (!sample.accepted) {
+      if (error_detail != nullptr) *error_detail = sample.diagnostic_code;
+      return exec::MakeBatch("query_plan_sample_invalid", {});
     }
-    if (keep_count < batch.rows.size()) batch.rows.resize(keep_count);
+    std::vector<exec::Tuple> sampled_rows;
+    sampled_rows.reserve(sample.selected_row_indices.size());
+    for (const auto row_index : sample.selected_row_indices) {
+      sampled_rows.push_back(batch.rows[row_index]);
+    }
+    batch = exec::MakeBatch(batch.descriptor_digest, std::move(sampled_rows));
     evidence->push_back({"query_sample", method});
     evidence->push_back({"query_sample_percent", FormatReal64(percent)});
+    evidence->push_back({"query_sample_seed", seed_text});
+    evidence->push_back({"query_sample_method_profile", sample.method_id});
+    if (method == "system") {
+      evidence->push_back(
+          {"query_sample_block_rows", block_rows_text});
+    }
     evidence->push_back({"query_sample_descriptor", "engine_row_descriptor_sample_route"});
     evidence->push_back({"query_sample_rows_before", std::to_string(before_count)});
     evidence->push_back({"query_sample_rows_after", std::to_string(batch.rows.size())});
