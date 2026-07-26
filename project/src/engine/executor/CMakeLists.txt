@@ -71,6 +71,7 @@ add_library(sb_engine_executor STATIC
   operator_fusion_executor.cpp
   parallel_physical_pipeline.cpp
   prepared_execution_template.cpp
+  # QOW-CMAKE-QRY-007-PROJECTION-V1
   projection_executor.cpp
   query_memory_arena_executor.cpp
   reservation_backed_executor_memory_bridge.cpp
