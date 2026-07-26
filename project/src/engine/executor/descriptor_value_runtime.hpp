@@ -112,6 +112,25 @@ struct CanonicalDescriptorCountResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalDescriptorInnerJoinRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch left_batch;
+  DescriptorBatch right_batch;
+  std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+      pair_truth_values;
+  scratchbird::engine::internal_api::EnginePredicateConsumer consumer =
+      scratchbird::engine::internal_api::EnginePredicateConsumer::join_on;
+};
+
+struct CanonicalDescriptorInnerJoinResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct Int64DecodeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::int64_t value = 0;
@@ -208,6 +227,8 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
     const CanonicalDescriptorLimitRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
+CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
+    const CanonicalDescriptorInnerJoinRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,

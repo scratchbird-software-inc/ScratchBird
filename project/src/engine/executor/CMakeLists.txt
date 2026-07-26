@@ -65,6 +65,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-007-FILTER-V1
   filter_executor.cpp
   indexed_physical_operator.cpp
+  # QOW-CMAKE-QRY-007-JOIN-V1
   join_executor.cpp
   late_materialization_covering_scan_runtime.cpp
   late_materialization_executor.cpp
