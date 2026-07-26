@@ -737,6 +737,47 @@ struct CanonicalSetOperationAllResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalSetOperationNestingRule : std::uint8_t {
+  kSqlPrecedence = 1,
+  kExplicitLeft,
+  kExplicitRight,
+};
+
+struct CanonicalSetOperationNestingRequest {
+  DescriptorBatch first_operand;
+  DescriptorBatch second_operand;
+  DescriptorBatch third_operand;
+  CanonicalSetOperationKind first_operation =
+      CanonicalSetOperationKind::kUnion;
+  CanonicalSetOperationKind second_operation =
+      CanonicalSetOperationKind::kUnion;
+  CanonicalSetOperationQuantifier first_quantifier =
+      CanonicalSetOperationQuantifier::kDistinct;
+  CanonicalSetOperationQuantifier second_quantifier =
+      CanonicalSetOperationQuantifier::kDistinct;
+  CanonicalSetOperationAlignment first_alignment =
+      CanonicalSetOperationAlignment::kOrdinal;
+  CanonicalSetOperationAlignment second_alignment =
+      CanonicalSetOperationAlignment::kOrdinal;
+  CanonicalSetOperationNestingRule nesting_rule =
+      CanonicalSetOperationNestingRule::kSqlPrecedence;
+  CanonicalSetOperationAllRequest inner_request_template;
+  CanonicalSetOperationAllRequest outer_request_template;
+  std::size_t maximum_intermediate_row_count = 1048576;
+};
+
+struct CanonicalSetOperationNestingResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  CanonicalSetOperationNestingRule resolved_nesting_rule =
+      CanonicalSetOperationNestingRule::kSqlPrecedence;
+  std::size_t intermediate_row_count = 0;
+  std::uint64_t inner_physical_node_id = 0;
+  std::uint64_t outer_physical_node_id = 0;
+  std::uint64_t inner_causal_counter_id = 0;
+  std::uint64_t outer_causal_counter_id = 0;
+};
+
 struct CanonicalJoinMgaCandidateEvidence {
   std::size_t pair_index = 0;
   std::uint64_t local_transaction_id = 0;
@@ -983,6 +1024,8 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     const CanonicalSetOperationAllRequest& request);
 CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
     const CanonicalSetOperationAllRequest& request);
+CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
+    const CanonicalSetOperationNestingRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(

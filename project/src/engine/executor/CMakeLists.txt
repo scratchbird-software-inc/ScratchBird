@@ -82,6 +82,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-016-ARITY-V1
   # QOW-CMAKE-QRY-016-BY-NAME-V1
   # QOW-CMAKE-QRY-016-DISTINCT-V1
+  # QOW-CMAKE-QRY-016-NESTING-V1
   executor_foundation.cpp
   executor_operator_metrics.cpp
   # QOW-CMAKE-QRY-007-FILTER-V1

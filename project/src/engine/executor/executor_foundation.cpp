@@ -2318,6 +2318,145 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
       request, CanonicalSetOperationQuantifier::kDistinct);
 }
 
+// QOW-SOURCE-QRY-016-NESTING-V1
+// Resolve one three-operand set expression before executing either physical
+// node. INTERSECT has higher SQL precedence than UNION/EXCEPT; otherwise the
+// unparenthesized expression is left associative. Explicit grouping overrides
+// that rule but still executes two independently admitted typed physical nodes.
+CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
+    const CanonicalSetOperationNestingRequest& request) {
+  CanonicalSetOperationNestingResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-016-NESTING-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.resolved_nesting_rule =
+        CanonicalSetOperationNestingRule::kSqlPrecedence;
+    result.intermediate_row_count = 0;
+    result.inner_physical_node_id = 0;
+    result.outer_physical_node_id = 0;
+    result.inner_causal_counter_id = 0;
+    result.outer_causal_counter_id = 0;
+    return result;
+  };
+  const auto known_operation = [](const CanonicalSetOperationKind operation) {
+    return operation == CanonicalSetOperationKind::kUnion ||
+           operation == CanonicalSetOperationKind::kIntersect ||
+           operation == CanonicalSetOperationKind::kExcept;
+  };
+  const auto known_quantifier = [](
+                                    const CanonicalSetOperationQuantifier
+                                        quantifier) {
+    return quantifier == CanonicalSetOperationQuantifier::kAll ||
+           quantifier == CanonicalSetOperationQuantifier::kDistinct;
+  };
+  const auto known_alignment = [](
+                                   const CanonicalSetOperationAlignment
+                                       alignment) {
+    return alignment == CanonicalSetOperationAlignment::kOrdinal ||
+           alignment == CanonicalSetOperationAlignment::kByName;
+  };
+  if (!known_operation(request.first_operation) ||
+      !known_operation(request.second_operation) ||
+      !known_quantifier(request.first_quantifier) ||
+      !known_quantifier(request.second_quantifier) ||
+      !known_alignment(request.first_alignment) ||
+      !known_alignment(request.second_alignment)) {
+    return refuse("set-operation nesting contains an unknown closed value");
+  }
+  if (request.maximum_intermediate_row_count == 0) {
+    return refuse("set-operation intermediate resource bound is zero");
+  }
+  if (request.inner_request_template.physical_dag.local_transaction_id !=
+          request.outer_request_template.physical_dag.local_transaction_id ||
+      request.inner_request_template.physical_dag.statement_snapshot_id !=
+          request.outer_request_template.physical_dag.statement_snapshot_id ||
+      request.inner_request_template.physical_dag.selected_plan_uuid !=
+          request.outer_request_template.physical_dag.selected_plan_uuid) {
+    return refuse("nested physical nodes do not share one engine MGA plan boundary");
+  }
+
+  bool right_grouped = false;
+  switch (request.nesting_rule) {
+    case CanonicalSetOperationNestingRule::kSqlPrecedence:
+      right_grouped =
+          request.second_operation == CanonicalSetOperationKind::kIntersect &&
+          request.first_operation != CanonicalSetOperationKind::kIntersect;
+      break;
+    case CanonicalSetOperationNestingRule::kExplicitLeft:
+      right_grouped = false;
+      break;
+    case CanonicalSetOperationNestingRule::kExplicitRight:
+      right_grouped = true;
+      break;
+    default:
+      return refuse("set-operation nesting rule is unknown");
+  }
+  const auto resolved_rule =
+      right_grouped ? CanonicalSetOperationNestingRule::kExplicitRight
+                    : CanonicalSetOperationNestingRule::kExplicitLeft;
+
+  const auto execute = [](const CanonicalSetOperationAllRequest& operation) {
+    return operation.quantifier == CanonicalSetOperationQuantifier::kAll
+               ? ExecuteCanonicalSetOperationAll(operation)
+               : ExecuteCanonicalSetOperationDistinct(operation);
+  };
+
+  auto inner = request.inner_request_template;
+  inner.operation = right_grouped ? request.second_operation
+                                  : request.first_operation;
+  inner.quantifier = right_grouped ? request.second_quantifier
+                                   : request.first_quantifier;
+  inner.alignment = right_grouped ? request.second_alignment
+                                  : request.first_alignment;
+  inner.left_batch = right_grouped ? request.second_operand
+                                   : request.first_operand;
+  inner.right_batch = right_grouped ? request.third_operand
+                                    : request.second_operand;
+  auto inner_result = execute(inner);
+  if (!inner_result.diagnostic.ok) {
+    return refuse("inner:" + inner_result.diagnostic.diagnostic_code + ":" +
+                  inner_result.diagnostic.detail);
+  }
+  if (inner_result.output_batch.rows.size() >
+      request.maximum_intermediate_row_count) {
+    return refuse("nested intermediate row resource bound was exceeded");
+  }
+
+  auto outer = request.outer_request_template;
+  outer.operation = right_grouped ? request.first_operation
+                                  : request.second_operation;
+  outer.quantifier = right_grouped ? request.first_quantifier
+                                   : request.second_quantifier;
+  outer.alignment = right_grouped ? request.first_alignment
+                                  : request.second_alignment;
+  outer.left_batch = right_grouped ? request.first_operand
+                                   : inner_result.output_batch;
+  outer.right_batch = right_grouped ? inner_result.output_batch
+                                    : request.third_operand;
+  auto outer_result = execute(outer);
+  if (!outer_result.diagnostic.ok) {
+    return refuse("outer:" + outer_result.diagnostic.diagnostic_code + ":" +
+                  outer_result.diagnostic.detail);
+  }
+  if (inner_result.causal_counter_id == 0 ||
+      outer_result.causal_counter_id <= inner_result.causal_counter_id) {
+    return refuse("nested physical causal order is not inner before outer");
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(outer_result.output_batch);
+  result.resolved_nesting_rule = resolved_rule;
+  result.intermediate_row_count = inner_result.output_batch.rows.size();
+  result.inner_physical_node_id = inner_result.executed_physical_node_id;
+  result.outer_physical_node_id = outer_result.executed_physical_node_id;
+  result.inner_causal_counter_id = inner_result.causal_counter_id;
+  result.outer_causal_counter_id = outer_result.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }
