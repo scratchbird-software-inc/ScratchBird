@@ -309,4 +309,75 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-EXISTS-V1
+// Evaluate EXISTS only after the complete canonical table-subquery result has
+// validated. The result is always one bound non-NULL boolean row; no input
+// value or parser-level predicate can supply existence authority.
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalExistsSubqueryResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-EXISTS-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.source_row_count = 0;
+    result.exists = false;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  if (!table.diagnostic.ok) {
+    return refuse(table.diagnostic.diagnostic_code + ":" +
+                  table.diagnostic.detail);
+  }
+  if (request.exists_expression_descriptor_id == 0 ||
+      request.result_column.descriptor_id !=
+          request.exists_expression_descriptor_id ||
+      request.result_column.stable_name.empty() ||
+      request.result_column.nullable ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      request.result_column.descriptor.canonical_type_name != "boolean") {
+    return refuse("EXISTS result is not a bound non-null boolean");
+  }
+
+  DescriptorBatch output;
+  output.columns = {request.result_column};
+  auto schema_validation = ValidateCanonicalDescriptorBatch(
+      output, {request.result_column.descriptor_id});
+  if (!schema_validation.ok) {
+    return refuse(schema_validation.diagnostic_code + ":" +
+                  schema_validation.detail);
+  }
+
+  const bool exists = table.materialized_row_count != 0;
+  EngineTypedValue value;
+  value.descriptor = request.result_column.descriptor;
+  value.encoded_value = exists ? "true" : "false";
+  value.state = EngineValueState::value;
+  output.rows = {{{std::move(value)}}};
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, {request.result_column.descriptor_id});
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.source_row_count = table.materialized_row_count;
+  result.exists = exists;
+  result.selected_plan_uuid = std::move(table.selected_plan_uuid);
+  result.executed_physical_node_id = table.executed_physical_node_id;
+  result.causal_counter_id = table.causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor

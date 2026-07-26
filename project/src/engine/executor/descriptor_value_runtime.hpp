@@ -145,6 +145,22 @@ struct CanonicalRowSubqueryResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalExistsSubqueryRequest {
+  CanonicalTableSubqueryRequest table_request;
+  std::uint32_t exists_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+};
+
+struct CanonicalExistsSubqueryResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t source_row_count = 0;
+  bool exists = false;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -661,6 +677,8 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     const CanonicalScalarSubqueryRequest& request);
 CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const CanonicalRowSubqueryRequest& request);
+CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
+    const CanonicalExistsSubqueryRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
