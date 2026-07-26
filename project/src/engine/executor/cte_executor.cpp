@@ -16,9 +16,10 @@
 #include "descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
-#include <memory>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -41,6 +42,19 @@ const PhysicalNodeRecord* FindPhysicalNode(const TypedPhysicalNodeDag& dag,
     if (node.physical_node_id == node_id) return &node;
   }
   return nullptr;
+}
+
+bool IsCanonicalCteEvidenceUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -757,6 +771,118 @@ ExecuteCanonicalRecursiveCteCancellation(
   result.cancellation_iteration_ordinal = 0;
   result.working_state_cleaned = true;
   result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  return result;
+}
+
+// QOW-SOURCE-QRY-014-MGA-V1
+// Consume engine-owned transaction-inventory evidence for the anchor boundary
+// and every recursive transition, including the final empty transition. This
+// executor validates ordered evidence but never chooses a snapshot, decides
+// visibility/security, or acquires commit, rollback, WAL, or finality authority.
+CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
+    const CanonicalRecursiveCteMgaRequest& request) {
+  CanonicalRecursiveCteMgaResult result;
+  const auto refuse = [&](std::string detail) {
+    result = {};
+    result.working_result.diagnostic.ok = false;
+    result.working_result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-MGA-REFUSAL-V1";
+    result.working_result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  const auto* selected_node = FindPhysicalNode(
+      request.working_request.physical_dag,
+      request.working_request.selected_physical_node_id);
+  if (request.working_request.selected_physical_node_id == 0 ||
+      request.working_request.selected_physical_node_id !=
+          request.working_request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
+      selected_node->implementation_id !=
+          "cte.recursive.mga-boundary.typed.v1") {
+    return refuse("recursive CTE MGA physical profile is not bound");
+  }
+
+  const auto mga_admission = std::find_if(
+      request.working_request.physical_dag.admission_evidence.begin(),
+      request.working_request.physical_dag.admission_evidence.end(),
+      [](const PhysicalAdmissionEvidence& evidence) {
+        return evidence.stage ==
+               PhysicalAdmissionStage::kMgaStatementBoundary;
+      });
+  if (request.transaction_inventory_id == 0 ||
+      request.inventory_local_transaction_id == 0 ||
+      request.inventory_statement_snapshot_id == 0 ||
+      request.inventory_local_transaction_id !=
+          request.working_request.physical_dag.local_transaction_id ||
+      request.inventory_statement_snapshot_id !=
+          request.working_request.physical_dag.statement_snapshot_id ||
+      !IsCanonicalCteEvidenceUuid(
+          request.transaction_inventory_evidence_uuid) ||
+      mga_admission ==
+          request.working_request.physical_dag.admission_evidence.end() ||
+      mga_admission->evidence_uuid !=
+          request.transaction_inventory_evidence_uuid) {
+    return refuse("recursive CTE transaction inventory evidence is not bound");
+  }
+  if (request.maximum_boundary_rechecks == 0 ||
+      request.iteration_evidence.empty() ||
+      request.iteration_evidence.size() > request.maximum_boundary_rechecks) {
+    return refuse("recursive CTE MGA boundary recheck contract is invalid");
+  }
+
+  std::unordered_set<std::string> evidence_uuids;
+  evidence_uuids.insert(request.transaction_inventory_evidence_uuid);
+  for (std::size_t index = 0; index < request.iteration_evidence.size();
+       ++index) {
+    const auto& evidence = request.iteration_evidence[index];
+    if (evidence.iteration_ordinal != index ||
+        evidence.local_transaction_id !=
+            request.inventory_local_transaction_id ||
+        evidence.statement_snapshot_id !=
+            request.inventory_statement_snapshot_id ||
+        !IsCanonicalCteEvidenceUuid(evidence.engine_evidence_uuid) ||
+        !evidence_uuids.insert(evidence.engine_evidence_uuid).second) {
+      return refuse("recursive CTE iteration MGA evidence is not bound");
+    }
+    if (evidence.visibility != CanonicalMgaVisibilityDecision::kVisible) {
+      return refuse("recursive CTE iteration is not MGA-visible");
+    }
+    if (evidence.security_decision !=
+        CanonicalMgaSecurityDecision::kAllowed) {
+      return refuse("recursive CTE iteration is not security-allowed");
+    }
+  }
+
+  CanonicalRecursiveCteWorkingRequest working = request.working_request;
+  for (auto& node : working.physical_dag.nodes) {
+    if (node.physical_node_id == working.selected_physical_node_id) {
+      node.implementation_id = "cte.recursive.working.typed.v1";
+      break;
+    }
+  }
+  auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
+  if (!working_result.diagnostic.ok) {
+    return refuse(working_result.diagnostic.diagnostic_code + ":" +
+                  working_result.diagnostic.detail);
+  }
+  if (request.iteration_evidence.size() !=
+      working_result.recursive_iteration_count + 1) {
+    return refuse("recursive CTE MGA evidence cardinality is not exact");
+  }
+
+  result.working_result = std::move(working_result);
+  result.iteration_evidence_count = request.iteration_evidence.size();
+  result.mga_boundary_proven = true;
+  result.transaction_inventory_evidence_uuid =
+      request.transaction_inventory_evidence_uuid;
   return result;
 }
 

@@ -665,6 +665,34 @@ enum class CanonicalMgaSecurityDecision : std::uint8_t {
   kIndeterminate,
 };
 
+struct CanonicalRecursiveCteMgaIterationEvidence {
+  std::size_t iteration_ordinal = 0;
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t statement_snapshot_id = 0;
+  CanonicalMgaVisibilityDecision visibility =
+      CanonicalMgaVisibilityDecision::kIndeterminate;
+  CanonicalMgaSecurityDecision security_decision =
+      CanonicalMgaSecurityDecision::kIndeterminate;
+  std::string engine_evidence_uuid;
+};
+
+struct CanonicalRecursiveCteMgaRequest {
+  CanonicalRecursiveCteWorkingRequest working_request;
+  std::uint64_t transaction_inventory_id = 0;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::string transaction_inventory_evidence_uuid;
+  std::vector<CanonicalRecursiveCteMgaIterationEvidence> iteration_evidence;
+  std::size_t maximum_boundary_rechecks = 1048576;
+};
+
+struct CanonicalRecursiveCteMgaResult {
+  CanonicalRecursiveCteWorkingResult working_result;
+  std::size_t iteration_evidence_count = 0;
+  bool mga_boundary_proven = false;
+  std::string transaction_inventory_evidence_uuid;
+};
+
 struct CanonicalJoinMgaCandidateEvidence {
   std::size_t pair_index = 0;
   std::uint64_t local_transaction_id = 0;
@@ -905,6 +933,8 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
 CanonicalRecursiveCteCancellationResult
 ExecuteCanonicalRecursiveCteCancellation(
     const CanonicalRecursiveCteCancellationRequest& request);
+CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
+    const CanonicalRecursiveCteMgaRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(

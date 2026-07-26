@@ -1,0 +1,253 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "descriptor_value_runtime.hpp"
+
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <string_view>
+
+namespace exec = scratchbird::engine::executor;
+namespace api = scratchbird::engine::internal_api;
+
+namespace {
+
+bool Require(const bool condition, const std::string_view detail) {
+  if (!condition) {
+    std::cerr << "QOW-TEST-QRY-014-MGA-V1: " << detail << '\n';
+  }
+  return condition;
+}
+
+api::EngineDescriptor Descriptor() {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical =
+      "019f0000-0000-7200-8000-000000003701";
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000003702;"
+      "nullability=not-null";
+  return descriptor;
+}
+
+api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
+                            const std::int64_t value) {
+  api::EngineTypedValue typed;
+  typed.descriptor = descriptor;
+  typed.encoded_value = std::to_string(value);
+  typed.state = api::EngineValueState::value;
+  return typed;
+}
+
+exec::CanonicalRecursiveCteMgaRequest Request() {
+  const auto descriptor = Descriptor();
+  exec::CanonicalRecursiveCteMgaRequest request;
+  auto& working = request.working_request;
+  working.physical_dag.selected_plan_uuid =
+      "019f0000-0000-7200-8000-000000003703";
+  working.physical_dag.root_physical_node_id = 3703;
+  working.physical_dag.local_transaction_id = 3704;
+  working.physical_dag.statement_snapshot_id = 3705;
+  working.physical_dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       "019f0000-0000-7200-8000-000000003711"},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch,
+       "019f0000-0000-7200-8000-000000003712"},
+      {exec::PhysicalAdmissionStage::kSecurity,
+       "019f0000-0000-7200-8000-000000003713"},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       "019f0000-0000-7200-8000-000000003714"},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       "019f0000-0000-7200-8000-000000003715"},
+      {exec::PhysicalAdmissionStage::kResource,
+       "019f0000-0000-7200-8000-000000003716"},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       "019f0000-0000-7200-8000-000000003717"},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       "019f0000-0000-7200-8000-000000003718"},
+  };
+  working.physical_dag.nodes = {
+      {.physical_node_id = 3701,
+       .relational_node_id = 3701,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.cte-mga-anchor.typed.v1",
+       .output_descriptor_ids = {3701},
+       .causal_counter_id = 37001},
+      {.physical_node_id = 3702,
+       .relational_node_id = 3702,
+       .node_kind = exec::PhysicalNodeKind::kCte,
+       .implementation_id = "cte.mga-term.typed.v1",
+       .output_descriptor_ids = {3701},
+       .causal_counter_id = 37002},
+      {.physical_node_id = 3703,
+       .relational_node_id = 3703,
+       .node_kind = exec::PhysicalNodeKind::kRecursiveCte,
+       .implementation_id = "cte.recursive.mga-boundary.typed.v1",
+       .input_physical_node_ids = {3701, 3702},
+       .output_descriptor_ids = {3701},
+       .causal_counter_id = 37003},
+  };
+  working.selected_physical_node_id = 3703;
+  working.anchor_batch = exec::MakeDescriptorBatch(
+      {{"n", descriptor, false, 3701}}, {{{Value(descriptor, 1)}}});
+  working.recursive_step =
+      [descriptor](const exec::DescriptorBatch& current, const std::size_t) {
+        exec::DescriptorBatch next;
+        next.columns = current.columns;
+        for (const auto& row : current.rows) {
+          const auto value = std::stoll(row.values[0].encoded_value);
+          if (value < 4) next.rows.push_back({{Value(descriptor, value + 1)}});
+        }
+        return next;
+      };
+  working.maximum_iteration_count = 8;
+  working.maximum_working_row_count = 4;
+  working.maximum_result_row_count = 8;
+
+  request.transaction_inventory_id = 3706;
+  request.inventory_local_transaction_id = 3704;
+  request.inventory_statement_snapshot_id = 3705;
+  request.transaction_inventory_evidence_uuid =
+      "019f0000-0000-7200-8000-000000003714";
+  request.iteration_evidence = {
+      {.iteration_ordinal = 0,
+       .local_transaction_id = 3704,
+       .statement_snapshot_id = 3705,
+       .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000003721"},
+      {.iteration_ordinal = 1,
+       .local_transaction_id = 3704,
+       .statement_snapshot_id = 3705,
+       .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000003722"},
+      {.iteration_ordinal = 2,
+       .local_transaction_id = 3704,
+       .statement_snapshot_id = 3705,
+       .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000003723"},
+      {.iteration_ordinal = 3,
+       .local_transaction_id = 3704,
+       .statement_snapshot_id = 3705,
+       .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000003724"},
+      {.iteration_ordinal = 4,
+       .local_transaction_id = 3704,
+       .statement_snapshot_id = 3705,
+       .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000003725"},
+  };
+  return request;
+}
+
+// QOW-TEST-QRY-014-MGA-V1
+bool ValidateRecursiveCteMgaBoundary() {
+  bool passed = true;
+  auto result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(Request());
+  passed &= Require(
+      result.working_result.diagnostic.ok && result.mga_boundary_proven &&
+          result.iteration_evidence_count == 5 &&
+          result.working_result.output_batch.rows.size() == 4 &&
+          result.working_result.recursive_iteration_count == 4 &&
+          result.transaction_inventory_evidence_uuid ==
+              "019f0000-0000-7200-8000-000000003714" &&
+          result.working_result.executed_physical_node_id == 3703,
+      "recursive CTE did not retain exact engine MGA boundary evidence");
+
+  auto request = Request();
+  request.iteration_evidence[2].visibility =
+      exec::CanonicalMgaVisibilityDecision::kInvisible;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok &&
+                        !result.mga_boundary_proven &&
+                        result.working_result.output_batch.rows.empty() &&
+                        result.iteration_evidence_count == 0,
+                    "invisible recursive transition published output");
+
+  request = Request();
+  request.iteration_evidence[2].security_decision =
+      exec::CanonicalMgaSecurityDecision::kDenied;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok &&
+                        result.working_result.output_batch.rows.empty(),
+                    "security-denied recursive transition published output");
+
+  request = Request();
+  request.inventory_statement_snapshot_id = 9999;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "inventory snapshot drift was accepted");
+
+  request = Request();
+  request.iteration_evidence.pop_back();
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok &&
+                        result.working_result.output_batch.rows.empty(),
+                    "missing final empty-transition evidence was accepted");
+
+  request = Request();
+  request.iteration_evidence[3].iteration_ordinal = 2;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "recursive iteration identity drift was accepted");
+
+  request = Request();
+  request.iteration_evidence[3].engine_evidence_uuid =
+      request.iteration_evidence[2].engine_evidence_uuid;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "duplicate engine evidence UUID was accepted");
+
+  request = Request();
+  request.maximum_boundary_rechecks = 4;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "recursive MGA boundary recheck bound was exceeded");
+
+  request = Request();
+  request.working_request.physical_dag.nodes[2].implementation_id =
+      "cte.recursive.working.typed.v1";
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "non-MGA recursive profile bypassed admission");
+
+  request = Request();
+  request.working_request.physical_dag.local_transaction_id = 0;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(!result.working_result.diagnostic.ok,
+                    "recursive MGA boundary accepted a missing transaction");
+
+  request = Request();
+  request.working_request.anchor_batch.rows.clear();
+  request.iteration_evidence.resize(1);
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(result.working_result.diagnostic.ok &&
+                        result.mga_boundary_proven &&
+                        result.iteration_evidence_count == 1 &&
+                        result.working_result.output_batch.rows.empty() &&
+                        result.working_result.recursive_iteration_count == 0,
+                    "empty anchor invented recursive transition evidence");
+  return passed;
+}
+
+}  // namespace
+
+int main() {
+  return ValidateRecursiveCteMgaBoundary() ? EXIT_SUCCESS : EXIT_FAILURE;
+}
