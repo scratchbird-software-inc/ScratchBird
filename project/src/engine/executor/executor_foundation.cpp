@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
@@ -296,6 +297,217 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
   }
 
   result.diagnostic = {};
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-GROUP-V1
+// Construct deterministic typed SUM states for one int64 grouping key.  The
+// admitted grouping-set rule is either (key) or the exact {(key), ()} set;
+// an actual SQL NULL key remains distinct from the synthetic grand total.
+CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
+    const CanonicalInt64SumGroupRequest& request) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumGroupResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-GROUP-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.groups.clear();
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected grouped aggregate is not the physical root");
+  }
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->input_physical_node_ids.size() != 1 ||
+      selected_node->output_descriptor_ids.size() != 2) {
+    return refuse("grouped SUM requires one selected aggregate node");
+  }
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr) return refuse("grouped aggregate input is unresolved");
+
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code + ":" +
+                  input_validation.detail);
+  }
+  if (request.key_column >= request.input_batch.columns.size() ||
+      request.value_column >= request.input_batch.columns.size()) {
+    return refuse("group or aggregate value column is outside the schema");
+  }
+  const auto& key_column = request.input_batch.columns[request.key_column];
+  const auto& value_column = request.input_batch.columns[request.value_column];
+  if (request.key_expression_descriptor_id == 0 ||
+      request.key_expression_descriptor_id != key_column.descriptor_id ||
+      key_column.descriptor.canonical_type_name != "int64" ||
+      request.value_expression_descriptor_id == 0 ||
+      request.value_expression_descriptor_id != value_column.descriptor_id ||
+      value_column.descriptor.canonical_type_name != "int64") {
+    return refuse("group key or SUM value expression is not bound int64");
+  }
+  if (request.key_result_column.descriptor_id !=
+          selected_node->output_descriptor_ids[0] ||
+      request.sum_result_column.descriptor_id !=
+          selected_node->output_descriptor_ids[1] ||
+      !request.key_result_column.nullable ||
+      !request.sum_result_column.nullable ||
+      request.key_result_column.descriptor.canonical_type_name != "int64" ||
+      request.sum_result_column.descriptor.canonical_type_name != "int64") {
+    return refuse("grouped SUM result descriptors are not bound nullable int64");
+  }
+  DescriptorBatch result_schema;
+  result_schema.columns = {request.key_result_column,
+                           request.sum_result_column};
+  auto schema_validation = ValidateCanonicalDescriptorBatch(
+      result_schema, selected_node->output_descriptor_ids);
+  if (!schema_validation.ok) {
+    return refuse(schema_validation.diagnostic_code + ":" +
+                  schema_validation.detail);
+  }
+  if ((request.grouping_set_rule !=
+           CanonicalInt64GroupingSetRule::key_only &&
+       request.grouping_set_rule !=
+           CanonicalInt64GroupingSetRule::key_and_grand_total) ||
+      request.maximum_group_count == 0 ||
+      request.maximum_transition_count == 0) {
+    return refuse("grouping-set or aggregate resource contract is invalid");
+  }
+  const std::size_t transition_multiplier =
+      request.grouping_set_rule ==
+              CanonicalInt64GroupingSetRule::key_and_grand_total
+          ? 2
+          : 1;
+  if (request.input_batch.rows.size() >
+      request.maximum_transition_count / transition_multiplier) {
+    return refuse("aggregate transition resource bound was exceeded");
+  }
+
+  const auto make_sum_state = [&] {
+    CanonicalInt64SumAggregateState state;
+    state.value_expression_descriptor_id =
+        request.value_expression_descriptor_id;
+    state.result_column = request.sum_result_column;
+    return state;
+  };
+  const auto transition = [&](CanonicalInt64SumAggregateState* state,
+                              const EngineTypedValue& value,
+                              std::string* detail) {
+    if (state == nullptr || detail == nullptr) return false;
+    ++state->transition_count;
+    if (value.state == EngineValueState::sql_null) return true;
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      *detail = decoded.diagnostic.diagnostic_code + ":" +
+                decoded.diagnostic.detail;
+      return false;
+    }
+    if ((decoded.value > 0 &&
+         state->accumulated_value >
+             std::numeric_limits<std::int64_t>::max() - decoded.value) ||
+        (decoded.value < 0 &&
+         state->accumulated_value <
+             std::numeric_limits<std::int64_t>::min() - decoded.value)) {
+      *detail = "grouped SUM int64 transition overflowed";
+      return false;
+    }
+    state->accumulated_value += decoded.value;
+    ++state->non_null_count;
+    state->has_value = true;
+    return true;
+  };
+
+  std::vector<CanonicalInt64SumGroupState> groups;
+  std::map<std::optional<std::int64_t>, std::size_t> group_by_key;
+  for (const auto& row : request.input_batch.rows) {
+    const auto& input_key = row.values[request.key_column];
+    std::optional<std::int64_t> key;
+    if (input_key.state != EngineValueState::sql_null) {
+      const auto decoded = DecodeInt64Value(input_key);
+      if (!decoded.ok()) {
+        return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                      decoded.diagnostic.detail);
+      }
+      key = decoded.value;
+    }
+    auto found = group_by_key.find(key);
+    if (found == group_by_key.end()) {
+      if (groups.size() >= request.maximum_group_count) {
+        return refuse("group count resource bound was exceeded");
+      }
+      CanonicalInt64SumGroupState group;
+      group.group_key.descriptor = request.key_result_column.descriptor;
+      if (key.has_value()) {
+        group.group_key.encoded_value = std::to_string(*key);
+        group.group_key.state = EngineValueState::value;
+      } else {
+        group.group_key.is_null = true;
+        group.group_key.state = EngineValueState::sql_null;
+      }
+      group.sum_state = make_sum_state();
+      groups.push_back(std::move(group));
+      found = group_by_key.emplace(key, groups.size() - 1).first;
+    }
+    std::string detail;
+    if (!transition(&groups[found->second].sum_state,
+                    row.values[request.value_column], &detail)) {
+      return refuse(std::move(detail));
+    }
+  }
+
+  if (request.grouping_set_rule ==
+      CanonicalInt64GroupingSetRule::key_and_grand_total) {
+    if (groups.size() >= request.maximum_group_count) {
+      return refuse("grand-total grouping set exceeds group resource bound");
+    }
+    CanonicalInt64SumGroupState grand_total;
+    grand_total.grouping_set_ordinal = 1;
+    grand_total.is_grand_total = true;
+    grand_total.group_key.descriptor = request.key_result_column.descriptor;
+    grand_total.group_key.is_null = true;
+    grand_total.group_key.state = EngineValueState::sql_null;
+    grand_total.sum_state = make_sum_state();
+    for (const auto& row : request.input_batch.rows) {
+      std::string detail;
+      if (!transition(&grand_total.sum_state,
+                      row.values[request.value_column], &detail)) {
+        return refuse(std::move(detail));
+      }
+    }
+    groups.push_back(std::move(grand_total));
+  }
+
+  result.diagnostic = {};
+  result.groups = std::move(groups);
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;

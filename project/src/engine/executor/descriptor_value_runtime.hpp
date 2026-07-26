@@ -181,6 +181,42 @@ struct CanonicalInt64SumFinalizeResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalInt64GroupingSetRule : std::uint8_t {
+  key_only = 1,
+  key_and_grand_total,
+};
+
+struct CanonicalInt64SumGroupState {
+  std::uint32_t grouping_set_ordinal = 0;
+  bool is_grand_total = false;
+  scratchbird::engine::internal_api::EngineTypedValue group_key;
+  CanonicalInt64SumAggregateState sum_state;
+};
+
+struct CanonicalInt64SumGroupRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::size_t key_column = 0;
+  std::uint32_t key_expression_descriptor_id = 0;
+  std::size_t value_column = 0;
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor key_result_column;
+  ExecutorColumnDescriptor sum_result_column;
+  CanonicalInt64GroupingSetRule grouping_set_rule =
+      CanonicalInt64GroupingSetRule::key_only;
+  std::size_t maximum_group_count = 65536;
+  std::size_t maximum_transition_count = 1048576;
+};
+
+struct CanonicalInt64SumGroupResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<CanonicalInt64SumGroupState> groups;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorInnerJoinRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -358,6 +394,8 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     const CanonicalInt64SumStateRequest& request);
 CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
     const CanonicalInt64SumFinalizeRequest& request);
+CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
+    const CanonicalInt64SumGroupRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
