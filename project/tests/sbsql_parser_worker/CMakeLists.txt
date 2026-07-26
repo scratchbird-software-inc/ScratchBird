@@ -594,6 +594,36 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-029;development_candidate"
   )
 
+  # QOW-CMAKE-WIN-004-V1
+  add_executable(qow_win_004_test_v1 qow_win_004.cpp)
+  target_compile_features(qow_win_004_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_004_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_004_v1 COMMAND qow_win_004_test_v1)
+  set_tests_properties(qow_win_004_v1 PROPERTIES
+    LABELS "qow_closure;QOW-401;QOW-LEAF-WIN-004;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-005-V1
+  add_executable(qow_win_005_test_v1 qow_win_005.cpp)
+  target_compile_features(qow_win_005_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_005_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_005_v1 COMMAND qow_win_005_test_v1)
+  set_tests_properties(qow_win_005_v1 PROPERTIES
+    LABELS "qow_closure;QOW-401;QOW-LEAF-WIN-005;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-014-V1
+  add_executable(qow_win_014_test_v1 qow_win_014.cpp)
+  target_compile_features(qow_win_014_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_014_test_v1 PRIVATE
+    sb_qow_canonical_logical_graph
+    sb_engine_executor
+  )
+  add_test(NAME qow_win_014_v1 COMMAND qow_win_014_test_v1)
+  set_tests_properties(qow_win_014_v1 PROPERTIES
+    LABELS "qow_closure;QOW-401;QOW-LEAF-WIN-014;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

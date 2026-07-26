@@ -219,6 +219,64 @@ bool CompareOrderValues(
 
 }  // namespace
 
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
+    const CanonicalDescriptorOrderTerm& term,
+    const ExecutorColumnDescriptor& column) {
+  namespace dt = scratchbird::core::datatypes;
+  if (term.expression_descriptor_id == 0 ||
+      term.expression_descriptor_id != column.descriptor_id) {
+    return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                   "order expression descriptor handle is unresolved");
+  }
+  if ((term.direction != CanonicalDescriptorOrderDirection::ascending &&
+       term.direction != CanonicalDescriptorOrderDirection::descending) ||
+      (term.null_placement != CanonicalDescriptorNullPlacement::first &&
+       term.null_placement != CanonicalDescriptorNullPlacement::last)) {
+    return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                   "order direction or NULL placement is invalid");
+  }
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      column.descriptor.canonical_type_name);
+  if (type_id == dt::CanonicalTypeId::unknown) {
+    return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                   "order expression type is unknown");
+  }
+  if (type_id == dt::CanonicalTypeId::character) {
+    const auto descriptor_collation = DescriptorField(
+        column.descriptor.encoded_descriptor, "collation_uuid");
+    const auto& seed = term.text_seed;
+    if (!IsCanonicalUuid(term.collation_uuid) ||
+        descriptor_collation != term.collation_uuid ||
+        term.resource_epoch == 0 || term.collation_epoch == 0 ||
+        !seed.active || seed.seed_pack_name.empty() ||
+        seed.seed_pack_version.empty() || seed.charset_name.empty() ||
+        seed.collation_name.empty()) {
+      return Refusal(
+          "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+          "character order lacks bound collation resource authority");
+    }
+  } else if (!term.collation_uuid.empty() || term.resource_epoch != 0 ||
+             term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed)) {
+    return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                   "non-character order term carries text collation authority");
+  }
+  return {};
+}
+
+CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
+    const scratchbird::engine::internal_api::EngineTypedValue& left,
+    const scratchbird::engine::internal_api::EngineTypedValue& right,
+    const CanonicalDescriptorOrderTerm& term) {
+  CanonicalDescriptorOrderComparisonResult result;
+  std::string detail;
+  if (!CompareOrderValues(left, right, term, &result.comparison, &detail)) {
+    result = {};
+    result.diagnostic = Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                                std::move(detail));
+  }
+  return result;
+}
+
 // QOW-SOURCE-QRY-007-SORT-LIMIT-V1
 // First canonical implementation in this module: a typed LIMIT/OFFSET node.
 // Typed ORDER BY terms are deliberately left to QRY-010; this entry does not
@@ -307,8 +365,6 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
 // before the first output row is materialized.
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request) {
-  namespace dt = scratchbird::core::datatypes;
-
   CanonicalDescriptorSortResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
@@ -372,39 +428,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       return order_refusal("order term column is outside the input schema");
     }
     const auto& column = request.input_batch.columns[term.column];
-    if (term.expression_descriptor_id == 0 ||
-        term.expression_descriptor_id != column.descriptor_id) {
-      return order_refusal("order expression descriptor handle is unresolved");
-    }
-    if ((term.direction != CanonicalDescriptorOrderDirection::ascending &&
-         term.direction != CanonicalDescriptorOrderDirection::descending) ||
-        (term.null_placement != CanonicalDescriptorNullPlacement::first &&
-         term.null_placement != CanonicalDescriptorNullPlacement::last)) {
-      return order_refusal("order direction or NULL placement is invalid");
-    }
-
-    const auto type_id = dt::CanonicalTypeIdFromStableName(
-        column.descriptor.canonical_type_name);
-    if (type_id == dt::CanonicalTypeId::unknown) {
-      return order_refusal("order expression type is unknown");
-    }
-    if (type_id == dt::CanonicalTypeId::character) {
-      const auto descriptor_collation = DescriptorField(
-          column.descriptor.encoded_descriptor, "collation_uuid");
-      const auto& seed = term.text_seed;
-      if (!IsCanonicalUuid(term.collation_uuid) ||
-          descriptor_collation != term.collation_uuid ||
-          term.resource_epoch == 0 || term.collation_epoch == 0 ||
-          !seed.active || seed.seed_pack_name.empty() ||
-          seed.seed_pack_version.empty() || seed.charset_name.empty() ||
-          seed.collation_name.empty()) {
-        return order_refusal(
-            "character order lacks bound collation resource authority");
-      }
-    } else if (!term.collation_uuid.empty() || term.resource_epoch != 0 ||
-               term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed)) {
-      return order_refusal(
-          "non-character order term carries text collation authority");
+    const auto validation =
+        ValidateCanonicalDescriptorOrderTerm(term, column);
+    if (!validation.ok) {
+      return order_refusal(validation.detail);
     }
   }
 
@@ -423,11 +450,12 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   std::vector<std::int8_t> comparisons(matrix_size, 0);
   for (std::size_t row = 0; row < row_count; ++row) {
     for (const auto& term : request.order_terms) {
-      int ignored = 0;
-      std::string detail;
       const auto& value = request.input_batch.rows[row].values[term.column];
-      if (!CompareOrderValues(value, value, term, &ignored, &detail)) {
-        return order_refusal("order operand refusal: " + detail);
+      const auto compared =
+          CompareCanonicalDescriptorOrderValues(value, value, term);
+      if (!compared.diagnostic.ok) {
+        return order_refusal("order operand refusal: " +
+                             compared.diagnostic.detail);
       }
     }
   }
@@ -435,15 +463,17 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     for (std::size_t right = left + 1; right < row_count; ++right) {
       int comparison = 0;
       for (const auto& term : request.order_terms) {
-        std::string detail;
         const auto& left_value =
             request.input_batch.rows[left].values[term.column];
         const auto& right_value =
             request.input_batch.rows[right].values[term.column];
-        if (!CompareOrderValues(left_value, right_value, term, &comparison,
-                                &detail)) {
-          return order_refusal("order comparison refusal: " + detail);
+        const auto compared = CompareCanonicalDescriptorOrderValues(
+            left_value, right_value, term);
+        if (!compared.diagnostic.ok) {
+          return order_refusal("order comparison refusal: " +
+                               compared.diagnostic.detail);
         }
+        comparison = compared.comparison;
         if (comparison != 0) break;
       }
       comparisons[left * row_count + right] =

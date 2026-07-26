@@ -1029,6 +1029,11 @@ struct CanonicalDescriptorOrderTerm {
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
 };
 
+struct CanonicalDescriptorOrderComparisonResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  int comparison = 0;
+};
+
 struct CanonicalDescriptorSortRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -1041,6 +1046,62 @@ struct CanonicalDescriptorSortRequest {
 struct CanonicalDescriptorSortResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+struct CanonicalWindowPartitionTerm {
+  std::size_t column = 0;
+  std::uint32_t expression_descriptor_id = 0;
+  std::string collation_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t collation_epoch = 0;
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+};
+
+struct CanonicalWindowRowPeerMetadata {
+  std::size_t source_row_index = 0;
+  std::size_t ordered_row_index = 0;
+  std::optional<std::size_t> partition_id;
+  std::optional<std::size_t> peer_group_id;
+  std::size_t partition_begin = 0;
+  std::size_t partition_end_exclusive = 0;
+  std::size_t peer_begin = 0;
+  std::size_t peer_end_exclusive = 0;
+};
+
+struct CanonicalWindowPartitionOrderRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<CanonicalWindowPartitionTerm> partition_terms;
+  std::vector<CanonicalDescriptorOrderTerm> order_terms;
+  std::string window_property_uuid;
+  std::string partition_property_uuid;
+  std::string ordering_property_uuid;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::size_t maximum_term_count = 64;
+  std::size_t maximum_pair_comparisons = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowPartitionOrderResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch ordered_batch;
+  std::vector<CanonicalWindowRowPeerMetadata> row_metadata;
+  std::size_t partition_count = 0;
+  std::size_t peer_group_count = 0;
+  std::string window_property_uuid;
+  std::string partition_property_uuid;
+  std::string ordering_property_uuid;
+  bool explicit_peer_metadata = false;
+  bool weaker_peer_recomputation_forbidden = false;
+  bool final_query_order_guaranteed = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -1231,6 +1292,15 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
+    const CanonicalDescriptorOrderTerm& term,
+    const ExecutorColumnDescriptor& column);
+CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
+    const scratchbird::engine::internal_api::EngineTypedValue& left,
+    const scratchbird::engine::internal_api::EngineTypedValue& right,
+    const CanonicalDescriptorOrderTerm& term);
+CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
+    const CanonicalWindowPartitionOrderRequest& request);
 CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
     const CanonicalInt64SumOrderedRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);

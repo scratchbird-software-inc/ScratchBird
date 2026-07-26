@@ -130,6 +130,8 @@ add_library(sb_engine_executor STATIC
   typed_slab_executor_work_area.cpp
   vectorized_result_batch.cpp
   # QOW-CMAKE-QRY-007-WINDOW-V1
+  # QOW-CMAKE-WIN-004-V1
+  # QOW-CMAKE-WIN-005-V1
   window_executor.cpp
 )
 
