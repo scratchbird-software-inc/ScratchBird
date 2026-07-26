@@ -10,6 +10,9 @@
 
 #include "binder/binder.hpp"
 
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -59,6 +62,30 @@ struct SblrVerifierResult {
   bool admitted{false};
   MessageVectorSet messages;
 };
+
+struct CanonicalNamedWindowDefinition {
+  std::string name;
+  std::optional<std::string> base_name;
+  std::vector<std::uint32_t> partition_descriptor_ids;
+  std::vector<std::uint32_t> order_descriptor_ids;
+  std::optional<std::uint32_t> frame_descriptor_id;
+  std::size_t resolution_depth{0};
+};
+
+struct CanonicalNamedWindowResolution {
+  bool accepted{false};
+  std::string diagnostic_id{"QOW-DIAG-WINDOW-NAMED"};
+  std::string detail;
+  std::size_t definition_index{0};
+  std::vector<CanonicalNamedWindowDefinition> resolved_definitions;
+  std::vector<std::size_t> reference_definition_indices;
+  bool resolved_once_in_scope{false};
+};
+
+CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
+    const std::vector<CanonicalNamedWindowDefinition>& definitions,
+    const std::vector<std::string>& referenced_names,
+    std::size_t maximum_definition_count = 1024);
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session);
 SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope);

@@ -750,6 +750,42 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-012-FRAME;development_candidate"
   )
 
+  # QOW-CMAKE-WIN-015-NAMED-V1
+  add_executable(qow_win_015_named_test_v1 qow_win_015_named.cpp)
+  target_compile_features(qow_win_015_named_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_win_015_named_test_v1 PRIVATE sbl_sbsql_parser_pipeline)
+  add_test(NAME qow_win_015_named_v1 COMMAND qow_win_015_named_test_v1)
+  set_tests_properties(qow_win_015_named_v1 PROPERTIES
+    LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-015-NAMED;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-015-MULTIPLE-V1
+  add_executable(qow_win_015_multiple_test_v1 qow_win_015_multiple.cpp)
+  target_compile_features(qow_win_015_multiple_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_015_multiple_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_015_multiple_v1 COMMAND qow_win_015_multiple_test_v1)
+  set_tests_properties(qow_win_015_multiple_v1 PROPERTIES
+    LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-015-MULTIPLE;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-015-QUALIFY-V1
+  add_executable(qow_win_015_qualify_test_v1 qow_win_015_qualify.cpp)
+  target_compile_features(qow_win_015_qualify_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_015_qualify_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_015_qualify_v1 COMMAND qow_win_015_qualify_test_v1)
+  set_tests_properties(qow_win_015_qualify_v1 PROPERTIES
+    LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-015-QUALIFY;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-015-COMPOSITION-V1
+  add_executable(qow_win_015_composition_test_v1 qow_win_015_composition.cpp)
+  target_compile_features(qow_win_015_composition_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_015_composition_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_015_composition_v1 COMMAND qow_win_015_composition_test_v1)
+  set_tests_properties(qow_win_015_composition_v1 PROPERTIES
+    LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-015-COMPOSITION;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

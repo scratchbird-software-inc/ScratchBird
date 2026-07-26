@@ -36,6 +36,10 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   # QOW-CMAKE-QRY-005-V1
   # QOW-ROUTE-STAGE-QRY-006-V1
   # QOW-CMAKE-QRY-006-V1
+  # QOW-CMAKE-WIN-015-NAMED-V1
+  # QOW-CMAKE-WIN-015-MULTIPLE-V1
+  # QOW-CMAKE-WIN-015-QUALIFY-V1
+  # QOW-CMAKE-WIN-015-COMPOSITION-V1
   lowering/lowering.cpp
   rendering/rendering.cpp
 )

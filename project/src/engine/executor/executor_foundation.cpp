@@ -4260,4 +4260,554 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   return result;
 }
 
+// QOW-SOURCE-WIN-015-MULTIPLE-V1
+// QOW-SOURCE-WIN-015-QUALIFY-V1
+// QOW-SOURCE-WIN-015-COMPOSITION-V1
+// Independent function values are mapped from each exact window ordering back
+// to the shared source-row identity before QUALIFY.  QUALIFY then consumes the
+// shared TRUE-only 3VL rule before projection, final query order, and row
+// limiting.  Optional composition evidence is an optimizer-published physical
+// DAG containing ordinary upstream nodes; no query-shape route gains executor
+// authority here.
+CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
+    const CanonicalWindowCompositionRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalWindowCompositionResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+  const auto descriptor_equal = [](const api::EngineDescriptor& left,
+                                   const api::EngineDescriptor& right) {
+    return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+           left.descriptor_kind == right.descriptor_kind &&
+           left.canonical_type_name == right.canonical_type_name &&
+           left.encoded_descriptor == right.encoded_descriptor;
+  };
+  const auto column_equal = [&](const ExecutorColumnDescriptor& left,
+                                const ExecutorColumnDescriptor& right) {
+    return left.stable_name == right.stable_name &&
+           left.nullable == right.nullable &&
+           left.descriptor_id == right.descriptor_id &&
+           descriptor_equal(left.descriptor, right.descriptor);
+  };
+  const auto value_equal = [&](const api::EngineTypedValue& left,
+                               const api::EngineTypedValue& right) {
+    return descriptor_equal(left.descriptor, right.descriptor) &&
+           left.encoded_value == right.encoded_value &&
+           left.binary_value == right.binary_value &&
+           left.is_null == right.is_null && left.state == right.state;
+  };
+  const auto authority_equal = [](
+      const CanonicalPhysicalDispatchAuthorityEvidence& left,
+      const CanonicalPhysicalDispatchAuthorityEvidence& right) {
+    return left.engine_mga_snapshot_bound == right.engine_mga_snapshot_bound &&
+           left.owns_transaction_finality == right.owns_transaction_finality &&
+           left.owns_recovery == right.owns_recovery &&
+           left.owns_parser_execution == right.owns_parser_execution &&
+           left.owns_visibility_outside_engine_mga ==
+               right.owns_visibility_outside_engine_mga &&
+           left.wal_is_transaction_or_recovery_authority ==
+               right.wal_is_transaction_or_recovery_authority;
+  };
+
+  if (request.shape_specific_parser_route_claimed ||
+      request.shape_specific_execution_route_claimed) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  "shape-specific parser or executor route claimed window authority");
+  }
+  if (request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  "window composition attempted to claim engine MGA authority");
+  }
+  if (request.maximum_window_count == 0 || request.windows.empty() ||
+      request.windows.size() > request.maximum_window_count ||
+      request.maximum_output_rows == 0 ||
+      request.input_batch.rows.size() > request.maximum_output_rows) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  "window count or output-row resource bound was exceeded");
+  }
+  std::vector<std::uint32_t> input_descriptor_ids;
+  input_descriptor_ids.reserve(request.input_batch.columns.size());
+  for (const auto& column : request.input_batch.columns) {
+    input_descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch, input_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  input_validation.diagnostic_code + ":" +
+                      input_validation.detail);
+  }
+
+  const auto& first_frames = request.windows.front().frames;
+  if (!CanonicalWindowFrameEvidenceValid(first_frames) ||
+      !first_frames.authority.engine_mga_snapshot_bound ||
+      first_frames.authority.owns_transaction_finality ||
+      first_frames.authority.owns_recovery ||
+      first_frames.authority.owns_parser_execution ||
+      first_frames.authority.owns_visibility_outside_engine_mga ||
+      first_frames.authority.wal_is_transaction_or_recovery_authority) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  "first window lacks canonical engine-owned frame authority");
+  }
+
+  DescriptorBatch materialized = request.input_batch;
+  std::set<std::uint32_t> descriptor_ids(input_descriptor_ids.begin(),
+                                         input_descriptor_ids.end());
+  std::set<std::string> function_state_uuids;
+  const auto row_count = request.input_batch.rows.size();
+  for (std::size_t window_index = 0;
+       window_index < request.windows.size(); ++window_index) {
+    const auto& window = request.windows[window_index];
+    if (!CanonicalWindowFrameEvidenceValid(window.frames) ||
+        window.frames.selected_plan_uuid != first_frames.selected_plan_uuid ||
+        window.frames.inventory_local_transaction_id !=
+            first_frames.inventory_local_transaction_id ||
+        window.frames.inventory_statement_snapshot_id !=
+            first_frames.inventory_statement_snapshot_id ||
+        !authority_equal(window.frames.authority, first_frames.authority) ||
+        !IsCanonicalUuid(window.function_state_uuid) ||
+        !function_state_uuids.insert(window.function_state_uuid).second) {
+      return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                    "independent window authority or function-state identity drifted");
+    }
+    if (window.frames.ordered_batch.columns.size() !=
+            request.input_batch.columns.size() ||
+        window.frames.ordered_batch.rows.size() != row_count ||
+        window.frames.row_metadata.size() != row_count ||
+        window.values.size() != row_count) {
+      return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                    "window materialization cardinality does not match its source");
+    }
+    for (std::size_t column = 0;
+         column < request.input_batch.columns.size(); ++column) {
+      if (!column_equal(window.frames.ordered_batch.columns[column],
+                        request.input_batch.columns[column])) {
+        return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                      "window materialization source schema drifted");
+      }
+    }
+    if (window.result_column.descriptor_id == 0 ||
+        window.result_column.stable_name.empty() ||
+        !descriptor_ids.insert(window.result_column.descriptor_id).second ||
+        !IsCanonicalUuid(
+            window.result_column.descriptor.descriptor_uuid.canonical) ||
+        window.result_column.descriptor.descriptor_kind.empty() ||
+        window.result_column.descriptor.canonical_type_name.empty() ||
+        window.result_column.descriptor.encoded_descriptor.empty()) {
+      return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                    "window result descriptor is missing, duplicated, or malformed");
+    }
+
+    DescriptorBatch value_validation_batch;
+    value_validation_batch.columns = {window.result_column};
+    value_validation_batch.rows.reserve(row_count);
+    for (const auto& value : window.values) {
+      value_validation_batch.rows.push_back({{value}});
+    }
+    const auto value_validation = ValidateCanonicalDescriptorBatch(
+        value_validation_batch, {window.result_column.descriptor_id});
+    if (!value_validation.ok) {
+      return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                    value_validation.diagnostic_code + ":" +
+                        value_validation.detail);
+    }
+
+    std::vector<std::uint8_t> source_seen(row_count, 0);
+    std::vector<api::EngineTypedValue> values_by_source(row_count);
+    for (std::size_t ordered_row = 0; ordered_row < row_count;
+         ++ordered_row) {
+      const auto source_row =
+          window.frames.row_metadata[ordered_row].source_row_index;
+      if (source_row >= row_count || source_seen[source_row]) {
+        return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                      "window source-row mapping is not a bijection");
+      }
+      source_seen[source_row] = 1;
+      const auto& ordered_values =
+          window.frames.ordered_batch.rows[ordered_row].values;
+      const auto& source_values = request.input_batch.rows[source_row].values;
+      if (ordered_values.size() != source_values.size()) {
+        return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                      "window source-row width drifted");
+      }
+      for (std::size_t column = 0; column < source_values.size(); ++column) {
+        if (!value_equal(ordered_values[column], source_values[column])) {
+          return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                        "window ordered row no longer matches its source identity");
+        }
+      }
+      values_by_source[source_row] = window.values[ordered_row];
+    }
+    if (std::ranges::find(source_seen, 0) != source_seen.end()) {
+      return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                    "window source-row mapping omitted a source row");
+    }
+    materialized.columns.push_back(window.result_column);
+    for (std::size_t source_row = 0; source_row < row_count; ++source_row) {
+      materialized.rows[source_row].values.push_back(
+          std::move(values_by_source[source_row]));
+    }
+    result.materialized_window_descriptor_ids.push_back(
+        window.result_column.descriptor_id);
+  }
+
+  const auto bound_equal = [&](const auto& left, const auto& right) {
+    if (left.kind != right.kind ||
+        left.offset.has_value() != right.offset.has_value()) {
+      return false;
+    }
+    return !left.offset.has_value() ||
+           value_equal(*left.offset, *right.offset);
+  };
+  const auto frame_descriptor_equal = [&](const auto& left,
+                                          const auto& right) {
+    if (left.frame_descriptor_uuid != right.frame_descriptor_uuid ||
+        left.frame_specified != right.frame_specified ||
+        left.unit != right.unit || left.exclusion != right.exclusion ||
+        left.start.has_value() != right.start.has_value() ||
+        left.end.has_value() != right.end.has_value()) {
+      return false;
+    }
+    return (!left.start.has_value() ||
+            bound_equal(*left.start, *right.start)) &&
+           (!left.end.has_value() || bound_equal(*left.end, *right.end));
+  };
+  for (std::size_t left = 0; left < request.windows.size(); ++left) {
+    for (std::size_t right = left + 1; right < request.windows.size();
+         ++right) {
+      const auto& lhs = request.windows[left].frames;
+      const auto& rhs = request.windows[right].frames;
+      bool exact = lhs.window_property_uuid == rhs.window_property_uuid &&
+                   lhs.ordering_property_uuid == rhs.ordering_property_uuid &&
+                   frame_descriptor_equal(lhs.resolved_frame,
+                                          rhs.resolved_frame) &&
+                   lhs.defaulted_with_order == rhs.defaulted_with_order &&
+                   lhs.defaulted_without_order ==
+                       rhs.defaulted_without_order &&
+                   lhs.every_frame_operand_consumed ==
+                       rhs.every_frame_operand_consumed &&
+                   lhs.empty_state_uses_optional_bounds ==
+                       rhs.empty_state_uses_optional_bounds &&
+                   lhs.row_metadata.size() == rhs.row_metadata.size() &&
+                   lhs.effective_frames.size() == rhs.effective_frames.size();
+      for (std::size_t row = 0; exact && row < lhs.row_metadata.size(); ++row) {
+        const auto& left_metadata = lhs.row_metadata[row];
+        const auto& right_metadata = rhs.row_metadata[row];
+        const auto& left_frame = lhs.effective_frames[row];
+        const auto& right_frame = rhs.effective_frames[row];
+        exact = left_metadata.source_row_index ==
+                    right_metadata.source_row_index &&
+                left_metadata.ordered_row_index ==
+                    right_metadata.ordered_row_index &&
+                left_metadata.partition_id == right_metadata.partition_id &&
+                left_metadata.peer_group_id == right_metadata.peer_group_id &&
+                left_metadata.partition_begin ==
+                    right_metadata.partition_begin &&
+                left_metadata.partition_end_exclusive ==
+                    right_metadata.partition_end_exclusive &&
+                left_metadata.peer_begin == right_metadata.peer_begin &&
+                left_metadata.peer_end_exclusive ==
+                    right_metadata.peer_end_exclusive &&
+                left_frame.ordered_row_index ==
+                    right_frame.ordered_row_index &&
+                left_frame.partition_id == right_frame.partition_id &&
+                left_frame.base_state == right_frame.base_state &&
+                left_frame.base_begin == right_frame.base_begin &&
+                left_frame.base_end_exclusive ==
+                    right_frame.base_end_exclusive &&
+                left_frame.exclusion_applied ==
+                    right_frame.exclusion_applied &&
+                lhs.effective_frames[row].effective_row_indices ==
+                    rhs.effective_frames[row].effective_row_indices;
+      }
+      if (exact) ++result.shared_materialization_pair_count;
+    }
+  }
+
+  std::vector<std::uint32_t> materialized_ids;
+  materialized_ids.reserve(materialized.columns.size());
+  for (const auto& column : materialized.columns) {
+    materialized_ids.push_back(column.descriptor_id);
+  }
+  const auto materialized_validation = ValidateCanonicalDescriptorBatch(
+      materialized, materialized_ids);
+  if (!materialized_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-MULTIPLE",
+                  materialized_validation.diagnostic_code + ":" +
+                      materialized_validation.detail);
+  }
+
+  result.stage_trace.push_back(CanonicalQueryEvaluationStage::from);
+  if (request.composition_dag.has_value()) {
+    const auto dag_validation =
+        ValidateTypedPhysicalNodeDag(*request.composition_dag);
+    if (!dag_validation.accepted || request.composition_dag->abi_version != 2 ||
+        !request.composition_dag->optimizer_published ||
+        request.composition_dag->selected_plan_uuid !=
+            first_frames.selected_plan_uuid ||
+        request.composition_dag->local_transaction_id !=
+            first_frames.inventory_local_transaction_id ||
+        request.composition_dag->statement_snapshot_id !=
+            first_frames.inventory_statement_snapshot_id ||
+        request.composition_dag->root_physical_node_id !=
+            first_frames.executed_physical_node_id) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "composition DAG does not match the executed window authority");
+    }
+    std::set<PhysicalNodeKind> required_kinds;
+    bool aggregate_stage_present = false;
+    for (const auto kind : request.required_upstream_node_kinds) {
+      if ((kind != PhysicalNodeKind::kJoin &&
+           kind != PhysicalNodeKind::kAggregate &&
+           kind != PhysicalNodeKind::kSubquery &&
+           kind != PhysicalNodeKind::kCte &&
+           kind != PhysicalNodeKind::kRecursiveCte) ||
+          !required_kinds.insert(kind).second) {
+        return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                      "composition requires unique ordinary upstream node kinds");
+      }
+      bool found = false;
+      for (const auto& node : request.composition_dag->nodes) {
+        if (node.node_kind == kind) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                      "required ordinary upstream node is absent from the selected DAG");
+      }
+      aggregate_stage_present |= kind == PhysicalNodeKind::kAggregate;
+    }
+    if (aggregate_stage_present) {
+      result.stage_trace.push_back(
+          CanonicalQueryEvaluationStage::group_and_aggregate);
+    }
+    result.ordinary_physical_nodes_validated = !required_kinds.empty();
+  } else if (!request.required_upstream_node_kinds.empty()) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  "ordinary composition nodes require a selected physical DAG");
+  }
+  result.stage_trace.push_back(CanonicalQueryEvaluationStage::window);
+
+  result.source_row_indices.resize(row_count);
+  std::iota(result.source_row_indices.begin(), result.source_row_indices.end(),
+            0);
+  if (request.qualify_truth_values.has_value()) {
+    if (request.qualify_referenced_window_descriptor_ids.empty() ||
+        request.qualify_truth_values->size() != row_count) {
+      return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                    "QUALIFY references or truth cardinality are incomplete");
+    }
+    std::set<std::uint32_t> qualify_references;
+    for (const auto descriptor_id :
+         request.qualify_referenced_window_descriptor_ids) {
+      if (!qualify_references.insert(descriptor_id).second ||
+          std::ranges::find(result.materialized_window_descriptor_ids,
+                            descriptor_id) ==
+              result.materialized_window_descriptor_ids.end()) {
+        return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                      "QUALIFY references a missing or duplicate window result");
+      }
+    }
+    DescriptorBatch qualified;
+    qualified.columns = materialized.columns;
+    std::vector<std::size_t> qualified_sources;
+    for (std::size_t source_row = 0; source_row < row_count; ++source_row) {
+      bool passes = false;
+      std::string detail;
+      if (!api::QowPredicateConsumerPassesV1(
+              (*request.qualify_truth_values)[source_row],
+              api::EnginePredicateConsumer::qualify, &passes, &detail)) {
+        return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                      "QUALIFY 3VL refusal: " + detail);
+      }
+      if (passes) {
+        qualified.rows.push_back(materialized.rows[source_row]);
+        qualified_sources.push_back(source_row);
+      }
+    }
+    materialized = std::move(qualified);
+    result.source_row_indices = std::move(qualified_sources);
+    result.stage_trace.push_back(CanonicalQueryEvaluationStage::qualify);
+    result.qualify_uses_true_only_3vl = true;
+  } else if (!request.qualify_referenced_window_descriptor_ids.empty()) {
+    return refuse("QOW-DIAG-WINDOW-QUALIFY",
+                  "QUALIFY references exist without a bound predicate");
+  }
+  result.all_windows_materialized_before_qualify = true;
+
+  if (request.projection_descriptor_ids.empty()) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  "post-window projection descriptor handles are required");
+  }
+  std::vector<std::size_t> projected_columns;
+  std::set<std::uint32_t> projected_ids;
+  for (const auto descriptor_id : request.projection_descriptor_ids) {
+    if (descriptor_id == 0 || !projected_ids.insert(descriptor_id).second) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "projection descriptor handles are missing or duplicated");
+    }
+    std::optional<std::size_t> resolved_column;
+    for (std::size_t column = 0; column < materialized.columns.size();
+         ++column) {
+      if (materialized.columns[column].descriptor_id == descriptor_id) {
+        resolved_column = column;
+        break;
+      }
+    }
+    if (!resolved_column.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "projection descriptor handle is unresolved after WINDOW/QUALIFY");
+    }
+    projected_columns.push_back(*resolved_column);
+  }
+  materialized = ProjectDescriptorBatch(materialized, projected_columns);
+  result.stage_trace.push_back(CanonicalQueryEvaluationStage::projection);
+
+  if (request.query_order_terms.empty()) {
+    if (!request.query_order_tie_evidence_uuid.empty()) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "query order evidence exists without bound order terms");
+    }
+  } else {
+    if (!IsCanonicalUuid(request.query_order_tie_evidence_uuid) ||
+        request.maximum_pair_comparisons == 0) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "query order tie evidence or resource bound is invalid");
+    }
+    std::set<std::pair<std::size_t, std::uint32_t>> order_terms;
+    for (const auto& term : request.query_order_terms) {
+      if (term.column >= materialized.columns.size() ||
+          !order_terms.emplace(term.column,
+                               term.expression_descriptor_id).second) {
+        return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                      "query order term is outside projection or duplicated");
+      }
+      const auto validation = ValidateCanonicalDescriptorOrderTerm(
+          term, materialized.columns[term.column]);
+      if (!validation.ok) {
+        return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                      "query order refusal: " + validation.detail);
+      }
+    }
+    const auto output_rows = materialized.rows.size();
+    if (output_rows != 0 &&
+        output_rows > std::numeric_limits<std::size_t>::max() / output_rows) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "query order comparison matrix overflowed");
+    }
+    const auto matrix_size = output_rows * output_rows;
+    if (matrix_size > request.maximum_pair_comparisons) {
+      return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                    "query order comparison resource bound was exceeded");
+    }
+    std::vector<std::int8_t> comparisons(matrix_size, 0);
+    for (std::size_t left = 0; left < output_rows; ++left) {
+      for (std::size_t right = left + 1; right < output_rows; ++right) {
+        int comparison = 0;
+        for (const auto& term : request.query_order_terms) {
+          const auto compared = CompareCanonicalDescriptorOrderValues(
+              materialized.rows[left].values[term.column],
+              materialized.rows[right].values[term.column], term);
+          if (!compared.diagnostic.ok) {
+            return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                          "query order comparison refusal: " +
+                              compared.diagnostic.detail);
+          }
+          comparison = compared.comparison;
+          if (comparison != 0) break;
+        }
+        comparisons[left * output_rows + right] =
+            static_cast<std::int8_t>(comparison);
+        comparisons[right * output_rows + left] =
+            static_cast<std::int8_t>(-comparison);
+      }
+    }
+    std::vector<std::size_t> order(output_rows);
+    std::iota(order.begin(), order.end(), 0);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](const std::size_t left, const std::size_t right) {
+                       return comparisons[left * output_rows + right] < 0;
+                     });
+    DescriptorBatch ordered;
+    ordered.columns = materialized.columns;
+    std::vector<std::size_t> ordered_sources;
+    ordered.rows.reserve(output_rows);
+    ordered_sources.reserve(output_rows);
+    for (const auto position : order) {
+      ordered.rows.push_back(materialized.rows[position]);
+      ordered_sources.push_back(result.source_row_indices[position]);
+    }
+    materialized = std::move(ordered);
+    result.source_row_indices = std::move(ordered_sources);
+    result.stage_trace.push_back(CanonicalQueryEvaluationStage::query_order);
+  }
+  result.projection_precedes_query_order = true;
+
+  if (request.offset != 0 || request.row_limit.has_value()) {
+    const auto available = static_cast<std::uint64_t>(materialized.rows.size());
+    const auto begin = std::min(request.offset, available);
+    const auto remaining = available - begin;
+    const auto take = request.row_limit.has_value()
+                          ? std::min(*request.row_limit, remaining)
+                          : remaining;
+    DescriptorBatch limited;
+    limited.columns = materialized.columns;
+    limited.rows.insert(
+        limited.rows.end(),
+        materialized.rows.begin() + static_cast<std::ptrdiff_t>(begin),
+        materialized.rows.begin() +
+            static_cast<std::ptrdiff_t>(begin + take));
+    std::vector<std::size_t> limited_sources(
+        result.source_row_indices.begin() +
+            static_cast<std::ptrdiff_t>(begin),
+        result.source_row_indices.begin() +
+            static_cast<std::ptrdiff_t>(begin + take));
+    materialized = std::move(limited);
+    result.source_row_indices = std::move(limited_sources);
+    result.stage_trace.push_back(
+        CanonicalQueryEvaluationStage::offset_limit_fetch_top);
+  }
+  result.query_order_precedes_row_limit = true;
+
+  if (materialized.rows.size() > request.maximum_output_rows) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  "post-window output row bound was exceeded");
+  }
+  std::vector<std::uint32_t> output_descriptor_ids;
+  output_descriptor_ids.reserve(materialized.columns.size());
+  for (const auto& column : materialized.columns) {
+    output_descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      materialized, output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  output_validation.diagnostic_code + ":" +
+                      output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(materialized);
+  result.every_function_state_independent = true;
+  result.authority = first_frames.authority;
+  result.selected_plan_uuid = first_frames.selected_plan_uuid;
+  result.inventory_local_transaction_id =
+      first_frames.inventory_local_transaction_id;
+  result.inventory_statement_snapshot_id =
+      first_frames.inventory_statement_snapshot_id;
+  result.executed_physical_node_id =
+      first_frames.executed_physical_node_id;
+  result.causal_counter_id = first_frames.causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor

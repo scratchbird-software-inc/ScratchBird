@@ -187,6 +187,72 @@ struct CanonicalWindowAggregateResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalQueryEvaluationStage : std::uint8_t {
+  from = 1,
+  where,
+  group_and_aggregate,
+  having,
+  window,
+  qualify,
+  projection,
+  distinct,
+  set_operation,
+  query_order,
+  offset_limit_fetch_top,
+};
+
+struct CanonicalWindowMaterialization {
+  CanonicalWindowFrameResult frames;
+  ExecutorColumnDescriptor result_column;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::string function_state_uuid;
+};
+
+struct CanonicalWindowCompositionRequest {
+  DescriptorBatch input_batch;
+  std::vector<CanonicalWindowMaterialization> windows;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
+      qualify_truth_values;
+  std::vector<std::uint32_t> qualify_referenced_window_descriptor_ids;
+  std::vector<std::uint32_t> projection_descriptor_ids;
+  std::vector<CanonicalDescriptorOrderTerm> query_order_terms;
+  std::string query_order_tie_evidence_uuid;
+  std::uint64_t offset = 0;
+  std::optional<std::uint64_t> row_limit;
+  std::optional<TypedPhysicalNodeDag> composition_dag;
+  std::vector<PhysicalNodeKind> required_upstream_node_kinds;
+  std::size_t maximum_window_count = 256;
+  std::size_t maximum_output_rows = 1048576;
+  std::size_t maximum_pair_comparisons = 1048576;
+  bool shape_specific_parser_route_claimed = false;
+  bool shape_specific_execution_route_claimed = false;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowCompositionResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<std::size_t> source_row_indices;
+  std::vector<CanonicalQueryEvaluationStage> stage_trace;
+  std::vector<std::uint32_t> materialized_window_descriptor_ids;
+  std::size_t shared_materialization_pair_count = 0;
+  bool every_function_state_independent = false;
+  bool all_windows_materialized_before_qualify = false;
+  bool qualify_uses_true_only_3vl = false;
+  bool projection_precedes_query_order = false;
+  bool query_order_precedes_row_limit = false;
+  bool ordinary_physical_nodes_validated = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string selected_plan_uuid;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows);
 OperatorDiagnostic ValidateBatch(const Batch& batch);
 std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs);
@@ -218,6 +284,8 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
     const CanonicalWindowValueRequest& request);
 CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
     const CanonicalWindowAggregateRequest& request);
+CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
+    const CanonicalWindowCompositionRequest& request);
 Batch MaterializeCte(const Batch& input);
 std::int64_t ScalarSubqueryFirstValue(const Batch& input, std::size_t column);
 Batch SetUnionDistinct(const Batch& left, const Batch& right);

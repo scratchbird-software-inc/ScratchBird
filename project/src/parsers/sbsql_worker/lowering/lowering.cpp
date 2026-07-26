@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <unordered_map>
@@ -21048,6 +21049,144 @@ bool ConsumeNamedWindowClause(const std::vector<const Token*>& tokens,
   return true;
 }
 
+bool IsCanonicalNamedWindowIdentifier(const std::string_view name) {
+  if (name.empty() || name.size() > 128 ||
+      !((name.front() >= 'a' && name.front() <= 'z') ||
+        name.front() == '_')) {
+    return false;
+  }
+  return std::ranges::all_of(name, [](const unsigned char ch) {
+    return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+           ch == '_';
+  });
+}
+
+bool CanonicalNamedWindowDescriptorIdsValid(
+    const std::vector<std::uint32_t>& descriptor_ids) {
+  std::unordered_set<std::uint32_t> unique;
+  for (const auto descriptor_id : descriptor_ids) {
+    if (descriptor_id == 0 || !unique.insert(descriptor_id).second) {
+      return false;
+    }
+  }
+  return true;
+}
+
+CanonicalNamedWindowResolution ResolveCanonicalNamedWindowsInternal(
+    const std::vector<CanonicalNamedWindowDefinition>& definitions,
+    const std::vector<std::string>& referenced_names,
+    const std::size_t maximum_definition_count) {
+  CanonicalNamedWindowResolution result;
+  const auto refuse = [&](const std::size_t definition_index,
+                          std::string detail) {
+    result = {};
+    result.accepted = false;
+    result.diagnostic_id = "QOW-DIAG-WINDOW-NAMED";
+    result.detail = std::move(detail);
+    result.definition_index = definition_index;
+    return result;
+  };
+  if (maximum_definition_count == 0 || definitions.empty() ||
+      definitions.size() > maximum_definition_count ||
+      referenced_names.size() > maximum_definition_count) {
+    return refuse(0, "named-window definition or reference bound was exceeded");
+  }
+
+  std::unordered_map<std::string, std::size_t> resolved_by_name;
+  result.resolved_definitions.reserve(definitions.size());
+  for (std::size_t index = 0; index < definitions.size(); ++index) {
+    const auto& source = definitions[index];
+    if (!IsCanonicalNamedWindowIdentifier(source.name) ||
+        !CanonicalNamedWindowDescriptorIdsValid(
+            source.partition_descriptor_ids) ||
+        !CanonicalNamedWindowDescriptorIdsValid(source.order_descriptor_ids) ||
+        (source.frame_descriptor_id.has_value() &&
+         *source.frame_descriptor_id == 0) ||
+        source.resolution_depth != 0) {
+      return refuse(index, "named-window definition is not canonically bound");
+    }
+    if (resolved_by_name.contains(source.name)) {
+      return refuse(index, "named-window definition is duplicated in scope");
+    }
+
+    CanonicalNamedWindowDefinition resolved = source;
+    if (source.base_name.has_value()) {
+      if (!IsCanonicalNamedWindowIdentifier(*source.base_name) ||
+          *source.base_name == source.name) {
+        return refuse(index, "named-window inheritance is cyclic");
+      }
+      const auto base_it = resolved_by_name.find(*source.base_name);
+      if (base_it == resolved_by_name.end()) {
+        return refuse(index,
+                      "named-window base is forward or unknown in this scope");
+      }
+      const auto& base = result.resolved_definitions[base_it->second];
+      if (!base.partition_descriptor_ids.empty() &&
+          !source.partition_descriptor_ids.empty()) {
+        return refuse(index,
+                      "named-window PARTITION BY cannot override its base");
+      }
+      if (!base.order_descriptor_ids.empty() &&
+          !source.order_descriptor_ids.empty()) {
+        return refuse(index,
+                      "named-window ORDER BY cannot replace its base");
+      }
+      if (base.frame_descriptor_id.has_value() &&
+          source.frame_descriptor_id.has_value()) {
+        return refuse(index,
+                      "named-window frame cannot be added to a framed base");
+      }
+      if (resolved.partition_descriptor_ids.empty()) {
+        resolved.partition_descriptor_ids = base.partition_descriptor_ids;
+      }
+      if (resolved.order_descriptor_ids.empty()) {
+        resolved.order_descriptor_ids = base.order_descriptor_ids;
+      }
+      if (!resolved.frame_descriptor_id.has_value()) {
+        resolved.frame_descriptor_id = base.frame_descriptor_id;
+      }
+      if (base.resolution_depth ==
+          std::numeric_limits<std::size_t>::max()) {
+        return refuse(index, "named-window inheritance depth overflowed");
+      }
+      resolved.resolution_depth = base.resolution_depth + 1;
+    }
+    resolved_by_name.emplace(resolved.name,
+                             result.resolved_definitions.size());
+    result.resolved_definitions.push_back(std::move(resolved));
+  }
+
+  result.reference_definition_indices.reserve(referenced_names.size());
+  for (const auto& reference : referenced_names) {
+    if (!IsCanonicalNamedWindowIdentifier(reference)) {
+      return refuse(definitions.size(),
+                    "named-window reference is not a canonical identifier");
+    }
+    const auto definition_it = resolved_by_name.find(reference);
+    if (definition_it == resolved_by_name.end()) {
+      return refuse(definitions.size(),
+                    "named-window reference is unknown in this scope");
+    }
+    result.reference_definition_indices.push_back(definition_it->second);
+  }
+
+  result.accepted = true;
+  result.diagnostic_id = "SB_EXECUTOR_OK";
+  result.detail.clear();
+  result.definition_index = 0;
+  result.resolved_once_in_scope = true;
+  return result;
+}
+
+// QOW-SOURCE-WIN-015-NAMED-V1
+// QOW-SOURCE-WIN-015-MULTIPLE-V1
+// QOW-SOURCE-WIN-015-QUALIFY-V1
+// QOW-SOURCE-WIN-015-COMPOSITION-V1
+// This legacy bounded recognizer remains a noncanonical query.plan_operation
+// route.  It uses the same named-scope rule for its one historical named
+// definition, while multiple-window materialization, QUALIFY, and composition
+// are owned by the descriptor executor and never inferred from trailing token
+// shapes here.
 RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
     const CstDocument& cst,
     const std::vector<std::string>& resolved_object_uuids) {
@@ -21248,6 +21387,21 @@ RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
   if (info.named_window_reference && !info.named_window_definition) {
     info.invalid_reason = "window_named_reference_requires_definition";
     return info;
+  }
+  if (info.named_window_definition) {
+    CanonicalNamedWindowDefinition definition;
+    definition.name = info.named_window;
+    definition.order_descriptor_ids = {1};
+    if (info.frame_clause) definition.frame_descriptor_id = 1;
+    const auto resolved = ResolveCanonicalNamedWindowsInternal(
+        {definition}, info.named_window_reference
+                          ? std::vector<std::string>{info.named_window}
+                          : std::vector<std::string>{},
+        1);
+    if (!resolved.accepted) {
+      info.invalid_reason = "window_named_scope_invalid";
+      return info;
+    }
   }
   if (index != tokens.size()) {
     info.invalid_reason = "window_trailing_tokens_require_query_plan_route";
@@ -35200,6 +35354,14 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
 }
 
 } // namespace
+
+CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(
+    const std::vector<CanonicalNamedWindowDefinition>& definitions,
+    const std::vector<std::string>& referenced_names,
+    const std::size_t maximum_definition_count) {
+  return ResolveCanonicalNamedWindowsInternal(
+      definitions, referenced_names, maximum_definition_count);
+}
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
   if (bound.native_relational.bound ||
