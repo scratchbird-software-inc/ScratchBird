@@ -62,6 +62,24 @@ EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
   return computed_value;
 }
 
+// QOW-SOURCE-QRY-008-NULL-V1
+bool QowCanonicalSqlNullStateV1(const EngineTypedValue& value) {
+  return value.isSqlNull() && value.encoded_value.empty() &&
+         value.binary_value.empty();
+}
+
+EngineTypedValue QowPropagateSqlNullAfterScalarV1(
+    const EngineDescriptor& result_descriptor,
+    EngineTypedValue computed_value) {
+  if (!computed_value.isSqlNull()) return computed_value;
+  computed_value.descriptor = result_descriptor;
+  computed_value.encoded_value.clear();
+  computed_value.binary_value.clear();
+  computed_value.is_null = true;
+  computed_value.state = EngineValueState::sql_null;
+  return computed_value;
+}
+
 }  // namespace scratchbird::engine::internal_api
 
 #ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
@@ -546,6 +564,17 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
             "engine.query.typed_scalar_descriptor_refused",
             "canonical descriptor identity is missing or malformed"));
   }
+  if (canonical_descriptor_route &&
+      ((left.isSqlNull() && !QowCanonicalSqlNullStateV1(left)) ||
+       (right.isSqlNull() && !QowCanonicalSqlNullStateV1(right)))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-008-NULL-REFUSAL-V1",
+            "engine.query.typed_scalar_null_refused",
+            "SQL NULL scalar operands cannot carry substitute payload bytes"));
+  }
   const std::string operation_text = !request.numeric_operation.empty()
       ? request.numeric_operation
       : OptionValue(request, "numeric_operation:");
@@ -573,11 +602,11 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   numeric_request.left.type_id = TypeFromDescriptor(left.descriptor);
   if (numeric_request.left.type_id == dt::CanonicalTypeId::unknown) { numeric_request.left.type_id = numeric_request.type_id; }
   numeric_request.left.encoded_value = left.encoded_value;
-  numeric_request.left.is_null = left.is_null;
+  numeric_request.left.is_null = left.isSqlNull();
   numeric_request.right.type_id = TypeFromDescriptor(right.descriptor);
   if (numeric_request.right.type_id == dt::CanonicalTypeId::unknown) { numeric_request.right.type_id = numeric_request.type_id; }
   numeric_request.right.encoded_value = right.encoded_value;
-  numeric_request.right.is_null = right.is_null;
+  numeric_request.right.is_null = right.isSqlNull();
   numeric_request.context.precision = ParseU32Option(OptionValue(request, "precision:"), request.precision);
   numeric_request.context.scale = ParseU32Option(OptionValue(request, "scale:"), request.scale);
   numeric_request.context.rounding = rounding;
@@ -612,6 +641,8 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
               "computed scalar type does not match the bound result descriptor"));
     }
     result.value = QowPreserveCanonicalDescriptorAfterScalarV1(
+        result_descriptor, std::move(result.value));
+    result.value = QowPropagateSqlNullAfterScalarV1(
         result_descriptor, std::move(result.value));
   }
   result.comparison = numeric_result.comparison;

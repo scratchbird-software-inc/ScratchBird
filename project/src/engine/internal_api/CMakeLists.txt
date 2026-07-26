@@ -17,6 +17,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
   # QOW-CMAKE-QRY-008-DESC-V1
+  # QOW-CMAKE-QRY-008-NULL-V1
   add_library(sb_qow_typed_scalar_descriptor_contract STATIC
     query/expression_api.cpp
   )
