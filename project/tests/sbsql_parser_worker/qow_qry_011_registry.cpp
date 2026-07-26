@@ -169,6 +169,51 @@ bool SameScalar(const exec::CanonicalAggregateRuntimeResult& left,
          lhs.binary_value == rhs.binary_value;
 }
 
+exec::CanonicalAggregateRuntimeRequest StatisticalRequest(
+    const exec::CanonicalAggregateFunction function) {
+  auto request = Request(function, 0, 2101, "real64");
+  const auto descriptor = request.input_batch.columns[0].descriptor;
+  request.input_batch.rows[0].values[0] = Value(descriptor, "1");
+  request.input_batch.rows[1].values[0] = Value(descriptor, "2");
+  request.input_batch.rows[2].values[0] = Value(descriptor, "3");
+  request.input_batch.rows[3].values[0] = Null(descriptor);
+  return request;
+}
+
+exec::CanonicalAggregateRuntimeRequest PairStatisticalRequest(
+    const exec::CanonicalAggregateFunction function) {
+  auto request = Request(function, 0, 2101,
+                         function ==
+                                 exec::CanonicalAggregateFunction::regr_count
+                             ? "int64"
+                             : "real64");
+  request.value_columns = {0, 3};
+  request.value_expression_descriptor_ids = {2101, 2104};
+  request.result_column.nullable =
+      function != exec::CanonicalAggregateFunction::regr_count;
+  const auto y_descriptor = request.input_batch.columns[0].descriptor;
+  const auto x_descriptor = request.input_batch.columns[3].descriptor;
+  request.input_batch.rows[0].values[0] = Value(y_descriptor, "2");
+  request.input_batch.rows[0].values[3] = Value(x_descriptor, "1");
+  request.input_batch.rows[1].values[0] = Value(y_descriptor, "4");
+  request.input_batch.rows[1].values[3] = Value(x_descriptor, "2");
+  request.input_batch.rows[2].values[0] = Value(y_descriptor, "6");
+  request.input_batch.rows[2].values[3] = Value(x_descriptor, "3");
+  request.input_batch.rows[3].values[0] = Null(y_descriptor);
+  request.input_batch.rows[3].values[3] = Value(x_descriptor, "4");
+  return request;
+}
+
+bool NearScalar(const exec::CanonicalAggregateRuntimeResult& result,
+                const double expected) {
+  return result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
+         result.output_batch.rows[0].values[0].state ==
+             api::EngineValueState::value &&
+         std::abs(std::stod(
+                      result.output_batch.rows[0].values[0].encoded_value) -
+                  expected) < 1e-12;
+}
+
 // QOW-TEST-QRY-011-REGISTRY-V1
 bool ValidateCanonicalAggregateRegistry() {
   bool passed = true;
@@ -189,7 +234,7 @@ bool ValidateCanonicalAggregateRegistry() {
     if (entry.executable) ++executable_count;
     if (entry.aggregate_as_window) ++aggregate_window_count;
   }
-  passed &= Require(registry.size() == 43 && executable_count == 8 &&
+  passed &= Require(registry.size() == 43 && executable_count == 26 &&
                         aggregate_window_count == 1 &&
                         Entry(exec::CanonicalAggregateFunction::sum)
                             .aggregate_as_window,
@@ -247,6 +292,123 @@ bool ValidateCanonicalAggregateRegistry() {
                                          .encoded_value) -
                                  (8.0 / 3.0)) < 1e-12,
                     "AVG did not preserve numeric state semantics");
+
+  struct StatisticalCase {
+    exec::CanonicalAggregateFunction function;
+    double expected;
+  };
+  const std::vector<StatisticalCase> univariate_cases = {
+      {exec::CanonicalAggregateFunction::variance_pop, 2.0 / 3.0},
+      {exec::CanonicalAggregateFunction::stddev_pop,
+       std::sqrt(2.0 / 3.0)},
+      {exec::CanonicalAggregateFunction::variance, 1.0},
+      {exec::CanonicalAggregateFunction::variance_samp, 1.0},
+      {exec::CanonicalAggregateFunction::stddev, 1.0},
+      {exec::CanonicalAggregateFunction::stddev_samp, 1.0},
+  };
+  for (const auto& test_case : univariate_cases) {
+    auto request = StatisticalRequest(test_case.function);
+    const auto serial = exec::ExecuteCanonicalAggregateRuntime(request);
+    request.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+    const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    passed &= Require(NearScalar(serial, test_case.expected) &&
+                          SameScalar(serial, partitioned) &&
+                          serial.non_null_transition_count == 3,
+                      "univariate statistical state or merge parity failed");
+  }
+
+  const std::vector<StatisticalCase> pair_cases = {
+      {exec::CanonicalAggregateFunction::corr, 1.0},
+      {exec::CanonicalAggregateFunction::covar_pop, 4.0 / 3.0},
+      {exec::CanonicalAggregateFunction::covar_samp, 2.0},
+      {exec::CanonicalAggregateFunction::regr_count, 3.0},
+      {exec::CanonicalAggregateFunction::regr_avgx, 2.0},
+      {exec::CanonicalAggregateFunction::regr_avgy, 4.0},
+      {exec::CanonicalAggregateFunction::regr_intercept, 0.0},
+      {exec::CanonicalAggregateFunction::regr_r2, 1.0},
+      {exec::CanonicalAggregateFunction::regr_slope, 2.0},
+      {exec::CanonicalAggregateFunction::regr_sxx, 2.0},
+      {exec::CanonicalAggregateFunction::regr_sxy, 4.0},
+      {exec::CanonicalAggregateFunction::regr_syy, 8.0},
+  };
+  for (const auto& test_case : pair_cases) {
+    auto request = PairStatisticalRequest(test_case.function);
+    const auto serial = exec::ExecuteCanonicalAggregateRuntime(request);
+    request.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+    const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    passed &= Require(NearScalar(serial, test_case.expected) &&
+                          SameScalar(serial, partitioned) &&
+                          serial.transition_count == 4 &&
+                          serial.non_null_transition_count == 3,
+                      "pair statistical state or merge parity failed");
+  }
+
+  auto singleton = StatisticalRequest(
+      exec::CanonicalAggregateFunction::stddev_samp);
+  singleton.input_batch.rows.resize(1);
+  auto boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
+  passed &= Require(boundary.diagnostic.ok &&
+                        boundary.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::sql_null,
+                    "sample standard deviation singleton was not NULL");
+  singleton = StatisticalRequest(
+      exec::CanonicalAggregateFunction::variance_pop);
+  singleton.input_batch.rows.resize(1);
+  boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
+  passed &= Require(NearScalar(boundary, 0.0),
+                    "population variance singleton was not zero");
+
+  auto pair_singleton =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::corr);
+  pair_singleton.input_batch.rows.resize(1);
+  boundary = exec::ExecuteCanonicalAggregateRuntime(pair_singleton);
+  passed &= Require(boundary.diagnostic.ok &&
+                        boundary.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::sql_null,
+                    "correlation singleton was not NULL");
+  pair_singleton =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::covar_pop);
+  pair_singleton.input_batch.rows.resize(1);
+  boundary = exec::ExecuteCanonicalAggregateRuntime(pair_singleton);
+  passed &= Require(NearScalar(boundary, 0.0),
+                    "population covariance singleton was not zero");
+
+  auto constant_y =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::regr_r2);
+  const auto y_descriptor = constant_y.input_batch.columns[0].descriptor;
+  for (std::size_t row = 0; row < 3; ++row) {
+    constant_y.input_batch.rows[row].values[0] =
+        Value(y_descriptor, "5");
+  }
+  boundary = exec::ExecuteCanonicalAggregateRuntime(constant_y);
+  passed &= Require(NearScalar(boundary, 1.0),
+                    "REGR_R2 constant-dependent-variable rule drifted");
+
+  auto constant_x =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::regr_slope);
+  const auto x_descriptor = constant_x.input_batch.columns[3].descriptor;
+  for (std::size_t row = 0; row < 3; ++row) {
+    constant_x.input_batch.rows[row].values[3] =
+        Value(x_descriptor, "1");
+  }
+  boundary = exec::ExecuteCanonicalAggregateRuntime(constant_x);
+  passed &= Require(boundary.diagnostic.ok &&
+                        boundary.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::sql_null,
+                    "REGR_SLOPE constant-independent-variable rule drifted");
+
+  auto bad_pair =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::corr);
+  bad_pair.value_columns.pop_back();
+  bad_pair.value_expression_descriptor_ids.pop_back();
+  auto statistical_refusal =
+      exec::ExecuteCanonicalAggregateRuntime(bad_pair);
+  passed &= Require(!statistical_refusal.diagnostic.ok &&
+                        statistical_refusal.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
+                    "pair statistical aggregate accepted one input");
 
   auto sum_request = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                              "int64");

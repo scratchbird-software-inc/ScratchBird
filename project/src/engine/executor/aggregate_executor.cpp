@@ -37,10 +37,70 @@ struct CanonicalAggregateCoreState {
   std::size_t non_null_count = 0;
   __int128 int64_sum = 0;
   long double real_sum = 0.0L;
+  long double numeric_mean = 0.0L;
+  long double numeric_m2 = 0.0L;
+  long double pair_mean_x = 0.0L;
+  long double pair_mean_y = 0.0L;
+  long double pair_m2_x = 0.0L;
+  long double pair_m2_y = 0.0L;
+  long double pair_comoment = 0.0L;
   bool saw_true = false;
   bool saw_false = false;
   std::optional<EngineTypedValue> extremum;
 };
+
+bool IsCanonicalUnivariateStatisticalFunction(
+    const CanonicalAggregateFunction function) {
+  return function == CanonicalAggregateFunction::stddev_pop ||
+         function == CanonicalAggregateFunction::variance_pop ||
+         function == CanonicalAggregateFunction::stddev ||
+         function == CanonicalAggregateFunction::variance ||
+         function == CanonicalAggregateFunction::stddev_samp ||
+         function == CanonicalAggregateFunction::variance_samp;
+}
+
+bool IsCanonicalPairStatisticalFunction(
+    const CanonicalAggregateFunction function) {
+  return function == CanonicalAggregateFunction::corr ||
+         function == CanonicalAggregateFunction::covar_pop ||
+         function == CanonicalAggregateFunction::covar_samp ||
+         function == CanonicalAggregateFunction::regr_count ||
+         function == CanonicalAggregateFunction::regr_avgx ||
+         function == CanonicalAggregateFunction::regr_avgy ||
+         function == CanonicalAggregateFunction::regr_intercept ||
+         function == CanonicalAggregateFunction::regr_r2 ||
+         function == CanonicalAggregateFunction::regr_slope ||
+         function == CanonicalAggregateFunction::regr_sxx ||
+         function == CanonicalAggregateFunction::regr_sxy ||
+         function == CanonicalAggregateFunction::regr_syy;
+}
+
+bool DecodeAggregateNumeric(const EngineTypedValue& value,
+                            long double* decoded,
+                            DescriptorRuntimeDiagnostic* diagnostic) {
+  if (decoded == nullptr || diagnostic == nullptr) return false;
+  if (value.descriptor.canonical_type_name == "int64") {
+    const auto result = DecodeInt64Value(value);
+    if (!result.ok()) {
+      *diagnostic = result.diagnostic;
+      return false;
+    }
+    *decoded = static_cast<long double>(result.value);
+    return true;
+  }
+  if (value.descriptor.canonical_type_name == "real64") {
+    const auto result = DecodeReal64Value(value);
+    if (!result.ok()) {
+      *diagnostic = result.diagnostic;
+      return false;
+    }
+    *decoded = static_cast<long double>(result.value);
+    return true;
+  }
+  *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
+                        "statistical aggregate requires numeric input");
+  return false;
+}
 
 bool IsType(const EngineTypedValue& value, const std::string_view type_name) {
   return value.descriptor.canonical_type_name == type_name;
@@ -103,10 +163,36 @@ bool TransitionCanonicalAggregateCore(
     ++state->non_null_count;
     return true;
   }
-  if (values.size() != 1) {
+  const std::size_t expected_arity =
+      IsCanonicalPairStatisticalFunction(descriptor.function) ? 2 : 1;
+  if (values.size() != expected_arity) {
     *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
-                          "core aggregate requires exactly one value");
+                          "aggregate transition arity is not bound");
     return false;
+  }
+  if (expected_arity == 2) {
+    const auto& y_value = values[0];
+    const auto& x_value = values[1];
+    if (y_value.state == EngineValueState::sql_null ||
+        x_value.state == EngineValueState::sql_null) {
+      return true;
+    }
+    long double y = 0.0L;
+    long double x = 0.0L;
+    if (!DecodeAggregateNumeric(y_value, &y, diagnostic) ||
+        !DecodeAggregateNumeric(x_value, &x, diagnostic)) {
+      return false;
+    }
+    ++state->non_null_count;
+    const auto count = static_cast<long double>(state->non_null_count);
+    const auto delta_x = x - state->pair_mean_x;
+    state->pair_mean_x += delta_x / count;
+    const auto delta_y = y - state->pair_mean_y;
+    state->pair_mean_y += delta_y / count;
+    state->pair_m2_x += delta_x * (x - state->pair_mean_x);
+    state->pair_m2_y += delta_y * (y - state->pair_mean_y);
+    state->pair_comoment += delta_x * (y - state->pair_mean_y);
+    return true;
   }
   const auto& value = values.front();
   if (value.state == EngineValueState::sql_null) return true;
@@ -144,6 +230,21 @@ bool TransitionCanonicalAggregateCore(
       *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
                             "SUM and AVG require int64 or real64 input");
       return false;
+    case CanonicalAggregateFunction::stddev_pop:
+    case CanonicalAggregateFunction::variance_pop:
+    case CanonicalAggregateFunction::stddev:
+    case CanonicalAggregateFunction::variance:
+    case CanonicalAggregateFunction::stddev_samp:
+    case CanonicalAggregateFunction::variance_samp: {
+      long double numeric = 0.0L;
+      if (!DecodeAggregateNumeric(value, &numeric, diagnostic)) return false;
+      const auto count = static_cast<long double>(state->non_null_count);
+      const auto delta = numeric - state->numeric_mean;
+      state->numeric_mean += delta / count;
+      const auto delta2 = numeric - state->numeric_mean;
+      state->numeric_m2 += delta * delta2;
+      return true;
+    }
     case CanonicalAggregateFunction::min:
     case CanonicalAggregateFunction::max: {
       if (!state->extremum.has_value()) {
@@ -192,6 +293,55 @@ bool MergeCanonicalAggregateCore(
     DescriptorRuntimeDiagnostic* diagnostic) {
   if (target == nullptr || diagnostic == nullptr) return false;
   target->transition_count += source.transition_count;
+  if (IsCanonicalUnivariateStatisticalFunction(descriptor.function)) {
+    const auto left_count = target->non_null_count;
+    const auto right_count = source.non_null_count;
+    if (right_count == 0) return true;
+    if (left_count == 0) {
+      target->non_null_count = source.non_null_count;
+      target->numeric_mean = source.numeric_mean;
+      target->numeric_m2 = source.numeric_m2;
+      return true;
+    }
+    const auto left = static_cast<long double>(left_count);
+    const auto right = static_cast<long double>(right_count);
+    const auto total = left + right;
+    const auto delta = source.numeric_mean - target->numeric_mean;
+    target->numeric_m2 +=
+        source.numeric_m2 + delta * delta * left * right / total;
+    target->numeric_mean += delta * right / total;
+    target->non_null_count += source.non_null_count;
+    return true;
+  }
+  if (IsCanonicalPairStatisticalFunction(descriptor.function)) {
+    const auto left_count = target->non_null_count;
+    const auto right_count = source.non_null_count;
+    if (right_count == 0) return true;
+    if (left_count == 0) {
+      target->non_null_count = source.non_null_count;
+      target->pair_mean_x = source.pair_mean_x;
+      target->pair_mean_y = source.pair_mean_y;
+      target->pair_m2_x = source.pair_m2_x;
+      target->pair_m2_y = source.pair_m2_y;
+      target->pair_comoment = source.pair_comoment;
+      return true;
+    }
+    const auto left = static_cast<long double>(left_count);
+    const auto right = static_cast<long double>(right_count);
+    const auto total = left + right;
+    const auto delta_x = source.pair_mean_x - target->pair_mean_x;
+    const auto delta_y = source.pair_mean_y - target->pair_mean_y;
+    target->pair_comoment +=
+        source.pair_comoment + delta_x * delta_y * left * right / total;
+    target->pair_m2_x +=
+        source.pair_m2_x + delta_x * delta_x * left * right / total;
+    target->pair_m2_y +=
+        source.pair_m2_y + delta_y * delta_y * left * right / total;
+    target->pair_mean_x += delta_x * right / total;
+    target->pair_mean_y += delta_y * right / total;
+    target->non_null_count += source.non_null_count;
+    return true;
+  }
   target->non_null_count += source.non_null_count;
   target->int64_sum += source.int64_sum;
   target->real_sum += source.real_sum;
@@ -228,6 +378,17 @@ bool ValidateCanonicalAggregateResultType(
         !request.result_column.nullable) {
       return true;
     }
+  } else if (function == CanonicalAggregateFunction::regr_count) {
+    if (IsType(request.result_column, "int64") &&
+        !request.result_column.nullable) {
+      return true;
+    }
+  } else if (IsCanonicalUnivariateStatisticalFunction(function) ||
+             IsCanonicalPairStatisticalFunction(function)) {
+    if (IsType(request.result_column, "real64") &&
+        request.result_column.nullable) {
+      return true;
+    }
   } else if (function == CanonicalAggregateFunction::avg) {
     if (IsType(request.result_column, "real64") &&
         request.result_column.nullable) {
@@ -260,11 +421,26 @@ bool ValidateCanonicalAggregateInputType(
       request.descriptor.function == CanonicalAggregateFunction::count) {
     return true;
   }
+  if (IsCanonicalPairStatisticalFunction(request.descriptor.function)) {
+    for (const auto column : request.value_columns) {
+      const auto& type = request.input_batch.columns[column]
+                             .descriptor.canonical_type_name;
+      if (type != "int64" && type != "real64") {
+        *diagnostic = Refusal(
+            "QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
+            "pair statistical aggregate requires two numeric descriptors");
+        return false;
+      }
+    }
+    return true;
+  }
   const auto& type = request.input_batch
                          .columns[request.value_columns.front()]
                          .descriptor.canonical_type_name;
   if (request.descriptor.function == CanonicalAggregateFunction::sum ||
-      request.descriptor.function == CanonicalAggregateFunction::avg) {
+      request.descriptor.function == CanonicalAggregateFunction::avg ||
+      IsCanonicalUnivariateStatisticalFunction(
+          request.descriptor.function)) {
     if (type == "int64" || type == "real64") return true;
   } else if (request.descriptor.function ==
                  CanonicalAggregateFunction::bool_and ||
@@ -329,6 +505,115 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
     }
     return AggregateValue(request.result_column,
                           FormatAggregateReal(average));
+  }
+  if (IsCanonicalUnivariateStatisticalFunction(function)) {
+    const bool population =
+        function == CanonicalAggregateFunction::variance_pop ||
+        function == CanonicalAggregateFunction::stddev_pop;
+    if (state.non_null_count < (population ? 1U : 2U)) {
+      return AggregateNull(request.result_column);
+    }
+    const auto denominator = static_cast<long double>(
+        population ? state.non_null_count : state.non_null_count - 1);
+    auto statistic = state.numeric_m2 / denominator;
+    if (statistic < 0.0L && statistic > -1e-18L) statistic = 0.0L;
+    if (function == CanonicalAggregateFunction::stddev_pop ||
+        function == CanonicalAggregateFunction::stddev ||
+        function == CanonicalAggregateFunction::stddev_samp) {
+      statistic = std::sqrt(statistic);
+    }
+    if (!std::isfinite(static_cast<double>(statistic))) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "statistical result exceeds real64 width");
+      return {};
+    }
+    return AggregateValue(request.result_column,
+                          FormatAggregateReal(statistic));
+  }
+  if (IsCanonicalPairStatisticalFunction(function)) {
+    if (function == CanonicalAggregateFunction::regr_count) {
+      if (state.non_null_count > static_cast<std::size_t>(
+                                     std::numeric_limits<std::int64_t>::max())) {
+        *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                              "REGR_COUNT exceeds int64 result profile");
+        return {};
+      }
+      return AggregateValue(request.result_column,
+                            std::to_string(state.non_null_count));
+    }
+    if (state.non_null_count == 0) return AggregateNull(request.result_column);
+    long double statistic = 0.0L;
+    switch (function) {
+      case CanonicalAggregateFunction::corr:
+        if (state.non_null_count < 2 || state.pair_m2_x <= 0.0L ||
+            state.pair_m2_y <= 0.0L) {
+          return AggregateNull(request.result_column);
+        }
+        statistic = state.pair_comoment /
+                    std::sqrt(state.pair_m2_x * state.pair_m2_y);
+        break;
+      case CanonicalAggregateFunction::covar_pop:
+        statistic = state.pair_comoment /
+                    static_cast<long double>(state.non_null_count);
+        break;
+      case CanonicalAggregateFunction::covar_samp:
+        if (state.non_null_count < 2) {
+          return AggregateNull(request.result_column);
+        }
+        statistic = state.pair_comoment /
+                    static_cast<long double>(state.non_null_count - 1);
+        break;
+      case CanonicalAggregateFunction::regr_avgx:
+        statistic = state.pair_mean_x;
+        break;
+      case CanonicalAggregateFunction::regr_avgy:
+        statistic = state.pair_mean_y;
+        break;
+      case CanonicalAggregateFunction::regr_intercept:
+        if (state.pair_m2_x == 0.0L) {
+          return AggregateNull(request.result_column);
+        }
+        statistic = state.pair_mean_y -
+                    state.pair_mean_x * state.pair_comoment /
+                        state.pair_m2_x;
+        break;
+      case CanonicalAggregateFunction::regr_r2:
+        if (state.pair_m2_x == 0.0L) {
+          return AggregateNull(request.result_column);
+        }
+        statistic = state.pair_m2_y == 0.0L
+                        ? 1.0L
+                        : state.pair_comoment * state.pair_comoment /
+                              (state.pair_m2_x * state.pair_m2_y);
+        break;
+      case CanonicalAggregateFunction::regr_slope:
+        if (state.pair_m2_x == 0.0L) {
+          return AggregateNull(request.result_column);
+        }
+        statistic = state.pair_comoment / state.pair_m2_x;
+        break;
+      case CanonicalAggregateFunction::regr_sxx:
+        statistic = state.pair_m2_x;
+        break;
+      case CanonicalAggregateFunction::regr_sxy:
+        statistic = state.pair_comoment;
+        break;
+      case CanonicalAggregateFunction::regr_syy:
+        statistic = state.pair_m2_y;
+        break;
+      default:
+        *diagnostic = Refusal(
+            "QOW-DIAG-QRY-011-REGISTRY-UNIMPLEMENTED-V1",
+            "pair statistical final state is unavailable");
+        return {};
+    }
+    if (!std::isfinite(static_cast<double>(statistic))) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "pair statistical result exceeds real64 width");
+      return {};
+    }
+    return AggregateValue(request.result_column,
+                          FormatAggregateReal(statistic));
   }
   if (function == CanonicalAggregateFunction::min ||
       function == CanonicalAggregateFunction::max) {
@@ -475,8 +760,8 @@ CanonicalAggregateRuntimeRegistryV1() {
       {1, Function::string_agg, "sb.aggregate.string_agg", "019de5fc-2400-7243-abc6-4f6a777dff00", false, false},
       {1, Function::json_agg, "sb.aggregate.json_agg", "019dffbb-f001-7021-8a00-000000000023", false, false},
       {1, Function::json_object_agg, "sb.aggregate.json_object_agg", "019dffbb-f001-7021-8a00-000000000024", false, false},
-      {1, Function::stddev_pop, "sb.aggregate.stddev_pop", "019de5fc-2400-73c9-ba10-4665f741215d", false, false},
-      {1, Function::variance_pop, "sb.aggregate.variance_pop", "019de5fc-2400-7fda-b470-e85414dcb314", false, false},
+      {1, Function::stddev_pop, "sb.aggregate.stddev_pop", "019de5fc-2400-73c9-ba10-4665f741215d", true, false},
+      {1, Function::variance_pop, "sb.aggregate.variance_pop", "019de5fc-2400-7fda-b470-e85414dcb314", true, false},
       {1, Function::every, "sb.aggregate.every", "019dffbb-f000-7876-9644-ae83b363d3bc", true, false},
       {1, Function::listagg, "sb.aggregate.listagg", "019dffbb-f000-7e93-8e4d-6063849de049", false, false},
       {1, Function::rank, "sb.aggregate.rank", "019dffbb-f000-7336-ab53-fef5316220d7", false, false},
@@ -491,22 +776,22 @@ CanonicalAggregateRuntimeRegistryV1() {
       {1, Function::approx_percentile_cont, "sb.aggregate.approx_percentile_cont", "019dffbb-f000-76df-98a6-aa77d1a342f8", false, false},
       {1, Function::approx_percentile_disc, "sb.aggregate.approx_percentile_disc", "019dffbb-f000-7578-a88f-8db4bb649755", false, false},
       {1, Function::approx_top_k, "sb.aggregate.approx_top_k", "019dffbb-f000-7f47-8fe1-0c5e0ec87bf0", false, false},
-      {1, Function::stddev, "sb.aggregate.stddev", "019dffbb-f000-7475-8516-ff003b2bdad9", false, false},
-      {1, Function::variance, "sb.aggregate.variance", "019dffbb-f000-7968-82c5-04cffbeb971b", false, false},
-      {1, Function::stddev_samp, "sb.aggregate.stddev_samp", "019dffbb-f000-7d99-a495-70f9c3b1b587", false, false},
-      {1, Function::variance_samp, "sb.aggregate.variance_samp", "019dffbb-f000-732b-8a0c-2aa88b04f3c5", false, false},
-      {1, Function::corr, "sb.aggregate.corr", "019dffbb-f000-77bb-ba9b-2e78acf84521", false, false},
-      {1, Function::covar_pop, "sb.aggregate.covar_pop", "019dffbb-f000-7f09-8ceb-17ad4c70e99f", false, false},
-      {1, Function::covar_samp, "sb.aggregate.covar_samp", "019dffbb-f000-747d-bc01-caad9137d070", false, false},
-      {1, Function::regr_count, "sb.aggregate.regr_count", "019dffbb-f000-75aa-bbe6-a4a67dacb81f", false, false},
-      {1, Function::regr_avgx, "sb.aggregate.regr_avgx", "019dffbb-f000-7662-a816-d1df50e9b664", false, false},
-      {1, Function::regr_avgy, "sb.aggregate.regr_avgy", "019dffbb-f000-7d03-ac2d-753cdb7744c0", false, false},
-      {1, Function::regr_intercept, "sb.aggregate.regr_intercept", "019dffbb-f000-7c7c-b576-d67ea9d4bcbb", false, false},
-      {1, Function::regr_r2, "sb.aggregate.regr_r2", "019dffbb-f000-7a43-9a28-a119b31d9c20", false, false},
-      {1, Function::regr_slope, "sb.aggregate.regr_slope", "019dffbb-f000-7f80-b81a-5240a6dbab55", false, false},
-      {1, Function::regr_sxx, "sb.aggregate.regr_sxx", "019dffbb-f000-735e-9e55-5f9243786403", false, false},
-      {1, Function::regr_sxy, "sb.aggregate.regr_sxy", "019dffbb-f000-788b-a249-866547a43ebe", false, false},
-      {1, Function::regr_syy, "sb.aggregate.regr_syy", "019dffbb-f000-74f7-98ba-c24ead6d30df", false, false},
+      {1, Function::stddev, "sb.aggregate.stddev", "019dffbb-f000-7475-8516-ff003b2bdad9", true, false},
+      {1, Function::variance, "sb.aggregate.variance", "019dffbb-f000-7968-82c5-04cffbeb971b", true, false},
+      {1, Function::stddev_samp, "sb.aggregate.stddev_samp", "019dffbb-f000-7d99-a495-70f9c3b1b587", true, false},
+      {1, Function::variance_samp, "sb.aggregate.variance_samp", "019dffbb-f000-732b-8a0c-2aa88b04f3c5", true, false},
+      {1, Function::corr, "sb.aggregate.corr", "019dffbb-f000-77bb-ba9b-2e78acf84521", true, false},
+      {1, Function::covar_pop, "sb.aggregate.covar_pop", "019dffbb-f000-7f09-8ceb-17ad4c70e99f", true, false},
+      {1, Function::covar_samp, "sb.aggregate.covar_samp", "019dffbb-f000-747d-bc01-caad9137d070", true, false},
+      {1, Function::regr_count, "sb.aggregate.regr_count", "019dffbb-f000-75aa-bbe6-a4a67dacb81f", true, false},
+      {1, Function::regr_avgx, "sb.aggregate.regr_avgx", "019dffbb-f000-7662-a816-d1df50e9b664", true, false},
+      {1, Function::regr_avgy, "sb.aggregate.regr_avgy", "019dffbb-f000-7d03-ac2d-753cdb7744c0", true, false},
+      {1, Function::regr_intercept, "sb.aggregate.regr_intercept", "019dffbb-f000-7c7c-b576-d67ea9d4bcbb", true, false},
+      {1, Function::regr_r2, "sb.aggregate.regr_r2", "019dffbb-f000-7a43-9a28-a119b31d9c20", true, false},
+      {1, Function::regr_slope, "sb.aggregate.regr_slope", "019dffbb-f000-7f80-b81a-5240a6dbab55", true, false},
+      {1, Function::regr_sxx, "sb.aggregate.regr_sxx", "019dffbb-f000-735e-9e55-5f9243786403", true, false},
+      {1, Function::regr_sxy, "sb.aggregate.regr_sxy", "019dffbb-f000-788b-a249-866547a43ebe", true, false},
+      {1, Function::regr_syy, "sb.aggregate.regr_syy", "019dffbb-f000-74f7-98ba-c24ead6d30df", true, false},
   };
 }
 
@@ -603,7 +888,12 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
                           "count-star is valid only for COUNT"));
   }
-  const std::size_t expected_arity = count_star ? 0 : 1;
+  const std::size_t expected_arity =
+      count_star ? 0
+                 : (IsCanonicalPairStatisticalFunction(
+                        request.descriptor.function)
+                        ? 2
+                        : 1);
   if (request.value_columns.size() != expected_arity ||
       request.value_expression_descriptor_ids.size() != expected_arity) {
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
@@ -696,8 +986,9 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   } else {
     CanonicalAggregateCoreState left;
     CanonicalAggregateCoreState right;
+    const auto split = transitions.size() / 2;
     for (std::size_t index = 0; index < transitions.size(); ++index) {
-      auto* partition = index % 2 == 0 ? &left : &right;
+      auto* partition = index < split ? &left : &right;
       if (!TransitionCanonicalAggregateCore(request.descriptor,
                                             transitions[index], partition,
                                             &state_diagnostic)) {
