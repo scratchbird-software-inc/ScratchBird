@@ -734,6 +734,64 @@ struct CanonicalScanAccessResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalPhysicalDispatchInput {
+  std::uint64_t physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  std::uint64_t result_handle_id = 0;
+  std::vector<std::uint32_t> output_descriptor_ids;
+};
+
+struct CanonicalPhysicalDispatchAuthorityEvidence {
+  bool engine_mga_snapshot_bound = false;
+  bool owns_transaction_finality = false;
+  bool owns_recovery = false;
+  bool owns_parser_execution = false;
+  bool owns_visibility_outside_engine_mga = false;
+  bool wal_is_transaction_or_recovery_authority = false;
+};
+
+struct CanonicalPhysicalDispatchStepResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  std::uint64_t result_handle_id = 0;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+};
+
+using CanonicalPhysicalNodeExecutor = std::function<
+    CanonicalPhysicalDispatchStepResult(
+        const TypedPhysicalNodeDag&,
+        const PhysicalNodeRecord&,
+        const std::vector<CanonicalPhysicalDispatchInput>&)>;
+
+struct CanonicalPhysicalExecutorRegistration {
+  PhysicalNodeKind node_kind = PhysicalNodeKind::kValues;
+  std::string implementation_id;
+  CanonicalPhysicalNodeExecutor execute;
+};
+
+struct CanonicalPhysicalDagDispatchRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  PhysicalNodeAbiLimits limits;
+  std::vector<CanonicalPhysicalExecutorRegistration> available_executors;
+};
+
+struct CanonicalPhysicalDagDispatchResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<CanonicalPhysicalDispatchStepResult> executed_steps;
+  std::uint64_t root_result_handle_id = 0;
+  std::vector<std::uint32_t> root_output_descriptor_ids;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  bool replan_required = false;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_root_physical_node_id = 0;
+  std::uint64_t root_causal_counter_id = 0;
+};
+
 struct CanonicalRecursiveCteMgaIterationEvidence {
   std::size_t iteration_ordinal = 0;
   std::uint64_t local_transaction_id = 0;
@@ -1128,6 +1186,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
+CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
+    const CanonicalPhysicalDagDispatchRequest& request);
 CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     const CanonicalInt64SumStateRequest& request);
 CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(

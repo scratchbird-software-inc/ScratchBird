@@ -98,6 +98,8 @@ add_library(sb_engine_executor STATIC
   operator_typed_arena_work_area.cpp
   operator_fusion_executor.cpp
   parallel_physical_pipeline.cpp
+  # QOW-CMAKE-QRY-004-CONSUMPTION-V1
+  physical_node_dispatch.cpp
   prepared_execution_template.cpp
   # QOW-CMAKE-QRY-007-PROJECTION-V1
   projection_executor.cpp
