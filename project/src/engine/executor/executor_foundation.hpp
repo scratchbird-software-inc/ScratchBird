@@ -86,6 +86,60 @@ struct CanonicalWindowRankingResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalWindowValueFunction : std::uint8_t {
+  lag = 1,
+  lead,
+  first_value,
+  last_value,
+  nth_value,
+};
+
+enum class CanonicalWindowNthOrigin : std::uint8_t {
+  from_first = 1,
+  from_last,
+};
+
+enum class CanonicalWindowNullTreatment : std::uint8_t {
+  respect_nulls = 1,
+  ignore_nulls,
+};
+
+struct CanonicalWindowValueRequest {
+  CanonicalWindowFrameResult frames;
+  CanonicalWindowValueFunction function = CanonicalWindowValueFunction::lag;
+  std::string function_uuid;
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineTypedValue>>
+      offset_values;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineTypedValue>>
+      default_values;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineTypedValue>>
+      nth_values;
+  std::optional<CanonicalWindowNthOrigin> nth_origin;
+  std::optional<CanonicalWindowNullTreatment> null_treatment;
+  std::size_t maximum_output_rows = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowValueResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalWindowValueFunction function = CanonicalWindowValueFunction::lag;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  bool frame_and_exclusion_validated = false;
+  bool frame_and_exclusion_ignored_for_navigation = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string window_property_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows);
 OperatorDiagnostic ValidateBatch(const Batch& batch);
 std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs);
@@ -113,6 +167,8 @@ Batch AddFirstValueWindow(const Batch& input, std::size_t order_column, std::siz
 Batch AddLastValueWindow(const Batch& input, std::size_t order_column, std::size_t value_column);
 CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
     const CanonicalWindowRankingRequest& request);
+CanonicalWindowValueResult ExecuteCanonicalWindowValue(
+    const CanonicalWindowValueRequest& request);
 Batch MaterializeCte(const Batch& input);
 std::int64_t ScalarSubqueryFirstValue(const Batch& input, std::size_t column);
 Batch SetUnionDistinct(const Batch& left, const Batch& right);

@@ -660,6 +660,51 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-403;QOW-LEAF-WIN-006;development_candidate"
   )
 
+  # QOW-CMAKE-WIN-007-V1
+  add_executable(qow_win_007_test_v1 qow_win_007.cpp)
+  target_compile_features(qow_win_007_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_007_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_007_v1 COMMAND qow_win_007_test_v1)
+  set_tests_properties(qow_win_007_v1 PROPERTIES
+    LABELS "qow_closure;QOW-404;QOW-LEAF-WIN-007;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-008-V1
+  add_executable(qow_win_008_test_v1 qow_win_008.cpp)
+  target_compile_features(qow_win_008_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_008_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_008_v1 COMMAND qow_win_008_test_v1)
+  set_tests_properties(qow_win_008_v1 PROPERTIES
+    LABELS "qow_closure;QOW-404;QOW-LEAF-WIN-008;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-009-V1
+  add_executable(qow_win_009_test_v1 qow_win_009.cpp)
+  target_compile_features(qow_win_009_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_009_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_009_v1 COMMAND qow_win_009_test_v1)
+  set_tests_properties(qow_win_009_v1 PROPERTIES
+    LABELS "qow_closure;QOW-404;QOW-LEAF-WIN-009;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-010-V1
+  add_executable(qow_win_010_test_v1 qow_win_010.cpp)
+  target_compile_features(qow_win_010_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_010_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_010_v1 COMMAND qow_win_010_test_v1)
+  set_tests_properties(qow_win_010_v1 PROPERTIES
+    LABELS "qow_closure;QOW-404;QOW-LEAF-WIN-010;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-011-V1
+  add_executable(qow_win_011_test_v1 qow_win_011.cpp)
+  target_compile_features(qow_win_011_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_011_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_011_v1 COMMAND qow_win_011_test_v1)
+  set_tests_properties(qow_win_011_v1 PROPERTIES
+    LABELS "qow_closure;QOW-404;QOW-LEAF-WIN-011;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

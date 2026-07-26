@@ -3230,11 +3230,20 @@ bool RankingFrameBoundValid(const CanonicalWindowFrameBound& bound) {
   return false;
 }
 
-bool RankingFrameEvidenceValid(const CanonicalWindowFrameResult& frames) {
+bool CanonicalWindowFrameEvidenceValid(
+    const CanonicalWindowFrameResult& frames) {
   const auto row_count = frames.ordered_batch.rows.size();
+  std::vector<std::uint32_t> descriptor_ids;
+  descriptor_ids.reserve(frames.ordered_batch.columns.size());
+  for (const auto& column : frames.ordered_batch.columns) {
+    descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto batch_diagnostic = ValidateCanonicalDescriptorBatch(
+      frames.ordered_batch, descriptor_ids);
   if (!frames.diagnostic.ok || !frames.every_frame_operand_consumed ||
       !frames.empty_state_uses_optional_bounds ||
       !frames.authority.engine_mga_snapshot_bound ||
+      !batch_diagnostic.ok ||
       !IsCanonicalUuid(frames.resolved_frame.frame_descriptor_uuid) ||
       !IsCanonicalUuid(frames.window_property_uuid) ||
       !IsCanonicalUuid(frames.selected_plan_uuid) ||
@@ -3415,7 +3424,7 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
       !IsCanonicalUuid(request.function_uuid)) {
     return refuse("ranking function kind and registry UUID do not match");
   }
-  if (!RankingFrameEvidenceValid(request.frames)) {
+  if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
     return refuse("ranking input is not canonical QOW-402 frame evidence");
   }
   if (request.parser_execution_authority_claimed ||
@@ -3529,6 +3538,388 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
   result.diagnostic = {};
   result.function = request.function;
   result.frame_and_exclusion_validated_then_ignored = true;
+  result.authority = request.frames.authority;
+  result.window_property_uuid = request.frames.window_property_uuid;
+  result.selected_plan_uuid = request.frames.selected_plan_uuid;
+  result.executed_physical_node_id =
+      request.frames.executed_physical_node_id;
+  result.causal_counter_id = request.frames.causal_counter_id;
+  return result;
+}
+
+namespace {
+
+constexpr std::string_view kWindowLagUuid =
+    "019de5fc-2400-782c-8436-9ac310301738";
+constexpr std::string_view kWindowLeadUuid =
+    "019de5fc-2400-7a06-bc3c-6747cf5be66f";
+constexpr std::string_view kWindowFirstValueUuid =
+    "019de5fc-2400-7264-90fb-d25bd0f806f2";
+constexpr std::string_view kWindowLastValueUuid =
+    "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
+constexpr std::string_view kWindowNthValueUuid =
+    "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+
+std::string_view WindowValueFunctionUuid(
+    const CanonicalWindowValueFunction function) {
+  switch (function) {
+    case CanonicalWindowValueFunction::lag:
+      return kWindowLagUuid;
+    case CanonicalWindowValueFunction::lead:
+      return kWindowLeadUuid;
+    case CanonicalWindowValueFunction::first_value:
+      return kWindowFirstValueUuid;
+    case CanonicalWindowValueFunction::last_value:
+      return kWindowLastValueUuid;
+    case CanonicalWindowValueFunction::nth_value:
+      return kWindowNthValueUuid;
+  }
+  return {};
+}
+
+bool SameWindowValueDescriptor(
+    const scratchbird::engine::internal_api::EngineDescriptor& left,
+    const scratchbird::engine::internal_api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool WindowValueResultColumnValid(
+    const ExecutorColumnDescriptor& result_column,
+    const ExecutorColumnDescriptor& value_column) {
+  return result_column.descriptor_id != 0 &&
+         !result_column.stable_name.empty() && result_column.nullable &&
+         IsCanonicalUuid(result_column.descriptor.descriptor_uuid.canonical) &&
+         result_column.descriptor.descriptor_kind == "scalar" &&
+         !result_column.descriptor.canonical_type_name.empty() &&
+         !result_column.descriptor.encoded_descriptor.empty() &&
+         SameWindowValueDescriptor(result_column.descriptor,
+                                   value_column.descriptor);
+}
+
+bool WindowAssignmentCastAdmitted(
+    const scratchbird::core::datatypes::DatatypeCastCategory category) {
+  namespace dt = scratchbird::core::datatypes;
+  return category == dt::DatatypeCastCategory::identity ||
+         category == dt::DatatypeCastCategory::lossless_implicit;
+}
+
+std::optional<scratchbird::engine::internal_api::EngineTypedValue>
+ConvertWindowAssignmentValue(
+    const scratchbird::engine::internal_api::EngineTypedValue& source,
+    const scratchbird::engine::internal_api::EngineDescriptor& target,
+    std::string* detail) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace dt = scratchbird::core::datatypes;
+  const auto fail = [&](std::string reason)
+      -> std::optional<api::EngineTypedValue> {
+    if (detail != nullptr) *detail = std::move(reason);
+    return std::nullopt;
+  };
+  if (!IsCanonicalUuid(source.descriptor.descriptor_uuid.canonical) ||
+      source.descriptor.descriptor_kind != "scalar" ||
+      source.descriptor.canonical_type_name.empty() ||
+      source.descriptor.encoded_descriptor.empty() ||
+      (source.state != api::EngineValueState::value &&
+       source.state != api::EngineValueState::sql_null) ||
+      !source.binary_value.empty()) {
+    return fail("window value is not a canonical scalar assignment operand");
+  }
+  if ((source.state == api::EngineValueState::sql_null &&
+       (!source.is_null || !source.encoded_value.empty())) ||
+      (source.state == api::EngineValueState::value && source.is_null)) {
+    return fail("window value carries contradictory SQL NULL state");
+  }
+  const auto source_type = dt::CanonicalTypeIdFromStableName(
+      source.descriptor.canonical_type_name);
+  const auto target_type =
+      dt::CanonicalTypeIdFromStableName(target.canonical_type_name);
+  if (source_type == dt::CanonicalTypeId::unknown ||
+      target_type == dt::CanonicalTypeId::unknown ||
+      !WindowAssignmentCastAdmitted(
+          dt::ClassifyDatatypeCast(source_type, target_type))) {
+    return fail("window value is not assignment-compatible with the result");
+  }
+  if (source_type == target_type &&
+      source.descriptor.encoded_descriptor != target.encoded_descriptor) {
+    return fail("window value descriptor attributes differ from the result");
+  }
+  dt::DatatypeCastRequest conversion;
+  conversion.value.type_id = source_type;
+  conversion.value.encoded_value = source.encoded_value;
+  conversion.value.is_null = source.state == api::EngineValueState::sql_null;
+  conversion.target_type_id = target_type;
+  const auto cast = dt::CastDatatypeValue(conversion);
+  if (!cast.ok()) {
+    std::string cast_detail = cast.diagnostic.diagnostic_code.empty()
+                                  ? "window assignment conversion failed"
+                                  : cast.diagnostic.diagnostic_code;
+    if (!cast.diagnostic.arguments.empty()) {
+      cast_detail += ":" + cast.diagnostic.arguments.front().value;
+    }
+    return fail(std::move(cast_detail));
+  }
+  api::EngineTypedValue converted;
+  converted.descriptor = target;
+  converted.encoded_value = cast.value.encoded_value;
+  converted.is_null = cast.value.is_null;
+  converted.state = cast.value.is_null ? api::EngineValueState::sql_null
+                                       : api::EngineValueState::value;
+  return converted;
+}
+
+scratchbird::engine::internal_api::EngineTypedValue WindowTypedNull(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor) {
+  scratchbird::engine::internal_api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.is_null = true;
+  value.state =
+      scratchbird::engine::internal_api::EngineValueState::sql_null;
+  return value;
+}
+
+DescriptorRuntimeDiagnostic WindowValueRefusal(std::string code,
+                                               std::string detail) {
+  DescriptorRuntimeDiagnostic diagnostic;
+  diagnostic.ok = false;
+  diagnostic.diagnostic_code = std::move(code);
+  diagnostic.detail = std::move(detail);
+  return diagnostic;
+}
+
+bool CanonicalWindowInt64Operand(
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    std::int64_t* decoded) {
+  namespace api = scratchbird::engine::internal_api;
+  namespace dt = scratchbird::core::datatypes;
+  if (decoded == nullptr ||
+      !IsCanonicalUuid(value.descriptor.descriptor_uuid.canonical) ||
+      value.descriptor.descriptor_kind != "scalar" ||
+      value.descriptor.encoded_descriptor.empty() ||
+      dt::CanonicalTypeIdFromStableName(
+          value.descriptor.canonical_type_name) != dt::CanonicalTypeId::int64 ||
+      value.state != api::EngineValueState::value || value.is_null ||
+      !value.binary_value.empty()) {
+    return false;
+  }
+  const auto parsed = DecodeInt64Value(value);
+  if (!parsed.ok()) return false;
+  *decoded = parsed.value;
+  return true;
+}
+
+}  // namespace
+
+// QOW-SOURCE-WIN-007-V1
+// QOW-SOURCE-WIN-008-V1
+// QOW-SOURCE-WIN-009-V1
+// QOW-SOURCE-WIN-010-V1
+// QOW-SOURCE-WIN-011-V1
+// Navigation and value functions consume the same typed QOW-401/QOW-402
+// partition, peer, frame, exclusion, descriptor, and MGA evidence. LAG/LEAD
+// validate but ignore the effective frame; FIRST/LAST/NTH select only from the
+// effective row-index vector remaining after exclusion.
+CanonicalWindowValueResult ExecuteCanonicalWindowValue(
+    const CanonicalWindowValueRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalWindowValueResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic =
+        WindowValueRefusal(std::move(code), std::move(detail));
+    return result;
+  };
+  const auto expected_uuid = WindowValueFunctionUuid(request.function);
+  if (expected_uuid.empty() || request.function_uuid != expected_uuid ||
+      !IsCanonicalUuid(request.function_uuid)) {
+    return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                  "window value function kind and registry UUID do not match");
+  }
+  if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
+    return refuse("QOW-DIAG-WINDOW-FRAME",
+                  "window value input is not canonical QOW-402 frame evidence");
+  }
+  if (request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-WINDOW-AUTHORITY",
+                  "window value function attempted to claim engine MGA authority");
+  }
+  const auto row_count = request.frames.ordered_batch.rows.size();
+  if (request.maximum_output_rows == 0 ||
+      row_count > request.maximum_output_rows) {
+    return refuse("QOW-DIAG-WINDOW-FRAME",
+                  "window value output resource bound was exceeded");
+  }
+
+  std::optional<std::size_t> value_column_index;
+  for (std::size_t column = 0;
+       column < request.frames.ordered_batch.columns.size(); ++column) {
+    if (request.frames.ordered_batch.columns[column].descriptor_id ==
+        request.value_expression_descriptor_id) {
+      if (value_column_index.has_value()) {
+        return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                      "window value descriptor handle is ambiguous");
+      }
+      value_column_index = column;
+    }
+  }
+  if (!value_column_index.has_value() ||
+      !WindowValueResultColumnValid(
+          request.result_column,
+          request.frames.ordered_batch.columns[*value_column_index])) {
+    return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                  "window value expression or result descriptor is unresolved");
+  }
+
+  std::vector<api::EngineTypedValue> source_values;
+  source_values.reserve(row_count);
+  std::string assignment_detail;
+  for (const auto& row : request.frames.ordered_batch.rows) {
+    const auto converted = ConvertWindowAssignmentValue(
+        row.values[*value_column_index], request.result_column.descriptor,
+        &assignment_detail);
+    if (!converted.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                    std::move(assignment_detail));
+    }
+    source_values.push_back(*converted);
+  }
+
+  const bool navigation =
+      request.function == CanonicalWindowValueFunction::lag ||
+      request.function == CanonicalWindowValueFunction::lead;
+  std::vector<std::uint64_t> positions;
+  std::vector<api::EngineTypedValue> defaults;
+  if (navigation) {
+    if (request.nth_values.has_value() || request.nth_origin.has_value() ||
+        request.null_treatment.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-OFFSET",
+                    "LAG/LEAD carries an NTH_VALUE-only operand");
+    }
+    if (request.default_values.has_value() &&
+        !request.offset_values.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-OFFSET",
+                    "LAG/LEAD default cannot omit the offset operand state");
+    }
+    positions.assign(row_count, 1);
+    if (request.offset_values.has_value()) {
+      if (request.offset_values->size() != row_count) {
+        return refuse("QOW-DIAG-WINDOW-OFFSET",
+                      "LAG/LEAD offset cardinality does not match input rows");
+      }
+      positions.clear();
+      positions.reserve(row_count);
+      for (const auto& value : *request.offset_values) {
+        std::int64_t decoded = 0;
+        if (!CanonicalWindowInt64Operand(value, &decoded) || decoded < 0) {
+          return refuse("QOW-DIAG-WINDOW-OFFSET",
+                        "LAG/LEAD offset must be a non-NULL non-negative int64");
+        }
+        positions.push_back(static_cast<std::uint64_t>(decoded));
+      }
+    }
+    if (request.default_values.has_value()) {
+      if (request.default_values->size() != row_count) {
+        return refuse("QOW-DIAG-WINDOW-DEFAULT-TYPE",
+                      "LAG/LEAD default cardinality does not match input rows");
+      }
+      defaults.reserve(row_count);
+      for (const auto& value : *request.default_values) {
+        const auto converted = ConvertWindowAssignmentValue(
+            value, request.result_column.descriptor, &assignment_detail);
+        if (!converted.has_value()) {
+          return refuse("QOW-DIAG-WINDOW-DEFAULT-TYPE",
+                        std::move(assignment_detail));
+        }
+        defaults.push_back(*converted);
+      }
+    }
+  } else if (request.function == CanonicalWindowValueFunction::nth_value) {
+    if (request.offset_values.has_value() || request.default_values.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-NTH",
+                    "NTH_VALUE carries a LAG/LEAD-only operand");
+    }
+    if (!request.nth_origin.has_value() ||
+        !request.null_treatment.has_value()) {
+      return refuse("QOW-DIAG-WINDOW-NULL-TREATMENT",
+                    "NTH_VALUE origin and NULL treatment must be explicit");
+    }
+    if (*request.nth_origin != CanonicalWindowNthOrigin::from_first ||
+        *request.null_treatment !=
+            CanonicalWindowNullTreatment::respect_nulls) {
+      return refuse("QOW-DIAG-WINDOW-NULL-TREATMENT",
+                    "only NTH_VALUE FROM FIRST RESPECT NULLS is accepted");
+    }
+    if (!request.nth_values.has_value() ||
+        request.nth_values->size() != row_count) {
+      return refuse("QOW-DIAG-WINDOW-NTH",
+                    "NTH_VALUE requires one explicit n operand per row");
+    }
+    positions.reserve(row_count);
+    for (const auto& value : *request.nth_values) {
+      std::int64_t decoded = 0;
+      if (!CanonicalWindowInt64Operand(value, &decoded) || decoded <= 0) {
+        return refuse("QOW-DIAG-WINDOW-NTH",
+                      "NTH_VALUE n must be a non-NULL positive int64");
+      }
+      positions.push_back(static_cast<std::uint64_t>(decoded));
+    }
+  } else if (request.offset_values.has_value() ||
+             request.default_values.has_value() ||
+             request.nth_values.has_value() || request.nth_origin.has_value() ||
+             request.null_treatment.has_value()) {
+    return refuse("QOW-DIAG-WINDOW-FRAME",
+                  "FIRST_VALUE/LAST_VALUE carries an unrelated operand");
+  }
+
+  result.values.reserve(row_count);
+  const auto typed_null = WindowTypedNull(request.result_column.descriptor);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    if (navigation) {
+      const auto& metadata = request.frames.row_metadata[row];
+      const auto offset = positions[row];
+      std::optional<std::size_t> target;
+      if (request.function == CanonicalWindowValueFunction::lag) {
+        const auto available = row - metadata.partition_begin;
+        if (offset <= available) target = row - static_cast<std::size_t>(offset);
+      } else {
+        const auto available = metadata.partition_end_exclusive - row - 1;
+        if (offset <= available) target = row + static_cast<std::size_t>(offset);
+      }
+      if (target.has_value()) {
+        result.values.push_back(source_values[*target]);
+      } else if (!defaults.empty()) {
+        result.values.push_back(defaults[row]);
+      } else {
+        result.values.push_back(typed_null);
+      }
+      continue;
+    }
+
+    const auto& effective =
+        request.frames.effective_frames[row].effective_row_indices;
+    std::optional<std::size_t> target;
+    if (request.function == CanonicalWindowValueFunction::first_value) {
+      if (!effective.empty()) target = effective.front();
+    } else if (request.function == CanonicalWindowValueFunction::last_value) {
+      if (!effective.empty()) target = effective.back();
+    } else {
+      const auto nth = positions[row];
+      if (nth <= effective.size()) {
+        target = effective[static_cast<std::size_t>(nth - 1)];
+      }
+    }
+    result.values.push_back(target.has_value() ? source_values[*target]
+                                               : typed_null);
+  }
+
+  result.diagnostic = {};
+  result.function = request.function;
+  result.frame_and_exclusion_validated = true;
+  result.frame_and_exclusion_ignored_for_navigation = navigation;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
   result.selected_plan_uuid = request.frames.selected_plan_uuid;
