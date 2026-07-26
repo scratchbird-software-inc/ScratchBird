@@ -6,6 +6,13 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+# QOW-CMAKE-QRY-004-NODE-ABI-V1
+add_library(sb_qow_physical_node_abi INTERFACE)
+target_compile_features(sb_qow_physical_node_abi INTERFACE cxx_std_20)
+target_include_directories(sb_qow_physical_node_abi INTERFACE
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
 if(NOT TARGET sb_storage_page)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../storage/page ${CMAKE_CURRENT_BINARY_DIR}/storage_page)
 endif()
@@ -33,6 +40,7 @@ if(NOT TARGET sb_engine_gpu_acceleration)
 endif()
 
 add_library(sb_engine_executor STATIC
+  physical_node_abi.hpp
   aggregate_executor.cpp
   allocator_lifetime_hot_path.cpp
   batch_point_lookup_executor.cpp

@@ -8,6 +8,23 @@
 
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPTIMIZER-ENROLLMENT-V1
+  if(NOT TARGET sb_qow_physical_node_abi)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/engine/executor"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_executor"
+    )
+  endif()
+  # QOW-CMAKE-QRY-004-NODE-ABI-V1
+  add_executable(qow_qry_004_node_abi_test_v1 qow_qry_004_node_abi.cpp)
+  target_compile_features(qow_qry_004_node_abi_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_004_node_abi_test_v1 PRIVATE
+    sb_qow_physical_node_abi
+  )
+  add_test(NAME qow_qry_004_node_abi_v1
+    COMMAND qow_qry_004_node_abi_test_v1)
+  set_tests_properties(qow_qry_004_node_abi_v1 PROPERTIES
+    LABELS "qow_closure;QOW-201;QOW-LEAF-QRY-004-NODE-ABI;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
