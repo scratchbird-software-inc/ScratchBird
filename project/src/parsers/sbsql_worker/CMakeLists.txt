@@ -23,6 +23,8 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   meta/meta_command_surface.cpp
   lexer/lexer.cpp
   cst/cst.cpp
+  # QOW-CMAKE-QRY-001-AST-V1
+  parser/parser.cpp
   ast/ast.cpp
   expression/expression_catalog.cpp
   expression/reference_variable_compatibility.cpp

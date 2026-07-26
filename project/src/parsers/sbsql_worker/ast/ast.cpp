@@ -1428,6 +1428,44 @@ std::string StatementFamilyName(StatementFamily family) {
   return "unknown";
 }
 
+std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
+  switch (kind) {
+    case NativeRelationAstKind::kValues: return "values";
+  }
+  return "unknown";
+}
+
+std::string NativeExpressionAstKindName(NativeExpressionAstKind kind) {
+  switch (kind) {
+    case NativeExpressionAstKind::kLiteral: return "literal";
+    case NativeExpressionAstKind::kParameter: return "parameter";
+    case NativeExpressionAstKind::kIdentifier: return "identifier";
+    case NativeExpressionAstKind::kFunctionCall: return "function_call";
+    case NativeExpressionAstKind::kUnary: return "unary";
+    case NativeExpressionAstKind::kBinary: return "binary";
+    case NativeExpressionAstKind::kParenthesized: return "parenthesized";
+  }
+  return "unknown";
+}
+
+std::string NativeLiteralAstKindName(NativeLiteralAstKind kind) {
+  switch (kind) {
+    case NativeLiteralAstKind::kNumeric: return "numeric";
+    case NativeLiteralAstKind::kString: return "string";
+    case NativeLiteralAstKind::kBinary: return "binary";
+    case NativeLiteralAstKind::kTemporal: return "temporal";
+    case NativeLiteralAstKind::kUuid: return "uuid";
+    case NativeLiteralAstKind::kBoolean: return "boolean";
+    case NativeLiteralAstKind::kNull: return "null";
+    case NativeLiteralAstKind::kDefault: return "default";
+    case NativeLiteralAstKind::kDocument: return "document";
+    case NativeLiteralAstKind::kVector: return "vector";
+    case NativeLiteralAstKind::kRegex: return "regex";
+    case NativeLiteralAstKind::kRange: return "range";
+  }
+  return "unknown";
+}
+
 AstDocument BuildAst(const CstDocument& cst) {
   AstDocument ast;
   ast.messages = cst.messages;
@@ -1441,6 +1479,23 @@ AstDocument BuildAst(const CstDocument& cst) {
   }
   if (first->kind == TokenKind::kMetaCommand) {
     ApplyMetaCommandSurface(&ast, *first);
+    if (!ast.nodes.empty()) {
+      ast.nodes[ast.root_node_index].text = ast.statement_kind;
+    }
+    return ast;
+  }
+  ast.native_relational = ParseNativeRelationalAst(cst);
+  if (ast.native_relational.recognized()) {
+    ast.messages.diagnostics.insert(
+        ast.messages.diagnostics.end(),
+        ast.native_relational.messages.diagnostics.begin(),
+        ast.native_relational.messages.diagnostics.end());
+    ast.family = StatementFamily::kValues;
+    ast.registry_family = "sbsql.query.values.v3";
+    ast.operation_family = "sblr.query.relational.v3";
+    ast.produces_sblr = ast.native_relational.accepted();
+    ApplyStatementDescriptorMetadata(&ast, DescriptorForStatementTokens(cst, "VALUES"));
+    ast.statement_kind = StatementFamilyName(ast.family);
     if (!ast.nodes.empty()) {
       ast.nodes[ast.root_node_index].text = ast.statement_kind;
     }

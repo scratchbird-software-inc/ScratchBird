@@ -8,8 +8,22 @@
 
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   # QOW-CMAKE-SBSQL-PARSER-WORKER-ENROLLMENT-V1
-  # Dependency-ordered QOW parser targets are added above this return by their
-  # owning leaves. The broad parser-worker suite remains disabled.
+  if(NOT TARGET sbl_sbsql_parser_pipeline)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_sbsql_worker"
+    )
+  endif()
+
+  # QOW-CMAKE-QRY-001-AST-V1
+  add_executable(qow_qry_001_ast_test_v1 qow_qry_001_ast.cpp)
+  target_compile_features(qow_qry_001_ast_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_qry_001_ast_test_v1 PRIVATE sbl_sbsql_parser_pipeline)
+  add_test(NAME qow_qry_001_ast_v1 COMMAND qow_qry_001_ast_test_v1)
+  set_tests_properties(qow_qry_001_ast_v1 PROPERTIES
+    LABELS "qow_closure;QOW-101;QOW-LEAF-QRY-001-AST;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

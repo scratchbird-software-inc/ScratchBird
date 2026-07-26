@@ -10,6 +10,8 @@
 
 #include "cst/cst.hpp"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -41,6 +43,82 @@ enum class StatementFamily {
   kMigration,
   kBridge,
   kClusterPrivate,
+};
+
+enum class NativeRelationalParseStatus {
+  kNotRecognized,
+  kAccepted,
+  kRefused,
+};
+
+enum class NativeRelationAstKind {
+  kValues,
+};
+
+enum class NativeExpressionAstKind {
+  kLiteral,
+  kParameter,
+  kIdentifier,
+  kFunctionCall,
+  kUnary,
+  kBinary,
+  kParenthesized,
+};
+
+enum class NativeLiteralAstKind {
+  kNumeric,
+  kString,
+  kBinary,
+  kTemporal,
+  kUuid,
+  kBoolean,
+  kNull,
+  kDefault,
+  kDocument,
+  kVector,
+  kRegex,
+  kRange,
+};
+
+struct NativeExpressionAstNode {
+  std::uint32_t expression_id{0};
+  NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
+  std::optional<NativeLiteralAstKind> literal_kind;
+  std::vector<std::uint32_t> child_expression_ids;
+  std::string spelling;
+  std::string operator_name;
+  SourceRange range;
+};
+
+struct NativeValuesRowAstNode {
+  std::uint32_t row_id{0};
+  std::vector<std::uint32_t> expression_ids;
+  SourceRange range;
+};
+
+struct NativeRelationAstNode {
+  std::uint32_t relation_id{0};
+  NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
+  std::vector<std::uint32_t> input_relation_ids;
+  std::vector<std::uint32_t> values_row_ids;
+  SourceRange range;
+};
+
+struct NativeRelationalAstDocument {
+  NativeRelationalParseStatus status{NativeRelationalParseStatus::kNotRecognized};
+  std::uint32_t root_relation_id{0};
+  std::vector<NativeRelationAstNode> relations;
+  std::vector<NativeValuesRowAstNode> values_rows;
+  std::vector<NativeExpressionAstNode> expressions;
+  MessageVectorSet messages;
+
+  [[nodiscard]] bool recognized() const {
+    return status != NativeRelationalParseStatus::kNotRecognized;
+  }
+
+  [[nodiscard]] bool accepted() const {
+    return status == NativeRelationalParseStatus::kAccepted && !messages.has_errors();
+  }
 };
 
 struct AstDocument {
@@ -76,10 +154,15 @@ struct AstDocument {
     std::vector<std::size_t> children;
   };
   std::vector<Node> nodes;
+  NativeRelationalAstDocument native_relational;
   MessageVectorSet messages;
 };
 
+NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst);
 AstDocument BuildAst(const CstDocument& cst);
 std::string StatementFamilyName(StatementFamily family);
+std::string NativeRelationAstKindName(NativeRelationAstKind kind);
+std::string NativeExpressionAstKindName(NativeExpressionAstKind kind);
+std::string NativeLiteralAstKindName(NativeLiteralAstKind kind);
 
 } // namespace scratchbird::parser::sbsql
