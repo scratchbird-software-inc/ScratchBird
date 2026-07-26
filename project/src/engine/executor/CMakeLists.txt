@@ -61,6 +61,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-009-V1
   executor_foundation.cpp
   executor_operator_metrics.cpp
+  # QOW-CMAKE-QRY-007-FILTER-V1
   filter_executor.cpp
   indexed_physical_operator.cpp
   join_executor.cpp

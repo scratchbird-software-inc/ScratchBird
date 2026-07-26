@@ -8,16 +8,10 @@
 
 #include "descriptor_value_runtime.hpp"
 
-#include <cctype>
-#include <string_view>
-#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
 namespace {
-
-using scratchbird::engine::internal_api::EngineDescriptor;
-using scratchbird::engine::internal_api::EngineValueState;
 
 DescriptorRuntimeDiagnostic Refusal(std::string code,
                                     std::string detail = {},
@@ -30,88 +24,6 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
   diagnostic.row_index = row;
   diagnostic.column_index = column;
   return diagnostic;
-}
-
-bool IsCanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
-
-bool SameCanonicalDescriptor(const EngineDescriptor& left,
-                             const EngineDescriptor& right) {
-  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
-         left.descriptor_kind == right.descriptor_kind &&
-         left.canonical_type_name == right.canonical_type_name &&
-         left.encoded_descriptor == right.encoded_descriptor;
-}
-
-DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatchForNode(
-    const DescriptorBatch& batch,
-    const std::vector<std::uint32_t>& output_descriptor_ids) {
-  if (batch.columns.size() != output_descriptor_ids.size() ||
-      batch.columns.empty()) {
-    return Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                   "physical output descriptor width mismatch");
-  }
-  std::unordered_set<std::uint32_t> descriptor_ids;
-  for (std::size_t column = 0; column < batch.columns.size(); ++column) {
-    const auto& bound_column = batch.columns[column];
-    const auto& descriptor = bound_column.descriptor;
-    if (bound_column.descriptor_id == 0 ||
-        bound_column.descriptor_id != output_descriptor_ids[column] ||
-        !descriptor_ids.insert(bound_column.descriptor_id).second ||
-        bound_column.stable_name.empty() ||
-        !IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
-        descriptor.descriptor_kind != "scalar" ||
-        descriptor.canonical_type_name.empty() ||
-        descriptor.encoded_descriptor.empty()) {
-      return Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                     "canonical output descriptor is unresolved", 0,
-                     column);
-    }
-  }
-  for (std::size_t row = 0; row < batch.rows.size(); ++row) {
-    if (batch.rows[row].values.size() != batch.columns.size()) {
-      return Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                     "typed row width does not match physical output", row,
-                     0);
-    }
-    for (std::size_t column = 0; column < batch.columns.size(); ++column) {
-      const auto& value = batch.rows[row].values[column];
-      const auto& bound_column = batch.columns[column];
-      if (!SameCanonicalDescriptor(value.descriptor,
-                                   bound_column.descriptor)) {
-        return Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                       "typed value lost its canonical descriptor", row,
-                       column);
-      }
-      if (value.state == EngineValueState::sql_null) {
-        if (!value.is_null || !value.encoded_value.empty() ||
-            !value.binary_value.empty() || !bound_column.nullable) {
-          return Refusal(
-              "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-              "canonical SQL NULL state is malformed or non-nullable", row,
-              column);
-        }
-        continue;
-      }
-      if (value.state != EngineValueState::value || value.is_null) {
-        return Refusal(
-            "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
-            "legacy NULL flag or non-value sentinel reached projection", row,
-            column);
-      }
-    }
-  }
-  return {};
 }
 
 }  // namespace
@@ -176,7 +88,7 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
                           "project output handle width mismatch"));
   }
 
-  auto input_validation = ValidateCanonicalDescriptorBatchForNode(
+  auto input_validation = ValidateCanonicalDescriptorBatch(
       request.input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
   for (std::size_t ordinal = 0;
@@ -194,7 +106,7 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
 
   result.output_batch =
       ProjectDescriptorBatch(request.input_batch, request.projected_columns);
-  auto output_validation = ValidateCanonicalDescriptorBatchForNode(
+  auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
   result.diagnostic = {};

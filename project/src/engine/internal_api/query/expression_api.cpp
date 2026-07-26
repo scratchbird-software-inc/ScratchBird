@@ -811,26 +811,6 @@ bool QowMaterializeCanonicalTruthValueV1(
   return true;
 }
 
-bool QowPredicateConsumerPassesV1(
-    const EngineSqlTruthValue truth_value,
-    const EnginePredicateConsumer consumer,
-    bool* passes,
-    std::string* refusal_detail) {
-  if (passes == nullptr || refusal_detail == nullptr) return false;
-  *passes = false;
-  refusal_detail->clear();
-  if (!QowCanonicalTruthValueV1(truth_value) ||
-      (consumer != EnginePredicateConsumer::filter &&
-       consumer != EnginePredicateConsumer::join_on &&
-       consumer != EnginePredicateConsumer::having &&
-       consumer != EnginePredicateConsumer::qualify)) {
-    *refusal_detail = "predicate consumer or truth value is not bound";
-    return false;
-  }
-  *passes = truth_value == EngineSqlTruthValue::true_value;
-  return true;
-}
-
 }  // namespace scratchbird::engine::internal_api
 
 #ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY

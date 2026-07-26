@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "physical_node_abi.hpp"
+#include "query/expression_api.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -55,6 +56,24 @@ struct CanonicalDescriptorProjectionRequest {
 };
 
 struct CanonicalDescriptorProjectionResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+struct CanonicalDescriptorFilterRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+      row_truth_values;
+  scratchbird::engine::internal_api::EnginePredicateConsumer consumer =
+      scratchbird::engine::internal_api::EnginePredicateConsumer::filter;
+};
+
+struct CanonicalDescriptorFilterResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
   std::string selected_plan_uuid;
@@ -147,8 +166,13 @@ std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& c
 bool DescriptorMatches(const scratchbird::engine::internal_api::EngineDescriptor& expected,
                        const scratchbird::engine::internal_api::EngineDescriptor& actual);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids);
 CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     const CanonicalDescriptorProjectionRequest& request);
+CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
+    const CanonicalDescriptorFilterRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,

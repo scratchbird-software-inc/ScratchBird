@@ -17,6 +17,8 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -89,6 +91,27 @@ bool IsOpaqueEncodedType(const EngineDescriptor& descriptor) {
 bool IsKnownScalarType(const EngineDescriptor& descriptor) {
   return IsInt64Type(descriptor) || IsBoolType(descriptor) || IsReal64Type(descriptor) || IsTextType(descriptor) ||
          IsOpaqueEncodedType(descriptor);
+}
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
+}
+
+bool SameCanonicalDescriptor(const EngineDescriptor& left,
+                             const EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
 }
 
 bool ParseInt64Strict(const std::string& text, std::int64_t* out) {
@@ -338,6 +361,70 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
         if (!ParseReal64Strict(value.encoded_value, &ignored)) {
           return ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column);
         }
+      }
+    }
+  }
+  return OkDiagnostic();
+}
+
+DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& output_descriptor_ids) {
+  if (batch.columns.size() != output_descriptor_ids.size() ||
+      batch.columns.empty()) {
+    return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
+                           "physical output descriptor width mismatch");
+  }
+  std::unordered_set<std::uint32_t> descriptor_ids;
+  for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+    const auto& bound_column = batch.columns[column];
+    const auto& descriptor = bound_column.descriptor;
+    if (bound_column.descriptor_id == 0 ||
+        bound_column.descriptor_id != output_descriptor_ids[column] ||
+        !descriptor_ids.insert(bound_column.descriptor_id).second ||
+        bound_column.stable_name.empty() ||
+        !IsCanonicalUuid(descriptor.descriptor_uuid.canonical) ||
+        descriptor.descriptor_kind != "scalar" ||
+        descriptor.canonical_type_name.empty() ||
+        descriptor.encoded_descriptor.empty()) {
+      return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
+                             "canonical output descriptor is unresolved", 0,
+                             column);
+    }
+  }
+  for (std::size_t row = 0; row < batch.rows.size(); ++row) {
+    if (batch.rows[row].values.size() != batch.columns.size()) {
+      return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
+                             "typed row width does not match physical output",
+                             row, 0);
+    }
+    for (std::size_t column = 0; column < batch.columns.size(); ++column) {
+      const auto& value = batch.rows[row].values[column];
+      const auto& bound_column = batch.columns[column];
+      if (!SameCanonicalDescriptor(value.descriptor,
+                                   bound_column.descriptor)) {
+        return ErrorDiagnostic("SBLR.PLAN_TREE.INVALID_HANDLE",
+                               "typed value lost its canonical descriptor",
+                               row, column);
+      }
+      if (value.state ==
+          scratchbird::engine::internal_api::EngineValueState::sql_null) {
+        if (!value.is_null || !value.encoded_value.empty() ||
+            !value.binary_value.empty() || !bound_column.nullable) {
+          return ErrorDiagnostic(
+              "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+              "canonical SQL NULL state is malformed or non-nullable", row,
+              column);
+        }
+        continue;
+      }
+      if (value.state !=
+              scratchbird::engine::internal_api::EngineValueState::value ||
+          value.is_null) {
+        return ErrorDiagnostic(
+            "QOW-DIAG-QRY-029-TYPED-VALUE-REFUSAL-V1",
+            "legacy NULL flag or non-value sentinel reached operator", row,
+            column);
       }
     }
   }

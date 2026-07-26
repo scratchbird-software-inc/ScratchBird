@@ -80,10 +80,30 @@ bool QowMaterializeCanonicalTruthValueV1(
     const EngineDescriptor& result_descriptor,
     EngineTypedValue* output_value,
     std::string* refusal_detail);
-bool QowPredicateConsumerPassesV1(EngineSqlTruthValue truth_value,
-                                  EnginePredicateConsumer consumer,
-                                  bool* passes,
-                                  std::string* refusal_detail);
+inline bool QowPredicateConsumerPassesV1(
+    const EngineSqlTruthValue truth_value,
+    const EnginePredicateConsumer consumer,
+    bool* passes,
+    std::string* refusal_detail) {
+  if (passes == nullptr || refusal_detail == nullptr) return false;
+  *passes = false;
+  refusal_detail->clear();
+  const bool canonical_truth =
+      truth_value == EngineSqlTruthValue::false_value ||
+      truth_value == EngineSqlTruthValue::true_value ||
+      truth_value == EngineSqlTruthValue::unknown;
+  const bool canonical_consumer =
+      consumer == EnginePredicateConsumer::filter ||
+      consumer == EnginePredicateConsumer::join_on ||
+      consumer == EnginePredicateConsumer::having ||
+      consumer == EnginePredicateConsumer::qualify;
+  if (!canonical_truth || !canonical_consumer) {
+    *refusal_detail = "predicate consumer or truth value is not bound";
+    return false;
+  }
+  *passes = truth_value == EngineSqlTruthValue::true_value;
+  return true;
+}
 
 struct EngineCastValueRequest : EngineApiRequest {
   EngineTypedValue input_value;
