@@ -17,6 +17,9 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
+#include <stdexcept>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -170,6 +173,132 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-014-UNION-V1
+// Admit either UNION ALL, which preserves every anchor and recursive row, or
+// the bounded one-column int64 UNION DISTINCT profile. DISTINCT compares
+// decoded typed values (with SQL NULL equal to SQL NULL for set semantics),
+// removes duplicates against the complete accumulated result and the current
+// intermediate relation, and feeds only newly admitted rows into the next
+// recursive working transition.
+CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
+    const CanonicalRecursiveCteUnionRequest& request) {
+  CanonicalRecursiveCteUnionResult result;
+  result.union_mode = request.union_mode;
+  const auto refuse = [&](std::string detail) {
+    result.working_result = {};
+    result.working_result.diagnostic.ok = false;
+    result.working_result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-UNION-REFUSAL-V1";
+    result.working_result.diagnostic.detail = std::move(detail);
+    result.union_mode = request.union_mode;
+    result.duplicate_row_count = 0;
+    return result;
+  };
+
+  if (request.union_mode != CanonicalRecursiveCteUnionMode::kAll &&
+      request.union_mode != CanonicalRecursiveCteUnionMode::kDistinct) {
+    return refuse("recursive CTE UNION mode is not bound");
+  }
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  const auto* selected_node = FindPhysicalNode(
+      request.working_request.physical_dag,
+      request.working_request.selected_physical_node_id);
+  const auto expected_profile =
+      request.union_mode == CanonicalRecursiveCteUnionMode::kAll
+          ? "cte.recursive.union-all.typed.v1"
+          : "cte.recursive.union-distinct-int64.typed.v1";
+  if (request.working_request.selected_physical_node_id == 0 ||
+      request.working_request.selected_physical_node_id !=
+          request.working_request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
+      selected_node->implementation_id != expected_profile) {
+    return refuse("recursive CTE UNION physical profile is not bound");
+  }
+
+  CanonicalRecursiveCteWorkingRequest working = request.working_request;
+  for (auto& node : working.physical_dag.nodes) {
+    if (node.physical_node_id == working.selected_physical_node_id) {
+      node.implementation_id = "cte.recursive.working.typed.v1";
+      break;
+    }
+  }
+
+  auto duplicate_count = std::make_shared<std::size_t>(0);
+  if (request.union_mode == CanonicalRecursiveCteUnionMode::kDistinct) {
+    if (working.anchor_batch.columns.size() != 1 ||
+        working.anchor_batch.columns.front().descriptor.canonical_type_name !=
+            "int64") {
+      return refuse("recursive CTE UNION DISTINCT requires one int64 column");
+    }
+
+    const auto row_key = [](const DescriptorTuple& row) {
+      if (row.values.size() != 1) {
+        throw std::runtime_error("recursive UNION DISTINCT row is ragged");
+      }
+      const auto& value = row.values.front();
+      if (value.state ==
+          scratchbird::engine::internal_api::EngineValueState::sql_null) {
+        return std::string("null");
+      }
+      const auto decoded = DecodeInt64Value(value);
+      if (!decoded.ok()) {
+        throw std::runtime_error(decoded.diagnostic.diagnostic_code + ":" +
+                                 decoded.diagnostic.detail);
+      }
+      return std::string("int64:") + std::to_string(decoded.value);
+    };
+
+    auto seen = std::make_shared<std::unordered_set<std::string>>();
+    DescriptorBatch distinct_anchor;
+    distinct_anchor.columns = working.anchor_batch.columns;
+    try {
+      for (const auto& row : working.anchor_batch.rows) {
+        if (seen->insert(row_key(row)).second) {
+          distinct_anchor.rows.push_back(row);
+        } else {
+          ++*duplicate_count;
+        }
+      }
+    } catch (const std::exception& error) {
+      return refuse(error.what());
+    }
+    working.anchor_batch = std::move(distinct_anchor);
+
+    const auto recursive_step = working.recursive_step;
+    working.recursive_step =
+        [recursive_step, seen, duplicate_count, row_key](
+            const DescriptorBatch& current, const std::size_t iteration) {
+          auto generated = recursive_step(current, iteration);
+          DescriptorBatch distinct;
+          distinct.columns = generated.columns;
+          for (const auto& row : generated.rows) {
+            if (seen->insert(row_key(row)).second) {
+              distinct.rows.push_back(row);
+            } else {
+              ++*duplicate_count;
+            }
+          }
+          return distinct;
+        };
+  }
+
+  auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
+  if (!working_result.diagnostic.ok) {
+    return refuse(working_result.diagnostic.diagnostic_code + ":" +
+                  working_result.diagnostic.detail);
+  }
+  result.working_result = std::move(working_result);
+  result.union_mode = request.union_mode;
+  result.duplicate_row_count = *duplicate_count;
   return result;
 }
 

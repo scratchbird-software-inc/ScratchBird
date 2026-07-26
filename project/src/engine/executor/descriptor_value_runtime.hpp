@@ -273,6 +273,24 @@ struct CanonicalRecursiveCteWorkingResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalRecursiveCteUnionMode : std::uint8_t {
+  kAll = 1,
+  kDistinct,
+};
+
+struct CanonicalRecursiveCteUnionRequest {
+  CanonicalRecursiveCteWorkingRequest working_request;
+  CanonicalRecursiveCteUnionMode union_mode =
+      CanonicalRecursiveCteUnionMode::kAll;
+};
+
+struct CanonicalRecursiveCteUnionResult {
+  CanonicalRecursiveCteWorkingResult working_result;
+  CanonicalRecursiveCteUnionMode union_mode =
+      CanonicalRecursiveCteUnionMode::kAll;
+  std::size_t duplicate_row_count = 0;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -799,6 +817,8 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     const CanonicalLateralSubqueryRequest& request);
 CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     const CanonicalRecursiveCteWorkingRequest& request);
+CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
+    const CanonicalRecursiveCteUnionRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
