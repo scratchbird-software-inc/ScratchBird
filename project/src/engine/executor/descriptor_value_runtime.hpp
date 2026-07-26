@@ -383,6 +383,61 @@ struct CanonicalJoinStrategyResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalMgaVisibilityDecision : std::uint8_t {
+  kVisible = 1,
+  kInvisible,
+  kIndeterminate,
+};
+
+enum class CanonicalMgaSecurityDecision : std::uint8_t {
+  kAllowed = 1,
+  kDenied,
+  kIndeterminate,
+};
+
+struct CanonicalJoinMgaCandidateEvidence {
+  std::size_t pair_index = 0;
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t statement_snapshot_id = 0;
+  std::uint64_t left_row_version_id = 0;
+  std::uint64_t right_row_version_id = 0;
+  CanonicalMgaVisibilityDecision left_visibility =
+      CanonicalMgaVisibilityDecision::kIndeterminate;
+  CanonicalMgaVisibilityDecision right_visibility =
+      CanonicalMgaVisibilityDecision::kIndeterminate;
+  CanonicalMgaSecurityDecision security_decision =
+      CanonicalMgaSecurityDecision::kIndeterminate;
+  std::uint64_t index_candidate_generation = 0;
+  std::uint64_t current_index_generation = 0;
+  scratchbird::engine::internal_api::EngineSqlTruthValue exact_key_recheck =
+      scratchbird::engine::internal_api::EngineSqlTruthValue::unknown;
+  std::string engine_evidence_uuid;
+};
+
+struct CanonicalJoinMgaRequest {
+  CanonicalJoinStrategyRequest strategy_request;
+  std::uint64_t transaction_inventory_id = 0;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::string transaction_inventory_evidence_uuid;
+  std::vector<CanonicalJoinMgaCandidateEvidence> candidate_evidence;
+  std::size_t maximum_boundary_rechecks = 1048576;
+};
+
+struct CanonicalJoinMgaResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t candidate_pair_count = 0;
+  std::size_t visible_pair_count = 0;
+  std::size_t visibility_filtered_pair_count = 0;
+  std::size_t security_filtered_pair_count = 0;
+  bool mga_boundary_proven = false;
+  std::string transaction_inventory_evidence_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorRowNumberRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -580,6 +635,8 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     const CanonicalJoinKindRequest& request);
 CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     const CanonicalJoinStrategyRequest& request);
+CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
+    const CanonicalJoinMgaRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(

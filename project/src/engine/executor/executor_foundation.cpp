@@ -1694,6 +1694,196 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
   return result;
 }
 
+// QOW-SOURCE-QRY-012-MGA-V1
+// Recheck strategy candidates against engine-owned transaction-inventory and
+// statement-snapshot evidence at the MGA boundary.  Visibility and security
+// verdicts are consumed, never synthesized here; stale generations or an
+// inexact key recheck fail closed before any row is published.
+CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
+    const CanonicalJoinMgaRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalJoinMgaResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-MGA-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.candidate_pair_count = 0;
+    result.visible_pair_count = 0;
+    result.visibility_filtered_pair_count = 0;
+    result.security_filtered_pair_count = 0;
+    result.mga_boundary_proven = false;
+    result.transaction_inventory_evidence_uuid.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  const auto& physical_dag =
+      request.strategy_request.residual_request.key_request.physical_dag;
+  if (request.transaction_inventory_id == 0 ||
+      request.inventory_local_transaction_id == 0 ||
+      request.inventory_statement_snapshot_id == 0 ||
+      request.inventory_local_transaction_id !=
+          physical_dag.local_transaction_id ||
+      request.inventory_statement_snapshot_id !=
+          physical_dag.statement_snapshot_id ||
+      !IsCanonicalUuid(request.transaction_inventory_evidence_uuid)) {
+    return refuse("engine transaction inventory evidence is not bound");
+  }
+  if (request.maximum_boundary_rechecks == 0 ||
+      request.candidate_evidence.size() >
+          request.maximum_boundary_rechecks) {
+    return refuse("MGA join boundary recheck bound was exceeded");
+  }
+
+  auto strategy =
+      ExecuteCanonicalJoinStrategy(request.strategy_request);
+  if (!strategy.diagnostic.ok) {
+    return refuse(strategy.diagnostic.diagnostic_code + ":" +
+                  strategy.diagnostic.detail);
+  }
+  if (request.candidate_evidence.size() !=
+          strategy.strategy_pair_indices.size() ||
+      strategy.output_batch.rows.size() !=
+          strategy.strategy_pair_indices.size()) {
+    return refuse("MGA candidate evidence cardinality is not bound");
+  }
+
+  std::vector<bool> publish_candidate(request.candidate_evidence.size(),
+                                      false);
+  std::size_t visible_pair_count = 0;
+  std::size_t visibility_filtered_pair_count = 0;
+  std::size_t security_filtered_pair_count = 0;
+  const auto& key_request =
+      request.strategy_request.residual_request.key_request;
+  const auto& key_term = key_request.key_terms.front();
+  const auto right_count = key_request.right_batch.rows.size();
+  for (std::size_t index = 0; index < request.candidate_evidence.size();
+       ++index) {
+    const auto& evidence = request.candidate_evidence[index];
+    if (evidence.pair_index != strategy.strategy_pair_indices[index] ||
+        evidence.local_transaction_id !=
+            request.inventory_local_transaction_id ||
+        evidence.statement_snapshot_id !=
+            request.inventory_statement_snapshot_id ||
+        evidence.left_row_version_id == 0 ||
+        evidence.right_row_version_id == 0 ||
+        !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
+      return refuse("MGA candidate identity or evidence is not bound");
+    }
+
+    const auto valid_visibility = [](const auto decision) {
+      return decision == CanonicalMgaVisibilityDecision::kVisible ||
+             decision == CanonicalMgaVisibilityDecision::kInvisible ||
+             decision == CanonicalMgaVisibilityDecision::kIndeterminate;
+    };
+    if (!valid_visibility(evidence.left_visibility) ||
+        !valid_visibility(evidence.right_visibility) ||
+        evidence.left_visibility ==
+            CanonicalMgaVisibilityDecision::kIndeterminate ||
+        evidence.right_visibility ==
+            CanonicalMgaVisibilityDecision::kIndeterminate) {
+      return refuse("MGA visibility decision is invalid or indeterminate");
+    }
+    if (evidence.security_decision !=
+            CanonicalMgaSecurityDecision::kAllowed &&
+        evidence.security_decision !=
+            CanonicalMgaSecurityDecision::kDenied &&
+        evidence.security_decision !=
+            CanonicalMgaSecurityDecision::kIndeterminate) {
+      return refuse("MGA security decision is invalid");
+    }
+    if (evidence.security_decision ==
+        CanonicalMgaSecurityDecision::kIndeterminate) {
+      return refuse("MGA security decision is indeterminate");
+    }
+    if (evidence.index_candidate_generation == 0 ||
+        evidence.current_index_generation == 0 ||
+        evidence.index_candidate_generation !=
+            evidence.current_index_generation) {
+      return refuse("stale index candidate generation requires replanning");
+    }
+    if (right_count == 0) {
+      return refuse("index candidate has no physical right row");
+    }
+    const auto left = evidence.pair_index / right_count;
+    const auto right = evidence.pair_index % right_count;
+    const auto& left_key =
+        key_request.left_batch.rows[left].values[key_term.left_column];
+    const auto& right_key =
+        key_request.right_batch.rows[right].values[key_term.right_column];
+    auto computed_key_truth = api::EngineSqlTruthValue::unknown;
+    if (left_key.state != api::EngineValueState::sql_null &&
+        right_key.state != api::EngineValueState::sql_null) {
+      const auto left_decoded = DecodeInt64Value(left_key);
+      const auto right_decoded = DecodeInt64Value(right_key);
+      if (!left_decoded.ok() || !right_decoded.ok()) {
+        return refuse("index candidate exact key encoding is invalid");
+      }
+      computed_key_truth =
+          left_decoded.value == right_decoded.value
+              ? api::EngineSqlTruthValue::true_value
+              : api::EngineSqlTruthValue::false_value;
+    }
+    if (computed_key_truth != api::EngineSqlTruthValue::true_value ||
+        evidence.exact_key_recheck != computed_key_truth) {
+      return refuse("index candidate failed exact join-key recheck");
+    }
+
+    if (evidence.left_visibility ==
+            CanonicalMgaVisibilityDecision::kInvisible ||
+        evidence.right_visibility ==
+            CanonicalMgaVisibilityDecision::kInvisible) {
+      ++visibility_filtered_pair_count;
+      continue;
+    }
+    if (evidence.security_decision ==
+        CanonicalMgaSecurityDecision::kDenied) {
+      ++security_filtered_pair_count;
+      continue;
+    }
+    publish_candidate[index] = true;
+    ++visible_pair_count;
+  }
+
+  DescriptorBatch output;
+  output.columns = strategy.output_batch.columns;
+  for (std::size_t index = 0; index < publish_candidate.size(); ++index) {
+    if (publish_candidate[index]) {
+      output.rows.push_back(std::move(strategy.output_batch.rows[index]));
+    }
+  }
+  std::vector<std::uint32_t> output_descriptor_ids;
+  output_descriptor_ids.reserve(output.columns.size());
+  for (const auto& column : output.columns) {
+    output_descriptor_ids.push_back(column.descriptor_id);
+  }
+  auto validation =
+      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.candidate_pair_count = request.candidate_evidence.size();
+  result.visible_pair_count = visible_pair_count;
+  result.visibility_filtered_pair_count = visibility_filtered_pair_count;
+  result.security_filtered_pair_count = security_filtered_pair_count;
+  result.mga_boundary_proven = true;
+  result.transaction_inventory_evidence_uuid =
+      request.transaction_inventory_evidence_uuid;
+  result.selected_plan_uuid = std::move(strategy.selected_plan_uuid);
+  result.executed_physical_node_id =
+      strategy.executed_physical_node_id;
+  result.causal_counter_id = strategy.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }

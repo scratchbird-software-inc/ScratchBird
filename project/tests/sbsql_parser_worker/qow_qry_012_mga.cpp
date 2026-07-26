@@ -1,0 +1,275 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "descriptor_value_runtime.hpp"
+
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <string_view>
+
+namespace exec = scratchbird::engine::executor;
+namespace api = scratchbird::engine::internal_api;
+
+namespace {
+
+bool Require(const bool condition, const std::string_view detail) {
+  if (!condition) {
+    std::cerr << "QOW-TEST-QRY-012-MGA-V1: " << detail << '\n';
+  }
+  return condition;
+}
+
+api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
+                                 const std::string& type_uuid) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor =
+      "type_uuid=" + type_uuid + ";nullability=nullable";
+  return descriptor;
+}
+
+api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
+                            const std::string& encoded) {
+  api::EngineTypedValue value;
+  value.descriptor = descriptor;
+  value.encoded_value = encoded;
+  value.state = api::EngineValueState::value;
+  return value;
+}
+
+exec::CanonicalJoinMgaRequest Request() {
+  const auto left_key = Descriptor(
+      "019f0000-0000-7200-8000-000000002401",
+      "019f0000-0000-7300-8000-000000002402");
+  const auto left_payload = Descriptor(
+      "019f0000-0000-7200-8000-000000002403",
+      "019f0000-0000-7300-8000-000000002404");
+  const auto right_key = Descriptor(
+      "019f0000-0000-7200-8000-000000002405",
+      "019f0000-0000-7300-8000-000000002406");
+  const auto right_payload = Descriptor(
+      "019f0000-0000-7200-8000-000000002407",
+      "019f0000-0000-7300-8000-000000002408");
+
+  exec::CanonicalJoinMgaRequest request;
+  auto& residual = request.strategy_request.residual_request;
+  auto& key = residual.key_request;
+  key.physical_dag.selected_plan_uuid =
+      "019f0000-0000-7200-8000-000000002409";
+  key.physical_dag.root_physical_node_id = 2403;
+  key.physical_dag.local_transaction_id = 2404;
+  key.physical_dag.statement_snapshot_id = 2405;
+  key.physical_dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       "019f0000-0000-7200-8000-000000002411"},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch,
+       "019f0000-0000-7200-8000-000000002412"},
+      {exec::PhysicalAdmissionStage::kSecurity,
+       "019f0000-0000-7200-8000-000000002413"},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       "019f0000-0000-7200-8000-000000002414"},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       "019f0000-0000-7200-8000-000000002415"},
+      {exec::PhysicalAdmissionStage::kResource,
+       "019f0000-0000-7200-8000-000000002416"},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       "019f0000-0000-7200-8000-000000002417"},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       "019f0000-0000-7200-8000-000000002418"},
+  };
+  key.physical_dag.nodes = {
+      {.physical_node_id = 2401,
+       .relational_node_id = 2401,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.left.typed.v1",
+       .output_descriptor_ids = {2401, 2402},
+       .causal_counter_id = 24001},
+      {.physical_node_id = 2402,
+       .relational_node_id = 2402,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.right.typed.v1",
+       .output_descriptor_ids = {2403, 2404},
+       .causal_counter_id = 24002},
+      {.physical_node_id = 2403,
+       .relational_node_id = 2403,
+       .node_kind = exec::PhysicalNodeKind::kJoin,
+       .implementation_id = "join.hash-inner.int64-equality.v1",
+       .input_physical_node_ids = {2401, 2402},
+       .output_descriptor_ids = {2401, 2402, 2403, 2404},
+       .causal_counter_id = 24003},
+  };
+  key.selected_physical_node_id = 2403;
+  key.left_batch = exec::MakeDescriptorBatch(
+      {{"left_key", left_key, false, 2401},
+       {"left_payload", left_payload, false, 2402}},
+      {{{Value(left_key, "1"), Value(left_payload, "10")}},
+       {{Value(left_key, "01"), Value(left_payload, "11")}},
+       {{Value(left_key, "2"), Value(left_payload, "12")}}});
+  key.right_batch = exec::MakeDescriptorBatch(
+      {{"right_key", right_key, false, 2403},
+       {"right_payload", right_payload, false, 2404}},
+      {{{Value(right_key, "1"), Value(right_payload, "20")}},
+       {{Value(right_key, "2"), Value(right_payload, "21")}},
+       {{Value(right_key, "01"), Value(right_payload, "22")}}});
+  key.key_terms = {
+      {.left_column = 0,
+       .left_expression_descriptor_id = 2401,
+       .right_column = 0,
+       .right_expression_descriptor_id = 2403},
+  };
+  using Truth = api::EngineSqlTruthValue;
+  residual.residual_truth_values = {
+      Truth::true_value,  Truth::true_value,  Truth::false_value,
+      Truth::false_value, Truth::true_value,  Truth::true_value,
+      Truth::true_value,  Truth::true_value,  Truth::true_value,
+  };
+
+  request.transaction_inventory_id = 2406;
+  request.inventory_local_transaction_id = 2404;
+  request.inventory_statement_snapshot_id = 2405;
+  request.transaction_inventory_evidence_uuid =
+      "019f0000-0000-7200-8000-000000002419";
+  request.candidate_evidence = {
+      {.pair_index = 0,
+       .local_transaction_id = 2404,
+       .statement_snapshot_id = 2405,
+       .left_row_version_id = 24101,
+       .right_row_version_id = 24201,
+       .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .right_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .index_candidate_generation = 7,
+       .current_index_generation = 7,
+       .exact_key_recheck = Truth::true_value,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000002421"},
+      {.pair_index = 5,
+       .local_transaction_id = 2404,
+       .statement_snapshot_id = 2405,
+       .left_row_version_id = 24102,
+       .right_row_version_id = 24202,
+       .left_visibility = exec::CanonicalMgaVisibilityDecision::kInvisible,
+       .right_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
+       .index_candidate_generation = 7,
+       .current_index_generation = 7,
+       .exact_key_recheck = Truth::true_value,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000002422"},
+      {.pair_index = 7,
+       .local_transaction_id = 2404,
+       .statement_snapshot_id = 2405,
+       .left_row_version_id = 24103,
+       .right_row_version_id = 24203,
+       .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .right_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
+       .security_decision = exec::CanonicalMgaSecurityDecision::kDenied,
+       .index_candidate_generation = 7,
+       .current_index_generation = 7,
+       .exact_key_recheck = Truth::true_value,
+       .engine_evidence_uuid =
+           "019f0000-0000-7200-8000-000000002423"},
+  };
+  return request;
+}
+
+// QOW-TEST-QRY-012-MGA-V1
+bool ValidateJoinMgaBoundary() {
+  bool passed = true;
+  auto result = exec::ExecuteCanonicalJoinMgaBoundary(Request());
+  passed &= Require(
+      result.diagnostic.ok && result.mga_boundary_proven &&
+          result.candidate_pair_count == 3 && result.visible_pair_count == 1 &&
+          result.visibility_filtered_pair_count == 1 &&
+          result.security_filtered_pair_count == 1 &&
+          result.output_batch.rows.size() == 1 &&
+          result.output_batch.rows[0].values[1].encoded_value == "10" &&
+          result.output_batch.rows[0].values[3].encoded_value == "20" &&
+          result.executed_physical_node_id == 2403,
+      "MGA boundary produced the wrong visible and secured join output");
+
+  auto request = Request();
+  request.candidate_evidence[1].index_candidate_generation = 6;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok && !result.mga_boundary_proven &&
+                        result.output_batch.rows.empty() &&
+                        result.candidate_pair_count == 0,
+                    "stale index generation published join output");
+
+  request = Request();
+  request.candidate_evidence[0].exact_key_recheck =
+      api::EngineSqlTruthValue::false_value;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "failed exact key recheck published a candidate");
+
+  request = Request();
+  request.candidate_evidence[0].left_visibility =
+      exec::CanonicalMgaVisibilityDecision::kIndeterminate;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "indeterminate MGA visibility was accepted");
+
+  request = Request();
+  request.candidate_evidence[0].security_decision =
+      exec::CanonicalMgaSecurityDecision::kIndeterminate;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "indeterminate security decision was accepted");
+
+  request = Request();
+  request.inventory_statement_snapshot_id = 9999;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "inventory snapshot drift was accepted");
+
+  request = Request();
+  request.candidate_evidence.pop_back();
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "missing candidate MGA evidence was accepted");
+
+  request = Request();
+  request.candidate_evidence[1].pair_index = 0;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "candidate physical identity drift was accepted");
+
+  request = Request();
+  request.maximum_boundary_rechecks = 2;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "MGA boundary recheck bound was exceeded");
+
+  request = Request();
+  request.strategy_request.residual_request.key_request.physical_dag
+      .local_transaction_id = 0;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "join MGA boundary accepted a missing transaction");
+
+  request = Request();
+  request.strategy_request.residual_request.key_request.left_batch.rows.clear();
+  request.strategy_request.residual_request.residual_truth_values.clear();
+  request.candidate_evidence.clear();
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(result.diagnostic.ok && result.mga_boundary_proven &&
+                        result.candidate_pair_count == 0 &&
+                        result.output_batch.rows.empty(),
+                    "empty join invented MGA boundary candidates");
+  return passed;
+}
+
+}  // namespace
+
+int main() {
+  return ValidateJoinMgaBoundary() ? EXIT_SUCCESS : EXIT_FAILURE;
+}
