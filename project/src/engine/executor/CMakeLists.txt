@@ -49,6 +49,7 @@ add_library(sb_engine_executor STATIC
   candidate_set_executor.cpp
   cpu_cache_layout_observability.cpp
   cte_executor.cpp
+  # QOW-CMAKE-QRY-029-V1
   descriptor_value_runtime.cpp
   dml_executor.cpp
   explain_executor.cpp
