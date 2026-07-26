@@ -150,7 +150,8 @@
                                               "aggregate finalize reached an impossible state"));
 }
 
-SblrResult EvaluateSblrWindowFunction(const SblrWindowFrameRequest& request) {
+SblrResult EvaluateLegacySblrWindowFunction(
+    const LegacySblrWindowFunctionRequest& request) {
   const auto kind = ResolveSblrWindowFunctionKind(request.function_id);
   if (kind == SblrWindowFunctionKind::unknown) {
     auto diagnostic = MakeSblrRefusalDiagnostic("SB_DIAG_WINDOW_FUNCTION_UNSUPPORTED",

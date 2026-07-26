@@ -132,6 +132,10 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-007-WINDOW-V1
   # QOW-CMAKE-WIN-004-V1
   # QOW-CMAKE-WIN-005-V1
+  # QOW-CMAKE-WIN-003-V1
+  # QOW-CMAKE-WIN-013-V1
+  # QOW-CMAKE-IAS-004-V1
+  window_frame_executor.cpp
   window_executor.cpp
 )
 

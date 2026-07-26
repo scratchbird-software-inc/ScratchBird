@@ -316,6 +316,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   }
   result.diagnostic = {};
   result.partition_count = partitions.size();
+  result.order_terms = request.order_terms;
   result.window_property_uuid = request.window_property_uuid;
   result.partition_property_uuid = request.partition_property_uuid;
   result.ordering_property_uuid = request.ordering_property_uuid;
@@ -323,6 +324,10 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   result.weaker_peer_recomputation_forbidden = true;
   result.final_query_order_guaranteed = false;
   result.authority.engine_mga_snapshot_bound = true;
+  result.inventory_local_transaction_id =
+      request.inventory_local_transaction_id;
+  result.inventory_statement_snapshot_id =
+      request.inventory_statement_snapshot_id;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;

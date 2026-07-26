@@ -20,7 +20,7 @@ namespace {
 
 using scratchbird::engine::sblr::FinalizeSblrAggregateState;
 using scratchbird::engine::sblr::InitializeSblrAggregateState;
-using scratchbird::engine::sblr::EvaluateSblrWindowFunction;
+using scratchbird::engine::sblr::EvaluateLegacySblrWindowFunction;
 using scratchbird::engine::sblr::MergeSblrAggregateState;
 using scratchbird::engine::sblr::SblrAggregateFinalizeRequest;
 using scratchbird::engine::sblr::SblrAggregateOptions;
@@ -31,7 +31,7 @@ using scratchbird::engine::sblr::SblrListAggOverflowMode;
 using scratchbird::engine::sblr::SblrStatusCode;
 using scratchbird::engine::sblr::SblrValue;
 using scratchbird::engine::sblr::SblrValuePayloadKind;
-using scratchbird::engine::sblr::SblrWindowFrameRequest;
+using scratchbird::engine::sblr::LegacySblrWindowFunctionRequest;
 using scratchbird::engine::sblr::SblrWindowRow;
 using scratchbird::engine::sblr::UpdateSblrAggregateState;
 
@@ -232,7 +232,7 @@ scratchbird::engine::sblr::SblrResult RunWindow(std::string function_id,
                                                 std::uint64_t nth = 1,
                                                 const SblrValue* default_value = nullptr,
                                                 const std::vector<std::uint64_t>& peer_groups = {}) {
-  SblrWindowFrameRequest request;
+  LegacySblrWindowFunctionRequest request;
   request.context.database_uuid = "SBSFC-015-runtime-db";
   request.context.transaction_uuid = "SBSFC-015-runtime-tx";
   request.context.transaction_context_present = true;
@@ -254,7 +254,7 @@ scratchbird::engine::sblr::SblrResult RunWindow(std::string function_id,
     if (index < peer_groups.size()) row.peer_group = peer_groups[index];
     request.rows.push_back(std::move(row));
   }
-  return EvaluateSblrWindowFunction(request);
+  return EvaluateLegacySblrWindowFunction(request);
 }
 
 bool ExpectOkScalar(const scratchbird::engine::sblr::SblrResult& result, std::string_view case_id) {

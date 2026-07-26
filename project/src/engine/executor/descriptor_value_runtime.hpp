@@ -1093,6 +1093,7 @@ struct CanonicalWindowPartitionOrderResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch ordered_batch;
   std::vector<CanonicalWindowRowPeerMetadata> row_metadata;
+  std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::size_t partition_count = 0;
   std::size_t peer_group_count = 0;
   std::string window_property_uuid;
@@ -1102,6 +1103,91 @@ struct CanonicalWindowPartitionOrderResult {
   bool weaker_peer_recomputation_forbidden = false;
   bool final_query_order_guaranteed = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+enum class CanonicalWindowFrameUnit : std::uint8_t {
+  rows = 1,
+  range,
+  groups,
+};
+
+enum class CanonicalWindowFrameBoundKind : std::uint8_t {
+  unbounded_preceding = 1,
+  offset_preceding,
+  current_row,
+  offset_following,
+  unbounded_following,
+};
+
+enum class CanonicalWindowFrameExclusion : std::uint8_t {
+  no_others = 1,
+  current_row,
+  group,
+  ties,
+};
+
+enum class CanonicalWindowFrameState : std::uint8_t {
+  nonempty = 1,
+  empty,
+  reversed_to_empty,
+};
+
+struct CanonicalWindowFrameBound {
+  CanonicalWindowFrameBoundKind kind =
+      CanonicalWindowFrameBoundKind::current_row;
+  std::optional<scratchbird::engine::internal_api::EngineTypedValue> offset;
+};
+
+struct CanonicalWindowFrameDescriptor {
+  std::string frame_descriptor_uuid;
+  bool frame_specified = false;
+  CanonicalWindowFrameUnit unit = CanonicalWindowFrameUnit::rows;
+  std::optional<CanonicalWindowFrameBound> start;
+  std::optional<CanonicalWindowFrameBound> end;
+  CanonicalWindowFrameExclusion exclusion =
+      CanonicalWindowFrameExclusion::no_others;
+};
+
+struct CanonicalWindowEffectiveFrame {
+  std::size_t ordered_row_index = 0;
+  std::optional<std::size_t> partition_id;
+  CanonicalWindowFrameState base_state =
+      CanonicalWindowFrameState::empty;
+  std::optional<std::size_t> base_begin;
+  std::optional<std::size_t> base_end_exclusive;
+  std::vector<std::size_t> effective_row_indices;
+  bool exclusion_applied = false;
+};
+
+struct CanonicalWindowFrameRequest {
+  CanonicalWindowPartitionOrderResult partition_order;
+  CanonicalWindowFrameDescriptor frame;
+  std::size_t maximum_effective_row_references = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowFrameResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch ordered_batch;
+  std::vector<CanonicalWindowRowPeerMetadata> row_metadata;
+  std::vector<CanonicalWindowEffectiveFrame> effective_frames;
+  CanonicalWindowFrameDescriptor resolved_frame;
+  std::string window_property_uuid;
+  std::string ordering_property_uuid;
+  bool defaulted_with_order = false;
+  bool defaulted_without_order = false;
+  bool every_frame_operand_consumed = false;
+  bool empty_state_uses_optional_bounds = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::uint64_t inventory_local_transaction_id = 0;
+  std::uint64_t inventory_statement_snapshot_id = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -1301,6 +1387,8 @@ CanonicalDescriptorOrderComparisonResult CompareCanonicalDescriptorOrderValues(
     const CanonicalDescriptorOrderTerm& term);
 CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     const CanonicalWindowPartitionOrderRequest& request);
+CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
+    const CanonicalWindowFrameRequest& request);
 CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
     const CanonicalInt64SumOrderedRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);

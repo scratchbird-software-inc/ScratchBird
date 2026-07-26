@@ -142,7 +142,11 @@ struct SblrWindowRow {
   std::uint64_t peer_group = 0;
 };
 
-struct SblrWindowFrameRequest {
+// Compatibility-only evaluator input retained for pre-QOW surface tests.
+// It is not a frame constructor and cannot carry optimizer, peer, MGA, or
+// causal-plan authority. Production frame construction is descriptor-driven
+// through executor::ExecuteCanonicalWindowFrames.
+struct LegacySblrWindowFunctionRequest {
   SblrExecutionContext context;
   std::string function_id;
   std::string function_uuid;
@@ -177,7 +181,8 @@ SblrResult MergeSblrAggregateState(SblrAggregateWindowState* target,
                                    const SblrExecutionContext& context);
 SblrResult FinalizeSblrAggregateState(const SblrAggregateWindowState& state,
                                       const SblrAggregateFinalizeRequest& request);
-SblrResult EvaluateSblrWindowFunction(const SblrWindowFrameRequest& request);
+SblrResult EvaluateLegacySblrWindowFunction(
+    const LegacySblrWindowFunctionRequest& request);
 SblrResult RefuseSblrAggregateWindowRuntime(const SblrExecutionContext& context,
                                             const SblrAggregateWindowState& state);
 

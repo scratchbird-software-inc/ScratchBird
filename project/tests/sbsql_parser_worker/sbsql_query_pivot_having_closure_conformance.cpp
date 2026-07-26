@@ -753,7 +753,7 @@ void RequireSblrAggregateWindowRuntime() {
   for (const auto& function_id : window_ids) {
     Require(sblr::IsSblrWindowFunctionSupported(function_id),
             "registered window id did not resolve as supported");
-    sblr::SblrWindowFrameRequest request;
+    sblr::LegacySblrWindowFunctionRequest request;
     request.context = context;
     request.function_id = function_id;
     request.function_uuid = "019f0000-0000-7000-8000-000000090c03";
@@ -767,7 +767,7 @@ void RequireSblrAggregateWindowRuntime() {
     request.aggregate_function_id = "sum";
     request.aggregate_function_uuid = "019f0000-0000-7000-8000-000000090c04";
     request.aggregate_result_descriptor_id = "int64";
-    const auto result = sblr::EvaluateSblrWindowFunction(request);
+    const auto result = sblr::EvaluateLegacySblrWindowFunction(request);
     if (!result.ok()) {
       for (const auto& diagnostic : result.diagnostics) {
         std::cerr << function_id << ':' << diagnostic.diagnostic_id << ':' << diagnostic.detail << '\n';
@@ -777,11 +777,11 @@ void RequireSblrAggregateWindowRuntime() {
             "registered window function failed");
   }
 
-  sblr::SblrWindowFrameRequest bad_window;
+  sblr::LegacySblrWindowFunctionRequest bad_window;
   bad_window.context = context;
   bad_window.function_id = "window.teleport";
   bad_window.function_uuid = "019f0000-0000-7000-8000-000000090c05";
-  const auto bad = sblr::EvaluateSblrWindowFunction(bad_window);
+  const auto bad = sblr::EvaluateLegacySblrWindowFunction(bad_window);
   Require(!bad.ok() && !bad.diagnostics.empty() &&
               bad.diagnostics.front().diagnostic_id == "SB_DIAG_WINDOW_FUNCTION_UNSUPPORTED",
           "unknown window diagnostic drifted");

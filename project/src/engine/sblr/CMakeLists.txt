@@ -41,6 +41,11 @@ add_library(sb_engine_sblr
   dispatch/sblr_family_dispatch_landing_zone.cpp
   operators/sblr_operator_family_landing_zone.cpp
   special_forms/sblr_special_form_family_landing_zone.cpp
+  # QOW-CMAKE-WIN-003-V1
+  # QOW-CMAKE-WIN-013-V1
+  # QOW-CMAKE-IAS-004-V1
+  # The index/sentinel evaluator below is compatibility-only. Canonical frame
+  # construction enters through the linked sb_engine_executor target.
   sblr_aggregate_window_runtime.cpp
   sblr_api_trace.cpp
   sblr_assignment_runtime.cpp
