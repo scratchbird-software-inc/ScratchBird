@@ -32,6 +32,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-008-NULL-V1
   # QOW-CMAKE-QRY-008-COERCE-V1
   # QOW-CMAKE-QRY-008-COLLATION-V1
+  # QOW-CMAKE-QRY-008-TIMEZONE-V1
   add_library(sb_qow_typed_scalar_descriptor_contract STATIC
     query/expression_api.cpp
   )

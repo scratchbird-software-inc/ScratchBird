@@ -53,6 +53,28 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     const EngineUuid& resource_uuid,
     const std::string& expected_resource_family);
 
+struct EngineTimezoneSeedAuthorityDescriptor {
+  bool active = false;
+  std::string seed_pack_name;
+  std::string seed_pack_version;
+  std::string content_hash;
+  EngineApiU64 resource_epoch = 0;
+  EngineApiU64 timezone_epoch = 0;
+  std::uint32_t timezone_records = 0;
+  std::uint32_t timezone_transition_records = 0;
+  std::uint32_t timezone_leap_second_records = 0;
+  std::vector<std::string> timezone_names;
+};
+
+struct EngineTimezoneSeedAuthorityLookupResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineTimezoneSeedAuthorityDescriptor authority;
+};
+
+EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
+    const EngineRequestContext& context);
+
 // Bounded engine-owned semantic projection attached only when name resolution
 // resolves a persisted global-aggregate view.  It deliberately omits the
 // source relation/column and expression literal retained by the engine-side

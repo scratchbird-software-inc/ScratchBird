@@ -757,6 +757,131 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
   return result;
 }
 
+EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
+    const EngineRequestContext& context) {
+  EngineTimezoneSeedAuthorityLookupResult result;
+  auto fail = [&](std::string code,
+                  std::string message_key,
+                  std::string detail) {
+    result.diagnostic = MakeEngineApiDiagnostic(std::move(code),
+                                                std::move(message_key),
+                                                std::move(detail));
+    return result;
+  };
+  if (context.database_path.empty()) {
+    return fail("CATALOG.RESOURCE.DATABASE_REQUIRED",
+                "catalog.resource.database_required",
+                "database_path_required");
+  }
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty()) {
+    return fail("CATALOG.RESOURCE.TRANSACTION_REQUIRED",
+                "catalog.resource.transaction_required",
+                "exact_active_transaction_identity_required");
+  }
+
+  scratchbird::storage::database::DatabaseOpenConfig open_config;
+  open_config.path = context.database_path;
+  open_config.read_only = true;
+  open_config.suppress_background_agents = true;
+  const auto opened =
+      scratchbird::storage::database::OpenDatabaseFile(open_config);
+  if (!opened.ok()) {
+    return fail("CATALOG.RESOURCE.CATALOG_UNAVAILABLE",
+                "catalog.resource.catalog_unavailable",
+                opened.diagnostic.diagnostic_code);
+  }
+  if (!opened.state.resource_seed_catalog_present ||
+      !opened.state.resource_seed_catalog.active) {
+    return fail("CATALOG.RESOURCE.CATALOG_REQUIRED",
+                "catalog.resource.catalog_required",
+                "durable_resource_seed_catalog_required");
+  }
+  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::transaction,
+      context.transaction_uuid.canonical);
+  if (!parsed_transaction.ok()) {
+    return fail("CATALOG.RESOURCE.TRANSACTION_INVALID",
+                "catalog.resource.transaction_invalid",
+                "transaction_uuid_malformed");
+  }
+  const scratchbird::transaction::mga::TransactionInventoryEntry*
+      transaction_entry = nullptr;
+  for (const auto& entry : opened.state.local_transaction_inventory.entries) {
+    if (entry.identity.local_id.value == context.local_transaction_id) {
+      transaction_entry = &entry;
+      break;
+    }
+  }
+  if (transaction_entry == nullptr ||
+      transaction_entry->identity.transaction_uuid.value !=
+          parsed_transaction.value.value ||
+      !IsResourceReadableTransactionState(transaction_entry->state)) {
+    return fail("CATALOG.RESOURCE.TRANSACTION_NOT_ACTIVE",
+                "catalog.resource.transaction_not_active",
+                "exact_active_transaction_identity_required");
+  }
+  if (!context.database_uuid.canonical.empty() &&
+      context.database_uuid.canonical != scratchbird::core::uuid::UuidToString(
+                                             opened.state.database_uuid.value)) {
+    return fail("CATALOG.RESOURCE.DATABASE_IDENTITY_MISMATCH",
+                "catalog.resource.database_identity_mismatch",
+                "database_uuid_does_not_match_catalog_authority");
+  }
+
+  const auto& image = opened.state.resource_seed_catalog;
+  if (context.resource_epoch == 0) {
+    return fail("CATALOG.RESOURCE.EPOCH_REQUIRED",
+                "catalog.resource.epoch_required",
+                "exact_nonzero_resource_epoch_required");
+  }
+  if (context.resource_epoch != image.resource_epoch) {
+    return fail("CATALOG.RESOURCE.EPOCH_STALE",
+                "catalog.resource.epoch_stale",
+                "requested=" + std::to_string(context.resource_epoch) +
+                    ";current=" + std::to_string(image.resource_epoch));
+  }
+
+  EngineTimezoneSeedAuthorityDescriptor authority;
+  authority.active = image.active;
+  authority.seed_pack_name = image.seed_pack_name;
+  authority.seed_pack_version = image.seed_pack_version;
+  authority.content_hash = image.timezone_content_hash;
+  authority.resource_epoch = image.resource_epoch;
+  authority.timezone_epoch = image.timezone_epoch;
+  authority.timezone_records = image.timezone_records;
+  authority.timezone_transition_records =
+      image.timezone_transition_records;
+  authority.timezone_leap_second_records =
+      image.timezone_leap_second_records;
+  for (const auto& alias : image.aliases) {
+    if (alias.family !=
+        scratchbird::core::resources::ResourceSeedFamily::timezone_tables) {
+      continue;
+    }
+    authority.timezone_names.push_back(alias.alias);
+    authority.timezone_names.push_back(alias.canonical_name);
+  }
+  std::sort(authority.timezone_names.begin(), authority.timezone_names.end());
+  authority.timezone_names.erase(
+      std::unique(authority.timezone_names.begin(),
+                  authority.timezone_names.end()),
+      authority.timezone_names.end());
+  if (!authority.active || authority.seed_pack_name.empty() ||
+      authority.seed_pack_version.empty() || authority.content_hash.empty() ||
+      authority.resource_epoch == 0 || authority.timezone_epoch == 0 ||
+      authority.timezone_records == 0 || authority.timezone_names.empty()) {
+    return fail("CATALOG.RESOURCE.TIMEZONE_AUTHORITY_INVALID",
+                "catalog.resource.timezone_authority_invalid",
+                "durable_timezone_seed_authority_incomplete");
+  }
+  result.ok = true;
+  result.diagnostic =
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  result.authority = std::move(authority);
+  return result;
+}
+
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_NAME_RESOLUTION_API_BEHAVIOR
 EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& request) {
   if (auto resource_result = ResolveEngineResourceName(request)) {

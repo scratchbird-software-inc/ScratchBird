@@ -9,6 +9,7 @@
 #include "query/expression_api.hpp"
 
 #include "datatype_operations.hpp"
+#include "datatype_temporal_wire.hpp"
 
 #include <cctype>
 #include <cstddef>
@@ -228,6 +229,91 @@ bool QowCompareCanonicalCollatedScalarsV1(
     return false;
   }
   *comparison = compared.comparison;
+  return true;
+}
+
+// QOW-SOURCE-QRY-008-TIMEZONE-V1
+bool QowNormalizeCanonicalTimezoneScalarV1(
+    const EngineTypedValue& input_value,
+    const scratchbird::core::datatypes::TimezoneSeedAuthority& timezone_seed,
+    const EngineApiU64 resource_epoch,
+    const EngineApiU64 timezone_epoch,
+    EngineTypedValue* output_value,
+    std::string* timezone_identifier,
+    int* timezone_offset_minutes,
+    bool* used_timezone_seed,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (output_value == nullptr || timezone_identifier == nullptr ||
+      timezone_offset_minutes == nullptr || used_timezone_seed == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  *output_value = EngineTypedValue{};
+  output_value->state = EngineValueState::error;
+  timezone_identifier->clear();
+  *timezone_offset_minutes = 0;
+  *used_timezone_seed = false;
+  refusal_detail->clear();
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      input_value.descriptor.canonical_type_name);
+  const std::string timezone_profile = QowCanonicalDescriptorFieldV1(
+      input_value.descriptor.encoded_descriptor, "timezone_profile_id");
+  const bool profile_matches_type =
+      (type_id == dt::CanonicalTypeId::timestamp &&
+       timezone_profile == "timestamp_timezone_profile") ||
+      (type_id == dt::CanonicalTypeId::time &&
+       timezone_profile == "time_timezone_profile");
+  if (!QowCanonicalDescriptorIdentityV1(input_value.descriptor) ||
+      input_value.descriptor.descriptor_kind != "scalar" ||
+      !profile_matches_type) {
+    *refusal_detail =
+        "canonical temporal descriptor has no matching timezone profile";
+    return false;
+  }
+  if (resource_epoch == 0 || timezone_epoch == 0 || !timezone_seed.active ||
+      timezone_seed.seed_pack_name.empty() ||
+      timezone_seed.seed_pack_version.empty() ||
+      timezone_seed.content_hash.empty() ||
+      timezone_seed.timezone_records == 0 ||
+      timezone_seed.timezone_names.empty()) {
+    *refusal_detail = "bound timezone seed authority is incomplete";
+    return false;
+  }
+  if (input_value.isSqlNull()) {
+    if (!QowCanonicalSqlNullStateV1(input_value)) {
+      *refusal_detail = "SQL NULL temporal scalar carries substitute payload";
+      return false;
+    }
+    *output_value = QowPropagateSqlNullAfterScalarV1(
+        input_value.descriptor, input_value);
+    return true;
+  }
+  if (input_value.state != EngineValueState::value || input_value.is_null) {
+    *refusal_detail = "timezone normalization requires a value or SQL NULL";
+    return false;
+  }
+  dt::ReferenceTemporalWireProfileRequest request;
+  request.reference_engine = "scratchbird_native";
+  request.reference_type_or_family = input_value.descriptor.canonical_type_name;
+  request.wire_profile = timezone_profile;
+  request.encoded_value = input_value.encoded_value;
+  request.timezone_seed = timezone_seed;
+  const auto normalized = dt::ValidateReferenceTemporalWireProfile(request);
+  if (!normalized.ok() || normalized.canonical_type_id != type_id) {
+    *refusal_detail = normalized.diagnostic.diagnostic_code.empty()
+                          ? "canonical timezone normalization refused"
+                          : normalized.diagnostic.diagnostic_code;
+    return false;
+  }
+  output_value->descriptor = input_value.descriptor;
+  output_value->encoded_value = normalized.normalized_value;
+  output_value->binary_value.clear();
+  output_value->is_null = false;
+  output_value->state = EngineValueState::value;
+  *timezone_identifier = normalized.timezone_identifier;
+  *timezone_offset_minutes = normalized.timezone_offset_minutes;
+  *used_timezone_seed = normalized.used_timezone_seed;
   return true;
 }
 
@@ -730,6 +816,63 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
       {"canonical_collation_identity", left_collation});
   result.evidence.push_back(
       {"collation_epoch", std::to_string(result.collation_epoch)});
+  return result;
+}
+
+EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
+    const EngineNormalizeTimezoneScalarRequest& request) {
+  const EngineTypedValue input =
+      RequestInputValue(request, request.input_value);
+  const auto resolved = LookupEngineTimezoneSeedAuthority(request.context);
+  auto refuse = [&](std::string detail) {
+    return ApiFailure<EngineNormalizeTimezoneScalarResult>(
+        request.context,
+        "query.normalize_timezone_scalar",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-008-TIMEZONE-REFUSAL-V1",
+            "engine.query.typed_scalar_timezone_refused",
+            std::move(detail)));
+  };
+  if (!resolved.ok) {
+    return refuse(resolved.diagnostic.code.empty()
+                      ? "bound timezone seed authority was not resolved"
+                      : resolved.diagnostic.code);
+  }
+  scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
+  timezone_seed.active = resolved.authority.active;
+  timezone_seed.seed_pack_name = resolved.authority.seed_pack_name;
+  timezone_seed.seed_pack_version = resolved.authority.seed_pack_version;
+  timezone_seed.content_hash = resolved.authority.content_hash;
+  timezone_seed.timezone_records = resolved.authority.timezone_records;
+  timezone_seed.timezone_transition_records =
+      resolved.authority.timezone_transition_records;
+  timezone_seed.timezone_leap_second_records =
+      resolved.authority.timezone_leap_second_records;
+  timezone_seed.timezone_names = resolved.authority.timezone_names;
+  EngineTypedValue output;
+  std::string timezone_identifier;
+  int timezone_offset_minutes = 0;
+  bool used_timezone_seed = false;
+  std::string refusal_detail;
+  if (!QowNormalizeCanonicalTimezoneScalarV1(
+          input, timezone_seed, resolved.authority.resource_epoch,
+          resolved.authority.timezone_epoch, &output, &timezone_identifier,
+          &timezone_offset_minutes, &used_timezone_seed, &refusal_detail)) {
+    return refuse(std::move(refusal_detail));
+  }
+  auto result = ApiSuccess<EngineNormalizeTimezoneScalarResult>(
+      request.context, "query.normalize_timezone_scalar");
+  result.value = std::move(output);
+  result.timezone_identifier = std::move(timezone_identifier);
+  result.timezone_offset_minutes = timezone_offset_minutes;
+  result.used_timezone_seed = used_timezone_seed;
+  result.timezone_epoch = resolved.authority.timezone_epoch;
+  result.result_shape.result_kind = "typed_value";
+  result.result_shape.columns.push_back(result.value.descriptor);
+  result.evidence.push_back(
+      {"timezone_seed_version", resolved.authority.seed_pack_version});
+  result.evidence.push_back(
+      {"timezone_epoch", std::to_string(result.timezone_epoch)});
   return result;
 }
 

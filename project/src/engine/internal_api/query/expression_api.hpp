@@ -43,6 +43,19 @@ struct EngineCompareScalarValuesResult : EngineApiResult {
 EngineCompareScalarValuesResult EngineCompareScalarValues(
     const EngineCompareScalarValuesRequest& request);
 
+struct EngineNormalizeTimezoneScalarRequest : EngineApiRequest {
+  EngineTypedValue input_value;
+};
+struct EngineNormalizeTimezoneScalarResult : EngineApiResult {
+  EngineTypedValue value;
+  std::string timezone_identifier;
+  int timezone_offset_minutes = 0;
+  bool used_timezone_seed = false;
+  EngineApiU64 timezone_epoch = 0;
+};
+EngineNormalizeTimezoneScalarResult EngineNormalizeTimezoneScalar(
+    const EngineNormalizeTimezoneScalarRequest& request);
+
 struct EngineExtractValueRequest : EngineApiRequest {
   EngineTypedValue input_value;
   std::string field;
