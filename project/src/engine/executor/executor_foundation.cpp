@@ -1912,6 +1912,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     result.consumed_right_multiplicity_count = 0;
     result.eliminated_duplicate_row_count = 0;
     result.equality_comparison_count = 0;
+    result.coerced_value_count = 0;
+    result.reconciled_type_names.clear();
     result.right_to_result_column_indices.clear();
     result.implementation_id.clear();
     result.selected_plan_uuid.clear();
@@ -1933,6 +1935,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   }
   if (!bound_collation && !request.collation_bindings.empty()) {
     return refuse("collation bindings require the bound-collation profile");
+  }
+  const bool reconcile_types =
+      request.type_profile ==
+      CanonicalSetOperationTypeProfile::kLosslessImplicit;
+  if (!reconcile_types &&
+      request.type_profile != CanonicalSetOperationTypeProfile::kExact) {
+    return refuse("set-operation type reconciliation profile is unknown",
+                  "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
   }
 
   const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
@@ -1997,13 +2007,17 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         break;
     }
     if (implementation.empty()) return implementation;
+    if (reconcile_types) implementation += ".type-reconciled";
     if (bound_collation) implementation += ".null-collation";
     implementation += ".typed.v1";
     return implementation;
   }();
   if (expected_implementation.empty() ||
       selected_node->implementation_id != expected_implementation) {
-    return refuse("set-operation kind, quantifier, or alignment profile drifted");
+    return refuse(
+        "set-operation kind, quantifier, alignment, or type profile drifted",
+        reconcile_types ? "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1"
+                        : std::string{});
   }
 
   const PhysicalNodeRecord* left_node = nullptr;
@@ -2114,27 +2128,134 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     }
   }
 
+  namespace dt = scratchbird::core::datatypes;
+  std::vector<std::string> reconciled_type_names;
+  reconciled_type_names.reserve(request.result_columns.size());
+
+  // QOW-SOURCE-QRY-016-TYPE-V1
+  // The result descriptor is the already-bound common type. Only identity and
+  // core-classified lossless implicit conversions may reach set equality;
+  // explicit-only, lossy, forbidden, and unknown conversions are refusals.
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
     const auto& left = request.left_batch.columns[column];
     const auto& right = aligned_right.columns[column];
     const auto& output = request.result_columns[column];
-    if (left.descriptor.descriptor_kind != "scalar" ||
-        right.descriptor.descriptor_kind != "scalar" ||
-        output.descriptor.descriptor_kind != "scalar" ||
-        left.descriptor.canonical_type_name !=
-            right.descriptor.canonical_type_name ||
-        left.descriptor.canonical_type_name !=
-            output.descriptor.canonical_type_name ||
-        left.descriptor.encoded_descriptor !=
-            right.descriptor.encoded_descriptor ||
-        left.descriptor.encoded_descriptor !=
-            output.descriptor.encoded_descriptor ||
-        output.nullable != (left.nullable || right.nullable)) {
+    bool compatible = left.descriptor.descriptor_kind == "scalar" &&
+                      right.descriptor.descriptor_kind == "scalar" &&
+                      output.descriptor.descriptor_kind == "scalar";
+    if (compatible && output.nullable != (left.nullable || right.nullable)) {
+      compatible = false;
+    }
+    if (compatible && !reconcile_types) {
+      compatible =
+          left.descriptor.canonical_type_name ==
+              right.descriptor.canonical_type_name &&
+          left.descriptor.canonical_type_name ==
+              output.descriptor.canonical_type_name &&
+          left.descriptor.encoded_descriptor ==
+              right.descriptor.encoded_descriptor &&
+          left.descriptor.encoded_descriptor ==
+              output.descriptor.encoded_descriptor;
+    }
+    if (compatible && reconcile_types) {
+      const auto target_type = dt::CanonicalTypeIdFromStableName(
+          output.descriptor.canonical_type_name);
+      const auto left_type = dt::CanonicalTypeIdFromStableName(
+          left.descriptor.canonical_type_name);
+      const auto right_type = dt::CanonicalTypeIdFromStableName(
+          right.descriptor.canonical_type_name);
+      const auto left_cast = dt::ClassifyDatatypeCast(left_type, target_type);
+      const auto right_cast = dt::ClassifyDatatypeCast(right_type, target_type);
+      const auto admitted = [](const dt::DatatypeCastCategory category) {
+        return category == dt::DatatypeCastCategory::identity ||
+               category == dt::DatatypeCastCategory::lossless_implicit;
+      };
+      compatible = target_type != dt::CanonicalTypeId::unknown &&
+                   left_type != dt::CanonicalTypeId::unknown &&
+                   right_type != dt::CanonicalTypeId::unknown &&
+                   admitted(left_cast) && admitted(right_cast);
+      if (compatible && bound_collation &&
+          target_type == dt::CanonicalTypeId::character) {
+        compatible =
+            left.descriptor.encoded_descriptor ==
+                right.descriptor.encoded_descriptor &&
+            left.descriptor.encoded_descriptor ==
+                output.descriptor.encoded_descriptor;
+      }
+    }
+    if (!compatible) {
       return refuse(
-          "set-operation descriptors require exact reconciliation",
-          bound_collation
+          reconcile_types
+              ? "set-operation type reconciliation is not lossless implicit"
+              : "set-operation descriptors require exact reconciliation",
+          reconcile_types
+              ? "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1"
+              : bound_collation
               ? "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1"
               : std::string{});
+    }
+    reconciled_type_names.push_back(output.descriptor.canonical_type_name);
+  }
+
+  DescriptorBatch reconciled_left = request.left_batch;
+  DescriptorBatch reconciled_right = aligned_right;
+  std::size_t coerced_value_count = 0;
+  if (reconcile_types) {
+    std::string reconciliation_detail;
+    const auto reconcile_batch = [&](DescriptorBatch* batch) {
+      if (batch == nullptr) return false;
+      for (std::size_t column = 0; column < batch->columns.size(); ++column) {
+        const auto source_type = dt::CanonicalTypeIdFromStableName(
+            batch->columns[column].descriptor.canonical_type_name);
+        const auto target_type = dt::CanonicalTypeIdFromStableName(
+            request.result_columns[column].descriptor.canonical_type_name);
+        for (auto& row : batch->rows) {
+          dt::DatatypeCastRequest source_validation;
+          source_validation.value.type_id = source_type;
+          source_validation.value.encoded_value =
+              row.values[column].encoded_value;
+          source_validation.value.is_null =
+              row.values[column].state == api::sql_null;
+          source_validation.target_type_id = source_type;
+          const auto validated = dt::CastDatatypeValue(source_validation);
+          if (!validated.ok()) {
+            reconciliation_detail =
+                validated.diagnostic.diagnostic_code.empty()
+                    ? "set-operation source value is not canonical"
+                    : validated.diagnostic.diagnostic_code;
+            return false;
+          }
+          dt::DatatypeCastRequest conversion;
+          conversion.value = source_validation.value;
+          conversion.target_type_id = target_type;
+          const auto cast = dt::CastDatatypeValue(conversion);
+          if (!cast.ok()) {
+            reconciliation_detail =
+                cast.diagnostic.diagnostic_code.empty()
+                    ? "set-operation lossless implicit cast refused"
+                    : cast.diagnostic.diagnostic_code;
+            return false;
+          }
+          if (source_type != target_type) ++coerced_value_count;
+          row.values[column].descriptor =
+              request.result_columns[column].descriptor;
+          row.values[column].encoded_value = cast.value.encoded_value;
+          row.values[column].binary_value.clear();
+          row.values[column].is_null = cast.value.is_null;
+          row.values[column].state =
+              cast.value.is_null ? api::sql_null : api::value;
+        }
+        batch->columns[column].descriptor =
+            request.result_columns[column].descriptor;
+        batch->columns[column].nullable =
+            request.result_columns[column].nullable;
+      }
+      return true;
+    };
+    if (!reconcile_batch(&reconciled_left) ||
+        !reconcile_batch(&reconciled_right)) {
+      return refuse(std::move(reconciliation_detail),
+                    "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
     }
   }
 
@@ -2292,17 +2413,17 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
 
   std::vector<RowKey> left_keys;
   std::vector<RowKey> right_keys;
-  left_keys.reserve(request.left_batch.rows.size());
-  right_keys.reserve(aligned_right.rows.size());
+  left_keys.reserve(reconciled_left.rows.size());
+  right_keys.reserve(reconciled_right.rows.size());
   std::string key_detail;
-  for (const auto& row : request.left_batch.rows) {
+  for (const auto& row : reconciled_left.rows) {
     RowKey key;
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
     }
     left_keys.push_back(std::move(key));
   }
-  for (const auto& row : aligned_right.rows) {
+  for (const auto& row : reconciled_right.rows) {
     RowKey key;
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
@@ -2359,15 +2480,15 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
             "collation:" + std::to_string(representatives.size() - 1);
         return true;
       };
-      for (std::size_t row = 0; row < request.left_batch.rows.size(); ++row) {
-        if (!classify(request.left_batch.rows[row].values[column],
+      for (std::size_t row = 0; row < reconciled_left.rows.size(); ++row) {
+        if (!classify(reconciled_left.rows[row].values[column],
                       &left_keys[row][column])) {
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
         }
       }
-      for (std::size_t row = 0; row < aligned_right.rows.size(); ++row) {
-        if (!classify(aligned_right.rows[row].values[column],
+      for (std::size_t row = 0; row < reconciled_right.rows.size(); ++row) {
+        if (!classify(reconciled_right.rows[row].values[column],
                       &right_keys[row][column])) {
           return refuse(std::move(key_detail),
                         "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
@@ -2389,14 +2510,14 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     std::set<RowKey> emitted;
     for (std::size_t index = 0; index < left_keys.size(); ++index) {
       if (emitted.insert(left_keys[index]).second) {
-        output.rows.push_back(retag_row(request.left_batch.rows[index]));
+        output.rows.push_back(retag_row(reconciled_left.rows[index]));
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
     for (std::size_t index = 0; index < right_keys.size(); ++index) {
       if (emitted.insert(right_keys[index]).second) {
-        output.rows.push_back(retag_row(aligned_right.rows[index]));
+        output.rows.push_back(retag_row(reconciled_right.rows[index]));
       } else {
         ++eliminated_duplicate_row_count;
       }
@@ -2413,17 +2534,17 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
               : !present_on_right;
       if (!candidate) continue;
       if (emitted.insert(left_keys[index]).second) {
-        output.rows.push_back(retag_row(request.left_batch.rows[index]));
+        output.rows.push_back(retag_row(reconciled_left.rows[index]));
       } else {
         ++eliminated_duplicate_row_count;
       }
     }
   } else if (request.operation == CanonicalSetOperationKind::kUnion) {
     output.rows.reserve(left_keys.size() + right_keys.size());
-    for (const auto& row : request.left_batch.rows) {
+    for (const auto& row : reconciled_left.rows) {
       output.rows.push_back(retag_row(row));
     }
-    for (const auto& row : aligned_right.rows) {
+    for (const auto& row : reconciled_right.rows) {
       output.rows.push_back(retag_row(row));
     }
   } else {
@@ -2441,7 +2562,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
           request.operation == CanonicalSetOperationKind::kIntersect
               ? consumes
               : !consumes;
-      if (emit) output.rows.push_back(retag_row(request.left_batch.rows[index]));
+      if (emit) output.rows.push_back(retag_row(reconciled_left.rows[index]));
     }
   }
   if (output.rows.size() > request.maximum_output_row_count) {
@@ -2462,6 +2583,8 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   result.eliminated_duplicate_row_count =
       eliminated_duplicate_row_count;
   result.equality_comparison_count = equality_comparison_count;
+  result.coerced_value_count = coerced_value_count;
+  result.reconciled_type_names = std::move(reconciled_type_names);
   result.right_to_result_column_indices =
       std::move(right_to_result_column_indices);
   result.implementation_id = expected_implementation;

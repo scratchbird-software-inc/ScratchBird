@@ -714,6 +714,11 @@ enum class CanonicalSetOperationEqualityProfile : std::uint8_t {
   kNullEqualBoundCollation,
 };
 
+enum class CanonicalSetOperationTypeProfile : std::uint8_t {
+  kExact = 1,
+  kLosslessImplicit,
+};
+
 struct CanonicalSetOperationCollationBinding {
   std::size_t result_column = 0;
   std::string collation_uuid;
@@ -735,6 +740,8 @@ struct CanonicalSetOperationAllRequest {
       CanonicalSetOperationQuantifier::kAll;
   CanonicalSetOperationEqualityProfile equality_profile =
       CanonicalSetOperationEqualityProfile::kExactTyped;
+  CanonicalSetOperationTypeProfile type_profile =
+      CanonicalSetOperationTypeProfile::kExact;
   std::vector<CanonicalSetOperationCollationBinding> collation_bindings;
   std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
@@ -748,6 +755,8 @@ struct CanonicalSetOperationAllResult {
   std::size_t consumed_right_multiplicity_count = 0;
   std::size_t eliminated_duplicate_row_count = 0;
   std::size_t equality_comparison_count = 0;
+  std::size_t coerced_value_count = 0;
+  std::vector<std::string> reconciled_type_names;
   std::vector<std::size_t> right_to_result_column_indices;
   std::string implementation_id;
   std::string selected_plan_uuid;
