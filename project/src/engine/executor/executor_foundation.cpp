@@ -1911,6 +1911,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     result.right_input_row_count = 0;
     result.consumed_right_multiplicity_count = 0;
     result.eliminated_duplicate_row_count = 0;
+    result.equality_comparison_count = 0;
     result.right_to_result_column_indices.clear();
     result.implementation_id.clear();
     result.selected_plan_uuid.clear();
@@ -1921,6 +1922,17 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
 
   if (request.quantifier != admitted_quantifier) {
     return refuse("set-operation quantifier and entry point differ");
+  }
+  const bool bound_collation =
+      request.equality_profile ==
+      CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation;
+  if (!bound_collation &&
+      request.equality_profile !=
+          CanonicalSetOperationEqualityProfile::kExactTyped) {
+    return refuse("set-operation equality profile is unknown");
+  }
+  if (!bound_collation && !request.collation_bindings.empty()) {
+    return refuse("collation bindings require the bound-collation profile");
   }
 
   const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
@@ -1954,33 +1966,40 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                         CanonicalSetOperationAlignment::kOrdinal) {
       return std::string{};
     }
+    std::string implementation;
     switch (request.operation) {
       case CanonicalSetOperationKind::kUnion:
         if (distinct) {
-          return by_name
-                     ? std::string("setop.union-distinct.by-name.typed.v1")
-                     : std::string("setop.union-distinct.ordinal.typed.v1");
+          implementation = by_name ? "setop.union-distinct.by-name"
+                                   : "setop.union-distinct.ordinal";
+          break;
         }
-        return by_name ? std::string("setop.union-all.by-name.typed.v1")
-                       : std::string("setop.union-all.ordinal.typed.v1");
+        implementation = by_name ? "setop.union-all.by-name"
+                                 : "setop.union-all.ordinal";
+        break;
       case CanonicalSetOperationKind::kIntersect:
         if (distinct) {
-          return by_name
-                     ? std::string("setop.intersect-distinct.by-name.typed.v1")
-                     : std::string("setop.intersect-distinct.ordinal.typed.v1");
+          implementation = by_name ? "setop.intersect-distinct.by-name"
+                                   : "setop.intersect-distinct.ordinal";
+          break;
         }
-        return by_name ? std::string("setop.intersect-all.by-name.typed.v1")
-                       : std::string("setop.intersect-all.ordinal.typed.v1");
+        implementation = by_name ? "setop.intersect-all.by-name"
+                                 : "setop.intersect-all.ordinal";
+        break;
       case CanonicalSetOperationKind::kExcept:
         if (distinct) {
-          return by_name
-                     ? std::string("setop.except-distinct.by-name.typed.v1")
-                     : std::string("setop.except-distinct.ordinal.typed.v1");
+          implementation = by_name ? "setop.except-distinct.by-name"
+                                   : "setop.except-distinct.ordinal";
+          break;
         }
-        return by_name ? std::string("setop.except-all.by-name.typed.v1")
-                       : std::string("setop.except-all.ordinal.typed.v1");
+        implementation = by_name ? "setop.except-all.by-name"
+                                 : "setop.except-all.ordinal";
+        break;
     }
-    return std::string{};
+    if (implementation.empty()) return implementation;
+    if (bound_collation) implementation += ".null-collation";
+    implementation += ".typed.v1";
+    return implementation;
   }();
   if (expected_implementation.empty() ||
       selected_node->implementation_id != expected_implementation) {
@@ -2111,7 +2130,87 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
         left.descriptor.encoded_descriptor !=
             output.descriptor.encoded_descriptor ||
         output.nullable != (left.nullable || right.nullable)) {
-      return refuse("set-operation descriptors require exact reconciliation");
+      return refuse(
+          "set-operation descriptors require exact reconciliation",
+          bound_collation
+              ? "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1"
+              : std::string{});
+    }
+  }
+
+  std::vector<const CanonicalSetOperationCollationBinding*> collation_by_column(
+      request.result_columns.size(), nullptr);
+
+  // QOW-SOURCE-QRY-016-NULL-COLLATION-V1
+  // SQL NULL equality is handled as a set-membership rule. Character equality
+  // additionally requires one catalog-bound collation record for every text
+  // result column; duplicate/missing fields or incomplete seed authority fail
+  // before any equivalence class is constructed.
+  if (bound_collation) {
+    namespace dt = scratchbird::core::datatypes;
+    if (request.maximum_equality_comparison_count == 0) {
+      return refuse("set-operation equality comparison bound is zero",
+                    "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+    }
+    for (const auto& binding : request.collation_bindings) {
+      if (binding.result_column >= request.result_columns.size() ||
+          collation_by_column[binding.result_column] != nullptr) {
+        return refuse("set-operation collation binding is duplicate or out of range",
+                      "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+      }
+      collation_by_column[binding.result_column] = &binding;
+    }
+    const auto descriptor_field = [](const std::string& encoded,
+                                     const std::string_view field,
+                                     std::string* value) {
+      if (value == nullptr) return false;
+      value->clear();
+      std::size_t match_count = 0;
+      std::size_t begin = 0;
+      while (begin <= encoded.size()) {
+        const auto end = encoded.find(';', begin);
+        const auto token = encoded.substr(
+            begin, end == std::string::npos ? std::string::npos : end - begin);
+        const std::string prefix = std::string(field) + "=";
+        if (token.rfind(prefix, 0) == 0) {
+          ++match_count;
+          *value = token.substr(prefix.size());
+        }
+        if (end == std::string::npos) break;
+        begin = end + 1;
+      }
+      return match_count == 1 && !value->empty();
+    };
+    for (std::size_t column = 0; column < request.result_columns.size();
+         ++column) {
+      const bool character =
+          dt::CanonicalTypeIdFromStableName(
+              request.result_columns[column].descriptor.canonical_type_name) ==
+          dt::CanonicalTypeId::character;
+      const auto* binding = collation_by_column[column];
+      if (!character) {
+        if (binding != nullptr) {
+          return refuse("collation binding targets a non-character column",
+                        "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+        }
+        continue;
+      }
+      std::string descriptor_collation;
+      if (binding == nullptr ||
+          !descriptor_field(
+              request.result_columns[column].descriptor.encoded_descriptor,
+              "collation_uuid", &descriptor_collation) ||
+          !IsCanonicalUuid(binding->collation_uuid) ||
+          descriptor_collation != binding->collation_uuid ||
+          binding->resource_epoch == 0 || binding->collation_epoch == 0 ||
+          !binding->text_seed.active ||
+          binding->text_seed.seed_pack_name.empty() ||
+          binding->text_seed.seed_pack_version.empty() ||
+          binding->text_seed.charset_name.empty() ||
+          binding->text_seed.collation_name.empty()) {
+        return refuse("bound set-operation collation authority is incomplete",
+                      "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+      }
     }
   }
   if (request.maximum_output_row_count == 0) {
@@ -2211,6 +2310,72 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     right_keys.push_back(std::move(key));
   }
 
+  std::size_t equality_comparison_count = 0;
+  if (bound_collation) {
+    namespace dt = scratchbird::core::datatypes;
+    for (std::size_t column = 0; column < request.result_columns.size();
+         ++column) {
+      const auto* binding = collation_by_column[column];
+      if (binding == nullptr) continue;
+      std::vector<const scratchbird::engine::internal_api::EngineTypedValue*>
+          representatives;
+      const auto classify = [&](const auto& value,
+                                std::string* equality_key) {
+        if (equality_key == nullptr) return false;
+        if (value.state == api::sql_null) {
+          *equality_key = "collation:null";
+          return true;
+        }
+        for (std::size_t index = 0; index < representatives.size(); ++index) {
+          if (equality_comparison_count >=
+              request.maximum_equality_comparison_count) {
+            key_detail = "collation equality comparison bound was exceeded";
+            return false;
+          }
+          ++equality_comparison_count;
+          dt::DatatypeComparisonRequest comparison_request;
+          comparison_request.left.type_id = dt::CanonicalTypeId::character;
+          comparison_request.left.encoded_value =
+              representatives[index]->encoded_value;
+          comparison_request.right.type_id = dt::CanonicalTypeId::character;
+          comparison_request.right.encoded_value = value.encoded_value;
+          comparison_request.case_insensitive_character_compare =
+              binding->text_seed.collation_case_insensitive;
+          comparison_request.text_seed = binding->text_seed;
+          const auto compared = dt::CompareDatatypeValues(comparison_request);
+          if (!compared.ok()) {
+            key_detail = compared.diagnostic.diagnostic_code.empty()
+                             ? "bound collation comparison refused"
+                             : compared.diagnostic.diagnostic_code;
+            return false;
+          }
+          if (compared.comparison == 0) {
+            *equality_key = "collation:" + std::to_string(index);
+            return true;
+          }
+        }
+        representatives.push_back(&value);
+        *equality_key =
+            "collation:" + std::to_string(representatives.size() - 1);
+        return true;
+      };
+      for (std::size_t row = 0; row < request.left_batch.rows.size(); ++row) {
+        if (!classify(request.left_batch.rows[row].values[column],
+                      &left_keys[row][column])) {
+          return refuse(std::move(key_detail),
+                        "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+        }
+      }
+      for (std::size_t row = 0; row < aligned_right.rows.size(); ++row) {
+        if (!classify(aligned_right.rows[row].values[column],
+                      &right_keys[row][column])) {
+          return refuse(std::move(key_detail),
+                        "QOW-DIAG-QRY-016-NULL-COLLATION-REFUSAL-V1");
+        }
+      }
+    }
+  }
+
   DescriptorBatch output;
   output.columns = request.result_columns;
   std::size_t consumed_right_multiplicity_count = 0;
@@ -2296,6 +2461,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
       consumed_right_multiplicity_count;
   result.eliminated_duplicate_row_count =
       eliminated_duplicate_row_count;
+  result.equality_comparison_count = equality_comparison_count;
   result.right_to_result_column_indices =
       std::move(right_to_result_column_indices);
   result.implementation_id = expected_implementation;

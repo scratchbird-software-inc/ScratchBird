@@ -709,6 +709,19 @@ enum class CanonicalSetOperationQuantifier : std::uint8_t {
   kDistinct,
 };
 
+enum class CanonicalSetOperationEqualityProfile : std::uint8_t {
+  kExactTyped = 1,
+  kNullEqualBoundCollation,
+};
+
+struct CanonicalSetOperationCollationBinding {
+  std::size_t result_column = 0;
+  std::string collation_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t collation_epoch = 0;
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+};
+
 struct CanonicalSetOperationAllRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -720,6 +733,10 @@ struct CanonicalSetOperationAllRequest {
       CanonicalSetOperationAlignment::kOrdinal;
   CanonicalSetOperationQuantifier quantifier =
       CanonicalSetOperationQuantifier::kAll;
+  CanonicalSetOperationEqualityProfile equality_profile =
+      CanonicalSetOperationEqualityProfile::kExactTyped;
+  std::vector<CanonicalSetOperationCollationBinding> collation_bindings;
+  std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
 };
 
@@ -730,6 +747,7 @@ struct CanonicalSetOperationAllResult {
   std::size_t right_input_row_count = 0;
   std::size_t consumed_right_multiplicity_count = 0;
   std::size_t eliminated_duplicate_row_count = 0;
+  std::size_t equality_comparison_count = 0;
   std::vector<std::size_t> right_to_result_column_indices;
   std::string implementation_id;
   std::string selected_plan_uuid;
