@@ -161,6 +161,37 @@ struct CanonicalExistsSubqueryResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalQuantifiedSubqueryQuantifier : std::uint8_t {
+  kAny = 1,
+  kAll,
+};
+
+struct CanonicalQuantifiedSubqueryRequest {
+  CanonicalTableSubqueryRequest table_request;
+  ExecutorColumnDescriptor left_operand_column;
+  scratchbird::engine::internal_api::EngineTypedValue left_value;
+  std::uint32_t right_expression_descriptor_id = 0;
+  scratchbird::engine::internal_api::EngineComparisonPredicateOperator
+      comparison_operator = scratchbird::engine::internal_api::
+          EngineComparisonPredicateOperator::unspecified;
+  CanonicalQuantifiedSubqueryQuantifier quantifier =
+      CanonicalQuantifiedSubqueryQuantifier::kAny;
+  std::uint32_t result_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+  std::size_t maximum_comparison_count = 1048576;
+};
+
+struct CanonicalQuantifiedSubqueryResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  scratchbird::engine::internal_api::EngineSqlTruthValue truth_value =
+      scratchbird::engine::internal_api::EngineSqlTruthValue::unspecified;
+  std::size_t comparison_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -679,6 +710,8 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     const CanonicalRowSubqueryRequest& request);
 CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(

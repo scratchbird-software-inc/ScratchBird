@@ -380,4 +380,192 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-QUANTIFIED-V1
+// Evaluate one bound int64 comparison against a one-column canonical table
+// result with SQL ANY/ALL three-valued folding. Every operand is decoded before
+// publication, so a decisive early truth cannot hide malformed later input.
+CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
+    const CanonicalQuantifiedSubqueryRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalQuantifiedSubqueryResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-QUANTIFIED-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.truth_value = api::EngineSqlTruthValue::unspecified;
+    result.comparison_count = 0;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  if (!table.diagnostic.ok) {
+    return refuse(table.diagnostic.diagnostic_code + ":" +
+                  table.diagnostic.detail);
+  }
+  if (table.output_batch.columns.size() != 1) {
+    return refuse("quantified subquery requires exactly one result column");
+  }
+  const auto& right_column = table.output_batch.columns.front();
+  if (request.right_expression_descriptor_id == 0 ||
+      request.right_expression_descriptor_id != right_column.descriptor_id ||
+      request.left_operand_column.descriptor_id == 0 ||
+      request.left_operand_column.stable_name.empty() ||
+      request.left_operand_column.descriptor.canonical_type_name != "int64" ||
+      right_column.descriptor.canonical_type_name != "int64") {
+    return refuse("quantified comparison operands are not bound int64");
+  }
+  const bool any = request.quantifier ==
+                   CanonicalQuantifiedSubqueryQuantifier::kAny;
+  const bool all = request.quantifier ==
+                   CanonicalQuantifiedSubqueryQuantifier::kAll;
+  if (!any && !all) {
+    return refuse("quantified comparison quantifier is not bound");
+  }
+  using Operation = api::EngineComparisonPredicateOperator;
+  switch (request.comparison_operator) {
+    case Operation::equal:
+    case Operation::not_equal:
+    case Operation::less_than:
+    case Operation::less_than_or_equal:
+    case Operation::greater_than:
+    case Operation::greater_than_or_equal:
+      break;
+    default:
+      return refuse("quantified comparison operator is not bound");
+  }
+  if (request.maximum_comparison_count == 0 ||
+      table.materialized_row_count > request.maximum_comparison_count) {
+    return refuse("quantified comparison resource bound was exceeded");
+  }
+
+  DescriptorBatch left_batch;
+  left_batch.columns = {request.left_operand_column};
+  left_batch.rows = {{{request.left_value}}};
+  auto left_validation = ValidateCanonicalDescriptorBatch(
+      left_batch, {request.left_operand_column.descriptor_id});
+  if (!left_validation.ok) {
+    return refuse(left_validation.diagnostic_code + ":" +
+                  left_validation.detail);
+  }
+  std::int64_t decoded_left = 0;
+  const bool left_is_null = request.left_value.state ==
+                            api::EngineValueState::sql_null;
+  if (!left_is_null) {
+    const auto decoded = DecodeInt64Value(request.left_value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    decoded_left = decoded.value;
+  }
+
+  std::vector<api::EngineSqlTruthValue> comparison_truths;
+  comparison_truths.reserve(table.materialized_row_count);
+  for (const auto& row : table.output_batch.rows) {
+    const auto& right_value = row.values.front();
+    if (left_is_null ||
+        right_value.state == api::EngineValueState::sql_null) {
+      comparison_truths.push_back(api::EngineSqlTruthValue::unknown);
+      continue;
+    }
+    const auto decoded_right = DecodeInt64Value(right_value);
+    if (!decoded_right.ok()) {
+      return refuse(decoded_right.diagnostic.diagnostic_code + ":" +
+                    decoded_right.diagnostic.detail);
+    }
+    const auto right = decoded_right.value;
+    bool predicate = false;
+    switch (request.comparison_operator) {
+      case Operation::equal:
+        predicate = decoded_left == right;
+        break;
+      case Operation::not_equal:
+        predicate = decoded_left != right;
+        break;
+      case Operation::less_than:
+        predicate = decoded_left < right;
+        break;
+      case Operation::less_than_or_equal:
+        predicate = decoded_left <= right;
+        break;
+      case Operation::greater_than:
+        predicate = decoded_left > right;
+        break;
+      case Operation::greater_than_or_equal:
+        predicate = decoded_left >= right;
+        break;
+      default:
+        return refuse("quantified comparison operator changed after binding");
+    }
+    comparison_truths.push_back(
+        predicate ? api::EngineSqlTruthValue::true_value
+                  : api::EngineSqlTruthValue::false_value);
+  }
+
+  auto truth = any ? api::EngineSqlTruthValue::false_value
+                   : api::EngineSqlTruthValue::true_value;
+  for (const auto comparison_truth : comparison_truths) {
+    if (any) {
+      if (comparison_truth == api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::true_value;
+      } else if (comparison_truth == api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    } else {
+      if (comparison_truth == api::EngineSqlTruthValue::false_value) {
+        truth = api::EngineSqlTruthValue::false_value;
+      } else if (comparison_truth == api::EngineSqlTruthValue::unknown &&
+                 truth == api::EngineSqlTruthValue::true_value) {
+        truth = api::EngineSqlTruthValue::unknown;
+      }
+    }
+  }
+
+  if (request.result_expression_descriptor_id == 0 ||
+      request.result_column.descriptor_id !=
+          request.result_expression_descriptor_id ||
+      request.result_column.stable_name.empty() ||
+      !request.result_column.nullable ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      request.result_column.descriptor.canonical_type_name != "boolean") {
+    return refuse("quantified result is not a bound nullable boolean");
+  }
+  DescriptorBatch output;
+  output.columns = {request.result_column};
+  api::EngineTypedValue value;
+  value.descriptor = request.result_column.descriptor;
+  if (truth == api::EngineSqlTruthValue::unknown) {
+    value.is_null = true;
+    value.state = api::EngineValueState::sql_null;
+  } else {
+    value.encoded_value = truth == api::EngineSqlTruthValue::true_value
+                              ? "true"
+                              : "false";
+    value.state = api::EngineValueState::value;
+  }
+  output.rows = {{{std::move(value)}}};
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, {request.result_column.descriptor_id});
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.truth_value = truth;
+  result.comparison_count = comparison_truths.size();
+  result.selected_plan_uuid = std::move(table.selected_plan_uuid);
+  result.executed_physical_node_id = table.executed_physical_node_id;
+  result.causal_counter_id = table.causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
