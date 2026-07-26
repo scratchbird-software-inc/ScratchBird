@@ -616,6 +616,150 @@ CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-DISTINCT-V1
+// Apply SUM(DISTINCT int64) by validating and decoding the complete typed
+// input before exclusion, then transitioning only the first occurrence of
+// each numeric value.  SQL NULL does not enter the DISTINCT set or SUM state.
+CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
+    const CanonicalInt64SumDistinctRequest& request) {
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumDistinctResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-DISTINCT-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.state = {};
+    result.distinct_value_count = 0;
+    return result;
+  };
+  const auto& aggregate = request.aggregate_request;
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(aggregate.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (aggregate.selected_physical_node_id == 0 ||
+      aggregate.selected_physical_node_id !=
+          aggregate.physical_dag.root_physical_node_id) {
+    return refuse("selected DISTINCT aggregate is not the physical root");
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse("DISTINCT SUM requires one selected aggregate node");
+  }
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr) {
+    return refuse("DISTINCT aggregate input is unresolved");
+  }
+
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      aggregate.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code + ":" +
+                  input_validation.detail);
+  }
+  if (aggregate.value_column >= aggregate.input_batch.columns.size()) {
+    return refuse("DISTINCT value column is outside the input schema");
+  }
+  const auto& value_column =
+      aggregate.input_batch.columns[aggregate.value_column];
+  if (aggregate.value_expression_descriptor_id == 0 ||
+      aggregate.value_expression_descriptor_id !=
+          value_column.descriptor_id ||
+      value_column.descriptor.canonical_type_name != "int64") {
+    return refuse("DISTINCT value expression is not bound int64");
+  }
+  if (selected_node->output_descriptor_ids.size() != 1 ||
+      aggregate.result_column.descriptor_id !=
+          selected_node->output_descriptor_ids.front() ||
+      !aggregate.result_column.nullable ||
+      aggregate.result_column.descriptor.canonical_type_name != "int64") {
+    return refuse(
+        "DISTINCT SUM result is not a bound nullable int64 descriptor");
+  }
+  DescriptorBatch result_schema;
+  result_schema.columns = {aggregate.result_column};
+  auto result_validation = ValidateCanonicalDescriptorBatch(
+      result_schema, selected_node->output_descriptor_ids);
+  if (!result_validation.ok) {
+    return refuse(result_validation.diagnostic_code + ":" +
+                  result_validation.detail);
+  }
+  if (aggregate.maximum_transition_count == 0 ||
+      aggregate.input_batch.rows.size() >
+          aggregate.maximum_transition_count) {
+    return refuse("DISTINCT aggregate scan resource bound was exceeded");
+  }
+  if (request.maximum_distinct_value_count == 0) {
+    return refuse("DISTINCT value resource bound is zero");
+  }
+
+  std::vector<std::optional<std::int64_t>> decoded_values;
+  decoded_values.reserve(aggregate.input_batch.rows.size());
+  for (const auto& row : aggregate.input_batch.rows) {
+    const auto& value = row.values[aggregate.value_column];
+    if (value.state == EngineValueState::sql_null) {
+      decoded_values.push_back(std::nullopt);
+      continue;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    decoded_values.push_back(decoded.value);
+  }
+
+  DescriptorBatch distinct_batch;
+  distinct_batch.columns = aggregate.input_batch.columns;
+  std::set<std::int64_t> observed_values;
+  for (std::size_t row_index = 0; row_index < decoded_values.size();
+       ++row_index) {
+    if (!decoded_values[row_index].has_value()) continue;
+    const auto value = *decoded_values[row_index];
+    if (observed_values.find(value) != observed_values.end()) continue;
+    if (observed_values.size() >= request.maximum_distinct_value_count) {
+      return refuse("DISTINCT value resource bound was exceeded");
+    }
+    observed_values.insert(value);
+    distinct_batch.rows.push_back(aggregate.input_batch.rows[row_index]);
+  }
+
+  auto distinct_request = aggregate;
+  distinct_request.input_batch = std::move(distinct_batch);
+  auto transitioned = ExecuteCanonicalInt64SumState(distinct_request);
+  if (!transitioned.diagnostic.ok) {
+    return refuse(transitioned.diagnostic.diagnostic_code + ":" +
+                  transitioned.diagnostic.detail);
+  }
+  result.diagnostic = {};
+  result.state = std::move(transitioned.state);
+  result.distinct_value_count = observed_values.size();
+  result.selected_plan_uuid = std::move(transitioned.selected_plan_uuid);
+  result.executed_physical_node_id =
+      transitioned.executed_physical_node_id;
+  result.causal_counter_id = transitioned.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }

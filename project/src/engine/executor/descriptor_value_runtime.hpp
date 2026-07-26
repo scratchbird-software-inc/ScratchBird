@@ -231,6 +231,20 @@ struct CanonicalInt64SumFilterResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalInt64SumDistinctRequest {
+  CanonicalInt64SumStateRequest aggregate_request;
+  std::size_t maximum_distinct_value_count = 1048576;
+};
+
+struct CanonicalInt64SumDistinctResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalInt64SumAggregateState state;
+  std::size_t distinct_value_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorInnerJoinRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -412,6 +426,8 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
     const CanonicalInt64SumGroupRequest& request);
 CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
     const CanonicalInt64SumFilterRequest& request);
+CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
+    const CanonicalInt64SumDistinctRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(

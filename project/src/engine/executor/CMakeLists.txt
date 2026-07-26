@@ -68,6 +68,7 @@ add_library(sb_engine_executor STATIC
   # QOW-CMAKE-QRY-011-EMPTY-V1
   # QOW-CMAKE-QRY-011-GROUP-V1
   # QOW-CMAKE-QRY-011-FILTER-V1
+  # QOW-CMAKE-QRY-011-DISTINCT-V1
   executor_foundation.cpp
   executor_operator_metrics.cpp
   # QOW-CMAKE-QRY-007-FILTER-V1
