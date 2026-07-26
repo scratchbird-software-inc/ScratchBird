@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 
@@ -29,6 +30,26 @@ std::vector<std::int64_t> ConcatValues(const Tuple& left, const Tuple& right) {
 
 bool HasColumn(const Tuple& tuple, std::size_t column) {
   return column < tuple.values.size();
+}
+
+// QOW-SOURCE-QRY-009-V1
+// Column positions reaching this legacy executor surface are already-bound
+// projection, sort, or expression handles.  Resolve the complete handle set
+// before an operator can consume any row so a ragged or out-of-range handle
+// cannot be translated into successful zero data.
+void RequireResolvedColumnHandles(
+    const Batch& input,
+    const std::vector<std::size_t>& columns) {
+  if (input.rows.empty() && !columns.empty()) {
+    throw std::out_of_range("SBLR.PLAN_TREE.INVALID_HANDLE");
+  }
+  for (const auto& row : input.rows) {
+    for (const auto column : columns) {
+      if (!HasColumn(row, column)) {
+        throw std::out_of_range("SBLR.PLAN_TREE.INVALID_HANDLE");
+      }
+    }
+  }
 }
 
 }  // namespace
@@ -54,9 +75,9 @@ Batch FilterByInt64Comparison(const Batch& input,
                               std::size_t column,
                               Int64ComparisonOperator op,
                               std::int64_t threshold) {
+  RequireResolvedColumnHandles(input, {column});
   std::vector<Tuple> rows;
   for (const auto& row : input.rows) {
-    if (!HasColumn(row, column)) continue;
     const auto value = row.values[column];
     bool matches = false;
     switch (op) {
@@ -89,21 +110,23 @@ Batch FilterGreaterThan(const Batch& input, std::size_t column, std::int64_t thr
 }
 
 Batch ProjectColumns(const Batch& input, const std::vector<std::size_t>& columns) {
+  RequireResolvedColumnHandles(input, columns);
   std::vector<Tuple> rows;
   rows.reserve(input.rows.size());
   for (const auto& row : input.rows) {
     Tuple projected;
-    for (auto column : columns) projected.values.push_back(HasColumn(row, column) ? row.values[column] : 0);
+    for (auto column : columns) projected.values.push_back(row.values[column]);
     rows.push_back(std::move(projected));
   }
   return MakeBatch(input.descriptor_digest + ":projected", std::move(rows));
 }
 
 Batch SortByColumn(const Batch& input, std::size_t column, bool ascending) {
+  RequireResolvedColumnHandles(input, {column});
   auto rows = input.rows;
   std::stable_sort(rows.begin(), rows.end(), [&](const Tuple& lhs, const Tuple& rhs) {
-    const auto lv = HasColumn(lhs, column) ? lhs.values[column] : 0;
-    const auto rv = HasColumn(rhs, column) ? rhs.values[column] : 0;
+    const auto lv = lhs.values[column];
+    const auto rv = rhs.values[column];
     return ascending ? lv < rv : lv > rv;
   });
   return MakeBatch(input.descriptor_digest, std::move(rows));

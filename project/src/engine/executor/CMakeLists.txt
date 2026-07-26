@@ -56,6 +56,7 @@ add_library(sb_engine_executor STATIC
   executor_batch_failure_policy.cpp
   executor_batch_join_dml.cpp
   executor_batch_relational.cpp
+  # QOW-CMAKE-QRY-009-V1
   executor_foundation.cpp
   executor_operator_metrics.cpp
   filter_executor.cpp
