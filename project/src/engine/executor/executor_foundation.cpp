@@ -1329,6 +1329,7 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
         "QOW-DIAG-QRY-012-RESIDUAL-REFUSAL-V1";
     result.diagnostic.detail = std::move(detail);
     result.output_batch = {};
+    result.accepted_pair_indices.clear();
     result.candidate_pair_count = 0;
     result.residual_recheck_count = 0;
     result.selected_plan_uuid.clear();
@@ -1372,11 +1373,17 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
 
   std::vector<api::EngineSqlTruthValue> accepted_pair_truth_values(
       keys.pair_count, api::EngineSqlTruthValue::false_value);
+  std::vector<std::size_t> accepted_pair_indices;
+  accepted_pair_indices.reserve(candidate_pair_count);
   for (std::size_t pair = 0; pair < keys.pair_count; ++pair) {
     if (keys.pair_truth_values[pair] ==
         api::EngineSqlTruthValue::true_value) {
       accepted_pair_truth_values[pair] =
           request.residual_truth_values[pair];
+      if (request.residual_truth_values[pair] ==
+          api::EngineSqlTruthValue::true_value) {
+        accepted_pair_indices.push_back(pair);
+      }
     }
   }
 
@@ -1396,11 +1403,134 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
 
   result.diagnostic = {};
   result.output_batch = std::move(joined.output_batch);
+  result.accepted_pair_indices = std::move(accepted_pair_indices);
   result.candidate_pair_count = candidate_pair_count;
   result.residual_recheck_count = candidate_pair_count;
   result.selected_plan_uuid = std::move(joined.selected_plan_uuid);
   result.executed_physical_node_id = joined.executed_physical_node_id;
   result.causal_counter_id = joined.causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-012-KIND-V1
+// Produce canonical left-outer cardinality from the admitted key/residual
+// route.  Accepted pair indices retain physical identity for duplicate values;
+// unmatched left rows receive descriptor-preserving SQL NULL right fields.
+CanonicalJoinKindResult ExecuteCanonicalJoinKind(
+    const CanonicalJoinKindRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalJoinKindResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-KIND-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.matched_pair_count = 0;
+    result.unmatched_left_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  if (request.join_kind != CanonicalAcceptedJoinKind::kLeftOuter) {
+    return refuse("join kind is outside the accepted left-outer profile");
+  }
+  if (request.maximum_output_rows == 0) {
+    return refuse("join-kind output resource contract is invalid");
+  }
+  auto residual =
+      ExecuteCanonicalJoinResidual(request.residual_request);
+  if (!residual.diagnostic.ok) {
+    return refuse(residual.diagnostic.diagnostic_code + ":" +
+                  residual.diagnostic.detail);
+  }
+
+  const auto& key_request = request.residual_request.key_request;
+  const auto left_count = key_request.left_batch.rows.size();
+  const auto right_count = key_request.right_batch.rows.size();
+  if (left_count > request.maximum_output_rows ||
+      residual.accepted_pair_indices.size() !=
+          residual.output_batch.rows.size()) {
+    return refuse("left-outer output cardinality is invalid or excessive");
+  }
+
+  std::vector<bool> matched_left_rows(left_count, false);
+  std::size_t previous_pair = 0;
+  bool has_previous_pair = false;
+  for (const auto pair : residual.accepted_pair_indices) {
+    if (right_count == 0 || pair >= left_count * right_count ||
+        (has_previous_pair && pair <= previous_pair)) {
+      return refuse("residual pair identity is not canonical");
+    }
+    matched_left_rows[pair / right_count] = true;
+    previous_pair = pair;
+    has_previous_pair = true;
+  }
+  const auto unmatched_left_row_count =
+      static_cast<std::size_t>(std::count(matched_left_rows.begin(),
+                                          matched_left_rows.end(), false));
+  if (residual.accepted_pair_indices.size() >
+      request.maximum_output_rows - unmatched_left_row_count) {
+    return refuse("left-outer output row bound was exceeded");
+  }
+
+  DescriptorBatch output;
+  output.columns = residual.output_batch.columns;
+  const auto left_width = key_request.left_batch.columns.size();
+  for (std::size_t column = left_width; column < output.columns.size();
+       ++column) {
+    output.columns[column].nullable = true;
+  }
+  output.rows.reserve(residual.accepted_pair_indices.size() +
+                      unmatched_left_row_count);
+
+  std::size_t accepted = 0;
+  for (std::size_t left = 0; left < left_count; ++left) {
+    bool emitted_match = false;
+    while (accepted < residual.accepted_pair_indices.size() &&
+           residual.accepted_pair_indices[accepted] / right_count == left) {
+      output.rows.push_back(std::move(residual.output_batch.rows[accepted]));
+      ++accepted;
+      emitted_match = true;
+    }
+    if (emitted_match) continue;
+
+    DescriptorTuple unmatched;
+    unmatched.values = key_request.left_batch.rows[left].values;
+    for (const auto& column : key_request.right_batch.columns) {
+      api::EngineTypedValue null_value;
+      null_value.descriptor = column.descriptor;
+      null_value.is_null = true;
+      null_value.state = api::EngineValueState::sql_null;
+      unmatched.values.push_back(std::move(null_value));
+    }
+    output.rows.push_back(std::move(unmatched));
+  }
+  if (accepted != residual.accepted_pair_indices.size()) {
+    return refuse("residual output did not map to its left input");
+  }
+
+  std::vector<std::uint32_t> output_descriptor_ids;
+  output_descriptor_ids.reserve(output.columns.size());
+  for (const auto& column : output.columns) {
+    output_descriptor_ids.push_back(column.descriptor_id);
+  }
+  auto validation =
+      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.matched_pair_count = residual.accepted_pair_indices.size();
+  result.unmatched_left_row_count = unmatched_left_row_count;
+  result.selected_plan_uuid = std::move(residual.selected_plan_uuid);
+  result.executed_physical_node_id = residual.executed_physical_node_id;
+  result.causal_counter_id = residual.causal_counter_id;
   return result;
 }
 

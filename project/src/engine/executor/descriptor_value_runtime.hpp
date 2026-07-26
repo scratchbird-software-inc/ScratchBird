@@ -327,8 +327,30 @@ struct CanonicalJoinResidualRequest {
 struct CanonicalJoinResidualResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
+  std::vector<std::size_t> accepted_pair_indices;
   std::size_t candidate_pair_count = 0;
   std::size_t residual_recheck_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+enum class CanonicalAcceptedJoinKind : std::uint8_t {
+  kLeftOuter = 1,
+};
+
+struct CanonicalJoinKindRequest {
+  CanonicalJoinResidualRequest residual_request;
+  CanonicalAcceptedJoinKind join_kind =
+      CanonicalAcceptedJoinKind::kLeftOuter;
+  std::size_t maximum_output_rows = 1048576;
+};
+
+struct CanonicalJoinKindResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t matched_pair_count = 0;
+  std::size_t unmatched_left_row_count = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -527,6 +549,8 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
     const CanonicalCompositeJoinKeyRequest& request);
 CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
     const CanonicalJoinResidualRequest& request);
+CanonicalJoinKindResult ExecuteCanonicalJoinKind(
+    const CanonicalJoinKindRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
