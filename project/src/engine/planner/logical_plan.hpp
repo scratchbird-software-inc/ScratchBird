@@ -360,6 +360,177 @@ ValidateCanonicalLogicalRelationalGraph(
   return result;
 }
 
+struct CanonicalPhysicalAlternativeRecord {
+  std::string alternative_uuid;
+  std::uint32_t logical_node_id{0};
+  std::string implementation_id;
+  std::string capability_uuid;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  bool available{false};
+  std::string refusal_diagnostic_id;
+};
+
+struct CanonicalPhysicalAlternativeCatalog {
+  std::uint16_t abi_version{1};
+  std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t statement_snapshot_id{0};
+  std::vector<CanonicalPhysicalAlternativeRecord> alternatives;
+  bool raw_sql_text_present{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct CanonicalLogicalPhysicalBoundaryIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string field_id;
+};
+
+struct CanonicalLogicalPhysicalBoundaryValidationResult {
+  bool accepted{false};
+  bool data_access_allowed{false};
+  std::size_t validated_alternative_count{0};
+  std::size_t executable_alternative_count{0};
+  std::vector<CanonicalLogicalPhysicalBoundaryIssue> issues;
+};
+
+// QOW-SOURCE-OPT-002-V1
+// Physical alternatives are catalogued outside the immutable semantic graph.
+// This boundary validates capability and result-shape compatibility only; it
+// does not select an alternative, alter a logical node, or authorize a read.
+inline CanonicalLogicalPhysicalBoundaryValidationResult
+ValidateCanonicalLogicalPhysicalBoundary(
+    const CanonicalLogicalRelationalGraph& graph,
+    const CanonicalPhysicalAlternativeCatalog& catalog,
+    const std::size_t maximum_alternatives = 524288) {
+  CanonicalLogicalPhysicalBoundaryValidationResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string field_id) {
+    result.accepted = false;
+    result.data_access_allowed = false;
+    result.validated_alternative_count = 0;
+    result.executable_alternative_count = 0;
+    result.issues.push_back({std::move(diagnostic_id), node_id,
+                             std::move(field_id)});
+    return result;
+  };
+  const auto graph_validation =
+      ValidateCanonicalLogicalRelationalGraph(graph);
+  if (!graph_validation.accepted) {
+    const auto& issue = graph_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id,
+                  issue.field_id);
+  }
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto stable_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
+  const auto diagnostic_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 160 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return std::isalnum(ch) || ch == '.' || ch == '_' || ch == '-';
+           });
+  };
+
+  if (catalog.abi_version != 1) {
+    return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-VERSION-V1", 0,
+                  "abi_version");
+  }
+  if (catalog.bound_sblr_tree_uuid != graph.bound_sblr_tree_uuid ||
+      catalog.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
+      catalog.security_context_uuid != graph.security_context_uuid ||
+      catalog.local_transaction_id != graph.local_transaction_id ||
+      catalog.statement_snapshot_id != graph.statement_snapshot_id) {
+    return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1", 0,
+                  "logical_scope_identity");
+  }
+  if (catalog.raw_sql_text_present ||
+      catalog.parser_execution_authority_claimed ||
+      catalog.transaction_finality_authority_claimed) {
+    return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-AUTHORITY-V1", 0,
+                  "forbidden_authority_claim");
+  }
+  if (maximum_alternatives == 0 || catalog.alternatives.empty() ||
+      catalog.alternatives.size() > maximum_alternatives) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0,
+                  "physical_alternative_count");
+  }
+
+  std::unordered_map<std::uint32_t, const CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+  std::unordered_set<std::string> alternative_uuids;
+  std::unordered_set<std::string> node_implementations;
+  std::unordered_map<std::uint32_t, std::size_t> available_by_node;
+  for (const auto& alternative : catalog.alternatives) {
+    const auto logical_node = nodes_by_id.find(alternative.logical_node_id);
+    const auto implementation_key =
+        std::to_string(alternative.logical_node_id) + ":" +
+        alternative.implementation_id;
+    if (!canonical_uuid(alternative.alternative_uuid) ||
+        !alternative_uuids.insert(alternative.alternative_uuid).second ||
+        logical_node == nodes_by_id.end() ||
+        !stable_id(alternative.implementation_id) ||
+        !canonical_uuid(alternative.capability_uuid) ||
+        !node_implementations.insert(implementation_key).second) {
+      return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-IDENTITY-V1",
+                    alternative.logical_node_id,
+                    "physical_alternative_record");
+    }
+    if (alternative.output_descriptor_ids !=
+        logical_node->second->output_descriptor_ids) {
+      return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-SHAPE-V1",
+                    alternative.logical_node_id,
+                    "output_descriptor_ids");
+    }
+    if ((alternative.available &&
+         !alternative.refusal_diagnostic_id.empty()) ||
+        (!alternative.available &&
+         !diagnostic_id(alternative.refusal_diagnostic_id))) {
+      return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-AVAILABILITY-V1",
+                    alternative.logical_node_id,
+                    "availability_or_refusal");
+    }
+    if (alternative.available) {
+      ++available_by_node[alternative.logical_node_id];
+      ++result.executable_alternative_count;
+    }
+  }
+  for (const auto& node : graph.nodes) {
+    if (available_by_node[node.logical_node_id] == 0) {
+      return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-UNAVAILABLE-V1",
+                    node.logical_node_id, "available_implementation");
+    }
+  }
+
+  result.accepted = true;
+  result.data_access_allowed = false;
+  result.validated_alternative_count = catalog.alternatives.size();
+  return result;
+}
+
 enum class LogicalPlanNodeKind {
   kCommand,
   kCatalogLookup,

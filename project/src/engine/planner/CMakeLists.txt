@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 # QOW-CMAKE-OPT-001-V1
+# QOW-CMAKE-OPT-002-V1
 if(NOT TARGET sb_qow_canonical_logical_graph)
   add_library(sb_qow_canonical_logical_graph INTERFACE)
   target_compile_features(sb_qow_canonical_logical_graph INTERFACE cxx_std_20)
