@@ -1884,19 +1884,25 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   return result;
 }
 
-// QOW-SOURCE-QRY-016-ALL-V1
-// Execute duplicate-preserving set operations only after the two input
+// Execute set operations only after the two input
 // descriptor vectors and the result descriptor vector have been bound to one
 // admitted physical set-operation node.  Multiset membership uses decoded
 // typed values; parser text and legacy integer batches are never consulted.
-CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
-    const CanonicalSetOperationAllRequest& request) {
+static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
+    const CanonicalSetOperationAllRequest& request,
+    const CanonicalSetOperationQuantifier admitted_quantifier) {
   using api = scratchbird::engine::internal_api::EngineValueState;
+  const bool distinct =
+      admitted_quantifier == CanonicalSetOperationQuantifier::kDistinct;
 
   CanonicalSetOperationAllResult result;
   const auto refuse = [&](std::string detail,
-                          std::string diagnostic_code =
-                              "QOW-DIAG-QRY-016-ALL-REFUSAL-V1") {
+                          std::string diagnostic_code = std::string{}) {
+    if (diagnostic_code.empty()) {
+      diagnostic_code = distinct
+                            ? "QOW-DIAG-QRY-016-DISTINCT-REFUSAL-V1"
+                            : "QOW-DIAG-QRY-016-ALL-REFUSAL-V1";
+    }
     result.diagnostic.ok = false;
     result.diagnostic.diagnostic_code = std::move(diagnostic_code);
     result.diagnostic.detail = std::move(detail);
@@ -1904,6 +1910,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     result.left_input_row_count = 0;
     result.right_input_row_count = 0;
     result.consumed_right_multiplicity_count = 0;
+    result.eliminated_duplicate_row_count = 0;
     result.right_to_result_column_indices.clear();
     result.implementation_id.clear();
     result.selected_plan_uuid.clear();
@@ -1911,6 +1918,10 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     result.causal_counter_id = 0;
     return result;
   };
+
+  if (request.quantifier != admitted_quantifier) {
+    return refuse("set-operation quantifier and entry point differ");
+  }
 
   const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
   if (!dag_validation.accepted) {
@@ -1933,7 +1944,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kSetOperation ||
       selected_node->input_physical_node_ids.size() != 2) {
-    return refuse("ALL requires one selected binary set-operation node");
+    return refuse("set operation requires one selected binary physical node");
   }
 
   const std::string expected_implementation = [&] {
@@ -1945,23 +1956,35 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     }
     switch (request.operation) {
       case CanonicalSetOperationKind::kUnion:
-        return by_name
-                   ? std::string("setop.union-all.by-name.typed.v1")
-                   : std::string("setop.union-all.ordinal.typed.v1");
+        if (distinct) {
+          return by_name
+                     ? std::string("setop.union-distinct.by-name.typed.v1")
+                     : std::string("setop.union-distinct.ordinal.typed.v1");
+        }
+        return by_name ? std::string("setop.union-all.by-name.typed.v1")
+                       : std::string("setop.union-all.ordinal.typed.v1");
       case CanonicalSetOperationKind::kIntersect:
-        return by_name
-                   ? std::string("setop.intersect-all.by-name.typed.v1")
-                   : std::string("setop.intersect-all.ordinal.typed.v1");
+        if (distinct) {
+          return by_name
+                     ? std::string("setop.intersect-distinct.by-name.typed.v1")
+                     : std::string("setop.intersect-distinct.ordinal.typed.v1");
+        }
+        return by_name ? std::string("setop.intersect-all.by-name.typed.v1")
+                       : std::string("setop.intersect-all.ordinal.typed.v1");
       case CanonicalSetOperationKind::kExcept:
-        return by_name
-                   ? std::string("setop.except-all.by-name.typed.v1")
-                   : std::string("setop.except-all.ordinal.typed.v1");
+        if (distinct) {
+          return by_name
+                     ? std::string("setop.except-distinct.by-name.typed.v1")
+                     : std::string("setop.except-distinct.ordinal.typed.v1");
+        }
+        return by_name ? std::string("setop.except-all.by-name.typed.v1")
+                       : std::string("setop.except-all.ordinal.typed.v1");
     }
     return std::string{};
   }();
   if (expected_implementation.empty() ||
       selected_node->implementation_id != expected_implementation) {
-    return refuse("set-operation kind and ALL implementation profile drifted");
+    return refuse("set-operation kind, quantifier, or alignment profile drifted");
   }
 
   const PhysicalNodeRecord* left_node = nullptr;
@@ -2088,13 +2111,13 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
         left.descriptor.encoded_descriptor !=
             output.descriptor.encoded_descriptor ||
         output.nullable != (left.nullable || right.nullable)) {
-      return refuse("ALL operand descriptors require exact ordinal reconciliation");
+      return refuse("set-operation descriptors require exact reconciliation");
     }
   }
   if (request.maximum_output_row_count == 0) {
     return refuse("set-operation output resource bound is zero");
   }
-  if (request.operation == CanonicalSetOperationKind::kUnion &&
+  if (!distinct && request.operation == CanonicalSetOperationKind::kUnion &&
       (request.left_batch.rows.size() > request.maximum_output_row_count ||
        request.right_batch.rows.size() >
            request.maximum_output_row_count -
@@ -2191,7 +2214,46 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   DescriptorBatch output;
   output.columns = request.result_columns;
   std::size_t consumed_right_multiplicity_count = 0;
-  if (request.operation == CanonicalSetOperationKind::kUnion) {
+  std::size_t eliminated_duplicate_row_count = 0;
+
+  // QOW-SOURCE-QRY-016-DISTINCT-V1
+  // DISTINCT uses the same fully decoded typed row keys as ALL. It validates
+  // every input row before eliminating duplicates, so a duplicate position
+  // cannot hide malformed transport or value state.
+  if (distinct && request.operation == CanonicalSetOperationKind::kUnion) {
+    std::set<RowKey> emitted;
+    for (std::size_t index = 0; index < left_keys.size(); ++index) {
+      if (emitted.insert(left_keys[index]).second) {
+        output.rows.push_back(retag_row(request.left_batch.rows[index]));
+      } else {
+        ++eliminated_duplicate_row_count;
+      }
+    }
+    for (std::size_t index = 0; index < right_keys.size(); ++index) {
+      if (emitted.insert(right_keys[index]).second) {
+        output.rows.push_back(retag_row(aligned_right.rows[index]));
+      } else {
+        ++eliminated_duplicate_row_count;
+      }
+    }
+  } else if (distinct) {
+    std::set<RowKey> right_membership(right_keys.begin(), right_keys.end());
+    std::set<RowKey> emitted;
+    for (std::size_t index = 0; index < left_keys.size(); ++index) {
+      const bool present_on_right =
+          right_membership.contains(left_keys[index]);
+      const bool candidate =
+          request.operation == CanonicalSetOperationKind::kIntersect
+              ? present_on_right
+              : !present_on_right;
+      if (!candidate) continue;
+      if (emitted.insert(left_keys[index]).second) {
+        output.rows.push_back(retag_row(request.left_batch.rows[index]));
+      } else {
+        ++eliminated_duplicate_row_count;
+      }
+    }
+  } else if (request.operation == CanonicalSetOperationKind::kUnion) {
     output.rows.reserve(left_keys.size() + right_keys.size());
     for (const auto& row : request.left_batch.rows) {
       output.rows.push_back(retag_row(row));
@@ -2232,6 +2294,8 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   result.right_input_row_count = request.right_batch.rows.size();
   result.consumed_right_multiplicity_count =
       consumed_right_multiplicity_count;
+  result.eliminated_duplicate_row_count =
+      eliminated_duplicate_row_count;
   result.right_to_result_column_indices =
       std::move(right_to_result_column_indices);
   result.implementation_id = expected_implementation;
@@ -2239,6 +2303,19 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
   return result;
+}
+
+// QOW-SOURCE-QRY-016-ALL-V1
+CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
+    const CanonicalSetOperationAllRequest& request) {
+  return ExecuteCanonicalSetOperationQuantified(
+      request, CanonicalSetOperationQuantifier::kAll);
+}
+
+CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
+    const CanonicalSetOperationAllRequest& request) {
+  return ExecuteCanonicalSetOperationQuantified(
+      request, CanonicalSetOperationQuantifier::kDistinct);
 }
 
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {

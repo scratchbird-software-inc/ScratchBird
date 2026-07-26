@@ -704,6 +704,11 @@ enum class CanonicalSetOperationAlignment : std::uint8_t {
   kByName,
 };
 
+enum class CanonicalSetOperationQuantifier : std::uint8_t {
+  kAll = 1,
+  kDistinct,
+};
+
 struct CanonicalSetOperationAllRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -713,6 +718,8 @@ struct CanonicalSetOperationAllRequest {
   CanonicalSetOperationKind operation = CanonicalSetOperationKind::kUnion;
   CanonicalSetOperationAlignment alignment =
       CanonicalSetOperationAlignment::kOrdinal;
+  CanonicalSetOperationQuantifier quantifier =
+      CanonicalSetOperationQuantifier::kAll;
   std::size_t maximum_output_row_count = 1048576;
 };
 
@@ -722,6 +729,7 @@ struct CanonicalSetOperationAllResult {
   std::size_t left_input_row_count = 0;
   std::size_t right_input_row_count = 0;
   std::size_t consumed_right_multiplicity_count = 0;
+  std::size_t eliminated_duplicate_row_count = 0;
   std::vector<std::size_t> right_to_result_column_indices;
   std::string implementation_id;
   std::string selected_plan_uuid;
@@ -972,6 +980,8 @@ ExecuteCanonicalRecursiveCteCancellation(
 CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
     const CanonicalRecursiveCteMgaRequest& request);
 CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
+    const CanonicalSetOperationAllRequest& request);
+CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
     const CanonicalSetOperationAllRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);

@@ -513,6 +513,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-210;QOW-LEAF-QRY-016-BY-NAME;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-016-DISTINCT-V1
+  add_executable(qow_qry_016_distinct_test_v1 qow_qry_016_distinct.cpp)
+  target_compile_features(qow_qry_016_distinct_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_016_distinct_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_qry_016_distinct_v1 COMMAND qow_qry_016_distinct_test_v1)
+  set_tests_properties(qow_qry_016_distinct_v1 PROPERTIES
+    LABELS "qow_closure;QOW-210;QOW-LEAF-QRY-016-DISTINCT;development_candidate"
+  )
+
   # QOW-ROUTE-STAGE-QRY-017-V1
   add_executable(qow_qry_017_test_v1 qow_qry_017.cpp)
   target_compile_features(qow_qry_017_test_v1 PRIVATE cxx_std_20)
