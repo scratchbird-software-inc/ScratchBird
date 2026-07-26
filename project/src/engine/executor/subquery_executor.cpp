@@ -754,4 +754,150 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-LATERAL-V1
+// Bind and execute one inner-LATERAL table expansion by consuming the proven
+// correlated scopes. The lateral physical plan shares the exact engine MGA
+// statement boundary and owns only the outer-plus-inner relational flattening;
+// correlation remains authoritative in ExecuteCanonicalCorrelatedSubquery.
+CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
+    const CanonicalLateralSubqueryRequest& request) {
+  CanonicalLateralSubqueryResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-LATERAL-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.scope_execution_count = 0;
+    result.output_row_count = 0;
+    result.correlated_plan_uuid.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected LATERAL node is not the physical root");
+  }
+  if (request.physical_dag.local_transaction_id !=
+          request.correlated_request.physical_dag.local_transaction_id ||
+      request.physical_dag.statement_snapshot_id !=
+          request.correlated_request.physical_dag.statement_snapshot_id) {
+    return refuse("LATERAL and correlation MGA statement contexts differ");
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* outer_node = nullptr;
+  const PhysicalNodeRecord* subquery_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kJoin ||
+      selected_node->implementation_id !=
+          "join.lateral-inner.correlated.typed.v1" ||
+      selected_node->input_physical_node_ids.size() != 2) {
+    return refuse("inner-LATERAL physical profile is not bound");
+  }
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[0]) {
+      outer_node = &node;
+    }
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[1]) {
+      subquery_node = &node;
+    }
+  }
+  if (outer_node == nullptr || subquery_node == nullptr ||
+      subquery_node->node_kind != PhysicalNodeKind::kSubquery) {
+    return refuse("LATERAL outer or correlated input node is unresolved");
+  }
+
+  std::vector<std::uint32_t> outer_descriptor_ids;
+  outer_descriptor_ids.reserve(
+      request.correlated_request.outer_batch.columns.size());
+  for (const auto& column : request.correlated_request.outer_batch.columns) {
+    outer_descriptor_ids.push_back(column.descriptor_id);
+  }
+  std::vector<std::uint32_t> inner_descriptor_ids;
+  inner_descriptor_ids.reserve(
+      request.correlated_request.inner_batch.columns.size());
+  for (const auto& column : request.correlated_request.inner_batch.columns) {
+    inner_descriptor_ids.push_back(column.descriptor_id);
+  }
+  std::vector<std::uint32_t> output_descriptor_ids = outer_descriptor_ids;
+  output_descriptor_ids.insert(output_descriptor_ids.end(),
+                               inner_descriptor_ids.begin(),
+                               inner_descriptor_ids.end());
+  if (outer_node->output_descriptor_ids != outer_descriptor_ids ||
+      subquery_node->output_descriptor_ids != inner_descriptor_ids ||
+      selected_node->output_descriptor_ids != output_descriptor_ids) {
+    return refuse("LATERAL physical descriptor handles drifted");
+  }
+  if (request.maximum_output_row_count == 0) {
+    return refuse("LATERAL output resource bound is zero");
+  }
+
+  auto correlated =
+      ExecuteCanonicalCorrelatedSubquery(request.correlated_request);
+  if (!correlated.diagnostic.ok) {
+    return refuse(correlated.diagnostic.diagnostic_code + ":" +
+                  correlated.diagnostic.detail);
+  }
+  if (correlated.result_row_count > request.maximum_output_row_count) {
+    return refuse("LATERAL output resource bound was exceeded");
+  }
+
+  DescriptorBatch output;
+  output.columns = request.correlated_request.outer_batch.columns;
+  output.columns.insert(output.columns.end(),
+                        request.correlated_request.inner_batch.columns.begin(),
+                        request.correlated_request.inner_batch.columns.end());
+  output.rows.reserve(correlated.result_row_count);
+  for (const auto& scope : correlated.scopes) {
+    if (scope.outer_row_index >=
+        request.correlated_request.outer_batch.rows.size()) {
+      return refuse("correlated scope lost physical outer-row identity");
+    }
+    const auto& outer_row =
+        request.correlated_request.outer_batch.rows[scope.outer_row_index];
+    for (const auto& inner_row : scope.output_batch.rows) {
+      DescriptorTuple lateral_row;
+      lateral_row.values = outer_row.values;
+      lateral_row.values.insert(lateral_row.values.end(),
+                                inner_row.values.begin(),
+                                inner_row.values.end());
+      output.rows.push_back(std::move(lateral_row));
+    }
+  }
+  auto output_validation =
+      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.scope_execution_count = correlated.scope_execution_count;
+  result.output_row_count = result.output_batch.rows.size();
+  result.correlated_plan_uuid = std::move(correlated.selected_plan_uuid);
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor

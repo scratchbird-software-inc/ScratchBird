@@ -223,6 +223,24 @@ struct CanonicalCorrelatedSubqueryResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalLateralSubqueryRequest {
+  CanonicalCorrelatedSubqueryRequest correlated_request;
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  std::size_t maximum_output_row_count = 1048576;
+};
+
+struct CanonicalLateralSubqueryResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t scope_execution_count = 0;
+  std::size_t output_row_count = 0;
+  std::string correlated_plan_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -745,6 +763,8 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
 CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
+CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
+    const CanonicalLateralSubqueryRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
