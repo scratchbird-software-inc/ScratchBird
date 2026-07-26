@@ -370,6 +370,8 @@ struct CanonicalPhysicalAlternativeRecord {
   std::vector<std::uint32_t> output_descriptor_ids;
   bool available{false};
   std::string refusal_diagnostic_id;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
 };
 
 struct CanonicalPhysicalAlternativeCatalog {

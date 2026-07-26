@@ -10,6 +10,7 @@
 
 #include "access_path.hpp"
 #include "access_path_full.hpp"
+#include "canonical_candidate_legality.hpp"
 #include "cost_model.hpp"
 #include "join_planner.hpp"
 #include "logical_plan.hpp"

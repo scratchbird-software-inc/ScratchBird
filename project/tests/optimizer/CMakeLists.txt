@@ -20,6 +20,12 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
       "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_executor"
     )
   endif()
+  if(NOT TARGET sb_qow_canonical_candidate_legality)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/engine/optimizer"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_optimizer"
+    )
+  endif()
   # QOW-CMAKE-QRY-004-NODE-ABI-V1
   add_executable(qow_qry_004_node_abi_test_v1 qow_qry_004_node_abi.cpp)
   target_compile_features(qow_qry_004_node_abi_test_v1 PRIVATE cxx_std_20)
@@ -121,6 +127,16 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   add_test(NAME qow_ias_006_v1 COMMAND qow_ias_006_test_v1)
   set_tests_properties(qow_ias_006_v1 PROPERTIES
     LABELS "qow_closure;QOW-302;QOW-LEAF-IAS-006;development_candidate"
+  )
+  # QOW-CMAKE-OPT-011-V1
+  add_executable(qow_opt_011_test_v1 qow_opt_011.cpp)
+  target_compile_features(qow_opt_011_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_011_test_v1 PRIVATE
+    sb_qow_canonical_candidate_legality
+  )
+  add_test(NAME qow_opt_011_v1 COMMAND qow_opt_011_test_v1)
+  set_tests_properties(qow_opt_011_v1 PROPERTIES
+    LABELS "qow_closure;QOW-302;QOW-LEAF-OPT-011;development_candidate"
   )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.

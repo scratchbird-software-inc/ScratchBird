@@ -6,6 +6,29 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
+  # QOW-CMAKE-OPT-011-V1
+  if(NOT TARGET sb_qow_canonical_candidate_legality)
+    add_library(sb_qow_canonical_candidate_legality STATIC
+      optimizer_contract.cpp
+    )
+    target_compile_features(sb_qow_canonical_candidate_legality PUBLIC
+      cxx_std_20
+    )
+    target_compile_definitions(sb_qow_canonical_candidate_legality PRIVATE
+      SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1
+    )
+    target_include_directories(sb_qow_canonical_candidate_legality PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/../planner
+    )
+    target_link_libraries(sb_qow_canonical_candidate_legality PUBLIC
+      sb_qow_canonical_logical_graph
+    )
+  endif()
+  return()
+endif()
+
 if(NOT TARGET sb_engine_plan_shapes)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../planner ${CMAKE_CURRENT_BINARY_DIR}/engine_planner)
 endif()

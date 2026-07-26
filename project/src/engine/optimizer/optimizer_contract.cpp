@@ -6,10 +6,16 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#ifdef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
+#include "canonical_candidate_legality.hpp"
+#else
 #include "optimizer_contract.hpp"
+#endif
 
+#ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 #include "join_planner_full.hpp"
 #include "relational_planner.hpp"
+#endif
 
 #include <algorithm>
 #include <initializer_list>
@@ -17,10 +23,238 @@
 #include <optional>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::optimizer {
 namespace planner = scratchbird::engine::planner;
+
+// QOW-SOURCE-OPT-011-V1
+CanonicalRelationalCandidateLegalityResult
+EvaluateCanonicalRelationalCandidateLegality(
+    const planner::CanonicalLogicalRelationalGraph& graph,
+    const planner::CanonicalLogicalPropertyCatalog& properties,
+    const planner::CanonicalPhysicalAlternativeCatalog& alternatives) {
+  CanonicalRelationalCandidateLegalityResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string alternative_uuid,
+                          std::string field_id) {
+    result.accepted = false;
+    result.data_access_allowed = false;
+    result.selectable_candidate_count = 0;
+    result.candidates.clear();
+    result.issues.push_back({std::move(diagnostic_id), node_id,
+                             std::move(alternative_uuid),
+                             std::move(field_id)});
+    return result;
+  };
+  const auto property_validation =
+      planner::ValidateCanonicalLogicalPropertyCatalog(graph, properties);
+  if (!property_validation.accepted) {
+    const auto& issue = property_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, {},
+                  issue.field_id);
+  }
+  const auto alternative_validation =
+      planner::ValidateCanonicalLogicalPhysicalBoundary(graph, alternatives);
+  if (!alternative_validation.accepted) {
+    const auto& issue = alternative_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, {},
+                  issue.field_id);
+  }
+
+  std::unordered_map<std::uint32_t,
+                     const planner::CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+  std::unordered_map<std::string,
+                     const planner::CanonicalLogicalPropertyRecord*>
+      properties_by_uuid;
+  for (const auto& property : properties.properties) {
+    properties_by_uuid.emplace(property.property_uuid, &property);
+  }
+  std::unordered_map<std::uint32_t, std::size_t> legal_candidates_by_node;
+
+  const auto node_has_delivered_kind =
+      [&](const planner::CanonicalLogicalRelationalNode& node,
+          const planner::CanonicalLogicalPropertyKind kind) {
+        return std::ranges::any_of(
+            node.delivered_property_uuids,
+            [&](const std::string& property_uuid) {
+              return properties_by_uuid.at(property_uuid)->property_kind ==
+                     kind;
+            });
+      };
+  for (const auto& node : graph.nodes) {
+    if (node.node_kind ==
+            planner::CanonicalLogicalRelationalNodeKind::kSort &&
+        !node_has_delivered_kind(
+            node, planner::CanonicalLogicalPropertyKind::kOrdering)) {
+      return refuse(
+          "QOW-DIAG-CANDIDATE-LOGICAL-PROPERTY-UNAVAILABLE-V1",
+          node.logical_node_id, {}, "sort_ordering_property");
+    }
+    if (node.node_kind ==
+            planner::CanonicalLogicalRelationalNodeKind::kWindow &&
+        !node_has_delivered_kind(
+            node, planner::CanonicalLogicalPropertyKind::kWindow)) {
+      return refuse(
+          "QOW-DIAG-CANDIDATE-LOGICAL-PROPERTY-UNAVAILABLE-V1",
+          node.logical_node_id, {}, "window_property");
+    }
+    if (node.node_kind ==
+        planner::CanonicalLogicalRelationalNodeKind::kAggregate) {
+      for (const auto& [property_uuid, property] : properties_by_uuid) {
+        if (property->origin_logical_node_id == node.logical_node_id &&
+            property->property_kind ==
+                planner::CanonicalLogicalPropertyKind::kGrouping &&
+            std::ranges::find(node.delivered_property_uuids, property_uuid) ==
+                node.delivered_property_uuids.end()) {
+          return refuse(
+              "QOW-DIAG-CANDIDATE-LOGICAL-PROPERTY-UNAVAILABLE-V1",
+              node.logical_node_id, {}, "aggregate_grouping_property");
+        }
+      }
+    }
+    if (node.node_kind ==
+        planner::CanonicalLogicalRelationalNodeKind::kWindow) {
+      for (const auto& delivered_uuid : node.delivered_property_uuids) {
+        const auto* property = properties_by_uuid.at(delivered_uuid);
+        if (property->property_kind !=
+            planner::CanonicalLogicalPropertyKind::kWindow) {
+          continue;
+        }
+        for (const auto& dependency_uuid :
+             property->dependency_property_uuids) {
+          if (std::ranges::find(node.required_property_uuids,
+                                dependency_uuid) ==
+              node.required_property_uuids.end()) {
+            return refuse(
+                "QOW-DIAG-CANDIDATE-LOGICAL-PROPERTY-UNAVAILABLE-V1",
+                node.logical_node_id, {}, "window_required_property");
+          }
+        }
+      }
+    }
+  }
+
+  constexpr std::size_t kMaximumAlternativePropertyReferences = 1048576;
+  std::size_t alternative_property_reference_count = 0;
+  for (const auto& alternative : alternatives.alternatives) {
+    if (alternative.required_property_uuids.size() >
+            kMaximumAlternativePropertyReferences -
+                alternative_property_reference_count) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    alternative.logical_node_id,
+                    alternative.alternative_uuid,
+                    "alternative_property_reference_count");
+    }
+    alternative_property_reference_count +=
+        alternative.required_property_uuids.size();
+    if (alternative.delivered_property_uuids.size() >
+            kMaximumAlternativePropertyReferences -
+                alternative_property_reference_count) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    alternative.logical_node_id,
+                    alternative.alternative_uuid,
+                    "alternative_property_reference_count");
+    }
+    alternative_property_reference_count +=
+        alternative.delivered_property_uuids.size();
+    const auto* node = nodes_by_id.at(alternative.logical_node_id);
+    std::unordered_set<std::string> input_delivered;
+    for (const auto input_id : node->input_logical_node_ids) {
+      const auto* input = nodes_by_id.at(input_id);
+      input_delivered.insert(input->delivered_property_uuids.begin(),
+                             input->delivered_property_uuids.end());
+    }
+    std::unordered_set<std::string> candidate_required;
+    std::unordered_set<std::string> candidate_delivered;
+    for (const auto& property_uuid : alternative.required_property_uuids) {
+      if (!properties_by_uuid.contains(property_uuid) ||
+          !candidate_required.insert(property_uuid).second) {
+        return refuse("QOW-DIAG-CANDIDATE-PROPERTY-REFERENCE-V1",
+                      node->logical_node_id, alternative.alternative_uuid,
+                      "required_property_uuids");
+      }
+    }
+    for (const auto& property_uuid : alternative.delivered_property_uuids) {
+      if (!properties_by_uuid.contains(property_uuid) ||
+          !candidate_delivered.insert(property_uuid).second ||
+          std::ranges::find(node->delivered_property_uuids, property_uuid) ==
+              node->delivered_property_uuids.end()) {
+        return refuse("QOW-DIAG-CANDIDATE-PROPERTY-REFERENCE-V1",
+                      node->logical_node_id, alternative.alternative_uuid,
+                      "delivered_property_uuids");
+      }
+    }
+
+    CanonicalRelationalCandidateLegalityRecord candidate;
+    candidate.alternative_uuid = alternative.alternative_uuid;
+    candidate.logical_node_id = alternative.logical_node_id;
+    for (const auto& required_uuid : candidate_required) {
+      if (!input_delivered.contains(required_uuid)) {
+        candidate.missing_property_uuids.push_back(required_uuid);
+      }
+    }
+    for (const auto& required_uuid : node->required_property_uuids) {
+      if (input_delivered.contains(required_uuid)) continue;
+      if (candidate_delivered.contains(required_uuid)) {
+        candidate.enforced_property_uuids.push_back(required_uuid);
+      } else {
+        candidate.missing_property_uuids.push_back(required_uuid);
+      }
+    }
+    for (const auto& delivered_uuid : node->delivered_property_uuids) {
+      if (!candidate_delivered.contains(delivered_uuid)) {
+        candidate.missing_property_uuids.push_back(delivered_uuid);
+      }
+    }
+    std::ranges::sort(candidate.missing_property_uuids);
+    candidate.missing_property_uuids.erase(
+        std::unique(candidate.missing_property_uuids.begin(),
+                    candidate.missing_property_uuids.end()),
+        candidate.missing_property_uuids.end());
+    std::ranges::sort(candidate.enforced_property_uuids);
+    candidate.property_enforcement_required =
+        !candidate.enforced_property_uuids.empty();
+    candidate.legal =
+        alternative.available && candidate.missing_property_uuids.empty();
+    if (!alternative.available) {
+      candidate.refusal_diagnostic_id =
+          alternative.refusal_diagnostic_id;
+    } else if (!candidate.legal) {
+      candidate.refusal_diagnostic_id =
+          "QOW-DIAG-CANDIDATE-PROPERTY-UNAVAILABLE-V1";
+    } else {
+      ++result.selectable_candidate_count;
+      ++legal_candidates_by_node[alternative.logical_node_id];
+    }
+    result.candidates.push_back(std::move(candidate));
+  }
+  result.accepted = true;
+  result.data_access_allowed = false;
+  result.complete_legal_coverage =
+      std::ranges::all_of(graph.nodes, [&](const auto& node) {
+        return legal_candidates_by_node[node.logical_node_id] != 0;
+      });
+  if (!result.complete_legal_coverage) {
+    for (const auto& node : graph.nodes) {
+      if (legal_candidates_by_node[node.logical_node_id] == 0) {
+        result.issues.push_back(
+            {"QOW-DIAG-NO-LEGAL-PROPERTY-CANDIDATE-V1",
+             node.logical_node_id, {}, "property_coverage"});
+      }
+    }
+  }
+  return result;
+}
+
+#ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 namespace {
 
 constexpr std::uint64_t kMaxCost = std::numeric_limits<std::uint64_t>::max();
@@ -1183,5 +1417,7 @@ OptimizerDecision ChooseSpecializedWorkloadAccess(const OptimizerEvidence& evide
   else decision.access_kind = planner::PhysicalAccessKind::kTimeSeriesAppendPath;
   return decision;
 }
+
+#endif
 
 }  // namespace scratchbird::engine::optimizer
