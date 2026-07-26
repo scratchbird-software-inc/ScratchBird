@@ -8,6 +8,7 @@
 
 # QOW-CMAKE-OPT-001-V1
 # QOW-CMAKE-OPT-002-V1
+# QOW-CMAKE-QRY-030-V1
 if(NOT TARGET sb_qow_canonical_logical_graph)
   add_library(sb_qow_canonical_logical_graph INTERFACE)
   target_compile_features(sb_qow_canonical_logical_graph INTERFACE cxx_std_20)
@@ -41,6 +42,7 @@ endif()
 if(NOT TARGET sb_engine_planner)
   add_library(sb_engine_planner
     reservation_backed_planner_memory_bridge.cpp
+    # Compiled removal guard for the former operation-prefix rule planner.
     rule_planner.cpp
   )
 

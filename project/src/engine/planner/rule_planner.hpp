@@ -8,17 +8,12 @@
 
 #pragma once
 
-#include "logical_plan.hpp"
-#include "sblr_engine_envelope.hpp"
-
 namespace scratchbird::engine::planner {
 
-// SEARCH_KEY: SB_SBLR_TO_OPTIMIZER_BINDING
-struct RulePlannerInput {
-  scratchbird::engine::sblr::SblrOperationEnvelope envelope;
-  scratchbird::engine::internal_api::EngineApiRequest api_request;
-};
-
-LogicalPlan BuildDeterministicLogicalPlan(const RulePlannerInput& input);
+// The operation-prefix planner was an unbound development scaffold.  It was
+// never called by the admitted SBLR query route and selected physical access
+// while constructing a nominally logical plan.  Keep this explicit tombstone
+// so downstream code cannot mistake the old header for a supported adapter.
+inline constexpr bool kOperationPrefixRulePlannerRemoved = true;
 
 }  // namespace scratchbird::engine::planner
