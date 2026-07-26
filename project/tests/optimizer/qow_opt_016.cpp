@@ -305,6 +305,7 @@ bool ValidatePropertyCapability() {
 
 }  // namespace
 
+#ifndef QOW_OPT_016_FIXTURE_ONLY
 // QOW-TEST-OPT-016-V1
 int main() {
   bool passed = true;
@@ -313,3 +314,4 @@ int main() {
   passed &= ValidatePropertyCapability();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+#endif

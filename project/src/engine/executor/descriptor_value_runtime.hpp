@@ -758,6 +758,15 @@ struct CanonicalPhysicalDispatchStepResult {
   std::uint64_t result_handle_id = 0;
   std::vector<std::uint32_t> output_descriptor_ids;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::size_t execution_ordinal = 0;
+  std::uint64_t input_row_count = 0;
+  std::uint64_t output_row_count = 0;
+  std::uint64_t rows_examined = 0;
+  std::uint64_t pages_read = 0;
+  std::uint64_t spill_bytes = 0;
+  bool execution_started = false;
+  bool execution_finished = false;
+  bool counters_captured_after_finish = false;
 };
 
 using CanonicalPhysicalNodeExecutor = std::function<
@@ -770,6 +779,10 @@ struct CanonicalPhysicalExecutorRegistration {
   PhysicalNodeKind node_kind = PhysicalNodeKind::kValues;
   std::string implementation_id;
   CanonicalPhysicalNodeExecutor execute;
+  std::string executor_capability_uuid;
+  std::uint32_t executor_capability_abi_version = 0;
+  bool engine_owned = false;
+  bool accepts_optimizer_publication_v2 = false;
 };
 
 struct CanonicalPhysicalDagDispatchRequest {
@@ -787,6 +800,8 @@ struct CanonicalPhysicalDagDispatchResult {
   std::vector<std::uint32_t> root_output_descriptor_ids;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   bool replan_required = false;
+  bool execution_started = false;
+  bool data_access_observed = false;
   std::string selected_plan_uuid;
   std::uint64_t executed_root_physical_node_id = 0;
   std::uint64_t root_causal_counter_id = 0;

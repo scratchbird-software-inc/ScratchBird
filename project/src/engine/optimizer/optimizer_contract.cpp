@@ -898,6 +898,7 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   return result;
 }
 
+// QOW-SOURCE-OPT-008-V1
 // QOW-SOURCE-OPT-016-V1
 CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     const CanonicalOptimizerAdmissionRequest& admission_request,

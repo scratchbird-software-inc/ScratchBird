@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "../../executor/descriptor_value_runtime.hpp"
 #include "../../executor/physical_node_abi.hpp"
 
 #include <cstddef>
@@ -261,6 +262,43 @@ struct CanonicalRuntimeOptimizerStatisticsResult {
 // QOW-SOURCE-OPT-015-V1
 CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
     const CanonicalRuntimeOptimizerStatisticsRequest& request);
+
+struct CanonicalOptimizerSelectedExecutionRequest {
+  std::uint16_t abi_version{1};
+  scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
+  std::string pre_access_statistics_snapshot_uuid;
+  std::uint64_t inventory_local_transaction_id{0};
+  std::uint64_t inventory_statement_snapshot_id{0};
+  scratchbird::engine::executor::PhysicalNodeAbiLimits limits;
+  std::vector<
+      scratchbird::engine::executor::CanonicalPhysicalExecutorRegistration>
+      available_executors;
+  bool engine_execution_authorized{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_claimed{false};
+  bool recovery_authority_claimed{false};
+};
+
+struct CanonicalOptimizerSelectedExecutionIssue {
+  std::string diagnostic_id;
+  std::uint64_t physical_node_id{0};
+  std::string field_id;
+};
+
+struct CanonicalOptimizerSelectedExecutionResult {
+  bool accepted{false};
+  bool exact_selected_nodes_executed{false};
+  bool causal_counters_attached{false};
+  bool data_access_observed{false};
+  bool replan_required{false};
+  scratchbird::engine::executor::CanonicalPhysicalDagDispatchResult dispatch;
+  CanonicalRuntimeOptimizerStatisticsResult runtime_actuals;
+  std::vector<CanonicalOptimizerSelectedExecutionIssue> issues;
+};
+
+// QOW-SOURCE-OPT-008-V1
+CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
+    const CanonicalOptimizerSelectedExecutionRequest& request);
 
 // QOW-SOURCE-QRY-002-V1
 RelationalDagValidationResult ValidateTypedRelationalDag(

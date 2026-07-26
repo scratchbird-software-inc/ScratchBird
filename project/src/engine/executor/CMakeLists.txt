@@ -100,6 +100,7 @@ add_library(sb_engine_executor STATIC
   operator_fusion_executor.cpp
   parallel_physical_pipeline.cpp
   # QOW-CMAKE-QRY-004-CONSUMPTION-V1
+  # QOW-CMAKE-OPT-008-V1
   physical_node_dispatch.cpp
   prepared_execution_template.cpp
   # QOW-CMAKE-QRY-007-PROJECTION-V1

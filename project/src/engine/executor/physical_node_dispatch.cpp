@@ -48,11 +48,14 @@ bool HasForbiddenAuthority(
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const CanonicalPhysicalDagDispatchRequest& request) {
   CanonicalPhysicalDagDispatchResult result;
+  bool execution_started = false;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic,
                           const bool replan = false) {
     result = {};
     result.diagnostic = std::move(diagnostic);
     result.replan_required = replan;
+    result.execution_started = execution_started;
+    result.data_access_observed = execution_started;
     return result;
   };
 
@@ -95,7 +98,14 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const auto registration =
         executors_by_implementation.find(node.implementation_id);
     if (registration == executors_by_implementation.end() ||
-        registration->second->node_kind != node.node_kind) {
+        registration->second->node_kind != node.node_kind ||
+        (request.physical_dag.abi_version == 2 &&
+         (registration->second->executor_capability_uuid !=
+              node.executor_capability_uuid ||
+          registration->second->executor_capability_abi_version !=
+              node.executor_capability_abi_version ||
+          !registration->second->engine_owned ||
+          !registration->second->accepts_optimizer_publication_v2))) {
       return refuse(
           Refusal("QOW-DIAG-QRY-004-PHYSICAL-IMPLEMENTATION-UNAVAILABLE-V1",
                   "selected physical implementation is unavailable: " +
@@ -142,6 +152,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     }
 
     CanonicalPhysicalDispatchStepResult step;
+    execution_started = true;
     try {
       step = executors_by_implementation.at(node.implementation_id)
                  ->execute(request.physical_dag, node, inputs);
@@ -158,6 +169,10 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));
     }
+    step.execution_ordinal = result.executed_steps.size() + 1;
+    step.execution_started = true;
+    step.execution_finished = true;
+    step.counters_captured_after_finish = true;
     if (step.selected_plan_uuid != request.physical_dag.selected_plan_uuid ||
         step.executed_physical_node_id != node.physical_node_id ||
         step.causal_counter_id != node.causal_counter_id ||
@@ -184,6 +199,8 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   result.root_result_handle_id = root.result_handle_id;
   result.root_output_descriptor_ids = root.output_descriptor_ids;
   result.authority.engine_mga_snapshot_bound = true;
+  result.execution_started = true;
+  result.data_access_observed = true;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_root_physical_node_id = root.executed_physical_node_id;
   result.root_causal_counter_id = root.causal_counter_id;

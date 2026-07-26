@@ -905,6 +905,138 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
   return result;
 }
 
+// QOW-SOURCE-OPT-008-V1
+// Consumes only an optimizer-published ABI-v2 physical DAG. The dispatcher
+// preflights the exact selected capability registrations, executes dependency
+// inputs before consumers, and supplies lifecycle/counter evidence that is
+// attached to the immutable physical/logical/causal identities after execution.
+CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
+    const CanonicalOptimizerSelectedExecutionRequest& request) {
+  CanonicalOptimizerSelectedExecutionResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint64_t physical_node_id,
+                          std::string field_id,
+                          const bool replan_required = false,
+                          const bool data_access_observed = false) {
+    result = {};
+    result.replan_required = replan_required;
+    result.data_access_observed = data_access_observed;
+    result.issues.push_back({std::move(diagnostic_id), physical_node_id,
+                             std::move(field_id)});
+    return result;
+  };
+
+  if (request.abi_version != 1 || !request.engine_execution_authorized ||
+      request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-AUTHORITY-V1", 0,
+                  "engine_execution_authority");
+  }
+  const auto dag_validation = executor::ValidateTypedPhysicalNodeDag(
+      request.selected_physical_dag, request.limits);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.physical_node_id,
+                  issue.field_id);
+  }
+  if (request.selected_physical_dag.abi_version != 2 ||
+      !request.selected_physical_dag.optimizer_published ||
+      !request.selected_physical_dag.immutable_node_identity_validated ||
+      !request.selected_physical_dag.capability_validated_before_access ||
+      request.selected_physical_dag.data_access_observed ||
+      request.pre_access_statistics_snapshot_uuid !=
+          request.selected_physical_dag.statistics_snapshot_uuid ||
+      request.inventory_local_transaction_id == 0 ||
+      request.inventory_local_transaction_id !=
+          request.selected_physical_dag.local_transaction_id ||
+      request.inventory_statement_snapshot_id == 0 ||
+      request.inventory_statement_snapshot_id !=
+          request.selected_physical_dag.statement_snapshot_id) {
+    return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-SCOPE-V1", 0,
+                  "published_plan_statistics_mga_scope");
+  }
+
+  executor::CanonicalPhysicalDagDispatchRequest dispatch_request;
+  dispatch_request.physical_dag = request.selected_physical_dag;
+  dispatch_request.inventory_local_transaction_id =
+      request.inventory_local_transaction_id;
+  dispatch_request.inventory_statement_snapshot_id =
+      request.inventory_statement_snapshot_id;
+  dispatch_request.limits = request.limits;
+  dispatch_request.available_executors = request.available_executors;
+  auto dispatch = executor::ExecuteCanonicalPhysicalDag(dispatch_request);
+  if (!dispatch.diagnostic.ok) {
+    return refuse(dispatch.diagnostic.diagnostic_code, 0,
+                  dispatch.diagnostic.detail, dispatch.replan_required,
+                  dispatch.data_access_observed);
+  }
+  if (dispatch.executed_steps.size() !=
+          request.selected_physical_dag.nodes.size() ||
+      dispatch.selected_plan_uuid !=
+          request.selected_physical_dag.selected_plan_uuid ||
+      dispatch.executed_root_physical_node_id !=
+          request.selected_physical_dag.root_physical_node_id ||
+      !dispatch.authority.engine_mga_snapshot_bound) {
+    return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-EVIDENCE-V1", 0,
+                  "complete_dispatch_identity");
+  }
+
+  CanonicalRuntimeOptimizerStatisticsRequest actuals_request;
+  actuals_request.selected_physical_dag = request.selected_physical_dag;
+  actuals_request.pre_access_statistics_snapshot_uuid =
+      request.pre_access_statistics_snapshot_uuid;
+  actuals_request.inventory_local_transaction_id =
+      request.inventory_local_transaction_id;
+  actuals_request.inventory_statement_snapshot_id =
+      request.inventory_statement_snapshot_id;
+  actuals_request.data_access_observed = true;
+  actuals_request.all_executed_nodes_finished = true;
+  actuals_request.estimates_frozen_before_access = true;
+  actuals_request.engine_execution_evidence = true;
+  actuals_request.node_actuals.reserve(dispatch.executed_steps.size());
+  for (const auto& step : dispatch.executed_steps) {
+    CanonicalRuntimeOptimizerNodeActual actual;
+    actual.physical_node_id = step.executed_physical_node_id;
+    const auto node = std::ranges::find_if(
+        request.selected_physical_dag.nodes, [&](const auto& record) {
+          return record.physical_node_id == step.executed_physical_node_id;
+        });
+    if (node == request.selected_physical_dag.nodes.end()) {
+      return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-EVIDENCE-V1",
+                    step.executed_physical_node_id,
+                    "executed_physical_node_id");
+    }
+    actual.logical_node_id = node->relational_node_id;
+    actual.causal_counter_id = step.causal_counter_id;
+    actual.execution_ordinal = step.execution_ordinal;
+    actual.input_row_count = step.input_row_count;
+    actual.output_row_count = step.output_row_count;
+    actual.rows_examined = step.rows_examined;
+    actual.pages_read = step.pages_read;
+    actual.spill_bytes = step.spill_bytes;
+    actual.execution_started = step.execution_started;
+    actual.execution_finished = step.execution_finished;
+    actual.counters_captured_after_finish =
+        step.counters_captured_after_finish;
+    actuals_request.node_actuals.push_back(std::move(actual));
+  }
+  auto actuals = BuildRuntimeOptimizerStatistics(actuals_request);
+  if (!actuals.accepted) {
+    const auto& issue = actuals.issues.front();
+    return refuse(issue.diagnostic_id, issue.physical_node_id,
+                  issue.field_id);
+  }
+
+  result.accepted = true;
+  result.exact_selected_nodes_executed = true;
+  result.causal_counters_attached = true;
+  result.data_access_observed = true;
+  result.dispatch = std::move(dispatch);
+  result.runtime_actuals = std::move(actuals);
+  return result;
+}
+
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 namespace {
 
@@ -6740,11 +6872,15 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
   return logical;
 }
 
-bool AttachOptimizerSelectionEvidence(const plan::LogicalPlan& logical,
-                                      const opt::OptimizerStatisticsCatalog& statistics,
-                                      std::vector<EngineEvidenceReference>* evidence,
-                                      std::string* error_detail,
-                                      plan::PhysicalAccessKind* selected_access = nullptr) {
+// Legacy noncanonical evidence-only route. This helper does not consume an
+// optimizer-published ABI-v2 physical DAG and must not be treated as canonical
+// selected-plan execution.
+bool AttachLegacyOptimizerSelectionEvidence(
+    const plan::LogicalPlan& logical,
+    const opt::OptimizerStatisticsCatalog& statistics,
+    std::vector<EngineEvidenceReference>* evidence,
+    std::string* error_detail,
+    plan::PhysicalAccessKind* selected_access = nullptr) {
   const auto optimized = opt::OptimizeLogicalPlanWithStatistics(logical, statistics);
   evidence->push_back({"optimizer_profile", optimized.optimizer_profile});
   evidence->push_back({"logical_plan_id", logical.plan_id});
@@ -7307,7 +7443,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       result.result_shape = PivotResultShape(request, relations->front(), &error_detail);
@@ -7336,7 +7472,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       result.result_shape = UnpivotResultShape(request, relations->front(), &error_detail);
@@ -7365,7 +7501,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       const bool count_all =
@@ -7476,7 +7612,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         result.evidence.push_back({"optimizer_selected_access", "join_nested_loop"});
         result.evidence.push_back({"optimizer_executor_capability", "nested_loop_join"});
       } else {
-        if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_join_access)) {
+        if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_join_access)) {
           return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
         }
       }
@@ -8048,7 +8184,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       const std::size_t group_key_column =
@@ -8274,7 +8410,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       const std::size_t order_column =
@@ -8312,7 +8448,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       result.result_shape = MaterializedWindowAssertionShape(request, relations->front(), &error_detail);
@@ -8334,7 +8470,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       const auto statistics =
           BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
-      if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
+      if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
       }
       result.result_shape = MaterializedAggregateAssertionShape(request, relations->front(), &error_detail);
@@ -8361,7 +8497,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         BuildLegacyPreAccessOptimizerStatistics(request, *relations);
     const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
     plan::PhysicalAccessKind selected_access = plan::PhysicalAccessKind::kTableScan;
-    if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access)) {
+    if (!AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access)) {
       return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
     }
     std::string planned_join_algorithm;
@@ -8501,7 +8637,7 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       BuildLegacyPreAccessOptimizerStatistics(request, planned_relations);
   const auto logical = BuildExecutableLogicalPlan(request, plan_name, planned_relations, &statistics, &result.evidence);
   plan::PhysicalAccessKind selected_access = plan::PhysicalAccessKind::kTableScan;
-  (void)AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access);
+  (void)AttachLegacyOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access);
   const std::string selected_plan = plan::PhysicalAccessKindName(selected_access);
   result.plan_kind = selected_plan;
   AddApiBehaviorEvidence(&result, "query_plan", selected_plan);

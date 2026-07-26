@@ -21,7 +21,14 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   endif()
   # QOW-CMAKE-QRY-002-V1
   # QOW-CMAKE-QRY-015-V1
+  # QOW-CMAKE-OPT-008-V1
   # QOW-CMAKE-OPT-015-V1
+  if(NOT TARGET sb_engine_executor)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../executor
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_executor
+    )
+  endif()
   add_library(sb_qow_relational_dag_contract STATIC query/plan_api.cpp)
   target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
   target_compile_definitions(sb_qow_relational_dag_contract PRIVATE
@@ -30,6 +37,9 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_include_directories(sb_qow_relational_dag_contract PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../planner
+  )
+  target_link_libraries(sb_qow_relational_dag_contract PUBLIC
+    sb_engine_executor
   )
   # QOW-CMAKE-QRY-008-DESC-V1
   # QOW-CMAKE-QRY-008-NULL-V1
