@@ -352,6 +352,23 @@ struct CanonicalRecursiveCteResourceResult {
   std::string memory_grant_evidence_uuid;
 };
 
+using CanonicalRecursiveCteCancellationProbe =
+    std::function<bool(std::size_t)>;
+
+struct CanonicalRecursiveCteCancellationRequest {
+  CanonicalRecursiveCteWorkingRequest working_request;
+  CanonicalRecursiveCteCancellationProbe cancellation_requested;
+  std::string cancellation_evidence_uuid;
+};
+
+struct CanonicalRecursiveCteCancellationResult {
+  CanonicalRecursiveCteWorkingResult working_result;
+  bool cancelled = false;
+  std::size_t cancellation_iteration_ordinal = 0;
+  bool working_state_cleaned = false;
+  std::string cancellation_evidence_uuid;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -885,6 +902,9 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     const CanonicalRecursiveCteSearchCycleRequest& request);
 CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     const CanonicalRecursiveCteResourceRequest& request);
+CanonicalRecursiveCteCancellationResult
+ExecuteCanonicalRecursiveCteCancellation(
+    const CanonicalRecursiveCteCancellationRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(

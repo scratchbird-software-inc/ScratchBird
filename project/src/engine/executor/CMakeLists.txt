@@ -52,6 +52,7 @@ add_library(sb_engine_executor STATIC
   bulk_executor.cpp
   candidate_set_executor.cpp
   cpu_cache_layout_observability.cpp
+  # QOW-CMAKE-QRY-014-CANCELLATION-V1
   # QOW-CMAKE-QRY-014-RESOURCE-V1
   # QOW-CMAKE-QRY-014-SEARCH-CYCLE-V1
   # QOW-CMAKE-QRY-014-UNION-V1

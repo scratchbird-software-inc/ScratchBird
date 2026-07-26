@@ -649,4 +649,115 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
   return result;
 }
 
+// QOW-SOURCE-QRY-014-CANCELLATION-V1
+// Probe cancellation before the anchor can be published and before each
+// recursive step. The shared working executor keeps every accumulated and
+// intermediate row private, allowing this wrapper to discard the entire state
+// at the exact observed boundary without becoming transaction authority.
+CanonicalRecursiveCteCancellationResult
+ExecuteCanonicalRecursiveCteCancellation(
+    const CanonicalRecursiveCteCancellationRequest& request) {
+  CanonicalRecursiveCteCancellationResult result;
+  result.working_state_cleaned = true;
+  const auto refuse = [&](std::string detail, const bool cancelled = false,
+                          const std::size_t ordinal = 0) {
+    result = {};
+    result.working_result.diagnostic.ok = false;
+    result.working_result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-014-CANCELLATION-REFUSAL-V1";
+    result.working_result.diagnostic.detail = std::move(detail);
+    result.cancelled = cancelled;
+    result.cancellation_iteration_ordinal = ordinal;
+    result.working_state_cleaned = true;
+    if (cancelled) {
+      result.cancellation_evidence_uuid =
+          request.cancellation_evidence_uuid;
+    }
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  const auto* selected_node = FindPhysicalNode(
+      request.working_request.physical_dag,
+      request.working_request.selected_physical_node_id);
+  if (request.working_request.selected_physical_node_id == 0 ||
+      request.working_request.selected_physical_node_id !=
+          request.working_request.physical_dag.root_physical_node_id ||
+      selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kRecursiveCte ||
+      selected_node->implementation_id !=
+          "cte.recursive.cancellable.typed.v1") {
+    return refuse("recursive CTE cancellation physical profile is not bound");
+  }
+  const auto policy_evidence = std::find_if(
+      request.working_request.physical_dag.admission_evidence.begin(),
+      request.working_request.physical_dag.admission_evidence.end(),
+      [](const PhysicalAdmissionEvidence& evidence) {
+        return evidence.stage == PhysicalAdmissionStage::kPolicyCapability;
+      });
+  if (!request.cancellation_requested ||
+      request.cancellation_evidence_uuid.empty() ||
+      policy_evidence ==
+          request.working_request.physical_dag.admission_evidence.end() ||
+      policy_evidence->evidence_uuid !=
+          request.cancellation_evidence_uuid) {
+    return refuse("recursive CTE cancellation evidence is not bound");
+  }
+
+  try {
+    if (request.cancellation_requested(0)) {
+      return refuse("recursive CTE was cancelled before anchor publication",
+                    true, 0);
+    }
+  } catch (const std::exception& error) {
+    return refuse(std::string("recursive CTE cancellation probe failed:") +
+                  error.what());
+  } catch (...) {
+    return refuse("recursive CTE cancellation probe failed");
+  }
+
+  CanonicalRecursiveCteWorkingRequest working = request.working_request;
+  for (auto& node : working.physical_dag.nodes) {
+    if (node.physical_node_id == working.selected_physical_node_id) {
+      node.implementation_id = "cte.recursive.working.typed.v1";
+      break;
+    }
+  }
+  const auto recursive_step = working.recursive_step;
+  const auto cancellation_probe = request.cancellation_requested;
+  auto cancelled = std::make_shared<bool>(false);
+  auto cancellation_ordinal = std::make_shared<std::size_t>(0);
+  working.recursive_step =
+      [recursive_step, cancellation_probe, cancelled, cancellation_ordinal](
+          const DescriptorBatch& current, const std::size_t iteration) {
+        if (cancellation_probe(iteration)) {
+          *cancelled = true;
+          *cancellation_ordinal = iteration;
+          throw std::runtime_error("recursive CTE cancellation observed");
+        }
+        return recursive_step(current, iteration);
+      };
+
+  auto working_result = ExecuteCanonicalRecursiveCteWorking(working);
+  if (*cancelled) {
+    return refuse("recursive CTE cancellation observed", true,
+                  *cancellation_ordinal);
+  }
+  if (!working_result.diagnostic.ok) {
+    return refuse(working_result.diagnostic.diagnostic_code + ":" +
+                  working_result.diagnostic.detail);
+  }
+  result.working_result = std::move(working_result);
+  result.cancelled = false;
+  result.cancellation_iteration_ordinal = 0;
+  result.working_state_cleaned = true;
+  result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
