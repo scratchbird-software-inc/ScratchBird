@@ -217,6 +217,20 @@ struct CanonicalInt64SumGroupResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalInt64SumFilterRequest {
+  CanonicalInt64SumStateRequest aggregate_request;
+  std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+      row_truth_values;
+};
+
+struct CanonicalInt64SumFilterResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalInt64SumAggregateState state;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorInnerJoinRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -396,6 +410,8 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
     const CanonicalInt64SumFinalizeRequest& request);
 CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
     const CanonicalInt64SumGroupRequest& request);
+CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
+    const CanonicalInt64SumFilterRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(

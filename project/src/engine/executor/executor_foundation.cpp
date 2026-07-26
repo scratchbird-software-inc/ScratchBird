@@ -514,6 +514,108 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-FILTER-V1
+// Apply aggregate FILTER through the shared SQL 3VL consumer.  The complete
+// typed input is validated before TRUE rows are selected, and FALSE/UNKNOWN
+// rows never transition the aggregate state.
+CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
+    const CanonicalInt64SumFilterRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalInt64SumFilterResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-FILTER-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.state = {};
+    return result;
+  };
+  const auto& aggregate = request.aggregate_request;
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(aggregate.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (aggregate.selected_physical_node_id == 0 ||
+      aggregate.selected_physical_node_id !=
+          aggregate.physical_dag.root_physical_node_id) {
+    return refuse("selected filtered aggregate is not the physical root");
+  }
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return refuse("filtered SUM requires one selected aggregate node");
+  }
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr) return refuse("filtered aggregate input is unresolved");
+
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      aggregate.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code + ":" +
+                  input_validation.detail);
+  }
+  if (aggregate.value_column >= aggregate.input_batch.columns.size() ||
+      aggregate.maximum_transition_count == 0 ||
+      aggregate.input_batch.rows.size() >
+          aggregate.maximum_transition_count ||
+      request.row_truth_values.size() != aggregate.input_batch.rows.size()) {
+    return refuse("FILTER row, value, or resource cardinality is invalid");
+  }
+  for (const auto& row : aggregate.input_batch.rows) {
+    const auto& value = row.values[aggregate.value_column];
+    if (value.state == api::EngineValueState::sql_null) continue;
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+  }
+
+  DescriptorBatch filtered;
+  filtered.columns = aggregate.input_batch.columns;
+  for (std::size_t row = 0; row < aggregate.input_batch.rows.size(); ++row) {
+    bool passes = false;
+    std::string detail;
+    if (!api::QowPredicateConsumerPassesV1(
+            request.row_truth_values[row], api::EnginePredicateConsumer::filter,
+            &passes, &detail)) {
+      return refuse("aggregate FILTER 3VL refusal: " + detail);
+    }
+    if (passes) filtered.rows.push_back(aggregate.input_batch.rows[row]);
+  }
+
+  auto filtered_request = aggregate;
+  filtered_request.input_batch = std::move(filtered);
+  auto transitioned = ExecuteCanonicalInt64SumState(filtered_request);
+  if (!transitioned.diagnostic.ok) {
+    return refuse(transitioned.diagnostic.diagnostic_code + ":" +
+                  transitioned.diagnostic.detail);
+  }
+  result.diagnostic = {};
+  result.state = std::move(transitioned.state);
+  result.selected_plan_uuid = std::move(transitioned.selected_plan_uuid);
+  result.executed_physical_node_id =
+      transitioned.executed_physical_node_id;
+  result.causal_counter_id = transitioned.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }
