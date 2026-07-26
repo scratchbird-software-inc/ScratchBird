@@ -34,6 +34,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPT-006-RESOURCE-V1
   # QOW-CMAKE-OPT-006-ROUTE-V1
   # QOW-CMAKE-OPT-006-STATISTICS-V1
+  # QOW-CMAKE-OPT-015-V1
   if(NOT TARGET sb_qow_optimizer_admission)
     add_library(sb_qow_optimizer_admission STATIC
       optimizer_admission.cpp

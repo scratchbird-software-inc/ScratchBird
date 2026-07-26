@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "catalog/sys_information_projection.hpp"
+#include "../../executor/physical_node_abi.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -204,6 +205,62 @@ struct EngineTypedRelationalPlanRequest : EngineApiRequest {
   bool execute{false};
   TypedRelationalDag relational_dag;
 };
+
+struct CanonicalRuntimeOptimizerNodeActual {
+  std::uint64_t physical_node_id{0};
+  std::uint32_t logical_node_id{0};
+  std::uint64_t causal_counter_id{0};
+  std::size_t execution_ordinal{0};
+  std::uint64_t input_row_count{0};
+  std::uint64_t output_row_count{0};
+  std::uint64_t rows_examined{0};
+  std::uint64_t pages_read{0};
+  std::uint64_t spill_bytes{0};
+  bool execution_started{false};
+  bool execution_finished{false};
+  bool counters_captured_after_finish{false};
+};
+
+struct CanonicalRuntimeOptimizerStatisticsRequest {
+  std::uint16_t abi_version{1};
+  scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
+  std::string pre_access_statistics_snapshot_uuid;
+  std::uint64_t inventory_local_transaction_id{0};
+  std::uint64_t inventory_statement_snapshot_id{0};
+  std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
+  bool data_access_observed{false};
+  bool all_executed_nodes_finished{false};
+  bool estimates_frozen_before_access{false};
+  bool engine_execution_evidence{false};
+  bool parser_actuals_authority_claimed{false};
+  bool transaction_finality_claimed{false};
+  bool visibility_authority_claimed{false};
+  bool security_authority_claimed{false};
+  bool recovery_authority_claimed{false};
+  bool benchmark_authority_claimed{false};
+};
+
+struct CanonicalRuntimeOptimizerStatisticsIssue {
+  std::string diagnostic_id;
+  std::uint64_t physical_node_id{0};
+  std::string field_id;
+};
+
+struct CanonicalRuntimeOptimizerStatisticsResult {
+  bool accepted{false};
+  bool post_execution_actuals{false};
+  bool planning_estimates_immutable{false};
+  bool feedback_authorized{false};
+  bool data_access_observed{false};
+  std::string selected_plan_uuid;
+  std::string pre_access_statistics_snapshot_uuid;
+  std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
+  std::vector<CanonicalRuntimeOptimizerStatisticsIssue> issues;
+};
+
+// QOW-SOURCE-OPT-015-V1
+CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
+    const CanonicalRuntimeOptimizerStatisticsRequest& request);
 
 // QOW-SOURCE-QRY-002-V1
 RelationalDagValidationResult ValidateTypedRelationalDag(

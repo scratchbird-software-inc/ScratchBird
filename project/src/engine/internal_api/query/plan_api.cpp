@@ -23,7 +23,6 @@
 #include "domain_support/domain_store.hpp"
 #include "executor_foundation.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
-#include "metric_registry.hpp"
 #include "optimizer_contract.hpp"
 #include "optimizer_plan_cache.hpp"
 #include "physical_plan.hpp"
@@ -775,13 +774,143 @@ CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
   return result;
 }
 
+// QOW-SOURCE-OPT-015-V1
+// Runtime actuals are a post-execution record keyed to the immutable selected
+// physical DAG. They never replace the pre-access estimate snapshot and do not
+// authorize feedback, visibility, security, recovery, or transaction finality.
+CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
+    const CanonicalRuntimeOptimizerStatisticsRequest& request) {
+  CanonicalRuntimeOptimizerStatisticsResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint64_t physical_node_id,
+                          std::string field_id) {
+    result = {};
+    result.issues.push_back({std::move(diagnostic_id), physical_node_id,
+                             std::move(field_id)});
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+
+  if (request.abi_version != 1) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-VERSION-V1", 0,
+                  "abi_version");
+  }
+  const auto physical_validation =
+      executor::ValidateTypedPhysicalNodeDag(request.selected_physical_dag);
+  if (!physical_validation.accepted) {
+    const auto& issue = physical_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.physical_node_id, issue.field_id);
+  }
+  if (!canonical_uuid(request.pre_access_statistics_snapshot_uuid) ||
+      request.pre_access_statistics_snapshot_uuid ==
+          request.selected_physical_dag.selected_plan_uuid ||
+      request.inventory_local_transaction_id == 0 ||
+      request.inventory_local_transaction_id !=
+          request.selected_physical_dag.local_transaction_id ||
+      request.inventory_statement_snapshot_id == 0 ||
+      request.inventory_statement_snapshot_id !=
+          request.selected_physical_dag.statement_snapshot_id) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-SCOPE-V1", 0,
+                  "plan_estimate_mga_scope");
+  }
+  if (!request.data_access_observed || !request.all_executed_nodes_finished ||
+      !request.estimates_frozen_before_access ||
+      !request.engine_execution_evidence) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-PHASE-V1", 0,
+                  "post_execution_boundary");
+  }
+  if (request.parser_actuals_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.visibility_authority_claimed ||
+      request.security_authority_claimed || request.recovery_authority_claimed ||
+      request.benchmark_authority_claimed) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-AUTHORITY-V1", 0,
+                  "forbidden_actuals_authority");
+  }
+  if (request.node_actuals.size() !=
+      request.selected_physical_dag.nodes.size()) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-COVERAGE-V1", 0,
+                  "executed_node_count");
+  }
+
+  std::unordered_map<std::uint64_t,
+                     const executor::PhysicalNodeRecord*>
+      physical_nodes;
+  for (const auto& node : request.selected_physical_dag.nodes) {
+    physical_nodes.emplace(node.physical_node_id, &node);
+  }
+  std::unordered_map<std::uint64_t,
+                     const CanonicalRuntimeOptimizerNodeActual*>
+      actuals_by_node;
+  std::unordered_set<std::size_t> execution_ordinals;
+  for (const auto& actual : request.node_actuals) {
+    const auto node_it = physical_nodes.find(actual.physical_node_id);
+    if (node_it == physical_nodes.end() ||
+        !actuals_by_node.emplace(actual.physical_node_id, &actual).second ||
+        actual.execution_ordinal == 0 ||
+        actual.execution_ordinal > request.node_actuals.size() ||
+        !execution_ordinals.insert(actual.execution_ordinal).second) {
+      return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-COVERAGE-V1",
+                    actual.physical_node_id, "physical_node_or_ordinal");
+    }
+    const auto& node = *node_it->second;
+    if (actual.logical_node_id != node.relational_node_id ||
+        actual.causal_counter_id != node.causal_counter_id ||
+        !actual.execution_started || !actual.execution_finished ||
+        !actual.counters_captured_after_finish) {
+      return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-IDENTITY-V1",
+                    actual.physical_node_id,
+                    "logical_causal_completion_identity");
+    }
+  }
+  for (const auto& node : request.selected_physical_dag.nodes) {
+    const auto actual_it = actuals_by_node.find(node.physical_node_id);
+    if (actual_it == actuals_by_node.end()) {
+      return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-COVERAGE-V1",
+                    node.physical_node_id, "executed_node_actual");
+    }
+    for (const auto input_id : node.input_physical_node_ids) {
+      const auto input_actual_it = actuals_by_node.find(input_id);
+      if (input_actual_it == actuals_by_node.end() ||
+          input_actual_it->second->execution_ordinal >=
+              actual_it->second->execution_ordinal) {
+        return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-ORDER-V1",
+                      node.physical_node_id, "input_execution_order");
+      }
+    }
+  }
+
+  result.accepted = true;
+  result.post_execution_actuals = true;
+  result.planning_estimates_immutable = true;
+  result.feedback_authorized = false;
+  result.data_access_observed = true;
+  result.selected_plan_uuid = request.selected_physical_dag.selected_plan_uuid;
+  result.pre_access_statistics_snapshot_uuid =
+      request.pre_access_statistics_snapshot_uuid;
+  result.node_actuals = request.node_actuals;
+  std::ranges::sort(result.node_actuals, {},
+                    &CanonicalRuntimeOptimizerNodeActual::execution_ordinal);
+  return result;
+}
+
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 namespace {
 
 namespace exec = scratchbird::engine::executor;
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
-namespace metrics = scratchbird::core::metrics;
 using scratchbird::core::catalog::BuiltinCatalogTableProfiles;
 
 plan::PhysicalAccessKind AccessKindForQueryOperation(const std::string& operation);
@@ -1095,70 +1224,6 @@ double ParseReal64Value(const std::string& value, double fallback) {
   return TryParseReal64Value(value, &parsed) ? parsed : fallback;
 }
 
-std::uint64_t EncodedRowBytes(const EngineRowValue& row) {
-  std::uint64_t bytes = 0;
-  for (const auto& [field, typed] : row.fields) {
-    bytes += field.size();
-    bytes += typed.encoded_value.size();
-    bytes += typed.descriptor.encoded_descriptor.size();
-  }
-  return bytes;
-}
-
-double MetricValueAsDouble(const metrics::MetricValue& value) {
-  if (value.type == metrics::MetricType::histogram && value.count != 0) {
-    return value.sum / static_cast<double>(value.count);
-  }
-  return value.value;
-}
-
-std::optional<double> CurrentMetricValue(const std::string& family) {
-  const auto snapshot = metrics::DefaultMetricRegistry().SnapshotCurrent(true);
-  auto it = std::find_if(snapshot.begin(), snapshot.end(), [&](const metrics::MetricValue& value) {
-    return value.family == family;
-  });
-  if (it == snapshot.end()) { return std::nullopt; }
-  return MetricValueAsDouble(*it);
-}
-
-void AddRuntimeStatistic(opt::OptimizerStatisticsCatalog* catalog,
-                         std::string name,
-                         std::string scope,
-                         std::string object_uuid,
-                         double value,
-                         opt::CostConfidence confidence = opt::CostConfidence::kMedium) {
-  catalog->Add(opt::MakeStatistic(std::move(name),
-                                  std::move(scope),
-                                  std::move(object_uuid),
-                                  value,
-                                  opt::StatisticSource::kRuntimeMetric,
-                                  1,
-                                  0,
-                                  confidence,
-                                  true));
-}
-
-std::uint64_t CountRetainedVersions(const CrudState& state, const std::string& table_uuid) {
-  return static_cast<std::uint64_t>(std::count_if(state.row_versions.begin(), state.row_versions.end(), [&](const CrudRowVersionRecord& row) {
-    return row.table_uuid == table_uuid;
-  }));
-}
-
-std::uint64_t CountIndexEntries(const CrudState& state, const std::string& index_uuid) {
-  return static_cast<std::uint64_t>(std::count_if(state.index_entries.begin(), state.index_entries.end(), [&](const CrudIndexEntryRecord& entry) {
-    return entry.index_uuid == index_uuid;
-  }));
-}
-
-std::uint64_t CountDistinctIndexKeys(const CrudState& state, const std::string& index_uuid) {
-  std::vector<std::string> keys;
-  for (const auto& entry : state.index_entries) {
-    if (entry.index_uuid == index_uuid) { keys.push_back(entry.key_value); }
-  }
-  std::sort(keys.begin(), keys.end());
-  return static_cast<std::uint64_t>(std::unique(keys.begin(), keys.end()) - keys.begin());
-}
-
 EngineLocalizedName NameForPlanCacheResolution(const EnginePlanOperationRequest& request,
                                                const std::string& value) {
   EngineLocalizedName name;
@@ -1457,14 +1522,15 @@ CrudStoreResult LoadQueryCrudCompatibilityState(const EngineRequestContext& cont
   return result;
 }
 
-opt::OptimizerStatisticsCatalog BuildRuntimeOptimizerStatistics(const EnginePlanOperationRequest& request,
-                                                                const std::vector<EngineQueryRelation>& relations) {
+opt::OptimizerStatisticsCatalog BuildLegacyPreAccessOptimizerStatistics(
+    const EnginePlanOperationRequest& request,
+    const std::vector<EngineQueryRelation>& relations) {
   opt::OptimizerStatisticsCatalog catalog = opt::DefaultLocalStatisticsCatalog();
   opt::AddClusterUnavailableStatistics(&catalog);
   if (StatisticsForcedStale(request)) {
-    catalog.Add(opt::MakeStatistic("runtime_relation_statistics_forced_stale",
+    catalog.Add(opt::MakeStatistic("preaccess_relation_statistics_forced_stale",
                                    "relation",
-                                   "runtime.request",
+                                   "preaccess.request",
                                    0.0,
                                    opt::StatisticSource::kUnavailable,
                                    0,
@@ -1474,84 +1540,25 @@ opt::OptimizerStatisticsCatalog BuildRuntimeOptimizerStatistics(const EnginePlan
     return catalog;
   }
 
-  CrudStoreResult loaded;
-  const bool can_load_crud = request.context.local_transaction_id != 0 && !request.context.database_path.empty();
-  if (can_load_crud) { loaded = LoadQueryCrudCompatibilityState(request.context); }
-
+  // This legacy planner has no catalog-statistics loader. Never substitute
+  // request rows, visible MGA rows, index entries, or materialized output for
+  // a pre-access estimate. Record unavailable object-scoped statistics and let
+  // the legacy cost layer use its explicitly non-benchmark policy defaults.
   for (const auto& relation : relations) {
     const std::string object_uuid = !relation.source_object.uuid.canonical.empty()
         ? relation.source_object.uuid.canonical
         : (relation.descriptor_digest.empty() ? relation.relation_name : relation.descriptor_digest);
-    std::uint64_t visible_rows = static_cast<std::uint64_t>(relation.rows.size());
-    std::uint64_t retained_versions = visible_rows;
-    if (loaded.ok && !relation.source_object.uuid.canonical.empty()) {
-      const auto persistent_visible_rows =
-          static_cast<std::uint64_t>(VisibleCrudRowsForContext(loaded.state,
-                                                               relation.source_object.uuid.canonical,
-                                                               request.context)
-                                         .size());
-      if (visible_rows == 0) {
-        visible_rows = persistent_visible_rows;
-      }
-      retained_versions = std::max<std::uint64_t>(CountRetainedVersions(loaded.state, relation.source_object.uuid.canonical), visible_rows);
+    for (const auto statistic_name : {"row_count", "page_count"}) {
+      catalog.Add(opt::MakeStatistic(statistic_name,
+                                     "relation",
+                                     object_uuid,
+                                     0.0,
+                                     opt::StatisticSource::kUnavailable,
+                                     request.context.catalog_generation_id,
+                                     0,
+                                     opt::CostConfidence::kUnknown,
+                                     false));
     }
-    std::uint64_t total_bytes = 0;
-    for (const auto& row : relation.rows) { total_bytes += EncodedRowBytes(row); }
-    const std::uint64_t average_row_bytes = visible_rows == 0 ? 32 : std::max<std::uint64_t>(total_bytes / visible_rows, 1);
-    const std::uint64_t page_count = std::max<std::uint64_t>(1, ((std::max<std::uint64_t>(retained_versions, 1) * average_row_bytes) + 8191) / 8192);
-
-    AddRuntimeStatistic(&catalog, "row_count", "relation", object_uuid, static_cast<double>(visible_rows), opt::CostConfidence::kHigh);
-    AddRuntimeStatistic(&catalog, "visible_row_count", "relation", object_uuid, static_cast<double>(visible_rows), opt::CostConfidence::kHigh);
-    AddRuntimeStatistic(&catalog, "relation_visible_version_count", "relation", object_uuid, static_cast<double>(visible_rows), opt::CostConfidence::kHigh);
-    AddRuntimeStatistic(&catalog, "relation_retained_version_count", "relation", object_uuid, static_cast<double>(retained_versions), opt::CostConfidence::kHigh);
-    AddRuntimeStatistic(&catalog, "page_count", "relation", object_uuid, static_cast<double>(page_count), opt::CostConfidence::kMedium);
-    AddRuntimeStatistic(&catalog, "average_row_bytes", "relation", object_uuid, static_cast<double>(average_row_bytes), opt::CostConfidence::kMedium);
-
-    if (loaded.ok && !relation.source_object.uuid.canonical.empty()) {
-      const auto indexes = VisibleCrudIndexesForTable(loaded.state,
-                                                      relation.source_object.uuid.canonical,
-                                                      request.context.local_transaction_id);
-      for (const auto& index : indexes) {
-        const auto entry_count = CountIndexEntries(loaded.state, index.index_uuid);
-        const auto distinct_keys = CountDistinctIndexKeys(loaded.state, index.index_uuid);
-        const auto height = std::max<std::uint64_t>(1, 1 + (entry_count / 1024));
-        const auto leaf_pages = std::max<std::uint64_t>(1, (entry_count + 63) / 64);
-        const double selectivity = visible_rows == 0 || distinct_keys == 0
-            ? 1.0
-            : std::clamp(1.0 / static_cast<double>(distinct_keys), 1.0 / static_cast<double>(visible_rows), 1.0);
-        AddRuntimeStatistic(&catalog, "index_depth", "index", object_uuid, static_cast<double>(height), opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_leaf_pages", "index", object_uuid, static_cast<double>(leaf_pages), opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_selectivity", "index", object_uuid, selectivity, opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_fragmentation_ratio", "index", object_uuid, 0.0, opt::CostConfidence::kLow);
-        AddRuntimeStatistic(&catalog, "index_visibility_coverage", "index", object_uuid, 1.0, opt::CostConfidence::kHigh);
-        AddRuntimeStatistic(&catalog, "index_depth", "index", index.index_uuid, static_cast<double>(height), opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_leaf_pages", "index", index.index_uuid, static_cast<double>(leaf_pages), opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_selectivity", "index", index.index_uuid, selectivity, opt::CostConfidence::kMedium);
-        AddRuntimeStatistic(&catalog, "index_fragmentation_ratio", "index", index.index_uuid, 0.0, opt::CostConfidence::kLow);
-        AddRuntimeStatistic(&catalog, "index_visibility_coverage", "index", index.index_uuid, 1.0, opt::CostConfidence::kHigh);
-      }
-    }
-  }
-
-  if (const auto memory_available = CurrentMetricValue("sb_memory_emergency_reserve_bytes")) {
-    AddRuntimeStatistic(&catalog, "memory_grant_available_bytes", "session", "local.default", *memory_available, opt::CostConfidence::kMedium);
-  }
-  if (const auto filespace_free = CurrentMetricValue("sb_filespace_free_bytes")) {
-    AddRuntimeStatistic(&catalog, "filespace_available_pages", "filespace", "local.default", std::max(1.0, *filespace_free / 8192.0), opt::CostConfidence::kMedium);
-  }
-  if (const auto read_latency = CurrentMetricValue("sb_filespace_device_read_latency_microseconds")) {
-    AddRuntimeStatistic(&catalog, "page_family_read_latency_microseconds", "page_family", "local.default", *read_latency, opt::CostConfidence::kMedium);
-    AddRuntimeStatistic(&catalog, "io_latency_multiplier", "page_family", "local.default", std::clamp(*read_latency / 1000.0, 0.25, 10.0), opt::CostConfidence::kMedium);
-  }
-  if (const auto lookup_latency = CurrentMetricValue("sb_index_lookup_latency_microseconds")) {
-    AddRuntimeStatistic(&catalog, "operator_latency_multiplier", "index", "local.default", std::clamp(*lookup_latency / 1000.0, 0.25, 10.0), opt::CostConfidence::kMedium);
-  }
-  if (const auto resident_pages = CurrentMetricValue("sb_page_cache_resident_pages")) {
-    AddRuntimeStatistic(&catalog, "page_cache_hit_ratio", "page_cache", "local.default", *resident_pages > 0.0 ? 0.75 : 0.0, opt::CostConfidence::kLow);
-  }
-  if (const auto dirty_pages = CurrentMetricValue("sb_page_cache_dirty_pages")) {
-    AddRuntimeStatistic(&catalog, "page_cache_pressure_level", "page_cache", "local.default", std::clamp(*dirty_pages / 1024.0, 0.0, 10.0), opt::CostConfidence::kLow);
-    AddRuntimeStatistic(&catalog, "estimate_uncertainty", "page_cache", "local.default", std::clamp(*dirty_pages, 0.0, 1000000.0), opt::CostConfidence::kLow);
   }
   return catalog;
 }
@@ -6674,7 +6681,8 @@ plan::LogicalPlan BuildExecutableLogicalPlan(const EnginePlanOperationRequest& r
                                              std::vector<EngineEvidenceReference>* evidence = nullptr) {
   std::optional<opt::OptimizerStatisticsCatalog> owned_statistics;
   if (statistics == nullptr) {
-    owned_statistics = BuildRuntimeOptimizerStatistics(request, relations);
+    owned_statistics =
+        BuildLegacyPreAccessOptimizerStatistics(request, relations);
     statistics = &*owned_statistics;
   }
   plan::LogicalPlan logical;
@@ -7296,7 +7304,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     }
     if (operation == "pivot" || operation == "table_pivot") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -7324,7 +7333,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     }
     if (operation == "unpivot" || operation == "table_unpivot") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -7352,7 +7362,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     }
     if (operation == "count" || operation == "count_all") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -7455,7 +7466,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
                                    std::to_string(result.result_shape.rows.size())});
         return result;
       }
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       plan::PhysicalAccessKind selected_join_access = plan::PhysicalAccessKind::kJoinHash;
       if (RequestOptionDisabled(request, "optimizer_join_costing:", "join_costing:")) {
@@ -8033,7 +8045,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
          ArrayAggregateRequiresTypedResult(aggregate_function));
     if (typed_aggregate_route) {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -8258,7 +8271,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
         WindowFunctionRequiresTypedResult(window_function);
     if (typed_window_route) {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -8295,7 +8309,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     const std::string result_projection = LowerAscii(OptionValue(request, "result_projection:"));
     if (operation == "materialized_cte" && result_projection == "window_assertion") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -8316,7 +8331,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
     }
     if (operation == "materialized_cte" && result_projection == "aggregate_assertion") {
       result.evidence.push_back({"query_executor", "local_noncluster"});
-      const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+      const auto statistics =
+          BuildLegacyPreAccessOptimizerStatistics(request, *relations);
       const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
       if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail)) {
         return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
@@ -8341,7 +8357,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
       return QueryFailure<EnginePlanOperationResult>(request.context, error_detail);
     }
     result.evidence.push_back({"query_executor", "local_noncluster"});
-    const auto statistics = BuildRuntimeOptimizerStatistics(request, *relations);
+    const auto statistics =
+        BuildLegacyPreAccessOptimizerStatistics(request, *relations);
     const auto logical = BuildExecutableLogicalPlan(request, operation, *relations, &statistics, &result.evidence);
     plan::PhysicalAccessKind selected_access = plan::PhysicalAccessKind::kTableScan;
     if (!AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access)) {
@@ -8480,7 +8497,8 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   planned_relation.source_object = request.target_object;
   planned_relations.push_back(std::move(planned_relation));
   std::string error_detail;
-  const auto statistics = BuildRuntimeOptimizerStatistics(request, planned_relations);
+  const auto statistics =
+      BuildLegacyPreAccessOptimizerStatistics(request, planned_relations);
   const auto logical = BuildExecutableLogicalPlan(request, plan_name, planned_relations, &statistics, &result.evidence);
   plan::PhysicalAccessKind selected_access = plan::PhysicalAccessKind::kTableScan;
   (void)AttachOptimizerSelectionEvidence(logical, statistics, &result.evidence, &error_detail, &selected_access);

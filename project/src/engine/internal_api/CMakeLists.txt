@@ -21,6 +21,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   endif()
   # QOW-CMAKE-QRY-002-V1
   # QOW-CMAKE-QRY-015-V1
+  # QOW-CMAKE-OPT-015-V1
   add_library(sb_qow_relational_dag_contract STATIC query/plan_api.cpp)
   target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
   target_compile_definitions(sb_qow_relational_dag_contract PRIVATE
