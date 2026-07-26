@@ -52,6 +52,7 @@ add_library(sb_engine_executor STATIC
   bulk_executor.cpp
   candidate_set_executor.cpp
   cpu_cache_layout_observability.cpp
+  # QOW-CMAKE-QRY-014-WORKING-V1
   cte_executor.cpp
   # QOW-CMAKE-IAS-014-V1
   # QOW-CMAKE-QRY-029-V1

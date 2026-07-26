@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -236,6 +237,37 @@ struct CanonicalLateralSubqueryResult {
   std::size_t scope_execution_count = 0;
   std::size_t output_row_count = 0;
   std::string correlated_plan_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+using CanonicalRecursiveCteStep =
+    std::function<DescriptorBatch(const DescriptorBatch&, std::size_t)>;
+
+struct CanonicalRecursiveCteWorkingRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch anchor_batch;
+  CanonicalRecursiveCteStep recursive_step;
+  std::size_t maximum_iteration_count = 0;
+  std::size_t maximum_working_row_count = 0;
+  std::size_t maximum_result_row_count = 0;
+};
+
+struct CanonicalRecursiveCteIteration {
+  std::size_t iteration_ordinal = 0;
+  std::size_t working_row_count = 0;
+  std::size_t intermediate_row_count = 0;
+};
+
+struct CanonicalRecursiveCteWorkingResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<CanonicalRecursiveCteIteration> iterations;
+  std::size_t recursive_iteration_count = 0;
+  std::size_t maximum_observed_working_row_count = 0;
+  bool converged = false;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -765,6 +797,8 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     const CanonicalCorrelatedSubqueryRequest& request);
 CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     const CanonicalLateralSubqueryRequest& request);
+CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
+    const CanonicalRecursiveCteWorkingRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
