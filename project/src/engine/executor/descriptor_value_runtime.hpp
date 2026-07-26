@@ -320,6 +320,27 @@ struct CanonicalDescriptorSortResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalInt64SumOrderedRequest {
+  CanonicalInt64SumStateRequest aggregate_request;
+  std::size_t order_column = 0;
+  std::uint32_t order_expression_descriptor_id = 0;
+  CanonicalDescriptorOrderDirection direction =
+      CanonicalDescriptorOrderDirection::ascending;
+  CanonicalDescriptorNullPlacement null_placement =
+      CanonicalDescriptorNullPlacement::last;
+  std::string deterministic_tie_evidence_uuid;
+  std::size_t maximum_pair_comparisons = 1048576;
+};
+
+struct CanonicalInt64SumOrderedResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalInt64SumAggregateState state;
+  std::vector<std::size_t> ordered_input_row_indices;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct Int64DecodeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::int64_t value = 0;
@@ -434,6 +455,8 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
+CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
+    const CanonicalInt64SumOrderedRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,

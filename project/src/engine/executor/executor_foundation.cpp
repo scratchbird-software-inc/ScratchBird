@@ -11,8 +11,11 @@
 #include "descriptor_value_runtime.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -34,6 +37,19 @@ std::vector<std::int64_t> ConcatValues(const Tuple& left, const Tuple& right) {
 
 bool HasColumn(const Tuple& tuple, std::size_t column) {
   return column < tuple.values.size();
+}
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
 }
 
 // QOW-SOURCE-QRY-009-V1
@@ -753,6 +769,173 @@ CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
   result.diagnostic = {};
   result.state = std::move(transitioned.state);
   result.distinct_value_count = observed_values.size();
+  result.selected_plan_uuid = std::move(transitioned.selected_plan_uuid);
+  result.executed_physical_node_id =
+      transitioned.executed_physical_node_id;
+  result.causal_counter_id = transitioned.causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-ORDERED-V1
+// Apply one descriptor-bound int64 aggregate ORDER BY transition.  The full
+// input and square comparison matrix are validated before rows are reordered;
+// equal keys retain input order and only the ordered batch reaches SUM state.
+CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
+    const CanonicalInt64SumOrderedRequest& request) {
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumOrderedResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-ORDERED-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.state = {};
+    result.ordered_input_row_indices.clear();
+    return result;
+  };
+  const auto& aggregate = request.aggregate_request;
+
+  auto route_request = aggregate;
+  route_request.input_batch.rows.clear();
+  const auto route_validation =
+      ExecuteCanonicalInt64SumState(route_request);
+  if (!route_validation.diagnostic.ok) {
+    return refuse(route_validation.diagnostic.diagnostic_code + ":" +
+                  route_validation.diagnostic.detail);
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (selected_node != nullptr &&
+        node.physical_node_id ==
+            selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr || input_node == nullptr) {
+    return refuse("ordered aggregate physical route is unresolved");
+  }
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      aggregate.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code + ":" +
+                  input_validation.detail);
+  }
+  if (aggregate.input_batch.rows.size() >
+      aggregate.maximum_transition_count) {
+    return refuse("ordered aggregate transition bound was exceeded");
+  }
+  if (request.order_column >= aggregate.input_batch.columns.size()) {
+    return refuse("ordered aggregate key is outside the input schema");
+  }
+  const auto& order_column =
+      aggregate.input_batch.columns[request.order_column];
+  if (request.order_expression_descriptor_id == 0 ||
+      request.order_expression_descriptor_id != order_column.descriptor_id ||
+      order_column.descriptor.canonical_type_name != "int64") {
+    return refuse("ordered aggregate key is not bound int64");
+  }
+  if ((request.direction !=
+           CanonicalDescriptorOrderDirection::ascending &&
+       request.direction !=
+           CanonicalDescriptorOrderDirection::descending) ||
+      (request.null_placement !=
+           CanonicalDescriptorNullPlacement::first &&
+       request.null_placement != CanonicalDescriptorNullPlacement::last)) {
+    return refuse("ordered aggregate direction or NULL placement is invalid");
+  }
+  if (!IsCanonicalUuid(request.deterministic_tie_evidence_uuid)) {
+    return refuse("ordered aggregate deterministic tie evidence is invalid");
+  }
+
+  const auto row_count = aggregate.input_batch.rows.size();
+  if (request.maximum_pair_comparisons == 0 ||
+      (row_count != 0 &&
+       row_count > std::numeric_limits<std::size_t>::max() / row_count)) {
+    return refuse("ordered aggregate comparison resource bound overflowed");
+  }
+  const auto matrix_size = row_count * row_count;
+  if (matrix_size > request.maximum_pair_comparisons) {
+    return refuse("ordered aggregate comparison resource bound was exceeded");
+  }
+
+  std::vector<std::optional<std::int64_t>> order_values;
+  order_values.reserve(row_count);
+  for (const auto& row : aggregate.input_batch.rows) {
+    const auto& value = row.values[request.order_column];
+    if (value.state == EngineValueState::sql_null) {
+      order_values.push_back(std::nullopt);
+      continue;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    order_values.push_back(decoded.value);
+  }
+
+  const auto compare = [&](const std::optional<std::int64_t>& left,
+                           const std::optional<std::int64_t>& right) {
+    if (!left.has_value() || !right.has_value()) {
+      if (!left.has_value() && !right.has_value()) return 0;
+      const auto null_comparison =
+          request.null_placement == CanonicalDescriptorNullPlacement::first
+              ? -1
+              : 1;
+      return left.has_value() ? -null_comparison : null_comparison;
+    }
+    int comparison = *left < *right ? -1 : (*left > *right ? 1 : 0);
+    if (request.direction ==
+        CanonicalDescriptorOrderDirection::descending) {
+      comparison = -comparison;
+    }
+    return comparison;
+  };
+
+  std::vector<std::int8_t> comparisons(matrix_size, 0);
+  for (std::size_t left = 0; left < row_count; ++left) {
+    for (std::size_t right = left + 1; right < row_count; ++right) {
+      const auto comparison = compare(order_values[left], order_values[right]);
+      comparisons[left * row_count + right] =
+          static_cast<std::int8_t>(comparison);
+      comparisons[right * row_count + left] =
+          static_cast<std::int8_t>(-comparison);
+    }
+  }
+
+  std::vector<std::size_t> row_order(row_count);
+  std::iota(row_order.begin(), row_order.end(), 0);
+  std::stable_sort(row_order.begin(), row_order.end(),
+                   [&](const std::size_t left, const std::size_t right) {
+                     return comparisons[left * row_count + right] < 0;
+                   });
+
+  DescriptorBatch ordered_batch;
+  ordered_batch.columns = aggregate.input_batch.columns;
+  ordered_batch.rows.reserve(row_count);
+  for (const auto row_index : row_order) {
+    ordered_batch.rows.push_back(aggregate.input_batch.rows[row_index]);
+  }
+  auto ordered_request = aggregate;
+  ordered_request.input_batch = std::move(ordered_batch);
+  auto transitioned = ExecuteCanonicalInt64SumState(ordered_request);
+  if (!transitioned.diagnostic.ok) {
+    return refuse(transitioned.diagnostic.diagnostic_code + ":" +
+                  transitioned.diagnostic.detail);
+  }
+
+  result.diagnostic = {};
+  result.state = std::move(transitioned.state);
+  result.ordered_input_row_indices = std::move(row_order);
   result.selected_plan_uuid = std::move(transitioned.selected_plan_uuid);
   result.executed_physical_node_id =
       transitioned.executed_physical_node_id;
