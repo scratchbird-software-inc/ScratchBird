@@ -278,6 +278,25 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
   result.admitted = true;
   result.planning_allowed = true;
   result.data_access_allowed = false;
+  result.bound_sblr_tree_uuid = request.logical_graph.bound_sblr_tree_uuid;
+  result.catalog_epoch_uuid = request.logical_graph.catalog_epoch_uuid;
+  result.security_context_uuid =
+      request.logical_graph.security_context_uuid;
+  result.capability_snapshot_uuid =
+      request.policy_capability.capability_snapshot_uuid;
+  result.resource_snapshot_uuid = request.resource.resource_snapshot_uuid;
+  result.statistics_snapshot_uuid =
+      request.statistics.statistics_snapshot_uuid;
+  result.route_snapshot_uuid = request.route.route_snapshot_uuid;
+  result.local_transaction_id = request.logical_graph.local_transaction_id;
+  result.statement_snapshot_id = request.logical_graph.statement_snapshot_id;
+  result.catalog_generation = request.catalog.catalog_generation;
+  result.security_epoch = request.security.security_epoch;
+  result.policy_epoch = request.security.policy_epoch;
+  result.resource_epoch = request.resource.resource_epoch;
+  result.statistics_generation = request.statistics.statistics_generation;
+  result.route_epoch = request.route.route_epoch;
+  result.route_generation = request.route.route_generation;
   return result;
 }
 

@@ -28,6 +28,9 @@
 
 namespace scratchbird::engine::optimizer {
 
+struct CanonicalOptimizerAdmissionRequest;
+struct CanonicalOptimizerAdmissionResult;
+
 enum class CanonicalOptimizerStatisticState : std::uint8_t {
   kKnown = 1,
   kUnknown,
@@ -97,6 +100,130 @@ CanonicalOptimizerStatisticsAdmissionResult
 AdmitCanonicalOptimizerStatisticsBeforeAccess(
     const scratchbird::engine::planner::CanonicalLogicalRelationalGraph& graph,
     const CanonicalOptimizerStatisticsSnapshot& snapshot);
+
+struct CanonicalOptimizerCostTerms {
+  std::string cost_vector_uuid;
+  std::string calibration_profile_uuid;
+  std::uint64_t cpu_units{0};
+  std::uint64_t page_read_sequential_units{0};
+  std::uint64_t page_read_random_units{0};
+  std::uint64_t page_write_units{0};
+  std::uint64_t memory_bytes_required{0};
+  std::uint64_t spill_bytes_expected{0};
+  std::uint64_t network_bytes_expected{0};
+  std::uint64_t mga_visibility_checks_expected{0};
+  std::uint64_t archive_fetches_expected{0};
+  std::uint64_t uncertainty_penalty{0};
+  std::uint64_t risk_penalty{0};
+  CostConfidence confidence{CostConfidence::kUnknown};
+};
+
+struct CanonicalOptimizerSearchCandidateInput {
+  std::string alternative_uuid;
+  std::string transformation_uuid;
+  std::string transformation_rule_id;
+  std::string bound_sblr_tree_uuid;
+  std::string statistics_snapshot_uuid;
+  std::uint64_t statistics_generation{0};
+  std::string model_family_id;
+  CanonicalOptimizerCostTerms cost_terms;
+  bool semantic_preserving{false};
+  bool derived_from_admitted_statistics{false};
+  bool engine_coster_owned{false};
+  bool parser_or_reference_cost_authority_claimed{false};
+  bool benchmark_authority_claimed{false};
+};
+
+struct CanonicalOptimizerSearchPolicy {
+  std::uint16_t abi_version{1};
+  std::uint64_t maximum_exhaustive_plan_count{0};
+  std::uint64_t bounded_beam_width{0};
+  std::uint64_t deterministic_step_cost_ns{0};
+  bool engine_owned{false};
+  bool allow_cross_model_cost_comparison{false};
+  bool parser_search_authority_claimed{false};
+  bool transaction_finality_claimed{false};
+};
+
+enum class CanonicalOptimizerSearchMode : std::uint8_t {
+  kExhaustiveSmall = 1,
+  kDeterministicBounded,
+};
+
+struct CanonicalOptimizerRankedCostVector {
+  CanonicalOptimizerCostTerms terms;
+  std::uint64_t scalar_score{0};
+};
+
+struct CanonicalOptimizerMemoCandidate {
+  std::string alternative_uuid;
+  std::string transformation_uuid;
+  std::string transformation_rule_id;
+  CanonicalOptimizerRankedCostVector cost;
+};
+
+struct CanonicalOptimizerMemoGroup {
+  std::uint32_t logical_node_id{0};
+  std::vector<CanonicalOptimizerMemoCandidate> candidates;
+};
+
+struct CanonicalOptimizerSearchTraceRecord {
+  std::uint64_t step_ordinal{0};
+  std::string event_id;
+  std::uint32_t logical_node_id{0};
+  std::uint64_t frontier_size{0};
+  std::uint64_t pruned_count{0};
+  std::string detail;
+};
+
+struct CanonicalOptimizerSelectedAlternative {
+  std::uint32_t logical_node_id{0};
+  std::string alternative_uuid;
+  std::string transformation_uuid;
+  std::string transformation_rule_id;
+  CanonicalOptimizerRankedCostVector cost;
+};
+
+struct CanonicalOptimizerSearchIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string alternative_uuid;
+  std::string field_id;
+};
+
+struct CanonicalOptimizerSearchResult {
+  bool accepted{false};
+  bool selected{false};
+  bool exhaustive_oracle_executed{false};
+  bool exhaustive_oracle_agreed{false};
+  bool resource_bounded{false};
+  bool deterministic{false};
+  bool physical_dag_published{false};
+  bool data_access_allowed{false};
+  CanonicalOptimizerSearchMode mode{
+      CanonicalOptimizerSearchMode::kExhaustiveSmall};
+  std::uint64_t memo_group_count{0};
+  std::uint64_t legal_candidate_count{0};
+  std::uint64_t complete_plan_space_count{0};
+  bool complete_plan_space_count_saturated{false};
+  std::uint64_t search_step_count{0};
+  std::uint64_t pruned_plan_count{0};
+  std::uint64_t selected_scalar_score{0};
+  std::string selected_plan_signature;
+  std::vector<CanonicalOptimizerMemoGroup> memo_groups;
+  std::vector<CanonicalOptimizerSelectedAlternative> selected_alternatives;
+  std::vector<CanonicalOptimizerSearchTraceRecord> trace;
+  std::vector<CanonicalOptimizerSearchIssue> issues;
+};
+
+// QOW-SOURCE-OPT-014-V1
+CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog&
+        alternatives,
+    const std::vector<CanonicalOptimizerSearchCandidateInput>& candidates,
+    const CanonicalOptimizerSearchPolicy& policy);
 
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 // SEARCH_KEY: SB_OPTIMIZER_CONTRACT

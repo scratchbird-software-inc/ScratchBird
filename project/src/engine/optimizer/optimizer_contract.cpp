@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "optimizer_contract.hpp"
+#include "optimizer_catalog_backed_planning.hpp"
 
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 #include "join_planner_full.hpp"
@@ -15,6 +16,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -409,6 +411,484 @@ EvaluateCanonicalRelationalCandidateLegality(
       }
     }
   }
+  return result;
+}
+
+// QOW-SOURCE-OPT-014-V1
+CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
+    const CanonicalOptimizerAdmissionRequest& admission_request,
+    const CanonicalOptimizerAdmissionResult& admission,
+    const planner::CanonicalPhysicalAlternativeCatalog& alternatives,
+    const std::vector<CanonicalOptimizerSearchCandidateInput>& candidates,
+    const CanonicalOptimizerSearchPolicy& policy) {
+  CanonicalOptimizerSearchResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t logical_node_id,
+                          std::string alternative_uuid,
+                          std::string field_id) {
+    result = {};
+    result.issues.push_back({std::move(diagnostic_id), logical_node_id,
+                             std::move(alternative_uuid),
+                             std::move(field_id)});
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto valid_rule_id = [](const std::string_view value) {
+    return !value.empty() && value.size() <= 128 &&
+           std::ranges::all_of(value, [](const unsigned char ch) {
+             return (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
+                    ch == '-';
+           });
+  };
+  const auto checked_add = [](const std::uint64_t left,
+                              const std::uint64_t right,
+                              std::uint64_t* out) {
+    if (out == nullptr ||
+        std::numeric_limits<std::uint64_t>::max() - left < right) {
+      return false;
+    }
+    *out = left + right;
+    return true;
+  };
+
+  if (!admission.admitted || !admission.planning_allowed ||
+      admission.data_access_allowed || !admission.issues.empty() ||
+      admission.evidence.size() != 8) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1", 0, {},
+                  "optimizer_admission");
+  }
+  if (admission.bound_sblr_tree_uuid !=
+          admission_request.logical_graph.bound_sblr_tree_uuid ||
+      admission.catalog_epoch_uuid !=
+          admission_request.logical_graph.catalog_epoch_uuid ||
+      admission.security_context_uuid !=
+          admission_request.logical_graph.security_context_uuid ||
+      admission.capability_snapshot_uuid !=
+          admission_request.policy_capability.capability_snapshot_uuid ||
+      admission.resource_snapshot_uuid !=
+          admission_request.resource.resource_snapshot_uuid ||
+      admission.statistics_snapshot_uuid !=
+          admission_request.statistics.statistics_snapshot_uuid ||
+      admission.route_snapshot_uuid !=
+          admission_request.route.route_snapshot_uuid ||
+      admission.local_transaction_id !=
+          admission_request.logical_graph.local_transaction_id ||
+      admission.statement_snapshot_id !=
+          admission_request.logical_graph.statement_snapshot_id ||
+      admission.catalog_generation !=
+          admission_request.catalog.catalog_generation ||
+      admission.security_epoch != admission_request.security.security_epoch ||
+      admission.policy_epoch != admission_request.security.policy_epoch ||
+      admission.resource_epoch != admission_request.resource.resource_epoch ||
+      admission.statistics_generation !=
+          admission_request.statistics.statistics_generation ||
+      admission.route_epoch != admission_request.route.route_epoch ||
+      admission.route_generation !=
+          admission_request.route.route_generation) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1", 0, {},
+                  "optimizer_admission_scope");
+  }
+  for (std::size_t index = 0; index < admission.evidence.size(); ++index) {
+    if (admission.evidence[index].stage !=
+        static_cast<CanonicalOptimizerAdmissionStage>(index + 1)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1", 0, {},
+                    "optimizer_admission_order");
+    }
+  }
+  if (policy.abi_version != 1 || !policy.engine_owned ||
+      policy.maximum_exhaustive_plan_count == 0 ||
+      policy.bounded_beam_width == 0 ||
+      policy.deterministic_step_cost_ns == 0 ||
+      policy.allow_cross_model_cost_comparison ||
+      policy.parser_search_authority_claimed ||
+      policy.transaction_finality_claimed) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-POLICY-V1", 0, {},
+                  "deterministic_search_policy");
+  }
+  const auto& resource = admission_request.resource;
+  if (!resource.engine_owned || resource.memory_budget_bytes == 0 ||
+      resource.maximum_candidate_count == 0 ||
+      resource.maximum_memo_groups == 0 ||
+      resource.maximum_search_steps == 0 ||
+      resource.maximum_planning_time_ns == 0 ||
+      policy.bounded_beam_width > resource.maximum_candidate_count ||
+      admission_request.logical_graph.nodes.size() >
+          resource.maximum_memo_groups ||
+      alternatives.alternatives.size() >
+          resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1", 0, {},
+                  "memo_candidate_resource_budget");
+  }
+  const auto time_step_budget =
+      resource.maximum_planning_time_ns / policy.deterministic_step_cost_ns;
+  const auto search_step_budget =
+      std::min(resource.maximum_search_steps, time_step_budget);
+  if (search_step_budget == 0) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1", 0, {},
+                  "deterministic_step_budget");
+  }
+
+  const auto legality = EvaluateCanonicalRelationalCandidateLegality(
+      admission_request.logical_graph, admission_request.logical_properties,
+      alternatives);
+  if (!legality.accepted || !legality.complete_legal_coverage) {
+    if (!legality.issues.empty()) {
+      const auto& issue = legality.issues.front();
+      return refuse(issue.diagnostic_id, issue.logical_node_id,
+                    issue.alternative_uuid, issue.field_id);
+    }
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-LEGALITY-V1", 0, {},
+                  "complete_legal_coverage");
+  }
+  if (legality.selectable_candidate_count >
+          resource.maximum_candidate_count ||
+      candidates.size() != legality.selectable_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-COVERAGE-V1", 0, {},
+                  "legal_candidate_cost_count");
+  }
+
+  std::unordered_map<std::string,
+                     const planner::CanonicalPhysicalAlternativeRecord*>
+      alternatives_by_uuid;
+  for (const auto& alternative : alternatives.alternatives) {
+    alternatives_by_uuid.emplace(alternative.alternative_uuid, &alternative);
+  }
+  std::unordered_set<std::string> legal_alternative_uuids;
+  for (const auto& record : legality.candidates) {
+    if (record.legal) legal_alternative_uuids.insert(record.alternative_uuid);
+  }
+  std::unordered_map<std::string,
+                     const CanonicalOptimizerSearchCandidateInput*>
+      candidate_inputs;
+  std::unordered_set<std::string> transformation_uuids;
+  std::unordered_set<std::string> cost_vector_uuids;
+  std::optional<std::string> calibration_profile_uuid;
+  for (const auto& candidate : candidates) {
+    const auto alternative_it =
+        alternatives_by_uuid.find(candidate.alternative_uuid);
+    if (alternative_it == alternatives_by_uuid.end() ||
+        !legal_alternative_uuids.contains(candidate.alternative_uuid) ||
+        !candidate_inputs.emplace(candidate.alternative_uuid, &candidate)
+             .second) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-COVERAGE-V1", 0,
+                    candidate.alternative_uuid, "alternative_uuid");
+    }
+    const auto node_id = alternative_it->second->logical_node_id;
+    if (!canonical_uuid(candidate.transformation_uuid) ||
+        !transformation_uuids.insert(candidate.transformation_uuid).second ||
+        !valid_rule_id(candidate.transformation_rule_id) ||
+        !candidate.semantic_preserving) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-TRANSFORMATION-V1", node_id,
+                    candidate.alternative_uuid,
+                    "semantic_transformation_authority");
+    }
+    if (candidate.bound_sblr_tree_uuid !=
+            admission.bound_sblr_tree_uuid ||
+        candidate.statistics_snapshot_uuid !=
+            admission.statistics_snapshot_uuid ||
+        candidate.statistics_generation != admission.statistics_generation ||
+        candidate.model_family_id != "relational.local.v1" ||
+        !candidate.derived_from_admitted_statistics ||
+        !candidate.engine_coster_owned ||
+        candidate.parser_or_reference_cost_authority_claimed ||
+        candidate.benchmark_authority_claimed) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-PROVENANCE-V1", node_id,
+                    candidate.alternative_uuid,
+                    "admitted_cost_provenance");
+    }
+    const auto& terms = candidate.cost_terms;
+    if (!canonical_uuid(terms.cost_vector_uuid) ||
+        !cost_vector_uuids.insert(terms.cost_vector_uuid).second ||
+        !canonical_uuid(terms.calibration_profile_uuid) ||
+        (calibration_profile_uuid.has_value() &&
+         terms.calibration_profile_uuid != *calibration_profile_uuid) ||
+        terms.confidence == CostConfidence::kUnknown ||
+        terms.confidence == CostConfidence::kRejected ||
+        ((terms.confidence == CostConfidence::kMedium ||
+          terms.confidence == CostConfidence::kLow) &&
+         terms.uncertainty_penalty == 0) ||
+        terms.memory_bytes_required > resource.memory_budget_bytes ||
+        (!resource.spill_allowed && terms.spill_bytes_expected != 0) ||
+        terms.network_bytes_expected != 0 ||
+        terms.archive_fetches_expected != 0) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1", node_id,
+                    candidate.alternative_uuid, "cost_vector_terms");
+    }
+    if (!calibration_profile_uuid.has_value()) {
+      calibration_profile_uuid = terms.calibration_profile_uuid;
+    }
+    const auto node_it = std::ranges::find_if(
+        admission_request.logical_graph.nodes, [&](const auto& node) {
+          return node.logical_node_id == node_id;
+        });
+    if (node_it == admission_request.logical_graph.nodes.end() ||
+        (node_it->node_kind ==
+             planner::CanonicalLogicalRelationalNodeKind::kRelationSource &&
+         terms.mga_visibility_checks_expected == 0)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1", node_id,
+                    candidate.alternative_uuid,
+                    "mga_visibility_cost_terms");
+    }
+  }
+
+  std::vector<std::uint32_t> node_ids;
+  node_ids.reserve(admission_request.logical_graph.nodes.size());
+  for (const auto& node : admission_request.logical_graph.nodes) {
+    node_ids.push_back(node.logical_node_id);
+  }
+  std::ranges::sort(node_ids);
+  result.memo_groups.reserve(node_ids.size());
+  std::uint64_t total_legal_candidates = 0;
+  std::uint64_t plan_space_count = 1;
+  bool plan_space_saturated = false;
+  for (const auto node_id : node_ids) {
+    CanonicalOptimizerMemoGroup group;
+    group.logical_node_id = node_id;
+    for (const auto& legality_record : legality.candidates) {
+      if (!legality_record.legal ||
+          legality_record.logical_node_id != node_id) {
+        continue;
+      }
+      const auto candidate_it =
+          candidate_inputs.find(legality_record.alternative_uuid);
+      if (candidate_it == candidate_inputs.end()) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-COVERAGE-V1", node_id,
+                      legality_record.alternative_uuid,
+                      "legal_candidate_cost");
+      }
+      const auto& candidate = *candidate_it->second;
+      std::uint64_t scalar_score = 0;
+      const auto add_term = [&](const std::uint64_t term) {
+        return checked_add(scalar_score, term, &scalar_score);
+      };
+      const auto& terms = candidate.cost_terms;
+      if (!add_term(terms.cpu_units) ||
+          !add_term(terms.page_read_sequential_units) ||
+          !add_term(terms.page_read_random_units) ||
+          !add_term(terms.page_write_units) ||
+          !add_term(terms.memory_bytes_required) ||
+          !add_term(terms.spill_bytes_expected) ||
+          !add_term(terms.network_bytes_expected) ||
+          !add_term(terms.mga_visibility_checks_expected) ||
+          !add_term(terms.archive_fetches_expected) ||
+          !add_term(terms.uncertainty_penalty) ||
+          !add_term(terms.risk_penalty)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1", node_id,
+                      candidate.alternative_uuid, "scalar_score");
+      }
+      group.candidates.push_back(
+          {candidate.alternative_uuid, candidate.transformation_uuid,
+           candidate.transformation_rule_id, {terms, scalar_score}});
+    }
+    std::ranges::sort(group.candidates, {},
+                      &CanonicalOptimizerMemoCandidate::alternative_uuid);
+    if (group.candidates.empty()) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-LEGALITY-V1", node_id, {},
+                    "memo_group_candidates");
+    }
+    if (!checked_add(total_legal_candidates, group.candidates.size(),
+                     &total_legal_candidates)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1", node_id, {},
+                    "legal_candidate_count");
+    }
+    if (group.candidates.size() != 0 &&
+        plan_space_count > std::numeric_limits<std::uint64_t>::max() /
+                               group.candidates.size()) {
+      plan_space_count = std::numeric_limits<std::uint64_t>::max();
+      plan_space_saturated = true;
+    } else if (!plan_space_saturated) {
+      plan_space_count *= group.candidates.size();
+    }
+    result.memo_groups.push_back(std::move(group));
+  }
+  result.memo_group_count = result.memo_groups.size();
+  result.legal_candidate_count = total_legal_candidates;
+  result.complete_plan_space_count = plan_space_count;
+  result.complete_plan_space_count_saturated = plan_space_saturated;
+
+  struct FrontierPlan {
+    std::uint64_t scalar_score{0};
+    std::uint64_t io_units{0};
+    std::uint64_t memory_bytes{0};
+    std::string signature;
+    std::vector<const CanonicalOptimizerMemoCandidate*> selected;
+  };
+  const auto plan_less = [](const FrontierPlan& left,
+                            const FrontierPlan& right) {
+    if (left.scalar_score != right.scalar_score) {
+      return left.scalar_score < right.scalar_score;
+    }
+    if (left.io_units != right.io_units) {
+      return left.io_units < right.io_units;
+    }
+    if (left.memory_bytes != right.memory_bytes) {
+      return left.memory_bytes < right.memory_bytes;
+    }
+    return left.signature < right.signature;
+  };
+
+  const bool exhaustive = !plan_space_saturated &&
+                          plan_space_count <=
+                              policy.maximum_exhaustive_plan_count;
+  result.mode = exhaustive
+                    ? CanonicalOptimizerSearchMode::kExhaustiveSmall
+                    : CanonicalOptimizerSearchMode::kDeterministicBounded;
+  std::vector<FrontierPlan> frontier(1);
+  for (const auto& group : result.memo_groups) {
+    std::vector<FrontierPlan> expanded;
+    const auto maximum_expanded =
+        exhaustive ? std::numeric_limits<std::uint64_t>::max()
+                   : policy.bounded_beam_width;
+    for (const auto& prior : frontier) {
+      for (const auto& candidate : group.candidates) {
+        if (result.search_step_count == search_step_budget) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1",
+                        group.logical_node_id, candidate.alternative_uuid,
+                        "search_step_budget");
+        }
+        ++result.search_step_count;
+        FrontierPlan plan = prior;
+        std::uint64_t io_units = 0;
+        const auto& terms = candidate.cost.terms;
+        if (!checked_add(terms.page_read_sequential_units,
+                         terms.page_read_random_units, &io_units) ||
+            !checked_add(io_units, terms.page_write_units, &io_units) ||
+            !checked_add(plan.scalar_score, candidate.cost.scalar_score,
+                         &plan.scalar_score) ||
+            !checked_add(plan.io_units, io_units, &plan.io_units) ||
+            !checked_add(plan.memory_bytes, terms.memory_bytes_required,
+                         &plan.memory_bytes)) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                        group.logical_node_id, candidate.alternative_uuid,
+                        "plan_cost_vector");
+        }
+        plan.signature += std::to_string(group.logical_node_id) + "=" +
+                          candidate.alternative_uuid + ";";
+        plan.selected.push_back(&candidate);
+        expanded.push_back(std::move(plan));
+      }
+    }
+    std::ranges::sort(expanded, plan_less);
+    std::uint64_t pruned = 0;
+    if (!exhaustive && expanded.size() > maximum_expanded) {
+      pruned = expanded.size() - maximum_expanded;
+      expanded.resize(static_cast<std::size_t>(maximum_expanded));
+      if (!checked_add(result.pruned_plan_count, pruned,
+                       &result.pruned_plan_count)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1",
+                      group.logical_node_id, {}, "pruned_plan_count");
+      }
+    }
+    frontier = std::move(expanded);
+    result.trace.push_back(
+        {result.search_step_count,
+         exhaustive ? "memo.exhaustive.expand.v1" : "memo.bounded.expand.v1",
+         group.logical_node_id, frontier.size(), pruned,
+         "deterministic_candidate_uuid_order"});
+  }
+  if (frontier.empty()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1", 0, {},
+                  "search_frontier");
+  }
+  std::ranges::sort(frontier, plan_less);
+  const auto selected = frontier.front();
+
+  if (exhaustive) {
+    result.exhaustive_oracle_executed = true;
+    std::optional<FrontierPlan> oracle_best;
+    FrontierPlan current;
+    bool oracle_budget_exhausted = false;
+    bool oracle_cost_overflow = false;
+    std::function<void(std::size_t)> enumerate = [&](const std::size_t index) {
+      if (oracle_budget_exhausted || oracle_cost_overflow) return;
+      if (index == result.memo_groups.size()) {
+        if (result.search_step_count == search_step_budget) {
+          oracle_budget_exhausted = true;
+          return;
+        }
+        ++result.search_step_count;
+        if (!oracle_best || plan_less(current, *oracle_best)) {
+          oracle_best = current;
+        }
+        return;
+      }
+      const auto& group = result.memo_groups[index];
+      for (const auto& candidate : group.candidates) {
+        const auto prior = current;
+        std::uint64_t io_units = 0;
+        const auto& terms = candidate.cost.terms;
+        if (!checked_add(terms.page_read_sequential_units,
+                         terms.page_read_random_units, &io_units) ||
+            !checked_add(io_units, terms.page_write_units, &io_units) ||
+            !checked_add(current.scalar_score, candidate.cost.scalar_score,
+                         &current.scalar_score) ||
+            !checked_add(current.io_units, io_units, &current.io_units) ||
+            !checked_add(current.memory_bytes, terms.memory_bytes_required,
+                         &current.memory_bytes)) {
+          oracle_cost_overflow = true;
+          current = prior;
+          return;
+        }
+        current.signature += std::to_string(group.logical_node_id) + "=" +
+                             candidate.alternative_uuid + ";";
+        current.selected.push_back(&candidate);
+        enumerate(index + 1);
+        current = prior;
+      }
+    };
+    enumerate(0);
+    if (oracle_budget_exhausted) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-RESOURCE-V1", 0, {},
+                    "exhaustive_oracle_step_budget");
+    }
+    if (oracle_cost_overflow || !oracle_best) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1", 0, {},
+                    "exhaustive_oracle_cost");
+    }
+    result.exhaustive_oracle_agreed =
+        oracle_best->signature == selected.signature &&
+        oracle_best->scalar_score == selected.scalar_score;
+    if (!result.exhaustive_oracle_agreed) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-ORACLE-V1", 0, {},
+                    "exhaustive_oracle_disagreement");
+    }
+    result.trace.push_back(
+        {result.search_step_count, "memo.exhaustive.oracle-agreed.v1", 0,
+         frontier.size(), 0, oracle_best->signature});
+  }
+
+  result.selected_alternatives.reserve(selected.selected.size());
+  for (std::size_t index = 0; index < selected.selected.size(); ++index) {
+    const auto* candidate = selected.selected[index];
+    result.selected_alternatives.push_back(
+        {result.memo_groups[index].logical_node_id,
+         candidate->alternative_uuid, candidate->transformation_uuid,
+         candidate->transformation_rule_id, candidate->cost});
+  }
+  result.accepted = true;
+  result.selected = true;
+  result.resource_bounded = true;
+  result.deterministic = true;
+  result.physical_dag_published = false;
+  result.data_access_allowed = false;
+  result.selected_scalar_score = selected.scalar_score;
+  result.selected_plan_signature = selected.signature;
+  result.trace.push_back(
+      {result.search_step_count, "memo.plan.selected.v1", 0,
+       selected.selected.size(), result.pruned_plan_count,
+       selected.signature});
   return result;
 }
 
