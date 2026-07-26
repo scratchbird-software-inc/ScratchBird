@@ -568,4 +568,190 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-CORRELATED-V1
+// Bind and execute one correlated int64-equality subquery scope for every
+// outer row. The physical root owns both input relations and emits the inner
+// descriptor shape; scope results retain physical outer-row identity and
+// deterministic inner order without granting the parser execution authority.
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalCorrelatedSubqueryResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-CORRELATED-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.scopes.clear();
+    result.scope_execution_count = 0;
+    result.comparison_count = 0;
+    result.result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected correlated subquery is not the physical root");
+  }
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* outer_node = nullptr;
+  const PhysicalNodeRecord* inner_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kSubquery ||
+      selected_node->implementation_id !=
+          "subquery.correlated.int64-equality.typed.v1" ||
+      selected_node->input_physical_node_ids.size() != 2) {
+    return refuse("correlated subquery physical profile is not bound");
+  }
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[0]) {
+      outer_node = &node;
+    }
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids[1]) {
+      inner_node = &node;
+    }
+  }
+  if (outer_node == nullptr || inner_node == nullptr ||
+      selected_node->output_descriptor_ids !=
+          inner_node->output_descriptor_ids) {
+    return refuse("correlated subquery input or output handles are unresolved");
+  }
+
+  auto outer_validation = ValidateCanonicalDescriptorBatch(
+      request.outer_batch, outer_node->output_descriptor_ids);
+  if (!outer_validation.ok) {
+    return refuse(outer_validation.diagnostic_code + ":" +
+                  outer_validation.detail);
+  }
+  auto inner_validation = ValidateCanonicalDescriptorBatch(
+      request.inner_batch, inner_node->output_descriptor_ids);
+  if (!inner_validation.ok) {
+    return refuse(inner_validation.diagnostic_code + ":" +
+                  inner_validation.detail);
+  }
+  if (request.outer_binding_column >= request.outer_batch.columns.size() ||
+      request.inner_reference_column >= request.inner_batch.columns.size()) {
+    return refuse("correlated binding column is outside its scope");
+  }
+  const auto& outer_column =
+      request.outer_batch.columns[request.outer_binding_column];
+  const auto& inner_column =
+      request.inner_batch.columns[request.inner_reference_column];
+  if (request.outer_binding_expression_descriptor_id == 0 ||
+      request.outer_binding_expression_descriptor_id !=
+          outer_column.descriptor_id ||
+      request.inner_reference_expression_descriptor_id == 0 ||
+      request.inner_reference_expression_descriptor_id !=
+          inner_column.descriptor_id ||
+      outer_column.descriptor.canonical_type_name != "int64" ||
+      inner_column.descriptor.canonical_type_name != "int64") {
+    return refuse("correlated binding is not an exact int64 handle pair");
+  }
+
+  const auto outer_count = request.outer_batch.rows.size();
+  const auto inner_count = request.inner_batch.rows.size();
+  if (request.maximum_scope_execution_count == 0 ||
+      outer_count > request.maximum_scope_execution_count ||
+      request.maximum_comparison_count == 0 ||
+      (outer_count != 0 &&
+       inner_count > request.maximum_comparison_count / outer_count) ||
+      outer_count * inner_count > request.maximum_comparison_count ||
+      request.maximum_result_row_count == 0) {
+    return refuse("correlated subquery resource bound was exceeded");
+  }
+
+  std::vector<std::optional<std::int64_t>> outer_keys;
+  outer_keys.reserve(outer_count);
+  for (const auto& row : request.outer_batch.rows) {
+    const auto& value = row.values[request.outer_binding_column];
+    if (value.state == api::EngineValueState::sql_null) {
+      outer_keys.push_back(std::nullopt);
+      continue;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    outer_keys.push_back(decoded.value);
+  }
+  std::vector<std::optional<std::int64_t>> inner_keys;
+  inner_keys.reserve(inner_count);
+  for (const auto& row : request.inner_batch.rows) {
+    const auto& value = row.values[request.inner_reference_column];
+    if (value.state == api::EngineValueState::sql_null) {
+      inner_keys.push_back(std::nullopt);
+      continue;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse(decoded.diagnostic.diagnostic_code + ":" +
+                    decoded.diagnostic.detail);
+    }
+    inner_keys.push_back(decoded.value);
+  }
+
+  std::vector<CanonicalCorrelatedScopeResult> scopes;
+  scopes.reserve(outer_count);
+  std::size_t result_row_count = 0;
+  for (std::size_t outer_index = 0; outer_index < outer_count; ++outer_index) {
+    CanonicalCorrelatedScopeResult scope;
+    scope.outer_row_index = outer_index;
+    scope.bound_outer_value =
+        request.outer_batch.rows[outer_index]
+            .values[request.outer_binding_column];
+    scope.output_batch.columns = request.inner_batch.columns;
+    if (outer_keys[outer_index].has_value()) {
+      for (std::size_t inner_index = 0; inner_index < inner_count;
+           ++inner_index) {
+        if (inner_keys[inner_index].has_value() &&
+            outer_keys[outer_index].value() ==
+                inner_keys[inner_index].value()) {
+          if (result_row_count == request.maximum_result_row_count) {
+            return refuse("correlated subquery result bound was exceeded");
+          }
+          scope.output_batch.rows.push_back(request.inner_batch.rows[inner_index]);
+          ++result_row_count;
+        }
+      }
+    }
+    auto scope_validation = ValidateCanonicalDescriptorBatch(
+        scope.output_batch, selected_node->output_descriptor_ids);
+    if (!scope_validation.ok) {
+      return refuse(scope_validation.diagnostic_code + ":" +
+                    scope_validation.detail);
+    }
+    scopes.push_back(std::move(scope));
+  }
+
+  result.diagnostic = {};
+  result.scopes = std::move(scopes);
+  result.scope_execution_count = outer_count;
+  result.comparison_count = outer_count * inner_count;
+  result.result_row_count = result_row_count;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor

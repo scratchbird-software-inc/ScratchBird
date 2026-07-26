@@ -192,6 +192,37 @@ struct CanonicalQuantifiedSubqueryResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalCorrelatedSubqueryRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch outer_batch;
+  DescriptorBatch inner_batch;
+  std::size_t outer_binding_column = 0;
+  std::uint32_t outer_binding_expression_descriptor_id = 0;
+  std::size_t inner_reference_column = 0;
+  std::uint32_t inner_reference_expression_descriptor_id = 0;
+  std::size_t maximum_scope_execution_count = 1048576;
+  std::size_t maximum_comparison_count = 1048576;
+  std::size_t maximum_result_row_count = 1048576;
+};
+
+struct CanonicalCorrelatedScopeResult {
+  std::size_t outer_row_index = 0;
+  scratchbird::engine::internal_api::EngineTypedValue bound_outer_value;
+  DescriptorBatch output_batch;
+};
+
+struct CanonicalCorrelatedSubqueryResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<CanonicalCorrelatedScopeResult> scopes;
+  std::size_t scope_execution_count = 0;
+  std::size_t comparison_count = 0;
+  std::size_t result_row_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
   fetch_first_rows_only = 1,
   fetch_first_rows_with_ties,
@@ -712,6 +743,8 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     const CanonicalExistsSubqueryRequest& request);
 CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     const CanonicalQuantifiedSubqueryRequest& request);
+CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
+    const CanonicalCorrelatedSubqueryRequest& request);
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
