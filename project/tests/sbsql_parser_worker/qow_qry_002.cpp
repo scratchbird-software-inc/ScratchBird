@@ -37,8 +37,28 @@ bool HasIssue(const api::RelationalDagValidationResult& result,
 api::TypedRelationalDag SharedDag() {
   api::TypedRelationalDag dag;
   dag.root_node_id = 4;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000000201",
+       "019f0000-0000-7300-8000-000000000211",
+       api::RelationalNullability::kNonNull},
+      {2, "019f0000-0000-7200-8000-000000000202",
+       "019f0000-0000-7300-8000-000000000212",
+       api::RelationalNullability::kNonNull},
+      {3, "019f0000-0000-7200-8000-000000000203",
+       "019f0000-0000-7300-8000-000000000213",
+       api::RelationalNullability::kNonNull},
+  };
+  api::RelationalExpressionRecord literal;
+  literal.expression_id = 1;
+  literal.expression_kind = api::RelationalExpressionKind::kLiteral;
+  literal.result_descriptor_id = 1;
+  literal.literal_kind = api::RelationalLiteralKind::kNumeric;
+  literal.literal_or_parameter_ref = "1";
+  dag.expressions.push_back(std::move(literal));
+  dag.outputs = {{1, 1, 1, "column_1", 1, true, 0}};
+  dag.values_rows = {{1, {1}}};
   dag.nodes = {
-      {1, api::RelationalDagNodeKind::kValues, {}, {1}, true},
+      {1, api::RelationalDagNodeKind::kValues, {}, {1}, true, {1}},
       {2, api::RelationalDagNodeKind::kFilter, {1}, {1}, false},
       {3, api::RelationalDagNodeKind::kProject, {1}, {2}, false},
       {4, api::RelationalDagNodeKind::kSetOperation, {2, 3}, {3}, false},
@@ -144,6 +164,10 @@ bool ValidateDuplicateAndDanglingRefusal() {
 
 bool ValidateCycleRefusal() {
   api::TypedRelationalDag dag;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000000221",
+       "019f0000-0000-7300-8000-000000000231",
+       api::RelationalNullability::kNonNull}};
   dag.root_node_id = 1;
   dag.nodes = {
       {1, api::RelationalDagNodeKind::kProject, {2}, {1}, false},
@@ -171,8 +195,12 @@ bool ValidateSharingRefusal() {
 
 bool ValidateOrphanRefusal() {
   auto dag = SharedDag();
+  dag.descriptors.push_back(
+      {4, "019f0000-0000-7200-8000-000000000204",
+       "019f0000-0000-7300-8000-000000000214",
+       api::RelationalNullability::kNonNull});
   dag.nodes.push_back(
-      {5, api::RelationalDagNodeKind::kValues, {}, {4}, false});
+      {5, api::RelationalDagNodeKind::kScan, {}, {4}, false});
   const auto result = api::ValidateTypedRelationalDag(dag);
   bool passed = true;
   passed &= Require(!result.accepted, "orphan relational node was accepted");
@@ -184,6 +212,19 @@ bool ValidateOrphanRefusal() {
 
 bool ValidateDepthLimitRefusal() {
   api::TypedRelationalDag dag;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000000241",
+       "019f0000-0000-7300-8000-000000000251",
+       api::RelationalNullability::kNonNull}};
+  api::RelationalExpressionRecord literal;
+  literal.expression_id = 1;
+  literal.expression_kind = api::RelationalExpressionKind::kLiteral;
+  literal.result_descriptor_id = 1;
+  literal.literal_kind = api::RelationalLiteralKind::kNumeric;
+  literal.literal_or_parameter_ref = "1";
+  dag.expressions.push_back(std::move(literal));
+  dag.outputs = {{1, 1, 1, "column_1", 1, true, 0}};
+  dag.values_rows = {{1, {1}}};
   for (std::uint32_t node_id = 1; node_id <= 257; ++node_id) {
     api::RelationalDagNode node;
     node.node_id = node_id;
@@ -191,6 +232,7 @@ bool ValidateDepthLimitRefusal() {
                                   : api::RelationalDagNodeKind::kProject;
     if (node_id != 1) node.input_node_ids.push_back(node_id - 1);
     node.output_descriptor_ids = {1};
+    if (node_id == 1) node.values_row_ids = {1};
     dag.nodes.push_back(std::move(node));
   }
   dag.root_node_id = 257;
@@ -205,13 +247,17 @@ bool ValidateDepthLimitRefusal() {
 
 bool ValidateFanoutLimitRefusal() {
   api::TypedRelationalDag dag;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000000261",
+       "019f0000-0000-7300-8000-000000000271",
+       api::RelationalNullability::kNonNull}};
   api::RelationalDagNode root;
   root.node_id = 1026;
   root.node_kind = api::RelationalDagNodeKind::kSetOperation;
   root.output_descriptor_ids = {1};
   for (std::uint32_t node_id = 1; node_id <= 1025; ++node_id) {
     dag.nodes.push_back(
-        {node_id, api::RelationalDagNodeKind::kValues, {}, {1}, false});
+        {node_id, api::RelationalDagNodeKind::kScan, {}, {1}, false});
     root.input_node_ids.push_back(node_id);
   }
   dag.nodes.push_back(std::move(root));
@@ -222,6 +268,44 @@ bool ValidateFanoutLimitRefusal() {
   passed &= Require(HasIssue(result, "SBLR.PLAN_TREE.RESOURCE_LIMIT",
                              "input_node_ids"),
                     "fanout-limit diagnostic differs");
+  return passed;
+}
+
+bool ValidateTypedValuesRefusal() {
+  auto missing_rows = SharedDag();
+  missing_rows.nodes[0].values_row_ids.clear();
+  const auto missing_rows_result =
+      api::ValidateTypedRelationalDag(missing_rows);
+
+  auto wrong_descriptor = SharedDag();
+  wrong_descriptor.expressions[0].result_descriptor_id = 2;
+  const auto wrong_descriptor_result =
+      api::ValidateTypedRelationalDag(wrong_descriptor);
+
+  auto missing_name_handle = SharedDag();
+  missing_name_handle.expressions[0].expression_kind =
+      api::RelationalExpressionKind::kIdentifier;
+  missing_name_handle.expressions[0].literal_kind.reset();
+  missing_name_handle.expressions[0].literal_or_parameter_ref.reset();
+  const auto missing_name_result =
+      api::ValidateTypedRelationalDag(missing_name_handle);
+
+  bool passed = true;
+  passed &= Require(
+      !missing_rows_result.accepted &&
+          HasIssue(missing_rows_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "literal_table_descriptor"),
+      "VALUES without row records was accepted");
+  passed &= Require(
+      !wrong_descriptor_result.accepted &&
+          HasIssue(wrong_descriptor_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "output_record"),
+      "VALUES expression descriptor mismatch was accepted");
+  passed &= Require(
+      !missing_name_result.accepted &&
+          HasIssue(missing_name_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "expression_typed_fields"),
+      "identifier without immutable name handle was accepted");
   return passed;
 }
 
@@ -240,5 +324,6 @@ int main() {
   passed &= ValidateOrphanRefusal();
   passed &= ValidateDepthLimitRefusal();
   passed &= ValidateFanoutLimitRefusal();
+  passed &= ValidateTypedValuesRefusal();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

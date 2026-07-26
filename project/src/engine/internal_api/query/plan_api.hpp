@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -42,18 +43,93 @@ enum class RelationalDagNodeKind : std::uint8_t {
   kTableFunctionInvoke,
 };
 
+enum class RelationalNullability : std::uint8_t {
+  kNonNull = 1,
+  kNullable,
+  kUnknown,
+};
+
+enum class RelationalExpressionKind : std::uint8_t {
+  kLiteral = 1,
+  kParameter,
+  kIdentifier,
+  kFunctionCall,
+  kUnary,
+  kBinary,
+  kParenthesized,
+};
+
+enum class RelationalLiteralKind : std::uint8_t {
+  kNumeric = 1,
+  kString,
+  kBinary,
+  kTemporal,
+  kUuid,
+  kBoolean,
+  kNull,
+  kDefault,
+  kDocument,
+  kVector,
+  kRegex,
+  kRange,
+};
+
+struct RelationalTypeDescriptor {
+  std::uint32_t descriptor_id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  RelationalNullability nullability{RelationalNullability::kUnknown};
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+};
+
+struct RelationalExpressionRecord {
+  std::uint32_t expression_id{0};
+  RelationalExpressionKind expression_kind{RelationalExpressionKind::kLiteral};
+  std::vector<std::uint32_t> child_expression_ids;
+  std::uint32_t result_descriptor_id{0};
+  std::optional<std::string> function_uuid;
+  std::optional<std::string> bound_name_uuid;
+  std::optional<RelationalLiteralKind> literal_kind;
+  std::optional<std::string> operator_name;
+  std::optional<std::string> literal_or_parameter_ref;
+};
+
+struct RelationalOutputRecord {
+  std::uint32_t output_id{0};
+  std::uint32_t relation_node_id{0};
+  std::uint32_t expression_id{0};
+  std::string output_name_utf8;
+  std::uint32_t descriptor_id{0};
+  bool visible{true};
+  std::uint32_t ordinal{0};
+};
+
+struct RelationalValuesRowRecord {
+  std::uint32_t row_id{0};
+  std::vector<std::uint32_t> expression_ids;
+};
+
 struct RelationalDagNode {
   std::uint32_t node_id{0};
   RelationalDagNodeKind node_kind{RelationalDagNodeKind::kValues};
   std::vector<std::uint32_t> input_node_ids;
   std::vector<std::uint32_t> output_descriptor_ids;
   bool shareable{false};
+  std::vector<std::uint32_t> values_row_ids;
 };
 
 struct TypedRelationalDag {
   std::uint16_t wire_version{1};
   RelationalPackageRoot package_root{RelationalPackageRoot::kQueryExecute};
   std::uint32_t root_node_id{0};
+  std::vector<RelationalTypeDescriptor> descriptors;
+  std::vector<RelationalExpressionRecord> expressions;
+  std::vector<RelationalOutputRecord> outputs;
+  std::vector<RelationalValuesRowRecord> values_rows;
   std::vector<RelationalDagNode> nodes;
 };
 
@@ -61,6 +137,7 @@ struct RelationalDagLimits {
   std::size_t maximum_nodes{131072};
   std::size_t maximum_depth{256};
   std::size_t maximum_fanout{1024};
+  std::size_t maximum_records{524288};
 };
 
 struct RelationalDagValidationIssue {

@@ -83,6 +83,36 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
     return false;
   };
+  const auto known_nullability = [](const RelationalNullability value) {
+    return value == RelationalNullability::kNonNull ||
+           value == RelationalNullability::kNullable ||
+           value == RelationalNullability::kUnknown;
+  };
+  const auto known_expression_kind = [](const RelationalExpressionKind kind) {
+    return kind == RelationalExpressionKind::kLiteral ||
+           kind == RelationalExpressionKind::kParameter ||
+           kind == RelationalExpressionKind::kIdentifier ||
+           kind == RelationalExpressionKind::kFunctionCall ||
+           kind == RelationalExpressionKind::kUnary ||
+           kind == RelationalExpressionKind::kBinary ||
+           kind == RelationalExpressionKind::kParenthesized;
+  };
+  const auto known_literal_kind = [](const RelationalLiteralKind kind) {
+    return kind >= RelationalLiteralKind::kNumeric &&
+           kind <= RelationalLiteralKind::kRange;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
 
   if (dag.wire_version != 1) {
     return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0, "wire_version");
@@ -92,9 +122,150 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                   "package_root");
   }
   if (limits.maximum_nodes == 0 || limits.maximum_depth == 0 ||
-      limits.maximum_fanout == 0 || dag.nodes.empty() ||
+      limits.maximum_fanout == 0 || limits.maximum_records == 0 ||
+      dag.nodes.empty() ||
       dag.nodes.size() > limits.maximum_nodes) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "node_count");
+  }
+  const auto record_count = dag.descriptors.size() + dag.expressions.size() +
+                            dag.outputs.size() + dag.values_rows.size();
+  if (record_count > limits.maximum_records) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (const auto& descriptor : dag.descriptors) {
+    if (descriptor.descriptor_id == 0 ||
+        !canonical_uuid(descriptor.descriptor_uuid) ||
+        !canonical_uuid(descriptor.type_uuid) ||
+        !known_nullability(descriptor.nullability) ||
+        (descriptor.collation_uuid.has_value() &&
+         !canonical_uuid(*descriptor.collation_uuid)) ||
+        (descriptor.timezone_profile_id.has_value() &&
+         descriptor.timezone_profile_id->empty()) ||
+        (descriptor.scale.has_value() &&
+         (!descriptor.precision.has_value() ||
+          *descriptor.scale > *descriptor.precision)) ||
+        !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
+        !descriptor_uuids.emplace(descriptor.descriptor_uuid).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0, "descriptor_record");
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  for (const auto& expression : dag.expressions) {
+    if (expression.expression_id == 0 ||
+        !known_expression_kind(expression.expression_kind) ||
+        expression.result_descriptor_id == 0 ||
+        !descriptors_by_id.contains(expression.result_descriptor_id) ||
+        !expressions_by_id.emplace(expression.expression_id, &expression).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0, "expression_record");
+    }
+    const bool literal =
+        expression.expression_kind == RelationalExpressionKind::kLiteral;
+    const bool parameter =
+        expression.expression_kind == RelationalExpressionKind::kParameter;
+    const bool identifier =
+        expression.expression_kind == RelationalExpressionKind::kIdentifier;
+    const bool function_call =
+        expression.expression_kind == RelationalExpressionKind::kFunctionCall;
+    const bool operator_expression =
+        expression.expression_kind == RelationalExpressionKind::kUnary ||
+        expression.expression_kind == RelationalExpressionKind::kBinary;
+    if (literal != expression.literal_kind.has_value() ||
+        (expression.literal_kind.has_value() &&
+         !known_literal_kind(*expression.literal_kind)) ||
+        function_call != expression.function_uuid.has_value() ||
+        (expression.function_uuid.has_value() &&
+         !canonical_uuid(*expression.function_uuid)) ||
+        identifier != expression.bound_name_uuid.has_value() ||
+        (expression.bound_name_uuid.has_value() &&
+         !canonical_uuid(*expression.bound_name_uuid)) ||
+        operator_expression != expression.operator_name.has_value() ||
+        (expression.operator_name.has_value() &&
+         expression.operator_name->empty()) ||
+        (literal || parameter) !=
+            expression.literal_or_parameter_ref.has_value()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                    "expression_typed_fields");
+    }
+    const auto child_count = expression.child_expression_ids.size();
+    const bool valid_arity =
+        ((literal || parameter || identifier) && child_count == 0) ||
+        (function_call) ||
+        (expression.expression_kind == RelationalExpressionKind::kUnary &&
+         child_count == 1) ||
+        (expression.expression_kind == RelationalExpressionKind::kBinary &&
+         child_count == 2) ||
+        (expression.expression_kind ==
+             RelationalExpressionKind::kParenthesized &&
+         child_count == 1);
+    if (!valid_arity) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                    "expression_arity");
+    }
+  }
+  for (const auto& expression : dag.expressions) {
+    for (const auto child_id : expression.child_expression_ids) {
+      if (child_id == 0 || !expressions_by_id.contains(child_id)) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                      "expression_child_ids");
+      }
+    }
+  }
+  std::unordered_map<std::uint32_t, std::uint8_t> expression_visit_state;
+  std::function<bool(std::uint32_t)> visit_expression =
+      [&](const std::uint32_t expression_id) {
+        const auto state = expression_visit_state[expression_id];
+        if (state == 1) return false;
+        if (state == 2) return true;
+        expression_visit_state[expression_id] = 1;
+        for (const auto child_id :
+             expressions_by_id.at(expression_id)->child_expression_ids) {
+          if (!visit_expression(child_id)) return false;
+        }
+        expression_visit_state[expression_id] = 2;
+        return true;
+      };
+  for (const auto& [expression_id, expression] : expressions_by_id) {
+    (void)expression;
+    if (!visit_expression(expression_id)) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                    "expression_cycle");
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalValuesRowRecord*>
+      values_rows_by_id;
+  for (const auto& row : dag.values_rows) {
+    if (row.row_id == 0 || row.expression_ids.empty() ||
+        !values_rows_by_id.emplace(row.row_id, &row).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                    "values_row_record");
+    }
+    for (const auto expression_id : row.expression_ids) {
+      if (expression_id == 0 || !expressions_by_id.contains(expression_id)) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                      "values_row_expression_ids");
+      }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const RelationalOutputRecord*>
+      outputs_by_id;
+  for (const auto& output : dag.outputs) {
+    const auto expression = expressions_by_id.find(output.expression_id);
+    if (output.output_id == 0 || output.relation_node_id == 0 ||
+        output.descriptor_id == 0 || expression == expressions_by_id.end() ||
+        !descriptors_by_id.contains(output.descriptor_id) ||
+        expression->second->result_descriptor_id != output.descriptor_id ||
+        !outputs_by_id.emplace(output.output_id, &output).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", output.relation_node_id,
+                    "output_record");
+    }
   }
 
   std::unordered_map<std::uint32_t, const RelationalDagNode*> nodes_by_id;
@@ -111,7 +282,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
     std::unordered_set<std::uint32_t> descriptor_ids;
     for (const auto descriptor_id : node.output_descriptor_ids) {
-      if (descriptor_id == 0 || !descriptor_ids.insert(descriptor_id).second) {
+      if (descriptor_id == 0 || !descriptors_by_id.contains(descriptor_id) ||
+          !descriptor_ids.insert(descriptor_id).second) {
         return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                       "output_descriptor_ids");
       }
@@ -121,6 +293,81 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       nodes_by_id.find(dag.root_node_id) == nodes_by_id.end()) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", dag.root_node_id,
                   "root_node_id");
+  }
+
+  std::unordered_set<std::uint32_t> assigned_values_row_ids;
+  for (const auto& node : dag.nodes) {
+    std::vector<const RelationalOutputRecord*> node_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == node.node_id) node_outputs.push_back(&output);
+    }
+    std::ranges::sort(node_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    if (!node_outputs.empty()) {
+      if (node_outputs.size() != node.output_descriptor_ids.size()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "output_record_count");
+      }
+      for (std::size_t ordinal = 0; ordinal < node_outputs.size(); ++ordinal) {
+        if (node_outputs[ordinal]->ordinal != ordinal ||
+            node_outputs[ordinal]->descriptor_id !=
+                node.output_descriptor_ids[ordinal]) {
+          return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                        "output_record_ordinal");
+        }
+      }
+    }
+    if (node.node_kind != RelationalDagNodeKind::kValues) {
+      if (!node.values_row_ids.empty()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "values_row_ids");
+      }
+      continue;
+    }
+    if (!node.input_node_ids.empty() || node.values_row_ids.empty() ||
+        node.output_descriptor_ids.empty() || node_outputs.empty()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "literal_table_descriptor");
+    }
+    for (const auto row_id : node.values_row_ids) {
+      const auto row = values_rows_by_id.find(row_id);
+      if (row_id == 0 || row == values_rows_by_id.end() ||
+          !assigned_values_row_ids.insert(row_id).second ||
+          row->second->expression_ids.size() !=
+              node.output_descriptor_ids.size()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "values_row_ids");
+      }
+      for (std::size_t ordinal = 0;
+           ordinal < row->second->expression_ids.size(); ++ordinal) {
+        const auto* expression =
+            expressions_by_id.at(row->second->expression_ids[ordinal]);
+        if (expression->result_descriptor_id !=
+            node.output_descriptor_ids[ordinal]) {
+          return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                        "values_row_descriptor_ids");
+        }
+      }
+    }
+    const auto* first_row = values_rows_by_id.at(node.values_row_ids.front());
+    for (std::size_t ordinal = 0; ordinal < node_outputs.size(); ++ordinal) {
+      if (node_outputs[ordinal]->expression_id !=
+          first_row->expression_ids[ordinal]) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                      "output_expression_ids");
+      }
+    }
+  }
+  if (assigned_values_row_ids.size() != dag.values_rows.size()) {
+    return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", 0,
+                  "orphan_values_row");
+  }
+  for (const auto& output : dag.outputs) {
+    if (!nodes_by_id.contains(output.relation_node_id)) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", output.relation_node_id,
+                    "output_relation_node_id");
+    }
   }
 
   for (const auto& node : dag.nodes) {
