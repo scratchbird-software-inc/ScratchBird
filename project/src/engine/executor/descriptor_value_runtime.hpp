@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "datatype_operations.hpp"
 #include "physical_node_abi.hpp"
 #include "query/expression_api.hpp"
 
@@ -147,6 +148,46 @@ struct CanonicalDescriptorRowNumberResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalDescriptorOrderDirection : std::uint8_t {
+  ascending = 1,
+  descending,
+};
+
+enum class CanonicalDescriptorNullPlacement : std::uint8_t {
+  first = 1,
+  last,
+};
+
+struct CanonicalDescriptorOrderTerm {
+  std::size_t column = 0;
+  std::uint32_t expression_descriptor_id = 0;
+  CanonicalDescriptorOrderDirection direction =
+      CanonicalDescriptorOrderDirection::ascending;
+  CanonicalDescriptorNullPlacement null_placement =
+      CanonicalDescriptorNullPlacement::last;
+  std::string collation_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t collation_epoch = 0;
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+};
+
+struct CanonicalDescriptorSortRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<CanonicalDescriptorOrderTerm> order_terms;
+  std::string deterministic_tie_evidence_uuid;
+  std::size_t maximum_pair_comparisons = 1048576;
+};
+
+struct CanonicalDescriptorSortResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct Int64DecodeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::int64_t value = 0;
@@ -247,6 +288,8 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
+CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
+    const CanonicalDescriptorSortRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,

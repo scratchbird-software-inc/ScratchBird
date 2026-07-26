@@ -19,6 +19,9 @@ endif()
 if(NOT TARGET sb_core_index)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/index ${CMAKE_CURRENT_BINARY_DIR}/core_index)
 endif()
+if(NOT TARGET sb_core_datatypes)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes ${CMAKE_CURRENT_BINARY_DIR}/core_datatypes)
+endif()
 if(NOT TARGET sb_core_memory)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../core/memory ${CMAKE_CURRENT_BINARY_DIR}/core_memory)
 endif()
@@ -85,6 +88,7 @@ add_library(sb_engine_executor STATIC
   security_barrier_executor.cpp
   snapshot_safe_result_cache.cpp
   # QOW-CMAKE-QRY-007-SORT-LIMIT-V1
+  # QOW-CMAKE-QRY-010-V1
   sort_limit_executor.cpp
   subquery_executor.cpp
   table_function_executor.cpp
@@ -105,6 +109,7 @@ target_include_directories(sb_engine_executor PUBLIC
 
 target_link_libraries(sb_engine_executor PUBLIC sb_storage_page)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_index)
+target_link_libraries(sb_engine_executor PUBLIC sb_core_datatypes)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_memory)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_bulk_load)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_resource_governance)
