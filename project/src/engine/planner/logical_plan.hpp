@@ -53,6 +53,8 @@ struct CanonicalLogicalRelationalNode {
   std::vector<std::string> required_object_uuids;
   std::string semantic_variant_id;
   bool shareable{false};
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
 };
 
 struct CanonicalLogicalRelationalGraph {
@@ -528,6 +530,447 @@ ValidateCanonicalLogicalPhysicalBoundary(
   result.accepted = true;
   result.data_access_allowed = false;
   result.validated_alternative_count = catalog.alternatives.size();
+  return result;
+}
+
+enum class CanonicalLogicalPropertyKind : std::uint8_t {
+  kOrdering = 1,
+  kGrouping,
+  kPartitioning,
+  kWindow,
+  kExpressionEquivalence,
+};
+
+enum class CanonicalLogicalPropertySortDirection : std::uint8_t {
+  kAscending = 1,
+  kDescending,
+};
+
+enum class CanonicalLogicalPropertyNullPlacement : std::uint8_t {
+  kNullsFirst = 1,
+  kNullsLast,
+};
+
+struct CanonicalLogicalPropertyOrderingTerm {
+  std::uint32_t expression_id{0};
+  CanonicalLogicalPropertySortDirection direction{
+      CanonicalLogicalPropertySortDirection::kAscending};
+  CanonicalLogicalPropertyNullPlacement null_placement{
+      CanonicalLogicalPropertyNullPlacement::kNullsLast};
+  std::string collation_uuid;
+};
+
+struct CanonicalLogicalPropertyRecord {
+  std::string property_uuid;
+  CanonicalLogicalPropertyKind property_kind{
+      CanonicalLogicalPropertyKind::kOrdering};
+  std::uint32_t origin_logical_node_id{0};
+  std::vector<std::uint32_t> expression_ids;
+  std::vector<CanonicalLogicalPropertyOrderingTerm> ordering_terms;
+  std::vector<std::string> dependency_property_uuids;
+  std::string window_frame_descriptor_uuid;
+  bool populated_from_bound_sblr{false};
+};
+
+struct CanonicalLogicalPropertyCatalog {
+  std::uint16_t abi_version{1};
+  std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t statement_snapshot_id{0};
+  std::vector<CanonicalLogicalPropertyRecord> properties;
+  bool raw_sql_text_present{false};
+  bool parser_execution_authority_claimed{false};
+  bool transaction_finality_authority_claimed{false};
+};
+
+struct CanonicalLogicalNodePropertyBinding {
+  std::uint32_t logical_node_id{0};
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+};
+
+struct CanonicalLogicalPropertyIssue {
+  std::string diagnostic_id;
+  std::uint32_t logical_node_id{0};
+  std::string field_id;
+};
+
+struct CanonicalLogicalPropertyValidationResult {
+  bool accepted{false};
+  std::size_t validated_property_count{0};
+  std::vector<CanonicalLogicalPropertyIssue> issues;
+};
+
+struct CanonicalLogicalPropertyPopulationResult {
+  bool accepted{false};
+  CanonicalLogicalRelationalGraph logical_graph;
+  CanonicalLogicalPropertyCatalog property_catalog;
+  std::vector<CanonicalLogicalPropertyIssue> issues;
+};
+
+inline const char* CanonicalLogicalPropertyKindName(
+    const CanonicalLogicalPropertyKind kind) {
+  switch (kind) {
+    case CanonicalLogicalPropertyKind::kOrdering:
+      return "ordering";
+    case CanonicalLogicalPropertyKind::kGrouping:
+      return "grouping";
+    case CanonicalLogicalPropertyKind::kPartitioning:
+      return "partitioning";
+    case CanonicalLogicalPropertyKind::kWindow:
+      return "window";
+    case CanonicalLogicalPropertyKind::kExpressionEquivalence:
+      return "expression_equivalence";
+  }
+  return "unknown";
+}
+
+inline std::string SerializeCanonicalLogicalPropertyIdentity(
+    const CanonicalLogicalPropertyRecord& property) {
+  std::vector<std::uint32_t> expression_ids = property.expression_ids;
+  if (property.property_kind ==
+      CanonicalLogicalPropertyKind::kExpressionEquivalence) {
+    std::ranges::sort(expression_ids);
+  }
+  std::string serialized =
+      "logical-property-v1|" + property.property_uuid + "|" +
+      CanonicalLogicalPropertyKindName(property.property_kind) + "|" +
+      std::to_string(property.origin_logical_node_id) + "|expressions=";
+  for (const auto expression_id : expression_ids) {
+    serialized += std::to_string(expression_id) + ",";
+  }
+  serialized += "|ordering=";
+  for (const auto& term : property.ordering_terms) {
+    serialized += std::to_string(term.expression_id) + ":" +
+                  (term.direction ==
+                           CanonicalLogicalPropertySortDirection::kAscending
+                       ? "asc"
+                       : "desc") +
+                  ":" +
+                  (term.null_placement ==
+                           CanonicalLogicalPropertyNullPlacement::kNullsFirst
+                       ? "nulls_first"
+                       : "nulls_last") +
+                  ":" + term.collation_uuid + ",";
+  }
+  serialized += "|dependencies=";
+  for (const auto& dependency : property.dependency_property_uuids) {
+    serialized += dependency + ",";
+  }
+  serialized += "|frame=" + property.window_frame_descriptor_uuid;
+  return serialized;
+}
+
+// QOW-SOURCE-OPT-003-V1
+// Stable property identities are scoped to one bound SBLR tree and its exact
+// catalog/security/MGA statement boundary.  Every property must be populated
+// from typed bound SBLR records; prebound/manual node metadata is rejected by
+// PopulateCanonicalLogicalPropertiesFromBoundSblr below.
+inline CanonicalLogicalPropertyValidationResult
+ValidateCanonicalLogicalPropertyCatalog(
+    const CanonicalLogicalRelationalGraph& graph,
+    const CanonicalLogicalPropertyCatalog& catalog,
+    const std::size_t maximum_properties = 524288,
+    const std::size_t maximum_property_references = 1048576) {
+  CanonicalLogicalPropertyValidationResult result;
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string field_id) {
+    result.accepted = false;
+    result.validated_property_count = 0;
+    result.issues.push_back({std::move(diagnostic_id), node_id,
+                             std::move(field_id)});
+    return result;
+  };
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto graph_validation = ValidateCanonicalLogicalRelationalGraph(graph);
+  if (!graph_validation.accepted) {
+    const auto& issue = graph_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.logical_node_id, issue.field_id);
+  }
+  if (catalog.abi_version != 1) {
+    return refuse("QOW-DIAG-LOGICAL-PROPERTY-VERSION-V1", 0,
+                  "abi_version");
+  }
+  if (catalog.bound_sblr_tree_uuid != graph.bound_sblr_tree_uuid ||
+      catalog.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
+      catalog.security_context_uuid != graph.security_context_uuid ||
+      catalog.local_transaction_id != graph.local_transaction_id ||
+      catalog.statement_snapshot_id != graph.statement_snapshot_id) {
+    return refuse("QOW-DIAG-LOGICAL-PROPERTY-SCOPE-V1", 0,
+                  "bound_property_scope");
+  }
+  if (catalog.raw_sql_text_present ||
+      catalog.parser_execution_authority_claimed ||
+      catalog.transaction_finality_authority_claimed) {
+    return refuse("QOW-DIAG-LOGICAL-PROPERTY-AUTHORITY-V1", 0,
+                  "forbidden_authority_claim");
+  }
+  if (maximum_properties == 0 || maximum_property_references == 0 ||
+      catalog.properties.size() > maximum_properties) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "property_count");
+  }
+
+  std::unordered_map<std::uint32_t, const CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  std::unordered_set<std::uint32_t> bound_expression_ids;
+  for (const auto& node : graph.nodes) {
+    nodes_by_id.emplace(node.logical_node_id, &node);
+    bound_expression_ids.insert(node.bound_expression_ids.begin(),
+                                node.bound_expression_ids.end());
+  }
+  std::unordered_map<std::string, const CanonicalLogicalPropertyRecord*>
+      properties_by_uuid;
+  std::size_t property_reference_count = 0;
+  for (const auto& property : catalog.properties) {
+    const auto add_references = [&](const std::size_t count) {
+      if (count > maximum_property_references - property_reference_count) {
+        return false;
+      }
+      property_reference_count += count;
+      return true;
+    };
+    if (!add_references(property.expression_ids.size()) ||
+        !add_references(property.ordering_terms.size()) ||
+        !add_references(property.dependency_property_uuids.size())) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    property.origin_logical_node_id,
+                    "property_reference_count");
+    }
+    if (!canonical_uuid(property.property_uuid) ||
+        !properties_by_uuid.emplace(property.property_uuid, &property).second ||
+        !nodes_by_id.contains(property.origin_logical_node_id) ||
+        property.property_kind < CanonicalLogicalPropertyKind::kOrdering ||
+        property.property_kind >
+            CanonicalLogicalPropertyKind::kExpressionEquivalence ||
+        !property.populated_from_bound_sblr) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1",
+                    property.origin_logical_node_id, "property_record");
+    }
+    std::unordered_set<std::uint32_t> expressions;
+    for (const auto expression_id : property.expression_ids) {
+      if (expression_id == 0 ||
+          !bound_expression_ids.contains(expression_id) ||
+          !expressions.insert(expression_id).second) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-EXPRESSION-V1",
+                      property.origin_logical_node_id, "expression_ids");
+      }
+    }
+    for (const auto& term : property.ordering_terms) {
+      if (term.expression_id == 0 ||
+          !bound_expression_ids.contains(term.expression_id) ||
+          !expressions.insert(term.expression_id).second ||
+          (term.direction !=
+               CanonicalLogicalPropertySortDirection::kAscending &&
+           term.direction !=
+               CanonicalLogicalPropertySortDirection::kDescending) ||
+          (term.null_placement !=
+               CanonicalLogicalPropertyNullPlacement::kNullsFirst &&
+           term.null_placement !=
+               CanonicalLogicalPropertyNullPlacement::kNullsLast) ||
+          (!term.collation_uuid.empty() &&
+           !canonical_uuid(term.collation_uuid))) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-ORDERING-V1",
+                      property.origin_logical_node_id, "ordering_terms");
+      }
+    }
+    std::unordered_set<std::string> dependencies;
+    for (const auto& dependency : property.dependency_property_uuids) {
+      if (!canonical_uuid(dependency) ||
+          !dependencies.insert(dependency).second ||
+          dependency == property.property_uuid) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                      property.origin_logical_node_id,
+                      "dependency_property_uuids");
+      }
+    }
+    const bool ordering =
+        property.property_kind == CanonicalLogicalPropertyKind::kOrdering;
+    const bool expression_set =
+        property.property_kind == CanonicalLogicalPropertyKind::kGrouping ||
+        property.property_kind ==
+            CanonicalLogicalPropertyKind::kPartitioning ||
+        property.property_kind ==
+            CanonicalLogicalPropertyKind::kExpressionEquivalence;
+    const bool window =
+        property.property_kind == CanonicalLogicalPropertyKind::kWindow;
+    const bool shape_valid =
+        (ordering && property.expression_ids.empty() &&
+         !property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty()) ||
+        (expression_set &&
+         property.expression_ids.size() >=
+             (property.property_kind ==
+                      CanonicalLogicalPropertyKind::kExpressionEquivalence
+                  ? 2U
+                  : 1U) &&
+         property.ordering_terms.empty() &&
+         property.dependency_property_uuids.empty() &&
+         property.window_frame_descriptor_uuid.empty()) ||
+        (window && property.expression_ids.empty() &&
+         property.ordering_terms.empty() &&
+         !property.dependency_property_uuids.empty() &&
+         property.dependency_property_uuids.size() <= 2 &&
+         canonical_uuid(property.window_frame_descriptor_uuid));
+    if (!shape_valid) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+                    property.origin_logical_node_id, "property_shape");
+    }
+  }
+
+  for (const auto& property : catalog.properties) {
+    if (property.property_kind != CanonicalLogicalPropertyKind::kWindow) {
+      continue;
+    }
+    bool saw_ordering = false;
+    bool saw_partitioning = false;
+    for (const auto& dependency_uuid : property.dependency_property_uuids) {
+      const auto dependency = properties_by_uuid.find(dependency_uuid);
+      if (dependency == properties_by_uuid.end()) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                      property.origin_logical_node_id,
+                      "unknown_window_dependency");
+      }
+      if (dependency->second->property_kind ==
+          CanonicalLogicalPropertyKind::kOrdering) {
+        if (saw_ordering) {
+          return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                        property.origin_logical_node_id,
+                        "duplicate_window_ordering");
+        }
+        saw_ordering = true;
+      } else if (dependency->second->property_kind ==
+                 CanonicalLogicalPropertyKind::kPartitioning) {
+        if (saw_partitioning) {
+          return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                        property.origin_logical_node_id,
+                        "duplicate_window_partitioning");
+        }
+        saw_partitioning = true;
+      } else {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+                      property.origin_logical_node_id,
+                      "window_dependency_kind");
+      }
+    }
+  }
+
+  std::unordered_set<std::string> referenced_properties;
+  for (const auto& node : graph.nodes) {
+    if (node.required_property_uuids.size() >
+            maximum_property_references - property_reference_count) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    node.logical_node_id, "property_reference_count");
+    }
+    property_reference_count += node.required_property_uuids.size();
+    if (node.delivered_property_uuids.size() >
+            maximum_property_references - property_reference_count) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    node.logical_node_id, "property_reference_count");
+    }
+    property_reference_count += node.delivered_property_uuids.size();
+    std::unordered_set<std::string> node_refs;
+    for (const auto& property_uuid : node.required_property_uuids) {
+      if (!node_refs.insert("r:" + property_uuid).second ||
+          !properties_by_uuid.contains(property_uuid)) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+                      node.logical_node_id, "required_property_uuids");
+      }
+      referenced_properties.insert(property_uuid);
+    }
+    for (const auto& property_uuid : node.delivered_property_uuids) {
+      if (!node_refs.insert("d:" + property_uuid).second ||
+          !properties_by_uuid.contains(property_uuid)) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+                      node.logical_node_id, "delivered_property_uuids");
+      }
+      referenced_properties.insert(property_uuid);
+      const auto* property = properties_by_uuid.at(property_uuid);
+      if (property->origin_logical_node_id == node.logical_node_id) continue;
+      const bool delivered_by_input =
+          std::ranges::any_of(node.input_logical_node_ids,
+                              [&](const std::uint32_t input_id) {
+            const auto* input = nodes_by_id.at(input_id);
+            return std::ranges::find(input->delivered_property_uuids,
+                                     property_uuid) !=
+                   input->delivered_property_uuids.end();
+          });
+      if (!delivered_by_input) {
+        return refuse("QOW-DIAG-LOGICAL-PROPERTY-PROPAGATION-V1",
+                      node.logical_node_id, property_uuid);
+      }
+    }
+  }
+  if (referenced_properties.size() != catalog.properties.size()) {
+    return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", 0,
+                  "orphan_property");
+  }
+
+  result.accepted = true;
+  result.validated_property_count = catalog.properties.size();
+  return result;
+}
+
+inline CanonicalLogicalPropertyPopulationResult
+PopulateCanonicalLogicalPropertiesFromBoundSblr(
+    CanonicalLogicalRelationalGraph graph,
+    CanonicalLogicalPropertyCatalog catalog,
+    const std::vector<CanonicalLogicalNodePropertyBinding>& bindings) {
+  CanonicalLogicalPropertyPopulationResult result;
+  result.logical_graph = std::move(graph);
+  result.property_catalog = std::move(catalog);
+  const auto refuse = [&](std::string diagnostic_id,
+                          const std::uint32_t node_id,
+                          std::string field_id) {
+    result.accepted = false;
+    result.issues.push_back({std::move(diagnostic_id), node_id,
+                             std::move(field_id)});
+    return result;
+  };
+  std::unordered_map<std::uint32_t, CanonicalLogicalRelationalNode*>
+      nodes_by_id;
+  for (auto& node : result.logical_graph.nodes) {
+    if (!node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty()) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-PREBOUND-V1",
+                    node.logical_node_id, "manual_property_metadata");
+    }
+    nodes_by_id.emplace(node.logical_node_id, &node);
+  }
+  std::unordered_set<std::uint32_t> bound_nodes;
+  for (const auto& binding : bindings) {
+    const auto node = nodes_by_id.find(binding.logical_node_id);
+    if (node == nodes_by_id.end() ||
+        !bound_nodes.insert(binding.logical_node_id).second) {
+      return refuse("QOW-DIAG-LOGICAL-PROPERTY-BINDING-V1",
+                    binding.logical_node_id, "logical_node_id");
+    }
+    node->second->required_property_uuids =
+        binding.required_property_uuids;
+    node->second->delivered_property_uuids =
+        binding.delivered_property_uuids;
+  }
+  const auto validation = ValidateCanonicalLogicalPropertyCatalog(
+      result.logical_graph, result.property_catalog);
+  if (!validation.accepted) {
+    result.issues = validation.issues;
+    return result;
+  }
+  result.accepted = true;
   return result;
 }
 
