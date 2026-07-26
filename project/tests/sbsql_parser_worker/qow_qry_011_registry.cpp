@@ -204,6 +204,38 @@ exec::CanonicalAggregateRuntimeRequest PairStatisticalRequest(
   return request;
 }
 
+exec::CanonicalAggregateRuntimeRequest CollectionRequest(
+    const exec::CanonicalAggregateFunction function) {
+  const auto result_type =
+      function == exec::CanonicalAggregateFunction::array_agg
+          ? "list<text nullable>"
+          : (function == exec::CanonicalAggregateFunction::string_agg ||
+                     function == exec::CanonicalAggregateFunction::listagg
+                 ? "text"
+                 : "json");
+  auto request = Request(function, 0, 2101, result_type);
+  const auto text_descriptor = Descriptor(
+      "019f0000-0000-7200-8000-000000002101",
+      "019f0000-0000-7300-8000-000000002105", "text");
+  request.input_batch.columns[0].descriptor = text_descriptor;
+  request.input_batch.rows[0].values[0] = Value(text_descriptor, "a");
+  request.input_batch.rows[1].values[0] = Value(text_descriptor, "b");
+  request.input_batch.rows[2].values[0] = Null(text_descriptor);
+  request.input_batch.rows[3].values[0] = Value(text_descriptor, "d");
+  request.aggregate_order_terms = {{.column = 3,
+                                    .expression_descriptor_id = 2104}};
+  request.aggregate_separator = "|";
+  if (function == exec::CanonicalAggregateFunction::json_object_agg) {
+    request.input_batch.rows[0].values[0] = Value(text_descriptor, "dup");
+    request.input_batch.rows[1].values[0] = Value(text_descriptor, "other");
+    request.input_batch.rows[2].values[0] = Value(text_descriptor, "dup");
+    request.input_batch.rows[3].values[0] = Value(text_descriptor, "tail");
+    request.value_columns = {0, 1};
+    request.value_expression_descriptor_ids = {2101, 2102};
+  }
+  return request;
+}
+
 bool NearScalar(const exec::CanonicalAggregateRuntimeResult& result,
                 const double expected) {
   return result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
@@ -234,7 +266,7 @@ bool ValidateCanonicalAggregateRegistry() {
     if (entry.executable) ++executable_count;
     if (entry.aggregate_as_window) ++aggregate_window_count;
   }
-  passed &= Require(registry.size() == 43 && executable_count == 26 &&
+  passed &= Require(registry.size() == 43 && executable_count == 31 &&
                         aggregate_window_count == 1 &&
                         Entry(exec::CanonicalAggregateFunction::sum)
                             .aggregate_as_window,
@@ -410,6 +442,88 @@ bool ValidateCanonicalAggregateRegistry() {
                             "QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
                     "pair statistical aggregate accepted one input");
 
+  struct CollectionCase {
+    exec::CanonicalAggregateFunction function;
+    const char* expected;
+  };
+  const std::vector<CollectionCase> collection_cases = {
+      {exec::CanonicalAggregateFunction::array_agg,
+       "list[text:b;text:d;text:a;NULL]"},
+      {exec::CanonicalAggregateFunction::string_agg, "b|d|a"},
+      {exec::CanonicalAggregateFunction::json_agg,
+       R"(["b","d","a",null])"},
+      {exec::CanonicalAggregateFunction::json_object_agg,
+       R"({"other":2.5,"tail":4,"dup":null})"},
+      {exec::CanonicalAggregateFunction::listagg, "b|d|a"},
+  };
+  for (const auto& test_case : collection_cases) {
+    auto request = CollectionRequest(test_case.function);
+    const auto serial = exec::ExecuteCanonicalAggregateRuntime(request);
+    request.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+    const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    passed &= Require(serial.diagnostic.ok &&
+                          serial.output_batch.rows[0].values[0].encoded_value ==
+                              test_case.expected &&
+                          serial.aggregate_order_applied &&
+                          serial.order_comparison_count != 0 &&
+                          serial.state_bytes != 0 &&
+                          SameScalar(serial, partitioned),
+                      "ordered collection state or merge parity failed");
+  }
+
+  auto listagg = CollectionRequest(
+      exec::CanonicalAggregateFunction::listagg);
+  const auto text_descriptor = listagg.input_batch.columns[0].descriptor;
+  listagg.input_batch.rows[0].values[0] = Value(text_descriptor, "north");
+  listagg.input_batch.rows[1].values[0] = Value(text_descriptor, "east");
+  listagg.input_batch.rows[2].values[0] = Value(text_descriptor, "south");
+  listagg.input_batch.rows[3].values[0] = Null(text_descriptor);
+  listagg.listagg_overflow_mode =
+      exec::CanonicalListaggOverflowMode::truncate;
+  listagg.listagg_max_output_bytes = 12;
+  auto collection = exec::ExecuteCanonicalAggregateRuntime(listagg);
+  passed &= Require(collection.diagnostic.ok &&
+                        collection.output_batch.rows[0].values[0]
+                                .encoded_value == "east|...(2)",
+                    "LISTAGG truncation did not preserve ordered boundaries");
+
+  listagg.listagg_overflow_mode = exec::CanonicalListaggOverflowMode::error;
+  collection = exec::ExecuteCanonicalAggregateRuntime(listagg);
+  passed &= Require(!collection.diagnostic.ok &&
+                        collection.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1",
+                    "LISTAGG overflow error did not fail atomically");
+
+  auto missing_order = CollectionRequest(
+      exec::CanonicalAggregateFunction::array_agg);
+  missing_order.aggregate_order_terms.clear();
+  collection = exec::ExecuteCanonicalAggregateRuntime(missing_order);
+  passed &= Require(!collection.diagnostic.ok &&
+                        collection.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-ORDER-V1",
+                    "ordered collection aggregate accepted missing order");
+
+  auto bounded_collection = CollectionRequest(
+      exec::CanonicalAggregateFunction::json_agg);
+  bounded_collection.maximum_state_bytes = 1;
+  collection = exec::ExecuteCanonicalAggregateRuntime(bounded_collection);
+  passed &= Require(!collection.diagnostic.ok &&
+                        collection.diagnostic.diagnostic_code ==
+                            "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+                        collection.output_batch.rows.empty(),
+                    "collection state exceeded its byte bound");
+
+  auto null_key = CollectionRequest(
+      exec::CanonicalAggregateFunction::json_object_agg);
+  null_key.input_batch.rows[0].values[0] =
+      Null(null_key.input_batch.columns[0].descriptor);
+  collection = exec::ExecuteCanonicalAggregateRuntime(null_key);
+  passed &= Require(!collection.diagnostic.ok &&
+                        collection.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-JSON-KEY-V1",
+                    "JSON object aggregate accepted a NULL key");
+
   auto sum_request = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                              "int64");
   sum_request.distinct = true;
@@ -456,9 +570,9 @@ bool ValidateCanonicalAggregateRegistry() {
 
   auto unavailable = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                              "int64");
-  const auto& array_entry = Entry(exec::CanonicalAggregateFunction::array_agg);
-  unavailable.descriptor = {array_entry.abi_version, array_entry.function,
-                            array_entry.builtin_id, array_entry.function_uuid,
+  const auto& rank_entry = Entry(exec::CanonicalAggregateFunction::rank);
+  unavailable.descriptor = {rank_entry.abi_version, rank_entry.function,
+                            rank_entry.builtin_id, rank_entry.function_uuid,
                             false};
   refusal = exec::ExecuteCanonicalAggregateRuntime(unavailable);
   passed &= Require(!refusal.diagnostic.ok &&

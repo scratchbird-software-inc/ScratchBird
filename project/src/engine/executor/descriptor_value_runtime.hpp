@@ -1082,6 +1082,12 @@ enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   partitioned_combine,
 };
 
+enum class CanonicalListaggOverflowMode : std::uint8_t {
+  none = 0,
+  error,
+  truncate,
+};
+
 struct CanonicalAggregateRegistryEntry {
   std::uint16_t abi_version = 0;
   CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
@@ -1112,10 +1118,18 @@ struct CanonicalAggregateRuntimeRequest {
       filter_truth_values;
   bool distinct = false;
   std::vector<CanonicalDescriptorOrderTerm> aggregate_order_terms;
+  std::string aggregate_separator = ",";
+  CanonicalListaggOverflowMode listagg_overflow_mode =
+      CanonicalListaggOverflowMode::none;
+  std::size_t listagg_max_output_bytes = 0;
+  std::string listagg_truncation_indicator = "...";
+  bool listagg_with_count = true;
   CanonicalAggregateExecutionStrategy forced_strategy =
       CanonicalAggregateExecutionStrategy::serial;
   std::size_t maximum_transition_count = 1048576;
   std::size_t maximum_distinct_value_count = 1048576;
+  std::size_t maximum_order_comparison_count = 1048576;
+  std::size_t maximum_state_bytes = 16777216;
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
@@ -1132,8 +1146,11 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t transition_count = 0;
   std::size_t non_null_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
+  std::size_t order_comparison_count = 0;
+  std::size_t state_bytes = 0;
   bool every_descriptor_field_consumed = false;
   bool filter_applied_before_distinct = false;
+  bool aggregate_order_applied = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
