@@ -5674,6 +5674,10 @@ bool ParseRelationRowUuid(const std::string& row_uuid,
 
 api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
     const SblrDispatchRequest& request) {
+  // QOW-SOURCE-WIN-001-V1
+  // The legacy adapter preserves explicit input only. Missing function and
+  // operand fields remain missing so downstream refusal cannot silently select
+  // ROW_NUMBER, bucket one, or another substitute implementation.
   api::EnginePlanOperationRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
@@ -5709,7 +5713,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   typed.order_column = DispatchOptionU64(base, "order_column:");
   typed.order_field = api::SecurityOptionValue(base, "order_by:");
   typed.window_function = api::SecurityOptionValue(base, "window_function:");
-  if (typed.window_function.empty()) typed.window_function = "row_number";
   typed.window_value_column = DispatchOptionU64(base, "window_value_column:");
   typed.window_value_field = api::SecurityOptionValue(base, "window_value_field:");
   typed.partition_key_column = DispatchOptionU64(base, "partition_column:");
@@ -5719,7 +5722,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   }
   typed.window_n = DispatchOptionU64(base, "window_n:");
   if (typed.window_n == 0) typed.window_n = DispatchOptionU64(base, "window_bucket_count:");
-  if (typed.window_n == 0) typed.window_n = 1;
   typed.limit = DispatchOptionU64(base, "limit:");
   typed.offset = DispatchOptionU64(base, "offset:");
 

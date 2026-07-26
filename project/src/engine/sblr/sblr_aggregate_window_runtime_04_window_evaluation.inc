@@ -152,6 +152,15 @@
 
 SblrResult EvaluateLegacySblrWindowFunction(
     const LegacySblrWindowFunctionRequest& request) {
+  auto retired = MakeSblrRefusalDiagnostic(
+      "QOW-DIAG-WINDOW-LEGACY-RUNTIME-REFUSED-V1", request.context,
+      "the index/sentinel window evaluator is retired; use the canonical "
+      "descriptor-driven physical window runtime");
+  retired.fields.push_back({"function_id", request.function_id});
+  retired.fields.push_back({"function_uuid", request.function_uuid});
+  return MakeSblrFailure(SblrStatusCode::unsupported_feature,
+                         request.function_id, std::move(retired));
+#if 0
   const auto kind = ResolveSblrWindowFunctionKind(request.function_id);
   if (kind == SblrWindowFunctionKind::unknown) {
     auto diagnostic = MakeSblrRefusalDiagnostic("SB_DIAG_WINDOW_FUNCTION_UNSUPPORTED",
@@ -415,6 +424,7 @@ SblrResult EvaluateLegacySblrWindowFunction(
                                               "window function evaluation reached an impossible state");
   diagnostic.fields.push_back({"function_id", request.function_id});
   return MakeSblrFailure(SblrStatusCode::internal_error, request.function_id, std::move(diagnostic));
+#endif
 }
 
 SblrResult RefuseSblrAggregateWindowRuntime(const SblrExecutionContext& context,

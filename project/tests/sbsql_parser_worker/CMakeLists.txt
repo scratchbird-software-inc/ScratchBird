@@ -786,6 +786,35 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-015-COMPOSITION;development_candidate"
   )
 
+  # QOW-CMAKE-WIN-001-V1
+  add_executable(qow_win_001_test_v1 qow_win_001.cpp)
+  target_compile_features(qow_win_001_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_001_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_001_v1 COMMAND qow_win_001_test_v1)
+  set_tests_properties(qow_win_001_v1 PROPERTIES
+    LABELS "qow_closure;QOW-406;QOW-LEAF-WIN-001;development_candidate"
+  )
+
+  # QOW-CMAKE-WIN-002-V1
+  add_executable(qow_win_002_test_v1 qow_win_002.cpp)
+  target_compile_features(qow_win_002_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_002_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_002_v1 COMMAND qow_win_002_test_v1)
+  set_tests_properties(qow_win_002_v1 PROPERTIES
+    LABELS "qow_closure;QOW-406;QOW-LEAF-WIN-002;development_candidate"
+  )
+
+  # QOW-CMAKE-IAS-005-V1
+  add_executable(qow_ias_005_test_v1 qow_ias_005.cpp)
+  target_compile_features(qow_ias_005_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_ias_005_test_v1 PRIVATE
+    sb_qow_relational_dag_contract
+  )
+  add_test(NAME qow_ias_005_v1 COMMAND qow_ias_005_test_v1)
+  set_tests_properties(qow_ias_005_v1 PROPERTIES
+    LABELS "qow_closure;QOW-406;QOW-LEAF-IAS-005;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -343,6 +344,17 @@ struct CanonicalSeededSampleResult {
 CanonicalSeededSampleResult ExecuteCanonicalSeededSample(
     const CanonicalSeededSampleRequest& request);
 
+struct CanonicalLegacyWindowRouteDisposition {
+  bool applies = false;
+  bool accepted = false;
+  std::string diagnostic_code;
+  std::string detail;
+};
+
+CanonicalLegacyWindowRouteDisposition
+RefuseNoncanonicalLegacyWindowRoute(std::string_view operation,
+                                    std::string_view result_projection);
+
 struct EnginePlanOperationRequest : EngineApiRequest {
   bool execute = false;
   std::string query_operation;
@@ -364,12 +376,12 @@ struct EnginePlanOperationRequest : EngineApiRequest {
   std::string aggregate_function = "sum";
   std::size_t order_column = 0;
   std::string order_field;
-  std::string window_function = "row_number";
+  std::string window_function;
   std::size_t window_value_column = 0;
   std::string window_value_field;
   std::size_t partition_key_column = 0;
   std::string partition_key_field;
-  EngineApiU64 window_n = 1;
+  EngineApiU64 window_n = 0;
   EngineApiU64 limit = 0;
   EngineApiU64 offset = 0;
   bool ascending = true;

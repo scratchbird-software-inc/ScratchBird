@@ -23,6 +23,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-015-V1
   # QOW-CMAKE-OPT-008-V1
   # QOW-CMAKE-OPT-015-V1
+  # QOW-CMAKE-IAS-005-V1
   if(NOT TARGET sb_engine_executor)
     add_subdirectory(
       ${CMAKE_CURRENT_SOURCE_DIR}/../executor

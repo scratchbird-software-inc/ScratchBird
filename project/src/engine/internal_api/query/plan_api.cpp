@@ -1037,6 +1037,32 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   return result;
 }
 
+// QOW-SOURCE-IAS-005-V1
+// The former typed-prefix and materialized-window assertion branches are not a
+// product window ABI.  They are refused before relation materialization so
+// only the descriptor-driven executor runtime may own window semantics.
+CanonicalLegacyWindowRouteDisposition
+RefuseNoncanonicalLegacyWindowRoute(const std::string_view operation,
+                                    const std::string_view result_projection) {
+  CanonicalLegacyWindowRouteDisposition disposition;
+  disposition.applies =
+      operation == "window" || operation == "row_number_window" ||
+      operation == "partition_count_window" || operation == "lag_window" ||
+      operation == "lead_window" || operation == "first_value_window" ||
+      operation == "last_value_window" || operation == "ntile_window" ||
+      operation == "percent_rank_window" || operation == "cume_dist_window" ||
+      operation == "nth_value_window" ||
+      (operation == "materialized_cte" &&
+       result_projection == "window_assertion");
+  if (!disposition.applies) return disposition;
+  disposition.diagnostic_code =
+      "QOW-DIAG-IAS-005-NONCANONICAL-WINDOW-ROUTE-V1";
+  disposition.detail =
+      "route-specific window result helpers were removed; canonical window "
+      "execution requires the descriptor-driven physical runtime";
+  return disposition;
+}
+
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
 namespace {
 
@@ -4084,7 +4110,12 @@ EngineResultShape MaterializedWindowAssertionShape(const EnginePlanOperationRequ
 
   std::string function = LowerAscii(OptionValue(request, "window_function:"));
   if (function.empty()) function = LowerAscii(request.window_function);
-  if (function.empty()) function = "row_number";
+  if (function.empty()) {
+    if (error_detail != nullptr) {
+      *error_detail = "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR";
+    }
+    return {};
+  }
 
   std::string order_field = OptionValue(request, "window_order_field:");
   if (order_field.empty()) order_field = OptionValue(request, "order_by:");
@@ -4179,7 +4210,7 @@ EngineResultShape MaterializedWindowAssertionShape(const EnginePlanOperationRequ
       actuals[index] = Real64Value(value);
     } else if (function == "ntile") {
       const std::size_t row_count = rows.size();
-      const std::size_t bucket_count = std::max<std::size_t>(1, n);
+      const std::size_t bucket_count = n;
       const std::size_t base_size = row_count / bucket_count;
       const std::size_t larger_bucket_count = row_count % bucket_count;
       std::size_t bucket = 1;
@@ -7078,7 +7109,7 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
             ? request.window_value_column
             : ColumnIndexForRelation(relations[0], request.window_value_field, request.window_value_column);
     std::string function = LowerAscii(request.window_function);
-    if (function.empty() || function == "row_number_window") function = "row_number";
+    if (function == "row_number_window") function = "row_number";
     if (operation == "partition_count_window") function = "count_star_partition";
     if (operation == "lag_window") function = "lag";
     if (operation == "lead_window") function = "lead";
@@ -7111,9 +7142,13 @@ exec::Batch ExecuteQueryBatch(const EnginePlanOperationRequest& request,
       batch = exec::AddFirstValueWindow(batch, order_column, value_column);
     } else if (function == "last_value") {
       batch = exec::AddLastValueWindow(batch, order_column, value_column);
-    } else {
-      function = "row_number";
+    } else if (function == "row_number") {
       batch = exec::AddRowNumberWindow(batch, order_column);
+    } else {
+      if (error_detail != nullptr) {
+        *error_detail = "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR";
+      }
+      return exec::MakeBatch("query_plan_window_invalid", {});
     }
     evidence->push_back({"query_window", function});
   } else if (operation == "cte" || operation == "materialized_cte") {
@@ -7361,6 +7396,12 @@ EnginePlanOperationResult EnginePlanOperationUncachedImpl(const EnginePlanOperat
   AddSbsfc085Evidence(&result, request);
   if (request.execute || OptionValue(request, "execute:") == "true") {
     const std::string operation = QueryOperation(request);
+    const auto legacy_window = RefuseNoncanonicalLegacyWindowRoute(
+        operation, LowerAscii(OptionValue(request, "result_projection:")));
+    if (legacy_window.applies) {
+      return QueryFailure<EnginePlanOperationResult>(
+          request.context, legacy_window.diagnostic_code);
+    }
     if (CountFastPathCanUseTargetRows(request, operation)) {
       return ExecuteFastCrudCount(request, operation);
     }

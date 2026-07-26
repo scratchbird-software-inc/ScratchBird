@@ -4260,6 +4260,196 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   return result;
 }
 
+std::vector<CanonicalWindowRuntimeDescriptor>
+CanonicalWindowRuntimeRegistryV1() {
+  return {
+      {1, CanonicalWindowRuntimeFunction::row_number,
+       "sb.window.row_number", "019de5fc-2400-7539-bcce-00eef3ae7220"},
+      {1, CanonicalWindowRuntimeFunction::rank,
+       "sb.window.rank", "019de5fc-2400-7b94-870d-0dd789ca70ab"},
+      {1, CanonicalWindowRuntimeFunction::dense_rank,
+       "sb.window.dense_rank", "019de5fc-2400-741d-bef0-f079fd3ba494"},
+      {1, CanonicalWindowRuntimeFunction::percent_rank,
+       "sb.window.percent_rank", "019de5fc-2400-7d86-86fe-96f3f27b5dd6"},
+      {1, CanonicalWindowRuntimeFunction::cume_dist,
+       "sb.window.cume_dist", "019de5fc-2400-721c-be64-2568b64a02b9"},
+      {1, CanonicalWindowRuntimeFunction::ntile,
+       "sb.window.ntile", "019de5fc-2400-7047-9474-232ca488c094"},
+      {1, CanonicalWindowRuntimeFunction::lag,
+       "sb.window.lag", "019de5fc-2400-782c-8436-9ac310301738"},
+      {1, CanonicalWindowRuntimeFunction::lead,
+       "sb.window.lead", "019de5fc-2400-7a06-bc3c-6747cf5be66f"},
+      {1, CanonicalWindowRuntimeFunction::first_value,
+       "sb.window.first_value", "019de5fc-2400-7264-90fb-d25bd0f806f2"},
+      {1, CanonicalWindowRuntimeFunction::last_value,
+       "sb.window.last_value", "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec"},
+      {1, CanonicalWindowRuntimeFunction::nth_value,
+       "sb.window.nth_value", "019de5fc-2400-7dc9-80e6-9f2ccf08076f"},
+      {1, CanonicalWindowRuntimeFunction::int64_sum,
+       "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777"},
+  };
+}
+
+// QOW-SOURCE-WIN-002-V1
+// Every accepted runtime descriptor selects exactly one retained canonical
+// strategy.  The descriptor ABI, enum, builtin id, and UUID must match one
+// registry row; missing or unknown state cannot select ROW_NUMBER, SUM, zero,
+// or another substitute.  The class-specific helpers remain implementation
+// strategies only and are production-reachable through this entry point.
+CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
+    const CanonicalWindowRuntimeRequest& request) {
+  CanonicalWindowRuntimeResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+  const auto registry = CanonicalWindowRuntimeRegistryV1();
+  const auto registry_row = std::ranges::find_if(
+      registry, [&](const CanonicalWindowRuntimeDescriptor& row) {
+        return row.function == request.descriptor.function;
+      });
+  if (request.descriptor.abi_version != 1 ||
+      request.descriptor.function == CanonicalWindowRuntimeFunction::unknown ||
+      request.descriptor.builtin_id.empty() ||
+      !IsCanonicalUuid(request.descriptor.function_uuid) ||
+      registry_row == registry.end() ||
+      registry_row->abi_version != request.descriptor.abi_version ||
+      registry_row->builtin_id != request.descriptor.builtin_id ||
+      registry_row->function_uuid != request.descriptor.function_uuid) {
+    return refuse("QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
+                  "window runtime descriptor is missing, unknown, malformed, or registry-drifted");
+  }
+
+  CanonicalWindowRuntimeStrategy expected_strategy =
+      CanonicalWindowRuntimeStrategy::unknown;
+  std::optional<CanonicalWindowRankingFunction> expected_ranking;
+  std::optional<CanonicalWindowValueFunction> expected_value;
+  switch (request.descriptor.function) {
+    case CanonicalWindowRuntimeFunction::row_number:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::row_number;
+      break;
+    case CanonicalWindowRuntimeFunction::rank:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::rank;
+      break;
+    case CanonicalWindowRuntimeFunction::dense_rank:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::dense_rank;
+      break;
+    case CanonicalWindowRuntimeFunction::percent_rank:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::percent_rank;
+      break;
+    case CanonicalWindowRuntimeFunction::cume_dist:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::cume_dist;
+      break;
+    case CanonicalWindowRuntimeFunction::ntile:
+      expected_strategy = CanonicalWindowRuntimeStrategy::ranking;
+      expected_ranking = CanonicalWindowRankingFunction::ntile;
+      break;
+    case CanonicalWindowRuntimeFunction::lag:
+      expected_strategy = CanonicalWindowRuntimeStrategy::value;
+      expected_value = CanonicalWindowValueFunction::lag;
+      break;
+    case CanonicalWindowRuntimeFunction::lead:
+      expected_strategy = CanonicalWindowRuntimeStrategy::value;
+      expected_value = CanonicalWindowValueFunction::lead;
+      break;
+    case CanonicalWindowRuntimeFunction::first_value:
+      expected_strategy = CanonicalWindowRuntimeStrategy::value;
+      expected_value = CanonicalWindowValueFunction::first_value;
+      break;
+    case CanonicalWindowRuntimeFunction::last_value:
+      expected_strategy = CanonicalWindowRuntimeStrategy::value;
+      expected_value = CanonicalWindowValueFunction::last_value;
+      break;
+    case CanonicalWindowRuntimeFunction::nth_value:
+      expected_strategy = CanonicalWindowRuntimeStrategy::value;
+      expected_value = CanonicalWindowValueFunction::nth_value;
+      break;
+    case CanonicalWindowRuntimeFunction::int64_sum:
+      expected_strategy = CanonicalWindowRuntimeStrategy::aggregate;
+      break;
+    case CanonicalWindowRuntimeFunction::unknown:
+      break;
+  }
+  if (expected_strategy == CanonicalWindowRuntimeStrategy::unknown ||
+      (request.forced_strategy.has_value() &&
+       (*request.forced_strategy == CanonicalWindowRuntimeStrategy::unknown ||
+        *request.forced_strategy != expected_strategy))) {
+    return refuse("QOW-DIAG-WINDOW-STRATEGY",
+                  "forced window strategy does not match the registry function class");
+  }
+  const auto payload_count = static_cast<unsigned>(request.ranking.has_value()) +
+                             static_cast<unsigned>(request.value.has_value()) +
+                             static_cast<unsigned>(request.aggregate.has_value());
+  if (payload_count != 1 ||
+      (expected_strategy == CanonicalWindowRuntimeStrategy::ranking) !=
+          request.ranking.has_value() ||
+      (expected_strategy == CanonicalWindowRuntimeStrategy::value) !=
+          request.value.has_value() ||
+      (expected_strategy == CanonicalWindowRuntimeStrategy::aggregate) !=
+          request.aggregate.has_value()) {
+    return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                  "window runtime requires exactly one class-matching strategy payload");
+  }
+
+  const auto publish = [&](const auto& strategy_result) {
+    result.diagnostic = strategy_result.diagnostic;
+    if (!result.diagnostic.ok) {
+      result.values.clear();
+      return false;
+    }
+    result.values = strategy_result.values;
+    result.authority = strategy_result.authority;
+    result.window_property_uuid = strategy_result.window_property_uuid;
+    result.selected_plan_uuid = strategy_result.selected_plan_uuid;
+    result.executed_physical_node_id =
+        strategy_result.executed_physical_node_id;
+    result.causal_counter_id = strategy_result.causal_counter_id;
+    return true;
+  };
+  if (expected_strategy == CanonicalWindowRuntimeStrategy::ranking) {
+    if (!expected_ranking.has_value() ||
+        request.ranking->function != *expected_ranking ||
+        request.ranking->function_uuid != request.descriptor.function_uuid) {
+      return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                    "ranking payload does not match the runtime descriptor");
+    }
+    if (!publish(ExecuteCanonicalWindowRanking(*request.ranking))) return result;
+  } else if (expected_strategy == CanonicalWindowRuntimeStrategy::value) {
+    if (!expected_value.has_value() ||
+        request.value->function != *expected_value ||
+        request.value->function_uuid != request.descriptor.function_uuid) {
+      return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                    "value payload does not match the runtime descriptor");
+    }
+    if (!publish(ExecuteCanonicalWindowValue(*request.value))) return result;
+  } else {
+    if (request.aggregate->function !=
+            CanonicalWindowAggregateFunction::int64_sum ||
+        request.aggregate->function_uuid != request.descriptor.function_uuid) {
+      return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                    "aggregate payload does not match the runtime descriptor");
+    }
+    if (!publish(ExecuteCanonicalWindowAggregate(*request.aggregate))) {
+      return result;
+    }
+  }
+
+  result.descriptor = request.descriptor;
+  result.executed_strategy = expected_strategy;
+  result.every_descriptor_field_consumed = true;
+  result.exactly_one_strategy_payload_consumed = true;
+  result.retained_strategy_reached = true;
+  return result;
+}
+
 // QOW-SOURCE-WIN-015-MULTIPLE-V1
 // QOW-SOURCE-WIN-015-QUALIFY-V1
 // QOW-SOURCE-WIN-015-COMPOSITION-V1

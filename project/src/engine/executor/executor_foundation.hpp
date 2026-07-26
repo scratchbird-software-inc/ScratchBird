@@ -187,6 +187,61 @@ struct CanonicalWindowAggregateResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalWindowRuntimeFunction : std::uint8_t {
+  unknown = 0,
+  row_number,
+  rank,
+  dense_rank,
+  percent_rank,
+  cume_dist,
+  ntile,
+  lag,
+  lead,
+  first_value,
+  last_value,
+  nth_value,
+  int64_sum,
+};
+
+enum class CanonicalWindowRuntimeStrategy : std::uint8_t {
+  unknown = 0,
+  ranking,
+  value,
+  aggregate,
+};
+
+struct CanonicalWindowRuntimeDescriptor {
+  std::uint16_t abi_version = 0;
+  CanonicalWindowRuntimeFunction function =
+      CanonicalWindowRuntimeFunction::unknown;
+  std::string builtin_id;
+  std::string function_uuid;
+};
+
+struct CanonicalWindowRuntimeRequest {
+  CanonicalWindowRuntimeDescriptor descriptor;
+  std::optional<CanonicalWindowRankingRequest> ranking;
+  std::optional<CanonicalWindowValueRequest> value;
+  std::optional<CanonicalWindowAggregateRequest> aggregate;
+  std::optional<CanonicalWindowRuntimeStrategy> forced_strategy;
+};
+
+struct CanonicalWindowRuntimeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalWindowRuntimeDescriptor descriptor;
+  CanonicalWindowRuntimeStrategy executed_strategy =
+      CanonicalWindowRuntimeStrategy::unknown;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  bool every_descriptor_field_consumed = false;
+  bool exactly_one_strategy_payload_consumed = false;
+  bool retained_strategy_reached = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string window_property_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 enum class CanonicalQueryEvaluationStage : std::uint8_t {
   from = 1,
   where,
@@ -284,6 +339,10 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
     const CanonicalWindowValueRequest& request);
 CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
     const CanonicalWindowAggregateRequest& request);
+std::vector<CanonicalWindowRuntimeDescriptor>
+CanonicalWindowRuntimeRegistryV1();
+CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
+    const CanonicalWindowRuntimeRequest& request);
 CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
     const CanonicalWindowCompositionRequest& request);
 Batch MaterializeCte(const Batch& input);

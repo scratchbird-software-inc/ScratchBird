@@ -45,8 +45,11 @@ add_library(sb_engine_sblr
   # QOW-CMAKE-WIN-013-V1
   # QOW-CMAKE-IAS-004-V1
   # QOW-CMAKE-WIN-006-V1
+  # QOW-CMAKE-WIN-001-V1
+  # QOW-CMAKE-WIN-002-V1
   # The index/sentinel evaluator below is compatibility-only. Canonical frame
-  # construction enters through the linked sb_engine_executor target.
+  # construction enters through the linked sb_engine_executor target, and the
+  # legacy evaluator is a compiled default-refusal only.
   sblr_aggregate_window_runtime.cpp
   sblr_api_trace.cpp
   sblr_assignment_runtime.cpp
