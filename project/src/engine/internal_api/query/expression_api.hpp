@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -19,6 +20,70 @@ namespace scratchbird::engine::internal_api {
 struct EngineBindExpressionRequest : EngineApiRequest {};
 struct EngineBindExpressionResult : EngineApiResult {};
 EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionRequest& request);
+
+enum class EngineSqlTruthValue : std::uint8_t {
+  unspecified = 0,
+  false_value,
+  true_value,
+  unknown,
+};
+
+enum class EngineComparisonPredicateOperator : std::uint8_t {
+  unspecified = 0,
+  equal,
+  not_equal,
+  less_than,
+  less_than_or_equal,
+  greater_than,
+  greater_than_or_equal,
+  is_null,
+  is_not_null,
+  logical_not,
+  logical_and,
+  logical_or,
+};
+
+enum class EnginePredicateConsumer : std::uint8_t {
+  unspecified = 0,
+  filter,
+  join_on,
+  having,
+  qualify,
+};
+
+const char* EngineSqlTruthValueName(EngineSqlTruthValue value) noexcept;
+bool QowCanonicalTruthValueV1(EngineSqlTruthValue value) noexcept;
+EngineSqlTruthValue QowSqlNotV1(EngineSqlTruthValue value) noexcept;
+EngineSqlTruthValue QowSqlAndV1(EngineSqlTruthValue left,
+                                EngineSqlTruthValue right) noexcept;
+EngineSqlTruthValue QowSqlOrV1(EngineSqlTruthValue left,
+                               EngineSqlTruthValue right) noexcept;
+bool QowEvaluateCanonicalComparisonTruthV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    int comparison,
+    EngineComparisonPredicateOperator operation,
+    EngineSqlTruthValue* truth_value,
+    std::string* refusal_detail);
+bool QowEvaluateCanonicalNullPredicateV1(
+    const EngineTypedValue& value,
+    bool negate,
+    EngineSqlTruthValue* truth_value,
+    std::string* refusal_detail);
+bool QowCompareCanonicalNonCollatedScalarsV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    int* comparison,
+    std::string* refusal_detail);
+bool QowMaterializeCanonicalTruthValueV1(
+    EngineSqlTruthValue truth_value,
+    const EngineDescriptor& result_descriptor,
+    EngineTypedValue* output_value,
+    std::string* refusal_detail);
+bool QowPredicateConsumerPassesV1(EngineSqlTruthValue truth_value,
+                                  EnginePredicateConsumer consumer,
+                                  bool* passes,
+                                  std::string* refusal_detail);
 
 struct EngineCastValueRequest : EngineApiRequest {
   EngineTypedValue input_value;

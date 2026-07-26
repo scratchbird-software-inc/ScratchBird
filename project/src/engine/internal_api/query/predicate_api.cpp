@@ -8,15 +8,192 @@
 
 #include "query/predicate_api.hpp"
 
+#include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "datatype_operations.hpp"
+
+#include <string>
+#include <utility>
 
 namespace scratchbird::engine::internal_api {
+namespace {
+
+const char* PredicateConsumerName(const EnginePredicateConsumer consumer) {
+  switch (consumer) {
+    case EnginePredicateConsumer::filter:
+      return "filter";
+    case EnginePredicateConsumer::join_on:
+      return "join_on";
+    case EnginePredicateConsumer::having:
+      return "having";
+    case EnginePredicateConsumer::qualify:
+      return "qualify";
+    case EnginePredicateConsumer::unspecified:
+      return "unspecified";
+  }
+  return "invalid";
+}
+
+const char* PredicateOperatorName(
+    const EngineComparisonPredicateOperator operation) {
+  switch (operation) {
+    case EngineComparisonPredicateOperator::equal:
+      return "equal";
+    case EngineComparisonPredicateOperator::not_equal:
+      return "not_equal";
+    case EngineComparisonPredicateOperator::less_than:
+      return "less_than";
+    case EngineComparisonPredicateOperator::less_than_or_equal:
+      return "less_than_or_equal";
+    case EngineComparisonPredicateOperator::greater_than:
+      return "greater_than";
+    case EngineComparisonPredicateOperator::greater_than_or_equal:
+      return "greater_than_or_equal";
+    case EngineComparisonPredicateOperator::is_null:
+      return "is_null";
+    case EngineComparisonPredicateOperator::is_not_null:
+      return "is_not_null";
+    case EngineComparisonPredicateOperator::logical_not:
+      return "logical_not";
+    case EngineComparisonPredicateOperator::logical_and:
+      return "logical_and";
+    case EngineComparisonPredicateOperator::logical_or:
+      return "logical_or";
+    case EngineComparisonPredicateOperator::unspecified:
+      return "unspecified";
+  }
+  return "invalid";
+}
+
+}  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PREDICATE_API_BEHAVIOR
 EngineBindPredicateResult EngineBindPredicate(const EngineBindPredicateRequest& request) {
   auto result = MakeApiBehaviorSuccess<EngineBindPredicateResult>(request.context, "query.bind_predicate");
   AddApiBehaviorEvidence(&result, "query_binding", "predicate");
   AddApiBehaviorRow(&result, {{"predicate_kind", request.predicate.predicate_kind}, {"predicate_envelope", request.predicate.canonical_predicate_envelope}, {"bound_value_count", std::to_string(request.predicate.bound_values.size())}});
+  return result;
+}
+
+// QOW-CONSUMER-QRY-017-V1
+EngineEvaluatePredicateResult EngineEvaluatePredicate(
+    const EngineEvaluatePredicateRequest& request) {
+  constexpr const char* kOperation = "query.evaluate_predicate";
+  const auto refuse = [&](std::string detail) {
+    return MakeApiBehaviorDiagnostic<EngineEvaluatePredicateResult>(
+        request.context,
+        kOperation,
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+            "engine.query.typed_predicate_refused", std::move(detail)));
+  };
+
+  EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
+  int comparison = 0;
+  std::string refusal_detail;
+  switch (request.predicate_operator) {
+    case EngineComparisonPredicateOperator::logical_not:
+      if (!QowCanonicalTruthValueV1(request.left_truth)) {
+        return refuse("logical NOT input is not a canonical truth value");
+      }
+      truth = QowSqlNotV1(request.left_truth);
+      break;
+    case EngineComparisonPredicateOperator::logical_and:
+      if (!QowCanonicalTruthValueV1(request.left_truth) ||
+          !QowCanonicalTruthValueV1(request.right_truth)) {
+        return refuse("logical AND input is not a canonical truth value");
+      }
+      truth = QowSqlAndV1(request.left_truth, request.right_truth);
+      break;
+    case EngineComparisonPredicateOperator::logical_or:
+      if (!QowCanonicalTruthValueV1(request.left_truth) ||
+          !QowCanonicalTruthValueV1(request.right_truth)) {
+        return refuse("logical OR input is not a canonical truth value");
+      }
+      truth = QowSqlOrV1(request.left_truth, request.right_truth);
+      break;
+    case EngineComparisonPredicateOperator::is_null:
+    case EngineComparisonPredicateOperator::is_not_null:
+      if (!QowEvaluateCanonicalNullPredicateV1(
+              request.left_value,
+              request.predicate_operator ==
+                  EngineComparisonPredicateOperator::is_not_null,
+              &truth, &refusal_detail)) {
+        return refuse(std::move(refusal_detail));
+      }
+      break;
+    case EngineComparisonPredicateOperator::equal:
+    case EngineComparisonPredicateOperator::not_equal:
+    case EngineComparisonPredicateOperator::less_than:
+    case EngineComparisonPredicateOperator::less_than_or_equal:
+    case EngineComparisonPredicateOperator::greater_than:
+    case EngineComparisonPredicateOperator::greater_than_or_equal: {
+      const auto type_id =
+          scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+              request.left_value.descriptor.canonical_type_name);
+      if (type_id ==
+          scratchbird::core::datatypes::CanonicalTypeId::character) {
+        EngineCompareScalarValuesRequest compare_request;
+        compare_request.context = request.context;
+        compare_request.left_value = request.left_value;
+        compare_request.right_value = request.right_value;
+        const auto compared = EngineCompareScalarValues(compare_request);
+        if (!compared.ok) {
+          const std::string detail =
+              compared.diagnostics.empty()
+                  ? "catalog-bound character comparison refused"
+                  : (compared.diagnostics.front().code + ":" +
+                     compared.diagnostics.front().detail);
+          return refuse(detail);
+        }
+        comparison = compared.comparison;
+      } else if (!request.left_value.isSqlNull() &&
+                 !request.right_value.isSqlNull() &&
+                 !QowCompareCanonicalNonCollatedScalarsV1(
+                     request.left_value, request.right_value, &comparison,
+                     &refusal_detail)) {
+        return refuse(std::move(refusal_detail));
+      }
+      if (!QowEvaluateCanonicalComparisonTruthV1(
+              request.left_value, request.right_value, comparison,
+              request.predicate_operator, &truth, &refusal_detail)) {
+        return refuse(std::move(refusal_detail));
+      }
+      break;
+    }
+    case EngineComparisonPredicateOperator::unspecified:
+    default:
+      return refuse("typed predicate operator is not bound");
+  }
+
+  EngineTypedValue materialized;
+  if (!QowMaterializeCanonicalTruthValueV1(
+          truth, request.result_descriptor, &materialized,
+          &refusal_detail)) {
+    return refuse(std::move(refusal_detail));
+  }
+  bool passes = false;
+  if (!QowPredicateConsumerPassesV1(
+          truth, request.consumer, &passes, &refusal_detail)) {
+    return refuse(std::move(refusal_detail));
+  }
+
+  auto result = MakeApiBehaviorSuccess<EngineEvaluatePredicateResult>(
+      request.context, kOperation);
+  result.truth_value = truth;
+  result.value = std::move(materialized);
+  result.comparison = comparison;
+  result.passes_consumer = passes;
+  result.result_shape.result_kind = "typed_value";
+  result.result_shape.columns.push_back(result.value.descriptor);
+  AddApiBehaviorEvidence(&result, "three_valued_runtime",
+                         "QOW-SOURCE-QRY-017-V1");
+  AddApiBehaviorEvidence(&result, "predicate_operator",
+                         PredicateOperatorName(request.predicate_operator));
+  AddApiBehaviorEvidence(&result, "predicate_consumer",
+                         PredicateConsumerName(request.consumer));
+  AddApiBehaviorEvidence(&result, "sql_truth_value",
+                         EngineSqlTruthValueName(truth));
   return result;
 }
 

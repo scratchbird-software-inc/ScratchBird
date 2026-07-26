@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "api_types.hpp"
+#include "query/expression_api.hpp"
 
 namespace scratchbird::engine::internal_api {
 
@@ -16,5 +16,26 @@ namespace scratchbird::engine::internal_api {
 struct EngineBindPredicateRequest : EngineApiRequest {};
 struct EngineBindPredicateResult : EngineApiResult {};
 EngineBindPredicateResult EngineBindPredicate(const EngineBindPredicateRequest& request);
+
+struct EngineEvaluatePredicateRequest : EngineApiRequest {
+  EngineComparisonPredicateOperator predicate_operator{
+      EngineComparisonPredicateOperator::unspecified};
+  EnginePredicateConsumer consumer{EnginePredicateConsumer::unspecified};
+  EngineTypedValue left_value;
+  EngineTypedValue right_value;
+  EngineSqlTruthValue left_truth{EngineSqlTruthValue::unspecified};
+  EngineSqlTruthValue right_truth{EngineSqlTruthValue::unspecified};
+  EngineDescriptor result_descriptor;
+};
+
+struct EngineEvaluatePredicateResult : EngineApiResult {
+  EngineSqlTruthValue truth_value{EngineSqlTruthValue::unknown};
+  EngineTypedValue value;
+  int comparison = 0;
+  bool passes_consumer = false;
+};
+
+EngineEvaluatePredicateResult EngineEvaluatePredicate(
+    const EngineEvaluatePredicateRequest& request);
 
 }  // namespace scratchbird::engine::internal_api

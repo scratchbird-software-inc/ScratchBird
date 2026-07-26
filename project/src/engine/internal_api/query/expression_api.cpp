@@ -11,6 +11,7 @@
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <limits>
@@ -105,7 +106,8 @@ EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
 
 // QOW-SOURCE-QRY-008-NULL-V1
 bool QowCanonicalSqlNullStateV1(const EngineTypedValue& value) {
-  return value.isSqlNull() && value.encoded_value.empty() &&
+  return value.state == EngineValueState::sql_null &&
+         value.encoded_value.empty() &&
          value.binary_value.empty();
 }
 
@@ -440,6 +442,392 @@ bool QowApplyCanonicalNumericScalarV1(
                             : EngineValueState::value;
   *output_value = QowPropagateSqlNullAfterScalarV1(
       result_descriptor, std::move(*output_value));
+  return true;
+}
+
+// QOW-SOURCE-QRY-017-V1
+const char* EngineSqlTruthValueName(const EngineSqlTruthValue value) noexcept {
+  switch (value) {
+    case EngineSqlTruthValue::unspecified:
+      return "unspecified";
+    case EngineSqlTruthValue::false_value:
+      return "false";
+    case EngineSqlTruthValue::true_value:
+      return "true";
+    case EngineSqlTruthValue::unknown:
+      return "unknown";
+  }
+  return "invalid";
+}
+
+bool QowCanonicalTruthValueV1(const EngineSqlTruthValue value) noexcept {
+  return value == EngineSqlTruthValue::false_value ||
+         value == EngineSqlTruthValue::true_value ||
+         value == EngineSqlTruthValue::unknown;
+}
+
+EngineSqlTruthValue QowSqlNotV1(const EngineSqlTruthValue value) noexcept {
+  if (value == EngineSqlTruthValue::true_value) {
+    return EngineSqlTruthValue::false_value;
+  }
+  if (value == EngineSqlTruthValue::false_value) {
+    return EngineSqlTruthValue::true_value;
+  }
+  return EngineSqlTruthValue::unknown;
+}
+
+EngineSqlTruthValue QowSqlAndV1(const EngineSqlTruthValue left,
+                                const EngineSqlTruthValue right) noexcept {
+  if (left == EngineSqlTruthValue::false_value ||
+      right == EngineSqlTruthValue::false_value) {
+    return EngineSqlTruthValue::false_value;
+  }
+  if (left == EngineSqlTruthValue::true_value) return right;
+  if (right == EngineSqlTruthValue::true_value) return left;
+  return EngineSqlTruthValue::unknown;
+}
+
+EngineSqlTruthValue QowSqlOrV1(const EngineSqlTruthValue left,
+                               const EngineSqlTruthValue right) noexcept {
+  if (left == EngineSqlTruthValue::true_value ||
+      right == EngineSqlTruthValue::true_value) {
+    return EngineSqlTruthValue::true_value;
+  }
+  if (left == EngineSqlTruthValue::false_value) return right;
+  if (right == EngineSqlTruthValue::false_value) return left;
+  return EngineSqlTruthValue::unknown;
+}
+
+bool QowEvaluateCanonicalComparisonTruthV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    const int comparison,
+    const EngineComparisonPredicateOperator operation,
+    EngineSqlTruthValue* truth_value,
+    std::string* refusal_detail) {
+  if (truth_value == nullptr || refusal_detail == nullptr) return false;
+  *truth_value = EngineSqlTruthValue::unknown;
+  refusal_detail->clear();
+  if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
+      !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
+      left_value.descriptor.descriptor_kind != "scalar" ||
+      right_value.descriptor.descriptor_kind != "scalar" ||
+      left_value.descriptor.canonical_type_name !=
+          right_value.descriptor.canonical_type_name) {
+    *refusal_detail =
+        "comparison operands do not share a canonical scalar type";
+    return false;
+  }
+  const auto comparison_type =
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+          left_value.descriptor.canonical_type_name);
+  if (comparison_type ==
+      scratchbird::core::datatypes::CanonicalTypeId::unknown) {
+    *refusal_detail = "comparison operand type is unknown";
+    return false;
+  }
+  if (comparison_type ==
+      scratchbird::core::datatypes::CanonicalTypeId::character) {
+    const std::string left_collation = QowCanonicalDescriptorFieldV1(
+        left_value.descriptor.encoded_descriptor, "collation_uuid");
+    const std::string right_collation = QowCanonicalDescriptorFieldV1(
+        right_value.descriptor.encoded_descriptor, "collation_uuid");
+    if (!QowCanonicalUuidV1(left_collation) ||
+        left_collation != right_collation) {
+      *refusal_detail =
+          "character comparison descriptors have mismatched collation authority";
+      return false;
+    }
+  }
+  if ((left_value.isSqlNull() &&
+       !QowCanonicalSqlNullStateV1(left_value)) ||
+      (right_value.isSqlNull() &&
+       !QowCanonicalSqlNullStateV1(right_value))) {
+    *refusal_detail = "SQL NULL predicate operand carries substitute payload";
+    return false;
+  }
+  switch (operation) {
+    case EngineComparisonPredicateOperator::equal:
+    case EngineComparisonPredicateOperator::not_equal:
+    case EngineComparisonPredicateOperator::less_than:
+    case EngineComparisonPredicateOperator::less_than_or_equal:
+    case EngineComparisonPredicateOperator::greater_than:
+    case EngineComparisonPredicateOperator::greater_than_or_equal:
+      break;
+    default:
+      *refusal_detail = "comparison predicate operator is not bound";
+      return false;
+  }
+  if (left_value.isSqlNull() || right_value.isSqlNull()) {
+    *truth_value = EngineSqlTruthValue::unknown;
+    return true;
+  }
+  if (left_value.state != EngineValueState::value || left_value.is_null ||
+      right_value.state != EngineValueState::value || right_value.is_null) {
+    *refusal_detail =
+        "comparison requires value or canonical SQL NULL operand states";
+    return false;
+  }
+  if (comparison < -1 || comparison > 1) {
+    *refusal_detail = "typed comparator returned a noncanonical ordering";
+    return false;
+  }
+  bool result = false;
+  switch (operation) {
+    case EngineComparisonPredicateOperator::equal:
+      result = comparison == 0;
+      break;
+    case EngineComparisonPredicateOperator::not_equal:
+      result = comparison != 0;
+      break;
+    case EngineComparisonPredicateOperator::less_than:
+      result = comparison < 0;
+      break;
+    case EngineComparisonPredicateOperator::less_than_or_equal:
+      result = comparison <= 0;
+      break;
+    case EngineComparisonPredicateOperator::greater_than:
+      result = comparison > 0;
+      break;
+    case EngineComparisonPredicateOperator::greater_than_or_equal:
+      result = comparison >= 0;
+      break;
+    default:
+      return false;
+  }
+  *truth_value = result ? EngineSqlTruthValue::true_value
+                        : EngineSqlTruthValue::false_value;
+  return true;
+}
+
+bool QowEvaluateCanonicalNullPredicateV1(
+    const EngineTypedValue& value,
+    const bool negate,
+    EngineSqlTruthValue* truth_value,
+    std::string* refusal_detail) {
+  if (truth_value == nullptr || refusal_detail == nullptr) return false;
+  *truth_value = EngineSqlTruthValue::unknown;
+  refusal_detail->clear();
+  if (!QowCanonicalDescriptorIdentityV1(value.descriptor) ||
+      value.descriptor.descriptor_kind != "scalar" ||
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+          value.descriptor.canonical_type_name) ==
+          scratchbird::core::datatypes::CanonicalTypeId::unknown ||
+      (value.isSqlNull() && !QowCanonicalSqlNullStateV1(value))) {
+    *refusal_detail = "IS NULL operand is not a canonical scalar state";
+    return false;
+  }
+  if (!value.isSqlNull() &&
+      (value.state != EngineValueState::value || value.is_null)) {
+    *refusal_detail = "IS NULL cannot consume a non-value runtime sentinel";
+    return false;
+  }
+  const bool is_null = value.isSqlNull();
+  *truth_value = (negate ? !is_null : is_null)
+                     ? EngineSqlTruthValue::true_value
+                     : EngineSqlTruthValue::false_value;
+  return true;
+}
+
+bool QowCompareCanonicalNonCollatedScalarsV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    int* comparison,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (comparison == nullptr || refusal_detail == nullptr) return false;
+  *comparison = 0;
+  refusal_detail->clear();
+  if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
+      !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
+      left_value.descriptor.descriptor_kind != "scalar" ||
+      right_value.descriptor.descriptor_kind != "scalar" ||
+      left_value.descriptor.canonical_type_name !=
+          right_value.descriptor.canonical_type_name ||
+      left_value.state != EngineValueState::value || left_value.is_null ||
+      right_value.state != EngineValueState::value || right_value.is_null) {
+    *refusal_detail =
+        "non-NULL comparison operands are not canonical scalar values";
+    return false;
+  }
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      left_value.descriptor.canonical_type_name);
+  const bool supported =
+      type_id == dt::CanonicalTypeId::boolean ||
+      (type_id >= dt::CanonicalTypeId::int8 &&
+       type_id <= dt::CanonicalTypeId::int128) ||
+      (type_id >= dt::CanonicalTypeId::uint8 &&
+       type_id <= dt::CanonicalTypeId::uint128) ||
+      (type_id >= dt::CanonicalTypeId::bfloat16 &&
+       type_id <= dt::CanonicalTypeId::decimal_float);
+  if (!supported) {
+    *refusal_detail =
+        type_id == dt::CanonicalTypeId::character
+            ? "character comparison requires catalog-bound collation authority"
+            : "canonical scalar comparison type is not enabled at this seam";
+    return false;
+  }
+  const bool runtime_numeric =
+      type_id == dt::CanonicalTypeId::decimal ||
+      type_id == dt::CanonicalTypeId::decimal_float ||
+      type_id == dt::CanonicalTypeId::int128 ||
+      type_id == dt::CanonicalTypeId::uint128 ||
+      type_id == dt::CanonicalTypeId::real128;
+  if (runtime_numeric) {
+    if (type_id == dt::CanonicalTypeId::int128 ||
+        type_id == dt::CanonicalTypeId::uint128 ||
+        type_id == dt::CanonicalTypeId::real128) {
+      std::uint32_t left_width = 0;
+      std::uint32_t right_width = 0;
+      if (!QowCanonicalDescriptorU32FieldV1(
+              left_value.descriptor.encoded_descriptor, "width",
+              &left_width) ||
+          !QowCanonicalDescriptorU32FieldV1(
+              right_value.descriptor.encoded_descriptor, "width",
+              &right_width) ||
+          left_width != 128 || right_width != 128) {
+        *refusal_detail =
+            "128-bit comparison descriptor width is invalid";
+        return false;
+      }
+    }
+    dt::DatatypeNumericOperationRequest request;
+    request.operation = dt::DatatypeNumericOperationKind::compare;
+    request.type_id = type_id;
+    request.left.type_id = type_id;
+    request.left.encoded_value = left_value.encoded_value;
+    request.right.type_id = type_id;
+    request.right.encoded_value = right_value.encoded_value;
+    request.context.precision = 38;
+    request.context.scale = 0;
+    if (type_id == dt::CanonicalTypeId::decimal ||
+        type_id == dt::CanonicalTypeId::decimal_float) {
+      std::uint32_t left_precision = 0;
+      std::uint32_t left_scale = 0;
+      std::uint32_t right_precision = 0;
+      std::uint32_t right_scale = 0;
+      if (!QowCanonicalDescriptorU32FieldV1(
+              left_value.descriptor.encoded_descriptor, "precision",
+              &left_precision) ||
+          !QowCanonicalDescriptorU32FieldV1(
+              left_value.descriptor.encoded_descriptor, "scale",
+              &left_scale) ||
+          !QowCanonicalDescriptorU32FieldV1(
+              right_value.descriptor.encoded_descriptor, "precision",
+              &right_precision) ||
+          !QowCanonicalDescriptorU32FieldV1(
+              right_value.descriptor.encoded_descriptor, "scale",
+              &right_scale)) {
+        *refusal_detail =
+            "numeric comparison descriptor precision or scale is invalid";
+        return false;
+      }
+      request.context.precision =
+          std::max(left_precision, right_precision);
+      request.context.scale = std::max(left_scale, right_scale);
+    }
+    const auto numeric = dt::ApplyNumericOperation(request);
+    if (!numeric.ok()) {
+      *refusal_detail = numeric.diagnostic.diagnostic_code.empty()
+                            ? "canonical numeric comparison refused"
+                            : numeric.diagnostic.diagnostic_code;
+      return false;
+    }
+    *comparison =
+        numeric.comparison < 0 ? -1 : (numeric.comparison > 0 ? 1 : 0);
+    return true;
+  }
+  const auto validate = [type_id](const EngineTypedValue& value) {
+    dt::DatatypeCastRequest request;
+    request.value.type_id = type_id;
+    request.value.encoded_value = value.encoded_value;
+    request.target_type_id = type_id;
+    request.explicit_cast = true;
+    return dt::CastDatatypeValue(request);
+  };
+  const auto left_checked = validate(left_value);
+  const auto right_checked = validate(right_value);
+  if (!left_checked.ok() || !right_checked.ok()) {
+    *refusal_detail = "canonical comparison operand encoding is invalid";
+    return false;
+  }
+  dt::DatatypeComparisonRequest request;
+  request.left.type_id = type_id;
+  request.left.encoded_value = left_checked.value.encoded_value;
+  request.right.type_id = type_id;
+  request.right.encoded_value = right_checked.value.encoded_value;
+  const auto compared = dt::CompareDatatypeValues(request);
+  if (!compared.ok()) {
+    *refusal_detail = compared.diagnostic.diagnostic_code.empty()
+                          ? "canonical scalar comparison refused"
+                          : compared.diagnostic.diagnostic_code;
+    return false;
+  }
+  *comparison = compared.comparison < 0 ? -1 : (compared.comparison > 0 ? 1 : 0);
+  return true;
+}
+
+bool QowMaterializeCanonicalTruthValueV1(
+    const EngineSqlTruthValue truth_value,
+    const EngineDescriptor& result_descriptor,
+    EngineTypedValue* output_value,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (output_value == nullptr || refusal_detail == nullptr) return false;
+  *output_value = EngineTypedValue{};
+  output_value->state = EngineValueState::error;
+  refusal_detail->clear();
+  if (!QowCanonicalTruthValueV1(truth_value) ||
+      !QowCanonicalDescriptorIdentityV1(result_descriptor) ||
+      result_descriptor.descriptor_kind != "scalar" ||
+      dt::CanonicalTypeIdFromStableName(
+          result_descriptor.canonical_type_name) !=
+          dt::CanonicalTypeId::boolean) {
+    *refusal_detail = "predicate result descriptor is not canonical boolean";
+    return false;
+  }
+  const std::string nullability = QowCanonicalDescriptorFieldV1(
+      result_descriptor.encoded_descriptor, "nullability");
+  if ((nullability != "nullable" && nullability != "non_null" &&
+       nullability != "unknown") ||
+      (truth_value == EngineSqlTruthValue::unknown &&
+       nullability == "non_null")) {
+    *refusal_detail =
+        "predicate truth state contradicts the bound result nullability";
+    return false;
+  }
+  output_value->descriptor = result_descriptor;
+  output_value->binary_value.clear();
+  if (truth_value == EngineSqlTruthValue::unknown) {
+    output_value->encoded_value.clear();
+    output_value->is_null = true;
+    output_value->state = EngineValueState::sql_null;
+  } else {
+    output_value->encoded_value =
+        truth_value == EngineSqlTruthValue::true_value ? "true" : "false";
+    output_value->is_null = false;
+    output_value->state = EngineValueState::value;
+  }
+  return true;
+}
+
+bool QowPredicateConsumerPassesV1(
+    const EngineSqlTruthValue truth_value,
+    const EnginePredicateConsumer consumer,
+    bool* passes,
+    std::string* refusal_detail) {
+  if (passes == nullptr || refusal_detail == nullptr) return false;
+  *passes = false;
+  refusal_detail->clear();
+  if (!QowCanonicalTruthValueV1(truth_value) ||
+      (consumer != EnginePredicateConsumer::filter &&
+       consumer != EnginePredicateConsumer::join_on &&
+       consumer != EnginePredicateConsumer::having &&
+       consumer != EnginePredicateConsumer::qualify)) {
+    *refusal_detail = "predicate consumer or truth value is not bound";
+    return false;
+  }
+  *passes = truth_value == EngineSqlTruthValue::true_value;
   return true;
 }
 
@@ -924,6 +1312,28 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
       resolved.resource_descriptor.case_insensitive;
   text_seed.collation_accent_insensitive =
       resolved.resource_descriptor.accent_insensitive;
+  if (left.isSqlNull() || right.isSqlNull()) {
+    EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
+    std::string refusal_detail;
+    if (!QowEvaluateCanonicalComparisonTruthV1(
+            left, right, 0, EngineComparisonPredicateOperator::equal,
+            &truth, &refusal_detail) ||
+        truth != EngineSqlTruthValue::unknown) {
+      return refuse(std::move(refusal_detail));
+    }
+    auto result = ApiSuccess<EngineCompareScalarValuesResult>(
+        request.context, "query.compare_scalar_values");
+    result.comparison = 0;
+    result.collation_uuid = std::move(collation_uuid);
+    result.collation_epoch = resolved.resource_descriptor.family_epoch;
+    result.evidence.push_back(
+        {"canonical_collation_identity", left_collation});
+    result.evidence.push_back(
+        {"collation_epoch", std::to_string(result.collation_epoch)});
+    result.evidence.push_back(
+        {"sql_truth_value", EngineSqlTruthValueName(truth)});
+    return result;
+  }
   int comparison = 0;
   std::string refusal_detail;
   if (!QowCompareCanonicalCollatedScalarsV1(
@@ -1154,13 +1564,68 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
       numeric_request.context.scale = 0;
     }
     if (operation == dt::DatatypeNumericOperationKind::compare) {
-      return ApiFailure<EngineApplyNumericOperationResult>(
-          request.context,
-          "query.apply_numeric_operation",
-          MakeEngineApiDiagnostic(
-              "QOW-DIAG-QRY-017-3VL-PENDING-V1",
-              "engine.query.typed_scalar_predicate_pending",
-              "canonical numeric comparison requires the shared 3VL seam"));
+      int comparison = 0;
+      std::string refusal_detail;
+      const auto left_comparison_type = dt::CanonicalTypeIdFromStableName(
+          left.descriptor.canonical_type_name);
+      const bool numeric_comparison_type =
+          (left_comparison_type >= dt::CanonicalTypeId::int8 &&
+           left_comparison_type <= dt::CanonicalTypeId::int128) ||
+          (left_comparison_type >= dt::CanonicalTypeId::uint8 &&
+           left_comparison_type <= dt::CanonicalTypeId::uint128) ||
+          (left_comparison_type >= dt::CanonicalTypeId::bfloat16 &&
+           left_comparison_type <= dt::CanonicalTypeId::decimal_float);
+      if (!numeric_comparison_type) {
+        refusal_detail =
+            "numeric comparison requires a canonical numeric operand";
+      }
+      if (!refusal_detail.empty() ||
+          (!left.isSqlNull() && !right.isSqlNull() &&
+          !QowCompareCanonicalNonCollatedScalarsV1(
+              left, right, &comparison, &refusal_detail))) {
+        return ApiFailure<EngineApplyNumericOperationResult>(
+            request.context,
+            "query.apply_numeric_operation",
+            MakeEngineApiDiagnostic(
+                "QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                "engine.query.typed_predicate_refused",
+                std::move(refusal_detail)));
+      }
+      EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
+      if (!QowEvaluateCanonicalComparisonTruthV1(
+              left, right, comparison,
+              EngineComparisonPredicateOperator::equal, &truth,
+              &refusal_detail)) {
+        return ApiFailure<EngineApplyNumericOperationResult>(
+            request.context,
+            "query.apply_numeric_operation",
+            MakeEngineApiDiagnostic(
+                "QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                "engine.query.typed_predicate_refused",
+                std::move(refusal_detail)));
+      }
+      EngineTypedValue output;
+      if (!QowMaterializeCanonicalTruthValueV1(
+              truth, result_descriptor, &output, &refusal_detail)) {
+        return ApiFailure<EngineApplyNumericOperationResult>(
+            request.context,
+            "query.apply_numeric_operation",
+            MakeEngineApiDiagnostic(
+                "QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                "engine.query.typed_predicate_refused",
+                std::move(refusal_detail)));
+      }
+      auto result = ApiSuccess<EngineApplyNumericOperationResult>(
+          request.context, "query.apply_numeric_operation");
+      result.value = std::move(output);
+      result.comparison = comparison;
+      result.result_shape.result_kind = "typed_value";
+      result.result_shape.columns.push_back(result.value.descriptor);
+      result.evidence.push_back(
+          {"datatype_numeric_operation", "compare"});
+      result.evidence.push_back(
+          {"sql_truth_value", EngineSqlTruthValueName(truth)});
+      return result;
     }
     EngineTypedValue output;
     std::string refusal_detail;
