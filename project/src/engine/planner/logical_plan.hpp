@@ -630,10 +630,16 @@ inline const char* CanonicalLogicalPropertyKindName(
 inline std::string SerializeCanonicalLogicalPropertyIdentity(
     const CanonicalLogicalPropertyRecord& property) {
   std::vector<std::uint32_t> expression_ids = property.expression_ids;
-  if (property.property_kind ==
-      CanonicalLogicalPropertyKind::kExpressionEquivalence) {
+  if (property.property_kind == CanonicalLogicalPropertyKind::kGrouping ||
+      property.property_kind ==
+          CanonicalLogicalPropertyKind::kPartitioning ||
+      property.property_kind ==
+          CanonicalLogicalPropertyKind::kExpressionEquivalence) {
     std::ranges::sort(expression_ids);
   }
+  std::vector<std::string> dependencies =
+      property.dependency_property_uuids;
+  std::ranges::sort(dependencies);
   std::string serialized =
       "logical-property-v1|" + property.property_uuid + "|" +
       CanonicalLogicalPropertyKindName(property.property_kind) + "|" +
@@ -656,7 +662,7 @@ inline std::string SerializeCanonicalLogicalPropertyIdentity(
                   ":" + term.collation_uuid + ",";
   }
   serialized += "|dependencies=";
-  for (const auto& dependency : property.dependency_property_uuids) {
+  for (const auto& dependency : dependencies) {
     serialized += dependency + ",";
   }
   serialized += "|frame=" + property.window_frame_descriptor_uuid;
@@ -922,6 +928,74 @@ ValidateCanonicalLogicalPropertyCatalog(
 
   result.accepted = true;
   result.validated_property_count = catalog.properties.size();
+  return result;
+}
+
+struct CanonicalLogicalPropertySerializationResult {
+  bool accepted{false};
+  std::string canonical_serialization;
+  std::vector<CanonicalLogicalPropertyIssue> issues;
+};
+
+// QOW-SOURCE-IAS-006-V1
+// Serializes the complete adopted property state after validation. Semantic
+// sets and catalog record order are canonicalized; ordering-term order remains
+// significant. The exact bound SBLR/catalog/security/MGA scope is part of the
+// preimage, so any invalidating scope change produces refusal, not reuse.
+inline CanonicalLogicalPropertySerializationResult
+SerializeCanonicalLogicalPropertyCatalog(
+    const CanonicalLogicalRelationalGraph& graph,
+    const CanonicalLogicalPropertyCatalog& catalog) {
+  CanonicalLogicalPropertySerializationResult result;
+  const auto validation =
+      ValidateCanonicalLogicalPropertyCatalog(graph, catalog);
+  if (!validation.accepted) {
+    result.issues = validation.issues;
+    return result;
+  }
+  std::string serialized =
+      "logical-property-catalog-v1|bound_sblr=" +
+      catalog.bound_sblr_tree_uuid + "|catalog=" + catalog.catalog_epoch_uuid +
+      "|security=" + catalog.security_context_uuid + "|transaction=" +
+      std::to_string(catalog.local_transaction_id) + "|snapshot=" +
+      std::to_string(catalog.statement_snapshot_id) + "|";
+
+  std::vector<const CanonicalLogicalPropertyRecord*> properties;
+  properties.reserve(catalog.properties.size());
+  for (const auto& property : catalog.properties) {
+    properties.push_back(&property);
+  }
+  std::ranges::sort(properties, {},
+                    &CanonicalLogicalPropertyRecord::property_uuid);
+  for (const auto* property : properties) {
+    const auto identity = SerializeCanonicalLogicalPropertyIdentity(*property);
+    serialized += "property=" + std::to_string(identity.size()) + ":" +
+                  identity + ";";
+  }
+
+  std::vector<const CanonicalLogicalRelationalNode*> nodes;
+  nodes.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) nodes.push_back(&node);
+  std::ranges::sort(nodes, {},
+                    &CanonicalLogicalRelationalNode::logical_node_id);
+  for (const auto* node : nodes) {
+    auto required = node->required_property_uuids;
+    auto delivered = node->delivered_property_uuids;
+    std::ranges::sort(required);
+    std::ranges::sort(delivered);
+    serialized += "node=" + std::to_string(node->logical_node_id) +
+                  "|required=";
+    for (const auto& property_uuid : required) {
+      serialized += property_uuid + ",";
+    }
+    serialized += "|delivered=";
+    for (const auto& property_uuid : delivered) {
+      serialized += property_uuid + ",";
+    }
+    serialized += ";";
+  }
+  result.accepted = true;
+  result.canonical_serialization = std::move(serialized);
   return result;
 }
 

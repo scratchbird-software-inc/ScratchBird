@@ -11,6 +11,7 @@
 # QOW-CMAKE-QRY-030-V1
 # QOW-CMAKE-IAS-015-V1
 # QOW-CMAKE-OPT-003-V1
+# QOW-CMAKE-IAS-006-V1
 if(NOT TARGET sb_qow_canonical_logical_graph)
   add_library(sb_qow_canonical_logical_graph INTERFACE)
   target_compile_features(sb_qow_canonical_logical_graph INTERFACE cxx_std_20)
