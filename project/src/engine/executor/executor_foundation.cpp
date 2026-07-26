@@ -214,6 +214,94 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-EMPTY-V1
+// Finalize one validated SUM state.  Empty and all-NULL inputs return one
+// canonical SQL NULL row under the bound nullable descriptor; zero is data
+// only when a real non-NULL transition produced it.
+CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
+    const CanonicalInt64SumFinalizeRequest& request) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumFinalizeResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-EMPTY-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    return result;
+  };
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.selected_physical_node_id == 0 ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id) {
+    return refuse("selected aggregate node is not the physical root");
+  }
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  const auto& state = request.state;
+  if (selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->input_physical_node_ids.size() != 1 ||
+      selected_node->output_descriptor_ids.size() != 1 ||
+      state.result_column.descriptor_id !=
+          selected_node->output_descriptor_ids.front()) {
+    return refuse("SUM finalization physical result handle is unresolved");
+  }
+  if (state.value_expression_descriptor_id == 0 ||
+      !state.result_column.nullable ||
+      state.result_column.descriptor.canonical_type_name != "int64" ||
+      state.non_null_count > state.transition_count ||
+      state.has_value != (state.non_null_count != 0)) {
+    return refuse("SUM transition state invariants are invalid");
+  }
+
+  DescriptorBatch result_schema;
+  result_schema.columns = {state.result_column};
+  auto schema_validation = ValidateCanonicalDescriptorBatch(
+      result_schema, selected_node->output_descriptor_ids);
+  if (!schema_validation.ok) {
+    return refuse(schema_validation.diagnostic_code + ":" +
+                  schema_validation.detail);
+  }
+
+  EngineTypedValue value;
+  value.descriptor = state.result_column.descriptor;
+  if (state.has_value) {
+    value.encoded_value = std::to_string(state.accumulated_value);
+    value.state = EngineValueState::value;
+  } else {
+    value.is_null = true;
+    value.state = EngineValueState::sql_null;
+  }
+  result.output_batch.columns = {state.result_column};
+  result.output_batch.rows = {{{std::move(value)}}};
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, selected_node->output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }
