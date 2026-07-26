@@ -8,12 +8,14 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace exec = scratchbird::engine::executor;
@@ -224,7 +226,10 @@ exec::CanonicalAggregateRuntimeRequest CollectionRequest(
   request.input_batch.rows[3].values[0] = Value(text_descriptor, "d");
   request.aggregate_order_terms = {{.column = 3,
                                     .expression_descriptor_id = 2104}};
-  request.aggregate_separator = "|";
+  if (function == exec::CanonicalAggregateFunction::string_agg ||
+      function == exec::CanonicalAggregateFunction::listagg) {
+    request.aggregate_separator = "|";
+  }
   if (function == exec::CanonicalAggregateFunction::json_object_agg) {
     request.input_batch.rows[0].values[0] = Value(text_descriptor, "dup");
     request.input_batch.rows[1].values[0] = Value(text_descriptor, "other");
@@ -233,6 +238,63 @@ exec::CanonicalAggregateRuntimeRequest CollectionRequest(
     request.value_columns = {0, 1};
     request.value_expression_descriptor_ids = {2101, 2102};
   }
+  return request;
+}
+
+exec::CanonicalAggregateRuntimeRequest OrderedNumericRequest(
+    const exec::CanonicalAggregateFunction function,
+    const std::string& result_type,
+    const bool nullable_result = true) {
+  auto request = Request(function, 0, 2101, result_type);
+  const auto descriptor = request.input_batch.columns[0].descriptor;
+  request.input_batch.rows[0].values[0] = Value(descriptor, "10");
+  request.input_batch.rows[1].values[0] = Value(descriptor, "20");
+  request.input_batch.rows[2].values[0] = Value(descriptor, "30");
+  request.input_batch.rows[3].values[0] = Value(descriptor, "40");
+  request.aggregate_order_terms = {{.column = 0,
+                                    .expression_descriptor_id = 2101}};
+  request.result_column.nullable = nullable_result;
+  return request;
+}
+
+exec::CanonicalAggregateRuntimeRequest HypotheticalRequest(
+    const exec::CanonicalAggregateFunction function) {
+  auto request = OrderedNumericRequest(
+      function,
+      function == exec::CanonicalAggregateFunction::rank ||
+              function == exec::CanonicalAggregateFunction::dense_rank
+          ? "int64"
+          : "real64",
+      false);
+  const auto descriptor = request.input_batch.columns[0].descriptor;
+  request.input_batch.rows[2].values[0] = Value(descriptor, "20");
+  auto fifth = request.input_batch.rows.back();
+  fifth.values[0] = Value(descriptor, "40");
+  request.input_batch.rows[3].values[0] = Value(descriptor, "30");
+  request.input_batch.rows.push_back(std::move(fifth));
+  request.direct_arguments = {Value(descriptor, "25")};
+  return request;
+}
+
+exec::CanonicalAggregateRuntimeRequest TopKRequest() {
+  auto request = CollectionRequest(
+      exec::CanonicalAggregateFunction::string_agg);
+  const auto& entry = Entry(exec::CanonicalAggregateFunction::approx_top_k);
+  request.descriptor = {entry.abi_version, entry.function, entry.builtin_id,
+                        entry.function_uuid, false};
+  request.result_column.descriptor.canonical_type_name = "json";
+  request.result_column.nullable = true;
+  request.aggregate_order_terms.clear();
+  request.aggregate_separator = ",";
+  const auto text_descriptor = request.input_batch.columns[0].descriptor;
+  const std::vector<std::string> values = {"b", "a", "b", "c", "a", "b"};
+  request.input_batch.rows.resize(values.size(), request.input_batch.rows[0]);
+  for (std::size_t row = 0; row < values.size(); ++row) {
+    request.input_batch.rows[row].values[0] =
+        Value(text_descriptor, values[row]);
+  }
+  const auto int_descriptor = request.input_batch.columns[3].descriptor;
+  request.direct_arguments = {Value(int_descriptor, "2")};
   return request;
 }
 
@@ -266,7 +328,7 @@ bool ValidateCanonicalAggregateRegistry() {
     if (entry.executable) ++executable_count;
     if (entry.aggregate_as_window) ++aggregate_window_count;
   }
-  passed &= Require(registry.size() == 43 && executable_count == 31 &&
+  passed &= Require(registry.size() == 43 && executable_count == 43 &&
                         aggregate_window_count == 1 &&
                         Entry(exec::CanonicalAggregateFunction::sum)
                             .aggregate_as_window,
@@ -524,6 +586,124 @@ bool ValidateCanonicalAggregateRegistry() {
                             "QOW-DIAG-QRY-011-REGISTRY-JSON-KEY-V1",
                     "JSON object aggregate accepted a NULL key");
 
+  const std::vector<StatisticalCase> hypothetical_cases = {
+      {exec::CanonicalAggregateFunction::rank, 4.0},
+      {exec::CanonicalAggregateFunction::dense_rank, 3.0},
+      {exec::CanonicalAggregateFunction::percent_rank, 0.6},
+      {exec::CanonicalAggregateFunction::cume_dist, 2.0 / 3.0},
+  };
+  for (const auto& test_case : hypothetical_cases) {
+    auto request = HypotheticalRequest(test_case.function);
+    const auto serial = exec::ExecuteCanonicalAggregateRuntime(request);
+    request.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+    const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    passed &= Require(NearScalar(serial, test_case.expected) &&
+                          SameScalar(serial, partitioned) &&
+                          serial.direct_argument_count == 1 &&
+                          serial.aggregate_order_applied,
+                      "hypothetical-set aggregate result or parity failed");
+  }
+
+  struct QuantileCase {
+    exec::CanonicalAggregateFunction function;
+    double fraction;
+    double expected;
+    bool has_direct_fraction;
+  };
+  const std::vector<QuantileCase> quantile_cases = {
+      {exec::CanonicalAggregateFunction::percentile_cont, 0.25, 17.5, true},
+      {exec::CanonicalAggregateFunction::percentile_disc, 0.25, 10.0, true},
+      {exec::CanonicalAggregateFunction::approx_median, 0.5, 25.0, false},
+      {exec::CanonicalAggregateFunction::approx_percentile_cont, 0.75, 32.5,
+       true},
+      {exec::CanonicalAggregateFunction::approx_percentile_disc, 0.75, 30.0,
+       true},
+  };
+  for (const auto& test_case : quantile_cases) {
+    auto request = OrderedNumericRequest(test_case.function, "real64");
+    if (test_case.function ==
+        exec::CanonicalAggregateFunction::approx_median) {
+      request.aggregate_order_terms.clear();
+    }
+    if (test_case.has_direct_fraction) {
+      const auto real_descriptor = request.input_batch.columns[1].descriptor;
+      request.direct_arguments = {
+          Value(real_descriptor, std::to_string(test_case.fraction))};
+    }
+    const auto serial = exec::ExecuteCanonicalAggregateRuntime(request);
+    request.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+    const auto partitioned = exec::ExecuteCanonicalAggregateRuntime(request);
+    passed &= Require(NearScalar(serial, test_case.expected) &&
+                          SameScalar(serial, partitioned),
+                      "quantile aggregate result or merge parity failed");
+  }
+
+  auto mode = OrderedNumericRequest(exec::CanonicalAggregateFunction::mode,
+                                    "int64");
+  const auto mode_descriptor = mode.input_batch.columns[0].descriptor;
+  mode.input_batch.rows[0].values[0] = Value(mode_descriptor, "5");
+  mode.input_batch.rows[1].values[0] = Value(mode_descriptor, "4");
+  mode.input_batch.rows[2].values[0] = Value(mode_descriptor, "5");
+  mode.input_batch.rows[3].values[0] = Value(mode_descriptor, "4");
+  auto ordered = exec::ExecuteCanonicalAggregateRuntime(mode);
+  mode.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  auto ordered_partitioned = exec::ExecuteCanonicalAggregateRuntime(mode);
+  passed &= Require(ordered.diagnostic.ok &&
+                        ordered.output_batch.rows[0].values[0].encoded_value ==
+                            "4" &&
+                        SameScalar(ordered, ordered_partitioned),
+                    "MODE frequency/tie rule or merge parity failed");
+
+  auto approximate_distinct = Request(
+      exec::CanonicalAggregateFunction::approx_count_distinct, 0, 2101,
+      "int64");
+  approximate_distinct.result_column.nullable = false;
+  auto approximate =
+      exec::ExecuteCanonicalAggregateRuntime(approximate_distinct);
+  approximate_distinct.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  auto approximate_partitioned =
+      exec::ExecuteCanonicalAggregateRuntime(approximate_distinct);
+  passed &= Require(approximate.diagnostic.ok &&
+                        approximate.output_batch.rows[0].values[0]
+                                .encoded_value == "2" &&
+                        SameScalar(approximate, approximate_partitioned),
+                    "approximate distinct state or merge parity failed");
+
+  auto top_k = TopKRequest();
+  approximate = exec::ExecuteCanonicalAggregateRuntime(top_k);
+  top_k.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  approximate_partitioned = exec::ExecuteCanonicalAggregateRuntime(top_k);
+  passed &= Require(
+      approximate.diagnostic.ok &&
+          approximate.output_batch.rows[0].values[0].encoded_value ==
+              R"([{"value":"b","count":3},{"value":"a","count":2}])" &&
+          SameScalar(approximate, approximate_partitioned),
+      "approximate top-k state or merge parity failed");
+
+  auto invalid_fraction = OrderedNumericRequest(
+      exec::CanonicalAggregateFunction::percentile_cont, "real64");
+  invalid_fraction.direct_arguments = {
+      Value(invalid_fraction.input_batch.columns[1].descriptor, "1.5")};
+  ordered = exec::ExecuteCanonicalAggregateRuntime(invalid_fraction);
+  passed &= Require(!ordered.diagnostic.ok &&
+                        ordered.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                    "invalid percentile fraction was accepted");
+
+  auto missing_direct =
+      HypotheticalRequest(exec::CanonicalAggregateFunction::rank);
+  missing_direct.direct_arguments.clear();
+  ordered = exec::ExecuteCanonicalAggregateRuntime(missing_direct);
+  passed &= Require(!ordered.diagnostic.ok &&
+                        ordered.diagnostic.diagnostic_code ==
+                            "QOW-DIAG-QRY-011-REGISTRY-DIRECT-ARITY-V1",
+                    "hypothetical aggregate accepted missing direct value");
+
   auto sum_request = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                              "int64");
   sum_request.distinct = true;
@@ -568,17 +748,11 @@ bool ValidateCanonicalAggregateRegistry() {
                         refusal.output_batch.rows.empty(),
                     "mismatched aggregate UUID substituted another function");
 
-  auto unavailable = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
-                             "int64");
-  const auto& rank_entry = Entry(exec::CanonicalAggregateFunction::rank);
-  unavailable.descriptor = {rank_entry.abi_version, rank_entry.function,
-                            rank_entry.builtin_id, rank_entry.function_uuid,
-                            false};
-  refusal = exec::ExecuteCanonicalAggregateRuntime(unavailable);
-  passed &= Require(!refusal.diagnostic.ok &&
-                        refusal.diagnostic.diagnostic_code ==
-                            "QOW-DIAG-QRY-011-REGISTRY-UNIMPLEMENTED-V1",
-                    "registry-only aggregate was reported executable");
+  passed &= Require(std::all_of(registry.begin(), registry.end(),
+                                [](const auto& row) {
+                                  return row.executable;
+                                }),
+                    "an accepted aggregate registry row remains registry-only");
 
   auto authority = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                            "int64");

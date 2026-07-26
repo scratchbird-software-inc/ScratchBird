@@ -1112,6 +1112,8 @@ struct CanonicalAggregateRuntimeRequest {
   DescriptorBatch input_batch;
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_expression_descriptor_ids;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue>
+      direct_arguments;
   ExecutorColumnDescriptor result_column;
   std::optional<
       std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
@@ -1146,6 +1148,7 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t transition_count = 0;
   std::size_t non_null_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
+  std::size_t direct_argument_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t state_bytes = 0;
   bool every_descriptor_field_consumed = false;

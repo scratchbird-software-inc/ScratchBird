@@ -51,15 +51,49 @@ struct CanonicalAggregateCoreState {
   std::vector<EngineTypedValue> collection_values;
   std::vector<std::string> text_values;
   std::vector<std::pair<std::string, std::string>> json_object_values;
+  std::vector<long double> ordered_numeric_values;
+  std::vector<std::string> approximate_distinct_values;
+  std::vector<std::pair<EngineTypedValue, std::size_t>> frequency_values;
 };
 
-bool IsCanonicalCollectionFunction(
+bool IsCanonicalHypotheticalSetFunction(
     const CanonicalAggregateFunction function) {
-  return function == CanonicalAggregateFunction::array_agg ||
-         function == CanonicalAggregateFunction::string_agg ||
-         function == CanonicalAggregateFunction::json_agg ||
-         function == CanonicalAggregateFunction::json_object_agg ||
-         function == CanonicalAggregateFunction::listagg;
+  return function == CanonicalAggregateFunction::rank ||
+         function == CanonicalAggregateFunction::dense_rank ||
+         function == CanonicalAggregateFunction::percent_rank ||
+         function == CanonicalAggregateFunction::cume_dist;
+}
+
+bool IsCanonicalQuantileFunction(
+    const CanonicalAggregateFunction function) {
+  return function == CanonicalAggregateFunction::percentile_cont ||
+         function == CanonicalAggregateFunction::percentile_disc ||
+         function == CanonicalAggregateFunction::approx_median ||
+         function == CanonicalAggregateFunction::approx_percentile_cont ||
+         function == CanonicalAggregateFunction::approx_percentile_disc;
+}
+
+bool IsCanonicalOrderedSetFunction(
+    const CanonicalAggregateFunction function) {
+  return IsCanonicalHypotheticalSetFunction(function) ||
+         function == CanonicalAggregateFunction::mode ||
+         function == CanonicalAggregateFunction::percentile_cont ||
+         function == CanonicalAggregateFunction::percentile_disc ||
+         function == CanonicalAggregateFunction::approx_percentile_cont ||
+         function == CanonicalAggregateFunction::approx_percentile_disc;
+}
+
+std::size_t CanonicalAggregateDirectArgumentCount(
+    const CanonicalAggregateFunction function) {
+  if (IsCanonicalHypotheticalSetFunction(function) ||
+      function == CanonicalAggregateFunction::percentile_cont ||
+      function == CanonicalAggregateFunction::percentile_disc ||
+      function == CanonicalAggregateFunction::approx_percentile_cont ||
+      function == CanonicalAggregateFunction::approx_percentile_disc ||
+      function == CanonicalAggregateFunction::approx_top_k) {
+    return 1;
+  }
+  return 0;
 }
 
 bool IsCanonicalUnivariateStatisticalFunction(
@@ -226,6 +260,17 @@ std::size_t EstimateCanonicalAggregateStateBytes(
   for (const auto& [key, value] : state.json_object_values) {
     bytes += key.size() + value.size();
   }
+  bytes += state.ordered_numeric_values.size() * sizeof(long double);
+  for (const auto& value : state.approximate_distinct_values) {
+    bytes += value.size();
+  }
+  for (const auto& [value, count] : state.frequency_values) {
+    (void)count;
+    bytes += sizeof(value) + value.encoded_value.size() +
+             value.binary_value.size() +
+             value.descriptor.canonical_type_name.size() +
+             value.descriptor.encoded_descriptor.size();
+  }
   return bytes;
 }
 
@@ -239,6 +284,32 @@ std::string JoinAggregateTextValues(const std::vector<std::string>& values,
     joined += values[index];
   }
   return joined;
+}
+
+bool SameAggregateValueIdentity(const EngineTypedValue& left,
+                                const EngineTypedValue& right) {
+  return left.descriptor.descriptor_uuid.canonical ==
+             right.descriptor.descriptor_uuid.canonical &&
+         left.descriptor.canonical_type_name ==
+             right.descriptor.canonical_type_name &&
+         left.state == right.state && left.is_null == right.is_null &&
+         left.encoded_value == right.encoded_value &&
+         left.binary_value == right.binary_value;
+}
+
+void AddCanonicalFrequencyValue(CanonicalAggregateCoreState* state,
+                                const EngineTypedValue& value,
+                                const std::size_t count = 1) {
+  const auto existing = std::find_if(
+      state->frequency_values.begin(), state->frequency_values.end(),
+      [&](const auto& candidate) {
+        return SameAggregateValueIdentity(candidate.first, value);
+      });
+  if (existing == state->frequency_values.end()) {
+    state->frequency_values.emplace_back(value, count);
+  } else {
+    existing->second += count;
+  }
 }
 
 EngineTypedValue AggregateValue(const ExecutorColumnDescriptor& column,
@@ -365,6 +436,38 @@ bool TransitionCanonicalAggregateCore(
       descriptor.function == CanonicalAggregateFunction::listagg) {
     if (value.state == EngineValueState::sql_null) return true;
     state->text_values.push_back(value.encoded_value);
+    ++state->non_null_count;
+    return true;
+  }
+  if (IsCanonicalHypotheticalSetFunction(descriptor.function) ||
+      IsCanonicalQuantileFunction(descriptor.function)) {
+    if (value.state == EngineValueState::sql_null) return true;
+    long double numeric = 0.0L;
+    if (!DecodeAggregateNumeric(value, &numeric, diagnostic)) return false;
+    state->ordered_numeric_values.push_back(numeric);
+    ++state->non_null_count;
+    return true;
+  }
+  if (descriptor.function == CanonicalAggregateFunction::mode ||
+      descriptor.function == CanonicalAggregateFunction::approx_top_k) {
+    if (value.state == EngineValueState::sql_null) return true;
+    AddCanonicalFrequencyValue(state, value);
+    ++state->non_null_count;
+    return true;
+  }
+  if (descriptor.function ==
+      CanonicalAggregateFunction::approx_count_distinct) {
+    if (value.state == EngineValueState::sql_null) return true;
+    std::string identity = value.descriptor.descriptor_uuid.canonical + ":" +
+                           value.descriptor.canonical_type_name + ":" +
+                           value.encoded_value;
+    identity.append(reinterpret_cast<const char*>(value.binary_value.data()),
+                    value.binary_value.size());
+    if (std::find(state->approximate_distinct_values.begin(),
+                  state->approximate_distinct_values.end(), identity) ==
+        state->approximate_distinct_values.end()) {
+      state->approximate_distinct_values.push_back(std::move(identity));
+    }
     ++state->non_null_count;
     return true;
   }
@@ -546,6 +649,35 @@ bool MergeCanonicalAggregateCore(
     }
     return true;
   }
+  if (IsCanonicalHypotheticalSetFunction(descriptor.function) ||
+      IsCanonicalQuantileFunction(descriptor.function)) {
+    target->non_null_count += source.non_null_count;
+    target->ordered_numeric_values.insert(
+        target->ordered_numeric_values.end(),
+        source.ordered_numeric_values.begin(),
+        source.ordered_numeric_values.end());
+    return true;
+  }
+  if (descriptor.function == CanonicalAggregateFunction::mode ||
+      descriptor.function == CanonicalAggregateFunction::approx_top_k) {
+    target->non_null_count += source.non_null_count;
+    for (const auto& [value, count] : source.frequency_values) {
+      AddCanonicalFrequencyValue(target, value, count);
+    }
+    return true;
+  }
+  if (descriptor.function ==
+      CanonicalAggregateFunction::approx_count_distinct) {
+    target->non_null_count += source.non_null_count;
+    for (const auto& identity : source.approximate_distinct_values) {
+      if (std::find(target->approximate_distinct_values.begin(),
+                    target->approximate_distinct_values.end(), identity) ==
+          target->approximate_distinct_values.end()) {
+        target->approximate_distinct_values.push_back(identity);
+      }
+    }
+    return true;
+  }
   target->non_null_count += source.non_null_count;
   target->int64_sum += source.int64_sum;
   target->real_sum += source.real_sum;
@@ -585,6 +717,30 @@ bool ValidateCanonicalAggregateResultType(
   } else if (function == CanonicalAggregateFunction::regr_count) {
     if (IsType(request.result_column, "int64") &&
         !request.result_column.nullable) {
+      return true;
+    }
+  } else if (function == CanonicalAggregateFunction::rank ||
+             function == CanonicalAggregateFunction::dense_rank ||
+             function ==
+                 CanonicalAggregateFunction::approx_count_distinct) {
+    if (IsType(request.result_column, "int64") &&
+        !request.result_column.nullable) {
+      return true;
+    }
+  } else if (function == CanonicalAggregateFunction::percent_rank ||
+             function == CanonicalAggregateFunction::cume_dist) {
+    if (IsType(request.result_column, "real64") &&
+        !request.result_column.nullable) {
+      return true;
+    }
+  } else if (IsCanonicalQuantileFunction(function)) {
+    if (IsType(request.result_column, "real64") &&
+        request.result_column.nullable) {
+      return true;
+    }
+  } else if (function == CanonicalAggregateFunction::approx_top_k) {
+    if (IsType(request.result_column, "json") &&
+        request.result_column.nullable) {
       return true;
     }
   } else if (IsCanonicalUnivariateStatisticalFunction(function) ||
@@ -681,6 +837,23 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (request.descriptor.function == CanonicalAggregateFunction::array_agg ||
       request.descriptor.function == CanonicalAggregateFunction::json_agg) {
+    return true;
+  }
+  if (IsCanonicalHypotheticalSetFunction(request.descriptor.function) ||
+      IsCanonicalQuantileFunction(request.descriptor.function)) {
+    const auto& type = request.input_batch
+                           .columns[request.value_columns.front()]
+                           .descriptor.canonical_type_name;
+    if (type == "int64" || type == "real64") return true;
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
+                          "ordered numeric aggregate requires numeric input");
+    return false;
+  }
+  if (request.descriptor.function == CanonicalAggregateFunction::mode ||
+      request.descriptor.function ==
+          CanonicalAggregateFunction::approx_count_distinct ||
+      request.descriptor.function ==
+          CanonicalAggregateFunction::approx_top_k) {
     return true;
   }
   const auto& type = request.input_batch
@@ -806,6 +979,175 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
         "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-INDICATOR-V1",
         "LISTAGG truncation indicator cannot fit its output bound");
     return {};
+  }
+  if (IsCanonicalHypotheticalSetFunction(function)) {
+    long double hypothetical = 0.0L;
+    if (!DecodeAggregateNumeric(request.direct_arguments.front(),
+                                &hypothetical, diagnostic)) {
+      return {};
+    }
+    std::vector<long double> values = state.ordered_numeric_values;
+    std::sort(values.begin(), values.end());
+    const auto less = static_cast<std::size_t>(std::count_if(
+        values.begin(), values.end(),
+        [&](const auto value) { return value < hypothetical; }));
+    const auto less_equal = static_cast<std::size_t>(std::count_if(
+        values.begin(), values.end(),
+        [&](const auto value) { return value <= hypothetical; }));
+    if (function == CanonicalAggregateFunction::rank) {
+      if (less >= static_cast<std::size_t>(
+                      std::numeric_limits<std::int64_t>::max())) {
+        *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                              "hypothetical RANK exceeds int64");
+        return {};
+      }
+      return AggregateValue(request.result_column, std::to_string(less + 1));
+    }
+    if (function == CanonicalAggregateFunction::dense_rank) {
+      values.erase(std::unique(values.begin(), values.end()), values.end());
+      const auto distinct_less = static_cast<std::size_t>(std::count_if(
+          values.begin(), values.end(),
+          [&](const auto value) { return value < hypothetical; }));
+      if (distinct_less >= static_cast<std::size_t>(
+                               std::numeric_limits<std::int64_t>::max())) {
+        *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                              "hypothetical DENSE_RANK exceeds int64");
+        return {};
+      }
+      return AggregateValue(request.result_column,
+                            std::to_string(distinct_less + 1));
+    }
+    long double result_value = 0.0L;
+    if (function == CanonicalAggregateFunction::percent_rank) {
+      const auto denominator = values.empty()
+                                   ? 1.0L
+                                   : static_cast<long double>(values.size());
+      result_value = static_cast<long double>(less) / denominator;
+    } else {
+      result_value = static_cast<long double>(less_equal + 1) /
+                     static_cast<long double>(values.size() + 1);
+    }
+    return AggregateValue(request.result_column,
+                          FormatAggregateReal(result_value));
+  }
+  if (IsCanonicalQuantileFunction(function)) {
+    if (state.ordered_numeric_values.empty()) {
+      return AggregateNull(request.result_column);
+    }
+    long double fraction = 0.5L;
+    if (function != CanonicalAggregateFunction::approx_median &&
+        !DecodeAggregateNumeric(request.direct_arguments.front(), &fraction,
+                                diagnostic)) {
+      return {};
+    }
+    auto values = state.ordered_numeric_values;
+    std::sort(values.begin(), values.end());
+    long double quantile = 0.0L;
+    if (function == CanonicalAggregateFunction::percentile_disc ||
+        function == CanonicalAggregateFunction::approx_percentile_disc) {
+      const auto scaled = fraction * static_cast<long double>(values.size());
+      const auto index = fraction <= 0.0L
+                             ? 0U
+                             : static_cast<std::size_t>(std::ceil(scaled) -
+                                                        1.0L);
+      quantile = values[std::min(index, values.size() - 1)];
+    } else {
+      const auto scaled =
+          fraction * static_cast<long double>(values.size() - 1);
+      const auto lower = static_cast<std::size_t>(std::floor(scaled));
+      const auto upper = static_cast<std::size_t>(std::ceil(scaled));
+      const auto weight = scaled - static_cast<long double>(lower);
+      quantile = values[lower] + (values[upper] - values[lower]) * weight;
+    }
+    if (!std::isfinite(static_cast<double>(quantile))) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "quantile result exceeds real64");
+      return {};
+    }
+    return AggregateValue(request.result_column,
+                          FormatAggregateReal(quantile));
+  }
+  if (function == CanonicalAggregateFunction::approx_count_distinct) {
+    if (state.approximate_distinct_values.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "approximate distinct count exceeds int64");
+      return {};
+    }
+    return AggregateValue(
+        request.result_column,
+        std::to_string(state.approximate_distinct_values.size()));
+  }
+  if (function == CanonicalAggregateFunction::mode) {
+    if (state.frequency_values.empty()) return AggregateNull(request.result_column);
+    std::size_t selected = 0;
+    for (std::size_t index = 1; index < state.frequency_values.size(); ++index) {
+      bool replace = state.frequency_values[index].second >
+                     state.frequency_values[selected].second;
+      if (!replace && state.frequency_values[index].second ==
+                          state.frequency_values[selected].second) {
+        int comparison = 0;
+        std::string detail;
+        if (!CompareAggregateValues(state.frequency_values[index].first,
+                                    state.frequency_values[selected].first,
+                                    &comparison, &detail)) {
+          *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-COMPARE-V1",
+                                std::move(detail));
+          return {};
+        }
+        replace = comparison < 0;
+      }
+      if (replace) selected = index;
+    }
+    auto value = state.frequency_values[selected].first;
+    value.descriptor = request.result_column.descriptor;
+    return value;
+  }
+  if (function == CanonicalAggregateFunction::approx_top_k) {
+    if (state.frequency_values.empty()) return AggregateNull(request.result_column);
+    const auto decoded = DecodeInt64Value(request.direct_arguments.front());
+    if (!decoded.ok()) {
+      *diagnostic = decoded.diagnostic;
+      return {};
+    }
+    std::vector<std::size_t> order(state.frequency_values.size());
+    std::iota(order.begin(), order.end(), 0);
+    bool comparison_failed = false;
+    std::string comparison_detail;
+    std::stable_sort(order.begin(), order.end(), [&](const auto left,
+                                                     const auto right) {
+      if (state.frequency_values[left].second !=
+          state.frequency_values[right].second) {
+        return state.frequency_values[left].second >
+               state.frequency_values[right].second;
+      }
+      int comparison = 0;
+      if (!CompareAggregateValues(state.frequency_values[left].first,
+                                  state.frequency_values[right].first,
+                                  &comparison, &comparison_detail)) {
+        comparison_failed = true;
+        return left < right;
+      }
+      return comparison < 0;
+    });
+    if (comparison_failed) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-COMPARE-V1",
+                            std::move(comparison_detail));
+      return {};
+    }
+    const auto limit = std::min(
+        static_cast<std::size_t>(decoded.value), order.size());
+    std::string encoded = "[";
+    for (std::size_t rank = 0; rank < limit; ++rank) {
+      if (rank != 0) encoded.push_back(',');
+      const auto index = order[rank];
+      encoded += "{\"value\":" + EscapeAggregateJson(
+          state.frequency_values[index].first.encoded_value);
+      encoded += ",\"count\":" +
+                 std::to_string(state.frequency_values[index].second) + "}";
+    }
+    encoded.push_back(']');
+    return AggregateValue(request.result_column, std::move(encoded));
   }
   if (state.non_null_count == 0) return AggregateNull(request.result_column);
   if (function == CanonicalAggregateFunction::sum) {
@@ -1078,8 +1420,9 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
 
 // QOW-SOURCE-QRY-011-REGISTRY-V1
 // Exact ABI-v1 projection of the normative private seed registry.  A registry
-// row is not an implementation claim: executable marks only functions routed
-// through the canonical state below; every other accepted row fails closed.
+// row is not an implementation claim by itself: executable is true only when
+// the row is routed through the bounded canonical state below. Descriptor,
+// direct-argument, ordering, type, and resource profiles still fail closed.
 std::vector<CanonicalAggregateRegistryEntry>
 CanonicalAggregateRuntimeRegistryV1() {
   using Function = CanonicalAggregateFunction;
@@ -1099,18 +1442,18 @@ CanonicalAggregateRuntimeRegistryV1() {
       {1, Function::variance_pop, "sb.aggregate.variance_pop", "019de5fc-2400-7fda-b470-e85414dcb314", true, false},
       {1, Function::every, "sb.aggregate.every", "019dffbb-f000-7876-9644-ae83b363d3bc", true, false},
       {1, Function::listagg, "sb.aggregate.listagg", "019dffbb-f000-7e93-8e4d-6063849de049", true, false},
-      {1, Function::rank, "sb.aggregate.rank", "019dffbb-f000-7336-ab53-fef5316220d7", false, false},
-      {1, Function::dense_rank, "sb.aggregate.dense_rank", "019dffbb-f000-7bd3-a731-1734581eb8ce", false, false},
-      {1, Function::percent_rank, "sb.aggregate.percent_rank", "019dffbb-f000-7817-911f-9f8b2e66ebec", false, false},
-      {1, Function::cume_dist, "sb.aggregate.cume_dist", "019dffbb-f000-7244-89fd-8fa66ae930d5", false, false},
-      {1, Function::mode, "sb.aggregate.mode", "019dffbb-f000-7150-9be6-bcf97f8facf5", false, false},
-      {1, Function::percentile_cont, "sb.aggregate.percentile_cont", "019dffbb-f000-7cfd-83dd-15435fe55bf5", false, false},
-      {1, Function::percentile_disc, "sb.aggregate.percentile_disc", "019dffbb-f000-7081-b766-7db818a89c04", false, false},
-      {1, Function::approx_count_distinct, "sb.aggregate.approx_count_distinct", "019dffbb-f000-7736-96f3-e20cbd532ba5", false, false},
-      {1, Function::approx_median, "sb.aggregate.approx_median", "019dffbb-f000-7ce0-85a6-cbcd71f2c86e", false, false},
-      {1, Function::approx_percentile_cont, "sb.aggregate.approx_percentile_cont", "019dffbb-f000-76df-98a6-aa77d1a342f8", false, false},
-      {1, Function::approx_percentile_disc, "sb.aggregate.approx_percentile_disc", "019dffbb-f000-7578-a88f-8db4bb649755", false, false},
-      {1, Function::approx_top_k, "sb.aggregate.approx_top_k", "019dffbb-f000-7f47-8fe1-0c5e0ec87bf0", false, false},
+      {1, Function::rank, "sb.aggregate.rank", "019dffbb-f000-7336-ab53-fef5316220d7", true, false},
+      {1, Function::dense_rank, "sb.aggregate.dense_rank", "019dffbb-f000-7bd3-a731-1734581eb8ce", true, false},
+      {1, Function::percent_rank, "sb.aggregate.percent_rank", "019dffbb-f000-7817-911f-9f8b2e66ebec", true, false},
+      {1, Function::cume_dist, "sb.aggregate.cume_dist", "019dffbb-f000-7244-89fd-8fa66ae930d5", true, false},
+      {1, Function::mode, "sb.aggregate.mode", "019dffbb-f000-7150-9be6-bcf97f8facf5", true, false},
+      {1, Function::percentile_cont, "sb.aggregate.percentile_cont", "019dffbb-f000-7cfd-83dd-15435fe55bf5", true, false},
+      {1, Function::percentile_disc, "sb.aggregate.percentile_disc", "019dffbb-f000-7081-b766-7db818a89c04", true, false},
+      {1, Function::approx_count_distinct, "sb.aggregate.approx_count_distinct", "019dffbb-f000-7736-96f3-e20cbd532ba5", true, false},
+      {1, Function::approx_median, "sb.aggregate.approx_median", "019dffbb-f000-7ce0-85a6-cbcd71f2c86e", true, false},
+      {1, Function::approx_percentile_cont, "sb.aggregate.approx_percentile_cont", "019dffbb-f000-76df-98a6-aa77d1a342f8", true, false},
+      {1, Function::approx_percentile_disc, "sb.aggregate.approx_percentile_disc", "019dffbb-f000-7578-a88f-8db4bb649755", true, false},
+      {1, Function::approx_top_k, "sb.aggregate.approx_top_k", "019dffbb-f000-7f47-8fe1-0c5e0ec87bf0", true, false},
       {1, Function::stddev, "sb.aggregate.stddev", "019dffbb-f000-7475-8516-ff003b2bdad9", true, false},
       {1, Function::variance, "sb.aggregate.variance", "019dffbb-f000-7968-82c5-04cffbeb971b", true, false},
       {1, Function::stddev_samp, "sb.aggregate.stddev_samp", "019dffbb-f000-7d99-a495-70f9c3b1b587", true, false},
@@ -1230,6 +1573,38 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
                           "aggregate value arity does not match its descriptor"));
   }
+  const auto expected_direct_argument_count =
+      CanonicalAggregateDirectArgumentCount(request.descriptor.function);
+  if (request.direct_arguments.size() != expected_direct_argument_count) {
+    return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-ARITY-V1",
+                          "aggregate direct-argument arity is not bound"));
+  }
+  if (expected_direct_argument_count != 0) {
+    const auto& direct = request.direct_arguments.front();
+    if (direct.state != EngineValueState::value || direct.is_null) {
+      return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                            "aggregate direct argument must be non-NULL"));
+    }
+    if (request.descriptor.function ==
+        CanonicalAggregateFunction::approx_top_k) {
+      const auto decoded = DecodeInt64Value(direct);
+      if (!decoded.ok() || decoded.value <= 0) {
+        return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                              "top-k direct argument must be positive int64"));
+      }
+    } else {
+      long double decoded = 0.0L;
+      DescriptorRuntimeDiagnostic direct_diagnostic;
+      if (!DecodeAggregateNumeric(direct, &decoded, &direct_diagnostic)) {
+        return refuse(std::move(direct_diagnostic));
+      }
+      if (IsCanonicalQuantileFunction(request.descriptor.function) &&
+          (decoded < 0.0L || decoded > 1.0L)) {
+        return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1",
+                              "percentile fraction must be between zero and one"));
+      }
+    }
+  }
   for (std::size_t index = 0; index < request.value_columns.size(); ++index) {
     const auto column = request.value_columns[index];
     if (column >= request.input_batch.columns.size() ||
@@ -1268,7 +1643,8 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
       function == CanonicalAggregateFunction::array_agg ||
       function == CanonicalAggregateFunction::json_agg ||
       function == CanonicalAggregateFunction::json_object_agg ||
-      function == CanonicalAggregateFunction::listagg;
+      function == CanonicalAggregateFunction::listagg ||
+      IsCanonicalOrderedSetFunction(function);
   if (ordered_collection_required && request.aggregate_order_terms.empty()) {
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-ORDER-V1",
                           "ordered collection aggregate has no bound order"));
@@ -1293,6 +1669,12 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
              !request.listagg_with_count) {
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-OPTIONS-V1",
                           "LISTAGG options reached another aggregate"));
+  }
+  if (function != CanonicalAggregateFunction::string_agg &&
+      function != CanonicalAggregateFunction::listagg &&
+      request.aggregate_separator != ",") {
+    return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-OPTIONS-V1",
+                          "string separator reached another aggregate"));
   }
 
   DescriptorRuntimeDiagnostic type_diagnostic;
@@ -1456,6 +1838,7 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   result.transition_count = state.transition_count;
   result.non_null_transition_count = state.non_null_count;
   result.state_bytes = EstimateCanonicalAggregateStateBytes(state);
+  result.direct_argument_count = request.direct_arguments.size();
   result.every_descriptor_field_consumed = true;
   result.shared_state_authority_used = true;
   result.authority.engine_mga_snapshot_bound = true;
