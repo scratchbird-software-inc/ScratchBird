@@ -9,9 +9,11 @@
 #include "executor_foundation.hpp"
 
 #include "descriptor_value_runtime.hpp"
+#include "temp_spill_executor.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -50,6 +52,60 @@ bool IsCanonicalUuid(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+bool ParseInt64Text(const std::string_view text, std::int64_t* value) {
+  if (value == nullptr || text.empty()) return false;
+  const auto* begin = text.data();
+  const auto* end = begin + text.size();
+  const auto parsed = std::from_chars(begin, end, *value);
+  return parsed.ec == std::errc{} && parsed.ptr == end;
+}
+
+bool HasOwnedAggregateSpillArtifact(const std::filesystem::path& directory,
+                                    bool* inspection_ok) {
+  if (inspection_ok == nullptr) return false;
+  *inspection_ok = false;
+  std::error_code error;
+  const bool exists = std::filesystem::exists(directory, error);
+  if (error) return false;
+  if (!exists) {
+    *inspection_ok = true;
+    return false;
+  }
+  if (!std::filesystem::is_directory(directory, error) || error) return false;
+  for (std::filesystem::directory_iterator iterator(directory, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    const auto filename = iterator->path().filename().string();
+    if (filename.rfind("orh283_temp_spill-", 0) == 0 &&
+        iterator->path().extension() == ".sbtmpidx") {
+      *inspection_ok = true;
+      return true;
+    }
+  }
+  if (error) return false;
+  *inspection_ok = true;
+  return false;
+}
+
+bool RemoveOwnedAggregateSpillArtifacts(
+    const std::filesystem::path& directory) {
+  bool inspection_ok = false;
+  if (!HasOwnedAggregateSpillArtifact(directory, &inspection_ok)) {
+    return inspection_ok;
+  }
+  std::error_code error;
+  for (std::filesystem::directory_iterator iterator(directory, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    const auto filename = iterator->path().filename().string();
+    if (filename.rfind("orh283_temp_spill-", 0) == 0 &&
+        iterator->path().extension() == ".sbtmpidx") {
+      std::filesystem::remove(iterator->path(), error);
+    }
+  }
+  if (error) return false;
+  return !HasOwnedAggregateSpillArtifact(directory, &inspection_ok) &&
+         inspection_ok;
 }
 
 // QOW-SOURCE-QRY-009-V1
@@ -940,6 +996,205 @@ CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
   result.executed_physical_node_id =
       transitioned.executed_physical_node_id;
   result.causal_counter_id = transitioned.causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-SPILL-V1
+// Spill and reopen one typed int64 GROUP BY/SUM transition set through the
+// engine temporary-work runtime.  Merged SUM/count components must equal the
+// canonical in-memory states, and owned artifacts must be absent before any
+// state is published (including cancellation and reopen-refusal paths).
+CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
+    const CanonicalInt64SumSpillRequest& request) {
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalInt64SumSpillResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-011-SPILL-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.groups.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+  const auto& aggregate = request.aggregate_request;
+  if (aggregate.grouping_set_rule !=
+      CanonicalInt64GroupingSetRule::key_only) {
+    return refuse("aggregate spill admits one ordinary int64 grouping key");
+  }
+  if (request.spill_root.empty() || !request.spill_root.is_absolute() ||
+      !IsCanonicalUuid(request.spill_owner_uuid) ||
+      request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
+      request.maximum_spill_record_count == 0) {
+    return refuse("aggregate spill ownership or resource context is invalid");
+  }
+  const auto owner_directory =
+      (request.spill_root / request.spill_owner_uuid).lexically_normal();
+  if (owner_directory.filename() != request.spill_owner_uuid) {
+    return refuse("aggregate spill owner directory is not exact");
+  }
+  std::error_code filesystem_error;
+  if (std::filesystem::is_symlink(owner_directory, filesystem_error) ||
+      filesystem_error) {
+    return refuse("aggregate spill owner directory is a symlink or unreadable");
+  }
+  bool ownership_inspection_ok = false;
+  if (HasOwnedAggregateSpillArtifact(owner_directory,
+                                     &ownership_inspection_ok) ||
+      !ownership_inspection_ok) {
+    return refuse("aggregate spill owner already has an artifact");
+  }
+
+  auto canonical = ExecuteCanonicalInt64SumGroups(aggregate);
+  if (!canonical.diagnostic.ok) {
+    return refuse(canonical.diagnostic.diagnostic_code + ":" +
+                  canonical.diagnostic.detail);
+  }
+  if (aggregate.input_batch.rows.empty() || canonical.groups.empty()) {
+    return refuse("aggregate spill requires a nonempty grouped input");
+  }
+
+  const auto group_token = [&](const auto& key,
+                               std::string* token) {
+    if (token == nullptr) return false;
+    if (key.state == EngineValueState::sql_null) {
+      *token = "null";
+      return true;
+    }
+    const auto decoded = DecodeInt64Value(key);
+    if (!decoded.ok()) return false;
+    *token = "value." + std::to_string(decoded.value);
+    return true;
+  };
+  const auto field_key = [](const std::string_view field,
+                            const std::string& token) {
+    return "qow205." + std::string(field) + "." + token;
+  };
+
+  TempSpillRequest spill;
+  spill.route_kind = TempSpillRouteKind::kHashAggregate;
+  spill.route_label = "qow205.aggregate-spill." + request.spill_owner_uuid;
+  spill.spill_directory = owner_directory;
+  spill.runtime_generation = request.runtime_generation;
+  spill.reopen_runtime_generation = request.reopen_runtime_generation;
+  spill.memory_quota_bytes = request.memory_quota_bytes;
+  spill.cancellation_requested = request.cancellation_requested;
+  spill.restart_recovery_proof_available =
+      request.restart_recovery_proof_available;
+  spill.authority.engine_mga_snapshot_bound = true;
+  spill.authority.transaction_inventory_authoritative = true;
+  spill.authority.security_recheck_required = true;
+  spill.authority.security_context_bound = true;
+  spill.authority.exact_recheck_required = true;
+
+  const auto append_spill_row = [&](std::string key, std::int64_t value,
+                                    std::uint64_t row_ordinal) {
+    if (spill.rows.size() >= request.maximum_spill_record_count) return false;
+    spill.rows.push_back({std::move(key), value, row_ordinal});
+    return true;
+  };
+  for (const auto& group : canonical.groups) {
+    std::string token;
+    if (!group_token(group.group_key, &token) ||
+        !append_spill_row(field_key("sum", token), 0, 0) ||
+        !append_spill_row(field_key("transition", token), 0, 0) ||
+        !append_spill_row(field_key("non_null", token), 0, 0)) {
+      return refuse("aggregate spill group header exceeds its resource bound");
+    }
+  }
+  for (std::size_t row_index = 0;
+       row_index < aggregate.input_batch.rows.size(); ++row_index) {
+    const auto& row = aggregate.input_batch.rows[row_index];
+    const auto& key = row.values[aggregate.key_column];
+    const auto& value = row.values[aggregate.value_column];
+    std::string token;
+    if (!group_token(key, &token) ||
+        !append_spill_row(field_key("transition", token), 1,
+                          row_index + 1)) {
+      return refuse("aggregate spill transition exceeds its resource bound");
+    }
+    if (value.state == EngineValueState::sql_null) continue;
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok() ||
+        !append_spill_row(field_key("sum", token), decoded.value,
+                          row_index + 1) ||
+        !append_spill_row(field_key("non_null", token), 1,
+                          row_index + 1)) {
+      return refuse("aggregate spill value exceeds its resource bound");
+    }
+  }
+
+  const auto spilled = ExecuteBoundedTempSpillRoute(spill);
+  result.spilled = spilled.spilled;
+  result.spill_reopened = spilled.reopen_recovery_proven;
+  result.cleanup_proven = spilled.cleanup_proven;
+  result.cancellation_observed = request.cancellation_requested;
+  result.spill_evidence = spilled.evidence;
+
+  bool cleanup_inspection_ok = false;
+  const bool artifact_remains = HasOwnedAggregateSpillArtifact(
+      owner_directory, &cleanup_inspection_ok);
+  if (!cleanup_inspection_ok || artifact_remains) {
+    result.cleanup_proven =
+        RemoveOwnedAggregateSpillArtifacts(owner_directory) &&
+        result.cleanup_proven;
+    return refuse("aggregate spill owned-artifact cleanup is incomplete");
+  }
+  if (!spilled.ok || !spilled.spilled || !spilled.cleanup_proven ||
+      !spilled.reopen_recovery_proven) {
+    return refuse(spilled.diagnostic_code + ":" + spilled.fallback_reason);
+  }
+
+  std::map<std::string, std::int64_t> merged_fields;
+  for (const auto& output : spilled.output_rows) {
+    const auto separator = output.rfind('=');
+    std::int64_t merged_value = 0;
+    if (separator == std::string::npos || separator == 0 ||
+        !ParseInt64Text(std::string_view(output).substr(separator + 1),
+                        &merged_value) ||
+        !merged_fields.emplace(output.substr(0, separator), merged_value)
+             .second) {
+      return refuse("aggregate spill merge output is malformed");
+    }
+  }
+  if (merged_fields.size() != canonical.groups.size() * 3) {
+    return refuse("aggregate spill merge field cardinality is invalid");
+  }
+  for (const auto& group : canonical.groups) {
+    std::string token;
+    if (!group_token(group.group_key, &token) ||
+        group.sum_state.transition_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()) ||
+        group.sum_state.non_null_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max())) {
+      return refuse("aggregate spill canonical state cannot be compared");
+    }
+    const auto sum = merged_fields.find(field_key("sum", token));
+    const auto transition =
+        merged_fields.find(field_key("transition", token));
+    const auto non_null = merged_fields.find(field_key("non_null", token));
+    if (sum == merged_fields.end() || transition == merged_fields.end() ||
+        non_null == merged_fields.end() ||
+        sum->second != group.sum_state.accumulated_value ||
+        transition->second !=
+            static_cast<std::int64_t>(group.sum_state.transition_count) ||
+        non_null->second !=
+            static_cast<std::int64_t>(group.sum_state.non_null_count)) {
+      return refuse("aggregate spill merge differs from canonical state");
+    }
+  }
+
+  result.diagnostic = {};
+  result.groups = std::move(canonical.groups);
+  result.selected_plan_uuid = std::move(canonical.selected_plan_uuid);
+  result.executed_physical_node_id =
+      canonical.executed_physical_node_id;
+  result.causal_counter_id = canonical.causal_counter_id;
   return result;
 }
 

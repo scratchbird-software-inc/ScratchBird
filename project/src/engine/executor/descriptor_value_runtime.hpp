@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -245,6 +246,31 @@ struct CanonicalInt64SumDistinctResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalInt64SumSpillRequest {
+  CanonicalInt64SumGroupRequest aggregate_request;
+  std::filesystem::path spill_root;
+  std::string spill_owner_uuid;
+  std::uint64_t runtime_generation = 1;
+  std::uint64_t reopen_runtime_generation = 0;
+  std::uint64_t memory_quota_bytes = 4096;
+  std::size_t maximum_spill_record_count = 3145728;
+  bool cancellation_requested = false;
+  bool restart_recovery_proof_available = true;
+};
+
+struct CanonicalInt64SumSpillResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<CanonicalInt64SumGroupState> groups;
+  bool spilled = false;
+  bool spill_reopened = false;
+  bool cleanup_proven = false;
+  bool cancellation_observed = false;
+  std::vector<std::string> spill_evidence;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorInnerJoinRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -449,6 +475,8 @@ CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
     const CanonicalInt64SumFilterRequest& request);
 CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
     const CanonicalInt64SumDistinctRequest& request);
+CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
+    const CanonicalInt64SumSpillRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
