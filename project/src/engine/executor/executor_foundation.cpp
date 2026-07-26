@@ -1534,6 +1534,166 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   return result;
 }
 
+// QOW-SOURCE-QRY-012-STRATEGY-V1
+// Execute one admitted hash-inner strategy for a single int64 equality key and
+// prove its physical-pair multiset equals the canonical key/residual route.
+// Hash candidates and output remain independently bounded.
+CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
+    const CanonicalJoinStrategyRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  constexpr std::string_view kStrategyId =
+      "join.hash-inner.int64-equality.v1";
+
+  CanonicalJoinStrategyResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-STRATEGY-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.canonical_pair_indices.clear();
+    result.strategy_pair_indices.clear();
+    result.hash_entry_count = 0;
+    result.candidate_probe_count = 0;
+    result.canonical_multiset_proven = false;
+    result.strategy_id.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  if (request.strategy !=
+      CanonicalJoinStrategyKind::kHashInnerInt64Equality) {
+    return refuse("join strategy is outside the accepted hash-inner profile");
+  }
+  if (request.maximum_hash_entries == 0 ||
+      request.maximum_candidate_probes == 0 ||
+      request.maximum_output_rows == 0) {
+    return refuse("join strategy resource contract is invalid");
+  }
+  const auto& key_request = request.residual_request.key_request;
+  if (key_request.key_terms.size() != 1) {
+    return refuse("hash-inner strategy requires exactly one equality key");
+  }
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : key_request.physical_dag.nodes) {
+    if (node.physical_node_id == key_request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->implementation_id != kStrategyId) {
+    return refuse("selected physical node does not name the hash strategy");
+  }
+
+  auto canonical =
+      ExecuteCanonicalJoinResidual(request.residual_request);
+  if (!canonical.diagnostic.ok) {
+    return refuse(canonical.diagnostic.diagnostic_code + ":" +
+                  canonical.diagnostic.detail);
+  }
+
+  const auto& term = key_request.key_terms.front();
+  std::map<std::int64_t, std::vector<std::size_t>> right_hash;
+  std::size_t hash_entry_count = 0;
+  for (std::size_t right = 0; right < key_request.right_batch.rows.size();
+       ++right) {
+    const auto& value =
+        key_request.right_batch.rows[right].values[term.right_column];
+    if (value.state == api::EngineValueState::sql_null) continue;
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse("hash strategy right key encoding is invalid");
+    }
+    if (hash_entry_count == request.maximum_hash_entries) {
+      return refuse("hash strategy entry bound was exceeded");
+    }
+    right_hash[decoded.value].push_back(right);
+    ++hash_entry_count;
+  }
+
+  DescriptorBatch output;
+  output.columns = key_request.left_batch.columns;
+  output.columns.insert(output.columns.end(),
+                        key_request.right_batch.columns.begin(),
+                        key_request.right_batch.columns.end());
+  std::vector<std::size_t> strategy_pair_indices;
+  std::size_t candidate_probe_count = 0;
+  const auto right_count = key_request.right_batch.rows.size();
+  for (std::size_t left = 0; left < key_request.left_batch.rows.size();
+       ++left) {
+    const auto& left_value =
+        key_request.left_batch.rows[left].values[term.left_column];
+    if (left_value.state == api::EngineValueState::sql_null) continue;
+    const auto left_decoded = DecodeInt64Value(left_value);
+    if (!left_decoded.ok()) {
+      return refuse("hash strategy left key encoding is invalid");
+    }
+    const auto bucket = right_hash.find(left_decoded.value);
+    if (bucket == right_hash.end()) continue;
+    for (const auto right : bucket->second) {
+      if (candidate_probe_count == request.maximum_candidate_probes) {
+        return refuse("hash strategy candidate probe bound was exceeded");
+      }
+      ++candidate_probe_count;
+      const auto pair = left * right_count + right;
+      if (request.residual_request.residual_truth_values[pair] !=
+          api::EngineSqlTruthValue::true_value) {
+        continue;
+      }
+      if (strategy_pair_indices.size() == request.maximum_output_rows) {
+        return refuse("hash strategy output row bound was exceeded");
+      }
+      DescriptorTuple joined;
+      joined.values = key_request.left_batch.rows[left].values;
+      joined.values.insert(joined.values.end(),
+                           key_request.right_batch.rows[right].values.begin(),
+                           key_request.right_batch.rows[right].values.end());
+      output.rows.push_back(std::move(joined));
+      strategy_pair_indices.push_back(pair);
+    }
+  }
+  if (candidate_probe_count != canonical.candidate_pair_count) {
+    return refuse("hash strategy candidate set differs from canonical keys");
+  }
+
+  auto canonical_multiset = canonical.accepted_pair_indices;
+  auto strategy_multiset = strategy_pair_indices;
+  std::sort(canonical_multiset.begin(), canonical_multiset.end());
+  std::sort(strategy_multiset.begin(), strategy_multiset.end());
+  if (canonical_multiset != strategy_multiset) {
+    return refuse("hash strategy output differs from canonical pair multiset");
+  }
+
+  std::vector<std::uint32_t> output_descriptor_ids;
+  output_descriptor_ids.reserve(output.columns.size());
+  for (const auto& column : output.columns) {
+    output_descriptor_ids.push_back(column.descriptor_id);
+  }
+  auto validation =
+      ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
+  if (!validation.ok) {
+    return refuse(validation.diagnostic_code + ":" + validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.canonical_pair_indices =
+      std::move(canonical.accepted_pair_indices);
+  result.strategy_pair_indices = std::move(strategy_pair_indices);
+  result.hash_entry_count = hash_entry_count;
+  result.candidate_probe_count = candidate_probe_count;
+  result.canonical_multiset_proven = true;
+  result.strategy_id = std::string(kStrategyId);
+  result.selected_plan_uuid = std::move(canonical.selected_plan_uuid);
+  result.executed_physical_node_id =
+      canonical.executed_physical_node_id;
+  result.causal_counter_id = canonical.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }

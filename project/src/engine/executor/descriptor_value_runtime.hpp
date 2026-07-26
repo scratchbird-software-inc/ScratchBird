@@ -356,6 +356,33 @@ struct CanonicalJoinKindResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalJoinStrategyKind : std::uint8_t {
+  kHashInnerInt64Equality = 1,
+};
+
+struct CanonicalJoinStrategyRequest {
+  CanonicalJoinResidualRequest residual_request;
+  CanonicalJoinStrategyKind strategy =
+      CanonicalJoinStrategyKind::kHashInnerInt64Equality;
+  std::size_t maximum_hash_entries = 1048576;
+  std::size_t maximum_candidate_probes = 1048576;
+  std::size_t maximum_output_rows = 1048576;
+};
+
+struct CanonicalJoinStrategyResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<std::size_t> canonical_pair_indices;
+  std::vector<std::size_t> strategy_pair_indices;
+  std::size_t hash_entry_count = 0;
+  std::size_t candidate_probe_count = 0;
+  bool canonical_multiset_proven = false;
+  std::string strategy_id;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorRowNumberRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -551,6 +578,8 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
     const CanonicalJoinResidualRequest& request);
 CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     const CanonicalJoinKindRequest& request);
+CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
+    const CanonicalJoinStrategyRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
