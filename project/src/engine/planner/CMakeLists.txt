@@ -6,6 +6,15 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+# QOW-CMAKE-OPT-001-V1
+if(NOT TARGET sb_qow_canonical_logical_graph)
+  add_library(sb_qow_canonical_logical_graph INTERFACE)
+  target_compile_features(sb_qow_canonical_logical_graph INTERFACE cxx_std_20)
+  target_include_directories(sb_qow_canonical_logical_graph INTERFACE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+endif()
+
 if(NOT TARGET sb_engine_plan_shapes)
   add_library(sb_engine_plan_shapes
     dml_plan.cpp

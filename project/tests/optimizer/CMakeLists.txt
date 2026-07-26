@@ -8,6 +8,12 @@
 
 if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   # QOW-CMAKE-OPTIMIZER-ENROLLMENT-V1
+  if(NOT TARGET sb_qow_canonical_logical_graph)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/engine/planner"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_planner"
+    )
+  endif()
   if(NOT TARGET sb_qow_physical_node_abi)
     add_subdirectory(
       "${PROJECT_SOURCE_DIR}/src/engine/executor"
@@ -44,6 +50,16 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
     COMMAND qow_qry_004_consumption_test_v1)
   set_tests_properties(qow_qry_004_consumption_v1 PROPERTIES
     LABELS "qow_closure;QOW-306;QOW-LEAF-QRY-004-CONSUMPTION;development_candidate"
+  )
+  # QOW-CMAKE-OPT-001-V1
+  add_executable(qow_opt_001_test_v1 qow_opt_001.cpp)
+  target_compile_features(qow_opt_001_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_001_test_v1 PRIVATE
+    sb_qow_canonical_logical_graph
+  )
+  add_test(NAME qow_opt_001_v1 COMMAND qow_opt_001_test_v1)
+  set_tests_properties(qow_opt_001_v1 PROPERTIES
+    LABELS "qow_closure;QOW-301;QOW-LEAF-OPT-001;development_candidate"
   )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
