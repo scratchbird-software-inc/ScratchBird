@@ -140,6 +140,53 @@ struct CanonicalWindowValueResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalWindowAggregateFunction : std::uint8_t {
+  int64_sum = 1,
+};
+
+struct CanonicalWindowAggregateRequest {
+  CanonicalWindowFrameResult frames;
+  CanonicalWindowAggregateFunction function =
+      CanonicalWindowAggregateFunction::int64_sum;
+  std::string function_uuid;
+  std::uint32_t value_expression_descriptor_id = 0;
+  ExecutorColumnDescriptor result_column;
+  std::optional<
+      std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>>
+      filter_truth_values;
+  bool distinct = false;
+  std::vector<CanonicalDescriptorOrderTerm> aggregate_order_terms;
+  std::string deterministic_tie_evidence_uuid;
+  std::size_t maximum_output_rows = 1048576;
+  std::size_t maximum_transition_count = 1048576;
+  std::size_t maximum_distinct_value_count = 1048576;
+  std::size_t maximum_pair_comparisons = 1048576;
+  bool parser_execution_authority_claimed = false;
+  bool transaction_finality_claimed = false;
+  bool recovery_authority_claimed = false;
+};
+
+struct CanonicalWindowAggregateResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalWindowAggregateFunction function =
+      CanonicalWindowAggregateFunction::int64_sum;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::vector<std::vector<std::size_t>> transition_row_indices;
+  std::size_t transition_count = 0;
+  std::size_t distinct_value_count = 0;
+  std::size_t pair_comparison_count = 0;
+  bool filter_applied_before_transition = false;
+  bool distinct_applied_before_transition = false;
+  bool aggregate_order_independent_of_window_order = false;
+  bool effective_frame_recomputed = false;
+  bool shared_aggregate_state_authority_used = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string window_property_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows);
 OperatorDiagnostic ValidateBatch(const Batch& batch);
 std::int64_t EvalAdd(std::int64_t lhs, std::int64_t rhs);
@@ -169,6 +216,8 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
     const CanonicalWindowRankingRequest& request);
 CanonicalWindowValueResult ExecuteCanonicalWindowValue(
     const CanonicalWindowValueRequest& request);
+CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
+    const CanonicalWindowAggregateRequest& request);
 Batch MaterializeCte(const Batch& input);
 std::int64_t ScalarSubqueryFirstValue(const Batch& input, std::size_t column);
 Batch SetUnionDistinct(const Batch& left, const Batch& right);

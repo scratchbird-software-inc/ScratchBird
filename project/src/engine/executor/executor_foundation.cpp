@@ -108,6 +108,52 @@ bool RemoveOwnedAggregateSpillArtifacts(
          inspection_ok;
 }
 
+bool TransitionCanonicalInt64SumValue(
+    CanonicalInt64SumAggregateState* state,
+    const scratchbird::engine::internal_api::EngineTypedValue& value,
+    std::string* detail) {
+  using scratchbird::engine::internal_api::EngineValueState;
+  if (state == nullptr || detail == nullptr) return false;
+  ++state->transition_count;
+  if (value.state == EngineValueState::sql_null) return true;
+  const auto decoded = DecodeInt64Value(value);
+  if (!decoded.ok()) {
+    *detail = decoded.diagnostic.diagnostic_code + ":" +
+              decoded.diagnostic.detail;
+    return false;
+  }
+  if ((decoded.value > 0 &&
+       state->accumulated_value >
+           std::numeric_limits<std::int64_t>::max() - decoded.value) ||
+      (decoded.value < 0 &&
+       state->accumulated_value <
+           std::numeric_limits<std::int64_t>::min() - decoded.value)) {
+    *detail = "SUM int64 transition overflowed";
+    return false;
+  }
+  state->accumulated_value += decoded.value;
+  ++state->non_null_count;
+  state->has_value = true;
+  return true;
+}
+
+scratchbird::engine::internal_api::EngineTypedValue
+FinalizeCanonicalInt64SumValue(
+    const CanonicalInt64SumAggregateState& state) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+  EngineTypedValue value;
+  value.descriptor = state.result_column.descriptor;
+  if (state.has_value) {
+    value.encoded_value = std::to_string(state.accumulated_value);
+    value.state = EngineValueState::value;
+  } else {
+    value.is_null = true;
+    value.state = EngineValueState::sql_null;
+  }
+  return value;
+}
+
 // QOW-SOURCE-QRY-009-V1
 // Column positions reaching this legacy executor surface are already-bound
 // projection, sort, or expression handles.  Resolve the complete handle set
@@ -257,26 +303,12 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
   state.value_expression_descriptor_id =
       request.value_expression_descriptor_id;
   state.result_column = request.result_column;
-  state.transition_count = request.input_batch.rows.size();
   for (const auto& row : request.input_batch.rows) {
     const auto& value = row.values[request.value_column];
-    if (value.state == EngineValueState::sql_null) continue;
-    const auto decoded = DecodeInt64Value(value);
-    if (!decoded.ok()) {
-      return refuse(decoded.diagnostic.diagnostic_code + ":" +
-                    decoded.diagnostic.detail);
+    std::string detail;
+    if (!TransitionCanonicalInt64SumValue(&state, value, &detail)) {
+      return refuse(std::move(detail));
     }
-    if ((decoded.value > 0 &&
-         state.accumulated_value >
-             std::numeric_limits<std::int64_t>::max() - decoded.value) ||
-        (decoded.value < 0 &&
-         state.accumulated_value <
-             std::numeric_limits<std::int64_t>::min() - decoded.value)) {
-      return refuse("SUM int64 transition overflowed");
-    }
-    state.accumulated_value += decoded.value;
-    ++state.non_null_count;
-    state.has_value = true;
   }
 
   result.diagnostic = {};
@@ -350,15 +382,7 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
                   schema_validation.detail);
   }
 
-  EngineTypedValue value;
-  value.descriptor = state.result_column.descriptor;
-  if (state.has_value) {
-    value.encoded_value = std::to_string(state.accumulated_value);
-    value.state = EngineValueState::value;
-  } else {
-    value.is_null = true;
-    value.state = EngineValueState::sql_null;
-  }
+  EngineTypedValue value = FinalizeCanonicalInt64SumValue(state);
   result.output_batch.columns = {state.result_column};
   result.output_batch.rows = {{{std::move(value)}}};
   auto output_validation = ValidateCanonicalDescriptorBatch(
@@ -3920,6 +3944,313 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
   result.function = request.function;
   result.frame_and_exclusion_validated = true;
   result.frame_and_exclusion_ignored_for_navigation = navigation;
+  result.authority = request.frames.authority;
+  result.window_property_uuid = request.frames.window_property_uuid;
+  result.selected_plan_uuid = request.frames.selected_plan_uuid;
+  result.executed_physical_node_id =
+      request.frames.executed_physical_node_id;
+  result.causal_counter_id = request.frames.causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-WIN-012-STATE-V1
+// QOW-SOURCE-WIN-012-FILTER-V1
+// QOW-SOURCE-WIN-012-DISTINCT-V1
+// QOW-SOURCE-WIN-012-ORDER-V1
+// QOW-SOURCE-WIN-012-FRAME-V1
+// Aggregate windows consume the exact QOW-402 effective-row vectors and the
+// same int64 SUM transition/finalization helpers as QOW-205.  Each frame is
+// recomputed deliberately: inverse transition remains an optional optimizer
+// improvement and cannot change values or diagnostics.  FILTER, DISTINCT,
+// and aggregate argument ordering are applied before transition in that
+// order, independently of the ordering that constructed the window frame.
+CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
+    const CanonicalWindowAggregateRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  constexpr std::string_view kInt64SumUuid =
+      "019de5fc-2400-72e4-8549-82b2eef5a777";
+
+  CanonicalWindowAggregateResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+  if (request.function != CanonicalWindowAggregateFunction::int64_sum ||
+      request.function_uuid != kInt64SumUuid ||
+      !IsCanonicalUuid(request.function_uuid)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "aggregate-window function kind and registry UUID do not match");
+  }
+  if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                  "aggregate-window input is not canonical QOW-402 frame evidence");
+  }
+  if (request.parser_execution_authority_claimed ||
+      request.transaction_finality_claimed ||
+      request.recovery_authority_claimed) {
+    return refuse("QOW-DIAG-WINDOW-AUTHORITY",
+                  "aggregate window attempted to claim engine MGA authority");
+  }
+
+  const auto row_count = request.frames.ordered_batch.rows.size();
+  if (request.maximum_output_rows == 0 ||
+      row_count > request.maximum_output_rows ||
+      request.maximum_transition_count == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                  "aggregate-window output or transition resource bound was exceeded");
+  }
+  std::optional<std::size_t> value_column_index;
+  for (std::size_t column = 0;
+       column < request.frames.ordered_batch.columns.size(); ++column) {
+    if (request.frames.ordered_batch.columns[column].descriptor_id ==
+        request.value_expression_descriptor_id) {
+      if (value_column_index.has_value()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                      "aggregate-window value descriptor handle is ambiguous");
+      }
+      value_column_index = column;
+    }
+  }
+  if (!value_column_index.has_value()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "aggregate-window value descriptor handle is unresolved");
+  }
+  const auto& value_column =
+      request.frames.ordered_batch.columns[*value_column_index];
+  if (value_column.descriptor.canonical_type_name != "int64" ||
+      request.result_column.descriptor_id == 0 ||
+      request.result_column.stable_name.empty() ||
+      !request.result_column.nullable ||
+      !IsCanonicalUuid(
+          request.result_column.descriptor.descriptor_uuid.canonical) ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      request.result_column.descriptor.canonical_type_name != "int64" ||
+      request.result_column.descriptor.encoded_descriptor.empty()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  "SUM window value or result is not a bound nullable int64 descriptor");
+  }
+  DescriptorBatch result_schema;
+  result_schema.columns = {request.result_column};
+  const auto result_schema_validation = ValidateCanonicalDescriptorBatch(
+      result_schema, {request.result_column.descriptor_id});
+  if (!result_schema_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  result_schema_validation.diagnostic_code + ":" +
+                      result_schema_validation.detail);
+  }
+
+  std::vector<std::optional<std::int64_t>> decoded_values;
+  decoded_values.reserve(row_count);
+  for (const auto& row : request.frames.ordered_batch.rows) {
+    const auto& value = row.values[*value_column_index];
+    if (value.state == api::EngineValueState::sql_null) {
+      decoded_values.push_back(std::nullopt);
+      continue;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                    decoded.diagnostic.diagnostic_code + ":" +
+                        decoded.diagnostic.detail);
+    }
+    decoded_values.push_back(decoded.value);
+  }
+
+  std::vector<std::uint8_t> filter_passes(row_count, 1);
+  if (request.filter_truth_values.has_value()) {
+    if (request.filter_truth_values->size() != row_count) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FILTER",
+                    "aggregate FILTER cardinality does not match window rows");
+    }
+    for (std::size_t row = 0; row < row_count; ++row) {
+      std::string detail;
+      bool passes = false;
+      if (!api::QowPredicateConsumerPassesV1(
+              (*request.filter_truth_values)[row],
+              api::EnginePredicateConsumer::filter, &passes, &detail)) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-FILTER",
+                      "aggregate FILTER 3VL refusal: " + detail);
+      }
+      filter_passes[row] = passes ? 1 : 0;
+    }
+  }
+
+  if (request.distinct && request.maximum_distinct_value_count == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
+                  "aggregate-window DISTINCT resource bound is zero");
+  }
+  if (request.aggregate_order_terms.empty()) {
+    if (!request.deterministic_tie_evidence_uuid.empty()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                    "unordered aggregate window carries ordering evidence");
+    }
+  } else {
+    if (request.aggregate_order_terms.size() > 64 ||
+        !IsCanonicalUuid(request.deterministic_tie_evidence_uuid) ||
+        request.maximum_pair_comparisons == 0) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                    "aggregate argument order resource or tie evidence is invalid");
+    }
+    std::set<std::pair<std::size_t, std::uint32_t>> seen_terms;
+    for (const auto& term : request.aggregate_order_terms) {
+      if (term.column >= request.frames.ordered_batch.columns.size()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      "aggregate argument order column is outside the schema");
+      }
+      const auto term_validation = ValidateCanonicalDescriptorOrderTerm(
+          term, request.frames.ordered_batch.columns[term.column]);
+      if (!term_validation.ok ||
+          !seen_terms.emplace(term.column, term.expression_descriptor_id)
+               .second) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      term_validation.ok
+                          ? "aggregate argument order term is duplicated"
+                          : term_validation.diagnostic_code + ":" +
+                                term_validation.detail);
+      }
+    }
+  }
+
+  result.values.reserve(row_count);
+  result.transition_row_indices.reserve(row_count);
+  for (std::size_t output_row = 0; output_row < row_count; ++output_row) {
+    std::vector<std::size_t> transition_rows;
+    for (const auto member :
+         request.frames.effective_frames[output_row].effective_row_indices) {
+      if (filter_passes[member]) transition_rows.push_back(member);
+    }
+
+    std::set<std::int64_t> distinct_values;
+    if (request.distinct) {
+      std::vector<std::size_t> distinct_rows;
+      distinct_rows.reserve(transition_rows.size());
+      for (const auto member : transition_rows) {
+        if (!decoded_values[member].has_value()) continue;
+        if (distinct_values.contains(*decoded_values[member])) continue;
+        if (distinct_values.size() >=
+            request.maximum_distinct_value_count) {
+          return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
+                        "aggregate-window DISTINCT resource bound was exceeded");
+        }
+        distinct_values.insert(*decoded_values[member]);
+        distinct_rows.push_back(member);
+      }
+      transition_rows = std::move(distinct_rows);
+      if (result.distinct_value_count >
+          std::numeric_limits<std::size_t>::max() - distinct_values.size()) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-DISTINCT",
+                      "aggregate-window DISTINCT evidence count overflowed");
+      }
+      result.distinct_value_count += distinct_values.size();
+    }
+
+    if (!request.aggregate_order_terms.empty()) {
+      const auto candidate_count = transition_rows.size();
+      if (candidate_count != 0 &&
+          candidate_count >
+              std::numeric_limits<std::size_t>::max() / candidate_count) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      "aggregate argument order comparison matrix overflowed");
+      }
+      const auto matrix_size = candidate_count * candidate_count;
+      if (matrix_size > request.maximum_pair_comparisons ||
+          result.pair_comparison_count >
+              request.maximum_pair_comparisons - matrix_size) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                      "aggregate argument order comparison bound was exceeded");
+      }
+      std::vector<std::int8_t> comparisons(matrix_size, 0);
+      for (std::size_t left = 0; left < candidate_count; ++left) {
+        for (std::size_t right = left + 1; right < candidate_count; ++right) {
+          int comparison = 0;
+          for (const auto& term : request.aggregate_order_terms) {
+            const auto compared = CompareCanonicalDescriptorOrderValues(
+                request.frames.ordered_batch.rows[transition_rows[left]]
+                    .values[term.column],
+                request.frames.ordered_batch.rows[transition_rows[right]]
+                    .values[term.column],
+                term);
+            if (!compared.diagnostic.ok) {
+              return refuse("QOW-DIAG-WINDOW-AGGREGATE-ORDER",
+                            compared.diagnostic.diagnostic_code + ":" +
+                                compared.diagnostic.detail);
+            }
+            comparison = compared.comparison;
+            if (comparison != 0) break;
+          }
+          comparisons[left * candidate_count + right] =
+              static_cast<std::int8_t>(comparison);
+          comparisons[right * candidate_count + left] =
+              static_cast<std::int8_t>(-comparison);
+        }
+      }
+      std::vector<std::size_t> order(candidate_count);
+      std::iota(order.begin(), order.end(), 0);
+      std::stable_sort(order.begin(), order.end(),
+                       [&](const std::size_t left, const std::size_t right) {
+                         return comparisons[left * candidate_count + right] <
+                                0;
+                       });
+      std::vector<std::size_t> ordered_rows;
+      ordered_rows.reserve(candidate_count);
+      for (const auto position : order) {
+        ordered_rows.push_back(transition_rows[position]);
+      }
+      transition_rows = std::move(ordered_rows);
+      result.pair_comparison_count += matrix_size;
+    }
+
+    if (transition_rows.size() > request.maximum_transition_count ||
+        result.transition_count >
+            request.maximum_transition_count - transition_rows.size()) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-FRAME",
+                    "aggregate-window transition resource bound was exceeded");
+    }
+    CanonicalInt64SumAggregateState state;
+    state.value_expression_descriptor_id =
+        request.value_expression_descriptor_id;
+    state.result_column = request.result_column;
+    for (const auto member : transition_rows) {
+      std::string detail;
+      if (!TransitionCanonicalInt64SumValue(
+              &state,
+              request.frames.ordered_batch.rows[member]
+                  .values[*value_column_index],
+              &detail)) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE", std::move(detail));
+      }
+    }
+    result.transition_count += transition_rows.size();
+    result.transition_row_indices.push_back(std::move(transition_rows));
+    result.values.push_back(FinalizeCanonicalInt64SumValue(state));
+  }
+
+  DescriptorBatch output_validation_batch;
+  output_validation_batch.columns = {request.result_column};
+  output_validation_batch.rows.reserve(result.values.size());
+  for (const auto& value : result.values) {
+    output_validation_batch.rows.push_back({{value}});
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      output_validation_batch, {request.result_column.descriptor_id});
+  if (!output_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE",
+                  output_validation.diagnostic_code + ":" +
+                      output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.function = request.function;
+  result.filter_applied_before_transition =
+      request.filter_truth_values.has_value();
+  result.distinct_applied_before_transition = request.distinct;
+  result.aggregate_order_independent_of_window_order =
+      !request.aggregate_order_terms.empty();
+  result.effective_frame_recomputed = true;
+  result.shared_aggregate_state_authority_used = true;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
   result.selected_plan_uuid = request.frames.selected_plan_uuid;
