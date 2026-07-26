@@ -32,6 +32,8 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   statement/statement_catalog.cpp
   # QOW-CMAKE-QRY-001-BINDING-V1
   binder/binder.cpp
+  # QOW-ROUTE-STAGE-QRY-005-V1
+  # QOW-CMAKE-QRY-005-V1
   lowering/lowering.cpp
   rendering/rendering.cpp
 )

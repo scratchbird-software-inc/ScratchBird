@@ -18,6 +18,7 @@
 #include <initializer_list>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
 
 namespace scratchbird::parser::sbsql {
 namespace {
@@ -34561,6 +34562,198 @@ std::string LanguageControlPayload(const SblrEnvelope& envelope,
   return out.str();
 }
 
+void AddNativeRelationalLoweringError(SblrEnvelope* envelope,
+                                      std::string code,
+                                      std::string message,
+                                      std::vector<Field> fields = {}) {
+  if (envelope->messages.has_errors()) return;
+  envelope->messages.diagnostics.push_back(MakeDiagnostic(
+      std::move(code), "ERROR", std::move(message),
+      "sbp_sbsql.native_relational_lowering", std::move(fields)));
+}
+
+std::string JoinCanonicalHandleList(
+    const std::vector<std::uint32_t>& handles) {
+  if (handles.empty()) return "-";
+  std::ostringstream out;
+  for (std::size_t index = 0; index < handles.size(); ++index) {
+    if (index != 0) out << ',';
+    out << handles[index];
+  }
+  return out.str();
+}
+
+std::string EscapeCanonicalSblrField(std::string_view value) {
+  std::string escaped;
+  escaped.reserve(value.size());
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\': escaped += "\\\\"; break;
+      case '\n': escaped += "\\n"; break;
+      case '\r': escaped += "\\r"; break;
+      case '\t': escaped += "\\t"; break;
+      default: escaped += ch; break;
+    }
+  }
+  return escaped;
+}
+
+std::string EncodeCanonicalNativeRelationalEnvelope(
+    const SblrEnvelope& envelope,
+    const BoundStatement& bound) {
+  std::ostringstream out;
+  out << "operation_id=" << envelope.operation_id << '\n'
+      << "opcode=" << envelope.sblr_opcode << '\n'
+      << "result_shape=" << envelope.result_shape_key << '\n'
+      << "diagnostic_shape=" << envelope.diagnostic_shape_key << '\n'
+      << "parser_package_uuid="
+      << EscapeCanonicalSblrField(bound.parser_package_uuid) << '\n'
+      << "registry_snapshot_uuid="
+      << EscapeCanonicalSblrField(bound.command_registry_snapshot_uuid) << '\n'
+      << "trace_key=" << EscapeCanonicalSblrField(envelope.trace_key) << '\n'
+      << "contains_sql_text=false\n"
+      << "parser_resolved_names_to_uuids=true\n"
+      << "requires_security_context=true\n"
+      << "requires_transaction_context=true\n"
+      << "requires_cluster_authority=false\n"
+      << "source_artifact_policy_status=absent\n"
+      << "source_artifact_identity=\n"
+      << "source_artifact_hash=\n"
+      << "source_artifact_format=sblr.source_artifact_map.v1\n"
+      << "source_artifact_render_metadata_only=true\n"
+      << "source_artifact_contains_sql_text=false\n"
+      << "source_artifact_raw_sql_text_authoritative=false\n";
+  for (const auto& operand : envelope.operands) {
+    out << "operand=" << EscapeCanonicalSblrField(operand.type) << '\t'
+        << EscapeCanonicalSblrField(operand.name) << '\t'
+        << EscapeCanonicalSblrField(operand.value) << '\n';
+  }
+  return out.str();
+}
+
+// QOW-ROUTE-STAGE-QRY-005-V1
+// QOW-SOURCE-QRY-005-V1
+SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
+    const BoundStatement& bound,
+    const SessionContext& session) {
+  SblrEnvelope envelope;
+  envelope.operation_family = "sblr.query.relational.v3";
+  envelope.statement_hash = bound.statement_hash;
+  envelope.surface_key = bound.surface_key;
+  envelope.command_family = bound.command_family;
+  envelope.operation_id = "query.execute";
+  envelope.sblr_operation_key = "sblr.query.relational.v3";
+  envelope.sblr_opcode = "SBLR_QUERY_EXECUTE";
+  envelope.engine_api_operation_id = envelope.operation_id;
+  envelope.engine_api_function = "DispatchTypedPlanOperation";
+  envelope.result_shape_key = "query_execute_result";
+  envelope.diagnostic_shape_key = "engine.diagnostic.v1";
+  envelope.resource_contract_key = "resource.contract.query_read";
+  envelope.trace_key = bound.trace_key;
+  envelope.source_artifact_policy = "absent";
+  envelope.catalog_epoch =
+      bound.catalog_epoch != 0 ? bound.catalog_epoch : session.catalog_epoch;
+  envelope.security_policy_epoch =
+      bound.security_policy_epoch != 0 ? bound.security_policy_epoch
+                                       : session.security_policy_epoch;
+  envelope.descriptor_epoch =
+      bound.descriptor_epoch != 0 ? bound.descriptor_epoch
+                                  : session.descriptor_epoch;
+  envelope.resolved_object_uuids = bound.resolved_object_uuids;
+  envelope.descriptor_refs = bound.descriptor_refs;
+  envelope.policy_refs = bound.policy_refs;
+  envelope.required_rights = bound.required_rights;
+  envelope.required_authority_steps = bound.required_authority_steps;
+  envelope.messages = bound.messages;
+  AppendIfMissing(&envelope.required_rights, "right.read");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.engine.query_execute_api_required");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.server.transaction_context_required");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.engine.mga_transaction_context_required");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.parser.no_security_authorization");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope.required_authority_steps,
+                  "authority.parser.no_sql_text_execution");
+
+  const auto& native = bound.native_relational;
+  if (!bound.bound || !native.bound || envelope.messages.has_errors()) {
+    AddNativeRelationalLoweringError(
+        &envelope, "QOW-DIAG-BOUNDAST-RELATION",
+        "canonical relational lowering requires an accepted typed BoundAST");
+    return envelope;
+  }
+  if (bound.parser_package_uuid.empty() ||
+      bound.command_registry_snapshot_uuid.empty() ||
+      envelope.catalog_epoch == 0 || envelope.security_policy_epoch == 0 ||
+      envelope.descriptor_epoch == 0) {
+    AddNativeRelationalLoweringError(
+        &envelope, "QOW-DIAG-BOUNDAST-SCOPE",
+        "canonical relational lowering requires parser identity and exact engine epochs");
+    return envelope;
+  }
+  if (native.root_relation_id == 0 || native.relations.size() != 1 ||
+      native.descriptors.empty() || native.outputs.empty()) {
+    AddNativeRelationalLoweringError(
+        &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "typed relational lowering requires one complete reachable relation root");
+    return envelope;
+  }
+
+  const auto& relation = native.relations.front();
+  if (relation.relation_id != native.root_relation_id ||
+      relation.relation_kind != NativeRelationAstKind::kValues ||
+      !relation.input_relation_ids.empty() || relation.lateral ||
+      relation.bound_object_uuid.has_value()) {
+    AddNativeRelationalLoweringError(
+        &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "typed VALUES relation fields do not form the accepted canonical leaf");
+    return envelope;
+  }
+
+  std::unordered_set<std::uint32_t> descriptor_ids;
+  for (const auto& descriptor : native.descriptors) {
+    if (descriptor.descriptor_id == 0 ||
+        !descriptor_ids.insert(descriptor.descriptor_id).second) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed descriptor handles must be nonzero and unique");
+      return envelope;
+    }
+  }
+
+  std::vector<std::uint32_t> output_descriptor_ids;
+  output_descriptor_ids.reserve(native.outputs.size());
+  std::unordered_set<std::uint32_t> emitted_output_descriptor_ids;
+  std::uint32_t expected_ordinal = 0;
+  for (const auto& output : native.outputs) {
+    if (output.ordinal != expected_ordinal++ || output.descriptor_id == 0 ||
+        !descriptor_ids.contains(output.descriptor_id) ||
+        !emitted_output_descriptor_ids.insert(output.descriptor_id).second) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed output descriptor handles must be ordered, bound, and unique");
+      return envelope;
+    }
+    output_descriptor_ids.push_back(output.descriptor_id);
+  }
+
+  envelope.operands.push_back(
+      {"uint16", "relational_wire_version", "1"});
+  envelope.operands.push_back(
+      {"uint32", "relational_root_node_id",
+       std::to_string(native.root_relation_id)});
+  envelope.operands.push_back(
+      {"relational_node_v1", std::to_string(relation.relation_id),
+       "13|0|" + JoinCanonicalHandleList(relation.input_relation_ids) + "|" +
+           JoinCanonicalHandleList(output_descriptor_ids)});
+  envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
+  return envelope;
+}
+
 std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstDocument& cst) {
   const auto words = MeaningfulUpperTokens(cst);
   if (const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
@@ -34800,6 +34993,10 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
 } // namespace
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
+  if (bound.native_relational.bound ||
+      bound.registry_family == "sbsql.query.values.v3") {
+    return LowerBoundNativeRelationalToCanonicalSblr(bound, session);
+  }
   const auto lifecycle_bridge_guard = AnalyzeBridgeRoute(cst);
   const bool filespace_lifecycle_command =
       LifecycleCommandStartsWith(cst.source, "ATTACH FILESPACE") ||
@@ -36235,6 +36432,72 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   if (envelope.required_authority_steps.empty()) {
     AddVerifierError(&result.messages, "SBSQL.SBLR.AUTHORITY_STEPS_MISSING",
                      "SBLR envelope authority evidence is missing");
+  }
+  if (envelope.operation_id == "query.execute") {
+    bool wire_version_present = false;
+    bool root_node_present = false;
+    std::size_t relational_node_count = 0;
+    bool canonical_operands = true;
+    for (const auto& operand : envelope.operands) {
+      if (operand.type == "uint16" &&
+          operand.name == "relational_wire_version" &&
+          operand.value == "1" && !wire_version_present) {
+        wire_version_present = true;
+      } else if (operand.type == "uint32" &&
+                 operand.name == "relational_root_node_id" &&
+                 !operand.value.empty() && operand.value != "0" &&
+                 !root_node_present) {
+        root_node_present = true;
+      } else if (operand.type == "relational_node_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_node_count;
+      } else {
+        canonical_operands = false;
+      }
+    }
+    if (envelope.sblr_opcode != "SBLR_QUERY_EXECUTE" ||
+        envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
+        envelope.engine_api_operation_id != "query.execute" ||
+        envelope.result_shape_key != "query_execute_result" ||
+        !wire_version_present || !root_node_present ||
+        relational_node_count == 0 || !canonical_operands ||
+        envelope.payload.find("operation_id=query.execute\n") ==
+            std::string::npos ||
+        envelope.payload.find("opcode=SBLR_QUERY_EXECUTE\n") ==
+            std::string::npos ||
+        envelope.payload.find("result_shape=query_execute_result\n") ==
+            std::string::npos ||
+        envelope.payload.find("requires_transaction_context=true\n") ==
+            std::string::npos ||
+        envelope.payload.find("contains_sql_text=false\n") ==
+            std::string::npos ||
+        envelope.payload.find("query.plan_operation") != std::string::npos ||
+        envelope.payload.find("SBLR_QUERY_PLAN_OPERATION") !=
+            std::string::npos) {
+      AddVerifierError(
+          &result.messages, "QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL",
+          "native relational queries must use the canonical typed query.execute root");
+    }
+    if (!HasValue(envelope.required_rights, "right.read") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.engine.query_execute_api_required") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.server.transaction_context_required") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.engine.mga_transaction_context_required") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.no_security_authorization") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.no_storage_or_finality") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.no_sql_text_execution") ||
+        envelope.parser_executes_sql || envelope.real_file_effects) {
+      AddVerifierError(
+          &result.messages, "SBSQL.SBLR.QUERY_EXECUTE_AUTHORITY_INVALID",
+          "canonical query execution must preserve engine-owned MGA and parser non-authority");
+    }
   }
   if (envelope.payload.find("\"query_envelope_kind\":\"vector_search\"") != std::string::npos) {
     if (envelope.operation_id != "nosql.vector_search" ||
