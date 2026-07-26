@@ -77,6 +77,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-104;QOW-LEAF-QRY-005;development_candidate"
   )
 
+  # QOW-ROUTE-STAGE-QRY-006-V1
+  # QOW-CMAKE-QRY-006-V1
+  add_executable(qow_qry_006_test_v1 qow_qry_006.cpp)
+  target_compile_features(qow_qry_006_test_v1 PRIVATE cxx_std_23)
+  target_link_libraries(qow_qry_006_test_v1 PRIVATE
+    sbl_sbsql_parser_pipeline
+    sb_qow_sblr_query_route_contract
+  )
+  add_test(NAME qow_qry_006_v1 COMMAND qow_qry_006_test_v1)
+  set_tests_properties(qow_qry_006_v1 PROPERTIES
+    LABELS "qow_closure;QOW-104;QOW-LEAF-QRY-006;development_candidate"
+  )
+
   set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

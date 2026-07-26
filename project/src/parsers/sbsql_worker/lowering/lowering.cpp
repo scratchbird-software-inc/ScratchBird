@@ -18,6 +18,7 @@
 #include <initializer_list>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace scratchbird::parser::sbsql {
@@ -34583,6 +34584,32 @@ std::string JoinCanonicalHandleList(
   return out.str();
 }
 
+std::string EncodeCanonicalHex(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    encoded.push_back(kHex[ch >> 4]);
+    encoded.push_back(kHex[ch & 0x0f]);
+  }
+  return encoded;
+}
+
+std::string EncodeOptionalCanonicalHex(
+    const std::optional<std::string>& value) {
+  return value.has_value() ? EncodeCanonicalHex(*value) : "-";
+}
+
+std::string EncodeOptionalCanonicalText(
+    const std::optional<std::string>& value) {
+  return value.has_value() ? *value : "-";
+}
+
+std::string EncodeOptionalCanonicalU32(
+    const std::optional<std::uint32_t>& value) {
+  return value.has_value() ? std::to_string(*value) : "-";
+}
+
 std::string EscapeCanonicalSblrField(std::string_view value) {
   std::string escaped;
   escaped.reserve(value.size());
@@ -34632,7 +34659,9 @@ std::string EncodeCanonicalNativeRelationalEnvelope(
 }
 
 // QOW-ROUTE-STAGE-QRY-005-V1
+// QOW-ROUTE-STAGE-QRY-006-V1
 // QOW-SOURCE-QRY-005-V1
+// QOW-SOURCE-QRY-006-V1
 SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const BoundStatement& bound,
     const SessionContext& session) {
@@ -34696,7 +34725,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
   if (native.root_relation_id == 0 || native.relations.size() != 1 ||
-      native.descriptors.empty() || native.outputs.empty()) {
+      native.descriptors.empty() || native.expressions.empty() ||
+      native.outputs.empty() || native.values_rows.empty()) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         "typed relational lowering requires one complete reachable relation root");
@@ -34707,7 +34737,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   if (relation.relation_id != native.root_relation_id ||
       relation.relation_kind != NativeRelationAstKind::kValues ||
       !relation.input_relation_ids.empty() || relation.lateral ||
-      relation.bound_object_uuid.has_value()) {
+      relation.bound_object_uuid.has_value() ||
+      relation.values_row_ids.empty()) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         "typed VALUES relation fields do not form the accepted canonical leaf");
@@ -34721,6 +34752,85 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed descriptor handles must be nonzero and unique");
+      return envelope;
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const BoundExpressionAstRecord*>
+      expressions_by_id;
+  for (const auto& expression : native.expressions) {
+    if (expression.expression_id == 0 ||
+        !descriptor_ids.contains(expression.result_descriptor_id) ||
+        !expressions_by_id.emplace(expression.expression_id, &expression).second) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed scalar expression handles must be complete and unique");
+      return envelope;
+    }
+    const bool literal =
+        expression.expression_kind == NativeExpressionAstKind::kLiteral;
+    const bool parameter =
+        expression.expression_kind == NativeExpressionAstKind::kParameter;
+    const bool identifier =
+        expression.expression_kind == NativeExpressionAstKind::kIdentifier;
+    const bool function_call =
+        expression.expression_kind == NativeExpressionAstKind::kFunctionCall;
+    const bool operator_expression =
+        expression.expression_kind == NativeExpressionAstKind::kUnary ||
+        expression.expression_kind == NativeExpressionAstKind::kBinary;
+    if (literal != expression.literal_kind.has_value() ||
+        function_call != expression.bound_function_uuid.has_value() ||
+        identifier != expression.bound_name_uuid.has_value() ||
+        operator_expression != expression.canonical_operator_name.has_value() ||
+        (literal || parameter) !=
+            expression.literal_or_parameter_ref.has_value()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed scalar expression fields are incomplete or contradictory");
+      return envelope;
+    }
+  }
+  for (const auto& expression : native.expressions) {
+    for (const auto child_id : expression.child_expression_ids) {
+      if (child_id == 0 || !expressions_by_id.contains(child_id)) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed scalar expression contains a dangling child handle");
+        return envelope;
+      }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const BoundValuesRowAstRecord*>
+      rows_by_id;
+  for (const auto& row : native.values_rows) {
+    if (row.row_id == 0 || row.expression_ids.empty() ||
+        !rows_by_id.emplace(row.row_id, &row).second) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed VALUES row handles must be complete and unique");
+      return envelope;
+    }
+    for (const auto expression_id : row.expression_ids) {
+      if (!expressions_by_id.contains(expression_id)) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed VALUES row contains a dangling expression handle");
+        return envelope;
+      }
+    }
+  }
+  if (relation.values_row_ids.size() != native.values_rows.size()) {
+    AddNativeRelationalLoweringError(
+        &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "typed VALUES relation does not declare every row handle");
+    return envelope;
+  }
+  for (std::size_t index = 0; index < relation.values_row_ids.size(); ++index) {
+    if (relation.values_row_ids[index] != native.values_rows[index].row_id) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed VALUES relation row order is not canonical");
       return envelope;
     }
   }
@@ -34740,16 +34850,94 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     output_descriptor_ids.push_back(output.descriptor_id);
   }
+  for (const auto& row : native.values_rows) {
+    if (row.expression_ids.size() != output_descriptor_ids.size()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed VALUES row arity differs from the output descriptor arity");
+      return envelope;
+    }
+    for (std::size_t ordinal = 0; ordinal < row.expression_ids.size(); ++ordinal) {
+      if (expressions_by_id.at(row.expression_ids[ordinal])
+              ->result_descriptor_id != output_descriptor_ids[ordinal]) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed VALUES expression descriptor differs from its output column");
+        return envelope;
+      }
+    }
+  }
+  for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
+    if (native.outputs[ordinal].expression_id !=
+        native.values_rows.front().expression_ids[ordinal]) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed output expression does not identify the first VALUES row");
+      return envelope;
+    }
+  }
 
   envelope.operands.push_back(
       {"uint16", "relational_wire_version", "1"});
   envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
        std::to_string(native.root_relation_id)});
+  for (const auto& descriptor : native.descriptors) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", std::to_string(descriptor.descriptor_id),
+         descriptor.descriptor_uuid + "|" + descriptor.type_uuid + "|" +
+             std::to_string(static_cast<std::uint8_t>(descriptor.nullability) + 1) +
+             "|" + EncodeOptionalCanonicalText(descriptor.collation_uuid) +
+             "|" + EncodeOptionalCanonicalHex(descriptor.timezone_profile_id) +
+             "|" + EncodeOptionalCanonicalU32(
+                         descriptor.width_precision_scale.width) +
+             "|" + EncodeOptionalCanonicalU32(
+                         descriptor.width_precision_scale.precision) +
+             "|" + EncodeOptionalCanonicalU32(
+                         descriptor.width_precision_scale.scale)});
+  }
+  for (const auto& expression : native.expressions) {
+    const auto literal_kind = expression.literal_kind.has_value()
+                                  ? std::to_string(
+                                        static_cast<std::uint8_t>(
+                                            *expression.literal_kind) +
+                                        1)
+                                  : "-";
+    envelope.operands.push_back(
+        {"relational_expression_v1",
+         std::to_string(expression.expression_id),
+         std::to_string(static_cast<std::uint8_t>(
+                            expression.expression_kind) +
+                        1) +
+             "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
+             "|" + std::to_string(expression.result_descriptor_id) + "|" +
+             EncodeOptionalCanonicalText(expression.bound_function_uuid) +
+             "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
+             "|" + literal_kind + "|" +
+             EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
+             "|" +
+             EncodeOptionalCanonicalHex(expression.literal_or_parameter_ref)});
+  }
+  for (const auto& output : native.outputs) {
+    envelope.operands.push_back(
+        {"relational_output_v1", std::to_string(output.output_id),
+         std::to_string(relation.relation_id) + "|" +
+             std::to_string(output.expression_id) + "|" +
+             std::to_string(output.descriptor_id) + "|" +
+             (output.visible ? "1" : "0") + "|" +
+             std::to_string(output.ordinal) + "|" +
+             EncodeCanonicalHex(output.output_name_utf8)});
+  }
+  for (const auto& row : native.values_rows) {
+    envelope.operands.push_back(
+        {"relational_values_row_v1", std::to_string(row.row_id),
+         JoinCanonicalHandleList(row.expression_ids)});
+  }
   envelope.operands.push_back(
       {"relational_node_v1", std::to_string(relation.relation_id),
        "13|0|" + JoinCanonicalHandleList(relation.input_relation_ids) + "|" +
-           JoinCanonicalHandleList(output_descriptor_ids)});
+           JoinCanonicalHandleList(output_descriptor_ids) + "|" +
+           JoinCanonicalHandleList(relation.values_row_ids)});
   envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;
 }
@@ -36437,6 +36625,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     bool wire_version_present = false;
     bool root_node_present = false;
     std::size_t relational_node_count = 0;
+    std::size_t relational_descriptor_count = 0;
+    std::size_t relational_expression_count = 0;
+    std::size_t relational_output_count = 0;
+    std::size_t relational_values_row_count = 0;
     bool canonical_operands = true;
     for (const auto& operand : envelope.operands) {
       if (operand.type == "uint16" &&
@@ -36452,6 +36644,22 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                  !operand.name.empty() && operand.name != "0" &&
                  !operand.value.empty()) {
         ++relational_node_count;
+      } else if (operand.type == "relational_descriptor_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_descriptor_count;
+      } else if (operand.type == "relational_expression_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_expression_count;
+      } else if (operand.type == "relational_output_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_output_count;
+      } else if (operand.type == "relational_values_row_v1" &&
+                 !operand.name.empty() && operand.name != "0" &&
+                 !operand.value.empty()) {
+        ++relational_values_row_count;
       } else {
         canonical_operands = false;
       }
@@ -36462,7 +36670,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.engine_api_operation_id != "query.execute" ||
         envelope.result_shape_key != "query_execute_result" ||
         !wire_version_present || !root_node_present ||
-        relational_node_count == 0 || !canonical_operands ||
+        relational_node_count == 0 || relational_descriptor_count == 0 ||
+        relational_expression_count == 0 || relational_output_count == 0 ||
+        relational_values_row_count == 0 || !canonical_operands ||
         envelope.payload.find("operation_id=query.execute\n") ==
             std::string::npos ||
         envelope.payload.find("opcode=SBLR_QUERY_EXECUTE\n") ==
