@@ -18,6 +18,7 @@
 #ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/name_resolution_api.hpp"
 #include "datatype_advanced_family.hpp"
 #include "datatype_document.hpp"
 #include "domain_support/domain_store.hpp"
@@ -40,6 +41,27 @@ bool QowCanonicalUuidV1(const std::string_view value) {
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
   return true;
+}
+
+std::string QowCanonicalDescriptorFieldV1(const std::string& descriptor,
+                                          const std::string& key) {
+  const std::string prefix = key + "=";
+  std::string value;
+  bool found = false;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const std::size_t end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    if (field.rfind(prefix, 0) == 0) {
+      if (found) return {};
+      value = field.substr(prefix.size());
+      found = true;
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return value;
 }
 
 }  // namespace
@@ -136,6 +158,76 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   output_value->state = cast.value.is_null ? EngineValueState::sql_null
                                            : EngineValueState::value;
   *cast_category = dt::DatatypeCastCategoryName(cast.category);
+  return true;
+}
+
+// QOW-SOURCE-QRY-008-COLLATION-V1
+bool QowCompareCanonicalCollatedScalarsV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    const std::string& collation_uuid,
+    const EngineApiU64 resource_epoch,
+    const EngineApiU64 collation_epoch,
+    const scratchbird::core::datatypes::DatatypeTextSeedAuthority& text_seed,
+    int* comparison,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (comparison == nullptr || refusal_detail == nullptr) return false;
+  *comparison = 0;
+  refusal_detail->clear();
+  const std::string left_collation = QowCanonicalDescriptorFieldV1(
+      left_value.descriptor.encoded_descriptor, "collation_uuid");
+  const std::string right_collation = QowCanonicalDescriptorFieldV1(
+      right_value.descriptor.encoded_descriptor, "collation_uuid");
+  if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
+      !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
+      left_value.descriptor.descriptor_kind != "scalar" ||
+      right_value.descriptor.descriptor_kind != "scalar" ||
+      dt::CanonicalTypeIdFromStableName(
+          left_value.descriptor.canonical_type_name) !=
+          dt::CanonicalTypeId::character ||
+      dt::CanonicalTypeIdFromStableName(
+          right_value.descriptor.canonical_type_name) !=
+          dt::CanonicalTypeId::character ||
+      !QowCanonicalUuidV1(collation_uuid) || left_collation != collation_uuid ||
+      right_collation != collation_uuid) {
+    *refusal_detail =
+        "canonical character descriptors do not share the bound collation UUID";
+    return false;
+  }
+  if (resource_epoch == 0 || collation_epoch == 0 || !text_seed.active ||
+      text_seed.seed_pack_name.empty() || text_seed.seed_pack_version.empty() ||
+      text_seed.charset_name.empty() || text_seed.collation_name.empty()) {
+    *refusal_detail = "bound collation resource authority is incomplete";
+    return false;
+  }
+  if (left_value.isSqlNull() || right_value.isSqlNull()) {
+    *refusal_detail =
+        "SQL NULL comparison requires the shared three-valued predicate seam";
+    return false;
+  }
+  if (left_value.state != EngineValueState::value ||
+      right_value.state != EngineValueState::value || left_value.is_null ||
+      right_value.is_null) {
+    *refusal_detail = "collation comparison requires two non-NULL value states";
+    return false;
+  }
+  dt::DatatypeComparisonRequest request;
+  request.left.type_id = dt::CanonicalTypeId::character;
+  request.left.encoded_value = left_value.encoded_value;
+  request.right.type_id = dt::CanonicalTypeId::character;
+  request.right.encoded_value = right_value.encoded_value;
+  request.case_insensitive_character_compare =
+      text_seed.collation_case_insensitive;
+  request.text_seed = text_seed;
+  const auto compared = dt::CompareDatatypeValues(request);
+  if (!compared.ok()) {
+    *refusal_detail = compared.diagnostic.diagnostic_code.empty()
+                          ? "canonical collation comparison refused"
+                          : compared.diagnostic.diagnostic_code;
+    return false;
+  }
+  *comparison = compared.comparison;
   return true;
 }
 
@@ -573,6 +665,71 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(target);
   result.evidence.push_back({"datatype_cast", result.cast_category});
+  return result;
+}
+
+EngineCompareScalarValuesResult EngineCompareScalarValues(
+    const EngineCompareScalarValuesRequest& request) {
+  const EngineTypedValue left =
+      RequestInputValue(request, request.left_value);
+  const EngineTypedValue right =
+      RequestSecondValue(request, request.right_value);
+  const std::string left_collation = DescriptorField(
+      left.descriptor.encoded_descriptor, "collation_uuid");
+  const std::string right_collation = DescriptorField(
+      right.descriptor.encoded_descriptor, "collation_uuid");
+  auto refuse = [&](std::string detail) {
+    return ApiFailure<EngineCompareScalarValuesResult>(
+        request.context,
+        "query.compare_scalar_values",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-008-COLLATION-REFUSAL-V1",
+            "engine.query.typed_scalar_collation_refused",
+            std::move(detail)));
+  };
+  if (left_collation.empty() || left_collation != right_collation) {
+    return refuse("bound scalar collation UUID is absent or mismatched");
+  }
+  EngineUuid collation_uuid;
+  collation_uuid.canonical = left_collation;
+  const auto resolved = LookupEngineResourceDescriptorByUuid(
+      request.context, collation_uuid, "collation");
+  if (!resolved.ok || !resolved.resource_descriptor.present ||
+      resolved.resource_descriptor.resource_uuid.canonical != left_collation) {
+    const std::string detail = resolved.diagnostic.code.empty()
+                                   ? "bound collation resource was not resolved"
+                                   : resolved.diagnostic.code;
+    return refuse(detail);
+  }
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+  text_seed.active = true;
+  text_seed.seed_pack_name = resolved.resource_descriptor.seed_pack_name;
+  text_seed.seed_pack_version = resolved.resource_descriptor.seed_pack_version;
+  text_seed.charset_name =
+      resolved.resource_descriptor.parent_canonical_name;
+  text_seed.collation_name = resolved.resource_descriptor.canonical_name;
+  text_seed.collation_case_insensitive =
+      resolved.resource_descriptor.case_insensitive;
+  text_seed.collation_accent_insensitive =
+      resolved.resource_descriptor.accent_insensitive;
+  int comparison = 0;
+  std::string refusal_detail;
+  if (!QowCompareCanonicalCollatedScalarsV1(
+          left, right, left_collation,
+          resolved.resource_descriptor.resource_epoch,
+          resolved.resource_descriptor.family_epoch, text_seed, &comparison,
+          &refusal_detail)) {
+    return refuse(std::move(refusal_detail));
+  }
+  auto result = ApiSuccess<EngineCompareScalarValuesResult>(
+      request.context, "query.compare_scalar_values");
+  result.comparison = comparison;
+  result.collation_uuid = std::move(collation_uuid);
+  result.collation_epoch = resolved.resource_descriptor.family_epoch;
+  result.evidence.push_back(
+      {"canonical_collation_identity", left_collation});
+  result.evidence.push_back(
+      {"collation_epoch", std::to_string(result.collation_epoch)});
   return result;
 }
 

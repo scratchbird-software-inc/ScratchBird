@@ -25,6 +25,8 @@ struct EngineResolvedResourceDescriptor {
   std::string parent_canonical_name;
   EngineUuid default_collation_uuid;
   std::string default_collation_name;
+  std::string seed_pack_name;
+  std::string seed_pack_version;
   EngineApiU64 resource_epoch = 0;
   EngineApiU64 family_epoch = 0;
   std::string family_version;

@@ -177,6 +177,8 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
   EngineResolvedResourceDescriptor descriptor;
   descriptor.present = true;
   descriptor.resource_family = resource_class;
+  descriptor.seed_pack_name = image.seed_pack_name;
+  descriptor.seed_pack_version = image.seed_pack_version;
   descriptor.resource_epoch = image.resource_epoch;
   const std::string& requested_name =
       request.sql_object_reference.object_name.raw_text;
@@ -669,6 +671,8 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
   EngineResolvedResourceDescriptor descriptor;
   descriptor.present = true;
   descriptor.resource_family = resource_family;
+  descriptor.seed_pack_name = image.seed_pack_name;
+  descriptor.seed_pack_version = image.seed_pack_version;
   descriptor.resource_epoch = image.resource_epoch;
   if (resource_family == "charset") {
     const scratchbird::core::resources::ResourceSeedCharsetDescriptor*

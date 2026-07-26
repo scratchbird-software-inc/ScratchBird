@@ -31,6 +31,18 @@ struct EngineCastValueResult : EngineApiResult {
 };
 EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request);
 
+struct EngineCompareScalarValuesRequest : EngineApiRequest {
+  EngineTypedValue left_value;
+  EngineTypedValue right_value;
+};
+struct EngineCompareScalarValuesResult : EngineApiResult {
+  int comparison = 0;
+  EngineUuid collation_uuid;
+  EngineApiU64 collation_epoch = 0;
+};
+EngineCompareScalarValuesResult EngineCompareScalarValues(
+    const EngineCompareScalarValuesRequest& request);
+
 struct EngineExtractValueRequest : EngineApiRequest {
   EngineTypedValue input_value;
   std::string field;
