@@ -8,6 +8,12 @@
 
 #include "query/expression_api.hpp"
 
+#include <cctype>
+#include <cstddef>
+#include <string_view>
+#include <utility>
+
+#ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "datatype_advanced_family.hpp"
@@ -16,9 +22,49 @@
 #include "domain_support/domain_store.hpp"
 #include "security/security_model.hpp"
 
-#include <cctype>
 #include <sstream>
-#include <utility>
+#endif
+
+namespace scratchbird::engine::internal_api {
+namespace {
+
+bool QowCanonicalUuidV1(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return true;
+}
+
+}  // namespace
+
+// QOW-SOURCE-QRY-008-DESC-V1
+bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
+  return QowCanonicalUuidV1(descriptor.descriptor_uuid.canonical) &&
+         !descriptor.descriptor_kind.empty() &&
+         !descriptor.canonical_type_name.empty() &&
+         !descriptor.encoded_descriptor.empty();
+}
+
+EngineTypedValue QowPreserveCanonicalDescriptorAfterScalarV1(
+    const EngineDescriptor& result_descriptor,
+    EngineTypedValue computed_value) {
+  if (QowCanonicalDescriptorIdentityV1(result_descriptor) &&
+      result_descriptor.canonical_type_name ==
+          computed_value.descriptor.canonical_type_name) {
+    computed_value.descriptor = result_descriptor;
+  }
+  return computed_value;
+}
+
+}  // namespace scratchbird::engine::internal_api
+
+#ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -482,6 +528,24 @@ EngineSetOperationResult EngineSetOperation(const EngineSetOperationRequest& req
 EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyNumericOperationRequest& request) {
   const EngineTypedValue left = RequestInputValue(request, request.left_value);
   const EngineTypedValue right = RequestSecondValue(request, request.right_value);
+  const EngineDescriptor result_descriptor =
+      request.descriptors.empty() ? left.descriptor : request.descriptors.front();
+  const bool canonical_descriptor_route =
+      !left.descriptor.descriptor_uuid.canonical.empty() ||
+      !right.descriptor.descriptor_uuid.canonical.empty() ||
+      !result_descriptor.descriptor_uuid.canonical.empty();
+  if (canonical_descriptor_route &&
+      (!QowCanonicalDescriptorIdentityV1(left.descriptor) ||
+       !QowCanonicalDescriptorIdentityV1(right.descriptor) ||
+       !QowCanonicalDescriptorIdentityV1(result_descriptor))) {
+    return ApiFailure<EngineApplyNumericOperationResult>(
+        request.context,
+        "query.apply_numeric_operation",
+        MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-008-DESC-REFUSAL-V1",
+            "engine.query.typed_scalar_descriptor_refused",
+            "canonical descriptor identity is missing or malformed"));
+  }
   const std::string operation_text = !request.numeric_operation.empty()
       ? request.numeric_operation
       : OptionValue(request, "numeric_operation:");
@@ -533,6 +597,23 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
   result.value.descriptor.canonical_type_name = dt::CanonicalTypeName(numeric_result.value.type_id);
   result.value.encoded_value = numeric_result.value.encoded_value;
   result.value.is_null = numeric_result.value.is_null;
+  result.value.state = numeric_result.value.is_null
+                           ? EngineValueState::sql_null
+                           : EngineValueState::value;
+  if (canonical_descriptor_route) {
+    if (result.value.descriptor.canonical_type_name !=
+        result_descriptor.canonical_type_name) {
+      return ApiFailure<EngineApplyNumericOperationResult>(
+          request.context,
+          "query.apply_numeric_operation",
+          MakeEngineApiDiagnostic(
+              "QOW-DIAG-QRY-008-DESC-REFUSAL-V1",
+              "engine.query.typed_scalar_descriptor_refused",
+              "computed scalar type does not match the bound result descriptor"));
+    }
+    result.value = QowPreserveCanonicalDescriptorAfterScalarV1(
+        result_descriptor, std::move(result.value));
+  }
   result.comparison = numeric_result.comparison;
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
@@ -767,3 +848,5 @@ EngineInvokeDomainMethodResult EngineInvokeDomainMethod(const EngineInvokeDomain
 }
 
 }  // namespace scratchbird::engine::internal_api
+
+#endif  // SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY

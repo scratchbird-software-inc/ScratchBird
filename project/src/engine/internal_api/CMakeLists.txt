@@ -16,6 +16,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_include_directories(sb_qow_relational_dag_contract PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
+  # QOW-CMAKE-QRY-008-DESC-V1
+  add_library(sb_qow_typed_scalar_descriptor_contract STATIC
+    query/expression_api.cpp
+  )
+  target_compile_features(sb_qow_typed_scalar_descriptor_contract PUBLIC
+    cxx_std_20
+  )
+  target_compile_definitions(sb_qow_typed_scalar_descriptor_contract PRIVATE
+    SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_qow_typed_scalar_descriptor_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
   set(SB_QOW_INTERNAL_API_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()
