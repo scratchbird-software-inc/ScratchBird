@@ -109,6 +109,19 @@ bool ValidateTypedBinding() {
                     "VALUES acquired a lateral binding flag");
   passed &= Require(native.expressions.size() == 4,
                     "bound expression count differs");
+  passed &= Require(native.values_rows.size() == 2 &&
+                        native.values_rows[0].expression_ids ==
+                            std::vector<std::uint32_t>({1, 2}) &&
+                        native.values_rows[1].expression_ids ==
+                            std::vector<std::uint32_t>({3, 4}) &&
+                        native.relations[0].values_row_ids ==
+                            std::vector<std::uint32_t>({1, 2}),
+                    "typed VALUES row membership was not preserved");
+  passed &= Require(native.expressions[0].literal_kind ==
+                        sbsql::NativeLiteralAstKind::kNumeric &&
+                        native.expressions[1].literal_kind ==
+                            sbsql::NativeLiteralAstKind::kString,
+                    "typed literal kinds were not preserved");
   passed &= Require(native.descriptors.size() == 2,
                     "bound descriptor count differs");
   passed &= Require(native.outputs.size() == 2,
@@ -219,6 +232,35 @@ bool ValidateOutputRefusal() {
   return passed;
 }
 
+bool ValidateIdentifierAuthorityRefusal() {
+  const auto ast = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst("VALUES (unresolved_name, 'a'), (2, 'b');"));
+  const auto bound =
+      sbsql::BindNativeRelationalAst(ast, ValuesBindingContext());
+  bool passed = true;
+  passed &= Require(!bound.bound, "unresolved identifier was accepted");
+  passed &= Require(HasDiagnostic(bound.messages,
+                                  "QOW-DIAG-BOUNDAST-EXPRESSION"),
+                    "unresolved identifier diagnostic differs");
+  return passed;
+}
+
+bool ValidateValuesRowRefusal() {
+  auto ast = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');"));
+  ast.values_rows[1].expression_ids.pop_back();
+  const auto bound =
+      sbsql::BindNativeRelationalAst(ast, ValuesBindingContext());
+  bool passed = true;
+  passed &= Require(!bound.bound, "inconsistent VALUES row arity was accepted");
+  passed &= Require(HasDiagnostic(bound.messages,
+                                  "QOW-DIAG-BOUNDAST-RELATION"),
+                    "VALUES row diagnostic differs");
+  passed &= Require(bound.values_rows.empty(),
+                    "VALUES row refusal retained partial BoundAST state");
+  return passed;
+}
+
 bool ValidateScopeRefusal() {
   const auto ast = sbsql::ParseNativeRelationalAst(
       sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');"));
@@ -243,6 +285,8 @@ int main() {
   passed &= ValidateExpressionRefusal();
   passed &= ValidateExpressionCycleRefusal();
   passed &= ValidateOutputRefusal();
+  passed &= ValidateIdentifierAuthorityRefusal();
+  passed &= ValidateValuesRowRefusal();
   passed &= ValidateScopeRefusal();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

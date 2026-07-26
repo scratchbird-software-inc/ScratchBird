@@ -281,6 +281,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.root_scope_id = 0;
   document.descriptors.clear();
   document.expressions.clear();
+  document.values_rows.clear();
   document.outputs.clear();
   document.relations.clear();
   document.scopes.clear();
@@ -408,11 +409,35 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const auto& expression_binding = *binding_iterator->second;
     const bool function_call =
         expression.expression_kind == NativeExpressionAstKind::kFunctionCall;
+    const bool identifier =
+        expression.expression_kind == NativeExpressionAstKind::kIdentifier;
     if (function_call != expression_binding.function_uuid.has_value() ||
         (expression_binding.function_uuid.has_value() &&
          !LooksLikeCanonicalUuid(*expression_binding.function_uuid))) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                             "function UUID state does not match the expression kind");
+      return RefusedBoundAst(std::move(bound));
+    }
+    if (identifier != expression_binding.bound_name_uuid.has_value() ||
+        (expression_binding.bound_name_uuid.has_value() &&
+         !LooksLikeCanonicalUuid(*expression_binding.bound_name_uuid))) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "identifier UUID state does not match the expression kind");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const bool literal =
+        expression.expression_kind == NativeExpressionAstKind::kLiteral;
+    if (literal != expression.literal_kind.has_value()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "literal kind state does not match the expression kind");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const bool operator_expression =
+        expression.expression_kind == NativeExpressionAstKind::kUnary ||
+        expression.expression_kind == NativeExpressionAstKind::kBinary;
+    if (operator_expression != !expression.operator_name.empty()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                            "operator identity state does not match the expression kind");
       return RefusedBoundAst(std::move(bound));
     }
     for (const auto child_id : expression.child_expression_ids) {
@@ -426,9 +451,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     BoundExpressionAstRecord record;
     record.expression_id = expression.expression_id;
     record.expression_kind = expression.expression_kind;
+    record.literal_kind = expression.literal_kind;
     record.child_expression_ids = expression.child_expression_ids;
     record.result_descriptor_id = expression_binding.descriptor_id;
     record.bound_function_uuid = expression_binding.function_uuid;
+    record.bound_name_uuid = expression_binding.bound_name_uuid;
+    if (operator_expression) {
+      record.canonical_operator_name = expression.operator_name;
+    }
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral ||
         expression.expression_kind == NativeExpressionAstKind::kParameter) {
       record.literal_or_parameter_ref = expression.spelling;
@@ -442,7 +472,32 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           "VALUES relation has no typed row handles");
     return RefusedBoundAst(std::move(bound));
   }
+  std::unordered_set<std::uint32_t> values_row_ids;
   const auto& first_row = ast.values_rows.front();
+  const auto values_arity = first_row.expression_ids.size();
+  if (values_arity == 0) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "VALUES rows require at least one typed expression handle");
+    return RefusedBoundAst(std::move(bound));
+  }
+  bound.values_rows.reserve(ast.values_rows.size());
+  for (const auto& row : ast.values_rows) {
+    if (row.row_id == 0 || !values_row_ids.insert(row.row_id).second ||
+        row.expression_ids.size() != values_arity) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "VALUES row handles and arity must be exact");
+      return RefusedBoundAst(std::move(bound));
+    }
+    for (const auto expression_id : row.expression_ids) {
+      if (expression_id == 0 ||
+          ast_expression_by_id.find(expression_id) == ast_expression_by_id.end()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "VALUES row contains a dangling expression handle");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+    bound.values_rows.push_back({row.row_id, row.expression_ids});
+  }
   if (context.outputs.size() != first_row.expression_ids.size()) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
                           "VALUES output bindings must match the row arity");
@@ -509,7 +564,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   if (ast.relations.size() != 1 || ast.root_relation_id == 0 ||
       ast.relations.front().relation_id != ast.root_relation_id ||
       ast.relations.front().relation_kind != NativeRelationAstKind::kValues ||
-      !ast.relations.front().input_relation_ids.empty()) {
+      !ast.relations.front().input_relation_ids.empty() ||
+      ast.relations.front().values_row_ids.size() != bound.values_rows.size()) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                           "typed VALUES relation graph is not canonical");
     return RefusedBoundAst(std::move(bound));
@@ -518,6 +574,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   relation.relation_id = ast.root_relation_id;
   relation.relation_kind = NativeRelationAstKind::kValues;
   relation.input_relation_ids = ast.relations.front().input_relation_ids;
+  relation.values_row_ids = ast.relations.front().values_row_ids;
+  for (std::size_t index = 0; index < relation.values_row_ids.size(); ++index) {
+    if (relation.values_row_ids[index] != bound.values_rows[index].row_id) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "VALUES relation row handles are not canonical");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
   relation.bound_object_uuid = std::nullopt;
   relation.lateral = false;
   bound.relations.push_back(std::move(relation));

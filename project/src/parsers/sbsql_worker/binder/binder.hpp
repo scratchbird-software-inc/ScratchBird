@@ -44,6 +44,7 @@ struct NativeExpressionBindingInput {
   std::uint32_t expression_id{0};
   std::uint32_t descriptor_id{0};
   std::optional<std::string> function_uuid;
+  std::optional<std::string> bound_name_uuid;
 };
 
 struct NativeOutputBindingInput {
@@ -76,10 +77,18 @@ struct BoundDescriptorAstRecord {
 struct BoundExpressionAstRecord {
   std::uint32_t expression_id{0};
   NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
+  std::optional<NativeLiteralAstKind> literal_kind;
   std::vector<std::uint32_t> child_expression_ids;
   std::uint32_t result_descriptor_id{0};
   std::optional<std::string> bound_function_uuid;
+  std::optional<std::string> bound_name_uuid;
+  std::optional<std::string> canonical_operator_name;
   std::optional<std::string> literal_or_parameter_ref;
+};
+
+struct BoundValuesRowAstRecord {
+  std::uint32_t row_id{0};
+  std::vector<std::uint32_t> expression_ids;
 };
 
 struct BoundOutputAstRecord {
@@ -95,6 +104,7 @@ struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
   std::vector<std::uint32_t> input_relation_ids;
+  std::vector<std::uint32_t> values_row_ids;
   std::optional<std::string> bound_object_uuid;
   bool lateral{false};
 };
@@ -114,6 +124,7 @@ struct BoundNativeRelationalDocument {
   std::uint32_t root_scope_id{0};
   std::vector<BoundDescriptorAstRecord> descriptors;
   std::vector<BoundExpressionAstRecord> expressions;
+  std::vector<BoundValuesRowAstRecord> values_rows;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
   std::vector<BoundScopeAstRecord> scopes;
