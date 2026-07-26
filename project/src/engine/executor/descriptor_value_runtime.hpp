@@ -131,6 +131,22 @@ struct CanonicalDescriptorInnerJoinResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalDescriptorRowNumberRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch ordered_input_batch;
+  ExecutorColumnDescriptor row_number_column;
+  std::string deterministic_order_evidence_uuid;
+};
+
+struct CanonicalDescriptorRowNumberResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct Int64DecodeResult {
   DescriptorRuntimeDiagnostic diagnostic;
   std::int64_t value = 0;
@@ -229,6 +245,8 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
 CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
+CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
+    const CanonicalDescriptorRowNumberRequest& request);
 std::optional<std::size_t> FindColumnByStableName(const DescriptorBatch& batch, const std::string& stable_name);
 DescriptorBatch ProjectDescriptorBatch(const DescriptorBatch& input, const std::vector<std::size_t>& columns);
 DescriptorBatch FilterDescriptorInt64GreaterThan(const DescriptorBatch& input,

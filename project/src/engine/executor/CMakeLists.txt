@@ -91,6 +91,7 @@ add_library(sb_engine_executor STATIC
   temp_spill_executor.cpp
   typed_slab_executor_work_area.cpp
   vectorized_result_batch.cpp
+  # QOW-CMAKE-QRY-007-WINDOW-V1
   window_executor.cpp
 )
 
