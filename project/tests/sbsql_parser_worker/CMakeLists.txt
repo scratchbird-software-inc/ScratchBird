@@ -6,6 +6,14 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
+  # QOW-CMAKE-SBSQL-PARSER-WORKER-ENROLLMENT-V1
+  # Dependency-ordered QOW parser targets are added above this return by their
+  # owning leaves. The broad parser-worker suite remains disabled.
+  set(SB_QOW_SBSQL_PARSER_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
+
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)
 target_compile_features(sbp_sbsql_pipeline_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE sbl_sbsql_parser_pipeline)

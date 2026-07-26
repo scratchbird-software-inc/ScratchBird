@@ -310,6 +310,9 @@ option(SB_BUILD_SBLR_DATATYPE_DOMAIN_PROBE "Build the SBLR datatype/domain dispa
 option(SB_BUILD_SBLR_DATATYPE_FULL_SURFACE_PROBE "Build the full SBLR datatype/domain surface probe" OFF)
 option(SB_BUILD_AGENT_RUNTIME_PROBES "Build the operational agent runtime implementation probes" OFF)
 option(SB_BUILD_TESTS "Build ScratchBird private tests" OFF)
+option(SB_BUILD_QOW_CLOSURE_TESTS
+       "Build the query-optimizer/window closure targets"
+       OFF)
 option(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS
   "Build public release correctness CTest gates that run from the public project tree"
   OFF)
@@ -3328,6 +3331,44 @@ endif()
 
 if(SB_BUILD_SB_LISTENER AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/listener/CMakeLists.txt")
   add_subdirectory(tests/listener)
+endif()
+
+# QOW-CMAKE-QOW-CLOSURE-TESTS-V1
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  if(SB_BUILD_TESTS OR SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
+    message(FATAL_ERROR
+      "SB_BUILD_QOW_CLOSURE_TESTS requires SB_BUILD_TESTS=OFF and "
+      "SB_BUILD_SBSQL_PARSER_WORKER_TESTS=OFF")
+  endif()
+
+  foreach(_sb_qow_test_directory IN ITEMS
+      tests/query_optimizer_window
+      tests/sbsql_parser_worker
+      tests/optimizer)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_sb_qow_test_directory}/CMakeLists.txt")
+      message(FATAL_ERROR
+        "SB_BUILD_QOW_CLOSURE_TESTS cannot reach ${_sb_qow_test_directory}")
+    endif()
+  endforeach()
+  unset(_sb_qow_test_directory)
+
+  add_subdirectory(tests/query_optimizer_window)
+  add_subdirectory(tests/sbsql_parser_worker)
+  add_subdirectory(tests/optimizer)
+
+  if(NOT SB_QOW_NATIVE_HARNESS_ENROLLED
+      OR NOT SB_QOW_SBSQL_PARSER_TESTS_ENROLLED
+      OR NOT SB_QOW_OPTIMIZER_TESTS_ENROLLED)
+    message(FATAL_ERROR
+      "SB_BUILD_QOW_CLOSURE_TESTS did not reach every isolated QOW test directory")
+  endif()
+  if(NOT TARGET qow_native_harness OR NOT TARGET qow_tst_001_harness_test_v1)
+    message(FATAL_ERROR
+      "SB_BUILD_QOW_CLOSURE_TESTS is missing the bounded QOW-022 harness targets")
+  endif()
+elseif(TARGET qow_native_harness OR TARGET qow_tst_001_harness_test_v1)
+  message(FATAL_ERROR
+    "QOW harness targets must not appear when SB_BUILD_QOW_CLOSURE_TESTS is OFF")
 endif()
 
 if(SB_BUILD_SBU_SBSQL_PARSER_SUPPORT AND NOT TARGET sbu_sbsql_parser_support)

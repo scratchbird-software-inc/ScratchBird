@@ -6,6 +6,14 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
+  # QOW-CMAKE-OPTIMIZER-ENROLLMENT-V1
+  # Dependency-ordered QOW optimizer targets are added above this return by
+  # their owning leaves. The broad optimizer suite remains disabled.
+  set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
+
 add_executable(
   optimizer_enterprise_inventory_gate
   optimizer_enterprise_inventory_gate.cpp
