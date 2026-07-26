@@ -8,6 +8,8 @@
 
 #include "executor_foundation.hpp"
 
+#include "descriptor_value_runtime.hpp"
+
 #include <algorithm>
 #include <map>
 #include <set>
@@ -53,6 +55,40 @@ void RequireResolvedColumnHandles(
 }
 
 }  // namespace
+
+// QOW-SOURCE-QRY-010-FETCH-TOP-PROFILE-V1
+// The native SBSQL development profile admits only FETCH FIRST <bound count>
+// ROWS ONLY.  WITH TIES and donor TOP variants stay explicit refusals rather
+// than silently degrading to an ordinary limit.
+CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
+    const CanonicalDescriptorFetchProfileRequest& request) {
+  CanonicalDescriptorFetchProfileResult result;
+  if (request.form !=
+          CanonicalFetchTopProfileForm::fetch_first_rows_only ||
+      !request.row_count_is_bound) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-PROFILE-REFUSAL-V1";
+    result.diagnostic.detail =
+        "only bound native FETCH FIRST ROWS ONLY is admitted";
+    return result;
+  }
+
+  CanonicalDescriptorLimitRequest limit_request;
+  limit_request.physical_dag = request.physical_dag;
+  limit_request.selected_physical_node_id =
+      request.selected_physical_node_id;
+  limit_request.input_batch = request.input_batch;
+  limit_request.limit = request.row_count;
+  limit_request.offset = request.offset;
+  auto limited = ExecuteCanonicalDescriptorLimit(limit_request);
+  result.diagnostic = std::move(limited.diagnostic);
+  result.output_batch = std::move(limited.output_batch);
+  result.selected_plan_uuid = std::move(limited.selected_plan_uuid);
+  result.executed_physical_node_id = limited.executed_physical_node_id;
+  result.causal_counter_id = limited.causal_counter_id;
+  return result;
+}
 
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
