@@ -1314,6 +1314,96 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
   return result;
 }
 
+// QOW-SOURCE-QRY-012-RESIDUAL-V1
+// Recheck a fully bound residual ON predicate only for pairs selected by the
+// canonical composite-key route.  The complete residual vector is validated
+// before candidate filtering so malformed non-candidate input cannot hide.
+CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
+    const CanonicalJoinResidualRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalJoinResidualResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-RESIDUAL-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.candidate_pair_count = 0;
+    result.residual_recheck_count = 0;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  if (request.maximum_candidate_rechecks == 0) {
+    return refuse("residual join candidate resource contract is invalid");
+  }
+  const auto keys = ExecuteCanonicalCompositeJoinKey(request.key_request);
+  if (!keys.diagnostic.ok) {
+    return refuse(keys.diagnostic.diagnostic_code + ":" +
+                  keys.diagnostic.detail);
+  }
+  if (request.residual_truth_values.size() != keys.pair_count) {
+    return refuse("residual join predicate cardinality is not bound");
+  }
+
+  for (std::size_t pair = 0; pair < request.residual_truth_values.size();
+       ++pair) {
+    bool passes = false;
+    std::string refusal_detail;
+    if (!api::QowPredicateConsumerPassesV1(
+            request.residual_truth_values[pair],
+            api::EnginePredicateConsumer::join_on, &passes,
+            &refusal_detail)) {
+      return refuse("residual join predicate at pair " +
+                    std::to_string(pair) + " is invalid:" +
+                    refusal_detail);
+    }
+  }
+
+  const auto candidate_pair_count = static_cast<std::size_t>(std::count(
+      keys.pair_truth_values.begin(), keys.pair_truth_values.end(),
+      api::EngineSqlTruthValue::true_value));
+  if (candidate_pair_count > request.maximum_candidate_rechecks) {
+    return refuse("residual join candidate recheck bound was exceeded");
+  }
+
+  std::vector<api::EngineSqlTruthValue> accepted_pair_truth_values(
+      keys.pair_count, api::EngineSqlTruthValue::false_value);
+  for (std::size_t pair = 0; pair < keys.pair_count; ++pair) {
+    if (keys.pair_truth_values[pair] ==
+        api::EngineSqlTruthValue::true_value) {
+      accepted_pair_truth_values[pair] =
+          request.residual_truth_values[pair];
+    }
+  }
+
+  CanonicalDescriptorInnerJoinRequest join;
+  join.physical_dag = request.key_request.physical_dag;
+  join.selected_physical_node_id =
+      request.key_request.selected_physical_node_id;
+  join.left_batch = request.key_request.left_batch;
+  join.right_batch = request.key_request.right_batch;
+  join.pair_truth_values = std::move(accepted_pair_truth_values);
+  join.consumer = api::EnginePredicateConsumer::join_on;
+  auto joined = ExecuteCanonicalDescriptorInnerJoin(join);
+  if (!joined.diagnostic.ok) {
+    return refuse(joined.diagnostic.diagnostic_code + ":" +
+                  joined.diagnostic.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(joined.output_batch);
+  result.candidate_pair_count = candidate_pair_count;
+  result.residual_recheck_count = candidate_pair_count;
+  result.selected_plan_uuid = std::move(joined.selected_plan_uuid);
+  result.executed_physical_node_id = joined.executed_physical_node_id;
+  result.causal_counter_id = joined.causal_counter_id;
+  return result;
+}
+
 Batch MakeBatch(std::string descriptor_digest, std::vector<Tuple> rows) {
   return {.descriptor_digest = std::move(descriptor_digest), .rows = std::move(rows)};
 }

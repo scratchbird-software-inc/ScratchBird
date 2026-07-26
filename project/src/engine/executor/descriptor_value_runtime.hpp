@@ -317,6 +317,23 @@ struct CanonicalCompositeJoinKeyResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalJoinResidualRequest {
+  CanonicalCompositeJoinKeyRequest key_request;
+  std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+      residual_truth_values;
+  std::size_t maximum_candidate_rechecks = 1048576;
+};
+
+struct CanonicalJoinResidualResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t candidate_pair_count = 0;
+  std::size_t residual_recheck_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorRowNumberRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -508,6 +525,8 @@ CanonicalDescriptorInnerJoinResult ExecuteCanonicalDescriptorInnerJoin(
     const CanonicalDescriptorInnerJoinRequest& request);
 CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
     const CanonicalCompositeJoinKeyRequest& request);
+CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
+    const CanonicalJoinResidualRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
