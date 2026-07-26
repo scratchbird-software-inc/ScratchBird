@@ -1904,6 +1904,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     result.left_input_row_count = 0;
     result.right_input_row_count = 0;
     result.consumed_right_multiplicity_count = 0;
+    result.right_to_result_column_indices.clear();
     result.implementation_id.clear();
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
@@ -1936,13 +1937,25 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   }
 
   const std::string expected_implementation = [&] {
+    const bool by_name = request.alignment ==
+                         CanonicalSetOperationAlignment::kByName;
+    if (!by_name && request.alignment !=
+                        CanonicalSetOperationAlignment::kOrdinal) {
+      return std::string{};
+    }
     switch (request.operation) {
       case CanonicalSetOperationKind::kUnion:
-        return std::string("setop.union-all.ordinal.typed.v1");
+        return by_name
+                   ? std::string("setop.union-all.by-name.typed.v1")
+                   : std::string("setop.union-all.ordinal.typed.v1");
       case CanonicalSetOperationKind::kIntersect:
-        return std::string("setop.intersect-all.ordinal.typed.v1");
+        return by_name
+                   ? std::string("setop.intersect-all.by-name.typed.v1")
+                   : std::string("setop.intersect-all.ordinal.typed.v1");
       case CanonicalSetOperationKind::kExcept:
-        return std::string("setop.except-all.ordinal.typed.v1");
+        return by_name
+                   ? std::string("setop.except-all.by-name.typed.v1")
+                   : std::string("setop.except-all.ordinal.typed.v1");
     }
     return std::string{};
   }();
@@ -1994,9 +2007,74 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     return refuse("set-operation input and result arity differ",
                   "QOW-DIAG-QRY-016-ARITY-REFUSAL-V1");
   }
+
+  DescriptorBatch aligned_right = request.right_batch;
+  std::vector<std::size_t> right_to_result_column_indices(
+      request.right_batch.columns.size());
+  std::iota(right_to_result_column_indices.begin(),
+            right_to_result_column_indices.end(), 0);
+
+  // QOW-SOURCE-QRY-016-BY-NAME-V1
+  // BY NAME maps only the names from already-bound output descriptor records.
+  // The aligned values retain their UUID-addressed descriptors, and duplicate,
+  // missing, or result-order-drifted names refuse before multiset evaluation.
+  if (request.alignment == CanonicalSetOperationAlignment::kByName) {
+    std::map<std::string, std::size_t> left_names;
+    std::map<std::string, std::size_t> right_names;
+    std::map<std::string, std::size_t> result_names;
+    for (std::size_t column = 0; column < request.result_columns.size();
+         ++column) {
+      if (!left_names
+               .emplace(request.left_batch.columns[column].stable_name, column)
+               .second ||
+          !right_names
+               .emplace(request.right_batch.columns[column].stable_name, column)
+               .second ||
+          !result_names
+               .emplace(request.result_columns[column].stable_name, column)
+               .second) {
+        return refuse("BY NAME requires unique bound column names",
+                      "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
+      }
+      if (request.left_batch.columns[column].stable_name !=
+          request.result_columns[column].stable_name) {
+        return refuse("BY NAME result order must follow the left operand",
+                      "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
+      }
+    }
+    aligned_right.columns.clear();
+    aligned_right.rows.assign(request.right_batch.rows.size(), {});
+    aligned_right.columns.reserve(request.result_columns.size());
+    for (auto& row : aligned_right.rows) {
+      row.values.reserve(request.result_columns.size());
+    }
+    for (std::size_t result_column = 0;
+         result_column < request.result_columns.size(); ++result_column) {
+      const auto found = right_names.find(
+          request.result_columns[result_column].stable_name);
+      if (found == right_names.end()) {
+        return refuse("BY NAME operand column sets differ",
+                      "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
+      }
+      const auto right_column = found->second;
+      right_to_result_column_indices[right_column] = result_column;
+      aligned_right.columns.push_back(
+          request.right_batch.columns[right_column]);
+      for (std::size_t row = 0; row < request.right_batch.rows.size(); ++row) {
+        aligned_right.rows[row].values.push_back(
+            request.right_batch.rows[row].values[right_column]);
+      }
+    }
+    if (left_names.size() != right_names.size() ||
+        left_names.size() != result_names.size()) {
+      return refuse("BY NAME operand column sets differ",
+                    "QOW-DIAG-QRY-016-BY-NAME-REFUSAL-V1");
+    }
+  }
+
   for (std::size_t column = 0; column < request.result_columns.size(); ++column) {
     const auto& left = request.left_batch.columns[column];
-    const auto& right = request.right_batch.columns[column];
+    const auto& right = aligned_right.columns[column];
     const auto& output = request.result_columns[column];
     if (left.descriptor.descriptor_kind != "scalar" ||
         right.descriptor.descriptor_kind != "scalar" ||
@@ -2093,7 +2171,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   std::vector<RowKey> left_keys;
   std::vector<RowKey> right_keys;
   left_keys.reserve(request.left_batch.rows.size());
-  right_keys.reserve(request.right_batch.rows.size());
+  right_keys.reserve(aligned_right.rows.size());
   std::string key_detail;
   for (const auto& row : request.left_batch.rows) {
     RowKey key;
@@ -2102,7 +2180,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     }
     left_keys.push_back(std::move(key));
   }
-  for (const auto& row : request.right_batch.rows) {
+  for (const auto& row : aligned_right.rows) {
     RowKey key;
     if (!typed_row_key(row, &key, &key_detail)) {
       return refuse(std::move(key_detail));
@@ -2118,7 +2196,7 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
     for (const auto& row : request.left_batch.rows) {
       output.rows.push_back(retag_row(row));
     }
-    for (const auto& row : request.right_batch.rows) {
+    for (const auto& row : aligned_right.rows) {
       output.rows.push_back(retag_row(row));
     }
   } else {
@@ -2154,6 +2232,8 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationAll(
   result.right_input_row_count = request.right_batch.rows.size();
   result.consumed_right_multiplicity_count =
       consumed_right_multiplicity_count;
+  result.right_to_result_column_indices =
+      std::move(right_to_result_column_indices);
   result.implementation_id = expected_implementation;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
