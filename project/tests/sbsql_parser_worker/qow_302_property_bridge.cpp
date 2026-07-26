@@ -52,6 +52,8 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000003001";
   context.local_transaction_id = 3001;
   context.snapshot_visible_through_local_transaction_id = 2999;
   context.statement_metadata_snapshot_engine_owned = true;
@@ -59,6 +61,27 @@ api::EngineRequestContext Context() {
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       kSecurityContextUuid;
+  context.catalog_generation_id = 3001;
+  context.security_epoch = 3002;
+  context.resource_epoch = 3003;
+  context.optimizer_capability_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006001";
+  context.optimizer_resource_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006002";
+  context.optimizer_route_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_route_epoch = 3004;
+  context.optimizer_route_generation = 3005;
+  context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 131072;
+  context.optimizer_maximum_memo_groups = 131072;
+  context.optimizer_maximum_search_steps = 1048576;
+  context.optimizer_maximum_planning_time_ns = 5'000'000'000;
+  context.optimizer_spill_allowed = true;
+  context.current_monotonic_ns = "3001000";
+  context.authorization_context.security_epoch = 3002;
+  context.authorization_context.policy_epoch = 3003;
+  context.authorization_context.catalog_generation_id = 3001;
   return context;
 }
 
@@ -137,6 +160,9 @@ bool ValidateLivePropertyPopulation() {
                     "property-bearing SBLR did not reach the logical bridge");
   passed &= Require(result.logical_graph_populated &&
                         result.logical_properties_populated &&
+                        result.optimizer_admitted &&
+                        result.optimizer_admission_degraded &&
+                        result.optimizer_admission_stage_count == 8 &&
                         result.logical_node_count == 4 &&
                         result.logical_property_count == 6,
                     "logical/property population evidence differs");
@@ -162,6 +188,10 @@ bool ValidateEngineScopeAndPropertyRefusal() {
       "019f0000-0000-7200-8000-000000003102";
   const auto malformed = sblr::DispatchSblrOperation(
       {Context(), std::move(unknown_property), {}});
+  auto missing_resource_context = Context();
+  missing_resource_context.optimizer_memory_budget_bytes = 0;
+  const auto missing_resource = sblr::DispatchSblrOperation(
+      {std::move(missing_resource_context), PropertyEnvelope(), {}});
 
   bool passed = true;
   passed &= Require(!stale.accepted && !stale.logical_graph_populated &&
@@ -173,6 +203,14 @@ bool ValidateEngineScopeAndPropertyRefusal() {
           HasApiDiagnostic(
               malformed, "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1"),
       "unknown property reference reached canonical logical population");
+  passed &= Require(
+      !missing_resource.accepted &&
+          missing_resource.logical_graph_populated &&
+          !missing_resource.optimizer_admitted &&
+          HasApiDiagnostic(
+              missing_resource,
+              "QOW-DIAG-OPTIMIZER-ADMISSION-RESOURCE-V1"),
+      "missing engine resource snapshot reached planning");
   return passed;
 }
 

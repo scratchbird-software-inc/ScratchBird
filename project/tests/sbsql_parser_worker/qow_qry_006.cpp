@@ -173,6 +173,8 @@ bool ValidateComposableScalarLowering() {
 
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000000602";
   context.local_transaction_id = 61;
   context.snapshot_visible_through_local_transaction_id = 59;
   context.statement_metadata_snapshot_engine_owned = true;
@@ -181,6 +183,27 @@ bool ValidateComposableScalarLowering() {
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000602";
+  context.catalog_generation_id = 602;
+  context.security_epoch = 603;
+  context.resource_epoch = 604;
+  context.optimizer_capability_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006001";
+  context.optimizer_resource_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006002";
+  context.optimizer_route_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_route_epoch = 605;
+  context.optimizer_route_generation = 606;
+  context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 131072;
+  context.optimizer_maximum_memo_groups = 131072;
+  context.optimizer_maximum_search_steps = 1048576;
+  context.optimizer_maximum_planning_time_ns = 5'000'000'000;
+  context.optimizer_spill_allowed = true;
+  context.current_monotonic_ns = "602000";
+  context.authorization_context.security_epoch = 603;
+  context.authorization_context.policy_epoch = 604;
+  context.authorization_context.catalog_generation_id = 602;
   const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
       lowered.payload, std::move(context));
   passed &= Require(
@@ -188,6 +211,8 @@ bool ValidateComposableScalarLowering() {
           dispatched.dispatched_to_api &&
           dispatched.logical_graph_populated &&
           dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted &&
+          dispatched.optimizer_admission_stage_count == 8 &&
           dispatched.logical_node_count == 1 &&
           dispatched.logical_property_count == 0 &&
           !dispatched.api_result.ok &&

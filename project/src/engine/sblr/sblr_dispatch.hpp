@@ -29,6 +29,10 @@ struct SblrDispatchResult {
   bool dispatched_to_api = false;
   bool logical_graph_populated = false;
   bool logical_properties_populated = false;
+  bool optimizer_admitted = false;
+  bool optimizer_admission_degraded = false;
+  bool optimizer_benchmark_clean_ready = false;
+  std::size_t optimizer_admission_stage_count = 0;
   std::size_t logical_node_count = 0;
   std::size_t logical_property_count = 0;
   scratchbird::engine::internal_api::EngineApiResult api_result;

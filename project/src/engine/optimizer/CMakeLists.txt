@@ -27,6 +27,29 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
       sb_qow_canonical_logical_graph
     )
   endif()
+  # QOW-CMAKE-OPT-006-CATALOG-V1
+  # QOW-CMAKE-OPT-006-SECURITY-V1
+  # QOW-CMAKE-OPT-006-MGA-V1
+  # QOW-CMAKE-OPT-006-POLICY-V1
+  # QOW-CMAKE-OPT-006-RESOURCE-V1
+  # QOW-CMAKE-OPT-006-ROUTE-V1
+  # QOW-CMAKE-OPT-006-STATISTICS-V1
+  if(NOT TARGET sb_qow_optimizer_admission)
+    add_library(sb_qow_optimizer_admission STATIC
+      optimizer_admission.cpp
+    )
+    target_compile_features(sb_qow_optimizer_admission PUBLIC cxx_std_20)
+    target_compile_definitions(sb_qow_optimizer_admission PUBLIC
+      SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY=1
+    )
+    target_include_directories(sb_qow_optimizer_admission PUBLIC
+      ${CMAKE_CURRENT_SOURCE_DIR}
+      ${CMAKE_CURRENT_SOURCE_DIR}/../planner
+    )
+    target_link_libraries(sb_qow_optimizer_admission PUBLIC
+      sb_qow_canonical_candidate_legality
+    )
+  endif()
   return()
 endif()
 
@@ -77,6 +100,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_correctness_oracle.cpp
     optimizer_crash_reopen_persistence.cpp
     optimizer_catalog_backed_planning.cpp
+    optimizer_admission.cpp
     optimizer_contract.cpp
     optimizer_cost_full.cpp
     optimizer_differential_fuzz.cpp

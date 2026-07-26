@@ -9,6 +9,7 @@
 #include "sblr_dispatch.hpp"
 
 #include "sblr_opcode_registry.hpp"
+#include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "query/plan_api.hpp"
 
@@ -131,6 +132,7 @@
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
+namespace opt = scratchbird::engine::optimizer;
 
 namespace {
 
@@ -145,6 +147,10 @@ struct CanonicalQueryRouteResult {
   bool graph_validated{false};
   bool logical_graph_populated{false};
   bool logical_properties_populated{false};
+  bool optimizer_admitted{false};
+  bool optimizer_admission_degraded{false};
+  bool optimizer_benchmark_clean_ready{false};
+  std::size_t optimizer_admission_stage_count{0};
   std::size_t logical_node_count{0};
   std::size_t logical_property_count{0};
   api::EngineApiResult api_result;
@@ -899,12 +905,84 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   routed.logical_properties_populated = true;
   routed.logical_node_count = logical.logical_graph.nodes.size();
   routed.logical_property_count = logical.property_catalog.properties.size();
+  std::uint64_t admitted_at_monotonic_ns = 0;
+  if (!ParseCanonicalUnsigned(request.context.current_monotonic_ns,
+                              std::numeric_limits<std::uint64_t>::max(),
+                              &admitted_at_monotonic_ns) ||
+      admitted_at_monotonic_ns == 0) {
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        "QOW-DIAG-OPTIMIZER-ADMISSION-RESOURCE-V1",
+        "engine monotonic admission timestamp is absent or invalid");
+    return routed;
+  }
+  opt::CanonicalNativeObjectFreeAdmissionContext admission_context;
+  admission_context.statement_uuid = request.context.statement_uuid.canonical;
+  admission_context.catalog_snapshot_uuid =
+      request.context.statement_metadata_snapshot_uuid.canonical;
+  admission_context.security_context_uuid =
+      request.context.authorization_context.authority_uuid.canonical;
+  admission_context.catalog_generation = request.context.catalog_generation_id;
+  admission_context.authorization_catalog_generation =
+      request.context.authorization_context.catalog_generation_id;
+  admission_context.security_epoch =
+      request.context.authorization_context.security_epoch;
+  admission_context.policy_epoch =
+      request.context.authorization_context.policy_epoch;
+  admission_context.resource_epoch = request.context.resource_epoch;
+  admission_context.capability_snapshot_uuid =
+      request.context.optimizer_capability_snapshot_uuid.canonical;
+  admission_context.resource_snapshot_uuid =
+      request.context.optimizer_resource_snapshot_uuid.canonical;
+  admission_context.route_snapshot_uuid =
+      request.context.optimizer_route_snapshot_uuid.canonical;
+  admission_context.route_epoch = request.context.optimizer_route_epoch;
+  admission_context.route_generation =
+      request.context.optimizer_route_generation;
+  admission_context.memory_budget_bytes =
+      request.context.optimizer_memory_budget_bytes;
+  admission_context.maximum_candidate_count =
+      request.context.optimizer_maximum_candidate_count;
+  admission_context.maximum_memo_groups =
+      request.context.optimizer_maximum_memo_groups;
+  admission_context.maximum_search_steps =
+      request.context.optimizer_maximum_search_steps;
+  admission_context.maximum_planning_time_ns =
+      request.context.optimizer_maximum_planning_time_ns;
+  admission_context.spill_allowed = request.context.optimizer_spill_allowed;
+  admission_context.local_transaction_id =
+      request.context.local_transaction_id;
+  admission_context.statement_snapshot_id =
+      request.context.snapshot_visible_through_local_transaction_id;
+  admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
+  admission_context.metadata_snapshot_engine_owned =
+      request.context.statement_metadata_snapshot_engine_owned;
+  admission_context.authorization_context_engine_owned =
+      request.context.authorization_context.present;
+  const auto optimizer_admission =
+      opt::BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
+          logical.logical_graph, logical.property_catalog, admission_context);
+  if (!optimizer_admission.built) {
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        optimizer_admission.diagnostic_id,
+        optimizer_admission.field_id);
+    return routed;
+  }
+  routed.optimizer_admitted = true;
+  routed.optimizer_admission_degraded =
+      optimizer_admission.admission.degraded_for_unknown_statistics;
+  routed.optimizer_benchmark_clean_ready =
+      optimizer_admission.admission.benchmark_clean_ready;
+  routed.optimizer_admission_stage_count =
+      optimizer_admission.admission.evidence.size();
   routed.api_result = QueryRouteFailure(
       request.context,
       request.envelope.operation_id,
       "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING",
-      "typed relational DAG populated the canonical logical/property graph; "
-      "physical dispatch is not yet connected");
+      "typed relational DAG populated the canonical logical/property graph "
+      "and passed optimizer admission; physical dispatch is not yet "
+      "connected");
   return routed;
 }
 
@@ -988,12 +1066,19 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
 
   const auto routed = DispatchTypedPlanOperation(request);
-  result.accepted = routed.logical_graph_populated;
-  result.dispatched_to_api = routed.logical_graph_populated;
+  result.accepted = routed.optimizer_admitted;
+  result.dispatched_to_api = routed.optimizer_admitted;
   result.logical_graph_populated = routed.logical_graph_populated;
   result.logical_properties_populated = routed.logical_properties_populated;
   result.logical_node_count = routed.logical_node_count;
   result.logical_property_count = routed.logical_property_count;
+  result.optimizer_admitted = routed.optimizer_admitted;
+  result.optimizer_admission_degraded =
+      routed.optimizer_admission_degraded;
+  result.optimizer_benchmark_clean_ready =
+      routed.optimizer_benchmark_clean_ready;
+  result.optimizer_admission_stage_count =
+      routed.optimizer_admission_stage_count;
   result.api_result = routed.api_result;
   result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
   return result;
@@ -1032,6 +1117,14 @@ std::string SerializeSblrDispatchResultToJson(
       << (result.logical_properties_populated ? "true" : "false")
       << ",\"logical_node_count\":" << result.logical_node_count
       << ",\"logical_property_count\":" << result.logical_property_count
+      << ",\"optimizer_admitted\":"
+      << (result.optimizer_admitted ? "true" : "false")
+      << ",\"optimizer_admission_degraded\":"
+      << (result.optimizer_admission_degraded ? "true" : "false")
+      << ",\"optimizer_benchmark_clean_ready\":"
+      << (result.optimizer_benchmark_clean_ready ? "true" : "false")
+      << ",\"optimizer_admission_stage_count\":"
+      << result.optimizer_admission_stage_count
       << ",\"api_ok\":" << (result.api_result.ok ? "true" : "false")
       << "}";
   return out.str();
@@ -7583,13 +7676,20 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
 
   if (request.envelope.operation_id == "query.execute") {
     const auto routed = DispatchTypedPlanOperation(request);
-    result.accepted = routed.logical_graph_populated;
-    result.dispatched_to_api = routed.logical_graph_populated;
+    result.accepted = routed.optimizer_admitted;
+    result.dispatched_to_api = routed.optimizer_admitted;
     result.logical_graph_populated = routed.logical_graph_populated;
     result.logical_properties_populated =
         routed.logical_properties_populated;
     result.logical_node_count = routed.logical_node_count;
     result.logical_property_count = routed.logical_property_count;
+    result.optimizer_admitted = routed.optimizer_admitted;
+    result.optimizer_admission_degraded =
+        routed.optimizer_admission_degraded;
+    result.optimizer_benchmark_clean_ready =
+        routed.optimizer_benchmark_clean_ready;
+    result.optimizer_admission_stage_count =
+        routed.optimizer_admission_stage_count;
     result.api_result = routed.api_result;
     result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
     return result;
@@ -8095,6 +8195,16 @@ std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) 
       << ",\n";
   out << "  \"logical_property_count\": " << result.logical_property_count
       << ",\n";
+  out << "  \"optimizer_admitted\": "
+      << (result.optimizer_admitted ? "true" : "false") << ",\n";
+  out << "  \"optimizer_admission_degraded\": "
+      << (result.optimizer_admission_degraded ? "true" : "false")
+      << ",\n";
+  out << "  \"optimizer_benchmark_clean_ready\": "
+      << (result.optimizer_benchmark_clean_ready ? "true" : "false")
+      << ",\n";
+  out << "  \"optimizer_admission_stage_count\": "
+      << result.optimizer_admission_stage_count << ",\n";
   out << "  \"api_ok\": " << (result.api_result.ok ? "true" : "false") << ",\n";
   out << "  \"operation_id\": \"" << JsonEscape(result.api_result.operation_id) << "\",\n";
   out << "  \"diagnostics\": [\n";

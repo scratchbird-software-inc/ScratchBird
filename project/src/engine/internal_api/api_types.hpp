@@ -365,6 +365,20 @@ struct EngineRequestContext {
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;
+  // Engine-issued optimizer admission snapshots and budgets. Parsers and SBLR
+  // operands cannot populate these fields. A zero/absent field causes the
+  // canonical query route to refuse before planning or data access.
+  EngineUuid optimizer_capability_snapshot_uuid;
+  EngineUuid optimizer_resource_snapshot_uuid;
+  EngineUuid optimizer_route_snapshot_uuid;
+  EngineApiU64 optimizer_route_epoch = 0;
+  EngineApiU64 optimizer_route_generation = 0;
+  EngineApiU64 optimizer_memory_budget_bytes = 0;
+  EngineApiU64 optimizer_maximum_candidate_count = 0;
+  EngineApiU64 optimizer_maximum_memo_groups = 0;
+  EngineApiU64 optimizer_maximum_search_steps = 0;
+  EngineApiU64 optimizer_maximum_planning_time_ns = 0;
+  bool optimizer_spill_allowed = false;
   EngineApiU64 name_resolution_epoch = 0;
   EngineApiU64 last_row_count = 0;
   bool last_row_count_present = false;

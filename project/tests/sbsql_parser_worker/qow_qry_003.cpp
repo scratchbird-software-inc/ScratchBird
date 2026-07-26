@@ -44,6 +44,8 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
 api::EngineRequestContext Context() {
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000000303";
   context.local_transaction_id = 37;
   context.snapshot_visible_through_local_transaction_id = 35;
   context.statement_metadata_snapshot_engine_owned = true;
@@ -52,6 +54,27 @@ api::EngineRequestContext Context() {
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000304";
+  context.catalog_generation_id = 303;
+  context.security_epoch = 304;
+  context.resource_epoch = 305;
+  context.optimizer_capability_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006001";
+  context.optimizer_resource_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006002";
+  context.optimizer_route_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_route_epoch = 306;
+  context.optimizer_route_generation = 307;
+  context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 131072;
+  context.optimizer_maximum_memo_groups = 131072;
+  context.optimizer_maximum_search_steps = 1048576;
+  context.optimizer_maximum_planning_time_ns = 5'000'000'000;
+  context.optimizer_spill_allowed = true;
+  context.current_monotonic_ns = "303000";
+  context.authorization_context.security_epoch = 304;
+  context.authorization_context.policy_epoch = 305;
+  context.authorization_context.catalog_generation_id = 303;
   return context;
 }
 
@@ -118,6 +141,8 @@ bool ValidateCanonicalDispatchSeam() {
                     "validated typed DAG did not reach the API dispatch seam");
   passed &= Require(result.logical_graph_populated &&
                         result.logical_properties_populated &&
+                        result.optimizer_admitted &&
+                        result.optimizer_admission_stage_count == 8 &&
                         result.logical_node_count == 1 &&
                         result.logical_property_count == 0,
                     "typed DAG did not populate the canonical logical graph");

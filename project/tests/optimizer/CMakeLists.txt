@@ -148,6 +148,65 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_opt_005_v1 PROPERTIES
     LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-005;development_candidate"
   )
+  # QOW-CMAKE-OPT-006-CATALOG-V1
+  add_executable(qow_opt_006_catalog_test_v1 qow_opt_006_catalog.cpp)
+  target_compile_features(qow_opt_006_catalog_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_catalog_test_v1 PRIVATE
+    sb_qow_optimizer_admission
+  )
+  add_test(NAME qow_opt_006_catalog_v1
+    COMMAND qow_opt_006_catalog_test_v1)
+  set_tests_properties(qow_opt_006_catalog_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-CATALOG;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-SECURITY-V1
+  add_executable(qow_opt_006_security_test_v1 qow_opt_006_security.cpp)
+  target_compile_features(qow_opt_006_security_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_security_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_security_v1 COMMAND qow_opt_006_security_test_v1)
+  set_tests_properties(qow_opt_006_security_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-SECURITY;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-MGA-V1
+  add_executable(qow_opt_006_mga_test_v1 qow_opt_006_mga.cpp)
+  target_compile_features(qow_opt_006_mga_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_mga_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_mga_v1 COMMAND qow_opt_006_mga_test_v1)
+  set_tests_properties(qow_opt_006_mga_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-MGA;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-POLICY-V1
+  add_executable(qow_opt_006_policy_test_v1 qow_opt_006_policy.cpp)
+  target_compile_features(qow_opt_006_policy_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_policy_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_policy_v1 COMMAND qow_opt_006_policy_test_v1)
+  set_tests_properties(qow_opt_006_policy_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-POLICY;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-RESOURCE-V1
+  add_executable(qow_opt_006_resource_test_v1 qow_opt_006_resource.cpp)
+  target_compile_features(qow_opt_006_resource_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_resource_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_resource_v1 COMMAND qow_opt_006_resource_test_v1)
+  set_tests_properties(qow_opt_006_resource_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-RESOURCE;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-ROUTE-V1
+  add_executable(qow_opt_006_route_test_v1 qow_opt_006_route.cpp)
+  target_compile_features(qow_opt_006_route_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_route_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_route_v1 COMMAND qow_opt_006_route_test_v1)
+  set_tests_properties(qow_opt_006_route_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-ROUTE;development_candidate"
+  )
+  # QOW-CMAKE-OPT-006-STATISTICS-V1
+  add_executable(qow_opt_006_statistics_test_v1 qow_opt_006_statistics.cpp)
+  target_compile_features(qow_opt_006_statistics_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_006_statistics_test_v1 PRIVATE sb_qow_optimizer_admission)
+  add_test(NAME qow_opt_006_statistics_v1 COMMAND qow_opt_006_statistics_test_v1)
+  set_tests_properties(qow_opt_006_statistics_v1 PROPERTIES
+    LABELS "qow_closure;QOW-303;QOW-LEAF-OPT-006-STATISTICS;development_candidate"
+  )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.
   set(SB_QOW_OPTIMIZER_TESTS_ENROLLED TRUE PARENT_SCOPE)

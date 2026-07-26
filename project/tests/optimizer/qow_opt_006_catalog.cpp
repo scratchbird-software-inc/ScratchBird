@@ -1,0 +1,203 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "optimizer_catalog_backed_planning.hpp"
+
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <string_view>
+
+namespace opt = scratchbird::engine::optimizer;
+namespace plan = scratchbird::engine::planner;
+
+namespace {
+
+constexpr std::string_view kTree =
+    "019f0000-0000-7300-8000-000000006101";
+constexpr std::string_view kCatalog =
+    "019f0000-0000-7300-8000-000000006102";
+constexpr std::string_view kSecurity =
+    "019f0000-0000-7300-8000-000000006103";
+constexpr std::string_view kRelation =
+    "019f0000-0000-7300-8000-000000006104";
+constexpr std::string_view kStatistics =
+    "019f0000-0000-7300-8000-000000006105";
+
+bool Require(const bool condition, const std::string_view detail) {
+  if (!condition) {
+    std::cerr << "QOW-TEST-OPT-006-CATALOG-V1: " << detail << '\n';
+  }
+  return condition;
+}
+
+opt::CanonicalOptimizerAdmissionRequest Request() {
+  opt::CanonicalOptimizerAdmissionRequest request;
+  auto& graph = request.logical_graph;
+  graph.bound_sblr_tree_uuid = std::string(kTree);
+  graph.catalog_epoch_uuid = std::string(kCatalog);
+  graph.security_context_uuid = std::string(kSecurity);
+  graph.local_transaction_id = 601;
+  graph.statement_snapshot_id = 599;
+  graph.root_logical_node_id = 1;
+  graph.result_descriptor_ids = {1};
+  plan::CanonicalLogicalRelationalNode source;
+  source.logical_node_id = 1;
+  source.node_kind = plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
+  source.output_descriptor_ids = {1};
+  source.origin_relational_node_ids = {1};
+  source.required_object_uuids = {std::string(kRelation)};
+  source.semantic_variant_id = "relation.source.v1";
+  graph.nodes = {source};
+
+  request.logical_properties.bound_sblr_tree_uuid = std::string(kTree);
+  request.logical_properties.catalog_epoch_uuid = std::string(kCatalog);
+  request.logical_properties.security_context_uuid = std::string(kSecurity);
+  request.logical_properties.local_transaction_id = 601;
+  request.logical_properties.statement_snapshot_id = 599;
+
+  request.catalog.snapshot_uuid = std::string(kCatalog);
+  request.catalog.catalog_epoch_uuid = std::string(kCatalog);
+  request.catalog.catalog_generation = 17;
+  request.catalog.object_uuids = {std::string(kRelation)};
+  request.catalog.descriptor_ids = {1};
+  request.catalog.engine_owned = true;
+
+  request.security.security_context_uuid = std::string(kSecurity);
+  request.security.security_epoch = 18;
+  request.security.policy_epoch = 19;
+  request.security.catalog_generation = 17;
+  request.security.authorized_object_uuids = {std::string(kRelation)};
+  request.security.engine_owned = true;
+
+  request.mga.local_transaction_id = 601;
+  request.mga.statement_snapshot_id = 599;
+  request.mga.metadata_snapshot_uuid = std::string(kCatalog);
+  request.mga.transaction_active = true;
+  request.mga.statement_snapshot_fixed = true;
+  request.mga.engine_owned = true;
+
+  request.policy_capability.policy_snapshot_uuid = std::string(kSecurity);
+  request.policy_capability.policy_epoch = 19;
+  request.policy_capability.capability_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000006106";
+  request.policy_capability.capability_abi_version = 1;
+  request.policy_capability.supported_node_kinds = {
+      plan::CanonicalLogicalRelationalNodeKind::kRelationSource};
+  request.policy_capability.engine_owned = true;
+
+  request.resource.resource_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000006107";
+  request.resource.resource_epoch = 20;
+  request.resource.memory_budget_bytes = 4 * 1024 * 1024;
+  request.resource.maximum_candidate_count = 8;
+  request.resource.maximum_memo_groups = 8;
+  request.resource.maximum_search_steps = 64;
+  request.resource.maximum_planning_time_ns = 1'000'000;
+  request.resource.spill_allowed = true;
+  request.resource.engine_owned = true;
+
+  request.statistics.statistics_snapshot_uuid = std::string(kStatistics);
+  request.statistics.catalog_epoch_uuid = std::string(kCatalog);
+  request.statistics.statistics_generation = 21;
+  request.statistics.admitted_at_monotonic_ns = 1'000'000;
+  request.statistics.captured_before_data_access = true;
+  opt::CanonicalOptimizerNodeEstimate estimate;
+  estimate.logical_node_id = 1;
+  estimate.object_uuid = std::string(kRelation);
+  estimate.state = opt::CanonicalOptimizerStatisticState::kKnown;
+  estimate.source = opt::CanonicalOptimizerStatisticSource::kCatalogExact;
+  estimate.catalog_epoch_uuid = std::string(kCatalog);
+  estimate.statistics_snapshot_uuid = std::string(kStatistics);
+  estimate.statistics_generation = 21;
+  estimate.collected_at_monotonic_ns = 900'000;
+  estimate.admitted_at_monotonic_ns = 1'000'000;
+  estimate.maximum_age_ns = 200'000;
+  estimate.confidence = opt::CostConfidence::kExact;
+  estimate.row_count_present = true;
+  estimate.row_count = 0;
+  estimate.page_count_present = true;
+  estimate.page_count = 1;
+  request.statistics.node_estimates = {estimate};
+
+  request.route.route_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000006108";
+  request.route.route_epoch = 22;
+  request.route.route_generation = 23;
+  request.route.operation_id = "query.execute";
+  request.route.route_id = "native.sblr.query.execute.v2";
+  request.route.native_local_route = true;
+  request.route.engine_owned = true;
+  request.populated_from_admitted_typed_sblr = true;
+  return request;
+}
+
+bool ValidateCatalogAdmission() {
+  const auto result = opt::AdmitCanonicalOptimizerPlanningRequest(Request());
+  bool passed = true;
+  passed &= Require(result.admitted && result.planning_allowed &&
+                        result.benchmark_clean_ready &&
+                        !result.degraded_for_unknown_statistics &&
+                        !result.data_access_allowed && result.issues.empty() &&
+                        result.evidence.size() == 8,
+                    "complete catalog-backed request was not admitted");
+  for (std::size_t index = 0; index < result.evidence.size(); ++index) {
+    passed &= Require(
+        result.evidence[index].stage ==
+            static_cast<opt::CanonicalOptimizerAdmissionStage>(index + 1),
+        "admission evidence order changed");
+  }
+  return passed;
+}
+
+bool ValidateCatalogRefusals() {
+  bool passed = true;
+  const auto expect_catalog_refusal = [&](auto mutation,
+                                           const std::string_view detail) {
+    auto request = Request();
+    mutation(request);
+    const auto result = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+    return Require(!result.admitted && !result.planning_allowed &&
+                       !result.data_access_allowed &&
+                       result.evidence.size() == 1 &&
+                       result.issues.size() == 1 &&
+                       result.issues.front().stage ==
+                           opt::CanonicalOptimizerAdmissionStage::kCatalogEpoch &&
+                       result.issues.front().diagnostic_id ==
+                           "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-V1",
+                   detail);
+  };
+  passed &= expect_catalog_refusal(
+      [](auto& request) { request.catalog.engine_owned = false; },
+      "non-engine catalog snapshot was admitted");
+  passed &= expect_catalog_refusal(
+      [](auto& request) { request.catalog.object_uuids.clear(); },
+      "missing catalog object was admitted");
+  passed &= expect_catalog_refusal(
+      [](auto& request) { request.catalog.descriptor_ids.clear(); },
+      "missing descriptor snapshot was admitted");
+  passed &= expect_catalog_refusal(
+      [](auto& request) {
+        request.catalog.catalog_epoch_uuid =
+            "019f0000-0000-7300-8000-000000006999";
+      },
+      "stale catalog epoch was admitted");
+  return passed;
+}
+
+}  // namespace
+
+#ifndef QOW_OPT_006_FIXTURE_ONLY
+// QOW-TEST-OPT-006-CATALOG-V1
+int main() {
+  bool passed = true;
+  passed &= ValidateCatalogAdmission();
+  passed &= ValidateCatalogRefusals();
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
+}
+#endif

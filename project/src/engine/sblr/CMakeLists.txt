@@ -7,6 +7,12 @@
 # SPDX-License-Identifier: MPL-2.0
 
 if(SB_BUILD_QOW_CLOSURE_TESTS)
+  if(NOT TARGET sb_qow_optimizer_admission)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../optimizer
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_optimizer
+    )
+  endif()
   # QOW-CMAKE-QRY-003-V1
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
@@ -24,6 +30,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   target_link_libraries(sb_qow_sblr_query_route_contract PUBLIC
     sb_qow_relational_dag_contract
+    sb_qow_optimizer_admission
   )
   set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
@@ -113,7 +120,7 @@ target_include_directories(sb_engine_sblr PUBLIC
 
 target_compile_features(sb_engine_sblr PUBLIC cxx_std_20)
 
-target_link_libraries(sb_engine_sblr PUBLIC sb_engine_internal_api sb_engine_executor sb_engine_native_compile sb_core_datatypes)
+target_link_libraries(sb_engine_sblr PUBLIC sb_engine_internal_api sb_engine_executor sb_engine_native_compile sb_engine_optimizer_contract_only sb_core_datatypes)
 if(TARGET sb_engine_functions)
   target_link_libraries(sb_engine_sblr PRIVATE sb_engine_functions)
 endif()
