@@ -208,4 +208,105 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-ROW-V1
+// Enforce the row-subquery cardinality contract over the canonical table
+// result. Zero rows produce one typed all-NULL row, one row preserves every
+// field, and more than one row fails before any row value is published.
+CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
+    const CanonicalRowSubqueryRequest& request) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalRowSubqueryResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-013-ROW-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.source_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+
+  auto table = ExecuteCanonicalTableSubquery(request.table_request);
+  if (!table.diagnostic.ok) {
+    return refuse(table.diagnostic.diagnostic_code + ":" +
+                  table.diagnostic.detail);
+  }
+  const auto width = table.output_batch.columns.size();
+  if (width == 0 || request.row_expression_descriptor_ids.size() != width ||
+      request.result_columns.size() != width) {
+    return refuse("row subquery result width is not completely bound");
+  }
+
+  std::vector<std::uint32_t> result_descriptor_ids;
+  result_descriptor_ids.reserve(width);
+  for (std::size_t column = 0; column < width; ++column) {
+    const auto& source = table.output_batch.columns[column];
+    const auto& bound = request.result_columns[column];
+    const auto& source_descriptor = source.descriptor;
+    const auto& bound_descriptor = bound.descriptor;
+    if (request.row_expression_descriptor_ids[column] == 0 ||
+        request.row_expression_descriptor_ids[column] !=
+            source.descriptor_id ||
+        bound.descriptor_id != source.descriptor_id ||
+        bound.stable_name.empty() || !bound.nullable ||
+        bound_descriptor.descriptor_uuid.canonical !=
+            source_descriptor.descriptor_uuid.canonical ||
+        bound_descriptor.descriptor_kind !=
+            source_descriptor.descriptor_kind ||
+        bound_descriptor.canonical_type_name !=
+            source_descriptor.canonical_type_name ||
+        bound_descriptor.encoded_descriptor !=
+            source_descriptor.encoded_descriptor) {
+      return refuse("row result descriptor is not the bound source field");
+    }
+    result_descriptor_ids.push_back(bound.descriptor_id);
+  }
+
+  DescriptorBatch output;
+  output.columns = request.result_columns;
+  auto schema_validation =
+      ValidateCanonicalDescriptorBatch(output, result_descriptor_ids);
+  if (!schema_validation.ok) {
+    return refuse(schema_validation.diagnostic_code + ":" +
+                  schema_validation.detail);
+  }
+  if (table.materialized_row_count > 1) {
+    return refuse("row subquery produced more than one row");
+  }
+
+  DescriptorTuple row;
+  if (table.materialized_row_count == 0) {
+    row.values.reserve(width);
+    for (const auto& column : request.result_columns) {
+      EngineTypedValue null_value;
+      null_value.descriptor = column.descriptor;
+      null_value.is_null = true;
+      null_value.state = EngineValueState::sql_null;
+      row.values.push_back(std::move(null_value));
+    }
+  } else {
+    row = table.output_batch.rows.front();
+  }
+  output.rows.push_back(std::move(row));
+  auto output_validation =
+      ValidateCanonicalDescriptorBatch(output, result_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.source_row_count = table.materialized_row_count;
+  result.selected_plan_uuid = std::move(table.selected_plan_uuid);
+  result.executed_physical_node_id = table.executed_physical_node_id;
+  result.causal_counter_id = table.causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
