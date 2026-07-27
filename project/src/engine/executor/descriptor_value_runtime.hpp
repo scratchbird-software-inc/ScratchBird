@@ -1173,6 +1173,53 @@ struct CanonicalAggregateRuntimeResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalAggregateGroupingSet {
+  // Strictly increasing ordinals into group_key_terms.  An empty vector is
+  // the grand-total grouping set.
+  std::vector<std::size_t> key_term_ordinals;
+};
+
+struct CanonicalGroupedAggregateRuntimeRequest {
+  CanonicalAggregateRuntimeRequest aggregate_request;
+  std::vector<CanonicalDescriptorOrderTerm> group_key_terms;
+  std::vector<ExecutorColumnDescriptor> group_result_columns;
+  std::vector<CanonicalAggregateGroupingSet> grouping_sets;
+  std::size_t maximum_group_count = 65536;
+  std::size_t maximum_grouping_key_comparison_count = 1048576;
+  std::size_t maximum_grouping_set_transition_count = 1048576;
+  std::size_t maximum_combined_distinct_tuple_count = 1048576;
+  std::size_t maximum_combined_order_comparison_count = 1048576;
+  std::size_t maximum_combined_state_bytes = 67108864;
+  std::size_t maximum_output_rows = 65536;
+};
+
+struct CanonicalGroupedAggregateMetadata {
+  std::uint32_t grouping_set_ordinal = 0;
+  std::uint64_t grouping_id = 0;
+  std::vector<bool> grouping_indicators;
+  std::size_t source_row_count = 0;
+  std::size_t aggregate_transition_count = 0;
+  std::size_t aggregate_state_bytes = 0;
+};
+
+struct CanonicalGroupedAggregateRuntimeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<CanonicalGroupedAggregateMetadata> groups;
+  std::size_t grouping_set_count = 0;
+  std::size_t grouping_key_comparison_count = 0;
+  std::size_t grouping_set_transition_count = 0;
+  std::size_t aggregate_transition_count = 0;
+  std::size_t aggregate_distinct_tuple_count = 0;
+  std::size_t aggregate_order_comparison_count = 0;
+  std::size_t combined_state_bytes = 0;
+  bool shared_state_authority_used = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorOrderComparisonResult {
   DescriptorRuntimeDiagnostic diagnostic;
   int comparison = 0;
@@ -1494,6 +1541,8 @@ std::vector<CanonicalAggregateRegistryEntry>
 CanonicalAggregateRuntimeRegistryV1();
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(

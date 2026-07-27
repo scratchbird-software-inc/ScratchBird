@@ -1853,4 +1853,443 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-GROUPED-REGISTRY-V1
+// Build explicit grouping sets over ordered, descriptor-bound keys and route
+// every resulting group through the one canonical aggregate registry/state
+// authority above.  Omitted grouping keys are published as typed SQL NULL and
+// remain distinguishable from data NULL through GROUPING/GROUPING_ID metadata.
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request) {
+  using scratchbird::engine::internal_api::EngineTypedValue;
+  using scratchbird::engine::internal_api::EngineValueState;
+
+  CanonicalGroupedAggregateRuntimeResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result.diagnostic = std::move(diagnostic);
+    result.output_batch = {};
+    result.groups.clear();
+    result.grouping_set_count = 0;
+    result.grouping_key_comparison_count = 0;
+    result.grouping_set_transition_count = 0;
+    result.aggregate_transition_count = 0;
+    result.aggregate_distinct_tuple_count = 0;
+    result.aggregate_order_comparison_count = 0;
+    result.combined_state_bytes = 0;
+    result.shared_state_authority_used = false;
+    result.authority = {};
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+  const auto grouped_refusal = [&](std::string detail) {
+    return refuse(Refusal("QOW-DIAG-QRY-011-GROUPED-REFUSAL-V1",
+                          std::move(detail)));
+  };
+
+  const auto& aggregate = request.aggregate_request;
+  if (request.grouping_sets.empty() ||
+      request.group_key_terms.size() > 64 ||
+      request.group_result_columns.size() !=
+          request.group_key_terms.size() ||
+      request.maximum_group_count == 0 ||
+      request.maximum_grouping_key_comparison_count == 0 ||
+      request.maximum_grouping_set_transition_count == 0 ||
+      request.maximum_combined_distinct_tuple_count == 0 ||
+      request.maximum_combined_order_comparison_count == 0 ||
+      request.maximum_combined_state_bytes == 0 ||
+      request.maximum_output_rows == 0) {
+    return grouped_refusal(
+        "grouped aggregate shape or resource contract is invalid");
+  }
+
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(
+      aggregate.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  }
+  if (aggregate.selected_physical_node_id == 0 ||
+      aggregate.selected_physical_node_id !=
+          aggregate.physical_dag.root_physical_node_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "selected grouped aggregate node is not the root"));
+  }
+  const PhysicalNodeRecord* aggregate_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id == aggregate.selected_physical_node_id) {
+      aggregate_node = &node;
+    }
+  }
+  if (aggregate_node == nullptr ||
+      aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
+      aggregate_node->implementation_id !=
+          "aggregate.registry-grouping-sets.v1" ||
+      aggregate_node->input_physical_node_ids.size() != 1) {
+    return grouped_refusal(
+        "selected physical node is not the grouped registry aggregate");
+  }
+  for (const auto& node : aggregate.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        aggregate_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr ||
+      aggregate_node->output_descriptor_ids.size() !=
+          request.group_result_columns.size() + 1 ||
+      aggregate.result_column.descriptor_id == 0 ||
+      aggregate_node->output_descriptor_ids.back() !=
+          aggregate.result_column.descriptor_id) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "grouped aggregate input or result shape is unresolved"));
+  }
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      aggregate.input_batch, input_node->output_descriptor_ids);
+  if (!input_validation.ok) return refuse(std::move(input_validation));
+
+  std::set<std::uint32_t> group_expression_ids;
+  std::vector<bool> key_can_be_omitted(request.group_key_terms.size(), false);
+  std::vector<CanonicalDescriptorOrderTerm> group_result_terms;
+  group_result_terms.reserve(request.group_key_terms.size());
+  for (std::size_t index = 0; index < request.group_key_terms.size(); ++index) {
+    const auto& term = request.group_key_terms[index];
+    if (term.column >= aggregate.input_batch.columns.size()) {
+      return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                            "group key column is unresolved"));
+    }
+    auto term_validation = ValidateCanonicalDescriptorOrderTerm(
+        term, aggregate.input_batch.columns[term.column]);
+    if (!term_validation.ok) return refuse(std::move(term_validation));
+    if (!group_expression_ids.insert(term.expression_descriptor_id).second) {
+      return grouped_refusal("group key expression handles are not unique");
+    }
+    const auto& output = request.group_result_columns[index];
+    if (output.descriptor_id == 0 ||
+        aggregate_node->output_descriptor_ids[index] != output.descriptor_id ||
+        output.descriptor.canonical_type_name !=
+            aggregate.input_batch.columns[term.column]
+                .descriptor.canonical_type_name) {
+      return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                            "group result descriptor is not bound to its key"));
+    }
+    auto output_term = term;
+    output_term.column = index;
+    output_term.expression_descriptor_id = output.descriptor_id;
+    auto output_term_validation =
+        ValidateCanonicalDescriptorOrderTerm(output_term, output);
+    if (!output_term_validation.ok) {
+      return refuse(std::move(output_term_validation));
+    }
+    group_result_terms.push_back(std::move(output_term));
+  }
+
+  std::vector<std::vector<bool>> grouping_membership;
+  grouping_membership.reserve(request.grouping_sets.size());
+  for (const auto& grouping_set : request.grouping_sets) {
+    std::vector<bool> included(request.group_key_terms.size(), false);
+    std::optional<std::size_t> previous;
+    for (const auto ordinal : grouping_set.key_term_ordinals) {
+      if (ordinal >= request.group_key_terms.size() ||
+          (previous.has_value() && ordinal <= *previous)) {
+        return grouped_refusal(
+            "grouping-set key ordinals must be unique, increasing, and bound");
+      }
+      included[ordinal] = true;
+      previous = ordinal;
+    }
+    for (std::size_t index = 0; index < included.size(); ++index) {
+      if (!included[index]) key_can_be_omitted[index] = true;
+    }
+    grouping_membership.push_back(std::move(included));
+  }
+  for (std::size_t index = 0; index < request.group_result_columns.size();
+       ++index) {
+    const auto input_nullable = aggregate.input_batch.columns[
+        request.group_key_terms[index].column].nullable;
+    if ((input_nullable || key_can_be_omitted[index]) &&
+        !request.group_result_columns[index].nullable) {
+      return grouped_refusal(
+          "group result nullability does not cover data or grouping NULL");
+    }
+  }
+
+  const auto row_count = aggregate.input_batch.rows.size();
+  if (aggregate.filter_truth_values.has_value() &&
+      aggregate.filter_truth_values->size() != row_count) {
+    return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                          "grouped aggregate FILTER cardinality is not bound"));
+  }
+  if (row_count != 0 &&
+      request.grouping_sets.size() >
+          request.maximum_grouping_set_transition_count / row_count) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "grouping-set transition bound is exceeded"));
+  }
+  result.grouping_set_transition_count =
+      row_count * request.grouping_sets.size();
+
+  const auto make_kernel_request = [&]() {
+    auto kernel_request = aggregate;
+    // The grouped node's complete output was validated above.  Its internal
+    // registry-state kernel publishes only the aggregate field, so project
+    // that already-bound field while retaining the exact plan/node/MGA IDs.
+    for (auto& node : kernel_request.physical_dag.nodes) {
+      if (node.physical_node_id == kernel_request.selected_physical_node_id) {
+        node.output_descriptor_ids = {
+            kernel_request.result_column.descriptor_id};
+        break;
+      }
+    }
+    return kernel_request;
+  };
+  auto preflight_request = make_kernel_request();
+  preflight_request.input_batch.rows.clear();
+  if (preflight_request.filter_truth_values.has_value()) {
+    preflight_request.filter_truth_values =
+        std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
+  }
+  const auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  if (!preflight.diagnostic.ok) {
+    return refuse(preflight.diagnostic);
+  }
+
+  struct WorkingGroup {
+    std::uint32_t grouping_set_ordinal = 0;
+    std::uint64_t grouping_id = 0;
+    std::vector<bool> grouping_indicators;
+    std::size_t representative_row = 0;
+    std::vector<std::size_t> source_rows;
+  };
+  std::vector<WorkingGroup> working_groups;
+  const auto compare_key = [&](const EngineTypedValue& left,
+                               const EngineTypedValue& right,
+                               const CanonicalDescriptorOrderTerm& term,
+                               bool* equal) {
+    if (result.grouping_key_comparison_count ==
+        request.maximum_grouping_key_comparison_count) {
+      return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                     "grouping-key comparison bound is exceeded");
+    }
+    ++result.grouping_key_comparison_count;
+    const auto compared = CompareCanonicalDescriptorOrderValues(
+        left, right, term);
+    if (!compared.diagnostic.ok) return compared.diagnostic;
+    *equal = compared.comparison == 0;
+    return DescriptorRuntimeDiagnostic{};
+  };
+  const auto add_group = [&](WorkingGroup group) {
+    if (working_groups.size() == request.maximum_group_count ||
+        working_groups.size() == request.maximum_output_rows) {
+      return false;
+    }
+    working_groups.push_back(std::move(group));
+    return true;
+  };
+
+  for (std::size_t set_ordinal = 0;
+       set_ordinal < grouping_membership.size(); ++set_ordinal) {
+    const auto& included = grouping_membership[set_ordinal];
+    std::vector<bool> indicators(included.size(), false);
+    std::uint64_t grouping_id = 0;
+    bool grand_total = true;
+    for (std::size_t index = 0; index < included.size(); ++index) {
+      indicators[index] = !included[index];
+      if (included[index]) {
+        grand_total = false;
+      } else {
+        grouping_id |= std::uint64_t{1}
+                       << (included.size() - 1 - index);
+      }
+    }
+    if (grand_total) {
+      WorkingGroup group;
+      group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
+      group.grouping_id = grouping_id;
+      group.grouping_indicators = std::move(indicators);
+      group.source_rows.resize(row_count);
+      std::iota(group.source_rows.begin(), group.source_rows.end(), 0);
+      if (!add_group(std::move(group))) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "group or output row bound is exceeded"));
+      }
+      continue;
+    }
+
+    const auto set_group_begin = working_groups.size();
+    for (std::size_t row = 0; row < row_count; ++row) {
+      std::optional<std::size_t> matching_group;
+      for (std::size_t group_index = set_group_begin;
+           group_index < working_groups.size(); ++group_index) {
+        bool matches = true;
+        for (std::size_t term_index = 0; term_index < included.size();
+             ++term_index) {
+          if (!included[term_index]) continue;
+          const auto& term = request.group_key_terms[term_index];
+          bool equal = false;
+          auto comparison = compare_key(
+              aggregate.input_batch.rows[row].values[term.column],
+              aggregate.input_batch
+                  .rows[working_groups[group_index].representative_row]
+                  .values[term.column],
+              term, &equal);
+          if (!comparison.ok) return refuse(std::move(comparison));
+          if (!equal) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) {
+          matching_group = group_index;
+          break;
+        }
+      }
+      if (matching_group.has_value()) {
+        working_groups[*matching_group].source_rows.push_back(row);
+        continue;
+      }
+
+      // A first representative has no peer comparison, so self-compare each
+      // included key to validate its typed encoding and collation authority.
+      for (std::size_t term_index = 0; term_index < included.size();
+           ++term_index) {
+        if (!included[term_index]) continue;
+        const auto& term = request.group_key_terms[term_index];
+        bool equal = false;
+        auto comparison = compare_key(
+            aggregate.input_batch.rows[row].values[term.column],
+            aggregate.input_batch.rows[row].values[term.column], term,
+            &equal);
+        if (!comparison.ok) return refuse(std::move(comparison));
+        if (!equal) {
+          return grouped_refusal("group key is not equal to itself");
+        }
+      }
+      WorkingGroup group;
+      group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
+      group.grouping_id = grouping_id;
+      group.grouping_indicators = indicators;
+      group.representative_row = row;
+      group.source_rows = {row};
+      if (!add_group(std::move(group))) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "group or output row bound is exceeded"));
+      }
+    }
+  }
+
+  result.output_batch.columns = request.group_result_columns;
+  result.output_batch.columns.push_back(aggregate.result_column);
+  result.output_batch.rows.reserve(working_groups.size());
+  result.groups.reserve(working_groups.size());
+  for (const auto& group : working_groups) {
+    auto group_request = make_kernel_request();
+    group_request.input_batch.rows.clear();
+    group_request.input_batch.rows.reserve(group.source_rows.size());
+    for (const auto row : group.source_rows) {
+      group_request.input_batch.rows.push_back(aggregate.input_batch.rows[row]);
+    }
+    if (aggregate.filter_truth_values.has_value()) {
+      std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>
+          group_filter;
+      group_filter.reserve(group.source_rows.size());
+      for (const auto row : group.source_rows) {
+        group_filter.push_back((*aggregate.filter_truth_values)[row]);
+      }
+      group_request.filter_truth_values = std::move(group_filter);
+    }
+    auto aggregate_result = ExecuteCanonicalAggregateRuntime(group_request);
+    if (!aggregate_result.diagnostic.ok) {
+      return refuse(std::move(aggregate_result.diagnostic));
+    }
+    if (aggregate_result.output_batch.rows.size() != 1 ||
+        aggregate_result.output_batch.rows.front().values.size() != 1 ||
+        !aggregate_result.shared_state_authority_used) {
+      return grouped_refusal(
+          "shared aggregate state returned an invalid group result");
+    }
+    if (aggregate_result.state_bytes >
+        request.maximum_combined_state_bytes - result.combined_state_bytes) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "combined grouped state byte bound is exceeded"));
+    }
+    result.combined_state_bytes += aggregate_result.state_bytes;
+    result.aggregate_transition_count += aggregate_result.transition_count;
+    if (aggregate_result.distinct_tuple_count >
+        request.maximum_combined_distinct_tuple_count -
+            result.aggregate_distinct_tuple_count) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "combined grouped DISTINCT bound is exceeded"));
+    }
+    result.aggregate_distinct_tuple_count +=
+        aggregate_result.distinct_tuple_count;
+    if (aggregate_result.order_comparison_count >
+        request.maximum_combined_order_comparison_count -
+            result.aggregate_order_comparison_count) {
+      return refuse(Refusal(
+          "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+          "combined grouped aggregate-order bound is exceeded"));
+    }
+    result.aggregate_order_comparison_count +=
+        aggregate_result.order_comparison_count;
+
+    DescriptorTuple output_row;
+    output_row.values.reserve(request.group_result_columns.size() + 1);
+    for (std::size_t key_index = 0;
+         key_index < request.group_result_columns.size(); ++key_index) {
+      EngineTypedValue value;
+      if (group.grouping_indicators[key_index]) {
+        value.descriptor = request.group_result_columns[key_index].descriptor;
+        value.is_null = true;
+        value.state = EngineValueState::sql_null;
+      } else {
+        const auto source_column = request.group_key_terms[key_index].column;
+        value = aggregate.input_batch.rows[group.representative_row]
+                    .values[source_column];
+        value.descriptor = request.group_result_columns[key_index].descriptor;
+        bool self_equal = false;
+        auto comparison = compare_key(value, value,
+                                      group_result_terms[key_index],
+                                      &self_equal);
+        if (!comparison.ok) return refuse(std::move(comparison));
+        if (!self_equal) {
+          return grouped_refusal(
+              "published group key is not equal to itself");
+        }
+      }
+      output_row.values.push_back(std::move(value));
+    }
+    output_row.values.push_back(
+        std::move(aggregate_result.output_batch.rows.front().values.front()));
+    result.output_batch.rows.push_back(std::move(output_row));
+    result.groups.push_back(
+        {.grouping_set_ordinal = group.grouping_set_ordinal,
+         .grouping_id = group.grouping_id,
+         .grouping_indicators = group.grouping_indicators,
+         .source_row_count = group.source_rows.size(),
+         .aggregate_transition_count = aggregate_result.transition_count,
+         .aggregate_state_bytes = aggregate_result.state_bytes});
+  }
+
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, aggregate_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(std::move(output_validation));
+
+  result.diagnostic = {};
+  result.grouping_set_count = request.grouping_sets.size();
+  result.shared_state_authority_used = true;
+  result.authority.engine_mga_snapshot_bound = true;
+  result.authority.owns_transaction_finality = false;
+  result.authority.owns_recovery = false;
+  result.authority.owns_parser_execution = false;
+  result.authority.owns_visibility_outside_engine_mga = false;
+  result.authority.wal_is_transaction_or_recovery_authority = false;
+  result.selected_plan_uuid = aggregate.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = aggregate_node->physical_node_id;
+  result.causal_counter_id = aggregate_node->causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
