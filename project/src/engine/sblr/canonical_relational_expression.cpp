@@ -469,6 +469,18 @@ bool CanonicalRelationalExpressionRuntime::Evaluate(
   return EvaluateInternal(expression_id, expected_type, value, refusal_detail);
 }
 
+bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
+    const std::uint32_t expression_id,
+    api::EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
+  if (truth == nullptr || refusal_detail == nullptr) return false;
+  api::EngineTypedValue value;
+  if (!Evaluate(expression_id, "boolean", &value, refusal_detail)) {
+    return false;
+  }
+  return TruthFromValue(value, truth, refusal_detail);
+}
+
 bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     const std::uint32_t expression_id,
     const std::string_view expected_type,

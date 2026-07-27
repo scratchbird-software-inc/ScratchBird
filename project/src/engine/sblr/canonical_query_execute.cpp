@@ -22,6 +22,7 @@
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -109,6 +110,66 @@ struct PreparedSetOperationRoot {
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
+
+struct PreparedInnerJoinRoot {
+  bool ok{false};
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  std::string detail;
+};
+
+PreparedInnerJoinRoot PrepareInnerJoinRoot(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& root,
+    const plan::CanonicalLogicalRelationalNode& left_node,
+    const plan::CanonicalLogicalRelationalNode& right_node,
+    const MaterializedValues& left,
+    const MaterializedValues& right) {
+  PreparedInnerJoinRoot result;
+  std::vector<std::uint32_t> concatenated_descriptors =
+      left_node.output_descriptor_ids;
+  concatenated_descriptors.insert(concatenated_descriptors.end(),
+                                  right_node.output_descriptor_ids.begin(),
+                                  right_node.output_descriptor_ids.end());
+  if (root.output_descriptor_ids.empty() ||
+      root.output_descriptor_ids != concatenated_descriptors ||
+      left.result_bindings.size() != left.batch.columns.size() ||
+      right.result_bindings.size() != right.batch.columns.size()) {
+    result.detail = "inner-join output does not concatenate both bound inputs";
+    return result;
+  }
+  if (std::ranges::any_of(dag.outputs, [&](const auto& output) {
+        return output.relation_node_id == root.logical_node_id;
+      })) {
+    result.detail =
+        "inner-join root output lineage is not admitted by this profile";
+    return result;
+  }
+
+  std::size_t published_ordinal = 0;
+  const auto append_bindings =
+      [&](const std::vector<exec::CanonicalResultColumnBinding>& bindings,
+          const std::size_t physical_base) {
+    for (const auto& source : bindings) {
+      auto binding = source;
+      binding.physical_column_ordinal += physical_base;
+      if (binding.visible) {
+        if (!binding.published_descriptor.has_value()) return false;
+        binding.published_descriptor->ordinal =
+            static_cast<std::uint32_t>(published_ordinal++);
+      }
+      result.result_bindings.push_back(std::move(binding));
+    }
+    return true;
+  };
+  if (!append_bindings(left.result_bindings, 0) ||
+      !append_bindings(right.result_bindings, left.batch.columns.size())) {
+    result.result_bindings.clear();
+    result.detail = "inner-join visible result binding is incomplete";
+    return result;
+  }
+  result.ok = true;
+  return result;
+}
 
 PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
     const api::TypedRelationalDag& dag,
@@ -225,6 +286,27 @@ bool AddBatchMemoryBytes(const exec::DescriptorBatch& batch,
       *memory_bytes += value.encoded_value.size();
     }
   }
+  return true;
+}
+
+bool CheckedAdd(const std::uint64_t left, const std::uint64_t right,
+                std::uint64_t* result) {
+  if (result == nullptr ||
+      right > std::numeric_limits<std::uint64_t>::max() - left) {
+    return false;
+  }
+  *result = left + right;
+  return true;
+}
+
+bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right,
+                     std::uint64_t* result) {
+  if (result == nullptr ||
+      (left != 0 && right >
+                        std::numeric_limits<std::uint64_t>::max() / left)) {
+    return false;
+  }
+  *result = left * right;
   return true;
 }
 
@@ -451,6 +533,216 @@ api::EngineApiResult SuccessfulApiResult(
   return result;
 }
 
+struct LivePhysicalNodeProfile {
+  std::uint32_t logical_node_id{0};
+  std::string implementation_id;
+  std::string capability_uuid;
+  plan::CanonicalLogicalRelationalNodeKind logical_node_kind{
+      plan::CanonicalLogicalRelationalNodeKind::kValues};
+  exec::PhysicalNodeKind physical_node_kind{exec::PhysicalNodeKind::kValues};
+  std::string transformation_rule_id;
+  std::uint64_t estimated_rows{0};
+  std::uint64_t memory_bytes_required{0};
+  std::size_t minimum_input_count{0};
+  std::size_t maximum_input_count{0};
+};
+
+struct LivePhysicalPlanningResult {
+  bool ok{false};
+  exec::TypedPhysicalNodeDag physical_dag;
+  std::string diagnostic_id;
+  std::string detail;
+};
+
+LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
+    const CanonicalObjectFreeValuesExecutionRequest& request,
+    const std::vector<LivePhysicalNodeProfile>& profiles,
+    const std::string_view selected_plan_purpose,
+    const std::string_view operation_name) {
+  LivePhysicalPlanningResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  if (profiles.size() != graph.nodes.size()) {
+    result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
+    result.detail = std::string(operation_name) +
+                    " live profile does not cover every logical node";
+    return result;
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+  const auto calibration_uuid =
+      DerivedCanonicalUuid(identity_scope, "relational.calibration");
+  plan::CanonicalPhysicalAlternativeCatalog alternatives;
+  alternatives.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+  alternatives.catalog_epoch_uuid = graph.catalog_epoch_uuid;
+  alternatives.security_context_uuid = graph.security_context_uuid;
+  alternatives.local_transaction_id = graph.local_transaction_id;
+  alternatives.statement_snapshot_id = graph.statement_snapshot_id;
+
+  std::unordered_set<std::uint32_t> covered_nodes;
+  std::unordered_set<std::string> published_capabilities;
+  std::vector<opt::CanonicalOptimizerSearchCandidateInput> candidates;
+  opt::CanonicalExecutorCapabilityCatalog capabilities;
+  capabilities.capability_snapshot_uuid =
+      request.optimizer_admission.capability_snapshot_uuid;
+  capabilities.policy_epoch = request.optimizer_admission.policy_epoch;
+  capabilities.engine_owned = true;
+  for (const auto& profile : profiles) {
+    const auto node = std::ranges::find_if(graph.nodes, [&](const auto& item) {
+      return item.logical_node_id == profile.logical_node_id;
+    });
+    if (profile.logical_node_id == 0 || node == graph.nodes.end() ||
+        node->node_kind != profile.logical_node_kind ||
+        profile.implementation_id.empty() || profile.capability_uuid.empty() ||
+        profile.transformation_rule_id.empty() ||
+        profile.memory_bytes_required == 0 ||
+        !covered_nodes.insert(profile.logical_node_id).second) {
+      result.diagnostic_id = "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1";
+      result.detail = std::string(operation_name) +
+                      " live node profile is incomplete or inconsistent";
+      return result;
+    }
+    const auto suffix = std::to_string(profile.logical_node_id);
+    const auto alternative_uuid =
+        DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
+    alternatives.alternatives.push_back(
+        {alternative_uuid,
+         profile.logical_node_id,
+         profile.implementation_id,
+         profile.capability_uuid,
+         node->output_descriptor_ids,
+         true,
+         {},
+         {},
+         {}});
+
+    opt::CanonicalOptimizerSearchCandidateInput candidate;
+    candidate.alternative_uuid = alternative_uuid;
+    candidate.transformation_uuid =
+        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
+    candidate.transformation_rule_id = profile.transformation_rule_id;
+    candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
+    candidate.statistics_snapshot_uuid =
+        request.optimizer_admission.statistics_snapshot_uuid;
+    candidate.statistics_generation =
+        request.optimizer_admission.statistics_generation;
+    candidate.model_family_id = "relational.local.v1";
+    candidate.cost_terms.cost_vector_uuid =
+        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
+    candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
+    candidate.cost_terms.cpu_units =
+        std::max<std::uint64_t>(1, profile.estimated_rows);
+    candidate.cost_terms.memory_bytes_required =
+        profile.memory_bytes_required;
+    candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
+    candidate.semantic_preserving = true;
+    candidate.derived_from_admitted_statistics = true;
+    candidate.engine_coster_owned = true;
+    candidates.push_back(std::move(candidate));
+
+    if (published_capabilities.insert(profile.capability_uuid).second) {
+      opt::CanonicalExecutorCapabilityRecord capability;
+      capability.capability_uuid = profile.capability_uuid;
+      capability.capability_abi_version = 1;
+      capability.implementation_id = profile.implementation_id;
+      capability.logical_node_kind = profile.logical_node_kind;
+      capability.physical_node_kind = profile.physical_node_kind;
+      capability.minimum_input_count = profile.minimum_input_count;
+      capability.maximum_input_count = profile.maximum_input_count;
+      capability.maximum_memory_bytes =
+          request.optimizer_request.resource.memory_budget_bytes;
+      capability.spill_supported = false;
+      capability.available = true;
+      capability.engine_owned = true;
+      capabilities.capabilities.push_back(std::move(capability));
+    }
+  }
+
+  opt::CanonicalOptimizerSearchPolicy search_policy;
+  search_policy.maximum_exhaustive_plan_count = 1;
+  search_policy.bounded_beam_width = 1;
+  search_policy.deterministic_step_cost_ns = 1;
+  search_policy.engine_owned = true;
+  const auto search = opt::SearchCanonicalRelationalMemo(
+      request.optimizer_request, request.optimizer_admission, alternatives,
+      candidates, search_policy);
+  if (!search.accepted || !search.selected || !search.issues.empty()) {
+    result.diagnostic_id =
+        search.issues.empty() ? "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1"
+                              : search.issues.front().diagnostic_id;
+    result.detail = search.issues.empty()
+                        ? std::string(operation_name) +
+                              " live search returned no selected plan"
+                        : search.issues.front().field_id;
+    return result;
+  }
+
+  opt::CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
+  publication_identity.selected_plan_uuid =
+      DerivedCanonicalUuid(identity_scope, selected_plan_purpose);
+  publication_identity.first_causal_counter_id = 1;
+  publication_identity.engine_owned = true;
+  const auto publication = opt::PublishCanonicalPhysicalDag(
+      request.optimizer_request, request.optimizer_admission, alternatives,
+      search, capabilities, publication_identity);
+  if (!publication.accepted || !publication.published ||
+      !publication.issues.empty()) {
+    result.diagnostic_id =
+        publication.issues.empty()
+            ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
+            : publication.issues.front().diagnostic_id;
+    result.detail = publication.issues.empty()
+                        ? std::string(operation_name) +
+                              " live physical DAG was not published"
+                        : publication.issues.front().field_id;
+    return result;
+  }
+  result.ok = true;
+  result.physical_dag = publication.physical_dag;
+  return result;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
+    std::unordered_map<std::uint64_t, exec::DescriptorBatch> batches,
+    std::string capability_uuid,
+    std::string diagnostic_id,
+    std::string operation_name) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kValues;
+  registration.implementation_id = std::string(kValuesImplementationId);
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [batches = std::move(batches), diagnostic_id = std::move(diagnostic_id),
+       operation_name = std::move(operation_name)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        const auto batch = batches.find(node.relational_node_id);
+        if (!inputs.empty() || batch == batches.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code = diagnostic_id;
+          step.diagnostic.detail = operation_name +
+                                   " VALUES executor input or payload identity differs";
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.output_row_count = batch->second.rows.size();
+        step.rows_examined = batch->second.rows.size();
+        step.materialized_output_batch = batch->second;
+        return step;
+      };
+  return registration;
+}
+
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeUnionAllQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -559,36 +851,10 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto set_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "union-all.capability");
-  const auto calibration_uuid =
-      DerivedCanonicalUuid(identity_scope, "relational.calibration");
-
-  plan::CanonicalPhysicalAlternativeCatalog alternatives;
-  alternatives.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-  alternatives.catalog_epoch_uuid = graph.catalog_epoch_uuid;
-  alternatives.security_context_uuid = graph.security_context_uuid;
-  alternatives.local_transaction_id = graph.local_transaction_id;
-  alternatives.statement_snapshot_id = graph.statement_snapshot_id;
-  std::vector<opt::CanonicalOptimizerSearchCandidateInput> candidates;
+  std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& node : graph.nodes) {
     const bool values =
         node.node_kind == plan::CanonicalLogicalRelationalNodeKind::kValues;
-    const auto suffix = std::to_string(node.logical_node_id);
-    const auto alternative_uuid =
-        DerivedCanonicalUuid(identity_scope, "alternative." + suffix);
-    const auto implementation_id =
-        values ? std::string(kValuesImplementationId)
-               : std::string("setop.union-all.ordinal.typed.v1");
-    alternatives.alternatives.push_back(
-        {alternative_uuid,
-         node.logical_node_id,
-         implementation_id,
-         values ? values_capability_uuid : set_capability_uuid,
-         node.output_descriptor_ids,
-         true,
-         {},
-         {},
-         {}});
-
     std::uint64_t node_rows = set_output_row_bound;
     std::uint64_t node_memory = memory_bytes;
     if (node.logical_node_id == left_node->logical_node_id) {
@@ -606,143 +872,37 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
                       "right VALUES cost size overflowed");
       }
     }
-    opt::CanonicalOptimizerSearchCandidateInput candidate;
-    candidate.alternative_uuid = alternative_uuid;
-    candidate.transformation_uuid =
-        DerivedCanonicalUuid(identity_scope, "transformation." + suffix);
-    candidate.transformation_rule_id =
-        values ? "canonical.values.materialize.v1"
-               : "canonical.setop.union-all.ordinal.v1";
-    candidate.bound_sblr_tree_uuid = graph.bound_sblr_tree_uuid;
-    candidate.statistics_snapshot_uuid =
-        request.optimizer_admission.statistics_snapshot_uuid;
-    candidate.statistics_generation =
-        request.optimizer_admission.statistics_generation;
-    candidate.model_family_id = "relational.local.v1";
-    candidate.cost_terms.cost_vector_uuid =
-        DerivedCanonicalUuid(identity_scope, "cost-vector." + suffix);
-    candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
-    candidate.cost_terms.cpu_units = std::max<std::uint64_t>(1, node_rows);
-    candidate.cost_terms.memory_bytes_required = node_memory;
-    candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
-    candidate.semantic_preserving = true;
-    candidate.derived_from_admitted_statistics = true;
-    candidate.engine_coster_owned = true;
-    candidates.push_back(std::move(candidate));
+    profiles.push_back(
+        {node.logical_node_id,
+         values ? std::string(kValuesImplementationId)
+                : std::string("setop.union-all.ordinal.typed.v1"),
+         values ? values_capability_uuid : set_capability_uuid,
+         node.node_kind,
+         values ? exec::PhysicalNodeKind::kValues
+                : exec::PhysicalNodeKind::kSetOperation,
+         values ? "canonical.values.materialize.v1"
+                : "canonical.setop.union-all.ordinal.v1",
+         node_rows,
+         node_memory,
+         values ? 0U : 2U,
+         values ? 0U : 2U});
   }
-
-  opt::CanonicalOptimizerSearchPolicy search_policy;
-  search_policy.maximum_exhaustive_plan_count = 1;
-  search_policy.bounded_beam_width = 1;
-  search_policy.deterministic_step_cost_ns = 1;
-  search_policy.engine_owned = true;
-  const auto search = opt::SearchCanonicalRelationalMemo(
-      request.optimizer_request, request.optimizer_admission, alternatives,
-      candidates, search_policy);
-  if (!search.accepted || !search.selected || !search.issues.empty()) {
-    return refuse(
-        search.issues.empty()
-            ? "QOW-DIAG-OPTIMIZER-SEARCH-NO-PLAN-V1"
-            : search.issues.front().diagnostic_id,
-        search.issues.empty() ? "live UNION ALL search returned no selected plan"
-                              : search.issues.front().field_id);
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "set.selected-plan", "UNION ALL");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
   }
   result.optimizer_selected = true;
-
-  opt::CanonicalExecutorCapabilityCatalog capabilities;
-  capabilities.capability_snapshot_uuid =
-      request.optimizer_admission.capability_snapshot_uuid;
-  capabilities.policy_epoch = request.optimizer_admission.policy_epoch;
-  capabilities.engine_owned = true;
-  opt::CanonicalExecutorCapabilityRecord values_capability;
-  values_capability.capability_uuid = values_capability_uuid;
-  values_capability.capability_abi_version = 1;
-  values_capability.implementation_id = std::string(kValuesImplementationId);
-  values_capability.logical_node_kind =
-      plan::CanonicalLogicalRelationalNodeKind::kValues;
-  values_capability.physical_node_kind = exec::PhysicalNodeKind::kValues;
-  values_capability.maximum_memory_bytes =
-      request.optimizer_request.resource.memory_budget_bytes;
-  values_capability.spill_supported =
-      request.optimizer_request.resource.spill_allowed;
-  values_capability.available = true;
-  values_capability.engine_owned = true;
-  capabilities.capabilities.push_back(std::move(values_capability));
-  opt::CanonicalExecutorCapabilityRecord set_capability;
-  set_capability.capability_uuid = set_capability_uuid;
-  set_capability.capability_abi_version = 1;
-  set_capability.implementation_id = "setop.union-all.ordinal.typed.v1";
-  set_capability.logical_node_kind =
-      plan::CanonicalLogicalRelationalNodeKind::kSetOperation;
-  set_capability.physical_node_kind = exec::PhysicalNodeKind::kSetOperation;
-  set_capability.minimum_input_count = 2;
-  set_capability.maximum_input_count = 2;
-  set_capability.maximum_memory_bytes =
-      request.optimizer_request.resource.memory_budget_bytes;
-  set_capability.spill_supported =
-      request.optimizer_request.resource.spill_allowed;
-  set_capability.available = true;
-  set_capability.engine_owned = true;
-  capabilities.capabilities.push_back(std::move(set_capability));
-
-  opt::CanonicalOptimizerPhysicalPublicationIdentity publication_identity;
-  publication_identity.selected_plan_uuid =
-      DerivedCanonicalUuid(identity_scope, "set.selected-plan");
-  publication_identity.first_causal_counter_id = 1;
-  publication_identity.engine_owned = true;
-  const auto publication = opt::PublishCanonicalPhysicalDag(
-      request.optimizer_request, request.optimizer_admission, alternatives,
-      search, capabilities, publication_identity);
-  if (!publication.accepted || !publication.published ||
-      !publication.issues.empty()) {
-    return refuse(
-        publication.issues.empty()
-            ? "QOW-DIAG-OPTIMIZER-PHYSICAL-PUBLICATION-V1"
-            : publication.issues.front().diagnostic_id,
-        publication.issues.empty()
-            ? "live UNION ALL physical DAG was not published"
-            : publication.issues.front().field_id);
-  }
   result.physical_dag_published = true;
-  result.physical_node_count = publication.physical_dag.nodes.size();
-  result.selected_plan_uuid = publication.physical_dag.selected_plan_uuid;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
 
   std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
   values_batches.emplace(left_node->logical_node_id, std::move(left.batch));
   values_batches.emplace(right_node->logical_node_id, std::move(right.batch));
-  exec::CanonicalPhysicalExecutorRegistration values_registration;
-  values_registration.node_kind = exec::PhysicalNodeKind::kValues;
-  values_registration.implementation_id = std::string(kValuesImplementationId);
-  values_registration.executor_capability_uuid = values_capability_uuid;
-  values_registration.executor_capability_abi_version = 1;
-  values_registration.engine_owned = true;
-  values_registration.accepts_optimizer_publication_v2 = true;
-  values_registration.execute =
-      [batches = std::move(values_batches)](
-          const exec::TypedPhysicalNodeDag& dag,
-          const exec::PhysicalNodeRecord& node,
-          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
-        exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.executed_physical_node_id = node.physical_node_id;
-        step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
-        const auto batch = batches.find(node.relational_node_id);
-        if (!inputs.empty() || batch == batches.end()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1";
-          step.diagnostic.detail =
-              "UNION ALL VALUES executor input or payload identity differs";
-          return step;
-        }
-        step.result_handle_id = node.physical_node_id;
-        step.output_row_count = batch->second.rows.size();
-        step.rows_examined = batch->second.rows.size();
-        step.materialized_output_batch = batch->second;
-        return step;
-      };
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1", "UNION ALL");
 
   exec::CanonicalPhysicalExecutorRegistration set_registration;
   set_registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
@@ -803,13 +963,13 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
       };
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
-  execution_request.selected_physical_dag = publication.physical_dag;
+  execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
-      publication.physical_dag.statistics_snapshot_uuid;
+      planning.physical_dag.statistics_snapshot_uuid;
   execution_request.inventory_local_transaction_id =
-      publication.physical_dag.local_transaction_id;
+      planning.physical_dag.local_transaction_id;
   execution_request.inventory_statement_snapshot_id =
-      publication.physical_dag.statement_snapshot_id;
+      planning.physical_dag.statement_snapshot_id;
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(std::move(set_registration));
@@ -862,11 +1022,340 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   return result;
 }
 
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeInnerJoinQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 3 || root == graph.nodes.end() ||
+      root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kJoin ||
+      root->semantic_variant_id != "join.inner.v1" ||
+      root->input_logical_node_ids.size() != 2 ||
+      root->input_logical_node_ids[0] == root->input_logical_node_ids[1] ||
+      root->bound_expression_ids.size() != 1 ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return result;
+  }
+  const auto find_node = [&](const std::uint32_t node_id) {
+    return std::ranges::find_if(graph.nodes, [&](const auto& node) {
+      return node.logical_node_id == node_id;
+    });
+  };
+  const auto left_node = find_node(root->input_logical_node_ids[0]);
+  const auto right_node = find_node(root->input_logical_node_ids[1]);
+  if (left_node == graph.nodes.end() || right_node == graph.nodes.end() ||
+      left_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      right_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      left_node->semantic_variant_id != "values.literal-table.v1" ||
+      right_node->semantic_variant_id != "values.literal-table.v1") {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    const bool values =
+        node.node_kind == plan::CanonicalLogicalRelationalNodeKind::kValues;
+    if (!node.required_object_uuids.empty() ||
+        !node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty() ||
+        (values && !node.input_logical_node_ids.empty())) {
+      return result;
+    }
+  }
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-ADMISSION-V1",
+                  "live INNER JOIN execution lacks optimizer admission");
+  }
+
+  auto left = MaterializeValues(request.relational_dag, *left_node);
+  if (!left.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
+                  "left VALUES: " + left.detail);
+  }
+  auto right = MaterializeValues(request.relational_dag, *right_node);
+  if (!right.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
+                  "right VALUES: " + right.detail);
+  }
+  auto prepared_root = PrepareInnerJoinRoot(
+      request.relational_dag, *root, *left_node, *right_node, left, right);
+  if (!prepared_root.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
+                  prepared_root.detail);
+  }
+
+  api::EngineSqlTruthValue predicate_truth =
+      api::EngineSqlTruthValue::unknown;
+  std::string predicate_detail;
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag);
+  if (!expression_runtime.EvaluatePredicate(root->bound_expression_ids.front(),
+                                            &predicate_truth,
+                                            &predicate_detail)) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
+                  "INNER JOIN predicate: " + predicate_detail);
+  }
+
+  const auto left_count = left.batch.rows.size();
+  const auto right_count = right.batch.rows.size();
+  if (left_count != 0 &&
+      right_count > std::numeric_limits<std::size_t>::max() / left_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live INNER JOIN pair cardinality overflowed");
+  }
+  const auto pair_count = left_count * right_count;
+  const auto output_row_bound =
+      predicate_truth == api::EngineSqlTruthValue::true_value ? pair_count : 0;
+
+  std::uint64_t left_memory = 1;
+  std::uint64_t right_memory = 1;
+  if (!AddBatchMemoryBytes(left.batch, &left_memory) ||
+      !AddBatchMemoryBytes(right.batch, &right_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live INNER JOIN input size overflowed");
+  }
+  std::uint64_t total_memory = 0;
+  std::uint64_t predicate_memory = 0;
+  if (!CheckedAdd(left_memory, right_memory, &total_memory) ||
+      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
+                       &predicate_memory) ||
+      !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live INNER JOIN predicate state size overflowed");
+  }
+  if (output_row_bound != 0) {
+    std::uint64_t repeated_left = 0;
+    std::uint64_t repeated_right = 0;
+    std::uint64_t output_memory = 0;
+    if (!CheckedMultiply(left_memory, right_count, &repeated_left) ||
+        !CheckedMultiply(right_memory, left_count, &repeated_right) ||
+        !CheckedAdd(repeated_left, repeated_right, &output_memory) ||
+        !CheckedAdd(output_memory, pair_count, &output_memory) ||
+        !CheckedAdd(total_memory, output_memory, &total_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live INNER JOIN output size overflowed");
+    }
+  }
+  if (total_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live INNER JOIN exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto join_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "inner-join.capability");
+  std::vector<LivePhysicalNodeProfile> profiles;
+  for (const auto& node : graph.nodes) {
+    const bool values =
+        node.node_kind == plan::CanonicalLogicalRelationalNodeKind::kValues;
+    std::uint64_t node_rows = pair_count;
+    std::uint64_t node_memory = total_memory;
+    if (node.logical_node_id == left_node->logical_node_id) {
+      node_rows = left_count;
+      node_memory = left_memory;
+    } else if (node.logical_node_id == right_node->logical_node_id) {
+      node_rows = right_count;
+      node_memory = right_memory;
+    }
+    profiles.push_back(
+        {node.logical_node_id,
+         values ? std::string(kValuesImplementationId)
+                : std::string("join.inner.3vl.nested.v1"),
+         values ? values_capability_uuid : join_capability_uuid,
+         node.node_kind,
+         values ? exec::PhysicalNodeKind::kValues
+                : exec::PhysicalNodeKind::kJoin,
+         values ? "canonical.values.materialize.v1"
+                : "canonical.join.inner.3vl.nested.v1",
+         node_rows,
+         node_memory,
+         values ? 0U : 2U,
+         values ? 0U : 2U});
+  }
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "join.selected-plan", "INNER JOIN");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(left_node->logical_node_id, std::move(left.batch));
+  values_batches.emplace(right_node->logical_node_id, std::move(right.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-JOIN-VALUES-V1", "INNER JOIN");
+
+  exec::CanonicalPhysicalExecutorRegistration join_registration;
+  join_registration.node_kind = exec::PhysicalNodeKind::kJoin;
+  join_registration.implementation_id = "join.inner.3vl.nested.v1";
+  join_registration.executor_capability_uuid = join_capability_uuid;
+  join_registration.executor_capability_abi_version = 1;
+  join_registration.engine_owned = true;
+  join_registration.accepts_optimizer_publication_v2 = true;
+  join_registration.execute =
+      [predicate_truth, pair_count](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 2 ||
+            !inputs[0].materialized_output_batch.has_value() ||
+            !inputs[1].materialized_output_batch.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "INNER JOIN executor did not receive two typed input batches";
+          return step;
+        }
+        const auto& left_batch = *inputs[0].materialized_output_batch;
+        const auto& right_batch = *inputs[1].materialized_output_batch;
+        if (left_batch.rows.size() != 0 &&
+            right_batch.rows.size() >
+                std::numeric_limits<std::size_t>::max() /
+                    left_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail = "INNER JOIN pair cardinality overflowed";
+          return step;
+        }
+        const auto actual_pair_count =
+            left_batch.rows.size() * right_batch.rows.size();
+        if (actual_pair_count != pair_count ||
+            right_batch.rows.size() >
+                std::numeric_limits<std::size_t>::max() -
+                    left_batch.rows.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "INNER JOIN input cardinality differs or overflows its "
+              "selected cost";
+          return step;
+        }
+        exec::CanonicalDescriptorInnerJoinRequest join_request;
+        join_request.physical_dag = dag;
+        join_request.selected_physical_node_id = node.physical_node_id;
+        join_request.left_batch = left_batch;
+        join_request.right_batch = right_batch;
+        join_request.pair_truth_values.assign(pair_count, predicate_truth);
+        join_request.consumer = api::EnginePredicateConsumer::join_on;
+        const auto join_result =
+            exec::ExecuteCanonicalDescriptorInnerJoin(join_request);
+        if (!join_result.diagnostic.ok) {
+          step.diagnostic = join_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count =
+            left_batch.rows.size() + right_batch.rows.size();
+        step.rows_examined = pair_count;
+        step.output_row_count = join_result.output_batch.rows.size();
+        step.materialized_output_batch = join_result.output_batch;
+        return step;
+      };
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.inventory_local_transaction_id =
+      planning.physical_dag.local_transaction_id;
+  execution_request.inventory_statement_snapshot_id =
+      planning.physical_dag.statement_snapshot_id;
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(std::move(join_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "join.execution-attempt");
+  execution_request.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(request.context.local_transaction_id) + ":" +
+              std::to_string(
+                  request.context.snapshot_visible_through_local_transaction_id),
+          "join.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(prepared_root.result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, output_row_bound);
+
+  const auto execution =
+      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-JOIN-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "live INNER JOIN selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
 }  // namespace
 
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
+  auto inner_join = ExecuteCanonicalObjectFreeInnerJoinQuery(request);
+  if (inner_join.profile_matched) return inner_join;
   auto set_operation = ExecuteCanonicalObjectFreeUnionAllQuery(request);
   if (set_operation.profile_matched) return set_operation;
   CanonicalObjectFreeValuesExecutionResult result;
@@ -1011,7 +1500,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
   capability.physical_node_kind = exec::PhysicalNodeKind::kValues;
   capability.maximum_memory_bytes =
       request.optimizer_request.resource.memory_budget_bytes;
-  capability.spill_supported = request.optimizer_request.resource.spill_allowed;
+  capability.spill_supported = false;
   capability.available = true;
   capability.engine_owned = true;
   capabilities.capabilities.push_back(std::move(capability));

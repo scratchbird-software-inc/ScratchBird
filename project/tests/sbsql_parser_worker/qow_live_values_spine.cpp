@@ -242,6 +242,52 @@ sblr::SblrOperationEnvelope UnionAllValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope InnerJoinValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.inner-join");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008500"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "3"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008501|"
+       "019f0000-0000-7400-8000-000000008502|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008503|"
+       "019f0000-0000-7400-8000-000000008504|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000008505|"
+       "019f0000-0000-7400-8000-000000008506|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "1|-|2|-|-|2|-|61"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|2|-|62"},
+      {"relational_expression_v1", "5", "1|-|3|-|-|6|-|54525545"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6c6566745f6e"},
+      {"relational_output_v1", "2", "2|3|2|1|0|72696768745f74"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2"},
+      {"relational_node_v1", "2", "13|0|-|2|3,4"},
+      {"relational_node_v1", "3", "4|0|1,2|1,2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|3,4|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       "6a6f696e2e696e6e65722e7631|5|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -390,6 +436,112 @@ bool ValidateUnionAllRefusalIsAtomic() {
       "incompatible UNION ALL input published partial plan/result evidence");
 }
 
+bool ValidateInnerJoinValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), InnerJoinValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), InnerJoinValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 3 && first.physical_node_count == 3 &&
+          first.canonical_result_column_count == 2 &&
+          first.canonical_result_row_count == 4,
+      "VALUES INNER JOIN did not traverse the selected multi-node DAG");
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      rows.size() == 4 && rows[0].fields.size() == 2 &&
+          rows[0].fields[0].first == "left_n" &&
+          rows[0].fields[1].first == "right_t" &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[0].fields[1].second.encoded_value == "a" &&
+          rows[1].fields[0].second.encoded_value == "1" &&
+          rows[1].fields[1].second.encoded_value == "b" &&
+          rows[2].fields[0].second.encoded_value == "2" &&
+          rows[2].fields[1].second.encoded_value == "a" &&
+          rows[3].fields[0].second.encoded_value == "2" &&
+          rows[3].fields[1].second.encoded_value == "b",
+      "INNER JOIN did not preserve canonical pair order and row shape");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical INNER JOIN input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateInnerJoinThreeValuedPredicate() {
+  auto false_predicate = InnerJoinValuesEnvelope();
+  auto unknown_predicate = InnerJoinValuesEnvelope();
+  for (auto& operand : false_predicate.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|3|-|-|6|-|46414c5345";
+    }
+  }
+  for (auto& operand : unknown_predicate.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|3|-|-|7|-|2d";
+    }
+  }
+  const auto false_result = sblr::DispatchSblrOperation(
+      {Context(), std::move(false_predicate), {}});
+  const auto unknown_result = sblr::DispatchSblrOperation(
+      {Context(), std::move(unknown_predicate), {}});
+  const auto empty_success = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.canonical_result_column_count == 2 &&
+           result.canonical_result_row_count == 0 &&
+           result.api_result.result_shape.columns.size() == 2 &&
+           result.api_result.result_shape.rows.empty();
+  };
+  return Require(empty_success(false_result) && empty_success(unknown_result),
+                 "INNER JOIN FALSE/UNKNOWN did not produce a typed empty result");
+}
+
+bool ValidateInnerJoinRefusalIsAtomic() {
+  auto invalid_output = InnerJoinValuesEnvelope();
+  auto unbound_identifier = InnerJoinValuesEnvelope();
+  for (auto& operand : invalid_output.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "3") {
+      operand.value = "4|0|1,2|2,1|-";
+    }
+  }
+  for (auto& operand : unbound_identifier.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value =
+          "3|-|3|-|019f0000-0000-7500-8000-000000008507|-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(invalid_output)) &&
+          refused_atomically(std::move(unbound_identifier)),
+      "invalid or source-unbound INNER JOIN published partial evidence");
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
@@ -461,6 +613,9 @@ int main() {
                       ValidateComposedScalarValuesSpine() &&
                       ValidateUnionAllValuesSpine() &&
                       ValidateUnionAllRefusalIsAtomic() &&
+                      ValidateInnerJoinValuesSpine() &&
+                      ValidateInnerJoinThreeValuedPredicate() &&
+                      ValidateInnerJoinRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
                       ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -37,6 +37,14 @@ class CanonicalRelationalExpressionRuntime {
                 internal_api::EngineTypedValue* value,
                 std::string* refusal_detail);
 
+  // Shared object-free predicate seam for FILTER/JOIN/HAVING/QUALIFY
+  // consumers. SQL NULL is returned as UNKNOWN; callers retain authority for
+  // the consumer-specific TRUE/FALSE/UNKNOWN decision.
+  bool EvaluatePredicate(
+      std::uint32_t expression_id,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* refusal_detail);
+
  private:
   bool InferTypeInternal(std::uint32_t expression_id,
                          std::optional<std::string_view> expected_type,
