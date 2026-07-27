@@ -211,6 +211,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_syy;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
+  const bool is_ordered_string_agg =
+      is_string_agg &&
+      root.semantic_variant_id ==
+          "aggregate.global-string-agg-ordered-expression.v1";
   const bool is_array_agg =
       function == exec::CanonicalAggregateFunction::array_agg;
   const bool is_json_agg =
@@ -272,7 +276,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::size_t expected_argument_count = 1;
   if (count_star) {
     expected_argument_count = 0;
-  } else if (is_json_object_agg) {
+  } else if (is_json_object_agg || is_ordered_string_agg) {
     expected_argument_count = 3;
   } else if (is_pair_statistical || is_string_agg ||
              is_ordered_single_collection) {
@@ -392,12 +396,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       const auto input_type =
           input.batch.columns[value_column].descriptor.canonical_type_name;
       const bool is_order_argument =
+          (is_ordered_string_agg && argument_ordinal == 2) ||
           (is_ordered_single_collection && argument_ordinal == 1) ||
           (is_json_object_agg && argument_ordinal == 2);
       if (is_order_argument) {
         if (input_type != "int64") {
           result.detail =
-              "global ordered collection aggregate order input must be a "
+              "global aggregate order input must be a "
               "canonical int64 column";
           return result;
         }
@@ -2636,9 +2641,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-bool-or-expression.v1";
   const bool every_expression =
       root->semantic_variant_id == "aggregate.global-every-expression.v1";
-  const bool string_agg_expression =
+  const bool unordered_string_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-string-agg-expression.v1";
+  const bool ordered_string_agg_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-string-agg-ordered-expression.v1";
+  const bool string_agg_expression =
+      unordered_string_agg_expression || ordered_string_agg_expression;
   const bool array_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-array-agg-ordered-expression.v1";
@@ -2863,6 +2873,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live STRING_AGG result size overflowed");
     }
+    if (ordered_string_agg_expression) {
+      std::uint64_t row_overhead_memory = 0;
+      if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+                           &row_overhead_memory) ||
+          !CheckedAdd(aggregate_result_memory, row_overhead_memory,
+                      &aggregate_result_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live ordered STRING_AGG state size overflowed");
+      }
+    }
   }
   if (ordered_collection_expression) {
     std::uint64_t expanded_input_memory = 0;
@@ -2922,6 +2942,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (every_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-every-expression.v1";
+  } else if (ordered_string_agg_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-string-agg-ordered-expression.v1";
   } else if (string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-expression.v1";

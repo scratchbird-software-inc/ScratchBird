@@ -49,6 +49,7 @@ struct CanonicalObjectFreeValuesExecutionResult {
 // boolean BOOL_AND/BOOL_OR/EVERY, int64-input unary statistical aggregate,
 // exact two-int64-input pair statistical/regression aggregate, or text
 // STRING_AGG(input-column, literal-separator), ordered text
+// STRING_AGG(input-column, literal-separator, int64-order-column), ordered text
 // ARRAY_AGG(input-column, int64-order-column), or ordered text
 // JSON_AGG(input-column, int64-order-column), or ordered text-key/int64-value
 // JSON_OBJECT_AGG(key-column, value-column, int64-order-column) shape,
