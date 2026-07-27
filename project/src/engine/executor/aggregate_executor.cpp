@@ -2401,7 +2401,9 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
       (selected_node->implementation_id !=
            "aggregate.registry-state-spill.v1" &&
        selected_node->implementation_id !=
-           "window.aggregate-registry-state-spill.v1") ||
+           "window.aggregate-registry-state-spill.v1" &&
+       selected_node->implementation_id !=
+           "aggregate.registry-grouping-sets-state-spill.v1") ||
       !request.aggregate_request.physical_dag.spill_allowed) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
                   "aggregate state spill was not selected and permitted by the physical plan");
@@ -2837,8 +2839,10 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
 // every resulting group through the one canonical aggregate registry/state
 // authority above.  Omitted grouping keys are published as typed SQL NULL and
 // remain distinguishable from data NULL through GROUPING/GROUPING_ID metadata.
-CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
-    const CanonicalGroupedAggregateRuntimeRequest& request) {
+static CanonicalGroupedAggregateRuntimeResult
+ExecuteCanonicalGroupedAggregateRuntimeSelected(
+    const CanonicalGroupedAggregateRuntimeRequest& request,
+    const bool spill_execution_context) {
   using scratchbird::engine::internal_api::EngineTypedValue;
   using scratchbird::engine::internal_api::EngineValueState;
 
@@ -2854,6 +2858,7 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     result.aggregate_distinct_tuple_count = 0;
     result.aggregate_order_comparison_count = 0;
     result.combined_state_bytes = 0;
+    result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
     result.authority = {};
     result.selected_plan_uuid.clear();
@@ -2903,11 +2908,26 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
   }
   if (aggregate_node == nullptr ||
       aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
-      aggregate_node->implementation_id !=
-          "aggregate.registry-grouping-sets.v1" ||
       aggregate_node->input_physical_node_ids.size() != 1) {
     return grouped_refusal(
         "selected physical node is not the grouped registry aggregate");
+  }
+  bool aggregate_state_spill_required = false;
+  if (aggregate_node->implementation_id ==
+      "aggregate.registry-grouping-sets.v1") {
+    aggregate_state_spill_required = false;
+  } else if (aggregate_node->implementation_id ==
+             "aggregate.registry-grouping-sets-state-spill.v1") {
+    aggregate_state_spill_required = true;
+  } else {
+    return grouped_refusal(
+        "selected physical implementation is not a grouped registry strategy");
+  }
+  if (aggregate_state_spill_required != spill_execution_context) {
+    return grouped_refusal(
+        aggregate_state_spill_required
+            ? "selected grouped state spill requires the spill runtime"
+            : "grouped spill payload does not match the selected implementation");
   }
   for (const auto& node : aggregate.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -3247,6 +3267,7 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
         {.grouping_set_ordinal = group.grouping_set_ordinal,
          .grouping_id = group.grouping_id,
          .grouping_indicators = group.grouping_indicators,
+         .source_row_indices = group.source_rows,
          .source_row_count = group.source_rows.size(),
          .aggregate_transition_count = aggregate_result.transition_count,
          .aggregate_state_bytes = aggregate_result.state_bytes});
@@ -3258,6 +3279,7 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
 
   result.diagnostic = {};
   result.grouping_set_count = request.grouping_sets.size();
+  result.aggregate_state_spill_required = aggregate_state_spill_required;
   result.shared_state_authority_used = true;
   result.authority.engine_mga_snapshot_bound = true;
   result.authority.owns_transaction_finality = false;
@@ -3271,13 +3293,19 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
   return result;
 }
 
+CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
+    const CanonicalGroupedAggregateRuntimeRequest& request) {
+  return ExecuteCanonicalGroupedAggregateRuntimeSelected(request, false);
+}
+
 // QOW-SOURCE-QRY-011-GROUPED-SET-V1
 // Compose several registry aggregates over one exact grouped physical node.
 // Group identity must match across every independently filtered/ordered state;
 // aggregate values are then appended in the physical output-descriptor order.
-CanonicalGroupedAggregateSetRuntimeResult
-ExecuteCanonicalGroupedAggregateSetRuntime(
-    const CanonicalGroupedAggregateSetRuntimeRequest& request) {
+static CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request,
+    const bool spill_execution_context) {
   CanonicalGroupedAggregateSetRuntimeResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
     result.diagnostic = std::move(diagnostic);
@@ -3291,6 +3319,7 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
     result.aggregate_order_comparison_count = 0;
     result.combined_state_bytes = 0;
     result.group_identity_proven = false;
+    result.aggregate_state_spill_required = false;
     result.shared_state_authority_used = false;
     result.authority = {};
     result.selected_plan_uuid.clear();
@@ -3334,12 +3363,27 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
           common.physical_dag.root_physical_node_id ||
       aggregate_node == nullptr ||
       aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
-      aggregate_node->implementation_id !=
-          "aggregate.registry-grouping-sets.v1" ||
       aggregate_node->output_descriptor_ids.size() !=
           first.group_result_columns.size() + aggregate_count) {
     return set_refusal(
         "selected physical node is not the exact grouped aggregate set");
+  }
+  bool aggregate_state_spill_required = false;
+  if (aggregate_node->implementation_id ==
+      "aggregate.registry-grouping-sets.v1") {
+    aggregate_state_spill_required = false;
+  } else if (aggregate_node->implementation_id ==
+             "aggregate.registry-grouping-sets-state-spill.v1") {
+    aggregate_state_spill_required = true;
+  } else {
+    return set_refusal(
+        "selected physical implementation is not a grouped aggregate-set strategy");
+  }
+  if (aggregate_state_spill_required != spill_execution_context) {
+    return set_refusal(
+        aggregate_state_spill_required
+            ? "selected grouped aggregate-set spill requires the spill runtime"
+            : "grouped aggregate-set spill payload does not match the selected implementation");
   }
 
   std::vector<const CanonicalAggregateRuntimeRequest*> aggregate_specs = {
@@ -3424,8 +3468,8 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
         break;
       }
     }
-    auto execution =
-        ExecuteCanonicalGroupedAggregateRuntime(grouped_request);
+    auto execution = ExecuteCanonicalGroupedAggregateRuntimeSelected(
+        grouped_request, spill_execution_context);
     if (!execution.diagnostic.ok) {
       return refuse(std::move(execution.diagnostic));
     }
@@ -3479,6 +3523,7 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
       if (actual.grouping_set_ordinal != expected.grouping_set_ordinal ||
           actual.grouping_id != expected.grouping_id ||
           actual.grouping_indicators != expected.grouping_indicators ||
+          actual.source_row_indices != expected.source_row_indices ||
           actual.source_row_count != expected.source_row_count) {
         return set_refusal("aggregate grouping metadata diverged");
       }
@@ -3521,6 +3566,8 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
     metadata.grouping_id = identity.groups[group].grouping_id;
     metadata.grouping_indicators =
         identity.groups[group].grouping_indicators;
+    metadata.source_row_indices =
+        identity.groups[group].source_row_indices;
     metadata.source_row_count = identity.groups[group].source_row_count;
     metadata.aggregate_transition_counts.reserve(aggregate_count);
     metadata.aggregate_state_bytes.reserve(aggregate_count);
@@ -3542,6 +3589,7 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
   result.diagnostic = {};
   result.aggregate_count = aggregate_count;
   result.group_identity_proven = true;
+  result.aggregate_state_spill_required = aggregate_state_spill_required;
   result.shared_state_authority_used = true;
   result.authority.engine_mga_snapshot_bound = true;
   result.authority.owns_transaction_finality = false;
@@ -3552,6 +3600,239 @@ ExecuteCanonicalGroupedAggregateSetRuntime(
   result.selected_plan_uuid = common.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  return result;
+}
+
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request) {
+  return ExecuteCanonicalGroupedAggregateSetRuntimeSelected(request, false);
+}
+
+// QOW-SOURCE-QRY-011-GROUPED-SET-STATE-SPILL-V1
+// Preserve canonical grouping identity in memory, then serialize, spill,
+// restore, and ordinarily finalize each aggregate state for each physical
+// group. The optimizer-selected grouped implementation owns the route, while
+// temporary work remains subordinate to engine MGA/security/recheck authority.
+CanonicalGroupedAggregateSetStateSpillResult
+ExecuteCanonicalGroupedAggregateSetStateSpill(
+    const CanonicalGroupedAggregateSetStateSpillRequest& request) {
+  using scratchbird::engine::internal_api::EngineSqlTruthValue;
+
+  CanonicalGroupedAggregateSetStateSpillResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    result.grouped_result = {};
+    return result;
+  };
+
+  const auto baseline = ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
+      request.grouped_request, true);
+  if (!baseline.diagnostic.ok) {
+    return refuse(baseline.diagnostic.diagnostic_code,
+                  baseline.diagnostic.detail);
+  }
+  const auto& first = request.grouped_request.first_aggregate;
+  const auto& common = first.aggregate_request;
+  if (!baseline.aggregate_state_spill_required ||
+      baseline.aggregate_count == 0 || baseline.groups.empty() ||
+      request.spill_root.empty() || !request.spill_root.is_absolute() ||
+      !IsCanonicalAggregateStateSpillUuid(request.spill_owner_uuid) ||
+      request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
+      request.maximum_serialized_state_bytes == 0 ||
+      request.maximum_spill_record_count == 0 ||
+      !common.physical_dag.spill_allowed) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-V1",
+                  "grouped aggregate state spill ownership, shape, or resource context is invalid");
+  }
+
+  std::vector<CanonicalAggregateRuntimeRequest> aggregate_specs;
+  aggregate_specs.reserve(baseline.aggregate_count);
+  aggregate_specs.push_back(common);
+  for (const auto& additional : request.grouped_request.additional_aggregates) {
+    auto specification = additional;
+    specification.physical_dag = common.physical_dag;
+    specification.selected_physical_node_id =
+        common.selected_physical_node_id;
+    specification.input_batch = common.input_batch;
+    aggregate_specs.push_back(std::move(specification));
+  }
+  if (aggregate_specs.size() != baseline.aggregate_count) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
+                  "grouped aggregate state inventory diverges from the canonical result");
+  }
+
+  auto restored = baseline;
+  std::size_t aggregate_transition_count = 0;
+  std::size_t distinct_tuple_count = 0;
+  std::size_t order_comparison_count = 0;
+  std::size_t combined_state_bytes = 0;
+  const auto within_total = [](const std::size_t next,
+                               const std::size_t current,
+                               const std::size_t maximum) {
+    return current <= maximum && next <= maximum - current;
+  };
+  const auto key_count = first.group_result_columns.size();
+  for (std::size_t group_index = 0;
+       group_index < baseline.groups.size(); ++group_index) {
+    const auto& group = baseline.groups[group_index];
+    if (group.source_row_count != group.source_row_indices.size() ||
+        restored.output_batch.rows[group_index].values.size() !=
+            key_count + baseline.aggregate_count ||
+        group.aggregate_transition_counts.size() != baseline.aggregate_count ||
+        group.aggregate_state_bytes.size() != baseline.aggregate_count) {
+      return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
+                    "grouped aggregate source or state evidence is inconsistent");
+    }
+    for (std::size_t aggregate_index = 0;
+         aggregate_index < aggregate_specs.size(); ++aggregate_index) {
+      if (result.serialized_aggregate_state_bytes >=
+              request.maximum_serialized_state_bytes ||
+          result.spilled_aggregate_state_record_count >=
+              request.maximum_spill_record_count) {
+        return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-RESOURCE-V1",
+                      "grouped aggregate state spill bound is exhausted");
+      }
+      auto aggregate = aggregate_specs[aggregate_index];
+      const auto full_filter = aggregate.filter_truth_values;
+      aggregate.input_batch.rows.clear();
+      aggregate.input_batch.rows.reserve(group.source_row_indices.size());
+      for (const auto row : group.source_row_indices) {
+        if (row >= common.input_batch.rows.size()) {
+          return refuse(
+              "QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
+              "grouped aggregate source-row identity is out of range");
+        }
+        aggregate.input_batch.rows.push_back(common.input_batch.rows[row]);
+      }
+      if (full_filter.has_value()) {
+        if (full_filter->size() != common.input_batch.rows.size()) {
+          return refuse("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                        "grouped aggregate spill FILTER cardinality is not bound");
+        }
+        std::vector<EngineSqlTruthValue> group_filter;
+        group_filter.reserve(group.source_row_indices.size());
+        for (const auto row : group.source_row_indices) {
+          group_filter.push_back((*full_filter)[row]);
+        }
+        aggregate.filter_truth_values = std::move(group_filter);
+      }
+      for (auto& node : aggregate.physical_dag.nodes) {
+        if (node.physical_node_id == aggregate.selected_physical_node_id) {
+          node.output_descriptor_ids = {
+              aggregate.result_column.descriptor_id};
+          break;
+        }
+      }
+
+      CanonicalAggregateStateSpillRequest state_request;
+      state_request.aggregate_request = std::move(aggregate);
+      state_request.spill_root = request.spill_root;
+      state_request.spill_owner_uuid = request.spill_owner_uuid;
+      state_request.runtime_generation = request.runtime_generation;
+      state_request.reopen_runtime_generation =
+          request.reopen_runtime_generation;
+      state_request.memory_quota_bytes = request.memory_quota_bytes;
+      state_request.maximum_serialized_state_bytes =
+          request.maximum_serialized_state_bytes -
+          result.serialized_aggregate_state_bytes;
+      state_request.maximum_spill_record_count =
+          request.maximum_spill_record_count -
+          result.spilled_aggregate_state_record_count;
+      state_request.cancellation_requested = request.cancellation_requested;
+      state_request.cleanup_after_cancellation =
+          request.cleanup_after_cancellation;
+      state_request.restart_recovery_proof_available =
+          request.restart_recovery_proof_available;
+      auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+
+      result.spilled = result.spilled || state.spilled;
+      result.spill_reopened = result.spill_reopened || state.spill_reopened;
+      result.cleanup_proven =
+          result.spilled_aggregate_state_count == 0
+              ? state.cleanup_proven
+              : result.cleanup_proven && state.cleanup_proven;
+      result.cancellation_observed =
+          result.cancellation_observed || state.cancellation_observed;
+      result.spill_evidence.insert(result.spill_evidence.end(),
+                                   state.spill_evidence.begin(),
+                                   state.spill_evidence.end());
+      if (!state.diagnostic.ok) {
+        return refuse(state.diagnostic.diagnostic_code,
+                      state.diagnostic.detail);
+      }
+      if (!state.state_serialized || !state.spilled ||
+          !state.spill_reopened || !state.state_restored ||
+          !state.restored_result_equivalent || !state.cleanup_proven ||
+          state.aggregate_result.output_batch.rows.size() != 1 ||
+          state.aggregate_result.output_batch.rows.front().values.size() != 1 ||
+          state.aggregate_result.selected_plan_uuid !=
+              baseline.selected_plan_uuid ||
+          state.aggregate_result.executed_physical_node_id !=
+              baseline.executed_physical_node_id ||
+          state.aggregate_result.causal_counter_id !=
+              baseline.causal_counter_id ||
+          state.aggregate_result.transition_count !=
+              group.aggregate_transition_counts[aggregate_index] ||
+          state.aggregate_result.state_bytes !=
+              group.aggregate_state_bytes[aggregate_index]) {
+        return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
+                      "restored grouped aggregate state evidence is inconsistent");
+      }
+      const auto& expected =
+          baseline.output_batch.rows[group_index]
+              .values[key_count + aggregate_index];
+      const auto& actual =
+          state.aggregate_result.output_batch.rows.front().values.front();
+      if (!SameAggregateValueIdentity(expected, actual) ||
+          !within_total(state.serialized_state_bytes,
+                        result.serialized_aggregate_state_bytes,
+                        request.maximum_serialized_state_bytes) ||
+          !within_total(state.spilled_state_record_count,
+                        result.spilled_aggregate_state_record_count,
+                        request.maximum_spill_record_count) ||
+          !within_total(state.aggregate_result.transition_count,
+                        aggregate_transition_count,
+                        baseline.aggregate_transition_count) ||
+          !within_total(state.aggregate_result.distinct_tuple_count,
+                        distinct_tuple_count,
+                        baseline.aggregate_distinct_tuple_count) ||
+          !within_total(state.aggregate_result.order_comparison_count,
+                        order_comparison_count,
+                        baseline.aggregate_order_comparison_count) ||
+          !within_total(state.aggregate_result.state_bytes,
+                        combined_state_bytes,
+                        baseline.combined_state_bytes)) {
+        return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EQUIVALENCE-V1",
+                      "restored grouped aggregate value or resource evidence diverges");
+      }
+
+      ++result.spilled_aggregate_state_count;
+      result.serialized_aggregate_state_bytes += state.serialized_state_bytes;
+      result.spilled_aggregate_state_record_count +=
+          state.spilled_state_record_count;
+      aggregate_transition_count += state.aggregate_result.transition_count;
+      distinct_tuple_count += state.aggregate_result.distinct_tuple_count;
+      order_comparison_count +=
+          state.aggregate_result.order_comparison_count;
+      combined_state_bytes += state.aggregate_result.state_bytes;
+      restored.output_batch.rows[group_index]
+          .values[key_count + aggregate_index] = std::move(
+              state.aggregate_result.output_batch.rows.front().values.front());
+    }
+  }
+
+  if (aggregate_transition_count != baseline.aggregate_transition_count ||
+      distinct_tuple_count != baseline.aggregate_distinct_tuple_count ||
+      order_comparison_count != baseline.aggregate_order_comparison_count ||
+      combined_state_bytes != baseline.combined_state_bytes) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EQUIVALENCE-V1",
+                  "restored grouped aggregate totals diverge from the in-memory result");
+  }
+  result.diagnostic = {};
+  result.grouped_result = std::move(restored);
   return result;
 }
 

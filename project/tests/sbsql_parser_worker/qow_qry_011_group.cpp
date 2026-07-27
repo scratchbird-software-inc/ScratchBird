@@ -549,9 +549,11 @@ bool ValidateTypedGroupingState() {
 
 }  // namespace
 
+#ifndef QOW_QRY_011_GROUP_FIXTURE_ONLY
 int main() {
   return ValidateTypedGroupingState() && ValidateGroupedRegistryState() &&
                  ValidateGroupedAggregateSetState()
              ? EXIT_SUCCESS
              : EXIT_FAILURE;
 }
+#endif

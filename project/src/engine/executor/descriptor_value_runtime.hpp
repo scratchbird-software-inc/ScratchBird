@@ -1252,6 +1252,7 @@ struct CanonicalGroupedAggregateMetadata {
   std::uint32_t grouping_set_ordinal = 0;
   std::uint64_t grouping_id = 0;
   std::vector<bool> grouping_indicators;
+  std::vector<std::size_t> source_row_indices;
   std::size_t source_row_count = 0;
   std::size_t aggregate_transition_count = 0;
   std::size_t aggregate_state_bytes = 0;
@@ -1268,6 +1269,7 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::size_t aggregate_distinct_tuple_count = 0;
   std::size_t aggregate_order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
+  bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
@@ -1293,6 +1295,7 @@ struct CanonicalGroupedAggregateSetMetadata {
   std::uint32_t grouping_set_ordinal = 0;
   std::uint64_t grouping_id = 0;
   std::vector<bool> grouping_indicators;
+  std::vector<std::size_t> source_row_indices;
   std::size_t source_row_count = 0;
   std::vector<std::size_t> aggregate_transition_counts;
   std::vector<std::size_t> aggregate_state_bytes;
@@ -1310,11 +1313,39 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::size_t aggregate_order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
   bool group_identity_proven = false;
+  bool aggregate_state_spill_required = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+};
+
+struct CanonicalGroupedAggregateSetStateSpillRequest {
+  CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
+  std::filesystem::path spill_root;
+  std::string spill_owner_uuid;
+  std::uint64_t runtime_generation = 0;
+  std::uint64_t reopen_runtime_generation = 0;
+  std::uint64_t memory_quota_bytes = 0;
+  std::size_t maximum_serialized_state_bytes = 67108864;
+  std::size_t maximum_spill_record_count = 67108864;
+  bool cancellation_requested = false;
+  bool cleanup_after_cancellation = true;
+  bool restart_recovery_proof_available = true;
+};
+
+struct CanonicalGroupedAggregateSetStateSpillResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalGroupedAggregateSetRuntimeResult grouped_result;
+  std::size_t spilled_aggregate_state_count = 0;
+  std::size_t serialized_aggregate_state_bytes = 0;
+  std::size_t spilled_aggregate_state_record_count = 0;
+  bool spilled = false;
+  bool spill_reopened = false;
+  bool cleanup_proven = false;
+  bool cancellation_observed = false;
+  std::vector<std::string> spill_evidence;
 };
 
 struct CanonicalDescriptorOrderComparisonResult {
@@ -1647,6 +1678,9 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
 CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntime(
     const CanonicalGroupedAggregateSetRuntimeRequest& request);
+CanonicalGroupedAggregateSetStateSpillResult
+ExecuteCanonicalGroupedAggregateSetStateSpill(
+    const CanonicalGroupedAggregateSetStateSpillRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
