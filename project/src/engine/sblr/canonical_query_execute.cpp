@@ -8,12 +8,12 @@
 
 #include "canonical_query_execute.hpp"
 
+#include "canonical_relational_expression.hpp"
+
 #include "engine/optimizer/optimizer_contract.hpp"
 
 #include <algorithm>
 #include <array>
-#include <charconv>
-#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <limits>
@@ -83,48 +83,6 @@ api::EngineApiResult Failure(const CanonicalObjectFreeValuesExecutionRequest& re
   return result;
 }
 
-bool IsCanonicalUuidText(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto byte = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
-  }
-  return true;
-}
-
-std::string LiteralTypeName(const api::RelationalExpressionRecord& expression) {
-  if (!expression.literal_kind.has_value()) return {};
-  switch (*expression.literal_kind) {
-    case api::RelationalLiteralKind::kNumeric: {
-      if (!expression.literal_or_parameter_ref.has_value()) return {};
-      std::int64_t decoded = 0;
-      const auto& encoded = *expression.literal_or_parameter_ref;
-      const auto [end, error] = std::from_chars(
-          encoded.data(), encoded.data() + encoded.size(), decoded);
-      return error == std::errc{} && end == encoded.data() + encoded.size()
-                 ? "int64"
-                 : std::string{};
-    }
-    case api::RelationalLiteralKind::kString: return "text";
-    case api::RelationalLiteralKind::kUuid:
-      return expression.literal_or_parameter_ref.has_value() &&
-                     IsCanonicalUuidText(*expression.literal_or_parameter_ref)
-                 ? "uuid"
-                 : std::string{};
-    case api::RelationalLiteralKind::kBoolean: return "boolean";
-    case api::RelationalLiteralKind::kNull: return "null";
-    case api::RelationalLiteralKind::kTemporal:
-      // The current relational literal ABI does not retain DATE/TIME/TIMESTAMP
-      // subtype identity. Refuse rather than assigning a possibly wrong type.
-      return {};
-    default: return {};
-  }
-}
-
 exec::CanonicalResultNullability ResultNullability(
     const api::RelationalNullability nullability) {
   switch (nullability) {
@@ -173,6 +131,7 @@ MaterializedValues MaterializeValues(
     expressions.emplace(expression.expression_id, &expression);
   }
   for (const auto& row : dag.values_rows) rows.emplace(row.row_id, &row);
+  CanonicalRelationalExpressionRuntime expression_runtime(dag);
 
   std::vector<const api::RelationalOutputRecord*> outputs;
   for (const auto& output : dag.outputs) {
@@ -196,16 +155,15 @@ MaterializedValues MaterializeValues(
       const auto expression =
           expressions.find(row->second->expression_ids[column]);
       if (expression == expressions.end() ||
-          expression->second->expression_kind !=
-              api::RelationalExpressionKind::kLiteral ||
           expression->second->result_descriptor_id !=
               node_it->output_descriptor_ids[column]) {
-        result.detail = "live VALUES expression is not a bound literal";
+        result.detail =
+            "live VALUES expression result descriptor is not column-bound";
         return result;
       }
-      const auto type_name = LiteralTypeName(*expression->second);
-      if (type_name.empty()) {
-        result.detail = "live VALUES literal type is outside the admitted profile";
+      std::string type_name;
+      if (!expression_runtime.InferType(expression->first, std::nullopt,
+                                        &type_name, &result.detail)) {
         return result;
       }
       if (type_name == "null") continue;
@@ -214,6 +172,22 @@ MaterializedValues MaterializeValues(
         return result;
       }
       type_names[column] = type_name;
+    }
+  }
+
+  for (const auto row_id : node_it->values_row_ids) {
+    const auto* row = rows.at(row_id);
+    for (std::size_t column = 0; column < type_names.size(); ++column) {
+      std::string reconciled_type;
+      if (type_names[column].empty() ||
+          !expression_runtime.InferType(row->expression_ids[column],
+                                        type_names[column], &reconciled_type,
+                                        &result.detail)) {
+        if (result.detail.empty()) {
+          result.detail = "live VALUES column type is unresolved";
+        }
+        return result;
+      }
     }
   }
 
@@ -294,15 +268,13 @@ MaterializedValues MaterializeValues(
     exec::DescriptorTuple tuple;
     tuple.values.reserve(row->expression_ids.size());
     for (std::size_t column = 0; column < row->expression_ids.size(); ++column) {
-      const auto* expression = expressions.at(row->expression_ids[column]);
       api::EngineTypedValue value;
-      value.descriptor = result.batch.columns[column].descriptor;
-      if (*expression->literal_kind == api::RelationalLiteralKind::kNull) {
-        value.state = api::EngineValueState::sql_null;
-        value.is_null = true;
-      } else {
-        value.state = api::EngineValueState::value;
-        value.encoded_value = *expression->literal_or_parameter_ref;
+      if (!expression_runtime.Evaluate(row->expression_ids[column],
+                                       type_names[column], &value,
+                                       &result.detail)) {
+        result.batch = {};
+        result.result_bindings.clear();
+        return result;
       }
       tuple.values.push_back(std::move(value));
     }

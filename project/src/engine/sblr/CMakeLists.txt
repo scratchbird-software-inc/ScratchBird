@@ -16,6 +16,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-003-V1
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
+    canonical_relational_expression.cpp
     canonical_query_execute.cpp
     sblr_dispatch.cpp
     sblr_engine_envelope.cpp
@@ -31,6 +32,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   )
   target_link_libraries(sb_qow_sblr_query_route_contract PUBLIC
     sb_qow_relational_dag_contract
+    sb_qow_typed_scalar_descriptor_contract
     sb_qow_optimizer_admission
   )
   set(SB_QOW_SBLR_TESTS_ENROLLED TRUE PARENT_SCOPE)
@@ -39,6 +41,7 @@ endif()
 
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
+  canonical_relational_expression.cpp
   canonical_query_execute.cpp
   dispatch/sblr_family_dispatch_landing_zone.cpp
   operators/sblr_operator_family_landing_zone.cpp

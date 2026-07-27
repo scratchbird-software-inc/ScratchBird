@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "datatype_operations.hpp"
 
 #include <cstdint>
 #include <string>
@@ -78,6 +79,14 @@ bool QowCompareCanonicalNonCollatedScalarsV1(
 bool QowMaterializeCanonicalTruthValueV1(
     EngineSqlTruthValue truth_value,
     const EngineDescriptor& result_descriptor,
+    EngineTypedValue* output_value,
+    std::string* refusal_detail);
+bool QowApplyCanonicalNumericScalarV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    const EngineDescriptor& result_descriptor,
+    scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
+    const scratchbird::core::datatypes::DatatypeNumericContext& context,
     EngineTypedValue* output_value,
     std::string* refusal_detail);
 inline bool QowPredicateConsumerPassesV1(

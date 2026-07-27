@@ -12,6 +12,7 @@
 #include "datatype_temporal_wire.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstddef>
 #include <limits>
@@ -366,6 +367,8 @@ bool QowApplyCanonicalNumericScalarV1(
       result_type == dt::CanonicalTypeId::int128 ||
       result_type == dt::CanonicalTypeId::uint128 ||
       result_type == dt::CanonicalTypeId::real128;
+  const bool fixed_int64_context =
+      result_type == dt::CanonicalTypeId::int64;
   const bool descriptor_context_matches =
       (decimal_context &&
        QowCanonicalDescriptorU32FieldV1(
@@ -379,7 +382,8 @@ bool QowApplyCanonicalNumericScalarV1(
        QowCanonicalDescriptorU32FieldV1(
            result_descriptor.encoded_descriptor, "width", &descriptor_width) &&
        descriptor_width == 128 && context.precision == 38 &&
-       context.scale == 0);
+       context.scale == 0) ||
+      (fixed_int64_context && context.scale == 0);
   if (!QowCanonicalDescriptorIdentityV1(left_value.descriptor) ||
       !QowCanonicalDescriptorIdentityV1(right_value.descriptor) ||
       !QowCanonicalDescriptorIdentityV1(result_descriptor) ||
@@ -387,7 +391,7 @@ bool QowApplyCanonicalNumericScalarV1(
       right_value.descriptor.descriptor_kind != "scalar" ||
       result_descriptor.descriptor_kind != "scalar" ||
       left_type != result_type || right_type != result_type ||
-      (!decimal_context && !fixed_128_context) ||
+      (!decimal_context && !fixed_128_context && !fixed_int64_context) ||
       operation == dt::DatatypeNumericOperationKind::compare ||
       !descriptor_context_matches) {
     *refusal_detail =
@@ -407,6 +411,66 @@ bool QowApplyCanonicalNumericScalarV1(
        (right_value.state != EngineValueState::value || right_value.is_null))) {
     *refusal_detail = "numeric operation requires value or SQL NULL states";
     return false;
+  }
+  if (fixed_int64_context) {
+    if (left_value.isSqlNull() || right_value.isSqlNull()) {
+      output_value->descriptor = result_descriptor;
+      output_value->encoded_value.clear();
+      output_value->binary_value.clear();
+      output_value->is_null = true;
+      output_value->state = EngineValueState::sql_null;
+      return true;
+    }
+    const auto parse = [](const std::string& encoded, std::int64_t* value) {
+      if (value == nullptr || encoded.empty()) return false;
+      const auto [end, error] = std::from_chars(
+          encoded.data(), encoded.data() + encoded.size(), *value);
+      return error == std::errc{} && end == encoded.data() + encoded.size();
+    };
+    std::int64_t left = 0;
+    std::int64_t right = 0;
+    if (!parse(left_value.encoded_value, &left) ||
+        !parse(right_value.encoded_value, &right)) {
+      *refusal_detail = "canonical int64 operand encoding is invalid";
+      return false;
+    }
+    std::int64_t computed = 0;
+    bool overflow = false;
+    switch (operation) {
+      case dt::DatatypeNumericOperationKind::add:
+        overflow = __builtin_add_overflow(left, right, &computed);
+        break;
+      case dt::DatatypeNumericOperationKind::subtract:
+        overflow = __builtin_sub_overflow(left, right, &computed);
+        break;
+      case dt::DatatypeNumericOperationKind::multiply:
+        overflow = __builtin_mul_overflow(left, right, &computed);
+        break;
+      case dt::DatatypeNumericOperationKind::divide:
+        if (right == 0) {
+          *refusal_detail = "canonical int64 division by zero";
+          return false;
+        }
+        if (left == std::numeric_limits<std::int64_t>::min() && right == -1) {
+          overflow = true;
+        } else {
+          computed = left / right;
+        }
+        break;
+      default:
+        *refusal_detail = "canonical int64 numeric operation is unsupported";
+        return false;
+    }
+    if (overflow) {
+      *refusal_detail = "canonical int64 arithmetic overflow";
+      return false;
+    }
+    output_value->descriptor = result_descriptor;
+    output_value->encoded_value = std::to_string(computed);
+    output_value->binary_value.clear();
+    output_value->is_null = false;
+    output_value->state = EngineValueState::value;
+    return true;
   }
   dt::DatatypeNumericOperationRequest numeric_request;
   numeric_request.operation = operation;

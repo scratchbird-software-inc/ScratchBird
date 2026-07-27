@@ -42,10 +42,10 @@ struct CanonicalObjectFreeValuesExecutionResult {
 
 // QOW-SOURCE-INTEGRATION-306-211-LIVE-VALUES-V1
 // This is the first bounded live native query profile. It accepts only one
-// object-free literal VALUES root whose complete typed payload can be derived
-// from the admitted relational DAG. Every other logical shape remains on the
-// existing physical-dispatch-pending path until its bound production payload
-// adapter exists.
+// object-free VALUES root whose complete typed literal/composed-scalar payload
+// can be derived from the admitted relational DAG. Every other logical shape
+// remains on the existing physical-dispatch-pending path until its bound
+// production payload adapter exists.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request);

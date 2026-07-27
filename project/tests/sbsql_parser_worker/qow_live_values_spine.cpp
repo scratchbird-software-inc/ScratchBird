@@ -109,6 +109,90 @@ sblr::SblrOperationEnvelope ValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope ComposedValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.composed");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008300"},
+      {"uuid", "relational_catalog_epoch_uuid",
+       std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "1"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008301|"
+       "019f0000-0000-7400-8000-000000008302|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008303|"
+       "019f0000-0000-7400-8000-000000008304|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000008305|"
+       "019f0000-0000-7400-8000-000000008306|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-000000008307|"
+       "019f0000-0000-7400-8000-000000008308|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-000000008309|"
+       "019f0000-0000-7400-8000-000000008310|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-000000008311|"
+       "019f0000-0000-7400-8000-000000008312|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "7",
+       "019f0000-0000-7300-8000-000000008313|"
+       "019f0000-0000-7400-8000-000000008314|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "8",
+       "019f0000-0000-7300-8000-000000008315|"
+       "019f0000-0000-7400-8000-000000008316|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "9",
+       "019f0000-0000-7300-8000-000000008317|"
+       "019f0000-0000-7400-8000-000000008318|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "10",
+       "019f0000-0000-7300-8000-000000008319|"
+       "019f0000-0000-7400-8000-000000008320|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "6|1,2|1|-|-|-|2b|-"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "5", "5|4|2|-|-|-|2d|-"},
+      {"relational_expression_v1", "6", "1|-|5|-|-|1|-|32"},
+      {"relational_expression_v1", "7", "1|-|5|-|-|1|-|31"},
+      {"relational_expression_v1", "8", "6|6,7|3|-|-|-|3e|-"},
+      {"relational_expression_v1", "9", "1|-|4|-|-|6|-|54525545"},
+      {"relational_expression_v1", "10", "1|-|4|-|-|7|-|2d"},
+      {"relational_expression_v1", "11", "6|9,10|4|-|-|-|414e44|-"},
+      {"relational_expression_v1", "12", "7|3|1|-|-|-|-|-"},
+      {"relational_expression_v1", "13", "1|-|6|-|-|2|-|61"},
+      {"relational_expression_v1", "14", "1|-|6|-|-|2|-|62"},
+      {"relational_expression_v1", "15", "6|13,14|6|-|-|-|7c7c|-"},
+      {"relational_expression_v1", "16", "1|-|7|-|-|6|-|46414c5345"},
+      {"relational_expression_v1", "17", "1|-|7|-|-|6|-|54525545"},
+      {"relational_expression_v1", "18", "6|16,17|7|-|-|-|4f52|-"},
+      {"relational_expression_v1", "19", "1|-|5|-|-|1|-|31"},
+      {"relational_expression_v1", "20", "1|-|10|-|-|7|-|2d"},
+      {"relational_expression_v1", "21", "6|19,20|8|-|-|-|4953|-"},
+      {"relational_expression_v1", "22", "1|-|9|-|-|6|-|46414c5345"},
+      {"relational_expression_v1", "23", "5|22|9|-|-|-|4e4f54|-"},
+      {"relational_output_v1", "1", "1|12|1|1|0|73756d"},
+      {"relational_output_v1", "2", "1|5|2|1|1|6e656761746564"},
+      {"relational_output_v1", "3", "1|8|3|1|2|67726561746572"},
+      {"relational_output_v1", "4", "1|11|4|1|3|7472757468"},
+      {"relational_output_v1", "5", "1|15|6|1|4|636f6e636174"},
+      {"relational_output_v1", "6", "1|18|7|1|5|6469736a756e6374"},
+      {"relational_output_v1", "7", "1|21|8|1|6|69735f6e756c6c"},
+      {"relational_output_v1", "8", "1|23|9|1|7|6e65676174696f6e"},
+      {"relational_values_row_v1", "1", "12,5,8,11,15,18,21,23"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3,4,6,7,8,9|1"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -157,6 +241,47 @@ bool ValidateLiveValuesSpine() {
   return passed;
 }
 
+bool ValidateComposedScalarValuesSpine() {
+  const auto result = sblr::DispatchSblrOperation(
+      {Context(), ComposedValuesEnvelope(), {}});
+  bool passed = true;
+  passed &= Require(
+      result.accepted && result.optimizer_admitted && result.optimizer_selected &&
+          result.physical_dag_published && result.physical_dag_executed &&
+          result.runtime_actuals_attached && result.canonical_result_published &&
+          result.api_result.ok && result.diagnostics.empty(),
+      "composed scalar VALUES did not traverse the canonical spine");
+  passed &= Require(
+      result.api_result.result_shape.rows.size() == 1 &&
+          result.api_result.result_shape.rows[0].fields.size() == 8 &&
+          result.api_result.result_shape.rows[0].fields[0].first == "sum" &&
+          result.api_result.result_shape.rows[0].fields[0].second.encoded_value ==
+              "3" &&
+          result.api_result.result_shape.rows[0].fields[1].first == "negated" &&
+          result.api_result.result_shape.rows[0].fields[1].second.encoded_value ==
+              "-3" &&
+          result.api_result.result_shape.rows[0].fields[2].first == "greater" &&
+          result.api_result.result_shape.rows[0].fields[2].second.encoded_value ==
+              "true" &&
+          result.api_result.result_shape.rows[0].fields[3].first == "truth" &&
+          result.api_result.result_shape.rows[0].fields[3].second.state ==
+              api::EngineValueState::sql_null &&
+          result.api_result.result_shape.rows[0].fields[4].first == "concat" &&
+          result.api_result.result_shape.rows[0].fields[4].second.encoded_value ==
+              "ab" &&
+          result.api_result.result_shape.rows[0].fields[5].first == "disjunct" &&
+          result.api_result.result_shape.rows[0].fields[5].second.encoded_value ==
+              "true" &&
+          result.api_result.result_shape.rows[0].fields[6].first == "is_null" &&
+          result.api_result.result_shape.rows[0].fields[6].second.encoded_value ==
+              "false" &&
+          result.api_result.result_shape.rows[0].fields[7].first == "negation" &&
+          result.api_result.result_shape.rows[0].fields[7].second.encoded_value ==
+              "true",
+      "composed arithmetic, comparison, logical, NULL, or text result differs");
+  return passed;
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
@@ -185,11 +310,48 @@ bool ValidatePayloadRefusalIsAtomic() {
       "invalid or type-ambiguous VALUES payload published partial evidence");
 }
 
+bool ValidateComposedScalarRefusalIsAtomic() {
+  auto overflow = ComposedValuesEnvelope();
+  auto divide_by_zero = ComposedValuesEnvelope();
+  for (auto& operand : overflow.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "1") {
+      operand.value = "1|-|1|-|-|1|-|39323233333732303336383534373735383037";
+    }
+  }
+  for (auto& operand : divide_by_zero.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "2") {
+      operand.value = "1|-|1|-|-|1|-|30";
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "3") {
+      operand.value = "6|1,2|1|-|-|-|2f|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(overflow)) &&
+          refused_atomically(std::move(divide_by_zero)),
+      "overflow or divide-by-zero published partial optimizer/executor evidence");
+}
+
 }  // namespace
 
 // QOW-TEST-INTEGRATION-306-211-LIVE-VALUES-V1
 int main() {
-  const bool passed =
-      ValidateLiveValuesSpine() && ValidatePayloadRefusalIsAtomic();
+  const bool passed = ValidateLiveValuesSpine() &&
+                      ValidateComposedScalarValuesSpine() &&
+                      ValidatePayloadRefusalIsAtomic() &&
+                      ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

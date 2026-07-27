@@ -6,8 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "api_types.hpp"
-#include "datatype_operations.hpp"
+#include "query/expression_api.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -16,17 +15,6 @@
 
 namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
-
-namespace scratchbird::engine::internal_api {
-bool QowApplyCanonicalNumericScalarV1(
-    const EngineTypedValue& left_value,
-    const EngineTypedValue& right_value,
-    const EngineDescriptor& result_descriptor,
-    scratchbird::core::datatypes::DatatypeNumericOperationKind operation,
-    const scratchbird::core::datatypes::DatatypeNumericContext& context,
-    EngineTypedValue* output_value,
-    std::string* refusal_detail);
-}  // namespace scratchbird::engine::internal_api
 
 namespace {
 
@@ -93,6 +81,33 @@ dt::DatatypeNumericContext Fixed128Context() {
   context.scale = 0;
   context.rounding = dt::DatatypeRoundingMode::half_even;
   context.allow_special_values = false;
+  return context;
+}
+
+api::EngineDescriptor Int64Descriptor(const std::string& descriptor_uuid) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000000885;"
+      "nullability=nullable";
+  return descriptor;
+}
+
+api::EngineTypedValue Int64Value(const std::string& descriptor_uuid,
+                                 const std::string& value) {
+  api::EngineTypedValue typed;
+  typed.descriptor = Int64Descriptor(descriptor_uuid);
+  typed.encoded_value = value;
+  typed.state = api::EngineValueState::value;
+  return typed;
+}
+
+dt::DatatypeNumericContext Int64Context() {
+  dt::DatatypeNumericContext context;
+  context.precision = 19;
+  context.scale = 0;
   return context;
 }
 
@@ -199,6 +214,48 @@ bool ValidateIntegerOverflowRefusal() {
   return passed;
 }
 
+bool ValidateInt64ExactArithmetic() {
+  const auto result_descriptor = Int64Descriptor(
+      "019f0000-0000-7200-8000-000000000886");
+  api::EngineTypedValue output;
+  std::string refusal;
+  const bool accepted = api::QowApplyCanonicalNumericScalarV1(
+      Int64Value("019f0000-0000-7200-8000-000000000887", "2"),
+      Int64Value("019f0000-0000-7200-8000-000000000888", "3"),
+      result_descriptor, dt::DatatypeNumericOperationKind::add, Int64Context(),
+      &output, &refusal);
+  bool passed = true;
+  passed &= Require(accepted && refusal.empty() && output.encoded_value == "5" &&
+                        output.descriptor.descriptor_uuid.canonical ==
+                            result_descriptor.descriptor_uuid.canonical,
+                    "exact int64 arithmetic lost its bound descriptor or value");
+
+  refusal.clear();
+  const bool addition_overflow = api::QowApplyCanonicalNumericScalarV1(
+      Int64Value("019f0000-0000-7200-8000-000000000889",
+                 "9223372036854775807"),
+      Int64Value("019f0000-0000-7200-8000-000000000890", "1"),
+      result_descriptor, dt::DatatypeNumericOperationKind::add, Int64Context(),
+      &output, &refusal);
+  passed &= Require(!addition_overflow &&
+                        refusal.find("overflow") != std::string::npos &&
+                        output.state == api::EngineValueState::error,
+                    "int64 addition overflow wrapped or produced a value");
+
+  refusal.clear();
+  const bool division_overflow = api::QowApplyCanonicalNumericScalarV1(
+      Int64Value("019f0000-0000-7200-8000-000000000891",
+                 "-9223372036854775808"),
+      Int64Value("019f0000-0000-7200-8000-000000000892", "-1"),
+      result_descriptor, dt::DatatypeNumericOperationKind::divide,
+      Int64Context(), &output, &refusal);
+  passed &= Require(!division_overflow &&
+                        refusal.find("overflow") != std::string::npos &&
+                        output.state == api::EngineValueState::error,
+                    "int64 division overflow wrapped or produced a value");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-008-OVERFLOW-V1
@@ -208,5 +265,6 @@ int main() {
   passed &= ValidateOverflowRefusal();
   passed &= ValidateContextAndNull();
   passed &= ValidateIntegerOverflowRefusal();
+  passed &= ValidateInt64ExactArithmetic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
