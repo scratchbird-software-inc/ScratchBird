@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -1272,6 +1273,108 @@ sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
        {"relational_node_binding_v1", "2",
         EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
             "|13,14,16|-|-|-"}});
+  return envelope;
+}
+
+sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values.rollup-count-sum");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-00000000e200"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000e201|"
+       "019f0000-0000-7400-8000-00000000e202|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000e203|"
+       "019f0000-0000-7400-8000-00000000e204|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000e205|"
+       "019f0000-0000-7400-8000-00000000e206|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000e207|"
+       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000e209|"
+       "019f0000-0000-7400-8000-00000000e20a|2|-|-|-|-|-"},
+  };
+
+  struct RollupRow {
+    std::string_view key_a;
+    std::string_view key_b;
+    std::string_view amount;
+    bool null_a{false};
+    bool null_b{false};
+    bool null_amount{false};
+  };
+  constexpr std::array<RollupRow, 6> kRows = {
+      RollupRow{"31", "3130", "35"},
+      RollupRow{"31", "3230", "37"},
+      RollupRow{"31", "2d", "33", false, true, false},
+      RollupRow{"32", "3130", "34"},
+      RollupRow{"2d", "3130", "38", true, false, false},
+      RollupRow{"31", "3130", "2d", false, false, true},
+  };
+  for (std::size_t row = 0; row < kRows.size(); ++row) {
+    const auto first_expression_id = row * 3 + 1;
+    const auto& value = kRows[row];
+    envelope.operands.push_back(
+        {"relational_expression_v1", std::to_string(first_expression_id),
+         "1|-|1|-|-|" + std::string(value.null_a ? "7" : "1") + "|-|" +
+             std::string(value.key_a)});
+    envelope.operands.push_back(
+        {"relational_expression_v1",
+         std::to_string(first_expression_id + 1),
+         "1|-|2|-|-|" + std::string(value.null_b ? "7" : "1") + "|-|" +
+             std::string(value.key_b)});
+    envelope.operands.push_back(
+        {"relational_expression_v1",
+         std::to_string(first_expression_id + 2),
+         "1|-|3|-|-|" +
+             std::string(value.null_amount ? "7" : "1") + "|-|" +
+             std::string(value.amount)});
+    envelope.operands.push_back(
+        {"relational_values_row_v1", std::to_string(row + 1),
+         std::to_string(first_expression_id) + "," +
+             std::to_string(first_expression_id + 1) + "," +
+             std::to_string(first_expression_id + 2)});
+  }
+  envelope.operands.insert(
+      envelope.operands.end(),
+      {{"relational_expression_v1", "19",
+        "3|-|1|-|019f0000-0000-7500-8000-00000000e20b|-|-|-"},
+       {"relational_expression_v1", "20",
+        "3|-|2|-|019f0000-0000-7500-8000-00000000e20c|-|-|-"},
+       {"relational_expression_v1", "21",
+        "4|-|4|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-"},
+       {"relational_expression_v1", "22",
+        "3|-|3|-|019f0000-0000-7500-8000-00000000e20d|-|-|-"},
+       {"relational_expression_v1", "23",
+        "4|22|5|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+       {"relational_output_v1", "1", "1|1|1|1|0|6b65795f61"},
+       {"relational_output_v1", "2", "1|2|2|1|1|6b65795f62"},
+       {"relational_output_v1", "3", "1|3|3|1|2|616d6f756e74"},
+       {"relational_output_v1", "4", "2|19|1|1|0|6b65795f61"},
+       {"relational_output_v1", "5", "2|20|2|1|1|6b65795f62"},
+       {"relational_output_v1", "6", "2|21|4|1|2|726f775f636f756e74"},
+       {"relational_output_v1", "7",
+        "2|23|5|1|3|746f74616c5f616d6f756e74"},
+       {"relational_node_v1", "1", "13|0|-|1,2,3|1,2,3,4,5,6"},
+       {"relational_node_v1", "2", "5|0|1|1,2,4,5|-"},
+       {"relational_node_binding_v1", "1",
+        "76616c7565732e6c69746572616c2d7461626c652e7631|"
+        "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18|-|-|-"},
+       {"relational_node_binding_v1", "2",
+        EncodeHex("aggregate.rollup-int64-keys-count-sum.v1") +
+            "|19,20,21,23|-|-|-"}});
   return envelope;
 }
 
@@ -3915,6 +4018,204 @@ bool ValidateGroupedCountSumRefusalIsAtomic() {
           refused_before_admission(std::move(output_order_drift)),
       "shape-, lineage-, function-, key-, or output-order-drifted grouped "
       "COUNT/SUM published partial evidence");
+}
+
+bool ValidateRollupCountSumValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), RollupCountSumValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), RollupCountSumValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 2 &&
+          first.logical_property_count == 0 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 4 &&
+          first.canonical_result_row_count == 9,
+      "VALUES two-key ROLLUP did not traverse its selected physical DAG");
+
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 4 && rows.size() == 9 &&
+          columns[0].canonical_type_name == "int64" &&
+          columns[0].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos &&
+          columns[1].canonical_type_name == "int64" &&
+          columns[1].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos &&
+          columns[2].canonical_type_name == "int64" &&
+          columns[2].encoded_descriptor.find("nullability=non_null") !=
+              std::string::npos &&
+          columns[3].canonical_type_name == "int64" &&
+          columns[3].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos,
+      "two-key ROLLUP result descriptors lost key or aggregate identity");
+
+  const auto value_matches = [](
+                                 const api::EngineTypedValue& value,
+                                 const std::optional<std::string_view> expected) {
+    if (!expected.has_value()) {
+      return value.state == api::EngineValueState::sql_null && value.is_null;
+    }
+    return value.state == api::EngineValueState::value && !value.is_null &&
+           value.encoded_value == *expected;
+  };
+  const auto row_matches = [&](const std::size_t ordinal,
+                               const std::optional<std::string_view> key_a,
+                               const std::optional<std::string_view> key_b,
+                               const std::string_view count,
+                               const std::string_view sum) {
+    return ordinal < rows.size() && rows[ordinal].fields.size() == 4 &&
+           rows[ordinal].fields[0].first == "key_a" &&
+           rows[ordinal].fields[1].first == "key_b" &&
+           rows[ordinal].fields[2].first == "row_count" &&
+           rows[ordinal].fields[3].first == "total_amount" &&
+           value_matches(rows[ordinal].fields[0].second, key_a) &&
+           value_matches(rows[ordinal].fields[1].second, key_b) &&
+           value_matches(rows[ordinal].fields[2].second, count) &&
+           value_matches(rows[ordinal].fields[3].second, sum);
+  };
+  passed &= Require(
+      row_matches(0, "1", "10", "2", "5") &&
+          row_matches(1, "1", "20", "1", "7") &&
+          row_matches(2, "1", std::nullopt, "1", "3") &&
+          row_matches(3, "2", "10", "1", "4") &&
+          row_matches(4, std::nullopt, "10", "1", "8") &&
+          row_matches(5, "1", std::nullopt, "4", "15") &&
+          row_matches(6, "2", std::nullopt, "1", "4") &&
+          row_matches(7, std::nullopt, std::nullopt, "1", "8") &&
+          row_matches(8, std::nullopt, std::nullopt, "6", "27"),
+      "two-key ROLLUP lost full-key, prefix, grand-total, data-NULL, or "
+      "aggregate state");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical two-key ROLLUP input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateRollupCountSumRefusalIsAtomic() {
+  auto missing_key = RollupCountSumValuesEnvelope();
+  auto key_order_drift = RollupCountSumValuesEnvelope();
+  auto duplicate_key = RollupCountSumValuesEnvelope();
+  auto count_function_drift = RollupCountSumValuesEnvelope();
+  auto sum_function_drift = RollupCountSumValuesEnvelope();
+  auto non_nullable_rollup_key = RollupCountSumValuesEnvelope();
+  auto semantic_shape_drift = RollupCountSumValuesEnvelope();
+  auto output_order_drift = RollupCountSumValuesEnvelope();
+  const auto set_root_binding = [](sblr::SblrOperationEnvelope* envelope,
+                                   const std::string& value) {
+    for (auto& operand : envelope->operands) {
+      if (operand.type == "relational_node_binding_v1" &&
+          operand.name == "2") {
+        operand.value = value;
+      }
+    }
+  };
+  const auto rollup_semantic =
+      EncodeHex("aggregate.rollup-int64-keys-count-sum.v1");
+  set_root_binding(&missing_key, rollup_semantic + "|19,21,23|-|-|-");
+  set_root_binding(&key_order_drift,
+                   rollup_semantic + "|20,19,21,23|-|-|-");
+  set_root_binding(&duplicate_key,
+                   rollup_semantic + "|19,19,21,23|-|-|-");
+  set_root_binding(
+      &semantic_shape_drift,
+      EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
+          "|19,20,21,23|-|-|-");
+  for (auto& operand : count_function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "21") {
+      operand.value =
+          "4|-|4|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
+    }
+  }
+  for (auto& operand : sum_function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "23") {
+      operand.value =
+          "4|22|5|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-";
+    }
+  }
+  for (auto& operand : non_nullable_rollup_key.operands) {
+    if (operand.type == "relational_descriptor_v1" && operand.name == "2") {
+      operand.value =
+          "019f0000-0000-7300-8000-00000000e203|"
+          "019f0000-0000-7400-8000-00000000e204|1|-|-|-|-|-";
+    }
+  }
+  for (auto& operand : output_order_drift.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "5|0|1|2,1,4,5|-";
+    }
+  }
+
+  const auto refused_atomically = [](const std::string_view label,
+                                     sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    const bool refused =
+        result.accepted && result.optimizer_admitted &&
+        !result.optimizer_selected && !result.physical_dag_published &&
+        !result.physical_dag_executed && !result.runtime_actuals_attached &&
+        !result.canonical_result_published && !result.api_result.ok &&
+        result.physical_node_count == 0 &&
+        result.canonical_result_bytes.empty() &&
+        HasApiDiagnostic(
+            result,
+            "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1");
+    if (!refused) {
+      std::cerr << "two-key ROLLUP refusal mismatch (" << label
+                << "): accepted=" << result.accepted
+                << ", admitted=" << result.optimizer_admitted
+                << ", selected=" << result.optimizer_selected
+                << ", published=" << result.physical_dag_published
+                << ", executed=" << result.physical_dag_executed
+                << ", api_ok=" << result.api_result.ok << '\n';
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    return refused;
+  };
+  const auto refused_before_admission =
+      [](sblr::SblrOperationEnvelope envelope) {
+        const auto result = sblr::DispatchSblrOperation(
+            {Context(), std::move(envelope), {}});
+        return !result.accepted && !result.optimizer_admitted &&
+               !result.optimizer_selected &&
+               !result.physical_dag_published &&
+               !result.physical_dag_executed &&
+               !result.runtime_actuals_attached &&
+               !result.canonical_result_published && !result.api_result.ok &&
+               result.physical_node_count == 0 &&
+               result.canonical_result_bytes.empty() &&
+               HasApiDiagnostic(result, "SBLR.PLAN_TREE.INVALID_HANDLE");
+      };
+  return Require(
+      refused_atomically("missing_key", std::move(missing_key)) &&
+          refused_atomically("key_order", std::move(key_order_drift)) &&
+          refused_atomically("count_function",
+                             std::move(count_function_drift)) &&
+          refused_atomically("sum_function", std::move(sum_function_drift)) &&
+          refused_atomically("non_nullable_rollup_key",
+                             std::move(non_nullable_rollup_key)) &&
+          refused_atomically("semantic_shape",
+                             std::move(semantic_shape_drift)) &&
+          refused_before_admission(std::move(duplicate_key)) &&
+          refused_before_admission(std::move(output_order_drift)),
+      "shape-, key-, function-, nullability-, semantic-, or output-order-"
+      "drifted two-key ROLLUP published partial evidence");
 }
 
 bool ValidateGlobalCountStarValuesSpine() {
@@ -7417,6 +7718,8 @@ int main() {
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&
                       ValidateGroupedCountSumRefusalIsAtomic() &&
+                      ValidateRollupCountSumValuesSpine() &&
+                      ValidateRollupCountSumRefusalIsAtomic() &&
                       ValidateGlobalCountStarValuesSpine() &&
                       ValidateGlobalCountStarRefusalIsAtomic() &&
                       ValidateGlobalCountExpressionValuesSpine() &&
