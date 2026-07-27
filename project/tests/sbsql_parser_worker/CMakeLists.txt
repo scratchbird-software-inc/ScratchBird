@@ -346,6 +346,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-205;QOW-213;QOW-LEAF-QRY-011-SPILL;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-011-REGISTRY-STATE-EXCHANGE-V1
+  add_executable(qow_qry_011_state_exchange_test_v1
+                 qow_qry_011_state_exchange.cpp)
+  target_compile_features(qow_qry_011_state_exchange_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_011_state_exchange_test_v1
+                        PRIVATE sb_engine_executor)
+  add_test(NAME qow_qry_011_state_exchange_v1
+           COMMAND qow_qry_011_state_exchange_test_v1)
+  set_tests_properties(qow_qry_011_state_exchange_v1 PROPERTIES
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;development_candidate"
+  )
+
   # QOW-CMAKE-QRY-011-GROUPED-STATE-SPILL-V1
   add_executable(qow_qry_011_group_state_spill_test_v1
                  qow_qry_011_group_state_spill.cpp)

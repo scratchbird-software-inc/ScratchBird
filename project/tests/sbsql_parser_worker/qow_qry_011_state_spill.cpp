@@ -310,6 +310,7 @@ bool ValidateRegistryStateSpillRefusals(const std::filesystem::path& root) {
 
 }  // namespace
 
+#ifndef QOW_QRY_011_STATE_SPILL_FIXTURE_ONLY
 int main() {
   const auto root = std::filesystem::temp_directory_path() /
                     ("scratchbird_qow205_registry_state_spill_" +
@@ -323,3 +324,4 @@ int main() {
   std::filesystem::remove_all(root, error);
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+#endif

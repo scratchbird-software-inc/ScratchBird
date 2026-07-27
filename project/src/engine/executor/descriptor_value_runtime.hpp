@@ -1203,6 +1203,35 @@ struct CanonicalAggregateStateSpillResult {
   std::vector<std::string> spill_evidence;
 };
 
+struct CanonicalAggregateStateExchangeRequest {
+  CanonicalAggregateRuntimeRequest aggregate_request;
+  std::vector<std::uint32_t> worker_ordinals;
+  std::uint64_t exchange_generation = 0;
+  std::uint64_t coordinator_exchange_generation = 0;
+  std::size_t maximum_partial_state_count = 1024;
+  std::size_t maximum_serialized_state_bytes_per_worker = 16777216;
+  std::size_t maximum_combined_serialized_state_bytes = 67108864;
+  bool cancellation_requested = false;
+};
+
+struct CanonicalAggregateStateExchangeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalAggregateRuntimeResult aggregate_result;
+  std::size_t partial_state_count = 0;
+  std::size_t restored_partial_state_count = 0;
+  std::size_t merged_partial_state_count = 0;
+  std::size_t serialized_state_bytes = 0;
+  std::vector<std::size_t> worker_transition_counts;
+  std::vector<std::size_t> worker_state_bytes;
+  std::vector<std::size_t> worker_serialized_state_bytes;
+  bool states_serialized = false;
+  bool exchange_identity_proven = false;
+  bool all_states_restored = false;
+  bool deterministic_merge_order_proven = false;
+  bool merged_result_equivalent = false;
+  bool cancellation_observed = false;
+};
+
 struct CanonicalAggregateMovingRuntimeRequest {
   CanonicalAggregateRuntimeRequest aggregate_request;
   std::vector<std::vector<std::size_t>> effective_frame_row_indices;
@@ -1671,6 +1700,8 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     const CanonicalAggregateStateSpillRequest& request);
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(

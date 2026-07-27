@@ -2107,8 +2107,9 @@ CanonicalAggregateRuntimeRegistryV1() {
   };
 }
 
-CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
-    const CanonicalAggregateRuntimeRequest& request) {
+static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
+    const CanonicalAggregateRuntimeRequest& request,
+    const bool state_exchange_execution_context) {
   CanonicalAggregateRuntimeResult result;
   result.descriptor = request.descriptor;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
@@ -2171,6 +2172,16 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
       aggregate_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-PHYSICAL-V1",
                           "canonical aggregate requires one physical input"));
+  }
+  const bool state_exchange_selected =
+      aggregate_node->implementation_id ==
+      "aggregate.registry-state-exchange.v1";
+  if (state_exchange_selected != state_exchange_execution_context) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-STRATEGY-V1",
+        state_exchange_selected
+            ? "selected aggregate state exchange requires the exchange runtime"
+            : "aggregate state exchange payload does not match the selected implementation"));
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -2362,6 +2373,11 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
   return result;
+}
+
+CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
+    const CanonicalAggregateRuntimeRequest& request) {
+  return ExecuteCanonicalAggregateRuntimeSelected(request, false);
 }
 
 // QOW-SOURCE-QRY-011-REGISTRY-STATE-SPILL-V1
@@ -2625,6 +2641,230 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
   result.diagnostic = {};
   result.aggregate_result = std::move(restored);
   result.restored_result_equivalent = true;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-REGISTRY-STATE-EXCHANGE-V1
+// Materialize one complete transition state per optimizer-bound worker,
+// serialize each state across an explicit exchange boundary, restore it at
+// the coordinator, and merge in worker-ordinal order through the same state
+// authority used by serial, local-combine, spill, grouped, and window routes.
+// The exchange carries no transaction-finality, recovery, visibility, or
+// parser-execution authority of its own.
+CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
+    const CanonicalAggregateStateExchangeRequest& request) {
+  CanonicalAggregateStateExchangeResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    result.aggregate_result = {};
+    result.exchange_identity_proven = false;
+    result.all_states_restored = false;
+    result.deterministic_merge_order_proven = false;
+    result.merged_result_equivalent = false;
+    return result;
+  };
+
+  const auto worker_count = request.worker_ordinals.size();
+  if (worker_count < 2 || worker_count > 1024 ||
+      request.maximum_partial_state_count == 0 ||
+      worker_count > request.maximum_partial_state_count ||
+      request.maximum_serialized_state_bytes_per_worker == 0 ||
+      request.maximum_combined_serialized_state_bytes == 0 ||
+      request.exchange_generation == 0 ||
+      request.coordinator_exchange_generation == 0) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-SHAPE-V1",
+        "aggregate state exchange worker, generation, or resource shape is invalid");
+  }
+  for (std::size_t worker = 0; worker < worker_count; ++worker) {
+    if (request.worker_ordinals[worker] != worker) {
+      return refuse(
+          "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-IDENTITY-V1",
+          "aggregate state exchange worker ordinals are not exact and increasing");
+    }
+  }
+  if (request.exchange_generation !=
+      request.coordinator_exchange_generation) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-GENERATION-V1",
+        "aggregate state exchange reached a stale coordinator generation");
+  }
+  if (request.aggregate_request.forced_strategy !=
+      CanonicalAggregateExecutionStrategy::partitioned_combine) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-STRATEGY-V1",
+        "aggregate state exchange requires the partitioned-combine strategy");
+  }
+  if (request.cancellation_requested) {
+    result.cancellation_observed = true;
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-CANCELLED-V1",
+                  "aggregate state exchange was cancelled before publication");
+  }
+
+  const auto baseline = ExecuteCanonicalAggregateRuntimeSelected(
+      request.aggregate_request, true);
+  if (!baseline.diagnostic.ok) {
+    return refuse(baseline.diagnostic.diagnostic_code,
+                  baseline.diagnostic.detail);
+  }
+
+  PreparedAggregateTransitions prepared;
+  DescriptorRuntimeDiagnostic state_diagnostic;
+  if (!PrepareCanonicalAggregateTransitions(request.aggregate_request,
+                                            &prepared,
+                                            &state_diagnostic)) {
+    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
+  }
+
+  struct ExchangedPartialState {
+    std::uint64_t generation = 0;
+    std::uint32_t worker_ordinal = 0;
+    CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
+    AggregateStateBytes bytes;
+  };
+  std::vector<ExchangedPartialState> exchanged;
+  exchanged.reserve(worker_count);
+  result.worker_transition_counts.reserve(worker_count);
+  result.worker_state_bytes.reserve(worker_count);
+  result.worker_serialized_state_bytes.reserve(worker_count);
+
+  const auto base_partition_size = prepared.transitions.size() / worker_count;
+  const auto extra_partition_count = prepared.transitions.size() % worker_count;
+  std::size_t partition_begin = 0;
+  for (std::size_t worker = 0; worker < worker_count; ++worker) {
+    const auto partition_size =
+        base_partition_size + (worker < extra_partition_count ? 1 : 0);
+    const auto partition_end = partition_begin + partition_size;
+    CanonicalAggregateCoreState partial_state;
+    for (std::size_t transition = partition_begin;
+         transition < partition_end; ++transition) {
+      if (!TransitionCanonicalAggregateCore(
+              request.aggregate_request.descriptor,
+              prepared.transitions[transition].values, &partial_state,
+              &state_diagnostic)) {
+        return refuse(state_diagnostic.diagnostic_code,
+                      state_diagnostic.detail);
+      }
+      if (EstimateCanonicalAggregateStateBytes(partial_state) >
+          request.aggregate_request.maximum_state_bytes) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "aggregate exchange partial-state byte bound is exceeded");
+      }
+    }
+    partition_begin = partition_end;
+
+    AggregateStateBytes serialized;
+    if (!SerializeCanonicalAggregateCoreState(
+            request.aggregate_request, partial_state,
+            request.maximum_serialized_state_bytes_per_worker,
+            &serialized)) {
+      return refuse(
+          "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-SERIALIZE-V1",
+          "aggregate worker state cannot be serialized within its bound");
+    }
+    if (result.serialized_state_bytes >
+            request.maximum_combined_serialized_state_bytes ||
+        serialized.size() >
+            request.maximum_combined_serialized_state_bytes -
+                result.serialized_state_bytes) {
+      return refuse(
+          "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-RESOURCE-V1",
+          "combined aggregate exchange state byte bound is exceeded");
+    }
+    result.serialized_state_bytes += serialized.size();
+    result.worker_transition_counts.push_back(partial_state.transition_count);
+    result.worker_state_bytes.push_back(
+        EstimateCanonicalAggregateStateBytes(partial_state));
+    result.worker_serialized_state_bytes.push_back(serialized.size());
+    exchanged.push_back({request.exchange_generation,
+                         request.worker_ordinals[worker],
+                         request.aggregate_request.descriptor.function,
+                         std::move(serialized)});
+  }
+  if (partition_begin != prepared.transitions.size()) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-PARTITION-V1",
+        "aggregate exchange partitions do not cover the prepared transitions");
+  }
+  result.partial_state_count = exchanged.size();
+  result.states_serialized = true;
+
+  CanonicalAggregateCoreState merged_state;
+  for (std::size_t worker = 0; worker < exchanged.size(); ++worker) {
+    const auto& envelope = exchanged[worker];
+    if (envelope.generation != request.coordinator_exchange_generation ||
+        envelope.worker_ordinal != worker ||
+        envelope.function != request.aggregate_request.descriptor.function) {
+      return refuse(
+          "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-IDENTITY-V1",
+          "aggregate partial-state envelope identity is not coordinator-bound");
+    }
+    CanonicalAggregateCoreState restored_state;
+    if (!DeserializeCanonicalAggregateCoreState(
+            request.aggregate_request, envelope.bytes,
+            request.maximum_serialized_state_bytes_per_worker,
+            &restored_state) ||
+        restored_state.transition_count !=
+            result.worker_transition_counts[worker] ||
+        EstimateCanonicalAggregateStateBytes(restored_state) !=
+            result.worker_state_bytes[worker]) {
+      return refuse(
+          "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-RESTORE-V1",
+          "aggregate partial state cannot be restored exactly");
+    }
+    ++result.restored_partial_state_count;
+    if (!MergeCanonicalAggregateCore(request.aggregate_request.descriptor,
+                                     &merged_state, restored_state,
+                                     &state_diagnostic)) {
+      return refuse(state_diagnostic.diagnostic_code,
+                    state_diagnostic.detail);
+    }
+    if (EstimateCanonicalAggregateStateBytes(merged_state) >
+        request.aggregate_request.maximum_state_bytes) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    "aggregate exchange merged-state byte bound is exceeded");
+    }
+    ++result.merged_partial_state_count;
+  }
+  result.exchange_identity_proven = true;
+  result.all_states_restored =
+      result.restored_partial_state_count == exchanged.size();
+  result.deterministic_merge_order_proven =
+      result.merged_partial_state_count == exchanged.size();
+
+  if (merged_state.transition_count != baseline.transition_count ||
+      merged_state.non_null_count != baseline.non_null_transition_count ||
+      EstimateCanonicalAggregateStateBytes(merged_state) !=
+          baseline.state_bytes) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-EQUIVALENCE-V1",
+        "merged aggregate exchange state differs from local combine evidence");
+  }
+  auto merged_value = FinalizeCanonicalAggregateCore(
+      request.aggregate_request, merged_state, &state_diagnostic);
+  if (!state_diagnostic.ok) {
+    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
+  }
+  auto merged = baseline;
+  merged.output_batch.rows = {{{std::move(merged_value)}}};
+  merged.transition_count = merged_state.transition_count;
+  merged.non_null_transition_count = merged_state.non_null_count;
+  merged.state_bytes = EstimateCanonicalAggregateStateBytes(merged_state);
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      merged.output_batch,
+      {request.aggregate_request.result_column.descriptor_id});
+  if (!output_validation.ok ||
+      !SameCanonicalAggregateRuntimeScalar(baseline, merged)) {
+    return refuse(
+        "QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-EQUIVALENCE-V1",
+        "merged aggregate exchange finalization differs from local combine");
+  }
+
+  result.diagnostic = {};
+  result.aggregate_result = std::move(merged);
+  result.merged_result_equivalent = true;
   return result;
 }
 
