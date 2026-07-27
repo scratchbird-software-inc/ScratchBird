@@ -16,8 +16,12 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
 
 namespace {
+
+constexpr std::string_view kCollationUuid =
+    "019f0000-0000-7400-8000-000000001921";
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -35,6 +39,29 @@ api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
   descriptor.encoded_descriptor =
       "type_uuid=" + type_uuid + ";nullability=nullable";
   return descriptor;
+}
+
+api::EngineDescriptor TypedDescriptor(
+    const std::string& descriptor_uuid,
+    const std::string& canonical_type_name,
+    const std::string& encoded_descriptor) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = canonical_type_name;
+  descriptor.encoded_descriptor = encoded_descriptor;
+  return descriptor;
+}
+
+dt::DatatypeTextSeedAuthority CollationSeed() {
+  dt::DatatypeTextSeedAuthority seed;
+  seed.active = true;
+  seed.seed_pack_name = "qow.join.seed";
+  seed.seed_pack_version = "1";
+  seed.charset_name = "utf8";
+  seed.collation_name = "qow_join_ci";
+  seed.collation_case_insensitive = true;
+  return seed;
 }
 
 api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
@@ -140,6 +167,86 @@ exec::CanonicalCompositeJoinKeyRequest Request() {
   return request;
 }
 
+exec::CanonicalCompositeJoinKeyRequest TypedRequest() {
+  auto request = Request();
+  const auto left_text = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001931", "text",
+      "type_uuid=019f0000-0000-7300-8000-000000001932;"
+      "nullability=nullable;collation_uuid=" +
+          std::string(kCollationUuid));
+  const auto left_decimal = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001933", "decimal",
+      "type_uuid=019f0000-0000-7300-8000-000000001934;"
+      "nullability=non_null;precision=12;scale=2");
+  const auto left_boolean = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001935", "boolean",
+      "type_uuid=019f0000-0000-7300-8000-000000001936;"
+      "nullability=non_null");
+  const auto right_text = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001937", "text",
+      "type_uuid=019f0000-0000-7300-8000-000000001938;"
+      "nullability=nullable;collation_uuid=" +
+          std::string(kCollationUuid));
+  const auto right_decimal = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001939", "decimal",
+      "type_uuid=019f0000-0000-7300-8000-000000001940;"
+      "nullability=non_null;precision=12;scale=2");
+  const auto right_boolean = TypedDescriptor(
+      "019f0000-0000-7200-8000-000000001941", "boolean",
+      "type_uuid=019f0000-0000-7300-8000-000000001942;"
+      "nullability=non_null");
+
+  request.physical_dag.nodes[0].output_descriptor_ids = {1901, 1902, 1905};
+  request.physical_dag.nodes[1].output_descriptor_ids = {1903, 1904, 1906};
+  request.physical_dag.nodes[2].output_descriptor_ids =
+      {1901, 1902, 1905, 1903, 1904, 1906};
+  request.physical_dag.nodes[2].implementation_id =
+      "join.composite-typed-key.v1";
+  request.left_batch = exec::MakeDescriptorBatch(
+      {{"left_text", left_text, true, 1901},
+       {"left_decimal", left_decimal, false, 1902},
+       {"left_boolean", left_boolean, false, 1905}},
+      {{{Value(left_text, "A"), Value(left_decimal, "1.00"),
+         Value(left_boolean, "true")}},
+       {{Value(left_text, "b"), Value(left_decimal, "2.0"),
+         Value(left_boolean, "false")}},
+       {{Null(left_text), Value(left_decimal, "1.0"),
+         Value(left_boolean, "true")}}});
+  request.right_batch = exec::MakeDescriptorBatch(
+      {{"right_text", right_text, true, 1903},
+       {"right_decimal", right_decimal, false, 1904},
+       {"right_boolean", right_boolean, false, 1906}},
+      {{{Value(right_text, "a"), Value(right_decimal, "1.0"),
+         Value(right_boolean, "true")}},
+       {{Value(right_text, "B"), Value(right_decimal, "2.00"),
+         Value(right_boolean, "false")}},
+       {{Null(right_text), Value(right_decimal, "1.00"),
+         Value(right_boolean, "true")}}});
+
+  exec::CanonicalCompositeJoinKeyTerm text_term;
+  text_term.left_column = 0;
+  text_term.left_expression_descriptor_id = 1901;
+  text_term.right_column = 0;
+  text_term.right_expression_descriptor_id = 1903;
+  text_term.collation_uuid = kCollationUuid;
+  text_term.resource_epoch = 51;
+  text_term.collation_epoch = 52;
+  text_term.text_seed = CollationSeed();
+  request.key_terms = {
+      text_term,
+      {.left_column = 1,
+       .left_expression_descriptor_id = 1902,
+       .right_column = 1,
+       .right_expression_descriptor_id = 1904},
+      {.left_column = 2,
+       .left_expression_descriptor_id = 1905,
+       .right_column = 2,
+       .right_expression_descriptor_id = 1906},
+  };
+  request.maximum_key_comparisons = 27;
+  return request;
+}
+
 // QOW-TEST-QRY-012-KEY-V1
 bool ValidateCompositeJoinKey() {
   using Truth = api::EngineSqlTruthValue;
@@ -155,6 +262,45 @@ bool ValidateCompositeJoinKey() {
                         result.pair_truth_values == expected &&
                         result.executed_physical_node_id == 1903,
                     "composite equality key produced the wrong 3VL matrix");
+
+  // QOW-TEST-QRY-012-KEY-TYPED-V1
+  result = exec::ExecuteCanonicalCompositeJoinKey(TypedRequest());
+  const std::vector<Truth> expected_typed = {
+      Truth::true_value, Truth::false_value, Truth::unknown,
+      Truth::false_value, Truth::true_value, Truth::false_value,
+      Truth::unknown, Truth::false_value, Truth::unknown,
+  };
+  passed &= Require(
+      result.diagnostic.ok && result.pair_count == 9 &&
+          result.pair_truth_values == expected_typed &&
+          result.executed_physical_node_id == 1903,
+      "collated text, decimal, and boolean key terms produced the wrong 3VL "
+      "matrix");
+
+  auto typed_request = TypedRequest();
+  typed_request.key_terms[0].resource_epoch = 0;
+  result = exec::ExecuteCanonicalCompositeJoinKey(typed_request);
+  passed &= Require(!result.diagnostic.ok && result.pair_truth_values.empty(),
+                    "typed join accepted unbound collation authority");
+
+  typed_request = TypedRequest();
+  typed_request.right_batch.columns[0].descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001938;"
+      "nullability=nullable;collation_uuid="
+      "019f0000-0000-7400-8000-000000001922";
+  for (auto& row : typed_request.right_batch.rows) {
+    row.values[0].descriptor = typed_request.right_batch.columns[0].descriptor;
+  }
+  result = exec::ExecuteCanonicalCompositeJoinKey(typed_request);
+  passed &= Require(!result.diagnostic.ok,
+                    "typed join accepted cross-collation equality");
+
+  typed_request = TypedRequest();
+  typed_request.right_batch.rows[2].values[1].encoded_value =
+      "not-a-decimal";
+  result = exec::ExecuteCanonicalCompositeJoinKey(typed_request);
+  passed &= Require(!result.diagnostic.ok && result.pair_truth_values.empty(),
+                    "malformed typed key published a partial matrix");
 
   auto request = Request();
   request.left_batch.rows.clear();

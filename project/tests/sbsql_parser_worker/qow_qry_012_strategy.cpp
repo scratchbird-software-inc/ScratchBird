@@ -16,8 +16,12 @@
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
 
 namespace {
+
+constexpr std::string_view kStrategyCollationUuid =
+    "019f0000-0000-7400-8000-000000002321";
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
@@ -52,6 +56,17 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
   value.is_null = true;
   value.state = api::EngineValueState::sql_null;
   return value;
+}
+
+dt::DatatypeTextSeedAuthority StrategyCollationSeed() {
+  dt::DatatypeTextSeedAuthority seed;
+  seed.active = true;
+  seed.seed_pack_name = "qow.join.strategy.seed";
+  seed.seed_pack_version = "1";
+  seed.charset_name = "utf8";
+  seed.collation_name = "qow_join_strategy_ci";
+  seed.collation_case_insensitive = true;
+  return seed;
 }
 
 exec::CanonicalJoinStrategyRequest Request() {
@@ -143,6 +158,50 @@ exec::CanonicalJoinStrategyRequest Request() {
       Truth::true_value, Truth::true_value, Truth::true_value, Truth::true_value,
       Truth::true_value, Truth::true_value, Truth::true_value, Truth::true_value,
   };
+  return request;
+}
+
+exec::CanonicalJoinStrategyRequest TypedNestedRequest() {
+  auto request = Request();
+  auto left_descriptor = request.residual_request.key_request.left_batch
+                             .columns[0]
+                             .descriptor;
+  auto right_descriptor = request.residual_request.key_request.right_batch
+                              .columns[0]
+                              .descriptor;
+  left_descriptor.canonical_type_name = "text";
+  left_descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000002302;"
+      "nullability=nullable;collation_uuid=" +
+      std::string(kStrategyCollationUuid);
+  right_descriptor.canonical_type_name = "text";
+  right_descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000002306;"
+      "nullability=nullable;collation_uuid=" +
+      std::string(kStrategyCollationUuid);
+  auto& key = request.residual_request.key_request;
+  key.left_batch.columns[0].descriptor = left_descriptor;
+  key.right_batch.columns[0].descriptor = right_descriptor;
+  const std::vector<std::string> left_keys = {"A", "a", "B"};
+  const std::vector<std::string> right_keys = {"a", "B", "A"};
+  for (std::size_t row = 0; row < key.left_batch.rows.size(); ++row) {
+    auto& value = key.left_batch.rows[row].values[0];
+    value.descriptor = left_descriptor;
+    if (row < left_keys.size()) value.encoded_value = left_keys[row];
+  }
+  for (std::size_t row = 0; row < key.right_batch.rows.size(); ++row) {
+    auto& value = key.right_batch.rows[row].values[0];
+    value.descriptor = right_descriptor;
+    if (row < right_keys.size()) value.encoded_value = right_keys[row];
+  }
+  auto& term = key.key_terms.front();
+  term.collation_uuid = kStrategyCollationUuid;
+  term.resource_epoch = 61;
+  term.collation_epoch = 62;
+  term.text_seed = StrategyCollationSeed();
+  request.strategy = exec::CanonicalJoinStrategyKind::kNestedLoopInner;
+  key.physical_dag.nodes.back().implementation_id =
+      "join.nested-loop-inner.v1";
   return request;
 }
 
@@ -262,6 +321,49 @@ bool ValidateJoinStrategy() {
           result.output_batch.rows.size() == 3 &&
           result.strategy_id == "join.merge-inner.int64-equality.v1",
       "merge strategy did not prove the canonical physical-pair multiset");
+
+  // QOW-TEST-QRY-012-STRATEGY-TYPED-NESTED-V1
+  request = TypedNestedRequest();
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_output_proven &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.candidate_probe_count == 5 &&
+          result.output_batch.rows.size() == 3,
+      "collated text nested-loop did not match canonical inner output");
+
+  request = TypedNestedRequest();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+  SelectStrategy(&request, exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+                 "join.nested-loop-full-outer.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_output_proven &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.unmatched_left_row_count == 1 &&
+          result.unmatched_right_row_count == 1 &&
+          result.output_batch.rows.size() == 5,
+      "collated text nested-loop did not match canonical full-outer output");
+
+  request = TypedNestedRequest();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality,
+                 "join.hash-inner.int64-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok &&
+                        !result.canonical_multiset_proven,
+                    "collated text entered the int64 hash profile");
+
+  request = TypedNestedRequest();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+                 "join.merge-inner.int64-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok &&
+                        !result.canonical_multiset_proven,
+                    "collated text entered the int64 merge profile");
 
   // QOW-TEST-QRY-012-STRATEGY-KIND-V1
   struct JoinKindCase {

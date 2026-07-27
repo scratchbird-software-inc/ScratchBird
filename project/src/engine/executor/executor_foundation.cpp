@@ -154,6 +154,43 @@ FinalizeCanonicalInt64SumValue(
   return value;
 }
 
+CanonicalDescriptorOrderTerm JoinKeyOrderTerm(
+    const CanonicalCompositeJoinKeyTerm& term,
+    const bool left) {
+  CanonicalDescriptorOrderTerm order_term;
+  order_term.column = left ? term.left_column : term.right_column;
+  order_term.expression_descriptor_id =
+      left ? term.left_expression_descriptor_id
+           : term.right_expression_descriptor_id;
+  order_term.direction = CanonicalDescriptorOrderDirection::ascending;
+  order_term.null_placement = CanonicalDescriptorNullPlacement::last;
+  order_term.collation_uuid = term.collation_uuid;
+  order_term.resource_epoch = term.resource_epoch;
+  order_term.collation_epoch = term.collation_epoch;
+  order_term.text_seed = term.text_seed;
+  return order_term;
+}
+
+bool CompareCanonicalJoinKeyValues(
+    const scratchbird::engine::internal_api::EngineTypedValue& left,
+    const scratchbird::engine::internal_api::EngineTypedValue& right,
+    const CanonicalCompositeJoinKeyTerm& term,
+    bool* equal,
+    std::string* detail) {
+  if (equal == nullptr || detail == nullptr) return false;
+  *equal = false;
+  detail->clear();
+  const auto compared = CompareCanonicalDescriptorOrderValues(
+      left, right, JoinKeyOrderTerm(term, true));
+  if (!compared.diagnostic.ok) {
+    *detail = compared.diagnostic.diagnostic_code + ":" +
+              compared.diagnostic.detail;
+    return false;
+  }
+  *equal = compared.comparison == 0;
+  return true;
+}
+
 // QOW-SOURCE-QRY-009-V1
 // Column positions reaching this legacy executor surface are already-bound
 // projection, sort, or expression handles.  Resolve the complete handle set
@@ -1223,10 +1260,11 @@ CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
 }
 
 // QOW-SOURCE-QRY-012-KEY-V1
-// Evaluate already-bound composite int64 equality keys for every physical row
-// pair.  Terms combine through SQL AND: FALSE dominates UNKNOWN, and only all
-// non-NULL equal terms produce TRUE.  Full route/input validation precedes the
-// bounded comparison matrix.
+// Evaluate already-bound composite typed equality keys for every physical row
+// pair. Terms combine through SQL AND: FALSE dominates UNKNOWN, and only all
+// non-NULL equal terms produce TRUE. Character terms require the same durable
+// collation authority as canonical typed ordering. Full route/input validation
+// precedes the bounded comparison matrix.
 CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
     const CanonicalCompositeJoinKeyRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -1284,9 +1322,19 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
         term.right_expression_descriptor_id == 0 ||
         term.left_expression_descriptor_id != left_column.descriptor_id ||
         term.right_expression_descriptor_id != right_column.descriptor_id ||
-        left_column.descriptor.canonical_type_name != "int64" ||
-        right_column.descriptor.canonical_type_name != "int64") {
-      return refuse("composite join key is not bound compatible int64");
+        left_column.descriptor.canonical_type_name !=
+            right_column.descriptor.canonical_type_name) {
+      return refuse("composite join key is not bound to compatible types");
+    }
+    const auto left_term_validation = ValidateCanonicalDescriptorOrderTerm(
+        JoinKeyOrderTerm(term, true), left_column);
+    const auto right_term_validation = ValidateCanonicalDescriptorOrderTerm(
+        JoinKeyOrderTerm(term, false), right_column);
+    if (!left_term_validation.ok || !right_term_validation.ok) {
+      const auto& diagnostic = !left_term_validation.ok
+                                   ? left_term_validation
+                                   : right_term_validation;
+      return refuse(diagnostic.diagnostic_code + ":" + diagnostic.detail);
     }
     if (!bound_term_handles
              .emplace(term.left_expression_descriptor_id,
@@ -1310,12 +1358,13 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
           saw_unknown = true;
           continue;
         }
-        const auto left_decoded = DecodeInt64Value(left_value);
-        const auto right_decoded = DecodeInt64Value(right_value);
-        if (!left_decoded.ok() || !right_decoded.ok()) {
-          return refuse("composite join key operand encoding is invalid");
+        bool equal = false;
+        std::string detail;
+        if (!CompareCanonicalJoinKeyValues(left_value, right_value, term,
+                                           &equal, &detail)) {
+          return refuse("composite join key operand is invalid:" + detail);
         }
-        if (left_decoded.value != right_decoded.value) {
+        if (!equal) {
           saw_false = true;
           break;
         }
@@ -1832,6 +1881,16 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     return refuse(canonical.diagnostic.diagnostic_code + ":" +
                   canonical.diagnostic.detail);
   }
+  if (request.strategy != CanonicalJoinStrategyKind::kNestedLoopInner) {
+    const auto& term = key_request.key_terms.front();
+    if (key_request.left_batch.columns[term.left_column]
+                .descriptor.canonical_type_name != "int64" ||
+        key_request.right_batch.columns[term.right_column]
+                .descriptor.canonical_type_name != "int64") {
+      return refuse(
+          "hash and merge strategies require one compatible int64 key");
+    }
+  }
 
   const auto finish = [&](std::vector<std::size_t> strategy_pair_indices,
                           const std::size_t retained_entry_count,
@@ -1907,12 +1966,13 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
             matches = false;
             break;
           }
-          const auto left_decoded = DecodeInt64Value(left_value);
-          const auto right_decoded = DecodeInt64Value(right_value);
-          if (!left_decoded.ok() || !right_decoded.ok()) {
-            return refuse("nested-loop strategy key encoding is invalid");
+          bool equal = false;
+          std::string detail;
+          if (!CompareCanonicalJoinKeyValues(left_value, right_value, term,
+                                             &equal, &detail)) {
+            return refuse("nested-loop strategy key is invalid:" + detail);
           }
-          if (left_decoded.value != right_decoded.value) {
+          if (!equal) {
             matches = false;
             break;
           }

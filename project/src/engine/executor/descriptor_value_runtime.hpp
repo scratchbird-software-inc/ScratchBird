@@ -565,6 +565,10 @@ struct CanonicalCompositeJoinKeyTerm {
   std::uint32_t left_expression_descriptor_id = 0;
   std::size_t right_column = 0;
   std::uint32_t right_expression_descriptor_id = 0;
+  std::string collation_uuid;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t collation_epoch = 0;
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
 };
 
 struct CanonicalCompositeJoinKeyRequest {
