@@ -362,6 +362,45 @@ sblr::SblrOperationEnvelope ProjectValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope LimitValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008800"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008801|"
+       "019f0000-0000-7400-8000-000000008802|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008803|"
+       "019f0000-0000-7400-8000-000000008804|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|34"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|32"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6e"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4"},
+      {"relational_node_v1", "2", "7|0|1|1|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "6c696d69742e626f756e642d636f756e742e7631|5|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -811,6 +850,111 @@ bool ValidateProjectRefusalIsAtomic() {
       "lineage-bearing or expression-bound PROJECT published partial evidence");
 }
 
+bool ValidateLimitValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), LimitValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), LimitValuesEnvelope(), {}});
+  auto zero_envelope = LimitValuesEnvelope();
+  auto oversized_envelope = LimitValuesEnvelope();
+  for (auto& operand : zero_envelope.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|2|-|-|1|-|30";
+    }
+  }
+  for (auto& operand : oversized_envelope.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|2|-|-|1|-|3939";
+    }
+  }
+  const auto zero = sblr::DispatchSblrOperation(
+      {Context(), std::move(zero_envelope), {}});
+  const auto oversized = sblr::DispatchSblrOperation(
+      {Context(), std::move(oversized_envelope), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 1 &&
+          first.canonical_result_row_count == 2,
+      "VALUES LIMIT did not traverse the selected two-node DAG");
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      rows.size() == 2 && rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == "n" &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[1].fields[0].second.encoded_value == "2",
+      "LIMIT did not preserve the bounded input prefix");
+  passed &= Require(
+      zero.api_result.ok && zero.canonical_result_column_count == 1 &&
+          zero.canonical_result_row_count == 0 &&
+          zero.api_result.result_shape.columns.size() == 1 &&
+          zero.api_result.result_shape.rows.empty(),
+      "LIMIT zero did not publish a typed empty result");
+  passed &= Require(
+      oversized.api_result.ok && oversized.canonical_result_row_count == 4 &&
+          oversized.api_result.result_shape.rows.size() == 4 &&
+          oversized.api_result.result_shape.rows[2].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          oversized.api_result.result_shape.rows[3]
+                  .fields[0]
+                  .second.encoded_value == "4",
+      "oversized LIMIT did not stop safely at end-of-input");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical LIMIT input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateLimitRefusalIsAtomic() {
+  auto negative = LimitValuesEnvelope();
+  auto null_count = LimitValuesEnvelope();
+  auto schema_drift = LimitValuesEnvelope();
+  for (auto& operand : negative.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|2|-|-|1|-|2d31";
+    }
+  }
+  for (auto& operand : null_count.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|2|-|-|7|-|2d";
+    }
+  }
+  for (auto& operand : schema_drift.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "7|0|1|2|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-LIMIT-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(negative)) &&
+          refused_atomically(std::move(null_count)) &&
+          refused_atomically(std::move(schema_drift)),
+      "invalid bound-count LIMIT published partial evidence");
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
@@ -890,6 +1034,8 @@ int main() {
                       ValidateFilterRefusalIsAtomic() &&
                       ValidateProjectValuesSpine() &&
                       ValidateProjectRefusalIsAtomic() &&
+                      ValidateLimitValuesSpine() &&
+                      ValidateLimitRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
                       ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

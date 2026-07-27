@@ -42,13 +42,14 @@ struct CanonicalObjectFreeValuesExecutionResult {
 
 // QOW-SOURCE-INTEGRATION-306-211-LIVE-VALUES-V1
 // This bounded live native query profile accepts one object-free VALUES root,
-// the exact two-node VALUES/FILTER or descriptor-direct VALUES/PROJECT shape,
-// the exact three-node VALUES/VALUES/UNION ALL ordinal shape, or the exact
-// three-node VALUES/VALUES/INNER JOIN shape. FILTER and INNER JOIN each require
-// one object-free bound boolean predicate. The complete typed literal/composed-
-// scalar payload must be derivable from the admitted relational DAG. Every
-// other logical shape remains on the existing physical-dispatch-pending path
-// until its bound production payload adapter exists.
+// the exact two-node VALUES/FILTER, descriptor-direct VALUES/PROJECT, or
+// bound-count VALUES/LIMIT shape, the exact three-node VALUES/VALUES/UNION ALL
+// ordinal shape, or the exact three-node VALUES/VALUES/INNER JOIN shape.
+// FILTER and INNER JOIN each require one object-free bound boolean predicate.
+// The complete typed literal/composed-scalar payload must be derivable from the
+// admitted relational DAG. Every other logical shape remains on the existing
+// physical-dispatch-pending path until its bound production payload adapter
+// exists.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request);
