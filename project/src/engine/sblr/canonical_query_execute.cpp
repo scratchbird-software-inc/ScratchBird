@@ -168,6 +168,70 @@ struct PreparedGlobalAggregateRoot {
   std::string detail;
 };
 
+struct LiveCoreAggregateExpressionProfile {
+  bool matched{false};
+  bool count_star{false};
+  bool distinct{false};
+  bool has_filter{false};
+  exec::CanonicalAggregateFunction function =
+      exec::CanonicalAggregateFunction::unknown;
+  std::string transformation_id;
+};
+
+LiveCoreAggregateExpressionProfile MatchLiveCoreAggregateExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LiveCoreAggregateExpressionProfile result;
+  if (semantic_variant_id == "aggregate.global-count-star.v1") {
+    result.matched = true;
+    result.count_star = true;
+    result.function = exec::CanonicalAggregateFunction::count;
+    result.transformation_id =
+        "canonical.aggregate.global-count-star.v1";
+    return result;
+  }
+
+  struct FunctionProfile {
+    std::string_view stem;
+    exec::CanonicalAggregateFunction function;
+  };
+  static constexpr std::array<FunctionProfile, 8> kFunctionProfiles = {{
+      {"count", exec::CanonicalAggregateFunction::count},
+      {"sum", exec::CanonicalAggregateFunction::sum},
+      {"avg", exec::CanonicalAggregateFunction::avg},
+      {"min", exec::CanonicalAggregateFunction::min},
+      {"max", exec::CanonicalAggregateFunction::max},
+      {"bool-and", exec::CanonicalAggregateFunction::bool_and},
+      {"bool-or", exec::CanonicalAggregateFunction::bool_or},
+      {"every", exec::CanonicalAggregateFunction::every},
+  }};
+
+  for (const auto& profile : kFunctionProfiles) {
+    const std::string prefix =
+        "aggregate.global-" + std::string(profile.stem);
+    if (semantic_variant_id == prefix + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id == prefix + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               prefix + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               prefix + "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.function = profile.function;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -219,22 +283,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     const plan::CanonicalLogicalRelationalNode& input_node,
     const MaterializedValues& input,
     const exec::CanonicalAggregateFunction function,
-    const bool count_star) {
+    const bool count_star,
+    const bool distinct,
+    const bool has_filter) {
   PreparedGlobalAggregateRoot result;
   result.count_star = count_star;
+  result.distinct = distinct;
   const bool is_count = function == exec::CanonicalAggregateFunction::count;
   const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
-  const bool has_filter =
-      root.semantic_variant_id ==
-          "aggregate.global-sum-filter-expression.v1" ||
-      root.semantic_variant_id ==
-          "aggregate.global-sum-distinct-filter-expression.v1";
-  const bool is_distinct =
-      root.semantic_variant_id ==
-          "aggregate.global-sum-distinct-expression.v1" ||
-      root.semantic_variant_id ==
-          "aggregate.global-sum-distinct-filter-expression.v1";
-  result.distinct = is_distinct;
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
   const bool is_min = function == exec::CanonicalAggregateFunction::min;
   const bool is_max = function == exec::CanonicalAggregateFunction::max;
@@ -3006,36 +3062,33 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       !request.optimizer_request.logical_properties.properties.empty()) {
     return result;
   }
-  const bool count_star =
-      root->semantic_variant_id == "aggregate.global-count-star.v1";
-  const bool count_expression =
-      root->semantic_variant_id == "aggregate.global-count-expression.v1";
-  const bool unmodified_sum_expression =
-      root->semantic_variant_id == "aggregate.global-sum-expression.v1";
-  const bool sum_filter_expression =
-      root->semantic_variant_id ==
-          "aggregate.global-sum-filter-expression.v1";
-  const bool sum_distinct_expression =
-      root->semantic_variant_id ==
-          "aggregate.global-sum-distinct-expression.v1";
-  const bool sum_distinct_filter_expression =
-      root->semantic_variant_id ==
-          "aggregate.global-sum-distinct-filter-expression.v1";
+  const auto core_aggregate_profile =
+      MatchLiveCoreAggregateExpressionProfile(root->semantic_variant_id);
+  const bool count_star = core_aggregate_profile.count_star;
   const bool sum_expression =
-      unmodified_sum_expression || sum_filter_expression ||
-      sum_distinct_expression || sum_distinct_filter_expression;
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function == exec::CanonicalAggregateFunction::sum;
   const bool avg_expression =
-      root->semantic_variant_id == "aggregate.global-avg-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function == exec::CanonicalAggregateFunction::avg;
   const bool min_expression =
-      root->semantic_variant_id == "aggregate.global-min-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function == exec::CanonicalAggregateFunction::min;
   const bool max_expression =
-      root->semantic_variant_id == "aggregate.global-max-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function == exec::CanonicalAggregateFunction::max;
   const bool bool_and_expression =
-      root->semantic_variant_id == "aggregate.global-bool-and-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::bool_and;
   const bool bool_or_expression =
-      root->semantic_variant_id == "aggregate.global-bool-or-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::bool_or;
   const bool every_expression =
-      root->semantic_variant_id == "aggregate.global-every-expression.v1";
+      core_aggregate_profile.matched &&
+      core_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::every;
   const bool unordered_string_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-string-agg-expression.v1";
@@ -3203,9 +3256,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       });
   const bool approximate_expression =
       approximate_profile != kApproximateExpressionProfiles.end();
-  if (!count_star && !count_expression && !sum_expression &&
-      !avg_expression && !min_expression && !max_expression &&
-      !bool_and_expression && !bool_or_expression && !every_expression &&
+  if (!core_aggregate_profile.matched &&
       !string_agg_expression && !listagg_expression &&
       !ordered_collection_expression &&
       !statistical_expression &&
@@ -3213,20 +3264,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       !approximate_expression) {
     return result;
   }
-  auto aggregate_function = exec::CanonicalAggregateFunction::count;
-  if (sum_expression) aggregate_function = exec::CanonicalAggregateFunction::sum;
-  if (avg_expression) aggregate_function = exec::CanonicalAggregateFunction::avg;
-  if (min_expression) aggregate_function = exec::CanonicalAggregateFunction::min;
-  if (max_expression) aggregate_function = exec::CanonicalAggregateFunction::max;
-  if (bool_and_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::bool_and;
-  }
-  if (bool_or_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::bool_or;
-  }
-  if (every_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::every;
-  }
+  auto aggregate_function = core_aggregate_profile.matched
+                                ? core_aggregate_profile.function
+                                : exec::CanonicalAggregateFunction::count;
   if (string_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::string_agg;
   }
@@ -3316,7 +3356,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   auto prepared_root = PrepareGlobalAggregateRoot(
       request.relational_dag, *root, *input_node, input, aggregate_function,
-      count_star);
+      count_star, core_aggregate_profile.distinct,
+      core_aggregate_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3469,42 +3510,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const std::string aggregate_implementation_id =
       count_star ? "aggregate.count-star.v1" : "aggregate.registry-core.v1";
   std::string aggregate_transformation_id;
-  if (count_star) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-count-star.v1";
-  } else if (count_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-count-expression.v1";
-  } else if (sum_distinct_filter_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-sum-distinct-filter-expression.v1";
-  } else if (sum_distinct_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-sum-distinct-expression.v1";
-  } else if (sum_filter_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-sum-filter-expression.v1";
-  } else if (sum_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-sum-expression.v1";
-  } else if (avg_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-avg-expression.v1";
-  } else if (min_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-min-expression.v1";
-  } else if (max_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-max-expression.v1";
-  } else if (bool_and_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-bool-and-expression.v1";
-  } else if (bool_or_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-bool-or-expression.v1";
-  } else if (every_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-every-expression.v1";
+  if (core_aggregate_profile.matched) {
+    aggregate_transformation_id = core_aggregate_profile.transformation_id;
   } else if (ordered_string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-ordered-expression.v1";

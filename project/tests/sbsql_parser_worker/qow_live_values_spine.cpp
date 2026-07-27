@@ -8,8 +8,11 @@
 
 #include "sblr_dispatch.hpp"
 
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <string_view>
 
 namespace api = scratchbird::engine::internal_api;
@@ -597,6 +600,107 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
   return envelope;
 }
 
+std::string EncodeHex(std::string_view value);
+
+enum class CoreAggregateKind {
+  kCount,
+  kSum,
+  kAvg,
+  kMin,
+  kMax,
+  kBoolAnd,
+  kBoolOr,
+  kEvery,
+};
+
+struct CoreAggregateTestProfile {
+  CoreAggregateKind kind;
+  std::string_view name;
+  std::string_view stem;
+  std::string_view uuid_family;
+  std::string_view function_uuid;
+  std::string_view output_name;
+  std::string_view result_type;
+  bool boolean_input;
+  bool result_nullable;
+};
+
+constexpr std::array<CoreAggregateTestProfile, 8>
+    kCoreAggregateTestProfiles = {{
+        {CoreAggregateKind::kCount,
+         "COUNT",
+         "count",
+         "b0",
+         "019de5fc-2400-784a-9aec-371f8b95b7ea",
+         "count_value",
+         "int64",
+         false,
+         false},
+        {CoreAggregateKind::kSum,
+         "SUM",
+         "sum",
+         "b1",
+         "019de5fc-2400-72e4-8549-82b2eef5a777",
+         "sum_value",
+         "int64",
+         false,
+         true},
+        {CoreAggregateKind::kAvg,
+         "AVG",
+         "avg",
+         "b2",
+         "019de5fc-2400-78ac-b50c-45b832831004",
+         "avg_value",
+         "real64",
+         false,
+         true},
+        {CoreAggregateKind::kMin,
+         "MIN",
+         "min",
+         "b3",
+         "019de5fc-2400-781c-881b-4af4d55d402b",
+         "min_value",
+         "int64",
+         false,
+         true},
+        {CoreAggregateKind::kMax,
+         "MAX",
+         "max",
+         "b4",
+         "019de5fc-2400-7d1e-8aa4-80bc647fbd9a",
+         "max_value",
+         "int64",
+         false,
+         true},
+        {CoreAggregateKind::kBoolAnd,
+         "BOOL_AND",
+         "bool-and",
+         "b5",
+         "019de5fc-2400-78b0-ad98-a681e93b4c49",
+         "bool_and_value",
+         "boolean",
+         true,
+         true},
+        {CoreAggregateKind::kBoolOr,
+         "BOOL_OR",
+         "bool-or",
+         "b6",
+         "019de5fc-2400-7c2a-a3f2-e4b9d36df403",
+         "bool_or_value",
+         "boolean",
+         true,
+         true},
+        {CoreAggregateKind::kEvery,
+         "EVERY",
+         "every",
+         "b7",
+         "019dffbb-f000-7876-9644-ae83b363d3bc",
+         "every_value",
+         "boolean",
+         true,
+         true},
+    }};
+
 enum class AggregateModifierProfile {
   kFilter,
   kDistinct,
@@ -616,63 +720,88 @@ std::string_view AggregateModifierName(
   return "unknown";
 }
 
-sblr::SblrOperationEnvelope GlobalSumModifierValuesEnvelope(
+sblr::SblrOperationEnvelope GlobalCoreAggregateModifierValuesEnvelope(
+    const CoreAggregateTestProfile& target,
     const AggregateModifierProfile profile) {
   const bool has_filter = profile != AggregateModifierProfile::kDistinct;
-  const std::string tree_uuid =
+  const std::string modifier_uuid =
       profile == AggregateModifierProfile::kFilter
-          ? "019f0000-0000-7000-8000-000000009250"
+          ? "01"
           : profile == AggregateModifierProfile::kDistinct
-                ? "019f0000-0000-7000-8000-000000009260"
-                : "019f0000-0000-7000-8000-000000009270";
+                ? "02"
+                : "03";
+  const std::string modifier_suffix =
+      profile == AggregateModifierProfile::kFilter
+          ? "-filter"
+          : profile == AggregateModifierProfile::kDistinct
+                ? "-distinct"
+                : "-distinct-filter";
+  const auto fixture_uuid = [&](const std::string_view family,
+                                const std::string_view ordinal) {
+    return "019f0000-0000-" + std::string(family) +
+           "-8000-00000000" + std::string(target.uuid_family) +
+           std::string(ordinal);
+  };
   const std::string semantic_variant =
-      profile == AggregateModifierProfile::kFilter
-          ? "6167677265676174652e676c6f62616c2d73756d2d66696c7465722d65787072657373696f6e2e7631"
-          : profile == AggregateModifierProfile::kDistinct
-                ? "6167677265676174652e676c6f62616c2d73756d2d64697374696e63742d65787072657373696f6e2e7631"
-                : "6167677265676174652e676c6f62616c2d73756d2d64697374696e63742d66696c7465722d65787072657373696f6e2e7631";
+      "aggregate.global-" + std::string(target.stem) + modifier_suffix +
+      "-expression.v1";
   auto envelope = sblr::MakeSblrEnvelope(
-      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.sum-modifier");
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values." + std::string(target.stem) + "-modifier");
   envelope.result_shape = "query_execute_result";
   envelope.requires_transaction_context = true;
   envelope.operands = {
       {"uint16", "relational_wire_version", "2"},
-      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       fixture_uuid("7000", modifier_uuid)},
       {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
       {"uuid", "relational_security_context_uuid",
        std::string(kSecurityContextUuid)},
       {"uint32", "relational_root_node_id", "2"},
       {"relational_descriptor_v1", "1",
-       "019f0000-0000-7300-8000-000000009251|"
-       "019f0000-0000-7400-8000-000000009252|2|-|-|-|-|-"},
+       fixture_uuid("7300", "11") + "|" + fixture_uuid("7400", "12") +
+           "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "2",
-       "019f0000-0000-7300-8000-000000009253|"
-       "019f0000-0000-7400-8000-000000009254|2|-|-|-|-|-"},
+       fixture_uuid("7300", "13") + "|" + fixture_uuid("7400", "14") +
+           "|2|-|-|-|-|-"},
       {"relational_descriptor_v1", "3",
-       "019f0000-0000-7300-8000-000000009255|"
-       "019f0000-0000-7400-8000-000000009256|2|-|-|-|-|-"},
-      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3130"},
+       fixture_uuid("7300", "15") + "|" + fixture_uuid("7400", "16") +
+           (target.result_nullable ? "|2|-|-|-|-|-" : "|1|-|-|-|-|-")},
+      {"relational_expression_v1", "1",
+       target.boolean_input ? "1|-|1|-|-|6|-|74727565"
+                            : "1|-|1|-|-|1|-|3130"},
       {"relational_expression_v1", "2", "1|-|2|-|-|6|-|54525545"},
-      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "3",
+       target.boolean_input ? "1|-|1|-|-|6|-|66616c7365"
+                            : "1|-|1|-|-|1|-|3230"},
       {"relational_expression_v1", "4", "1|-|2|-|-|6|-|46414c5345"},
-      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "5",
+       target.boolean_input ? "1|-|1|-|-|6|-|66616c7365"
+                            : "1|-|1|-|-|1|-|3230"},
       {"relational_expression_v1", "6", "1|-|2|-|-|6|-|54525545"},
-      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|3330"},
+      {"relational_expression_v1", "7",
+       target.boolean_input ? "1|-|1|-|-|7|-|2d"
+                            : "1|-|1|-|-|1|-|3330"},
       {"relational_expression_v1", "8", "1|-|2|-|-|7|-|2d"},
-      {"relational_expression_v1", "9", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "9",
+       target.boolean_input ? "1|-|1|-|-|6|-|74727565"
+                            : "1|-|1|-|-|1|-|3430"},
       {"relational_expression_v1", "10", "1|-|2|-|-|6|-|54525545"},
-      {"relational_expression_v1", "11", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "11",
+       target.boolean_input ? "1|-|1|-|-|6|-|74727565"
+                            : "1|-|1|-|-|1|-|3430"},
       {"relational_expression_v1", "12", "1|-|2|-|-|6|-|54525545"},
       {"relational_expression_v1", "13",
-       "3|-|1|-|019f0000-0000-7500-8000-000000009257|-|-|-"},
+       "3|-|1|-|" + fixture_uuid("7500", "17") + "|-|-|-"},
       {"relational_expression_v1", "14",
-       "3|-|2|-|019f0000-0000-7500-8000-000000009258|-|-|-"},
+       "3|-|2|-|" + fixture_uuid("7500", "18") + "|-|-|-"},
       {"relational_expression_v1", "15",
        std::string("4|") + (has_filter ? "13,14" : "13") +
-           "|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+           "|3|" + std::string(target.function_uuid) + "|-|-|-|-"},
       {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
       {"relational_output_v1", "2", "1|2|2|1|1|73656c6563746564"},
-      {"relational_output_v1", "3", "2|15|3|1|0|73756d5f76616c7565"},
+      {"relational_output_v1", "3",
+       "2|15|3|1|0|" + EncodeHex(target.output_name)},
       {"relational_values_row_v1", "1", "1,2"},
       {"relational_values_row_v1", "2", "3,4"},
       {"relational_values_row_v1", "3", "5,6"},
@@ -685,7 +814,7 @@ sblr::SblrOperationEnvelope GlobalSumModifierValuesEnvelope(
        "76616c7565732e6c69746572616c2d7461626c652e7631|"
        "1,2,3,4,5,6,7,8,9,10,11,12|-|-|-"},
       {"relational_node_binding_v1", "2",
-       semantic_variant + "|15|-|-|-"},
+       EncodeHex(semantic_variant) + "|15|-|-|-"},
   };
   return envelope;
 }
@@ -2815,64 +2944,134 @@ bool ValidateGlobalSumExpressionRefusalIsAtomic() {
       "evidence");
 }
 
-bool ValidateGlobalSumModifierValuesSpine() {
-  bool passed = true;
-  for (const auto profile : {AggregateModifierProfile::kFilter,
-                             AggregateModifierProfile::kDistinct,
-                             AggregateModifierProfile::kDistinctFilter}) {
-    const auto first = sblr::DispatchSblrOperation(
-        {Context(), GlobalSumModifierValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
-        {Context(), GlobalSumModifierValuesEnvelope(profile), {}});
-    if (!first.api_result.ok) {
-      for (const auto& diagnostic : first.api_result.diagnostics) {
-        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
-      }
-    }
-    const std::string_view expected =
+bool CoreAggregateModifierOutputMatches(
+    const CoreAggregateTestProfile& target,
+    const AggregateModifierProfile profile,
+    const std::string& actual) {
+  if (target.kind == CoreAggregateKind::kAvg) {
+    char* parse_end = nullptr;
+    const double decoded = std::strtod(actual.c_str(), &parse_end);
+    const double expected =
         profile == AggregateModifierProfile::kFilter
-            ? "110"
-            : profile == AggregateModifierProfile::kDistinct ? "100" : "70";
-    const auto& columns = first.api_result.result_shape.columns;
-    const auto& rows = first.api_result.result_shape.rows;
-    passed &= Require(
-        first.accepted && first.optimizer_admitted &&
-            first.optimizer_selected && first.physical_dag_published &&
-            first.physical_dag_executed &&
-            first.runtime_actuals_attached &&
-            first.canonical_result_published && first.api_result.ok &&
-            first.diagnostics.empty() && first.logical_node_count == 2 &&
-            first.logical_property_count == 0 &&
-            first.physical_node_count == 2 && columns.size() == 1 &&
-            rows.size() == 1 && rows[0].fields.size() == 1 &&
-            rows[0].fields[0].first == "sum_value" &&
-            rows[0].fields[0].second.state ==
-                api::EngineValueState::value &&
-            !rows[0].fields[0].second.is_null &&
-            rows[0].fields[0].second.encoded_value == expected,
-        "global SUM " + std::string(AggregateModifierName(profile)) +
-            " did not execute through the selected canonical aggregate "
-            "spine");
-    passed &= Require(
-        repeated.api_result.ok &&
-            repeated.selected_plan_uuid == first.selected_plan_uuid &&
-            repeated.canonical_result_bytes == first.canonical_result_bytes,
-        "identical global SUM " +
-            std::string(AggregateModifierName(profile)) +
-            " input changed canonical plan/result bytes");
+            ? 27.5
+            : profile == AggregateModifierProfile::kDistinct
+                  ? 25.0
+                  : 70.0 / 3.0;
+    return parse_end == actual.c_str() + actual.size() &&
+           std::abs(decoded - expected) <= 1e-12;
+  }
+  std::string_view expected;
+  switch (target.kind) {
+    case CoreAggregateKind::kCount:
+      expected = profile == AggregateModifierProfile::kDistinctFilter
+                     ? "3"
+                     : "4";
+      break;
+    case CoreAggregateKind::kSum:
+      expected = profile == AggregateModifierProfile::kFilter
+                     ? "110"
+                     : profile == AggregateModifierProfile::kDistinct
+                           ? "100"
+                           : "70";
+      break;
+    case CoreAggregateKind::kMin:
+      expected = "10";
+      break;
+    case CoreAggregateKind::kMax:
+      expected = "40";
+      break;
+    case CoreAggregateKind::kBoolAnd:
+    case CoreAggregateKind::kEvery:
+      expected = "false";
+      break;
+    case CoreAggregateKind::kBoolOr:
+      expected = "true";
+      break;
+    case CoreAggregateKind::kAvg:
+      return false;
+  }
+  return actual == expected;
+}
+
+bool ValidateGlobalCoreAggregateModifierValuesSpine() {
+  bool passed = true;
+  for (const auto& target : kCoreAggregateTestProfiles) {
+    for (const auto profile : {AggregateModifierProfile::kFilter,
+                               AggregateModifierProfile::kDistinct,
+                               AggregateModifierProfile::kDistinctFilter}) {
+      const auto first = sblr::DispatchSblrOperation(
+          {Context(),
+           GlobalCoreAggregateModifierValuesEnvelope(target, profile), {}});
+      const auto repeated = sblr::DispatchSblrOperation(
+          {Context(),
+           GlobalCoreAggregateModifierValuesEnvelope(target, profile), {}});
+      if (!first.api_result.ok) {
+        for (const auto& diagnostic : first.api_result.diagnostics) {
+          std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+        }
+      }
+      const auto& columns = first.api_result.result_shape.columns;
+      const auto& rows = first.api_result.result_shape.rows;
+      const bool exact_output =
+          columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name == target.result_type &&
+          columns[0].encoded_descriptor.find(
+              target.result_nullable ? "nullability=nullable"
+                                     : "nullability=non_null") !=
+              std::string::npos &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == target.output_name &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null &&
+          CoreAggregateModifierOutputMatches(
+              target, profile, rows[0].fields[0].second.encoded_value);
+      passed &= Require(
+          first.accepted && first.optimizer_admitted &&
+              first.optimizer_selected && first.physical_dag_published &&
+              first.physical_dag_executed &&
+              first.runtime_actuals_attached &&
+              first.canonical_result_published && first.api_result.ok &&
+              first.diagnostics.empty() && first.logical_node_count == 2 &&
+              first.logical_property_count == 0 &&
+              first.physical_node_count == 2 && exact_output,
+          "global " + std::string(target.name) + " " +
+              std::string(AggregateModifierName(profile)) +
+              " did not execute through the selected canonical aggregate "
+              "spine");
+      passed &= Require(
+          repeated.api_result.ok &&
+              repeated.selected_plan_uuid == first.selected_plan_uuid &&
+              repeated.canonical_result_bytes == first.canonical_result_bytes,
+          "identical global " + std::string(target.name) + " " +
+              std::string(AggregateModifierName(profile)) +
+              " input changed canonical plan/result bytes");
+    }
   }
   return passed;
 }
 
-bool ValidateGlobalSumModifierRefusalIsAtomic() {
+bool ValidateGlobalCoreAggregateModifierRefusalIsAtomic() {
+  const auto& sum_target = kCoreAggregateTestProfiles[1];
+  const auto& count_target = kCoreAggregateTestProfiles[0];
+  const auto& bool_and_target = kCoreAggregateTestProfiles[5];
   auto non_boolean_filter =
-      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+      GlobalCoreAggregateModifierValuesEnvelope(
+          sum_target, AggregateModifierProfile::kFilter);
   auto non_identifier_filter =
-      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+      GlobalCoreAggregateModifierValuesEnvelope(
+          sum_target, AggregateModifierProfile::kFilter);
   auto filter_arity_drift =
-      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+      GlobalCoreAggregateModifierValuesEnvelope(
+          sum_target, AggregateModifierProfile::kFilter);
   auto distinct_arity_drift =
-      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kDistinct);
+      GlobalCoreAggregateModifierValuesEnvelope(
+          sum_target, AggregateModifierProfile::kDistinct);
+  auto count_function_drift =
+      GlobalCoreAggregateModifierValuesEnvelope(
+          count_target, AggregateModifierProfile::kDistinctFilter);
+  auto boolean_value_type_drift =
+      GlobalCoreAggregateModifierValuesEnvelope(
+          bool_and_target, AggregateModifierProfile::kFilter);
   for (auto& operand : non_boolean_filter.operands) {
     if (operand.type != "relational_expression_v1") continue;
     if (operand.name == "2" || operand.name == "4" ||
@@ -2904,6 +3103,21 @@ bool ValidateGlobalSumModifierRefusalIsAtomic() {
           "4|13,14|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
     }
   }
+  for (auto& operand : count_function_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "15") {
+      operand.value =
+          "4|13,14|3|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+    }
+  }
+  for (auto& operand : boolean_value_type_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "1" || operand.name == "3" ||
+         operand.name == "5" || operand.name == "7" ||
+         operand.name == "9" || operand.name == "11")) {
+      operand.value = "1|-|1|-|-|1|-|31";
+    }
+  }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
     const auto result = sblr::DispatchSblrOperation(
         {Context(), std::move(envelope), {}});
@@ -2921,9 +3135,11 @@ bool ValidateGlobalSumModifierRefusalIsAtomic() {
       refused_atomically(std::move(non_boolean_filter)) &&
           refused_atomically(std::move(non_identifier_filter)) &&
           refused_atomically(std::move(filter_arity_drift)) &&
-          refused_atomically(std::move(distinct_arity_drift)),
-      "type-, identity-, or arity-drifted global SUM modifiers published "
-      "evidence");
+          refused_atomically(std::move(distinct_arity_drift)) &&
+          refused_atomically(std::move(count_function_drift)) &&
+          refused_atomically(std::move(boolean_value_type_drift)),
+      "type-, function-identity-, or arity-drifted global core aggregate "
+      "modifiers published evidence");
 }
 
 bool ValidateGlobalAvgExpressionValuesSpine() {
@@ -4758,8 +4974,8 @@ int main() {
                       ValidateGlobalCountExpressionRefusalIsAtomic() &&
                       ValidateGlobalSumExpressionValuesSpine() &&
                       ValidateGlobalSumExpressionRefusalIsAtomic() &&
-                      ValidateGlobalSumModifierValuesSpine() &&
-                      ValidateGlobalSumModifierRefusalIsAtomic() &&
+                      ValidateGlobalCoreAggregateModifierValuesSpine() &&
+                      ValidateGlobalCoreAggregateModifierRefusalIsAtomic() &&
                       ValidateGlobalAvgExpressionValuesSpine() &&
                       ValidateGlobalAvgExpressionRefusalIsAtomic() &&
                       ValidateGlobalExtremumExpressionValuesSpine(false) &&
