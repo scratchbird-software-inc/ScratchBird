@@ -168,7 +168,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   result.count_star = count_star;
   const bool is_count = function == exec::CanonicalAggregateFunction::count;
   const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
-  if ((!is_count && !is_sum) || (count_star && !is_count)) {
+  const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
+  if ((!is_count && !is_sum && !is_avg) || (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
   }
@@ -272,24 +273,34 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       return result;
     }
     result.value_descriptor_id = argument->result_descriptor_id;
-    if (is_sum &&
+    if ((is_sum || is_avg) &&
         input.batch.columns[result.value_column]
                 .descriptor.canonical_type_name != "int64") {
-      result.detail = "global SUM input must be a canonical int64 column";
+      result.detail = is_sum
+                          ? "global SUM input must be a canonical int64 column"
+                          : "global AVG input must be a canonical int64 column";
       return result;
     }
   }
+  const bool result_nullable = is_sum || is_avg;
   const auto expected_nullability =
-      is_sum ? api::RelationalNullability::kNullable
-             : api::RelationalNullability::kNonNull;
+      result_nullable ? api::RelationalNullability::kNullable
+                      : api::RelationalNullability::kNonNull;
   if (descriptor->nullability != expected_nullability ||
       descriptor->collation_uuid.has_value() ||
       descriptor->timezone_profile_id.has_value() ||
       descriptor->width.has_value() || descriptor->precision.has_value() ||
       descriptor->scale.has_value()) {
-    result.detail = is_sum
-                        ? "global SUM result must be an unqualified nullable int64"
-                        : "global COUNT result must be an unqualified non-null int64";
+    if (is_sum) {
+      result.detail =
+          "global SUM result must be an unqualified nullable int64";
+    } else if (is_avg) {
+      result.detail =
+          "global AVG result must be an unqualified nullable real64";
+    } else {
+      result.detail =
+          "global COUNT result must be an unqualified non-null int64";
+    }
     return result;
   }
 
@@ -299,12 +310,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   api::EngineDescriptor engine_descriptor;
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
-  engine_descriptor.canonical_type_name = "int64";
+  engine_descriptor.canonical_type_name = is_avg ? "real64" : "int64";
   engine_descriptor.encoded_descriptor =
       "type_uuid=" + descriptor->type_uuid + ";nullability=" +
-      (is_sum ? "nullable" : "non_null");
-  result.result_column = {output->output_name_utf8, engine_descriptor, is_sum,
-                          descriptor->descriptor_id};
+      (result_nullable ? "nullable" : "non_null");
+  result.result_column = {output->output_name_utf8, engine_descriptor,
+                          result_nullable, descriptor->descriptor_id};
   exec::CanonicalResultColumnBinding binding;
   binding.physical_column_ordinal = 0;
   binding.visible = true;
@@ -313,8 +324,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       output->output_name_utf8,
       descriptor->descriptor_uuid,
       descriptor->type_uuid,
-      is_sum ? exec::CanonicalResultNullability::kNullable
-             : exec::CanonicalResultNullability::kNonNull,
+      result_nullable ? exec::CanonicalResultNullability::kNullable
+                      : exec::CanonicalResultNullability::kNonNull,
       std::nullopt,
       std::nullopt};
   result.result_bindings.push_back(std::move(binding));
@@ -2377,10 +2388,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-count-expression.v1";
   const bool sum_expression =
       root->semantic_variant_id == "aggregate.global-sum-expression.v1";
-  if (!count_star && !count_expression && !sum_expression) return result;
-  const auto aggregate_function =
-      sum_expression ? exec::CanonicalAggregateFunction::sum
-                     : exec::CanonicalAggregateFunction::count;
+  const bool avg_expression =
+      root->semantic_variant_id == "aggregate.global-avg-expression.v1";
+  if (!count_star && !count_expression && !sum_expression &&
+      !avg_expression) {
+    return result;
+  }
+  auto aggregate_function = exec::CanonicalAggregateFunction::count;
+  if (sum_expression) aggregate_function = exec::CanonicalAggregateFunction::sum;
+  if (avg_expression) aggregate_function = exec::CanonicalAggregateFunction::avg;
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
         return node.logical_node_id == root->input_logical_node_ids.front();
@@ -2437,10 +2453,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const auto input_row_count = input.batch.rows.size();
   std::uint64_t input_memory = 1;
   std::uint64_t total_memory = 0;
-  constexpr std::uint64_t kAggregateResultMemory =
+  constexpr std::uint64_t kIntegerAggregateResultMemory =
       std::numeric_limits<std::int64_t>::digits10 + 2;
+  constexpr std::uint64_t kRealAggregateResultMemory = 64;
+  const auto aggregate_result_memory =
+      avg_expression ? kRealAggregateResultMemory
+                     : kIntegerAggregateResultMemory;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, kAggregateResultMemory, &total_memory)) {
+      !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
   }
@@ -2452,11 +2472,20 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
 
   const std::string aggregate_implementation_id =
       count_star ? "aggregate.count-star.v1" : "aggregate.registry-core.v1";
-  const std::string aggregate_transformation_id =
-      count_star ? "canonical.aggregate.global-count-star.v1"
-      : count_expression
-          ? "canonical.aggregate.global-count-expression.v1"
-          : "canonical.aggregate.global-sum-expression.v1";
+  std::string aggregate_transformation_id;
+  if (count_star) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-count-star.v1";
+  } else if (count_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-count-expression.v1";
+  } else if (sum_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-sum-expression.v1";
+  } else {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-avg-expression.v1";
+  }
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;

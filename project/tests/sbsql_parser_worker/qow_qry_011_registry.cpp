@@ -739,6 +739,14 @@ bool ValidateCanonicalAggregateRegistry() {
                         empty.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::sql_null,
                     "empty SUM did not produce typed SQL NULL");
+  auto empty_avg = Request(exec::CanonicalAggregateFunction::avg, 0, 2101,
+                           "real64");
+  empty_avg.input_batch.rows.clear();
+  empty = exec::ExecuteCanonicalAggregateRuntime(empty_avg);
+  passed &= Require(empty.diagnostic.ok &&
+                        empty.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::sql_null,
+                    "empty AVG did not produce typed SQL NULL");
   auto empty_count = Request(exec::CanonicalAggregateFunction::count, 0, 0,
                              "int64", true);
   empty_count.input_batch.rows.clear();

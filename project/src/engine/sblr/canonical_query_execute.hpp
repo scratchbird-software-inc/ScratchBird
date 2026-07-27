@@ -44,8 +44,8 @@ struct CanonicalObjectFreeValuesExecutionResult {
 // This bounded live native query profile accepts one object-free VALUES root,
 // the exact two-node VALUES/FILTER, descriptor-direct VALUES/PROJECT, or
 // bound-count VALUES/LIMIT shape, the exact property-bound VALUES/SORT shape,
-// the exact VALUES/global COUNT(*), COUNT(input-column), or integer
-// SUM(input-column) aggregate shape,
+// the exact VALUES/global COUNT(*), COUNT(input-column), integer
+// SUM(input-column), or integer-input AVG(input-column) aggregate shape,
 // the exact three-node VALUES/VALUES/UNION ALL ordinal shape, or the exact
 // three-node VALUES/VALUES/INNER JOIN shape.
 // FILTER and INNER JOIN each require one object-free bound boolean predicate.
