@@ -2379,6 +2379,121 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionValuesEnvelope(
   return envelope;
 }
 
+sblr::SblrOperationEnvelope OrderedSingleCollectionModifierValuesEnvelope(
+    const OrderedSingleCollectionProfile& profile,
+    const AggregateModifierProfile modifier) {
+  const bool has_filter = modifier != AggregateModifierProfile::kDistinct;
+  const bool is_array_agg = profile.name == "ARRAY_AGG";
+  const std::string modifier_digit =
+      modifier == AggregateModifierProfile::kFilter
+          ? "1"
+          : modifier == AggregateModifierProfile::kDistinct ? "2" : "3";
+  const std::string modifier_suffix =
+      modifier == AggregateModifierProfile::kFilter
+          ? "-filter"
+          : modifier == AggregateModifierProfile::kDistinct
+                ? "-distinct"
+                : "-distinct-filter";
+  const auto fixture_uuid = [&](const std::string_view family_prefix,
+                                const std::string_view ordinal) {
+    return PairProfileUuid(std::string(family_prefix) +
+                               (is_array_agg ? "1" : "2") + modifier_digit,
+                           "c4", ordinal);
+  };
+  const auto tree_uuid = fixture_uuid("8b", "00");
+  const auto value_descriptor = fixture_uuid("8c", "01");
+  const auto value_type = fixture_uuid("8d", "02");
+  const auto order_descriptor = fixture_uuid("8c", "03");
+  const auto order_type = fixture_uuid("8d", "04");
+  const auto filter_descriptor = fixture_uuid("8c", "05");
+  const auto filter_type = fixture_uuid("8d", "06");
+  const auto result_descriptor = fixture_uuid("8c", "07");
+  const auto result_type = fixture_uuid("8d", "08");
+  const auto value_bound_name = fixture_uuid("8e", "09");
+  const auto order_bound_name = fixture_uuid("8e", "0a");
+  const auto filter_bound_name = fixture_uuid("8e", "0b");
+  const std::string function_children =
+      has_filter ? "22,23,24" : "22,23";
+  constexpr std::string_view kExpressionSuffix = "-expression.v1";
+  const std::string semantic_base =
+      std::string(profile.semantic_variant).substr(
+          0, profile.semantic_variant.size() - kExpressionSuffix.size());
+  const std::string semantic_variant =
+      semantic_base + modifier_suffix + std::string(kExpressionSuffix);
+
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      std::string(profile.operation) + modifier_suffix);
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       filter_descriptor + "|" + filter_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       result_descriptor + "|" + result_type + "|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|2|-|62657461"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|34"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|2|-|616c706861"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|6|-|66616c7365"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|2|-|616c706861"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|35"},
+      {"relational_expression_v1", "9", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "10", "1|-|1|-|-|2|-|67616d6d61"},
+      {"relational_expression_v1", "11", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "12", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|2|-|64656c7461"},
+      {"relational_expression_v1", "14", "1|-|2|-|-|1|-|36"},
+      {"relational_expression_v1", "15", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "16", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "17", "1|-|2|-|-|1|-|30"},
+      {"relational_expression_v1", "18", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "19", "1|-|1|-|-|2|-|64656c7461"},
+      {"relational_expression_v1", "20", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "21", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "22",
+       "3|-|1|-|" + value_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "23",
+       "3|-|2|-|" + order_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "24",
+       "3|-|3|-|" + filter_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "25",
+       "4|" + function_children + "|4|" +
+           std::string(profile.function_uuid) + "|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2", "1|2|2|1|1|6f72646572"},
+      {"relational_output_v1", "3", "1|3|3|1|2|73656c6563746564"},
+      {"relational_output_v1", "4",
+       "2|25|4|1|0|" + EncodeHex(profile.output_name)},
+      {"relational_values_row_v1", "1", "1,2,3"},
+      {"relational_values_row_v1", "2", "4,5,6"},
+      {"relational_values_row_v1", "3", "7,8,9"},
+      {"relational_values_row_v1", "4", "10,11,12"},
+      {"relational_values_row_v1", "5", "13,14,15"},
+      {"relational_values_row_v1", "6", "16,17,18"},
+      {"relational_values_row_v1", "7", "19,20,21"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3|1,2,3,4,5,6,7"},
+      {"relational_node_v1", "2", "5|0|1|4|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex(semantic_variant) + "|25|-|-|-"},
+  };
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope OrderedJsonObjectAggValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -5382,6 +5497,175 @@ bool ValidateOrderedSingleCollectionRefusalIsAtomic() {
   return passed;
 }
 
+std::string_view OrderedSingleCollectionModifierExpected(
+    const OrderedSingleCollectionProfile& profile,
+    const AggregateModifierProfile modifier) {
+  const bool is_array_agg = profile.name == "ARRAY_AGG";
+  if (is_array_agg) {
+    switch (modifier) {
+      case AggregateModifierProfile::kFilter:
+        return "list[NULL;text:delta;text:beta;text:alpha;text:delta]";
+      case AggregateModifierProfile::kDistinct:
+        return "list[NULL;text:gamma;text:alpha;text:beta;text:delta]";
+      case AggregateModifierProfile::kDistinctFilter:
+        return "list[NULL;text:beta;text:alpha;text:delta]";
+    }
+  }
+  switch (modifier) {
+    case AggregateModifierProfile::kFilter:
+      return R"([null,"delta","beta","alpha","delta"])";
+    case AggregateModifierProfile::kDistinct:
+      return R"([null,"gamma","alpha","beta","delta"])";
+    case AggregateModifierProfile::kDistinctFilter:
+      return R"([null,"beta","alpha","delta"])";
+  }
+  return {};
+}
+
+bool ValidateOrderedSingleCollectionModifierValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSingleCollectionProfiles) {
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      const auto first = sblr::DispatchSblrOperation(
+          {Context(), OrderedSingleCollectionModifierValuesEnvelope(
+                          profile, modifier),
+           {}});
+      const auto repeated = sblr::DispatchSblrOperation(
+          {Context(), OrderedSingleCollectionModifierValuesEnvelope(
+                          profile, modifier),
+           {}});
+      if (!first.api_result.ok) {
+        for (const auto& diagnostic : first.api_result.diagnostics) {
+          std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+        }
+      }
+      passed &= Require(
+          first.accepted && first.optimizer_admitted &&
+              first.optimizer_selected && first.physical_dag_published &&
+              first.physical_dag_executed &&
+              first.runtime_actuals_attached &&
+              first.canonical_result_published && first.api_result.ok &&
+              first.diagnostics.empty() && first.logical_node_count == 2 &&
+              first.logical_property_count == 0 &&
+              first.physical_node_count == 2 &&
+              first.canonical_result_column_count == 1 &&
+              first.canonical_result_row_count == 1,
+          "VALUES global ordered " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " did not traverse its selected physical DAG");
+
+      const auto& columns = first.api_result.result_shape.columns;
+      const auto& rows = first.api_result.result_shape.rows;
+      passed &= Require(
+          columns.size() == 1 && rows.size() == 1 &&
+              columns[0].canonical_type_name == profile.result_type &&
+              columns[0].encoded_descriptor.find("nullability=nullable") !=
+                  std::string::npos &&
+              rows[0].fields.size() == 1 &&
+              rows[0].fields[0].first == profile.output_name &&
+              rows[0].fields[0].second.state ==
+                  api::EngineValueState::value &&
+              !rows[0].fields[0].second.is_null &&
+              rows[0].fields[0].second.encoded_value ==
+                  OrderedSingleCollectionModifierExpected(profile, modifier),
+          "global ordered " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " did not apply FILTER-before-DISTINCT-before-order");
+      passed &= Require(
+          repeated.api_result.ok &&
+              repeated.selected_plan_uuid == first.selected_plan_uuid &&
+              repeated.canonical_result_bytes ==
+                  first.canonical_result_bytes,
+          "identical global ordered " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " input changed canonical plan/result bytes");
+    }
+  }
+  return passed;
+}
+
+bool ValidateOrderedSingleCollectionModifierRefusalIsAtomic() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSingleCollectionProfiles) {
+    auto non_boolean_filter =
+        OrderedSingleCollectionModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kFilter);
+    auto non_identifier_filter =
+        OrderedSingleCollectionModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kFilter);
+    auto filter_arity_drift =
+        OrderedSingleCollectionModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kFilter);
+    auto distinct_arity_drift =
+        OrderedSingleCollectionModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kDistinct);
+    auto order_filter_inversion =
+        OrderedSingleCollectionModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kDistinctFilter);
+    for (auto& operand : non_boolean_filter.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "3" || operand.name == "6" ||
+           operand.name == "9" || operand.name == "12" ||
+           operand.name == "15" || operand.name == "18" ||
+           operand.name == "21")) {
+        operand.value = "1|-|3|-|-|1|-|31";
+      }
+    }
+    for (auto& operand : non_identifier_filter.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "25") {
+        operand.value = "4|22,23,3|4|" +
+                        std::string(profile.function_uuid) + "|-|-|-|-";
+      }
+    }
+    for (auto& operand : filter_arity_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "25") {
+        operand.value = "4|22,23|4|" +
+                        std::string(profile.function_uuid) + "|-|-|-|-";
+      }
+    }
+    for (auto& operand : distinct_arity_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "25") {
+        operand.value = "4|22,23,24|4|" +
+                        std::string(profile.function_uuid) + "|-|-|-|-";
+      }
+    }
+    for (auto& operand : order_filter_inversion.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "25") {
+        operand.value = "4|22,24,23|4|" +
+                        std::string(profile.function_uuid) + "|-|-|-|-";
+      }
+    }
+    const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+      const auto result = sblr::DispatchSblrOperation(
+          {Context(), std::move(envelope), {}});
+      return result.accepted && result.optimizer_admitted &&
+             !result.optimizer_selected && !result.physical_dag_published &&
+             !result.physical_dag_executed &&
+             !result.runtime_actuals_attached &&
+             !result.canonical_result_published && !result.api_result.ok &&
+             result.physical_node_count == 0 &&
+             result.canonical_result_bytes.empty() &&
+             HasApiDiagnostic(
+                 result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+    };
+    passed &= Require(
+        refused_atomically(std::move(non_boolean_filter)) &&
+            refused_atomically(std::move(non_identifier_filter)) &&
+            refused_atomically(std::move(filter_arity_drift)) &&
+            refused_atomically(std::move(distinct_arity_drift)) &&
+            refused_atomically(std::move(order_filter_inversion)),
+        "type-, expression-shape-, arity-, or argument-order-drifted " +
+            std::string(profile.name) + " modifiers published evidence");
+  }
+  return passed;
+}
+
 bool ValidateOrderedJsonObjectAggValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), OrderedJsonObjectAggValuesEnvelope(), {}});
@@ -5737,6 +6021,8 @@ int main() {
                       ValidateOrderedListaggExpressionRefusalIsAtomic() &&
                       ValidateOrderedSingleCollectionValuesSpine() &&
                       ValidateOrderedSingleCollectionRefusalIsAtomic() &&
+                      ValidateOrderedSingleCollectionModifierValuesSpine() &&
+                      ValidateOrderedSingleCollectionModifierRefusalIsAtomic() &&
                       ValidateOrderedJsonObjectAggValuesSpine() &&
                       ValidateOrderedJsonObjectAggRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&

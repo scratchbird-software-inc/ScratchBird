@@ -344,6 +344,58 @@ LiveStringAggregateExpressionProfile MatchLiveStringAggregateExpressionProfile(
   return result;
 }
 
+struct LiveOrderedSingleCollectionExpressionProfile {
+  bool matched{false};
+  bool distinct{false};
+  bool has_filter{false};
+  exec::CanonicalAggregateFunction function =
+      exec::CanonicalAggregateFunction::unknown;
+  std::string transformation_id;
+};
+
+LiveOrderedSingleCollectionExpressionProfile
+MatchLiveOrderedSingleCollectionExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LiveOrderedSingleCollectionExpressionProfile result;
+  struct FunctionProfile {
+    std::string_view prefix;
+    exec::CanonicalAggregateFunction function;
+  };
+  static constexpr std::array<FunctionProfile, 2> kFunctionProfiles = {{
+      {"aggregate.global-array-agg-ordered",
+       exec::CanonicalAggregateFunction::array_agg},
+      {"aggregate.global-json-agg-ordered",
+       exec::CanonicalAggregateFunction::json_agg},
+  }};
+
+  for (const auto& profile : kFunctionProfiles) {
+    if (semantic_variant_id ==
+        std::string(profile.prefix) + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) +
+                   "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.function = profile.function;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -466,10 +518,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_listagg_profile =
       is_listagg_ordered || is_listagg_overflow_error ||
       is_listagg_overflow_truncate;
+  const auto ordered_single_collection_profile =
+      MatchLiveOrderedSingleCollectionExpressionProfile(
+          root.semantic_variant_id);
   const bool is_array_agg =
-      function == exec::CanonicalAggregateFunction::array_agg;
+      function == exec::CanonicalAggregateFunction::array_agg &&
+      ordered_single_collection_profile.matched &&
+      ordered_single_collection_profile.function == function;
   const bool is_json_agg =
-      function == exec::CanonicalAggregateFunction::json_agg;
+      function == exec::CanonicalAggregateFunction::json_agg &&
+      ordered_single_collection_profile.matched &&
+      ordered_single_collection_profile.function == function;
   const bool is_json_object_agg =
       function == exec::CanonicalAggregateFunction::json_object_agg;
   const bool is_ordered_single_collection = is_array_agg || is_json_agg;
@@ -569,6 +628,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       expected_argument_count = 3;
     } else if (is_string_agg) {
       expected_argument_count = is_ordered_string_agg ? 4 : 3;
+    } else if (is_ordered_single_collection) {
+      expected_argument_count = 3;
     }
   } else if (is_listagg_overflow_truncate) {
     expected_argument_count = 6;
@@ -868,6 +929,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         filter_argument_ordinal = 2;
       } else if (is_string_agg) {
         filter_argument_ordinal = is_ordered_string_agg ? 3 : 2;
+      } else if (is_ordered_single_collection) {
+        filter_argument_ordinal = 2;
       }
       const bool is_filter_argument =
           has_filter && argument_ordinal == filter_argument_ordinal;
@@ -3238,12 +3301,17 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const bool listagg_expression =
       listagg_ordered_expression || listagg_overflow_error_expression ||
       listagg_overflow_truncate_expression;
+  const auto ordered_single_collection_profile =
+      MatchLiveOrderedSingleCollectionExpressionProfile(
+          root->semantic_variant_id);
   const bool array_agg_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-array-agg-ordered-expression.v1";
+      ordered_single_collection_profile.matched &&
+      ordered_single_collection_profile.function ==
+          exec::CanonicalAggregateFunction::array_agg;
   const bool json_agg_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-json-agg-ordered-expression.v1";
+      ordered_single_collection_profile.matched &&
+      ordered_single_collection_profile.function ==
+          exec::CanonicalAggregateFunction::json_agg;
   const bool json_object_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-json-object-agg-ordered-expression.v1";
@@ -3416,10 +3484,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       request.relational_dag, *root, *input_node, input, aggregate_function,
       count_star,
       unary_aggregate_profile.distinct || pair_statistical_profile.distinct ||
-          string_aggregate_profile.distinct,
+          string_aggregate_profile.distinct ||
+          ordered_single_collection_profile.distinct,
       unary_aggregate_profile.has_filter ||
           pair_statistical_profile.has_filter ||
-          string_aggregate_profile.has_filter);
+          string_aggregate_profile.has_filter ||
+          ordered_single_collection_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3588,10 +3658,10 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
         "canonical.aggregate.global-listagg-ordered-expression.v1";
   } else if (array_agg_expression) {
     aggregate_transformation_id =
-        "canonical.aggregate.global-array-agg-ordered-expression.v1";
+        ordered_single_collection_profile.transformation_id;
   } else if (json_agg_expression) {
     aggregate_transformation_id =
-        "canonical.aggregate.global-json-agg-ordered-expression.v1";
+        ordered_single_collection_profile.transformation_id;
   } else if (json_object_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-json-object-agg-ordered-expression.v1";
