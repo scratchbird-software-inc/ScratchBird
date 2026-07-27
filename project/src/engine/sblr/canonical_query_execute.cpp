@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <limits>
@@ -82,6 +83,19 @@ api::EngineApiResult Failure(const CanonicalObjectFreeValuesExecutionRequest& re
   return result;
 }
 
+bool IsCanonicalUuidText(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto byte = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
+  }
+  return true;
+}
+
 std::string LiteralTypeName(const api::RelationalExpressionRecord& expression) {
   if (!expression.literal_kind.has_value()) return {};
   switch (*expression.literal_kind) {
@@ -96,10 +110,17 @@ std::string LiteralTypeName(const api::RelationalExpressionRecord& expression) {
                  : std::string{};
     }
     case api::RelationalLiteralKind::kString: return "text";
-    case api::RelationalLiteralKind::kTemporal: return "timestamp";
-    case api::RelationalLiteralKind::kUuid: return "uuid";
+    case api::RelationalLiteralKind::kUuid:
+      return expression.literal_or_parameter_ref.has_value() &&
+                     IsCanonicalUuidText(*expression.literal_or_parameter_ref)
+                 ? "uuid"
+                 : std::string{};
     case api::RelationalLiteralKind::kBoolean: return "boolean";
     case api::RelationalLiteralKind::kNull: return "null";
+    case api::RelationalLiteralKind::kTemporal:
+      // The current relational literal ABI does not retain DATE/TIME/TIMESTAMP
+      // subtype identity. Refuse rather than assigning a possibly wrong type.
+      return {};
     default: return {};
   }
 }

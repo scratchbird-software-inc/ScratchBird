@@ -160,19 +160,29 @@ bool ValidateLiveValuesSpine() {
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
-  const auto result =
-      sblr::DispatchSblrOperation({Context(), std::move(malformed), {}});
+  auto invalid_uuid = ValuesEnvelope();
+  invalid_uuid.operands[7].value = "1|-|1|-|-|5|-|6e6f74";
+  auto ambiguous_temporal = ValuesEnvelope();
+  ambiguous_temporal.operands[7].value =
+      "1|-|1|-|-|4|-|323032362d30372d32365430303a30303a30305a";
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1");
+  };
   return Require(
-      result.accepted && result.optimizer_admitted &&
-          !result.optimizer_selected && !result.physical_dag_published &&
-          !result.physical_dag_executed &&
-          !result.runtime_actuals_attached &&
-          !result.canonical_result_published && !result.api_result.ok &&
-          result.physical_node_count == 0 &&
-          result.canonical_result_bytes.empty() &&
-          HasApiDiagnostic(
-              result, "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
-      "malformed later VALUES payload published partial plan/result evidence");
+      refused_atomically(std::move(malformed)) &&
+          refused_atomically(std::move(invalid_uuid)) &&
+          refused_atomically(std::move(ambiguous_temporal)),
+      "invalid or type-ambiguous VALUES payload published partial evidence");
 }
 
 }  // namespace
