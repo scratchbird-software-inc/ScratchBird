@@ -51,6 +51,146 @@ struct DescriptorRuntimeDiagnostic {
   std::size_t column_index = 0;
 };
 
+enum class CanonicalResultKind : std::uint8_t {
+  kRows = 1,
+  kCommand,
+  kEmpty,
+  kCursor,
+  kExplain,
+};
+
+enum class CanonicalResultNullability : std::uint8_t {
+  kNonNull = 1,
+  kNullable,
+  kUnknown,
+};
+
+enum class CanonicalResultCursorState : std::uint8_t {
+  kClosed = 1,
+  kOpen,
+  kSuspended,
+};
+
+enum class CanonicalResultDiagnosticSeverity : std::uint8_t {
+  kInfo = 1,
+  kWarning,
+  kError,
+  kFatal,
+};
+
+enum class CanonicalResultDiagnosticPhase : std::uint8_t {
+  kParse = 1,
+  kBind,
+  kVerify,
+  kPlan,
+  kExecute,
+  kFinalize,
+};
+
+enum class CanonicalResultTransactionEffect : std::uint8_t {
+  kUnchanged = 1,
+  kStatementFailedTransactionUsable,
+  kEngineMarkedTransactionFailed,
+};
+
+enum class CanonicalResultRetryability : std::uint8_t {
+  kNotRetryable = 1,
+  kRetrySameSnapshot,
+  kRetryNewSnapshot,
+};
+
+enum class CanonicalResultInvocationMode : std::uint8_t {
+  kDirect = 1,
+  kPrepared,
+};
+
+enum class CanonicalResultDeliveryKind : std::uint8_t {
+  kMetadata = 1,
+  kRow,
+  kDiagnostics,
+};
+
+struct CanonicalResultColumnDescriptor {
+  std::uint32_t ordinal = 0;
+  std::string name_utf8;
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  CanonicalResultNullability nullability =
+      CanonicalResultNullability::kUnknown;
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+};
+
+struct CanonicalResultColumnBinding {
+  std::size_t physical_column_ordinal = 0;
+  bool visible = true;
+  std::optional<CanonicalResultColumnDescriptor> published_descriptor;
+};
+
+struct CanonicalResultDiagnosticRecord {
+  std::string diagnostic_id;
+  std::string stable_code;
+  CanonicalResultDiagnosticSeverity severity =
+      CanonicalResultDiagnosticSeverity::kError;
+  std::optional<std::string> sqlstate;
+  std::string message_key;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue>
+      argument_values;
+  CanonicalResultDiagnosticPhase phase =
+      CanonicalResultDiagnosticPhase::kExecute;
+  std::optional<std::string> record_path;
+  std::optional<std::string> field_id;
+  std::optional<std::uint64_t> physical_node_id;
+  CanonicalResultTransactionEffect transaction_effect =
+      CanonicalResultTransactionEffect::kUnchanged;
+  CanonicalResultRetryability retryability =
+      CanonicalResultRetryability::kNotRetryable;
+};
+
+struct CanonicalResultEnvelopeV1 {
+  std::uint16_t abi_version = 1;
+  std::string statement_uuid;
+  std::string execution_attempt_uuid;
+  CanonicalResultKind result_kind = CanonicalResultKind::kRows;
+  std::vector<CanonicalResultColumnDescriptor> column_descriptors;
+  std::string row_stream_format_id;
+  std::optional<std::uint64_t> row_count;
+  std::optional<std::string> command_tag;
+  std::optional<CanonicalResultCursorState> cursor_state;
+  std::vector<CanonicalResultDiagnosticRecord> diagnostics;
+};
+
+struct CanonicalResultDeliveryRecord {
+  CanonicalResultDeliveryKind kind = CanonicalResultDeliveryKind::kMetadata;
+  std::optional<std::size_t> row_ordinal;
+};
+
+struct CanonicalResultPublicationRequest {
+  std::uint16_t abi_version = 1;
+  std::string statement_uuid;
+  std::string execution_attempt_uuid;
+  CanonicalResultKind result_kind = CanonicalResultKind::kRows;
+  CanonicalResultInvocationMode invocation_mode =
+      CanonicalResultInvocationMode::kDirect;
+  DescriptorBatch physical_output_batch;
+  std::vector<CanonicalResultColumnBinding> column_bindings;
+  std::string row_stream_format_id = "QOW-TYPED-ROW-STREAM-V1";
+  std::optional<std::string> command_tag;
+  std::optional<CanonicalResultCursorState> cursor_state;
+  std::vector<CanonicalResultDiagnosticRecord> diagnostics;
+  std::string transaction_effect_evidence_uuid;
+  std::size_t maximum_row_count = 1048576;
+};
+
+struct CanonicalResultPublicationResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  bool published = false;
+  CanonicalResultEnvelopeV1 envelope;
+  DescriptorBatch row_stream;
+  std::vector<CanonicalResultDeliveryRecord> delivery_records;
+  std::string canonical_envelope_bytes;
+};
+
 struct CanonicalDescriptorProjectionRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -1733,6 +1873,8 @@ scratchbird::engine::internal_api::EngineTypedValue MakeExecutorValue(
     bool is_null = false);
 DescriptorBatch MakeDescriptorBatch(std::vector<ExecutorColumnDescriptor> columns,
                                     std::vector<DescriptorTuple> rows);
+CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
+    const CanonicalResultPublicationRequest& request);
 std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& columns);
 bool DescriptorMatches(const scratchbird::engine::internal_api::EngineDescriptor& expected,
                        const scratchbird::engine::internal_api::EngineDescriptor& actual);

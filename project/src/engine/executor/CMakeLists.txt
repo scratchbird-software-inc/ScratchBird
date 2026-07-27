@@ -124,6 +124,9 @@ add_library(sb_engine_executor STATIC
   projection_executor.cpp
   query_memory_arena_executor.cpp
   reservation_backed_executor_memory_bridge.cpp
+  # QOW-CMAKE-QRY-021-V1
+  # QOW-CMAKE-IAS-010-V1
+  result_envelope.cpp
   row_ordinal_locator.cpp
   runtime_filter_executor.cpp
   # QOW-CMAKE-QRY-004-ACCESS-V1
