@@ -401,6 +401,71 @@ sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope SortValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.sort");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008900"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008901|"
+       "019f0000-0000-7400-8000-000000008902|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008903|"
+       "019f0000-0000-7400-8000-000000008904|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000008905|"
+       "019f0000-0000-7400-8000-000000008906|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|1|-|31"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "9", "1|-|3|-|-|1|-|33"},
+      {"relational_expression_v1", "10", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "11", "1|-|2|-|-|1|-|39"},
+      {"relational_expression_v1", "12", "1|-|3|-|-|1|-|34"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "14", "1|-|2|-|-|1|-|30"},
+      {"relational_expression_v1", "15", "1|-|3|-|-|1|-|35"},
+      {"relational_expression_v1", "16", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "17", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "18", "1|-|3|-|-|1|-|36"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6b6579"},
+      {"relational_output_v1", "2", "1|2|2|1|1|746965"},
+      {"relational_output_v1", "3", "1|3|3|1|2|6964"},
+      {"relational_values_row_v1", "1", "1,2,3"},
+      {"relational_values_row_v1", "2", "4,5,6"},
+      {"relational_values_row_v1", "3", "7,8,9"},
+      {"relational_values_row_v1", "4", "10,11,12"},
+      {"relational_values_row_v1", "5", "13,14,15"},
+      {"relational_values_row_v1", "6", "16,17,18"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3|1,2,3,4,5,6"},
+      {"relational_node_v1", "2", "6|0|1|1,2,3|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "736f72742e72657175697265642d6f726465722e7631|1,2|-|"
+       "019f0000-0000-7200-8000-000000008907|"
+       "019f0000-0000-7200-8000-000000008907"},
+      {"relational_property_v1",
+       "019f0000-0000-7200-8000-000000008907",
+       "1|2|-|1:2:1:-,2:1:2:-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -955,6 +1020,83 @@ bool ValidateLimitRefusalIsAtomic() {
       "invalid bound-count LIMIT published partial evidence");
 }
 
+bool ValidateSortValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), SortValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), SortValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.logical_property_count == 1 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 3 &&
+          first.canonical_result_row_count == 6,
+      "VALUES SORT did not traverse the property-enforcing physical DAG");
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      first.api_result.result_shape.columns.size() == 3 && rows.size() == 6 &&
+          rows[0].fields[0].second.state == api::EngineValueState::sql_null &&
+          rows[0].fields[1].second.encoded_value == "0" &&
+          rows[0].fields[2].second.encoded_value == "5" &&
+          rows[1].fields[0].second.state == api::EngineValueState::sql_null &&
+          rows[1].fields[2].second.encoded_value == "2" &&
+          rows[2].fields[2].second.encoded_value == "3" &&
+          rows[3].fields[2].second.encoded_value == "1" &&
+          rows[4].fields[2].second.encoded_value == "6" &&
+          rows[5].fields[0].second.encoded_value == "1" &&
+          rows[5].fields[2].second.encoded_value == "4",
+      "SORT did not apply DESC, NULLS FIRST, ASC, and stable tie ordering");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical SORT input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateSortRefusalIsAtomic() {
+  auto schema_drift = SortValuesEnvelope();
+  auto invalid_collation = SortValuesEnvelope();
+  for (auto& operand : schema_drift.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "6|0|1|2,1,3|-";
+    }
+  }
+  for (auto& operand : invalid_collation.operands) {
+    if (operand.type == "relational_property_v1") {
+      operand.value =
+          "1|2|-|1:2:1:019f0000-0000-7200-8000-000000008908,"
+          "2:1:2:-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-SORT-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(schema_drift)) &&
+          refused_atomically(std::move(invalid_collation)),
+      "schema-drifted or invalid-collation SORT published partial evidence");
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
@@ -1036,6 +1178,8 @@ int main() {
                       ValidateProjectRefusalIsAtomic() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
+                      ValidateSortValuesSpine() &&
+                      ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
                       ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
