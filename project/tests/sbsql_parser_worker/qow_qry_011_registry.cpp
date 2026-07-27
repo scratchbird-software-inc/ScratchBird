@@ -584,6 +584,30 @@ bool ValidateCanonicalAggregateRegistry() {
                       "ordered collection state or merge parity failed");
   }
 
+  const std::vector<CollectionCase> nullable_collection_boundaries = {
+      {exec::CanonicalAggregateFunction::array_agg, "list[text:a]"},
+      {exec::CanonicalAggregateFunction::json_agg, R"(["a"])"},
+  };
+  for (const auto& test_case : nullable_collection_boundaries) {
+    auto singleton = CollectionRequest(test_case.function);
+    singleton.input_batch.rows.resize(1);
+    const auto singleton_result =
+        exec::ExecuteCanonicalAggregateRuntime(singleton);
+    auto empty = CollectionRequest(test_case.function);
+    empty.input_batch.rows.clear();
+    const auto empty_result = exec::ExecuteCanonicalAggregateRuntime(empty);
+    passed &= Require(
+        singleton_result.diagnostic.ok &&
+            singleton_result.output_batch.rows[0].values[0].state ==
+                api::EngineValueState::value &&
+            singleton_result.output_batch.rows[0].values[0].encoded_value ==
+                test_case.expected &&
+            empty_result.diagnostic.ok &&
+            empty_result.output_batch.rows[0].values[0].state ==
+                api::EngineValueState::sql_null,
+        "ARRAY_AGG/JSON_AGG singleton or empty-input boundary drifted");
+  }
+
   auto singleton_string =
       CollectionRequest(exec::CanonicalAggregateFunction::string_agg);
   singleton_string.input_batch.rows.resize(1);

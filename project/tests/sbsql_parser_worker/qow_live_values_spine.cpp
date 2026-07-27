@@ -1192,6 +1192,103 @@ sblr::SblrOperationEnvelope GlobalStringAggExpressionValuesEnvelope() {
   return envelope;
 }
 
+struct OrderedSingleCollectionProfile {
+  std::string_view name;
+  std::string_view operation;
+  std::string_view semantic_variant;
+  std::string_view uuid_family;
+  std::string_view function_uuid;
+  std::string_view output_name;
+  std::string_view result_type;
+  std::string_view expected;
+};
+
+constexpr OrderedSingleCollectionProfile
+    kOrderedSingleCollectionProfiles[] = {
+        {"ARRAY_AGG",
+         "qow.live.values.array-agg-ordered-expression",
+         "aggregate.global-array-agg-ordered-expression.v1",
+         "b0",
+         "019de5fc-2400-7159-9f7b-915513b8c0d4",
+         "array_agg_value",
+         "list<text nullable>",
+         "list[text:a;text:b;NULL;text:d]"},
+        {"JSON_AGG",
+         "qow.live.values.json-agg-ordered-expression",
+         "aggregate.global-json-agg-ordered-expression.v1",
+         "b1",
+         "019dffbb-f001-7021-8a00-000000000023",
+         "json_agg_value",
+         "json",
+         R"(["a","b",null,"d"])"},
+};
+
+sblr::SblrOperationEnvelope OrderedSingleCollectionValuesEnvelope(
+    const OrderedSingleCollectionProfile& profile) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", std::string(profile.operation));
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  const auto tree_uuid = PairProfileUuid("7d00", profile.uuid_family, "00");
+  const auto value_descriptor =
+      PairProfileUuid("7d10", profile.uuid_family, "01");
+  const auto value_type = PairProfileUuid("7d20", profile.uuid_family, "02");
+  const auto order_descriptor =
+      PairProfileUuid("7d10", profile.uuid_family, "03");
+  const auto order_type = PairProfileUuid("7d20", profile.uuid_family, "04");
+  const auto result_descriptor =
+      PairProfileUuid("7d10", profile.uuid_family, "05");
+  const auto result_type = PairProfileUuid("7d20", profile.uuid_family, "06");
+  const auto value_bound_name =
+      PairProfileUuid("7d30", profile.uuid_family, "07");
+  const auto order_bound_name =
+      PairProfileUuid("7d30", profile.uuid_family, "08");
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       order_descriptor + "|" + order_type + "|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       result_descriptor + "|" + result_type + "|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|2|-|62"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|2|-|64"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|1|-|34"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "6", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|2|-|61"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "9",
+       "3|-|1|-|" + value_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "10",
+       "3|-|2|-|" + order_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "11",
+       "4|9,10|3|" + std::string(profile.function_uuid) + "|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2", "1|2|2|1|1|6f72646572"},
+      {"relational_output_v1", "3",
+       "2|11|3|1|0|" + EncodeHex(profile.output_name)},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2,3,4"},
+      {"relational_node_v1", "2", "5|0|1|3|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex(profile.semantic_variant) + "|11|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -2693,6 +2790,133 @@ bool ValidateGlobalStringAggExpressionRefusalIsAtomic() {
       "STRING_AGG published evidence");
 }
 
+bool ValidateOrderedSingleCollectionValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSingleCollectionProfiles) {
+    const auto first = sblr::DispatchSblrOperation(
+        {Context(), OrderedSingleCollectionValuesEnvelope(profile), {}});
+    const auto repeated = sblr::DispatchSblrOperation(
+        {Context(), OrderedSingleCollectionValuesEnvelope(profile), {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed && first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 2 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 2 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1,
+        "VALUES global ordered " + std::string(profile.name) +
+            " did not traverse its selected physical DAG");
+
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    passed &= Require(
+        columns.size() == 1 && rows.size() == 1 &&
+            columns[0].canonical_type_name == profile.result_type &&
+            columns[0].encoded_descriptor.find("nullability=nullable") !=
+                std::string::npos &&
+            rows[0].fields.size() == 1 &&
+            rows[0].fields[0].first == profile.output_name &&
+            rows[0].fields[0].second.state == api::EngineValueState::value &&
+            !rows[0].fields[0].second.is_null &&
+            rows[0].fields[0].second.encoded_value == profile.expected,
+        "global ordered " + std::string(profile.name) +
+            " did not apply its bound order or include SQL NULL");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "identical global ordered " + std::string(profile.name) +
+            " input changed canonical plan/result bytes");
+  }
+  return passed;
+}
+
+bool ValidateOrderedSingleCollectionRefusalIsAtomic() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSingleCollectionProfiles) {
+    auto function_drift = OrderedSingleCollectionValuesEnvelope(profile);
+    auto result_nullability_drift =
+        OrderedSingleCollectionValuesEnvelope(profile);
+    auto non_text_value = OrderedSingleCollectionValuesEnvelope(profile);
+    auto non_integer_order = OrderedSingleCollectionValuesEnvelope(profile);
+    auto arity_drift = OrderedSingleCollectionValuesEnvelope(profile);
+    for (auto& operand : function_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "11") {
+        operand.value =
+            "4|9,10|3|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+      }
+    }
+    for (auto& operand : result_nullability_drift.operands) {
+      if (operand.type == "relational_descriptor_v1" &&
+          operand.name == "3") {
+        operand.value = PairProfileUuid("7d10", profile.uuid_family, "05") +
+                        "|" +
+                        PairProfileUuid("7d20", profile.uuid_family, "06") +
+                        "|1|-|-|-|-|-";
+      }
+    }
+    for (auto& operand : non_text_value.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "1" || operand.name == "3" ||
+           operand.name == "7")) {
+        operand.value =
+            operand.name == "1"   ? "1|-|1|-|-|1|-|32"
+            : operand.name == "3" ? "1|-|1|-|-|1|-|34"
+                                    : "1|-|1|-|-|1|-|31";
+      }
+    }
+    for (auto& operand : non_integer_order.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "2" || operand.name == "4" ||
+           operand.name == "6" || operand.name == "8")) {
+        operand.value =
+            operand.name == "2"   ? "1|-|2|-|-|2|-|62"
+            : operand.name == "4" ? "1|-|2|-|-|2|-|64"
+            : operand.name == "6" ? "1|-|2|-|-|2|-|63"
+                                    : "1|-|2|-|-|2|-|61";
+      }
+    }
+    for (auto& operand : arity_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "11") {
+        operand.value = "4|9|3|" + std::string(profile.function_uuid) +
+                        "|-|-|-|-";
+      }
+    }
+    const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+      const auto result = sblr::DispatchSblrOperation(
+          {Context(), std::move(envelope), {}});
+      return result.accepted && result.optimizer_admitted &&
+             !result.optimizer_selected && !result.physical_dag_published &&
+             !result.physical_dag_executed &&
+             !result.runtime_actuals_attached &&
+             !result.canonical_result_published && !result.api_result.ok &&
+             result.physical_node_count == 0 &&
+             result.canonical_result_bytes.empty() &&
+             HasApiDiagnostic(
+                 result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+    };
+    passed &= Require(
+        refused_atomically(std::move(function_drift)) &&
+            refused_atomically(std::move(result_nullability_drift)) &&
+            refused_atomically(std::move(non_text_value)) &&
+            refused_atomically(std::move(non_integer_order)) &&
+            refused_atomically(std::move(arity_drift)),
+        "function-, result-, value-, order-, or arity-drifted ordered " +
+            std::string(profile.name) + " published evidence");
+  }
+  return passed;
+}
+
 bool ValidateSortValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), SortValuesEnvelope(), {}});
@@ -2881,6 +3105,8 @@ int main() {
                       ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() &&
                       ValidateGlobalStringAggExpressionValuesSpine() &&
                       ValidateGlobalStringAggExpressionRefusalIsAtomic() &&
+                      ValidateOrderedSingleCollectionValuesSpine() &&
+                      ValidateOrderedSingleCollectionRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&

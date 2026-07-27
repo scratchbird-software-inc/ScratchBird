@@ -151,6 +151,7 @@ struct PreparedGlobalAggregateRoot {
   bool count_star{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
+  std::vector<exec::CanonicalDescriptorOrderTerm> aggregate_order_terms;
   std::string aggregate_separator{","};
   exec::CanonicalAggregateDescriptor aggregate_descriptor;
   exec::ExecutorColumnDescriptor result_column;
@@ -210,9 +211,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_syy;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
+  const bool is_array_agg =
+      function == exec::CanonicalAggregateFunction::array_agg;
+  const bool is_json_agg =
+      function == exec::CanonicalAggregateFunction::json_agg;
+  const bool is_ordered_single_collection = is_array_agg || is_json_agg;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
-       !is_string_agg) ||
+       !is_string_agg && !is_ordered_single_collection) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -260,7 +266,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return candidate.function == function;
       });
   const auto expected_argument_count =
-      count_star ? 0U : ((is_pair_statistical || is_string_agg) ? 2U : 1U);
+      count_star
+          ? 0U
+          : ((is_pair_statistical || is_string_agg ||
+              is_ordered_single_collection)
+                 ? 2U
+                 : 1U);
   if (expression == dag.expressions.end() ||
       descriptor == dag.descriptors.end() || aggregate == registry.end() ||
       !aggregate->executable ||
@@ -372,10 +383,33 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "descriptor-exact";
         return result;
       }
-      result.value_columns.push_back(value_column);
-      result.value_descriptor_ids.push_back(argument->result_descriptor_id);
       const auto input_type =
           input.batch.columns[value_column].descriptor.canonical_type_name;
+      if (is_ordered_single_collection && argument_ordinal == 1) {
+        if (input_type != "int64") {
+          result.detail =
+              "global ordered collection aggregate order input must be a "
+              "canonical int64 column";
+          return result;
+        }
+        exec::CanonicalDescriptorOrderTerm order_term;
+        order_term.column = value_column;
+        order_term.expression_descriptor_id = argument->result_descriptor_id;
+        order_term.direction =
+            exec::CanonicalDescriptorOrderDirection::ascending;
+        order_term.null_placement =
+            exec::CanonicalDescriptorNullPlacement::last;
+        const auto validation = exec::ValidateCanonicalDescriptorOrderTerm(
+            order_term, input.batch.columns[value_column]);
+        if (!validation.ok) {
+          result.detail = validation.detail;
+          return result;
+        }
+        result.aggregate_order_terms.push_back(std::move(order_term));
+        continue;
+      }
+      result.value_columns.push_back(value_column);
+      result.value_descriptor_ids.push_back(argument->result_descriptor_id);
       if ((is_sum || is_avg || is_min || is_max || is_statistical ||
            is_pair_statistical) &&
           input_type != "int64") {
@@ -408,11 +442,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global STRING_AGG input must be a canonical text column";
         return result;
       }
+      if (is_ordered_single_collection && input_type != "text") {
+        result.detail =
+            "global ARRAY_AGG/JSON_AGG input must be a canonical text column";
+        return result;
+      }
     }
   }
   const bool result_nullable =
       is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
-      (is_pair_statistical && !is_regr_count) || is_string_agg;
+      (is_pair_statistical && !is_regr_count) || is_string_agg ||
+      is_ordered_single_collection;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -448,6 +488,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     } else if (is_string_agg) {
       result.detail =
           "global STRING_AGG result must be an unqualified nullable text";
+    } else if (is_array_agg) {
+      result.detail =
+          "global ARRAY_AGG result must be an unqualified nullable "
+          "list<text nullable>";
+    } else if (is_json_agg) {
+      result.detail =
+          "global JSON_AGG result must be an unqualified nullable json";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -461,13 +508,20 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   api::EngineDescriptor engine_descriptor;
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
-  engine_descriptor.canonical_type_name =
-      is_string_agg
-          ? "text"
-          : ((is_avg || is_statistical ||
-              (is_pair_statistical && !is_regr_count))
-                 ? "real64"
-                 : (is_boolean ? "boolean" : "int64"));
+  if (is_array_agg) {
+    engine_descriptor.canonical_type_name = "list<text nullable>";
+  } else if (is_json_agg) {
+    engine_descriptor.canonical_type_name = "json";
+  } else if (is_string_agg) {
+    engine_descriptor.canonical_type_name = "text";
+  } else if (is_avg || is_statistical ||
+             (is_pair_statistical && !is_regr_count)) {
+    engine_descriptor.canonical_type_name = "real64";
+  } else if (is_boolean) {
+    engine_descriptor.canonical_type_name = "boolean";
+  } else {
+    engine_descriptor.canonical_type_name = "int64";
+  }
   engine_descriptor.encoded_descriptor =
       "type_uuid=" + descriptor->type_uuid + ";nullability=" +
       (result_nullable ? "nullable" : "non_null");
@@ -2560,6 +2614,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const bool string_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-string-agg-expression.v1";
+  const bool array_agg_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-array-agg-ordered-expression.v1";
+  const bool json_agg_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-json-agg-ordered-expression.v1";
+  const bool ordered_single_collection_expression =
+      array_agg_expression || json_agg_expression;
   const bool stddev_pop_expression =
       root->semantic_variant_id ==
       "aggregate.global-stddev-pop-expression.v1";
@@ -2633,7 +2695,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
-      !string_agg_expression && !statistical_expression &&
+      !string_agg_expression && !ordered_single_collection_expression &&
+      !statistical_expression &&
       !pair_statistical_expression) {
     return result;
   }
@@ -2653,6 +2716,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (string_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::string_agg;
+  }
+  if (array_agg_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::array_agg;
+  }
+  if (json_agg_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::json_agg;
   }
   if (stddev_pop_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::stddev_pop;
@@ -2762,6 +2831,23 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     "live STRING_AGG result size overflowed");
     }
   }
+  if (ordered_single_collection_expression) {
+    std::uint64_t expanded_input_memory = 0;
+    std::uint64_t row_overhead_memory = 0;
+    const std::uint64_t input_expansion = json_agg_expression ? 6U : 1U;
+    if (!CheckedMultiply(input_memory, input_expansion,
+                         &expanded_input_memory) ||
+        !CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+                         &row_overhead_memory) ||
+        !CheckedAdd(expanded_input_memory, row_overhead_memory,
+                    &aggregate_result_memory) ||
+        !CheckedAdd(aggregate_result_memory, 2U,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live ordered collection aggregate result size "
+                    "overflowed");
+    }
+  }
   if (!CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
@@ -2805,6 +2891,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-expression.v1";
+  } else if (array_agg_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-array-agg-ordered-expression.v1";
+  } else if (json_agg_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-json-agg-ordered-expression.v1";
   } else if (stddev_pop_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-stddev-pop-expression.v1";
@@ -2885,6 +2977,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        count_star = prepared_root.count_star,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
+       aggregate_order_terms = prepared_root.aggregate_order_terms,
        aggregate_separator = prepared_root.aggregate_separator,
        input_row_count](
           const exec::TypedPhysicalNodeDag& dag,
@@ -2938,6 +3031,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.value_expression_descriptor_ids =
               value_descriptor_ids;
           aggregate_request.result_column = result_column;
+          aggregate_request.aggregate_order_terms = aggregate_order_terms;
           aggregate_request.aggregate_separator = aggregate_separator;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
