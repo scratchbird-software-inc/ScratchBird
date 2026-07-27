@@ -602,7 +602,7 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
 
 std::string EncodeHex(std::string_view value);
 
-enum class CoreAggregateKind {
+enum class UnaryAggregateKind {
   kCount,
   kSum,
   kAvg,
@@ -611,10 +611,16 @@ enum class CoreAggregateKind {
   kBoolAnd,
   kBoolOr,
   kEvery,
+  kStddevPop,
+  kVariancePop,
+  kStddev,
+  kVariance,
+  kStddevSamp,
+  kVarianceSamp,
 };
 
-struct CoreAggregateTestProfile {
-  CoreAggregateKind kind;
+struct UnaryAggregateTestProfile {
+  UnaryAggregateKind kind;
   std::string_view name;
   std::string_view stem;
   std::string_view uuid_family;
@@ -625,9 +631,9 @@ struct CoreAggregateTestProfile {
   bool result_nullable;
 };
 
-constexpr std::array<CoreAggregateTestProfile, 8>
-    kCoreAggregateTestProfiles = {{
-        {CoreAggregateKind::kCount,
+constexpr std::array<UnaryAggregateTestProfile, 14>
+    kUnaryAggregateTestProfiles = {{
+        {UnaryAggregateKind::kCount,
          "COUNT",
          "count",
          "b0",
@@ -636,7 +642,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "int64",
          false,
          false},
-        {CoreAggregateKind::kSum,
+        {UnaryAggregateKind::kSum,
          "SUM",
          "sum",
          "b1",
@@ -645,7 +651,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "int64",
          false,
          true},
-        {CoreAggregateKind::kAvg,
+        {UnaryAggregateKind::kAvg,
          "AVG",
          "avg",
          "b2",
@@ -654,7 +660,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "real64",
          false,
          true},
-        {CoreAggregateKind::kMin,
+        {UnaryAggregateKind::kMin,
          "MIN",
          "min",
          "b3",
@@ -663,7 +669,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "int64",
          false,
          true},
-        {CoreAggregateKind::kMax,
+        {UnaryAggregateKind::kMax,
          "MAX",
          "max",
          "b4",
@@ -672,7 +678,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "int64",
          false,
          true},
-        {CoreAggregateKind::kBoolAnd,
+        {UnaryAggregateKind::kBoolAnd,
          "BOOL_AND",
          "bool-and",
          "b5",
@@ -681,7 +687,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "boolean",
          true,
          true},
-        {CoreAggregateKind::kBoolOr,
+        {UnaryAggregateKind::kBoolOr,
          "BOOL_OR",
          "bool-or",
          "b6",
@@ -690,7 +696,7 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "boolean",
          true,
          true},
-        {CoreAggregateKind::kEvery,
+        {UnaryAggregateKind::kEvery,
          "EVERY",
          "every",
          "b7",
@@ -698,6 +704,60 @@ constexpr std::array<CoreAggregateTestProfile, 8>
          "every_value",
          "boolean",
          true,
+         true},
+        {UnaryAggregateKind::kStddevPop,
+         "STDDEV_POP",
+         "stddev-pop",
+         "b8",
+         "019de5fc-2400-73c9-ba10-4665f741215d",
+         "stddev_pop_value",
+         "real64",
+         false,
+         true},
+        {UnaryAggregateKind::kVariancePop,
+         "VARIANCE_POP",
+         "variance-pop",
+         "b9",
+         "019de5fc-2400-7fda-b470-e85414dcb314",
+         "variance_pop_value",
+         "real64",
+         false,
+         true},
+        {UnaryAggregateKind::kStddev,
+         "STDDEV",
+         "stddev",
+         "ba",
+         "019dffbb-f000-7475-8516-ff003b2bdad9",
+         "stddev_value",
+         "real64",
+         false,
+         true},
+        {UnaryAggregateKind::kVariance,
+         "VARIANCE",
+         "variance",
+         "bb",
+         "019dffbb-f000-7968-82c5-04cffbeb971b",
+         "variance_value",
+         "real64",
+         false,
+         true},
+        {UnaryAggregateKind::kStddevSamp,
+         "STDDEV_SAMP",
+         "stddev-samp",
+         "bc",
+         "019dffbb-f000-7d99-a495-70f9c3b1b587",
+         "stddev_samp_value",
+         "real64",
+         false,
+         true},
+        {UnaryAggregateKind::kVarianceSamp,
+         "VARIANCE_SAMP",
+         "variance-samp",
+         "bd",
+         "019dffbb-f000-732b-8a0c-2aa88b04f3c5",
+         "variance_samp_value",
+         "real64",
+         false,
          true},
     }};
 
@@ -720,8 +780,8 @@ std::string_view AggregateModifierName(
   return "unknown";
 }
 
-sblr::SblrOperationEnvelope GlobalCoreAggregateModifierValuesEnvelope(
-    const CoreAggregateTestProfile& target,
+sblr::SblrOperationEnvelope GlobalUnaryAggregateModifierValuesEnvelope(
+    const UnaryAggregateTestProfile& target,
     const AggregateModifierProfile profile) {
   const bool has_filter = profile != AggregateModifierProfile::kDistinct;
   const std::string modifier_uuid =
@@ -2944,67 +3004,101 @@ bool ValidateGlobalSumExpressionRefusalIsAtomic() {
       "evidence");
 }
 
-bool CoreAggregateModifierOutputMatches(
-    const CoreAggregateTestProfile& target,
+bool UnaryAggregateModifierOutputMatches(
+    const UnaryAggregateTestProfile& target,
     const AggregateModifierProfile profile,
     const std::string& actual) {
-  if (target.kind == CoreAggregateKind::kAvg) {
+  if (target.result_type == "real64") {
     char* parse_end = nullptr;
     const double decoded = std::strtod(actual.c_str(), &parse_end);
-    const double expected =
+    const std::array<double, 4> values =
         profile == AggregateModifierProfile::kFilter
-            ? 27.5
+            ? std::array<double, 4>{10.0, 20.0, 40.0, 40.0}
             : profile == AggregateModifierProfile::kDistinct
-                  ? 25.0
-                  : 70.0 / 3.0;
+                  ? std::array<double, 4>{10.0, 20.0, 30.0, 40.0}
+                  : std::array<double, 4>{10.0, 20.0, 40.0, 0.0};
+    const std::size_t value_count =
+        profile == AggregateModifierProfile::kDistinctFilter ? 3 : 4;
+    double sum = 0.0;
+    for (std::size_t index = 0; index < value_count; ++index) {
+      sum += values[index];
+    }
+    const double mean = sum / static_cast<double>(value_count);
+    double squared_deviation_sum = 0.0;
+    for (std::size_t index = 0; index < value_count; ++index) {
+      const double deviation = values[index] - mean;
+      squared_deviation_sum += deviation * deviation;
+    }
+    const bool population =
+        target.kind == UnaryAggregateKind::kStddevPop ||
+        target.kind == UnaryAggregateKind::kVariancePop;
+    const bool deviation =
+        target.kind == UnaryAggregateKind::kStddevPop ||
+        target.kind == UnaryAggregateKind::kStddev ||
+        target.kind == UnaryAggregateKind::kStddevSamp;
+    const double variance = squared_deviation_sum /
+                            static_cast<double>(population ? value_count
+                                                           : value_count - 1);
+    const double expected =
+        target.kind == UnaryAggregateKind::kAvg
+            ? mean
+            : (deviation ? std::sqrt(variance) : variance);
+    const double tolerance =
+        target.kind == UnaryAggregateKind::kAvg ? 1e-12 : 1e-9;
     return parse_end == actual.c_str() + actual.size() &&
-           std::abs(decoded - expected) <= 1e-12;
+           std::abs(decoded - expected) <= tolerance;
   }
   std::string_view expected;
   switch (target.kind) {
-    case CoreAggregateKind::kCount:
+    case UnaryAggregateKind::kCount:
       expected = profile == AggregateModifierProfile::kDistinctFilter
                      ? "3"
                      : "4";
       break;
-    case CoreAggregateKind::kSum:
+    case UnaryAggregateKind::kSum:
       expected = profile == AggregateModifierProfile::kFilter
                      ? "110"
                      : profile == AggregateModifierProfile::kDistinct
                            ? "100"
                            : "70";
       break;
-    case CoreAggregateKind::kMin:
+    case UnaryAggregateKind::kMin:
       expected = "10";
       break;
-    case CoreAggregateKind::kMax:
+    case UnaryAggregateKind::kMax:
       expected = "40";
       break;
-    case CoreAggregateKind::kBoolAnd:
-    case CoreAggregateKind::kEvery:
+    case UnaryAggregateKind::kBoolAnd:
+    case UnaryAggregateKind::kEvery:
       expected = "false";
       break;
-    case CoreAggregateKind::kBoolOr:
+    case UnaryAggregateKind::kBoolOr:
       expected = "true";
       break;
-    case CoreAggregateKind::kAvg:
+    case UnaryAggregateKind::kAvg:
+    case UnaryAggregateKind::kStddevPop:
+    case UnaryAggregateKind::kVariancePop:
+    case UnaryAggregateKind::kStddev:
+    case UnaryAggregateKind::kVariance:
+    case UnaryAggregateKind::kStddevSamp:
+    case UnaryAggregateKind::kVarianceSamp:
       return false;
   }
   return actual == expected;
 }
 
-bool ValidateGlobalCoreAggregateModifierValuesSpine() {
+bool ValidateGlobalUnaryAggregateModifierValuesSpine() {
   bool passed = true;
-  for (const auto& target : kCoreAggregateTestProfiles) {
+  for (const auto& target : kUnaryAggregateTestProfiles) {
     for (const auto profile : {AggregateModifierProfile::kFilter,
                                AggregateModifierProfile::kDistinct,
                                AggregateModifierProfile::kDistinctFilter}) {
       const auto first = sblr::DispatchSblrOperation(
           {Context(),
-           GlobalCoreAggregateModifierValuesEnvelope(target, profile), {}});
+           GlobalUnaryAggregateModifierValuesEnvelope(target, profile), {}});
       const auto repeated = sblr::DispatchSblrOperation(
           {Context(),
-           GlobalCoreAggregateModifierValuesEnvelope(target, profile), {}});
+           GlobalUnaryAggregateModifierValuesEnvelope(target, profile), {}});
       if (!first.api_result.ok) {
         for (const auto& diagnostic : first.api_result.diagnostics) {
           std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
@@ -3023,7 +3117,7 @@ bool ValidateGlobalCoreAggregateModifierValuesSpine() {
           rows[0].fields[0].first == target.output_name &&
           rows[0].fields[0].second.state == api::EngineValueState::value &&
           !rows[0].fields[0].second.is_null &&
-          CoreAggregateModifierOutputMatches(
+          UnaryAggregateModifierOutputMatches(
               target, profile, rows[0].fields[0].second.encoded_value);
       passed &= Require(
           first.accepted && first.optimizer_admitted &&
@@ -3050,28 +3144,32 @@ bool ValidateGlobalCoreAggregateModifierValuesSpine() {
   return passed;
 }
 
-bool ValidateGlobalCoreAggregateModifierRefusalIsAtomic() {
-  const auto& sum_target = kCoreAggregateTestProfiles[1];
-  const auto& count_target = kCoreAggregateTestProfiles[0];
-  const auto& bool_and_target = kCoreAggregateTestProfiles[5];
+bool ValidateGlobalUnaryAggregateModifierRefusalIsAtomic() {
+  const auto& sum_target = kUnaryAggregateTestProfiles[1];
+  const auto& count_target = kUnaryAggregateTestProfiles[0];
+  const auto& bool_and_target = kUnaryAggregateTestProfiles[5];
+  const auto& stddev_pop_target = kUnaryAggregateTestProfiles[8];
   auto non_boolean_filter =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           sum_target, AggregateModifierProfile::kFilter);
   auto non_identifier_filter =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           sum_target, AggregateModifierProfile::kFilter);
   auto filter_arity_drift =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           sum_target, AggregateModifierProfile::kFilter);
   auto distinct_arity_drift =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           sum_target, AggregateModifierProfile::kDistinct);
   auto count_function_drift =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           count_target, AggregateModifierProfile::kDistinctFilter);
   auto boolean_value_type_drift =
-      GlobalCoreAggregateModifierValuesEnvelope(
+      GlobalUnaryAggregateModifierValuesEnvelope(
           bool_and_target, AggregateModifierProfile::kFilter);
+  auto statistical_result_nullability_drift =
+      GlobalUnaryAggregateModifierValuesEnvelope(
+          stddev_pop_target, AggregateModifierProfile::kDistinctFilter);
   for (auto& operand : non_boolean_filter.operands) {
     if (operand.type != "relational_expression_v1") continue;
     if (operand.name == "2" || operand.name == "4" ||
@@ -3118,6 +3216,15 @@ bool ValidateGlobalCoreAggregateModifierRefusalIsAtomic() {
       operand.value = "1|-|1|-|-|1|-|31";
     }
   }
+  for (auto& operand : statistical_result_nullability_drift.operands) {
+    if (operand.type == "relational_descriptor_v1" &&
+        operand.name == "3") {
+      const auto separator = operand.value.find("|2|");
+      if (separator != std::string::npos) {
+        operand.value.replace(separator, 3, "|1|");
+      }
+    }
+  }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
     const auto result = sblr::DispatchSblrOperation(
         {Context(), std::move(envelope), {}});
@@ -3137,8 +3244,11 @@ bool ValidateGlobalCoreAggregateModifierRefusalIsAtomic() {
           refused_atomically(std::move(filter_arity_drift)) &&
           refused_atomically(std::move(distinct_arity_drift)) &&
           refused_atomically(std::move(count_function_drift)) &&
-          refused_atomically(std::move(boolean_value_type_drift)),
-      "type-, function-identity-, or arity-drifted global core aggregate "
+          refused_atomically(std::move(boolean_value_type_drift)) &&
+          refused_atomically(
+              std::move(statistical_result_nullability_drift)),
+      "type-, function-identity-, result-, or arity-drifted global unary "
+      "aggregate "
       "modifiers published evidence");
 }
 
@@ -4974,8 +5084,8 @@ int main() {
                       ValidateGlobalCountExpressionRefusalIsAtomic() &&
                       ValidateGlobalSumExpressionValuesSpine() &&
                       ValidateGlobalSumExpressionRefusalIsAtomic() &&
-                      ValidateGlobalCoreAggregateModifierValuesSpine() &&
-                      ValidateGlobalCoreAggregateModifierRefusalIsAtomic() &&
+                      ValidateGlobalUnaryAggregateModifierValuesSpine() &&
+                      ValidateGlobalUnaryAggregateModifierRefusalIsAtomic() &&
                       ValidateGlobalAvgExpressionValuesSpine() &&
                       ValidateGlobalAvgExpressionRefusalIsAtomic() &&
                       ValidateGlobalExtremumExpressionValuesSpine(false) &&

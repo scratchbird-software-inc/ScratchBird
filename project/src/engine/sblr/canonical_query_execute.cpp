@@ -168,7 +168,7 @@ struct PreparedGlobalAggregateRoot {
   std::string detail;
 };
 
-struct LiveCoreAggregateExpressionProfile {
+struct LiveUnaryAggregateExpressionProfile {
   bool matched{false};
   bool count_star{false};
   bool distinct{false};
@@ -178,9 +178,9 @@ struct LiveCoreAggregateExpressionProfile {
   std::string transformation_id;
 };
 
-LiveCoreAggregateExpressionProfile MatchLiveCoreAggregateExpressionProfile(
+LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
     const std::string_view semantic_variant_id) {
-  LiveCoreAggregateExpressionProfile result;
+  LiveUnaryAggregateExpressionProfile result;
   if (semantic_variant_id == "aggregate.global-count-star.v1") {
     result.matched = true;
     result.count_star = true;
@@ -194,7 +194,7 @@ LiveCoreAggregateExpressionProfile MatchLiveCoreAggregateExpressionProfile(
     std::string_view stem;
     exec::CanonicalAggregateFunction function;
   };
-  static constexpr std::array<FunctionProfile, 8> kFunctionProfiles = {{
+  static constexpr std::array<FunctionProfile, 14> kFunctionProfiles = {{
       {"count", exec::CanonicalAggregateFunction::count},
       {"sum", exec::CanonicalAggregateFunction::sum},
       {"avg", exec::CanonicalAggregateFunction::avg},
@@ -203,6 +203,12 @@ LiveCoreAggregateExpressionProfile MatchLiveCoreAggregateExpressionProfile(
       {"bool-and", exec::CanonicalAggregateFunction::bool_and},
       {"bool-or", exec::CanonicalAggregateFunction::bool_or},
       {"every", exec::CanonicalAggregateFunction::every},
+      {"stddev-pop", exec::CanonicalAggregateFunction::stddev_pop},
+      {"variance-pop", exec::CanonicalAggregateFunction::variance_pop},
+      {"stddev", exec::CanonicalAggregateFunction::stddev},
+      {"variance", exec::CanonicalAggregateFunction::variance},
+      {"stddev-samp", exec::CanonicalAggregateFunction::stddev_samp},
+      {"variance-samp", exec::CanonicalAggregateFunction::variance_samp},
   }};
 
   for (const auto& profile : kFunctionProfiles) {
@@ -3062,32 +3068,36 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       !request.optimizer_request.logical_properties.properties.empty()) {
     return result;
   }
-  const auto core_aggregate_profile =
-      MatchLiveCoreAggregateExpressionProfile(root->semantic_variant_id);
-  const bool count_star = core_aggregate_profile.count_star;
+  const auto unary_aggregate_profile =
+      MatchLiveUnaryAggregateExpressionProfile(root->semantic_variant_id);
+  const bool count_star = unary_aggregate_profile.count_star;
   const bool sum_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function == exec::CanonicalAggregateFunction::sum;
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::sum;
   const bool avg_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function == exec::CanonicalAggregateFunction::avg;
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::avg;
   const bool min_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function == exec::CanonicalAggregateFunction::min;
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::min;
   const bool max_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function == exec::CanonicalAggregateFunction::max;
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
+          exec::CanonicalAggregateFunction::max;
   const bool bool_and_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function ==
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
           exec::CanonicalAggregateFunction::bool_and;
   const bool bool_or_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function ==
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
           exec::CanonicalAggregateFunction::bool_or;
   const bool every_expression =
-      core_aggregate_profile.matched &&
-      core_aggregate_profile.function ==
+      unary_aggregate_profile.matched &&
+      unary_aggregate_profile.function ==
           exec::CanonicalAggregateFunction::every;
   const bool unordered_string_agg_expression =
       root->semantic_variant_id ==
@@ -3122,26 +3132,20 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       array_agg_expression || json_agg_expression;
   const bool ordered_collection_expression =
       ordered_single_collection_expression || json_object_agg_expression;
-  const bool stddev_pop_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-stddev-pop-expression.v1";
-  const bool variance_pop_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-variance-pop-expression.v1";
-  const bool stddev_expression =
-      root->semantic_variant_id == "aggregate.global-stddev-expression.v1";
-  const bool variance_expression =
-      root->semantic_variant_id == "aggregate.global-variance-expression.v1";
-  const bool stddev_samp_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-stddev-samp-expression.v1";
-  const bool variance_samp_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-variance-samp-expression.v1";
   const bool statistical_expression =
-      stddev_pop_expression || variance_pop_expression || stddev_expression ||
-      variance_expression || stddev_samp_expression ||
-      variance_samp_expression;
+      unary_aggregate_profile.matched &&
+      (unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::stddev_pop ||
+       unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::variance_pop ||
+       unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::stddev ||
+       unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::variance ||
+       unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::stddev_samp ||
+       unary_aggregate_profile.function ==
+           exec::CanonicalAggregateFunction::variance_samp);
   struct PairStatisticalExpressionProfile {
     std::string_view semantic_variant;
     exec::CanonicalAggregateFunction function;
@@ -3256,7 +3260,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       });
   const bool approximate_expression =
       approximate_profile != kApproximateExpressionProfiles.end();
-  if (!core_aggregate_profile.matched &&
+  if (!unary_aggregate_profile.matched &&
       !string_agg_expression && !listagg_expression &&
       !ordered_collection_expression &&
       !statistical_expression &&
@@ -3264,8 +3268,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       !approximate_expression) {
     return result;
   }
-  auto aggregate_function = core_aggregate_profile.matched
-                                ? core_aggregate_profile.function
+  auto aggregate_function = unary_aggregate_profile.matched
+                                ? unary_aggregate_profile.function
                                 : exec::CanonicalAggregateFunction::count;
   if (string_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::string_agg;
@@ -3281,24 +3285,6 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (json_object_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::json_object_agg;
-  }
-  if (stddev_pop_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::stddev_pop;
-  }
-  if (variance_pop_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::variance_pop;
-  }
-  if (stddev_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::stddev;
-  }
-  if (variance_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::variance;
-  }
-  if (stddev_samp_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::stddev_samp;
-  }
-  if (variance_samp_expression) {
-    aggregate_function = exec::CanonicalAggregateFunction::variance_samp;
   }
   if (pair_statistical_expression) {
     aggregate_function = pair_statistical_profile->function;
@@ -3356,8 +3342,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   auto prepared_root = PrepareGlobalAggregateRoot(
       request.relational_dag, *root, *input_node, input, aggregate_function,
-      count_star, core_aggregate_profile.distinct,
-      core_aggregate_profile.has_filter);
+      count_star, unary_aggregate_profile.distinct,
+      unary_aggregate_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3510,8 +3496,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const std::string aggregate_implementation_id =
       count_star ? "aggregate.count-star.v1" : "aggregate.registry-core.v1";
   std::string aggregate_transformation_id;
-  if (core_aggregate_profile.matched) {
-    aggregate_transformation_id = core_aggregate_profile.transformation_id;
+  if (unary_aggregate_profile.matched) {
+    aggregate_transformation_id = unary_aggregate_profile.transformation_id;
   } else if (ordered_string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-ordered-expression.v1";
@@ -3536,21 +3522,6 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (json_object_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-json-object-agg-ordered-expression.v1";
-  } else if (stddev_pop_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-stddev-pop-expression.v1";
-  } else if (variance_pop_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-variance-pop-expression.v1";
-  } else if (stddev_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-stddev-expression.v1";
-  } else if (variance_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-variance-expression.v1";
-  } else if (stddev_samp_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-stddev-samp-expression.v1";
   } else if (pair_statistical_expression) {
     aggregate_transformation_id =
         std::string(pair_statistical_profile->transformation_id);
@@ -3561,8 +3532,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     aggregate_transformation_id =
         std::string(approximate_profile->transformation_id);
   } else {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-variance-samp-expression.v1";
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+                  "live global aggregate transformation is unresolved");
   }
 
   const auto identity_scope =
