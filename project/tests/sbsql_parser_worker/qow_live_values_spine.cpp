@@ -325,6 +325,43 @@ sblr::SblrOperationEnvelope FilterValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope ProjectValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.project");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008700"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008701|"
+       "019f0000-0000-7400-8000-000000008702|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008703|"
+       "019f0000-0000-7400-8000-000000008704|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|2|-|616c706861"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|7|-|2d"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6964"},
+      {"relational_output_v1", "2", "1|2|2|1|1|6c6162656c"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2"},
+      {"relational_node_v1", "2", "3|0|1|2,1|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "70726f6a6563742e73656c6563742d6c6973742e7631|-|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -680,6 +717,100 @@ bool ValidateFilterRefusalIsAtomic() {
       "invalid or source-unbound FILTER published partial evidence");
 }
 
+bool ValidateProjectValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), ProjectValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), ProjectValuesEnvelope(), {}});
+  auto dropped_envelope = ProjectValuesEnvelope();
+  for (auto& operand : dropped_envelope.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "3|0|1|2|-";
+    }
+  }
+  const auto dropped = sblr::DispatchSblrOperation(
+      {Context(), std::move(dropped_envelope), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 2 &&
+          first.canonical_result_row_count == 2,
+      "VALUES PROJECT did not traverse the selected two-node DAG");
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      first.api_result.result_shape.columns.size() == 2 && rows.size() == 2 &&
+          rows[0].fields.size() == 2 && rows[0].fields[0].first == "label" &&
+          rows[0].fields[1].first == "id" &&
+          rows[0].fields[0].second.encoded_value == "alpha" &&
+          rows[0].fields[1].second.encoded_value == "1" &&
+          rows[1].fields[0].second.state == api::EngineValueState::sql_null &&
+          rows[1].fields[1].second.encoded_value == "2",
+      "PROJECT did not reorder typed columns or preserve SQL NULL");
+  passed &= Require(
+      dropped.api_result.ok && dropped.canonical_result_column_count == 1 &&
+          dropped.canonical_result_row_count == 2 &&
+          dropped.api_result.result_shape.columns.size() == 1 &&
+          dropped.api_result.result_shape.rows[0].fields.size() == 1 &&
+          dropped.api_result.result_shape.rows[0].fields[0].first == "label" &&
+          dropped.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "alpha" &&
+          dropped.api_result.result_shape.rows[1].fields[0].second.state ==
+              api::EngineValueState::sql_null,
+      "descriptor-direct PROJECT did not drop the unselected column");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical PROJECT input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateProjectRefusalIsAtomic() {
+  auto root_lineage = ProjectValuesEnvelope();
+  root_lineage.operands.push_back(
+      {"relational_output_v1", "3", "2|2|2|1|0|6c6162656c"});
+  root_lineage.operands.push_back(
+      {"relational_output_v1", "4", "2|1|1|1|1|6964"});
+  auto bound_expression = ProjectValuesEnvelope();
+  bound_expression.operands.push_back(
+      {"relational_expression_v1", "5",
+       "3|-|2|-|019f0000-0000-7500-8000-000000008705|-|-|-"});
+  for (auto& operand : bound_expression.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "2") {
+      operand.value =
+          "70726f6a6563742e73656c6563742d6c6973742e7631|5|-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(root_lineage)) &&
+          refused_atomically(std::move(bound_expression)),
+      "lineage-bearing or expression-bound PROJECT published partial evidence");
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
@@ -757,6 +888,8 @@ int main() {
                       ValidateFilterValuesSpine() &&
                       ValidateFilterThreeValuedPredicate() &&
                       ValidateFilterRefusalIsAtomic() &&
+                      ValidateProjectValuesSpine() &&
+                      ValidateProjectRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
                       ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
