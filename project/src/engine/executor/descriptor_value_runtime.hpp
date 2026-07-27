@@ -962,6 +962,11 @@ struct CanonicalPhysicalDispatchInput {
   std::uint64_t causal_counter_id = 0;
   std::uint64_t result_handle_id = 0;
   std::vector<std::uint32_t> output_descriptor_ids;
+  // A selected physical operator consumes the typed batch produced by each
+  // input node.  The stable handle and descriptor identities remain the
+  // causal ABI; this payload is the engine-owned value channel and is never
+  // reconstructed from parser text or an opaque handle.
+  std::optional<DescriptorBatch> materialized_output_batch;
 };
 
 struct CanonicalPhysicalDispatchAuthorityEvidence {

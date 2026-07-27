@@ -148,7 +148,8 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       inputs.push_back({input_result.executed_physical_node_id,
                         input_result.causal_counter_id,
                         input_result.result_handle_id,
-                        input_result.output_descriptor_ids});
+                        input_result.output_descriptor_ids,
+                        input_result.materialized_output_batch});
     }
 
     CanonicalPhysicalDispatchStepResult step;
