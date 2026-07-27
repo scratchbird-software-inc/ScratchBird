@@ -774,6 +774,36 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.values_rows.push_back(std::move(row));
       continue;
     }
+    if (operand.type == "relational_grouping_set_v1") {
+      if (decoded.request.relational_dag.grouping_sets.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational grouping-set transport limit exceeded";
+        return decoded;
+      }
+      std::uint64_t ordinal = 0;
+      std::uint64_t node_id = 0;
+      std::array<std::string_view, 2> fields{};
+      api::RelationalGroupingSetRecord grouping_set;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &ordinal) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !ParseRelationalHandleList(fields[1],
+                                     &grouping_set.expression_ids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational grouping-set record";
+        return decoded;
+      }
+      grouping_set.relation_node_id = static_cast<std::uint32_t>(node_id);
+      grouping_set.ordinal = static_cast<std::uint32_t>(ordinal);
+      decoded.request.relational_dag.grouping_sets.push_back(
+          std::move(grouping_set));
+      continue;
+    }
     if (operand.type == "relational_property_v1") {
       if (decoded.request.relational_dag.properties.size() >= 524288 ||
           operand.value.size() > 65536) {

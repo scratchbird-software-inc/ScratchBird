@@ -66,6 +66,25 @@ api::TypedRelationalDag SharedDag() {
   return dag;
 }
 
+api::TypedRelationalDag GroupingSetDag() {
+  auto dag = SharedDag();
+  dag.wire_version = 2;
+  dag.bound_sblr_tree_uuid = "019f0000-0000-7000-8000-000000000281";
+  dag.bound_catalog_epoch_uuid = "019f0000-0000-7000-8000-000000000282";
+  dag.bound_security_context_uuid = "019f0000-0000-7000-8000-000000000283";
+  for (auto& node : dag.nodes) {
+    node.semantic_variant_id = "relational.contract-node.v1";
+  }
+  dag.nodes.back().node_kind = api::RelationalDagNodeKind::kAggregate;
+  dag.nodes.back().bound_expression_ids = {1};
+  dag.grouping_sets = {
+      {4, 0, {1}},
+      {4, 1, {}},
+      {4, 2, {1}},
+  };
+  return dag;
+}
+
 bool ValidateAcceptedSharedDag() {
   const auto result = api::ValidateTypedRelationalDag(SharedDag());
   bool passed = true;
@@ -309,6 +328,68 @@ bool ValidateTypedValuesRefusal() {
   return passed;
 }
 
+bool ValidateTypedGroupingSetContract() {
+  const auto accepted = api::ValidateTypedRelationalDag(GroupingSetDag());
+
+  auto nonaggregate = GroupingSetDag();
+  nonaggregate.grouping_sets[0].relation_node_id = 3;
+  const auto nonaggregate_result =
+      api::ValidateTypedRelationalDag(nonaggregate);
+
+  auto duplicate_ordinal = GroupingSetDag();
+  duplicate_ordinal.grouping_sets[1].ordinal = 0;
+  const auto duplicate_ordinal_result =
+      api::ValidateTypedRelationalDag(duplicate_ordinal);
+
+  auto sparse_ordinal = GroupingSetDag();
+  sparse_ordinal.grouping_sets[1].ordinal = 3;
+  const auto sparse_ordinal_result =
+      api::ValidateTypedRelationalDag(sparse_ordinal);
+
+  auto unbound_expression = GroupingSetDag();
+  unbound_expression.grouping_sets[0].expression_ids = {99};
+  const auto unbound_expression_result =
+      api::ValidateTypedRelationalDag(unbound_expression);
+
+  auto duplicate_expression = GroupingSetDag();
+  duplicate_expression.grouping_sets[0].expression_ids = {1, 1};
+  const auto duplicate_expression_result =
+      api::ValidateTypedRelationalDag(duplicate_expression);
+
+  bool passed = true;
+  passed &= Require(
+      accepted.accepted && accepted.issues.empty(),
+      "ordered grouping-set records, including a repeated set, were refused");
+  passed &= Require(
+      !nonaggregate_result.accepted &&
+          HasIssue(nonaggregate_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "grouping_set_record"),
+      "grouping-set record bound to a non-aggregate node was accepted");
+  passed &= Require(
+      !duplicate_ordinal_result.accepted &&
+          HasIssue(duplicate_ordinal_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "grouping_set_record"),
+      "duplicate grouping-set ordinal was accepted");
+  passed &= Require(
+      !sparse_ordinal_result.accepted &&
+          HasIssue(sparse_ordinal_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "grouping_set_ordinals"),
+      "sparse grouping-set ordinals were accepted");
+  passed &= Require(
+      !unbound_expression_result.accepted &&
+          HasIssue(unbound_expression_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "grouping_set_expression_ids"),
+      "unbound grouping-set expression was accepted");
+  passed &= Require(
+      !duplicate_expression_result.accepted &&
+          HasIssue(duplicate_expression_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "grouping_set_expression_ids"),
+      "duplicate expression inside a grouping set was accepted");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-002-V1
@@ -325,5 +406,6 @@ int main() {
   passed &= ValidateDepthLimitRefusal();
   passed &= ValidateFanoutLimitRefusal();
   passed &= ValidateTypedValuesRefusal();
+  passed &= ValidateTypedGroupingSetContract();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

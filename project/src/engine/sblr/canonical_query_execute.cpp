@@ -184,6 +184,7 @@ struct LiveGroupedCountSumProfile {
   bool matched{false};
   std::size_t key_count{0};
   std::vector<exec::CanonicalAggregateGroupingSet> grouping_sets;
+  bool grouping_sets_from_sblr{false};
   bool projects_grouping_metadata{false};
   std::string transformation_id;
 };
@@ -228,6 +229,21 @@ LiveGroupedCountSumProfile MatchLiveGroupedCountSumProfile(
     result.projects_grouping_metadata = true;
     result.transformation_id =
         "canonical.aggregate.cube-int64-keys-count-sum-grouping.v1";
+  } else if (semantic_variant_id ==
+             "aggregate.grouping-sets-int64-keys-count-sum.v1") {
+    result.matched = true;
+    result.key_count = 2;
+    result.grouping_sets_from_sblr = true;
+    result.transformation_id =
+        "canonical.aggregate.grouping-sets-int64-keys-count-sum.v1";
+  } else if (semantic_variant_id ==
+             "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1") {
+    result.matched = true;
+    result.key_count = 2;
+    result.grouping_sets_from_sblr = true;
+    result.projects_grouping_metadata = true;
+    result.transformation_id =
+        "canonical.aggregate.grouping-sets-int64-keys-count-sum-grouping.v1";
   }
   return result;
 }
@@ -1498,7 +1514,8 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
   const auto expected_output_count =
       profile.key_count + 2 + grouping_projection_count;
   if (!profile.matched || profile.key_count == 0 ||
-      profile.grouping_sets.empty() ||
+      (!profile.grouping_sets_from_sblr && profile.grouping_sets.empty()) ||
+      (profile.grouping_sets_from_sblr && !profile.grouping_sets.empty()) ||
       root.output_descriptor_ids.size() != expected_output_count ||
       root.bound_expression_ids.size() != expected_output_count ||
       input.result_bindings.size() != input.batch.columns.size() ||
@@ -1516,7 +1533,63 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
     return result;
   }
 
-  result.grouping_sets = profile.grouping_sets;
+  if (profile.grouping_sets_from_sblr) {
+    std::vector<const api::RelationalGroupingSetRecord*> grouping_sets;
+    for (const auto& grouping_set : dag.grouping_sets) {
+      if (grouping_set.relation_node_id == root.logical_node_id) {
+        grouping_sets.push_back(&grouping_set);
+      }
+    }
+    std::ranges::sort(grouping_sets, {},
+                      &api::RelationalGroupingSetRecord::ordinal);
+    std::vector<bool> key_used(profile.key_count, false);
+    for (std::size_t ordinal = 0; ordinal < grouping_sets.size(); ++ordinal) {
+      if (grouping_sets[ordinal]->ordinal != ordinal) {
+        result.detail =
+            "grouped COUNT/SUM grouping-set ordinals are not dense";
+        return result;
+      }
+      exec::CanonicalAggregateGroupingSet prepared;
+      for (const auto expression_id : grouping_sets[ordinal]->expression_ids) {
+        const auto key = std::ranges::find(
+            root.bound_expression_ids.begin(),
+            root.bound_expression_ids.begin() + profile.key_count,
+            expression_id);
+        if (key == root.bound_expression_ids.begin() + profile.key_count) {
+          result.detail =
+              "grouped COUNT/SUM grouping-set member is not a bound key";
+          return result;
+        }
+        const auto key_ordinal = static_cast<std::size_t>(std::distance(
+            root.bound_expression_ids.begin(), key));
+        if (!prepared.key_term_ordinals.empty() &&
+            key_ordinal <= prepared.key_term_ordinals.back()) {
+          result.detail =
+              "grouped COUNT/SUM grouping-set members are not in key order";
+          return result;
+        }
+        prepared.key_term_ordinals.push_back(key_ordinal);
+        key_used[key_ordinal] = true;
+      }
+      result.grouping_sets.push_back(std::move(prepared));
+    }
+    if (result.grouping_sets.empty() ||
+        std::ranges::find(key_used, false) != key_used.end()) {
+      result.detail =
+          "grouped COUNT/SUM grouping-set payload is empty or has an unused key";
+      return result;
+    }
+  } else {
+    if (std::ranges::any_of(
+            dag.grouping_sets, [&](const auto& grouping_set) {
+              return grouping_set.relation_node_id == root.logical_node_id;
+            })) {
+      result.detail =
+          "grouped COUNT/SUM fixed grouping profile has an unexpected payload";
+      return result;
+    }
+    result.grouping_sets = profile.grouping_sets;
+  }
   for (std::size_t key_ordinal = 0; key_ordinal < profile.key_count;
        ++key_ordinal) {
     const auto key_expression = std::ranges::find_if(

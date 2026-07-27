@@ -116,6 +116,12 @@ struct RelationalValuesRowRecord {
   std::vector<std::uint32_t> expression_ids;
 };
 
+struct RelationalGroupingSetRecord {
+  std::uint32_t relation_node_id{0};
+  std::uint32_t ordinal{0};
+  std::vector<std::uint32_t> expression_ids;
+};
+
 enum class RelationalPropertyKind : std::uint8_t {
   kOrdering = 1,
   kGrouping,
@@ -178,6 +184,7 @@ struct TypedRelationalDag {
   std::vector<RelationalExpressionRecord> expressions;
   std::vector<RelationalOutputRecord> outputs;
   std::vector<RelationalValuesRowRecord> values_rows;
+  std::vector<RelationalGroupingSetRecord> grouping_sets;
   std::vector<RelationalPropertyRecord> properties;
   std::vector<RelationalDagNode> nodes;
 };

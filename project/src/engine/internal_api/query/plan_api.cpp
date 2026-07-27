@@ -129,7 +129,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
   const auto record_count = dag.descriptors.size() + dag.expressions.size() +
                             dag.outputs.size() + dag.values_rows.size() +
-                            dag.properties.size();
+                            dag.grouping_sets.size() + dag.properties.size();
   if (record_count > limits.maximum_records) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
   }
@@ -366,6 +366,62 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       nodes_by_id.find(dag.root_node_id) == nodes_by_id.end()) {
     return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", dag.root_node_id,
                   "root_node_id");
+  }
+
+  if (!planning_wire && !dag.grouping_sets.empty()) {
+    return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0,
+                  "grouping_sets_require_wire_v2");
+  }
+  std::unordered_map<std::uint32_t, std::set<std::uint32_t>>
+      grouping_set_ordinals_by_node;
+  for (const auto& grouping_set : dag.grouping_sets) {
+    const auto node = nodes_by_id.find(grouping_set.relation_node_id);
+    if (!add_planning_references(grouping_set.expression_ids.size())) {
+      return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                    grouping_set.relation_node_id,
+                    "planning_reference_count");
+    }
+    auto& ordinals =
+        grouping_set_ordinals_by_node[grouping_set.relation_node_id];
+    if (grouping_set.relation_node_id == 0 || node == nodes_by_id.end() ||
+        node->second->node_kind != RelationalDagNodeKind::kAggregate ||
+        !ordinals.insert(grouping_set.ordinal).second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    grouping_set.relation_node_id,
+                    "grouping_set_record");
+    }
+    std::unordered_set<std::uint32_t> expression_ids;
+    std::optional<std::size_t> previous_bound_ordinal;
+    for (const auto expression_id : grouping_set.expression_ids) {
+      const auto bound = std::ranges::find(
+          node->second->bound_expression_ids, expression_id);
+      if (expression_id == 0 || !expressions_by_id.contains(expression_id) ||
+          !expression_ids.insert(expression_id).second ||
+          bound == node->second->bound_expression_ids.end()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      grouping_set.relation_node_id,
+                      "grouping_set_expression_ids");
+      }
+      const auto bound_ordinal = static_cast<std::size_t>(std::distance(
+          node->second->bound_expression_ids.begin(), bound));
+      if (previous_bound_ordinal.has_value() &&
+          bound_ordinal <= *previous_bound_ordinal) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      grouping_set.relation_node_id,
+                      "grouping_set_expression_order");
+      }
+      previous_bound_ordinal = bound_ordinal;
+    }
+  }
+  for (const auto& [node_id, ordinals] : grouping_set_ordinals_by_node) {
+    std::uint32_t expected_ordinal = 0;
+    for (const auto ordinal : ordinals) {
+      if (ordinal != expected_ordinal) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node_id,
+                      "grouping_set_ordinals");
+      }
+      ++expected_ordinal;
+    }
   }
 
   std::unordered_set<std::uint32_t> assigned_values_row_ids;
