@@ -2535,10 +2535,12 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
 }
 
 // QOW-SOURCE-QRY-012-MGA-V1
+// QOW-SOURCE-QRY-012-MGA-V2
 // Recheck strategy candidates against engine-owned transaction-inventory and
 // statement-snapshot evidence at the MGA boundary.  Visibility and security
-// verdicts are consumed, never synthesized here; stale generations or an
-// inexact key recheck fail closed before any row is published.
+// verdicts are consumed, never synthesized here. The input-row evidence
+// profile filters relations before non-inner semantics, then exact-rechecks
+// every matched physical pair; stale generations or drift fail atomically.
 CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     const CanonicalJoinMgaRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -2554,6 +2556,12 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     result.visible_pair_count = 0;
     result.visibility_filtered_pair_count = 0;
     result.security_filtered_pair_count = 0;
+    result.visible_left_row_count = 0;
+    result.visible_right_row_count = 0;
+    result.visibility_filtered_left_row_count = 0;
+    result.visibility_filtered_right_row_count = 0;
+    result.security_filtered_left_row_count = 0;
+    result.security_filtered_right_row_count = 0;
     result.mga_boundary_proven = false;
     result.transaction_inventory_evidence_uuid.clear();
     result.selected_plan_uuid.clear();
@@ -2565,9 +2573,10 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   const auto& physical_dag =
       request.strategy_request.residual_request.key_request.physical_dag;
   if (request.strategy_request.join_kind !=
-      CanonicalAcceptedJoinKind::kInner) {
+          CanonicalAcceptedJoinKind::kInner &&
+      !request.input_row_evidence_profile) {
     return refuse(
-        "MGA join candidate evidence currently admits inner output only");
+        "non-inner MGA execution requires input-row evidence");
   }
   if (request.transaction_inventory_id == 0 ||
       request.inventory_local_transaction_id == 0 ||
@@ -2579,10 +2588,276 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
       !IsCanonicalUuid(request.transaction_inventory_evidence_uuid)) {
     return refuse("engine transaction inventory evidence is not bound");
   }
-  if (request.maximum_boundary_rechecks == 0 ||
-      request.candidate_evidence.size() >
-          request.maximum_boundary_rechecks) {
+  if (request.maximum_boundary_rechecks == 0) {
     return refuse("MGA join boundary recheck bound was exceeded");
+  }
+  std::size_t boundary_recheck_count = request.candidate_evidence.size();
+  if (request.input_row_evidence_profile) {
+    if (request.left_row_evidence.size() >
+            std::numeric_limits<std::size_t>::max() -
+                boundary_recheck_count ||
+        request.right_row_evidence.size() >
+            std::numeric_limits<std::size_t>::max() -
+                boundary_recheck_count - request.left_row_evidence.size()) {
+      return refuse("MGA join boundary recheck cardinality overflowed");
+    }
+    boundary_recheck_count += request.left_row_evidence.size() +
+                              request.right_row_evidence.size();
+  }
+  if (boundary_recheck_count > request.maximum_boundary_rechecks) {
+    return refuse("MGA join boundary recheck bound was exceeded");
+  }
+
+  if (request.input_row_evidence_profile) {
+    const auto& original_key_request =
+        request.strategy_request.residual_request.key_request;
+    if (request.strategy_request.strategy !=
+            CanonicalJoinStrategyKind::kHashInnerInt64Equality ||
+        original_key_request.key_terms.size() != 1) {
+      return refuse(
+          "MGA input-row evidence admits one hash int64 key profile");
+    }
+    const auto original_left_count = original_key_request.left_batch.rows.size();
+    const auto original_right_count =
+        original_key_request.right_batch.rows.size();
+    if (request.left_row_evidence.size() != original_left_count ||
+        request.right_row_evidence.size() != original_right_count) {
+      return refuse("MGA input-row evidence cardinality is not bound");
+    }
+    if (original_left_count != 0 &&
+        original_right_count >
+            std::numeric_limits<std::size_t>::max() / original_left_count) {
+      return refuse("MGA input pair cardinality overflowed");
+    }
+    const auto original_pair_count =
+        original_left_count * original_right_count;
+    if (request.strategy_request.residual_request.residual_truth_values.size() !=
+        original_pair_count) {
+      return refuse("MGA residual matrix is not bound to the input rows");
+    }
+    CanonicalDescriptorInnerJoinRequest original_input_validation;
+    original_input_validation.physical_dag = original_key_request.physical_dag;
+    original_input_validation.selected_physical_node_id =
+        original_key_request.selected_physical_node_id;
+    original_input_validation.left_batch = original_key_request.left_batch;
+    original_input_validation.right_batch = original_key_request.right_batch;
+    original_input_validation.pair_truth_values.assign(
+        original_pair_count, api::EngineSqlTruthValue::false_value);
+    const auto original_input =
+        ExecuteCanonicalDescriptorInnerJoin(original_input_validation);
+    if (!original_input.diagnostic.ok) {
+      return refuse(original_input.diagnostic.diagnostic_code + ":" +
+                    original_input.diagnostic.detail);
+    }
+    const auto& original_key_term = original_key_request.key_terms.front();
+    const auto validate_key_domain = [&](const DescriptorBatch& batch,
+                                         const std::size_t column) {
+      for (const auto& row : batch.rows) {
+        const auto& value = row.values[column];
+        if (value.state == api::EngineValueState::sql_null) continue;
+        if (!DecodeInt64Value(value).ok()) return false;
+      }
+      return true;
+    };
+    if (!validate_key_domain(original_key_request.left_batch,
+                             original_key_term.left_column) ||
+        !validate_key_domain(original_key_request.right_batch,
+                             original_key_term.right_column)) {
+      return refuse("MGA input-row join-key domain is invalid");
+    }
+    for (const auto truth :
+         request.strategy_request.residual_request.residual_truth_values) {
+      bool ignored = false;
+      std::string detail;
+      if (!api::QowPredicateConsumerPassesV1(
+              truth, api::EnginePredicateConsumer::join_on, &ignored,
+              &detail)) {
+        return refuse("MGA residual predicate domain is invalid:" + detail);
+      }
+    }
+
+    std::vector<std::size_t> visible_left_indices;
+    std::vector<std::size_t> visible_right_indices;
+    std::size_t visibility_filtered_left_row_count = 0;
+    std::size_t visibility_filtered_right_row_count = 0;
+    std::size_t security_filtered_left_row_count = 0;
+    std::size_t security_filtered_right_row_count = 0;
+    const auto collect_visible = [&](const auto& evidence_vector,
+                                     std::vector<std::size_t>* visible,
+                                     std::size_t* visibility_filtered,
+                                     std::size_t* security_filtered) {
+      for (std::size_t index = 0; index < evidence_vector.size(); ++index) {
+        const auto& evidence = evidence_vector[index];
+        if (evidence.row_index != index ||
+            evidence.local_transaction_id !=
+                request.inventory_local_transaction_id ||
+            evidence.statement_snapshot_id !=
+                request.inventory_statement_snapshot_id ||
+            evidence.row_version_id == 0 ||
+            evidence.candidate_generation == 0 ||
+            evidence.current_generation == 0 ||
+            evidence.candidate_generation != evidence.current_generation ||
+            !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
+          return false;
+        }
+        if (evidence.visibility !=
+                CanonicalMgaVisibilityDecision::kVisible &&
+            evidence.visibility !=
+                CanonicalMgaVisibilityDecision::kInvisible) {
+          return false;
+        }
+        if (evidence.security_decision !=
+                CanonicalMgaSecurityDecision::kAllowed &&
+            evidence.security_decision !=
+                CanonicalMgaSecurityDecision::kDenied) {
+          return false;
+        }
+        if (evidence.visibility ==
+            CanonicalMgaVisibilityDecision::kInvisible) {
+          ++*visibility_filtered;
+        } else if (evidence.security_decision ==
+                   CanonicalMgaSecurityDecision::kDenied) {
+          ++*security_filtered;
+        } else {
+          visible->push_back(index);
+        }
+      }
+      return true;
+    };
+    if (!collect_visible(request.left_row_evidence, &visible_left_indices,
+                         &visibility_filtered_left_row_count,
+                         &security_filtered_left_row_count) ||
+        !collect_visible(request.right_row_evidence, &visible_right_indices,
+                         &visibility_filtered_right_row_count,
+                         &security_filtered_right_row_count)) {
+      return refuse("MGA input-row identity or verdict is invalid");
+    }
+
+    auto filtered_request = request.strategy_request;
+    auto& filtered_key_request =
+        filtered_request.residual_request.key_request;
+    filtered_key_request.left_batch.rows.clear();
+    filtered_key_request.right_batch.rows.clear();
+    for (const auto original : visible_left_indices) {
+      filtered_key_request.left_batch.rows.push_back(
+          original_key_request.left_batch.rows[original]);
+    }
+    for (const auto original : visible_right_indices) {
+      filtered_key_request.right_batch.rows.push_back(
+          original_key_request.right_batch.rows[original]);
+    }
+    filtered_request.residual_request.residual_truth_values.clear();
+    for (const auto left : visible_left_indices) {
+      for (const auto right : visible_right_indices) {
+        filtered_request.residual_request.residual_truth_values.push_back(
+            request.strategy_request.residual_request.residual_truth_values[
+                left * original_right_count + right]);
+      }
+    }
+
+    auto strategy = ExecuteCanonicalJoinStrategy(filtered_request);
+    if (!strategy.diagnostic.ok) {
+      return refuse(strategy.diagnostic.diagnostic_code + ":" +
+                    strategy.diagnostic.detail);
+    }
+    if (request.candidate_evidence.size() !=
+        strategy.strategy_pair_indices.size()) {
+      return refuse("MGA matched-pair evidence cardinality is not bound");
+    }
+    if (!strategy.canonical_multiset_proven ||
+        !strategy.canonical_output_proven) {
+      return refuse("MGA strategy lacks canonical pair/output proof");
+    }
+
+    const auto& key_term = filtered_key_request.key_terms.front();
+    const auto filtered_right_count = visible_right_indices.size();
+    for (std::size_t index = 0; index < request.candidate_evidence.size();
+         ++index) {
+      if (filtered_right_count == 0) {
+        return refuse("matched MGA candidate has no physical right row");
+      }
+      const auto filtered_pair = strategy.strategy_pair_indices[index];
+      const auto filtered_left = filtered_pair / filtered_right_count;
+      const auto filtered_right = filtered_pair % filtered_right_count;
+      if (filtered_left >= visible_left_indices.size() ||
+          filtered_right >= visible_right_indices.size()) {
+        return refuse("matched MGA pair identity is outside filtered input");
+      }
+      const auto original_left = visible_left_indices[filtered_left];
+      const auto original_right = visible_right_indices[filtered_right];
+      const auto original_pair =
+          original_left * original_right_count + original_right;
+      const auto& evidence = request.candidate_evidence[index];
+      if (evidence.pair_index != original_pair ||
+          evidence.local_transaction_id !=
+              request.inventory_local_transaction_id ||
+          evidence.statement_snapshot_id !=
+              request.inventory_statement_snapshot_id ||
+          evidence.left_row_version_id !=
+              request.left_row_evidence[original_left].row_version_id ||
+          evidence.right_row_version_id !=
+              request.right_row_evidence[original_right].row_version_id ||
+          evidence.left_visibility !=
+              CanonicalMgaVisibilityDecision::kVisible ||
+          evidence.right_visibility !=
+              CanonicalMgaVisibilityDecision::kVisible ||
+          evidence.security_decision !=
+              CanonicalMgaSecurityDecision::kAllowed ||
+          evidence.index_candidate_generation == 0 ||
+          evidence.current_index_generation == 0 ||
+          evidence.index_candidate_generation !=
+              evidence.current_index_generation ||
+          !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
+        return refuse("matched MGA candidate evidence is not exact");
+      }
+      const auto& left_key = filtered_key_request.left_batch
+                                 .rows[filtered_left]
+                                 .values[key_term.left_column];
+      const auto& right_key = filtered_key_request.right_batch
+                                  .rows[filtered_right]
+                                  .values[key_term.right_column];
+      auto computed_key_truth = api::EngineSqlTruthValue::unknown;
+      if (left_key.state != api::EngineValueState::sql_null &&
+          right_key.state != api::EngineValueState::sql_null) {
+        const auto left_decoded = DecodeInt64Value(left_key);
+        const auto right_decoded = DecodeInt64Value(right_key);
+        if (!left_decoded.ok() || !right_decoded.ok()) {
+          return refuse("matched MGA exact key encoding is invalid");
+        }
+        computed_key_truth =
+            left_decoded.value == right_decoded.value
+                ? api::EngineSqlTruthValue::true_value
+                : api::EngineSqlTruthValue::false_value;
+      }
+      if (computed_key_truth != api::EngineSqlTruthValue::true_value ||
+          evidence.exact_key_recheck != computed_key_truth) {
+        return refuse("matched MGA candidate failed exact key recheck");
+      }
+    }
+
+    result.diagnostic = {};
+    result.output_batch = std::move(strategy.output_batch);
+    result.candidate_pair_count = request.candidate_evidence.size();
+    result.visible_pair_count = request.candidate_evidence.size();
+    result.visibility_filtered_pair_count = 0;
+    result.security_filtered_pair_count = 0;
+    result.visible_left_row_count = visible_left_indices.size();
+    result.visible_right_row_count = visible_right_indices.size();
+    result.visibility_filtered_left_row_count =
+        visibility_filtered_left_row_count;
+    result.visibility_filtered_right_row_count =
+        visibility_filtered_right_row_count;
+    result.security_filtered_left_row_count =
+        security_filtered_left_row_count;
+    result.security_filtered_right_row_count =
+        security_filtered_right_row_count;
+    result.mga_boundary_proven = true;
+    result.transaction_inventory_evidence_uuid =
+        request.transaction_inventory_evidence_uuid;
+    result.selected_plan_uuid = std::move(strategy.selected_plan_uuid);
+    result.executed_physical_node_id = strategy.executed_physical_node_id;
+    result.causal_counter_id = strategy.causal_counter_id;
+    return result;
   }
 
   auto strategy =

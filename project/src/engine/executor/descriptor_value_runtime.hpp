@@ -1045,12 +1045,29 @@ struct CanonicalJoinMgaCandidateEvidence {
   std::string engine_evidence_uuid;
 };
 
+struct CanonicalJoinMgaInputRowEvidence {
+  std::size_t row_index = 0;
+  std::uint64_t local_transaction_id = 0;
+  std::uint64_t statement_snapshot_id = 0;
+  std::uint64_t row_version_id = 0;
+  CanonicalMgaVisibilityDecision visibility =
+      CanonicalMgaVisibilityDecision::kIndeterminate;
+  CanonicalMgaSecurityDecision security_decision =
+      CanonicalMgaSecurityDecision::kIndeterminate;
+  std::uint64_t candidate_generation = 0;
+  std::uint64_t current_generation = 0;
+  std::string engine_evidence_uuid;
+};
+
 struct CanonicalJoinMgaRequest {
   CanonicalJoinStrategyRequest strategy_request;
   std::uint64_t transaction_inventory_id = 0;
   std::uint64_t inventory_local_transaction_id = 0;
   std::uint64_t inventory_statement_snapshot_id = 0;
   std::string transaction_inventory_evidence_uuid;
+  bool input_row_evidence_profile = false;
+  std::vector<CanonicalJoinMgaInputRowEvidence> left_row_evidence;
+  std::vector<CanonicalJoinMgaInputRowEvidence> right_row_evidence;
   std::vector<CanonicalJoinMgaCandidateEvidence> candidate_evidence;
   std::size_t maximum_boundary_rechecks = 1048576;
 };
@@ -1062,6 +1079,12 @@ struct CanonicalJoinMgaResult {
   std::size_t visible_pair_count = 0;
   std::size_t visibility_filtered_pair_count = 0;
   std::size_t security_filtered_pair_count = 0;
+  std::size_t visible_left_row_count = 0;
+  std::size_t visible_right_row_count = 0;
+  std::size_t visibility_filtered_left_row_count = 0;
+  std::size_t visibility_filtered_right_row_count = 0;
+  std::size_t security_filtered_left_row_count = 0;
+  std::size_t security_filtered_right_row_count = 0;
   bool mga_boundary_proven = false;
   std::string transaction_inventory_evidence_uuid;
   std::string selected_plan_uuid;
