@@ -238,6 +238,64 @@ LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
   return result;
 }
 
+struct LivePairStatisticalExpressionProfile {
+  bool matched{false};
+  bool distinct{false};
+  bool has_filter{false};
+  exec::CanonicalAggregateFunction function =
+      exec::CanonicalAggregateFunction::unknown;
+  std::string transformation_id;
+};
+
+LivePairStatisticalExpressionProfile MatchLivePairStatisticalExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LivePairStatisticalExpressionProfile result;
+  struct FunctionProfile {
+    std::string_view stem;
+    exec::CanonicalAggregateFunction function;
+  };
+  static constexpr std::array<FunctionProfile, 12> kFunctionProfiles = {{
+      {"corr", exec::CanonicalAggregateFunction::corr},
+      {"covar-pop", exec::CanonicalAggregateFunction::covar_pop},
+      {"covar-samp", exec::CanonicalAggregateFunction::covar_samp},
+      {"regr-count", exec::CanonicalAggregateFunction::regr_count},
+      {"regr-avgx", exec::CanonicalAggregateFunction::regr_avgx},
+      {"regr-avgy", exec::CanonicalAggregateFunction::regr_avgy},
+      {"regr-intercept", exec::CanonicalAggregateFunction::regr_intercept},
+      {"regr-r2", exec::CanonicalAggregateFunction::regr_r2},
+      {"regr-slope", exec::CanonicalAggregateFunction::regr_slope},
+      {"regr-sxx", exec::CanonicalAggregateFunction::regr_sxx},
+      {"regr-sxy", exec::CanonicalAggregateFunction::regr_sxy},
+      {"regr-syy", exec::CanonicalAggregateFunction::regr_syy},
+  }};
+
+  for (const auto& profile : kFunctionProfiles) {
+    const std::string prefix =
+        "aggregate.global-" + std::string(profile.stem);
+    if (semantic_variant_id == prefix + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id == prefix + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               prefix + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               prefix + "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.function = profile.function;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -457,7 +515,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   if (count_star) {
     expected_argument_count = 0;
   } else if (has_filter) {
-    expected_argument_count = 2;
+    expected_argument_count = is_pair_statistical ? 3 : 2;
   } else if (is_listagg_overflow_truncate) {
     expected_argument_count = 6;
   } else if (is_listagg_overflow_error) {
@@ -751,7 +809,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       const auto input_type =
           input.batch.columns[value_column].descriptor.canonical_type_name;
-      const bool is_filter_argument = has_filter && argument_ordinal == 1;
+      const bool is_filter_argument =
+          has_filter &&
+          argument_ordinal == (is_pair_statistical ? 2U : 1U);
       if (is_filter_argument) {
         if (input_type != "boolean") {
           result.detail =
@@ -3146,56 +3206,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
            exec::CanonicalAggregateFunction::stddev_samp ||
        unary_aggregate_profile.function ==
            exec::CanonicalAggregateFunction::variance_samp);
-  struct PairStatisticalExpressionProfile {
-    std::string_view semantic_variant;
-    exec::CanonicalAggregateFunction function;
-    std::string_view transformation_id;
-  };
-  static constexpr std::array<PairStatisticalExpressionProfile, 12>
-      kPairStatisticalExpressionProfiles = {{
-          {"aggregate.global-corr-expression.v1",
-           exec::CanonicalAggregateFunction::corr,
-           "canonical.aggregate.global-corr-expression.v1"},
-          {"aggregate.global-covar-pop-expression.v1",
-           exec::CanonicalAggregateFunction::covar_pop,
-           "canonical.aggregate.global-covar-pop-expression.v1"},
-          {"aggregate.global-covar-samp-expression.v1",
-           exec::CanonicalAggregateFunction::covar_samp,
-           "canonical.aggregate.global-covar-samp-expression.v1"},
-          {"aggregate.global-regr-count-expression.v1",
-           exec::CanonicalAggregateFunction::regr_count,
-           "canonical.aggregate.global-regr-count-expression.v1"},
-          {"aggregate.global-regr-avgx-expression.v1",
-           exec::CanonicalAggregateFunction::regr_avgx,
-           "canonical.aggregate.global-regr-avgx-expression.v1"},
-          {"aggregate.global-regr-avgy-expression.v1",
-           exec::CanonicalAggregateFunction::regr_avgy,
-           "canonical.aggregate.global-regr-avgy-expression.v1"},
-          {"aggregate.global-regr-intercept-expression.v1",
-           exec::CanonicalAggregateFunction::regr_intercept,
-           "canonical.aggregate.global-regr-intercept-expression.v1"},
-          {"aggregate.global-regr-r2-expression.v1",
-           exec::CanonicalAggregateFunction::regr_r2,
-           "canonical.aggregate.global-regr-r2-expression.v1"},
-          {"aggregate.global-regr-slope-expression.v1",
-           exec::CanonicalAggregateFunction::regr_slope,
-           "canonical.aggregate.global-regr-slope-expression.v1"},
-          {"aggregate.global-regr-sxx-expression.v1",
-           exec::CanonicalAggregateFunction::regr_sxx,
-           "canonical.aggregate.global-regr-sxx-expression.v1"},
-          {"aggregate.global-regr-sxy-expression.v1",
-           exec::CanonicalAggregateFunction::regr_sxy,
-           "canonical.aggregate.global-regr-sxy-expression.v1"},
-          {"aggregate.global-regr-syy-expression.v1",
-           exec::CanonicalAggregateFunction::regr_syy,
-           "canonical.aggregate.global-regr-syy-expression.v1"},
-      }};
-  const auto pair_statistical_profile = std::ranges::find_if(
-      kPairStatisticalExpressionProfiles, [&](const auto& profile) {
-        return root->semantic_variant_id == profile.semantic_variant;
-      });
-  const bool pair_statistical_expression =
-      pair_statistical_profile != kPairStatisticalExpressionProfiles.end();
+  const auto pair_statistical_profile =
+      MatchLivePairStatisticalExpressionProfile(root->semantic_variant_id);
+  const bool pair_statistical_expression = pair_statistical_profile.matched;
   struct OrderedSetExpressionProfile {
     std::string_view semantic_variant;
     exec::CanonicalAggregateFunction function;
@@ -3287,7 +3300,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     aggregate_function = exec::CanonicalAggregateFunction::json_object_agg;
   }
   if (pair_statistical_expression) {
-    aggregate_function = pair_statistical_profile->function;
+    aggregate_function = pair_statistical_profile.function;
   }
   if (ordered_set_expression) {
     aggregate_function = ordered_set_profile->function;
@@ -3342,8 +3355,10 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   auto prepared_root = PrepareGlobalAggregateRoot(
       request.relational_dag, *root, *input_node, input, aggregate_function,
-      count_star, unary_aggregate_profile.distinct,
-      unary_aggregate_profile.has_filter);
+      count_star,
+      unary_aggregate_profile.distinct || pair_statistical_profile.distinct,
+      unary_aggregate_profile.has_filter ||
+          pair_statistical_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3523,8 +3538,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     aggregate_transformation_id =
         "canonical.aggregate.global-json-object-agg-ordered-expression.v1";
   } else if (pair_statistical_expression) {
-    aggregate_transformation_id =
-        std::string(pair_statistical_profile->transformation_id);
+    aggregate_transformation_id = pair_statistical_profile.transformation_id;
   } else if (ordered_set_expression) {
     aggregate_transformation_id =
         std::string(ordered_set_profile->transformation_id);

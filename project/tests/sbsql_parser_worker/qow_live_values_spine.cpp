@@ -1237,7 +1237,23 @@ sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
   return envelope;
 }
 
+enum class PairStatisticalAggregateKind {
+  kCorr,
+  kCovarPop,
+  kCovarSamp,
+  kRegrCount,
+  kRegrAvgx,
+  kRegrAvgy,
+  kRegrIntercept,
+  kRegrR2,
+  kRegrSlope,
+  kRegrSxx,
+  kRegrSxy,
+  kRegrSyy,
+};
+
 struct PairStatisticalAggregateProfile {
+  PairStatisticalAggregateKind kind;
   std::string_view name;
   std::string_view operation;
   std::string_view semantic_variant;
@@ -1250,7 +1266,8 @@ struct PairStatisticalAggregateProfile {
 
 constexpr PairStatisticalAggregateProfile
     kPairStatisticalAggregateProfiles[] = {
-        {"CORR",
+        {PairStatisticalAggregateKind::kCorr,
+         "CORR",
          "qow.live.values.corr-expression",
          "aggregate.global-corr-expression.v1",
          "a0",
@@ -1258,7 +1275,8 @@ constexpr PairStatisticalAggregateProfile
          "corr_value",
          1.0,
          false},
-        {"COVAR_POP",
+        {PairStatisticalAggregateKind::kCovarPop,
+         "COVAR_POP",
          "qow.live.values.covar-pop-expression",
          "aggregate.global-covar-pop-expression.v1",
          "a1",
@@ -1266,7 +1284,8 @@ constexpr PairStatisticalAggregateProfile
          "covar_pop_value",
          4.0 / 3.0,
          false},
-        {"COVAR_SAMP",
+        {PairStatisticalAggregateKind::kCovarSamp,
+         "COVAR_SAMP",
          "qow.live.values.covar-samp-expression",
          "aggregate.global-covar-samp-expression.v1",
          "a2",
@@ -1274,7 +1293,8 @@ constexpr PairStatisticalAggregateProfile
          "covar_samp_value",
          2.0,
          false},
-        {"REGR_COUNT",
+        {PairStatisticalAggregateKind::kRegrCount,
+         "REGR_COUNT",
          "qow.live.values.regr-count-expression",
          "aggregate.global-regr-count-expression.v1",
          "a3",
@@ -1282,7 +1302,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_count_value",
          3.0,
          true},
-        {"REGR_AVGX",
+        {PairStatisticalAggregateKind::kRegrAvgx,
+         "REGR_AVGX",
          "qow.live.values.regr-avgx-expression",
          "aggregate.global-regr-avgx-expression.v1",
          "a4",
@@ -1290,7 +1311,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_avgx_value",
          2.0,
          false},
-        {"REGR_AVGY",
+        {PairStatisticalAggregateKind::kRegrAvgy,
+         "REGR_AVGY",
          "qow.live.values.regr-avgy-expression",
          "aggregate.global-regr-avgy-expression.v1",
          "a5",
@@ -1298,7 +1320,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_avgy_value",
          4.0,
          false},
-        {"REGR_INTERCEPT",
+        {PairStatisticalAggregateKind::kRegrIntercept,
+         "REGR_INTERCEPT",
          "qow.live.values.regr-intercept-expression",
          "aggregate.global-regr-intercept-expression.v1",
          "a6",
@@ -1306,7 +1329,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_intercept_value",
          0.0,
          false},
-        {"REGR_R2",
+        {PairStatisticalAggregateKind::kRegrR2,
+         "REGR_R2",
          "qow.live.values.regr-r2-expression",
          "aggregate.global-regr-r2-expression.v1",
          "a7",
@@ -1314,7 +1338,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_r2_value",
          1.0,
          false},
-        {"REGR_SLOPE",
+        {PairStatisticalAggregateKind::kRegrSlope,
+         "REGR_SLOPE",
          "qow.live.values.regr-slope-expression",
          "aggregate.global-regr-slope-expression.v1",
          "a8",
@@ -1322,7 +1347,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_slope_value",
          2.0,
          false},
-        {"REGR_SXX",
+        {PairStatisticalAggregateKind::kRegrSxx,
+         "REGR_SXX",
          "qow.live.values.regr-sxx-expression",
          "aggregate.global-regr-sxx-expression.v1",
          "a9",
@@ -1330,7 +1356,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_sxx_value",
          2.0,
          false},
-        {"REGR_SXY",
+        {PairStatisticalAggregateKind::kRegrSxy,
+         "REGR_SXY",
          "qow.live.values.regr-sxy-expression",
          "aggregate.global-regr-sxy-expression.v1",
          "aa",
@@ -1338,7 +1365,8 @@ constexpr PairStatisticalAggregateProfile
          "regr_sxy_value",
          4.0,
          false},
-        {"REGR_SYY",
+        {PairStatisticalAggregateKind::kRegrSyy,
+         "REGR_SYY",
          "qow.live.values.regr-syy-expression",
          "aggregate.global-regr-syy-expression.v1",
          "ab",
@@ -1420,6 +1448,120 @@ GlobalPairStatisticalAggregateExpressionValuesEnvelope(
        "1,2,3,4,5,6,7,8|-|-|-"},
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|11|-|-|-"},
+  };
+  return envelope;
+}
+
+sblr::SblrOperationEnvelope
+GlobalPairStatisticalAggregateModifierValuesEnvelope(
+    const PairStatisticalAggregateProfile& profile,
+    const AggregateModifierProfile modifier) {
+  const bool has_filter = modifier != AggregateModifierProfile::kDistinct;
+  const std::string modifier_digit =
+      modifier == AggregateModifierProfile::kFilter
+          ? "1"
+          : modifier == AggregateModifierProfile::kDistinct ? "2" : "3";
+  const std::string modifier_suffix =
+      modifier == AggregateModifierProfile::kFilter
+          ? "-filter"
+          : modifier == AggregateModifierProfile::kDistinct
+                ? "-distinct"
+                : "-distinct-filter";
+  constexpr std::string_view kExpressionSuffix = "-expression.v1";
+  const std::string semantic_base = std::string(profile.semantic_variant).substr(
+      0, profile.semantic_variant.size() - kExpressionSuffix.size());
+  const std::string semantic_variant =
+      semantic_base + modifier_suffix + std::string(kExpressionSuffix);
+  const auto fixture_uuid = [&](const std::string_view group_prefix,
+                                const std::string_view ordinal) {
+    return PairProfileUuid(std::string(group_prefix) + modifier_digit,
+                           profile.uuid_family, ordinal);
+  };
+  const auto tree_uuid = fixture_uuid("710", "00");
+  const auto y_descriptor = fixture_uuid("730", "01");
+  const auto y_type = fixture_uuid("740", "02");
+  const auto x_descriptor = fixture_uuid("730", "03");
+  const auto x_type = fixture_uuid("740", "04");
+  const auto filter_descriptor = fixture_uuid("730", "05");
+  const auto filter_type = fixture_uuid("740", "06");
+  const auto result_descriptor = fixture_uuid("730", "07");
+  const auto result_type = fixture_uuid("740", "08");
+  const auto y_bound_name = fixture_uuid("750", "09");
+  const auto x_bound_name = fixture_uuid("750", "0a");
+  const auto filter_bound_name = fixture_uuid("750", "0b");
+  const std::string function_children =
+      has_filter ? "22,23,24" : "22,23";
+
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      std::string(profile.operation) + ".modifier");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       y_descriptor + "|" + y_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       x_descriptor + "|" + x_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       filter_descriptor + "|" + filter_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       result_descriptor + "|" + result_type +
+           (profile.count_result ? "|1|-|-|-|-|-" : "|2|-|-|-|-|-")},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|34"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|6|-|66616c7365"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|34"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "9", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "10", "1|-|1|-|-|1|-|38"},
+      {"relational_expression_v1", "11", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "12", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|1|-|3130"},
+      {"relational_expression_v1", "14", "1|-|2|-|-|1|-|34"},
+      {"relational_expression_v1", "15", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "16", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "17", "1|-|2|-|-|1|-|35"},
+      {"relational_expression_v1", "18", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "19", "1|-|1|-|-|1|-|3130"},
+      {"relational_expression_v1", "20", "1|-|2|-|-|1|-|34"},
+      {"relational_expression_v1", "21", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "22",
+       "3|-|1|-|" + y_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "23",
+       "3|-|2|-|" + x_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "24",
+       "3|-|3|-|" + filter_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "25",
+       "4|" + function_children + "|4|" +
+           std::string(profile.function_uuid) + "|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|79"},
+      {"relational_output_v1", "2", "1|2|2|1|1|78"},
+      {"relational_output_v1", "3", "1|3|3|1|2|73656c6563746564"},
+      {"relational_output_v1", "4",
+       "2|25|4|1|0|" + EncodeHex(profile.output_name)},
+      {"relational_values_row_v1", "1", "1,2,3"},
+      {"relational_values_row_v1", "2", "4,5,6"},
+      {"relational_values_row_v1", "3", "7,8,9"},
+      {"relational_values_row_v1", "4", "10,11,12"},
+      {"relational_values_row_v1", "5", "13,14,15"},
+      {"relational_values_row_v1", "6", "16,17,18"},
+      {"relational_values_row_v1", "7", "19,20,21"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3|1,2,3,4,5,6,7"},
+      {"relational_node_v1", "2", "5|0|1|4|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex(semantic_variant) + "|25|-|-|-"},
   };
   return envelope;
 }
@@ -3674,6 +3816,208 @@ bool ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() {
   return passed;
 }
 
+long double PairStatisticalModifierExpected(
+    const PairStatisticalAggregateProfile& profile,
+    const AggregateModifierProfile modifier) {
+  using Pair = std::pair<long double, long double>;
+  const std::vector<Pair> values =
+      modifier == AggregateModifierProfile::kFilter
+          ? std::vector<Pair>{{2.0L, 1.0L}, {4.0L, 2.0L},
+                              {10.0L, 4.0L}, {10.0L, 4.0L}}
+          : modifier == AggregateModifierProfile::kDistinct
+                ? std::vector<Pair>{{2.0L, 1.0L}, {4.0L, 2.0L},
+                                    {8.0L, 3.0L}, {10.0L, 4.0L}}
+                : std::vector<Pair>{{2.0L, 1.0L}, {4.0L, 2.0L},
+                                    {10.0L, 4.0L}};
+  long double sum_y = 0.0L;
+  long double sum_x = 0.0L;
+  for (const auto& [y, x] : values) {
+    sum_y += y;
+    sum_x += x;
+  }
+  const auto count = static_cast<long double>(values.size());
+  const long double mean_y = sum_y / count;
+  const long double mean_x = sum_x / count;
+  long double m2_y = 0.0L;
+  long double m2_x = 0.0L;
+  long double comoment = 0.0L;
+  for (const auto& [y, x] : values) {
+    const long double delta_y = y - mean_y;
+    const long double delta_x = x - mean_x;
+    m2_y += delta_y * delta_y;
+    m2_x += delta_x * delta_x;
+    comoment += delta_y * delta_x;
+  }
+  switch (profile.kind) {
+    case PairStatisticalAggregateKind::kCorr:
+      return comoment / std::sqrt(m2_x * m2_y);
+    case PairStatisticalAggregateKind::kCovarPop:
+      return comoment / count;
+    case PairStatisticalAggregateKind::kCovarSamp:
+      return comoment / (count - 1.0L);
+    case PairStatisticalAggregateKind::kRegrCount:
+      return count;
+    case PairStatisticalAggregateKind::kRegrAvgx:
+      return mean_x;
+    case PairStatisticalAggregateKind::kRegrAvgy:
+      return mean_y;
+    case PairStatisticalAggregateKind::kRegrIntercept:
+      return mean_y - mean_x * comoment / m2_x;
+    case PairStatisticalAggregateKind::kRegrR2:
+      return comoment * comoment / (m2_x * m2_y);
+    case PairStatisticalAggregateKind::kRegrSlope:
+      return comoment / m2_x;
+    case PairStatisticalAggregateKind::kRegrSxx:
+      return m2_x;
+    case PairStatisticalAggregateKind::kRegrSxy:
+      return comoment;
+    case PairStatisticalAggregateKind::kRegrSyy:
+      return m2_y;
+  }
+  return std::numeric_limits<long double>::quiet_NaN();
+}
+
+bool PairStatisticalModifierOutputMatches(
+    const PairStatisticalAggregateProfile& profile,
+    const AggregateModifierProfile modifier,
+    const std::string& actual) {
+  const long double expected =
+      PairStatisticalModifierExpected(profile, modifier);
+  if (profile.count_result) {
+    return actual == std::to_string(static_cast<std::size_t>(expected));
+  }
+  char* parse_end = nullptr;
+  const double decoded = std::strtod(actual.c_str(), &parse_end);
+  return parse_end == actual.c_str() + actual.size() &&
+         std::abs(decoded - static_cast<double>(expected)) <= 1e-9;
+}
+
+bool ValidateGlobalPairStatisticalAggregateModifierValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kPairStatisticalAggregateProfiles) {
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      const auto first = sblr::DispatchSblrOperation(
+          {Context(), GlobalPairStatisticalAggregateModifierValuesEnvelope(
+                          profile, modifier),
+           {}});
+      const auto repeated = sblr::DispatchSblrOperation(
+          {Context(), GlobalPairStatisticalAggregateModifierValuesEnvelope(
+                          profile, modifier),
+           {}});
+      if (!first.api_result.ok) {
+        for (const auto& diagnostic : first.api_result.diagnostics) {
+          std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+        }
+      }
+      const auto& columns = first.api_result.result_shape.columns;
+      const auto& rows = first.api_result.result_shape.rows;
+      const bool exact_output =
+          columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name ==
+              (profile.count_result ? "int64" : "real64") &&
+          columns[0].encoded_descriptor.find(
+              profile.count_result ? "nullability=non_null"
+                                   : "nullability=nullable") !=
+              std::string::npos &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == profile.output_name &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null &&
+          PairStatisticalModifierOutputMatches(
+              profile, modifier, rows[0].fields[0].second.encoded_value);
+      passed &= Require(
+          first.accepted && first.optimizer_admitted &&
+              first.optimizer_selected && first.physical_dag_published &&
+              first.physical_dag_executed &&
+              first.runtime_actuals_attached &&
+              first.canonical_result_published && first.api_result.ok &&
+              first.diagnostics.empty() && first.logical_node_count == 2 &&
+              first.logical_property_count == 0 &&
+              first.physical_node_count == 2 && exact_output,
+          "global " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " did not execute through the selected canonical pair "
+              "statistical spine");
+      passed &= Require(
+          repeated.api_result.ok &&
+              repeated.selected_plan_uuid == first.selected_plan_uuid &&
+              repeated.canonical_result_bytes == first.canonical_result_bytes,
+          "identical global " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " input changed canonical plan/result bytes");
+    }
+  }
+  return passed;
+}
+
+bool ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic() {
+  const auto& profile = kPairStatisticalAggregateProfiles[0];
+  auto non_boolean_filter =
+      GlobalPairStatisticalAggregateModifierValuesEnvelope(
+          profile, AggregateModifierProfile::kFilter);
+  auto non_identifier_filter =
+      GlobalPairStatisticalAggregateModifierValuesEnvelope(
+          profile, AggregateModifierProfile::kFilter);
+  auto filter_arity_drift =
+      GlobalPairStatisticalAggregateModifierValuesEnvelope(
+          profile, AggregateModifierProfile::kFilter);
+  auto distinct_arity_drift =
+      GlobalPairStatisticalAggregateModifierValuesEnvelope(
+          profile, AggregateModifierProfile::kDistinct);
+  for (auto& operand : non_boolean_filter.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "3" || operand.name == "6" ||
+         operand.name == "9" || operand.name == "12" ||
+         operand.name == "15" || operand.name == "18" ||
+         operand.name == "21")) {
+      operand.value = "1|-|3|-|-|1|-|31";
+    }
+  }
+  for (auto& operand : non_identifier_filter.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "25") {
+      operand.value = "4|22,23,3|4|" +
+                      std::string(profile.function_uuid) + "|-|-|-|-";
+    }
+  }
+  for (auto& operand : filter_arity_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "25") {
+      operand.value = "4|22,23|4|" + std::string(profile.function_uuid) +
+                      "|-|-|-|-";
+    }
+  }
+  for (auto& operand : distinct_arity_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "25") {
+      operand.value = "4|22,23,24|4|" +
+                      std::string(profile.function_uuid) + "|-|-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(non_boolean_filter)) &&
+          refused_atomically(std::move(non_identifier_filter)) &&
+          refused_atomically(std::move(filter_arity_drift)) &&
+          refused_atomically(std::move(distinct_arity_drift)),
+      "type-, expression-shape-, or arity-drifted global pair statistical "
+      "modifiers published evidence");
+}
+
 bool ValidateGlobalPairStatisticalAggregateExpressionValuesSpine() {
   bool passed = true;
   for (const auto& profile : kPairStatisticalAggregateProfiles) {
@@ -5106,6 +5450,8 @@ int main() {
                           BooleanAggregateKind::kEvery) &&
                       ValidateGlobalStatisticalAggregateExpressionValuesSpine() &&
                       ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() &&
+                      ValidateGlobalPairStatisticalAggregateModifierValuesSpine() &&
+                      ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic() &&
                       ValidateGlobalPairStatisticalAggregateExpressionValuesSpine() &&
                       ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() &&
                       ValidateGlobalOrderedSetAggregateValuesSpine() &&
