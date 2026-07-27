@@ -23,6 +23,46 @@ exec::CanonicalWindowRuntimeDescriptor RuntimeDescriptor(
              : *found;
 }
 
+exec::CanonicalWindowRuntimeDescriptor RuntimeAggregateDescriptor(
+    const exec::CanonicalAggregateFunction function) {
+  const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  const auto found = std::ranges::find_if(
+      registry, [&](const auto& row) { return row.function == function; });
+  if (found == registry.end()) return {};
+  exec::CanonicalWindowRuntimeDescriptor descriptor;
+  descriptor.abi_version = found->abi_version;
+  descriptor.builtin_id = found->builtin_id;
+  descriptor.function_uuid = found->function_uuid;
+  descriptor.aggregate_function = found->function;
+  return descriptor;
+}
+
+exec::CanonicalRegistryWindowAggregateRequest RegistrySumWindowRequest(
+    exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame()) {
+  auto request = RegistryAverageWindowRequest(std::move(frame));
+  auto& aggregate = request.aggregate_template;
+  aggregate.descriptor = {
+      1, exec::CanonicalAggregateFunction::sum, "sb.aggregate.sum",
+      std::string(kInt64SumUuid), false};
+  aggregate.result_column = request.frames.ordered_batch.columns[4];
+  aggregate.result_column.stable_name = "window_sum";
+  aggregate.result_column.descriptor_id = 5998;
+  return request;
+}
+
+exec::CanonicalRegistryWindowAggregateRequest RegistryMinimumWindowRequest(
+    exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame()) {
+  auto request = RegistryAverageWindowRequest(std::move(frame));
+  auto& aggregate = request.aggregate_template;
+  aggregate.descriptor = {
+      1, exec::CanonicalAggregateFunction::min, "sb.aggregate.min",
+      std::string(kMinimumUuid), false};
+  aggregate.result_column = request.frames.ordered_batch.columns[4];
+  aggregate.result_column.stable_name = "window_min";
+  aggregate.result_column.descriptor_id = 5998;
+  return request;
+}
+
 bool SameValue(const api::EngineTypedValue& left,
                const api::EngineTypedValue& right) {
   return left.descriptor.descriptor_uuid.canonical ==
@@ -92,11 +132,25 @@ bool ValidateRuntimeRegistry() {
     passed &= Require401(
         row.abi_version == 1 &&
             row.function != exec::CanonicalWindowRuntimeFunction::unknown &&
+            !row.aggregate_function.has_value() &&
             !row.builtin_id.empty() && !row.function_uuid.empty() &&
             functions.insert(row.function).second &&
             builtin_ids.insert(row.builtin_id).second &&
             uuids.insert(row.function_uuid).second,
         "canonical runtime registry contains an incomplete or duplicate row");
+  }
+  const auto aggregate_registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  passed &= Require401(aggregate_registry.size() == 43,
+                       "aggregate-as-window registry row count drifted");
+  for (const auto& row : aggregate_registry) {
+    exec::CanonicalWindowRuntimeRequest request;
+    request.descriptor = RuntimeAggregateDescriptor(row.function);
+    const auto result = exec::ExecuteCanonicalWindowRuntime(request);
+    passed &= Require401(
+        !result.diagnostic.ok &&
+            result.diagnostic.diagnostic_code ==
+                "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+        "aggregate identity did not reach unified runtime payload admission");
   }
   return passed;
 }
@@ -179,21 +233,106 @@ bool ValidateValueStrategies() {
 }
 
 bool ValidateAggregateStrategyAndRefusals() {
-  auto aggregate = AggregateWindowRequest();
-  const auto direct = exec::ExecuteCanonicalWindowAggregate(aggregate);
+  auto aggregate = RegistrySumWindowRequest();
+  const auto direct =
+      exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
   exec::CanonicalWindowRuntimeRequest request;
   request.descriptor =
       RuntimeDescriptor(exec::CanonicalWindowRuntimeFunction::int64_sum);
-  request.aggregate = aggregate;
+  request.registry_aggregate = aggregate;
   request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
+  auto runtime = exec::ExecuteCanonicalWindowRuntime(request);
   bool passed = Require401(
       direct.diagnostic.ok &&
-          RuntimeResultAccepted(exec::ExecuteCanonicalWindowRuntime(request),
-                                *request.forced_strategy, direct.values),
-      "aggregate strategy diverged behind the canonical runtime");
+          RuntimeResultAccepted(runtime, *request.forced_strategy,
+                                direct.values) &&
+          runtime.aggregate_registry_bridge_used &&
+          runtime.effective_frame_recomputed &&
+          !runtime.moving_inverse_state_used &&
+          runtime.aggregate_transition_count == direct.transition_count,
+      "SUM seed did not adopt the aggregate-registry window bridge");
+
+  aggregate = RegistrySumWindowRequest();
+  const auto real_payload_descriptor = WindowDescriptor(
+      5103, "real64",
+      "type_uuid=" + WindowUuid(5203) + ";nullability=nullable");
+  aggregate.frames.ordered_batch.columns[4].descriptor =
+      real_payload_descriptor;
+  for (auto& row : aggregate.frames.ordered_batch.rows) {
+    row.values[4].descriptor = real_payload_descriptor;
+  }
+  aggregate.aggregate_template.result_column =
+      RegistryAverageWindowRequest().aggregate_template.result_column;
+  aggregate.aggregate_template.result_column.stable_name = "window_sum_real";
+  const auto broad_sum_direct =
+      exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::sum);
+  request.registry_aggregate = aggregate;
+  request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
+  runtime = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      broad_sum_direct.diagnostic.ok &&
+          RuntimeResultAccepted(runtime, *request.forced_strategy,
+                                broad_sum_direct.values) &&
+          runtime.aggregate_registry_bridge_used &&
+          runtime.effective_frame_recomputed,
+      "generic SUM identity did not admit its broader result profile");
+
+  request.descriptor =
+      RuntimeDescriptor(exec::CanonicalWindowRuntimeFunction::int64_sum);
+  auto refused = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      !refused.diagnostic.ok &&
+          refused.diagnostic.diagnostic_code ==
+              "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" &&
+          refused.values.empty(),
+      "retained int64 SUM seed admitted a broader SUM result profile");
+
+  aggregate = RegistryAverageWindowRequest(PrefixFrame());
+  aggregate.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  const auto average_direct =
+      exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::avg);
+  request.registry_aggregate = aggregate;
+  request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
+  runtime = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      average_direct.diagnostic.ok &&
+          RuntimeResultAccepted(runtime, *request.forced_strategy,
+                                average_direct.values) &&
+          runtime.aggregate_registry_bridge_used &&
+          runtime.moving_inverse_state_used &&
+          !runtime.effective_frame_recomputed &&
+          runtime.aggregate_transition_count == 9 &&
+          runtime.aggregate_inverse_transition_count == 8,
+      "generic AVG identity did not reach moving state through the unified runtime");
+
+  aggregate = RegistryMinimumWindowRequest();
+  const auto minimum_direct =
+      exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::min);
+  request.registry_aggregate = aggregate;
+  request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
+  runtime = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      minimum_direct.diagnostic.ok &&
+          RuntimeResultAccepted(runtime, *request.forced_strategy,
+                                minimum_direct.values) &&
+          runtime.aggregate_registry_bridge_used &&
+          runtime.effective_frame_recomputed &&
+          !runtime.moving_inverse_state_used &&
+          runtime.aggregate_inverse_transition_count == 0,
+      "generic MIN identity did not retain canonical frame recomputation");
 
   request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::ranking;
-  auto refused = exec::ExecuteCanonicalWindowRuntime(request);
+  refused = exec::ExecuteCanonicalWindowRuntime(request);
   passed &= Require401(
       !refused.diagnostic.ok &&
           refused.diagnostic.diagnostic_code ==
@@ -214,6 +353,32 @@ bool ValidateAggregateStrategyAndRefusals() {
               "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" &&
           refused.values.empty(),
       "multiple strategy payloads entered window execution");
+
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::avg);
+  request.descriptor.aggregate_function =
+      exec::CanonicalAggregateFunction::min;
+  request.registry_aggregate = RegistryAverageWindowRequest();
+  refused = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      !refused.diagnostic.ok &&
+          refused.diagnostic.diagnostic_code ==
+              "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR" &&
+          refused.values.empty(),
+      "aggregate enum drift selected an aggregate-as-window identity");
+
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::avg);
+  request.registry_aggregate = RegistrySumWindowRequest();
+  refused = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      !refused.diagnostic.ok &&
+          refused.diagnostic.diagnostic_code ==
+              "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" &&
+          refused.values.empty(),
+      "SUM payload impersonated the generic AVG runtime descriptor");
   return passed;
 }
 

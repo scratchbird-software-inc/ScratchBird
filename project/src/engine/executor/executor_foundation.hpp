@@ -284,13 +284,17 @@ struct CanonicalWindowRuntimeDescriptor {
       CanonicalWindowRuntimeFunction::unknown;
   std::string builtin_id;
   std::string function_uuid;
+  // Native window functions use function. Aggregate-as-window identities use
+  // the QRY-011 registry enum directly and leave function as unknown, avoiding
+  // a duplicate aggregate identity inventory in the window registry.
+  std::optional<CanonicalAggregateFunction> aggregate_function;
 };
 
 struct CanonicalWindowRuntimeRequest {
   CanonicalWindowRuntimeDescriptor descriptor;
   std::optional<CanonicalWindowRankingRequest> ranking;
   std::optional<CanonicalWindowValueRequest> value;
-  std::optional<CanonicalWindowAggregateRequest> aggregate;
+  std::optional<CanonicalRegistryWindowAggregateRequest> registry_aggregate;
   std::optional<CanonicalWindowRuntimeStrategy> forced_strategy;
 };
 
@@ -303,6 +307,11 @@ struct CanonicalWindowRuntimeResult {
   bool every_descriptor_field_consumed = false;
   bool exactly_one_strategy_payload_consumed = false;
   bool retained_strategy_reached = false;
+  bool aggregate_registry_bridge_used = false;
+  bool moving_inverse_state_used = false;
+  bool effective_frame_recomputed = false;
+  std::size_t aggregate_transition_count = 0;
+  std::size_t aggregate_inverse_transition_count = 0;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
   std::string selected_plan_uuid;
