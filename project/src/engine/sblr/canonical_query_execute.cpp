@@ -149,9 +149,12 @@ struct PreparedSortRoot {
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
+  bool distinct{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
   std::vector<api::EngineTypedValue> direct_arguments;
+  std::optional<std::size_t> filter_column;
+  std::uint32_t filter_descriptor_id{0};
   std::vector<exec::CanonicalDescriptorOrderTerm> aggregate_order_terms;
   std::string aggregate_separator{","};
   exec::CanonicalListaggOverflowMode listagg_overflow_mode =
@@ -165,6 +168,51 @@ struct PreparedGlobalAggregateRoot {
   std::string detail;
 };
 
+bool MaterializeAggregateFilterTruthValues(
+    const exec::DescriptorBatch& input,
+    const std::size_t filter_column,
+    const std::uint32_t filter_descriptor_id,
+    std::vector<api::EngineSqlTruthValue>* filter_truth_values,
+    std::string* detail) {
+  if (filter_truth_values == nullptr || detail == nullptr) return false;
+  filter_truth_values->clear();
+  if (filter_column >= input.columns.size() ||
+      input.columns[filter_column].descriptor_id != filter_descriptor_id ||
+      input.columns[filter_column].descriptor.canonical_type_name !=
+          "boolean") {
+    *detail =
+        "global aggregate FILTER input descriptor is not exact canonical "
+        "boolean";
+    return false;
+  }
+  filter_truth_values->reserve(input.rows.size());
+  for (const auto& row : input.rows) {
+    if (filter_column >= row.values.size()) {
+      *detail = "global aggregate FILTER input cardinality is unresolved";
+      return false;
+    }
+    const auto& value = row.values[filter_column];
+    if (value.state == api::EngineValueState::sql_null && value.is_null &&
+        value.encoded_value.empty() && value.binary_value.empty()) {
+      filter_truth_values->push_back(api::EngineSqlTruthValue::unknown);
+    } else if (value.state == api::EngineValueState::value && !value.is_null &&
+               value.binary_value.empty() &&
+               (value.encoded_value == "true" ||
+                value.encoded_value == "false")) {
+      filter_truth_values->push_back(
+          value.encoded_value == "true"
+              ? api::EngineSqlTruthValue::true_value
+              : api::EngineSqlTruthValue::false_value);
+    } else {
+      *detail =
+          "global aggregate FILTER input is not exact SQL boolean "
+          "three-valued state";
+      return false;
+    }
+  }
+  return true;
+}
+
 PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
@@ -176,6 +224,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   result.count_star = count_star;
   const bool is_count = function == exec::CanonicalAggregateFunction::count;
   const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
+  const bool has_filter =
+      root.semantic_variant_id ==
+          "aggregate.global-sum-filter-expression.v1" ||
+      root.semantic_variant_id ==
+          "aggregate.global-sum-distinct-filter-expression.v1";
+  const bool is_distinct =
+      root.semantic_variant_id ==
+          "aggregate.global-sum-distinct-expression.v1" ||
+      root.semantic_variant_id ==
+          "aggregate.global-sum-distinct-filter-expression.v1";
+  result.distinct = is_distinct;
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
   const bool is_min = function == exec::CanonicalAggregateFunction::min;
   const bool is_max = function == exec::CanonicalAggregateFunction::max;
@@ -335,6 +394,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::size_t expected_argument_count = 1;
   if (count_star) {
     expected_argument_count = 0;
+  } else if (has_filter) {
+    expected_argument_count = 2;
   } else if (is_listagg_overflow_truncate) {
     expected_argument_count = 6;
   } else if (is_listagg_overflow_error) {
@@ -628,6 +689,24 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       const auto input_type =
           input.batch.columns[value_column].descriptor.canonical_type_name;
+      const bool is_filter_argument = has_filter && argument_ordinal == 1;
+      if (is_filter_argument) {
+        if (input_type != "boolean") {
+          result.detail =
+              "global aggregate FILTER input must be a canonical boolean "
+              "column";
+          return result;
+        }
+        std::vector<api::EngineSqlTruthValue> filter_truth_values;
+        if (!MaterializeAggregateFilterTruthValues(
+                input.batch, value_column, argument->result_descriptor_id,
+                &filter_truth_values, &result.detail)) {
+          return result;
+        }
+        result.filter_column = value_column;
+        result.filter_descriptor_id = argument->result_descriptor_id;
+        continue;
+      }
       const bool is_order_argument =
           (is_ordered_string_agg && argument_ordinal == 2) ||
           (is_listagg_profile && argument_ordinal == 2) ||
@@ -2931,8 +3010,20 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-count-star.v1";
   const bool count_expression =
       root->semantic_variant_id == "aggregate.global-count-expression.v1";
-  const bool sum_expression =
+  const bool unmodified_sum_expression =
       root->semantic_variant_id == "aggregate.global-sum-expression.v1";
+  const bool sum_filter_expression =
+      root->semantic_variant_id ==
+          "aggregate.global-sum-filter-expression.v1";
+  const bool sum_distinct_expression =
+      root->semantic_variant_id ==
+          "aggregate.global-sum-distinct-expression.v1";
+  const bool sum_distinct_filter_expression =
+      root->semantic_variant_id ==
+          "aggregate.global-sum-distinct-filter-expression.v1";
+  const bool sum_expression =
+      unmodified_sum_expression || sum_filter_expression ||
+      sum_distinct_expression || sum_distinct_filter_expression;
   const bool avg_expression =
       root->semantic_variant_id == "aggregate.global-avg-expression.v1";
   const bool min_expression =
@@ -3287,6 +3378,28 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       }
     }
   }
+  if (prepared_root.filter_column.has_value()) {
+    std::uint64_t filter_memory = 0;
+    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count),
+                         sizeof(api::EngineSqlTruthValue), &filter_memory) ||
+        !CheckedAdd(aggregate_result_memory, filter_memory,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live aggregate FILTER state size overflowed");
+    }
+  }
+  if (prepared_root.distinct) {
+    std::uint64_t distinct_row_overhead = 0;
+    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+                         &distinct_row_overhead) ||
+        !CheckedAdd(aggregate_result_memory, input_memory,
+                    &aggregate_result_memory) ||
+        !CheckedAdd(aggregate_result_memory, distinct_row_overhead,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live aggregate DISTINCT state size overflowed");
+    }
+  }
   if (ordered_collection_expression) {
     std::uint64_t expanded_input_memory = 0;
     std::uint64_t row_overhead_memory = 0;
@@ -3362,6 +3475,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (count_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-count-expression.v1";
+  } else if (sum_distinct_filter_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-sum-distinct-filter-expression.v1";
+  } else if (sum_distinct_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-sum-distinct-expression.v1";
+  } else if (sum_filter_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-sum-filter-expression.v1";
   } else if (sum_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-sum-expression.v1";
@@ -3491,9 +3613,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
        result_column = prepared_root.result_column,
        count_star = prepared_root.count_star,
+       distinct = prepared_root.distinct,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
        direct_arguments = prepared_root.direct_arguments,
+       filter_column = prepared_root.filter_column,
+       filter_descriptor_id = prepared_root.filter_descriptor_id,
        aggregate_order_terms = prepared_root.aggregate_order_terms,
        aggregate_separator = prepared_root.aggregate_separator,
        listagg_overflow_mode = prepared_root.listagg_overflow_mode,
@@ -3529,6 +3654,22 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               "global aggregate input cardinality differs from its selected cost";
           return step;
         }
+        std::optional<std::vector<api::EngineSqlTruthValue>>
+            filter_truth_values;
+        if (filter_column.has_value()) {
+          std::vector<api::EngineSqlTruthValue> materialized_filter;
+          std::string filter_detail;
+          if (!MaterializeAggregateFilterTruthValues(
+                  input_batch, *filter_column, filter_descriptor_id,
+                  &materialized_filter, &filter_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail = std::move(filter_detail);
+            return step;
+          }
+          filter_truth_values = std::move(materialized_filter);
+        }
         exec::DescriptorBatch output_batch;
         if (count_star) {
           exec::CanonicalDescriptorCountRequest aggregate_request;
@@ -3554,6 +3695,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
               value_descriptor_ids;
           aggregate_request.direct_arguments = direct_arguments;
           aggregate_request.result_column = result_column;
+          aggregate_request.filter_truth_values =
+              std::move(filter_truth_values);
+          aggregate_request.distinct = distinct;
           aggregate_request.aggregate_order_terms = aggregate_order_terms;
           aggregate_request.aggregate_separator = aggregate_separator;
           aggregate_request.listagg_overflow_mode = listagg_overflow_mode;

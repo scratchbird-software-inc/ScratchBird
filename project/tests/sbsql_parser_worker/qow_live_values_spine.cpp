@@ -597,6 +597,99 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
   return envelope;
 }
 
+enum class AggregateModifierProfile {
+  kFilter,
+  kDistinct,
+  kDistinctFilter,
+};
+
+std::string_view AggregateModifierName(
+    const AggregateModifierProfile profile) {
+  switch (profile) {
+    case AggregateModifierProfile::kFilter:
+      return "FILTER";
+    case AggregateModifierProfile::kDistinct:
+      return "DISTINCT";
+    case AggregateModifierProfile::kDistinctFilter:
+      return "DISTINCT FILTER";
+  }
+  return "unknown";
+}
+
+sblr::SblrOperationEnvelope GlobalSumModifierValuesEnvelope(
+    const AggregateModifierProfile profile) {
+  const bool has_filter = profile != AggregateModifierProfile::kDistinct;
+  const std::string tree_uuid =
+      profile == AggregateModifierProfile::kFilter
+          ? "019f0000-0000-7000-8000-000000009250"
+          : profile == AggregateModifierProfile::kDistinct
+                ? "019f0000-0000-7000-8000-000000009260"
+                : "019f0000-0000-7000-8000-000000009270";
+  const std::string semantic_variant =
+      profile == AggregateModifierProfile::kFilter
+          ? "6167677265676174652e676c6f62616c2d73756d2d66696c7465722d65787072657373696f6e2e7631"
+          : profile == AggregateModifierProfile::kDistinct
+                ? "6167677265676174652e676c6f62616c2d73756d2d64697374696e63742d65787072657373696f6e2e7631"
+                : "6167677265676174652e676c6f62616c2d73756d2d64697374696e63742d66696c7465722d65787072657373696f6e2e7631";
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.sum-modifier");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000009251|"
+       "019f0000-0000-7400-8000-000000009252|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000009253|"
+       "019f0000-0000-7400-8000-000000009254|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000009255|"
+       "019f0000-0000-7400-8000-000000009256|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3130"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|6|-|54525545"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|6|-|46414c5345"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "6", "1|-|2|-|-|6|-|54525545"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|3330"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|7|-|2d"},
+      {"relational_expression_v1", "9", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "10", "1|-|2|-|-|6|-|54525545"},
+      {"relational_expression_v1", "11", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "12", "1|-|2|-|-|6|-|54525545"},
+      {"relational_expression_v1", "13",
+       "3|-|1|-|019f0000-0000-7500-8000-000000009257|-|-|-"},
+      {"relational_expression_v1", "14",
+       "3|-|2|-|019f0000-0000-7500-8000-000000009258|-|-|-"},
+      {"relational_expression_v1", "15",
+       std::string("4|") + (has_filter ? "13,14" : "13") +
+           "|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2", "1|2|2|1|1|73656c6563746564"},
+      {"relational_output_v1", "3", "2|15|3|1|0|73756d5f76616c7565"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_values_row_v1", "5", "9,10"},
+      {"relational_values_row_v1", "6", "11,12"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2,3,4,5,6"},
+      {"relational_node_v1", "2", "5|0|1|3|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       semantic_variant + "|15|-|-|-"},
+  };
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope GlobalAvgExpressionValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -2722,6 +2815,117 @@ bool ValidateGlobalSumExpressionRefusalIsAtomic() {
       "evidence");
 }
 
+bool ValidateGlobalSumModifierValuesSpine() {
+  bool passed = true;
+  for (const auto profile : {AggregateModifierProfile::kFilter,
+                             AggregateModifierProfile::kDistinct,
+                             AggregateModifierProfile::kDistinctFilter}) {
+    const auto first = sblr::DispatchSblrOperation(
+        {Context(), GlobalSumModifierValuesEnvelope(profile), {}});
+    const auto repeated = sblr::DispatchSblrOperation(
+        {Context(), GlobalSumModifierValuesEnvelope(profile), {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    const std::string_view expected =
+        profile == AggregateModifierProfile::kFilter
+            ? "110"
+            : profile == AggregateModifierProfile::kDistinct ? "100" : "70";
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed &&
+            first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 2 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 2 && columns.size() == 1 &&
+            rows.size() == 1 && rows[0].fields.size() == 1 &&
+            rows[0].fields[0].first == "sum_value" &&
+            rows[0].fields[0].second.state ==
+                api::EngineValueState::value &&
+            !rows[0].fields[0].second.is_null &&
+            rows[0].fields[0].second.encoded_value == expected,
+        "global SUM " + std::string(AggregateModifierName(profile)) +
+            " did not execute through the selected canonical aggregate "
+            "spine");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "identical global SUM " +
+            std::string(AggregateModifierName(profile)) +
+            " input changed canonical plan/result bytes");
+  }
+  return passed;
+}
+
+bool ValidateGlobalSumModifierRefusalIsAtomic() {
+  auto non_boolean_filter =
+      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+  auto non_identifier_filter =
+      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+  auto filter_arity_drift =
+      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kFilter);
+  auto distinct_arity_drift =
+      GlobalSumModifierValuesEnvelope(AggregateModifierProfile::kDistinct);
+  for (auto& operand : non_boolean_filter.operands) {
+    if (operand.type != "relational_expression_v1") continue;
+    if (operand.name == "2" || operand.name == "4" ||
+        operand.name == "6" || operand.name == "10") {
+      operand.value = "1|-|2|-|-|1|-|31";
+    }
+    if (operand.name == "12") {
+      operand.value = "1|-|2|-|-|1|-|30";
+    }
+  }
+  for (auto& operand : non_identifier_filter.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "15") {
+      operand.value =
+          "4|13,2|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
+    }
+  }
+  for (auto& operand : filter_arity_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "15") {
+      operand.value =
+          "4|13|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
+    }
+  }
+  for (auto& operand : distinct_arity_drift.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "15") {
+      operand.value =
+          "4|13,14|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(non_boolean_filter)) &&
+          refused_atomically(std::move(non_identifier_filter)) &&
+          refused_atomically(std::move(filter_arity_drift)) &&
+          refused_atomically(std::move(distinct_arity_drift)),
+      "type-, identity-, or arity-drifted global SUM modifiers published "
+      "evidence");
+}
+
 bool ValidateGlobalAvgExpressionValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), GlobalAvgExpressionValuesEnvelope(), {}});
@@ -4554,6 +4758,8 @@ int main() {
                       ValidateGlobalCountExpressionRefusalIsAtomic() &&
                       ValidateGlobalSumExpressionValuesSpine() &&
                       ValidateGlobalSumExpressionRefusalIsAtomic() &&
+                      ValidateGlobalSumModifierValuesSpine() &&
+                      ValidateGlobalSumModifierRefusalIsAtomic() &&
                       ValidateGlobalAvgExpressionValuesSpine() &&
                       ValidateGlobalAvgExpressionRefusalIsAtomic() &&
                       ValidateGlobalExtremumExpressionValuesSpine(false) &&
