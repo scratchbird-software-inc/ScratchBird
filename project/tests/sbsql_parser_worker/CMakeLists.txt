@@ -758,6 +758,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-405;QOW-LEAF-WIN-012-STATE;development_candidate"
   )
 
+  # QOW-CMAKE-WIN-012-REGISTRY-ALL-V1
+  add_executable(qow_win_012_registry_all_test_v1
+                 qow_win_012_registry_all.cpp)
+  target_compile_features(qow_win_012_registry_all_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_win_012_registry_all_test_v1
+                        PRIVATE sb_engine_executor)
+  add_test(NAME qow_win_012_registry_all_v1
+           COMMAND qow_win_012_registry_all_test_v1)
+  set_tests_properties(qow_win_012_registry_all_v1 PROPERTIES
+    LABELS "qow_closure;QOW-405;QOW-406;QOW-LEAF-WIN-012-STATE;development_candidate"
+  )
+
   # QOW-CMAKE-WIN-012-FILTER-V1
   add_executable(qow_win_012_filter_test_v1 qow_win_012_filter.cpp)
   target_compile_features(qow_win_012_filter_test_v1 PRIVATE cxx_std_20)

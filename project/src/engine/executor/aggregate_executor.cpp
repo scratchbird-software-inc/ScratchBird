@@ -1229,6 +1229,16 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
     encoded.push_back(']');
     return AggregateValue(request.result_column, std::move(encoded));
   }
+  if (function == CanonicalAggregateFunction::regr_count) {
+    if (state.non_null_count > static_cast<std::size_t>(
+                                   std::numeric_limits<std::int64_t>::max())) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
+                            "REGR_COUNT exceeds int64 result profile");
+      return {};
+    }
+    return AggregateValue(request.result_column,
+                          std::to_string(state.non_null_count));
+  }
   if (state.non_null_count == 0) return AggregateNull(request.result_column);
   if (function == CanonicalAggregateFunction::sum) {
     if (IsType(request.result_column, "int64")) {
@@ -1288,16 +1298,6 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
                           FormatAggregateReal(statistic));
   }
   if (IsCanonicalPairStatisticalFunction(function)) {
-    if (function == CanonicalAggregateFunction::regr_count) {
-      if (state.non_null_count > static_cast<std::size_t>(
-                                     std::numeric_limits<std::int64_t>::max())) {
-        *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-OVERFLOW-V1",
-                              "REGR_COUNT exceeds int64 result profile");
-        return {};
-      }
-      return AggregateValue(request.result_column,
-                            std::to_string(state.non_null_count));
-    }
     if (state.non_null_count == 0) return AggregateNull(request.result_column);
     long double statistic = 0.0L;
     switch (function) {

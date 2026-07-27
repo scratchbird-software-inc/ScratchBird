@@ -747,6 +747,16 @@ bool ValidateCanonicalAggregateRegistry() {
                         empty.output_batch.rows[0].values[0].encoded_value ==
                             "0",
                     "empty COUNT(*) did not produce zero");
+  auto empty_regr_count =
+      PairStatisticalRequest(exec::CanonicalAggregateFunction::regr_count);
+  empty_regr_count.input_batch.rows.clear();
+  empty = exec::ExecuteCanonicalAggregateRuntime(empty_regr_count);
+  passed &= Require(empty.diagnostic.ok &&
+                        empty.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::value &&
+                        empty.output_batch.rows[0].values[0].encoded_value ==
+                            "0",
+                    "empty REGR_COUNT did not produce non-NULL zero");
 
   auto malformed = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                            "int64");
