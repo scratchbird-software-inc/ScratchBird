@@ -2174,6 +2174,7 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.hash_entry_count = 0;
     result.retained_entry_count = 0;
     result.candidate_probe_count = 0;
+    result.strategy_key_comparison_count = 0;
     result.canonical_multiset_proven = false;
     result.canonical_output_proven = false;
     result.join_kind = CanonicalAcceptedJoinKind::kInner;
@@ -2227,6 +2228,14 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
       strategy_id = "join.merge-" + std::string(join_kind_id) +
                     ".int64-equality.v1";
       break;
+    case CanonicalJoinStrategyKind::kHashTypedCompositeEquality:
+      strategy_id = "join.hash-" + std::string(join_kind_id) +
+                    ".typed-composite-equality.v1";
+      break;
+    case CanonicalJoinStrategyKind::kMergeTypedCompositeEquality:
+      strategy_id = "join.merge-" + std::string(join_kind_id) +
+                    ".typed-composite-equality.v1";
+      break;
     default:
       return refuse("join strategy is outside the accepted canonical profile");
   }
@@ -2235,24 +2244,40 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     return refuse("join strategy resource contract is invalid");
   }
   const auto& key_request = request.residual_request.key_request;
+  const bool legacy_int64_strategy =
+      request.strategy ==
+          CanonicalJoinStrategyKind::kHashInnerInt64Equality ||
+      request.strategy ==
+          CanonicalJoinStrategyKind::kMergeInnerInt64Equality;
+  const bool hash_strategy =
+      request.strategy ==
+          CanonicalJoinStrategyKind::kHashInnerInt64Equality ||
+      request.strategy ==
+          CanonicalJoinStrategyKind::kHashTypedCompositeEquality;
+  const bool merge_strategy =
+      request.strategy ==
+          CanonicalJoinStrategyKind::kMergeInnerInt64Equality ||
+      request.strategy ==
+          CanonicalJoinStrategyKind::kMergeTypedCompositeEquality;
   if (key_request.key_terms.empty() ||
-      ((request.strategy ==
-            CanonicalJoinStrategyKind::kHashInnerInt64Equality ||
-        request.strategy ==
-            CanonicalJoinStrategyKind::kMergeInnerInt64Equality) &&
-       key_request.key_terms.size() != 1)) {
+      (legacy_int64_strategy && key_request.key_terms.size() != 1)) {
     return refuse("selected join strategy has incompatible key arity");
   }
-  if (request.strategy ==
-          CanonicalJoinStrategyKind::kHashInnerInt64Equality &&
+  if (hash_strategy &&
       (request.maximum_hash_entries == 0 ||
        request.maximum_retained_entries == 0)) {
     return refuse("hash strategy entry resource contract is invalid");
   }
-  if (request.strategy ==
-          CanonicalJoinStrategyKind::kMergeInnerInt64Equality &&
+  if (merge_strategy &&
       request.maximum_retained_entries == 0) {
     return refuse("merge strategy retained-state contract is invalid");
+  }
+  if ((request.strategy ==
+           CanonicalJoinStrategyKind::kHashTypedCompositeEquality ||
+       request.strategy ==
+           CanonicalJoinStrategyKind::kMergeTypedCompositeEquality) &&
+      request.maximum_strategy_key_comparisons == 0) {
+    return refuse("typed strategy comparison resource contract is invalid");
   }
   const PhysicalNodeRecord* selected_node = nullptr;
   for (const auto& node : key_request.physical_dag.nodes) {
@@ -2272,7 +2297,7 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     return refuse(canonical.diagnostic.diagnostic_code + ":" +
                   canonical.diagnostic.detail);
   }
-  if (request.strategy != CanonicalJoinStrategyKind::kNestedLoopInner) {
+  if (legacy_int64_strategy) {
     const auto& term = key_request.key_terms.front();
     if (key_request.left_batch.columns[term.left_column]
                 .descriptor.canonical_type_name != "int64" ||
@@ -2317,10 +2342,7 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.output_batch = std::move(canonical_output.output_batch);
     result.canonical_pair_indices = canonical_multiset;
     result.strategy_pair_indices = std::move(strategy_pair_indices);
-    result.hash_entry_count =
-        request.strategy == CanonicalJoinStrategyKind::kHashInnerInt64Equality
-            ? retained_entry_count
-            : 0;
+    result.hash_entry_count = hash_strategy ? retained_entry_count : 0;
     result.retained_entry_count = retained_entry_count;
     result.candidate_probe_count = candidate_probe_count;
     result.canonical_multiset_proven = true;
@@ -2387,6 +2409,304 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
       return refuse("nested-loop candidate set differs from canonical keys");
     }
     return finish(std::move(strategy_pairs), 0, candidate_probe_count);
+  }
+
+  // QOW-SOURCE-QRY-012-STRATEGY-TYPED-COMPOSITE-V1
+  // Typed hash and merge share one bounded comparator matrix.  The hash route
+  // hashes stable equivalence-class ordinals whose membership is established
+  // only by the canonical typed comparator; it never hashes display bytes.
+  if (request.strategy ==
+          CanonicalJoinStrategyKind::kHashTypedCompositeEquality ||
+      request.strategy ==
+          CanonicalJoinStrategyKind::kMergeTypedCompositeEquality) {
+    const auto row_has_null_key = [&](const DescriptorTuple& row,
+                                      const bool left) {
+      for (const auto& term : key_request.key_terms) {
+        const auto column = left ? term.left_column : term.right_column;
+        if (row.values[column].state == api::EngineValueState::sql_null) {
+          return true;
+        }
+      }
+      return false;
+    };
+    std::vector<std::size_t> left_key_rows;
+    std::vector<std::size_t> right_key_rows;
+    for (std::size_t row = 0; row < key_request.left_batch.rows.size();
+         ++row) {
+      if (!row_has_null_key(key_request.left_batch.rows[row], true)) {
+        left_key_rows.push_back(row);
+      }
+    }
+    for (std::size_t row = 0; row < key_request.right_batch.rows.size();
+         ++row) {
+      if (!row_has_null_key(key_request.right_batch.rows[row], false)) {
+        right_key_rows.push_back(row);
+      }
+    }
+
+    if (request.strategy ==
+            CanonicalJoinStrategyKind::kMergeTypedCompositeEquality &&
+        left_key_rows.size() > std::numeric_limits<std::size_t>::max() -
+                                   right_key_rows.size()) {
+      return refuse("typed strategy retained-state cardinality overflowed");
+    }
+    const auto retained_count =
+        request.strategy ==
+                CanonicalJoinStrategyKind::kHashTypedCompositeEquality
+            ? right_key_rows.size()
+            : left_key_rows.size() + right_key_rows.size();
+    if (retained_count > request.maximum_retained_entries ||
+        (request.strategy ==
+             CanonicalJoinStrategyKind::kHashTypedCompositeEquality &&
+         right_key_rows.size() > request.maximum_hash_entries)) {
+      return refuse("typed strategy retained-state bound was exceeded");
+    }
+
+    const auto bounded_product = [](const std::size_t left,
+                                    const std::size_t right,
+                                    std::size_t* product) {
+      if (product == nullptr ||
+          (left != 0 &&
+           right > std::numeric_limits<std::size_t>::max() / left)) {
+        return false;
+      }
+      *product = left * right;
+      return true;
+    };
+    std::size_t left_cells = 0;
+    std::size_t right_cells = 0;
+    std::size_t cross_cells = 0;
+    if (!bounded_product(left_key_rows.size(), left_key_rows.size(),
+                         &left_cells) ||
+        !bounded_product(right_key_rows.size(), right_key_rows.size(),
+                         &right_cells) ||
+        !bounded_product(left_key_rows.size(), right_key_rows.size(),
+                         &cross_cells) ||
+        left_cells > request.maximum_strategy_key_comparisons ||
+        right_cells >
+            request.maximum_strategy_key_comparisons - left_cells ||
+        cross_cells > request.maximum_strategy_key_comparisons - left_cells -
+                          right_cells) {
+      return refuse("typed strategy comparison matrix bound was exceeded");
+    }
+
+    std::size_t comparison_count = 0;
+    const auto compare_rows = [&](const DescriptorBatch& left_batch,
+                                  const std::size_t left_row,
+                                  const bool left_uses_left_columns,
+                                  const DescriptorBatch& right_batch,
+                                  const std::size_t right_row,
+                                  const bool right_uses_left_columns,
+                                  int* comparison,
+                                  std::string* detail) {
+      if (comparison == nullptr || detail == nullptr) return false;
+      *comparison = 0;
+      detail->clear();
+      for (const auto& term : key_request.key_terms) {
+        if (comparison_count ==
+            request.maximum_strategy_key_comparisons) {
+          *detail = "typed strategy key comparison bound was exceeded";
+          return false;
+        }
+        ++comparison_count;
+        const auto left_column = left_uses_left_columns
+                                     ? term.left_column
+                                     : term.right_column;
+        const auto right_column = right_uses_left_columns
+                                      ? term.left_column
+                                      : term.right_column;
+        const auto compared = CompareCanonicalDescriptorOrderValues(
+            left_batch.rows[left_row].values[left_column],
+            right_batch.rows[right_row].values[right_column],
+            JoinKeyOrderTerm(term, left_uses_left_columns));
+        if (!compared.diagnostic.ok) {
+          *detail = compared.diagnostic.diagnostic_code + ":" +
+                    compared.diagnostic.detail;
+          return false;
+        }
+        *comparison = compared.comparison;
+        if (*comparison != 0) break;
+      }
+      return true;
+    };
+
+    std::vector<std::int8_t> left_comparisons(left_cells, 0);
+    std::vector<std::int8_t> right_comparisons(right_cells, 0);
+    std::vector<std::int8_t> cross_comparisons(cross_cells, 0);
+    std::string comparison_detail;
+    for (std::size_t left = 0; left < left_key_rows.size(); ++left) {
+      for (std::size_t right = left + 1; right < left_key_rows.size();
+           ++right) {
+        int comparison = 0;
+        if (!compare_rows(key_request.left_batch, left_key_rows[left], true,
+                          key_request.left_batch, left_key_rows[right], true,
+                          &comparison, &comparison_detail)) {
+          return refuse("typed strategy left-key comparison is invalid:" +
+                        comparison_detail);
+        }
+        left_comparisons[left * left_key_rows.size() + right] =
+            static_cast<std::int8_t>(comparison);
+        left_comparisons[right * left_key_rows.size() + left] =
+            static_cast<std::int8_t>(-comparison);
+      }
+    }
+    for (std::size_t left = 0; left < right_key_rows.size(); ++left) {
+      for (std::size_t right = left + 1; right < right_key_rows.size();
+           ++right) {
+        int comparison = 0;
+        if (!compare_rows(key_request.right_batch, right_key_rows[left], false,
+                          key_request.right_batch, right_key_rows[right],
+                          false, &comparison, &comparison_detail)) {
+          return refuse("typed strategy right-key comparison is invalid:" +
+                        comparison_detail);
+        }
+        right_comparisons[left * right_key_rows.size() + right] =
+            static_cast<std::int8_t>(comparison);
+        right_comparisons[right * right_key_rows.size() + left] =
+            static_cast<std::int8_t>(-comparison);
+      }
+    }
+    for (std::size_t left = 0; left < left_key_rows.size(); ++left) {
+      for (std::size_t right = 0; right < right_key_rows.size(); ++right) {
+        int comparison = 0;
+        if (!compare_rows(key_request.left_batch, left_key_rows[left], true,
+                          key_request.right_batch, right_key_rows[right],
+                          false, &comparison, &comparison_detail)) {
+          return refuse("typed strategy cross-key comparison is invalid:" +
+                        comparison_detail);
+        }
+        cross_comparisons[left * right_key_rows.size() + right] =
+            static_cast<std::int8_t>(comparison);
+      }
+    }
+
+    std::vector<std::size_t> strategy_pairs;
+    std::size_t candidate_probe_count = 0;
+    const auto right_count = key_request.right_batch.rows.size();
+    const auto retain_pair = [&](const std::size_t left_row,
+                                 const std::size_t right_row) {
+      if (candidate_probe_count == request.maximum_candidate_probes) {
+        return false;
+      }
+      ++candidate_probe_count;
+      const auto pair = left_row * right_count + right_row;
+      if (request.residual_request.residual_truth_values[pair] ==
+          api::EngineSqlTruthValue::true_value) {
+        if (strategy_pairs.size() == request.maximum_output_rows) {
+          return false;
+        }
+        strategy_pairs.push_back(pair);
+      }
+      return true;
+    };
+
+    if (request.strategy ==
+        CanonicalJoinStrategyKind::kHashTypedCompositeEquality) {
+      std::vector<std::size_t> representative_positions;
+      std::unordered_map<std::size_t, std::vector<std::size_t>> right_hash;
+      for (std::size_t position = 0; position < right_key_rows.size();
+           ++position) {
+        std::size_t bucket_id = representative_positions.size();
+        for (std::size_t candidate = 0;
+             candidate < representative_positions.size(); ++candidate) {
+          if (right_comparisons[position * right_key_rows.size() +
+                                representative_positions[candidate]] == 0) {
+            bucket_id = candidate;
+            break;
+          }
+        }
+        if (bucket_id == representative_positions.size()) {
+          representative_positions.push_back(position);
+        }
+        right_hash[bucket_id].push_back(right_key_rows[position]);
+      }
+      for (std::size_t left = 0; left < left_key_rows.size(); ++left) {
+        std::optional<std::size_t> bucket_id;
+        for (std::size_t candidate = 0;
+             candidate < representative_positions.size(); ++candidate) {
+          if (cross_comparisons[left * right_key_rows.size() +
+                                representative_positions[candidate]] == 0) {
+            bucket_id = candidate;
+            break;
+          }
+        }
+        if (!bucket_id.has_value()) continue;
+        for (const auto right_row : right_hash.at(*bucket_id)) {
+          if (!retain_pair(left_key_rows[left], right_row)) {
+            return refuse("typed hash strategy output or probe bound was "
+                          "exceeded");
+          }
+        }
+      }
+      if (candidate_probe_count != canonical.candidate_pair_count) {
+        return refuse(
+            "typed hash strategy candidate set differs from canonical keys");
+      }
+      result.strategy_key_comparison_count = comparison_count;
+      return finish(std::move(strategy_pairs), right_key_rows.size(),
+                    candidate_probe_count);
+    }
+
+    std::vector<std::size_t> left_order(left_key_rows.size());
+    std::vector<std::size_t> right_order(right_key_rows.size());
+    std::iota(left_order.begin(), left_order.end(), 0);
+    std::iota(right_order.begin(), right_order.end(), 0);
+    std::stable_sort(
+        left_order.begin(), left_order.end(), [&](const auto left,
+                                                   const auto right) {
+          return left_comparisons[left * left_key_rows.size() + right] < 0;
+        });
+    std::stable_sort(
+        right_order.begin(), right_order.end(), [&](const auto left,
+                                                     const auto right) {
+          return right_comparisons[left * right_key_rows.size() + right] < 0;
+        });
+    std::size_t left = 0;
+    std::size_t right = 0;
+    while (left < left_order.size() && right < right_order.size()) {
+      const auto comparison =
+          cross_comparisons[left_order[left] * right_key_rows.size() +
+                            right_order[right]];
+      if (comparison < 0) {
+        ++left;
+        continue;
+      }
+      if (comparison > 0) {
+        ++right;
+        continue;
+      }
+      auto left_end = left + 1;
+      auto right_end = right + 1;
+      while (left_end < left_order.size() &&
+             left_comparisons[left_order[left] * left_key_rows.size() +
+                              left_order[left_end]] == 0) {
+        ++left_end;
+      }
+      while (right_end < right_order.size() &&
+             right_comparisons[right_order[right] * right_key_rows.size() +
+                               right_order[right_end]] == 0) {
+        ++right_end;
+      }
+      for (auto left_match = left; left_match < left_end; ++left_match) {
+        for (auto right_match = right; right_match < right_end;
+             ++right_match) {
+          if (!retain_pair(left_key_rows[left_order[left_match]],
+                           right_key_rows[right_order[right_match]])) {
+            return refuse("typed merge strategy output or probe bound was "
+                          "exceeded");
+          }
+        }
+      }
+      left = left_end;
+      right = right_end;
+    }
+    if (candidate_probe_count != canonical.candidate_pair_count) {
+      return refuse(
+          "typed merge strategy candidate set differs from canonical keys");
+    }
+    result.strategy_key_comparison_count = comparison_count;
+    return finish(std::move(strategy_pairs), retained_count,
+                  candidate_probe_count);
   }
 
   if (request.strategy ==

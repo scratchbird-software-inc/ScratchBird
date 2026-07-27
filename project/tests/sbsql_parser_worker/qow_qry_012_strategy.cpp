@@ -205,6 +205,70 @@ exec::CanonicalJoinStrategyRequest TypedNestedRequest() {
   return request;
 }
 
+exec::CanonicalJoinStrategyRequest TypedCompositeRequest() {
+  auto request = TypedNestedRequest();
+  auto& key = request.residual_request.key_request;
+  auto left_decimal = key.left_batch.columns[1].descriptor;
+  auto right_decimal = key.right_batch.columns[1].descriptor;
+  left_decimal.canonical_type_name = "decimal";
+  left_decimal.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000002304;"
+      "nullability=non_null;precision=12;scale=2";
+  right_decimal.canonical_type_name = "decimal";
+  right_decimal.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000002308;"
+      "nullability=non_null;precision=12;scale=2";
+  auto left_boolean = Descriptor(
+      "019f0000-0000-7200-8000-000000002331",
+      "019f0000-0000-7300-8000-000000002332");
+  auto right_boolean = Descriptor(
+      "019f0000-0000-7200-8000-000000002333",
+      "019f0000-0000-7300-8000-000000002334");
+  left_boolean.canonical_type_name = "boolean";
+  right_boolean.canonical_type_name = "boolean";
+  const std::vector<std::string> left_secondary =
+      {"1.00", "2.0", "1.0", "9.00"};
+  const std::vector<std::string> right_secondary =
+      {"1.0", "1.00", "2.00", "9.0"};
+  const std::vector<std::string> left_boolean_values =
+      {"true", "false", "true", "true"};
+  const std::vector<std::string> right_boolean_values =
+      {"true", "true", "false", "true"};
+  key.left_batch.columns[1].descriptor = left_decimal;
+  key.right_batch.columns[1].descriptor = right_decimal;
+  key.left_batch.columns.push_back(
+      {"left_boolean", left_boolean, false, 2305});
+  key.right_batch.columns.push_back(
+      {"right_boolean", right_boolean, false, 2306});
+  for (std::size_t row = 0; row < key.left_batch.rows.size(); ++row) {
+    key.left_batch.rows[row].values[1].descriptor = left_decimal;
+    key.left_batch.rows[row].values[1].encoded_value = left_secondary[row];
+    key.left_batch.rows[row].values.push_back(
+        Value(left_boolean, left_boolean_values[row]));
+  }
+  for (std::size_t row = 0; row < key.right_batch.rows.size(); ++row) {
+    key.right_batch.rows[row].values[1].descriptor = right_decimal;
+    key.right_batch.rows[row].values[1].encoded_value = right_secondary[row];
+    key.right_batch.rows[row].values.push_back(
+        Value(right_boolean, right_boolean_values[row]));
+  }
+  key.physical_dag.nodes[0].output_descriptor_ids = {2301, 2302, 2305};
+  key.physical_dag.nodes[1].output_descriptor_ids = {2303, 2304, 2306};
+  key.physical_dag.nodes[2].output_descriptor_ids =
+      {2301, 2302, 2305, 2303, 2304, 2306};
+  key.key_terms.push_back(
+      {.left_column = 1,
+       .left_expression_descriptor_id = 2302,
+       .right_column = 1,
+       .right_expression_descriptor_id = 2304});
+  key.key_terms.push_back(
+      {.left_column = 2,
+       .left_expression_descriptor_id = 2305,
+       .right_column = 2,
+       .right_expression_descriptor_id = 2306});
+  return request;
+}
+
 void SelectStrategy(exec::CanonicalJoinStrategyRequest* request,
                     const exec::CanonicalJoinStrategyKind strategy,
                     const std::string& implementation_id) {
@@ -271,6 +335,12 @@ std::string StrategyId(const exec::CanonicalJoinStrategyKind strategy,
     case exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality:
       return "join.merge-" + std::string(join_kind) +
              ".int64-equality.v1";
+    case exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality:
+      return "join.hash-" + std::string(join_kind) +
+             ".typed-composite-equality.v1";
+    case exec::CanonicalJoinStrategyKind::kMergeTypedCompositeEquality:
+      return "join.merge-" + std::string(join_kind) +
+             ".typed-composite-equality.v1";
   }
   return {};
 }
@@ -364,6 +434,79 @@ bool ValidateJoinStrategy() {
   passed &= Require(!result.diagnostic.ok &&
                         !result.canonical_multiset_proven,
                     "collated text entered the int64 merge profile");
+
+  // QOW-TEST-QRY-012-STRATEGY-TYPED-COMPOSITE-V1
+  request = TypedCompositeRequest();
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality,
+      "join.hash-inner.typed-composite-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_output_proven &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.hash_entry_count == 3 && result.retained_entry_count == 3 &&
+          result.candidate_probe_count == 3 &&
+          result.strategy_key_comparison_count != 0 &&
+          result.output_batch.rows.size() == 3,
+      "typed composite hash did not match the canonical comparator route");
+
+  request = TypedCompositeRequest();
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kMergeTypedCompositeEquality,
+      "join.merge-inner.typed-composite-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_output_proven &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.hash_entry_count == 0 && result.retained_entry_count == 6 &&
+          result.candidate_probe_count == 3 &&
+          result.strategy_key_comparison_count != 0 &&
+          result.output_batch.rows.size() == 3,
+      "typed composite merge did not match the canonical comparator route");
+
+  request = TypedCompositeRequest();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality,
+      "join.hash-full-outer.typed-composite-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_output_proven &&
+          result.unmatched_left_row_count == 1 &&
+          result.unmatched_right_row_count == 1 &&
+          result.output_batch.rows.size() == 5,
+      "typed composite hash lost canonical full-outer semantics");
+
+  request = TypedCompositeRequest();
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality,
+      "join.hash-inner.typed-composite-equality.v1");
+  request.maximum_strategy_key_comparisons = 10;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      !result.diagnostic.ok && result.output_batch.rows.empty() &&
+          result.strategy_key_comparison_count == 0,
+      "typed composite hash exceeded its comparison-matrix bound");
+
+  request = TypedCompositeRequest();
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kHashTypedCompositeEquality,
+      "join.hash-inner.typed-composite-equality.v1");
+  request.maximum_hash_entries = 2;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "typed composite hash exceeded its entry bound");
+
+  request = TypedCompositeRequest();
+  SelectStrategy(
+      &request, exec::CanonicalJoinStrategyKind::kMergeTypedCompositeEquality,
+      "join.merge-inner.typed-composite-equality.v1");
+  request.maximum_retained_entries = 5;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "typed composite merge exceeded its retained-state bound");
 
   // QOW-TEST-QRY-012-STRATEGY-KIND-V1
   struct JoinKindCase {
