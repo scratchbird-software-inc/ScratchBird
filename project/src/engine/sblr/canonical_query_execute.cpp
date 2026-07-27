@@ -213,6 +213,21 @@ LiveGroupedCountSumProfile MatchLiveGroupedCountSumProfile(
     result.projects_grouping_metadata = true;
     result.transformation_id =
         "canonical.aggregate.rollup-int64-keys-count-sum-grouping.v1";
+  } else if (semantic_variant_id ==
+             "aggregate.cube-int64-keys-count-sum.v1") {
+    result.matched = true;
+    result.key_count = 2;
+    result.grouping_sets = {{{0, 1}}, {{0}}, {{1}}, {}};
+    result.transformation_id =
+        "canonical.aggregate.cube-int64-keys-count-sum.v1";
+  } else if (semantic_variant_id ==
+             "aggregate.cube-int64-keys-count-sum-grouping.v1") {
+    result.matched = true;
+    result.key_count = 2;
+    result.grouping_sets = {{{0, 1}}, {{0}}, {{1}}, {}};
+    result.projects_grouping_metadata = true;
+    result.transformation_id =
+        "canonical.aggregate.cube-int64-keys-count-sum-grouping.v1";
   }
   return result;
 }
@@ -1589,7 +1604,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
         });
     if (key_can_be_omitted && !key_result_column.nullable) {
       result.detail =
-          "grouped COUNT/SUM rollup key result must admit grouping NULL";
+          "grouped COUNT/SUM grouping-set key result must admit grouping NULL";
       return result;
     }
     result.key_result_columns.push_back(std::move(key_result_column));
