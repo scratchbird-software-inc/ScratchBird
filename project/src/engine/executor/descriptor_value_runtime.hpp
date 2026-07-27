@@ -606,7 +606,13 @@ struct CanonicalJoinResidualResult {
 };
 
 enum class CanonicalAcceptedJoinKind : std::uint8_t {
-  kLeftOuter = 1,
+  kCross = 1,
+  kInner,
+  kLeftOuter,
+  kRightOuter,
+  kFullOuter,
+  kLeftSemi,
+  kLeftAnti,
 };
 
 struct CanonicalJoinKindRequest {
@@ -621,6 +627,8 @@ struct CanonicalJoinKindResult {
   DescriptorBatch output_batch;
   std::size_t matched_pair_count = 0;
   std::size_t unmatched_left_row_count = 0;
+  std::size_t unmatched_right_row_count = 0;
+  std::size_t emitted_left_row_count = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;

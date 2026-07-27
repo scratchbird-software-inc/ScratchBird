@@ -174,6 +174,70 @@ bool ValidateJoinKind() {
       "left outer join lost pair order or canonical unmatched NULLs");
 
   auto request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kInner;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok && result.matched_pair_count == 3 &&
+                        result.output_batch.rows.size() == 3 &&
+                        result.output_batch.columns.size() == 4,
+                    "inner join did not preserve accepted pair multiplicity");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok && result.matched_pair_count == 12 &&
+                        result.output_batch.rows.size() == 12,
+                    "cross join did not emit the Cartesian product");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok && result.matched_pair_count == 3 &&
+                        result.emitted_left_row_count == 3 &&
+                        result.output_batch.columns.size() == 2 &&
+                        result.output_batch.rows.size() == 3 &&
+                        ValueEquals(result.output_batch.rows[2].values[1],
+                                    "12"),
+                    "left semi join did not emit each matching left row once");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok &&
+                        result.unmatched_left_row_count == 1 &&
+                        result.emitted_left_row_count == 1 &&
+                        result.output_batch.columns.size() == 2 &&
+                        result.output_batch.rows.size() == 1 &&
+                        ValueEquals(result.output_batch.rows[0].values[1],
+                                    "13"),
+                    "left anti join did not emit only unmatched left rows");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+  request.residual_request.key_request.left_batch.rows.clear();
+  request.residual_request.residual_truth_values.clear();
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok && result.matched_pair_count == 0 &&
+                        result.unmatched_right_row_count == 3 &&
+                        result.output_batch.rows.size() == 3 &&
+                        result.output_batch.columns[0].nullable &&
+                        result.output_batch.columns[1].nullable &&
+                        IsNull(result.output_batch.rows[0].values[0]) &&
+                        ValueEquals(result.output_batch.rows[2].values[3],
+                                    "22"),
+                    "right outer join did not preserve an unmatched right side");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(result.diagnostic.ok && result.matched_pair_count == 3 &&
+                        result.unmatched_left_row_count == 1 &&
+                        result.unmatched_right_row_count == 0 &&
+                        result.output_batch.rows.size() == 4 &&
+                        result.output_batch.columns[0].nullable &&
+                        result.output_batch.columns[3].nullable,
+                    "full outer join did not preserve both nullable sides");
+
+  request = Request();
   request.join_kind = static_cast<exec::CanonicalAcceptedJoinKind>(99);
   result = exec::ExecuteCanonicalJoinKind(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
