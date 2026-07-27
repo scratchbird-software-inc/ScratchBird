@@ -552,6 +552,51 @@ sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values.sum-expression");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000009200"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000009201|"
+       "019f0000-0000-7400-8000-000000009202|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000009203|"
+       "019f0000-0000-7400-8000-000000009204|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|35"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|2d32"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|37"},
+      {"relational_expression_v1", "5",
+       "3|-|1|-|019f0000-0000-7500-8000-000000009205|-|-|-"},
+      {"relational_expression_v1", "6",
+       "4|5|2|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2", "2|6|2|1|0|73756d5f76616c7565"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4"},
+      {"relational_node_v1", "2", "5|0|1|2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "6167677265676174652e676c6f62616c2d73756d2d65787072657373696f6e2e7631|"
+       "6|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -1273,6 +1318,98 @@ bool ValidateGlobalCountExpressionRefusalIsAtomic() {
       "published evidence");
 }
 
+bool ValidateGlobalSumExpressionValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), GlobalSumExpressionValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), GlobalSumExpressionValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.logical_property_count == 0 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 1 &&
+          first.canonical_result_row_count == 1,
+      "VALUES global SUM(expression) did not traverse its selected physical "
+      "DAG");
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name == "int64" &&
+          columns[0].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == "sum_value" &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null &&
+          rows[0].fields[0].second.encoded_value == "10",
+      "global SUM(expression) did not ignore SQL NULL and preserve signed "
+      "int64 state");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical global SUM(expression) input changed canonical plan/result "
+      "bytes");
+  return passed;
+}
+
+bool ValidateGlobalSumExpressionRefusalIsAtomic() {
+  auto function_drift = GlobalSumExpressionValuesEnvelope();
+  auto result_nullability_drift = GlobalSumExpressionValuesEnvelope();
+  auto non_integer_input = GlobalSumExpressionValuesEnvelope();
+  for (auto& operand : function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "6") {
+      operand.value =
+          "4|5|2|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-";
+    }
+  }
+  for (auto& operand : result_nullability_drift.operands) {
+    if (operand.type == "relational_descriptor_v1" && operand.name == "2") {
+      operand.value =
+          "019f0000-0000-7300-8000-000000009203|"
+          "019f0000-0000-7400-8000-000000009204|1|-|-|-|-|-";
+    }
+  }
+  for (auto& operand : non_integer_input.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "1" || operand.name == "3" ||
+         operand.name == "4")) {
+      if (operand.name == "1") operand.value = "1|-|1|-|-|2|-|35";
+      if (operand.name == "3") operand.value = "1|-|1|-|-|2|-|2d32";
+      if (operand.name == "4") operand.value = "1|-|1|-|-|2|-|37";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(function_drift)) &&
+          refused_atomically(std::move(result_nullability_drift)) &&
+          refused_atomically(std::move(non_integer_input)),
+      "function-, result-, or input-type-drifted SUM(expression) published "
+      "evidence");
+}
+
 bool ValidateSortValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), SortValuesEnvelope(), {}});
@@ -1435,6 +1572,8 @@ int main() {
                       ValidateGlobalCountStarRefusalIsAtomic() &&
                       ValidateGlobalCountExpressionValuesSpine() &&
                       ValidateGlobalCountExpressionRefusalIsAtomic() &&
+                      ValidateGlobalSumExpressionValuesSpine() &&
+                      ValidateGlobalSumExpressionRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&

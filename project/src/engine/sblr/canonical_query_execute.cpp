@@ -146,25 +146,32 @@ struct PreparedSortRoot {
   std::string detail;
 };
 
-struct PreparedGlobalCountRoot {
+struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
   std::size_t value_column{0};
   std::uint32_t value_descriptor_id{0};
   exec::CanonicalAggregateDescriptor aggregate_descriptor;
-  exec::ExecutorColumnDescriptor count_column;
+  exec::ExecutorColumnDescriptor result_column;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
 
-PreparedGlobalCountRoot PrepareGlobalCountRoot(
+PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
     const plan::CanonicalLogicalRelationalNode& input_node,
     const MaterializedValues& input,
+    const exec::CanonicalAggregateFunction function,
     const bool count_star) {
-  PreparedGlobalCountRoot result;
+  PreparedGlobalAggregateRoot result;
   result.count_star = count_star;
+  const bool is_count = function == exec::CanonicalAggregateFunction::count;
+  const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
+  if ((!is_count && !is_sum) || (count_star && !is_count)) {
+    result.detail = "global aggregate function profile is not admitted";
+    return result;
+  }
   if (root.output_descriptor_ids.size() != 1 ||
       root.bound_expression_ids.size() != 1 ||
       input.result_bindings.size() != input.batch.columns.size() ||
@@ -173,7 +180,7 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
                         root.output_descriptor_ids.front()) !=
           input_node.output_descriptor_ids.end()) {
     result.detail =
-        "global COUNT input or output descriptor coverage is unresolved";
+        "global aggregate input or output descriptor coverage is unresolved";
     return result;
   }
 
@@ -181,7 +188,7 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
   for (const auto& candidate : dag.outputs) {
     if (candidate.relation_node_id != root.logical_node_id) continue;
     if (output != nullptr) {
-      result.detail = "global COUNT requires exactly one bound output";
+      result.detail = "global aggregate requires exactly one bound output";
       return result;
     }
     output = &candidate;
@@ -190,7 +197,7 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
       output->output_name_utf8.empty() ||
       output->descriptor_id != root.output_descriptor_ids.front() ||
       output->expression_id != root.bound_expression_ids.front()) {
-    result.detail = "global COUNT output lineage is not exact";
+    result.detail = "global aggregate output lineage is not exact";
     return result;
   }
 
@@ -203,24 +210,25 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
         return candidate.descriptor_id == root.output_descriptor_ids.front();
       });
   const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
-  const auto count = std::ranges::find_if(registry, [](const auto& candidate) {
-    return candidate.function == exec::CanonicalAggregateFunction::count;
-  });
+  const auto aggregate = std::ranges::find_if(
+      registry, [&](const auto& candidate) {
+        return candidate.function == function;
+      });
   if (expression == dag.expressions.end() ||
-      descriptor == dag.descriptors.end() || count == registry.end() ||
-      !count->executable ||
+      descriptor == dag.descriptors.end() || aggregate == registry.end() ||
+      !aggregate->executable ||
       expression->expression_kind !=
           api::RelationalExpressionKind::kFunctionCall ||
       expression->child_expression_ids.size() != (count_star ? 0 : 1) ||
       expression->result_descriptor_id != descriptor->descriptor_id ||
       !expression->function_uuid.has_value() ||
-      *expression->function_uuid != count->function_uuid ||
+      *expression->function_uuid != aggregate->function_uuid ||
       expression->bound_name_uuid.has_value() ||
       expression->literal_kind.has_value() ||
       expression->operator_name.has_value() ||
       expression->literal_or_parameter_ref.has_value()) {
     result.detail =
-        "global COUNT function identity or argument binding is invalid";
+        "global aggregate function identity or argument binding is invalid";
     return result;
   }
 
@@ -240,7 +248,7 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
         argument->operator_name.has_value() ||
         argument->literal_or_parameter_ref.has_value()) {
       result.detail =
-          "global COUNT expression is not one bound input identifier";
+          "global aggregate expression is not one bound input identifier";
       return result;
     }
     const auto input_descriptor = std::ranges::find(
@@ -249,7 +257,7 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
         std::ranges::count(input_node.output_descriptor_ids,
                            argument->result_descriptor_id) != 1) {
       result.detail =
-          "global COUNT expression descriptor is not uniquely supplied by "
+          "global aggregate expression descriptor is not uniquely supplied by "
           "its input";
       return result;
     }
@@ -260,32 +268,43 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
         input.batch.columns[result.value_column].descriptor_id !=
             argument->result_descriptor_id) {
       result.detail =
-          "global COUNT expression input ordinal is not descriptor-exact";
+          "global aggregate expression input ordinal is not descriptor-exact";
       return result;
     }
     result.value_descriptor_id = argument->result_descriptor_id;
+    if (is_sum &&
+        input.batch.columns[result.value_column]
+                .descriptor.canonical_type_name != "int64") {
+      result.detail = "global SUM input must be a canonical int64 column";
+      return result;
+    }
   }
-  if (descriptor->nullability != api::RelationalNullability::kNonNull ||
+  const auto expected_nullability =
+      is_sum ? api::RelationalNullability::kNullable
+             : api::RelationalNullability::kNonNull;
+  if (descriptor->nullability != expected_nullability ||
       descriptor->collation_uuid.has_value() ||
       descriptor->timezone_profile_id.has_value() ||
       descriptor->width.has_value() || descriptor->precision.has_value() ||
       descriptor->scale.has_value()) {
-    result.detail =
-        "global COUNT result must be an unqualified non-null int64";
+    result.detail = is_sum
+                        ? "global SUM result must be an unqualified nullable int64"
+                        : "global COUNT result must be an unqualified non-null int64";
     return result;
   }
 
   result.aggregate_descriptor =
-      {count->abi_version, count->function, count->builtin_id,
-       count->function_uuid, count_star};
+      {aggregate->abi_version, aggregate->function, aggregate->builtin_id,
+       aggregate->function_uuid, count_star};
   api::EngineDescriptor engine_descriptor;
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   engine_descriptor.canonical_type_name = "int64";
   engine_descriptor.encoded_descriptor =
-      "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
-  result.count_column = {output->output_name_utf8, engine_descriptor, false,
-                         descriptor->descriptor_id};
+      "type_uuid=" + descriptor->type_uuid + ";nullability=" +
+      (is_sum ? "nullable" : "non_null");
+  result.result_column = {output->output_name_utf8, engine_descriptor, is_sum,
+                          descriptor->descriptor_id};
   exec::CanonicalResultColumnBinding binding;
   binding.physical_column_ordinal = 0;
   binding.visible = true;
@@ -294,7 +313,8 @@ PreparedGlobalCountRoot PrepareGlobalCountRoot(
       output->output_name_utf8,
       descriptor->descriptor_uuid,
       descriptor->type_uuid,
-      exec::CanonicalResultNullability::kNonNull,
+      is_sum ? exec::CanonicalResultNullability::kNullable
+             : exec::CanonicalResultNullability::kNonNull,
       std::nullopt,
       std::nullopt};
   result.result_bindings.push_back(std::move(binding));
@@ -2336,7 +2356,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
 }
 
 CanonicalObjectFreeValuesExecutionResult
-ExecuteCanonicalObjectFreeGlobalCountQuery(
+ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& graph = request.optimizer_request.logical_graph;
@@ -2355,7 +2375,12 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
       root->semantic_variant_id == "aggregate.global-count-star.v1";
   const bool count_expression =
       root->semantic_variant_id == "aggregate.global-count-expression.v1";
-  if (!count_star && !count_expression) return result;
+  const bool sum_expression =
+      root->semantic_variant_id == "aggregate.global-sum-expression.v1";
+  if (!count_star && !count_expression && !sum_expression) return result;
+  const auto aggregate_function =
+      sum_expression ? exec::CanonicalAggregateFunction::sum
+                     : exec::CanonicalAggregateFunction::count;
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
         return node.logical_node_id == root->input_logical_node_ids.front();
@@ -2393,16 +2418,17 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
   if (!request.optimizer_admission.admitted ||
       !request.optimizer_admission.planning_allowed) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-ADMISSION-V1",
-                  "live global COUNT execution lacks optimizer admission");
+                  "live global aggregate execution lacks optimizer admission");
   }
 
   auto input = MaterializeValues(request.relational_dag, *input_node);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
-                  "global COUNT input VALUES: " + input.detail);
+                  "global aggregate input VALUES: " + input.detail);
   }
-  auto prepared_root = PrepareGlobalCountRoot(
-      request.relational_dag, *root, *input_node, input, count_star);
+  auto prepared_root = PrepareGlobalAggregateRoot(
+      request.relational_dag, *root, *input_node, input, aggregate_function,
+      count_star);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -2411,24 +2437,26 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
   const auto input_row_count = input.batch.rows.size();
   std::uint64_t input_memory = 1;
   std::uint64_t total_memory = 0;
-  constexpr std::uint64_t kCountResultMemory =
+  constexpr std::uint64_t kAggregateResultMemory =
       std::numeric_limits<std::int64_t>::digits10 + 2;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, kCountResultMemory, &total_memory)) {
+      !CheckedAdd(input_memory, kAggregateResultMemory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live global COUNT input or result size overflowed");
+                  "live global aggregate input or result size overflowed");
   }
   if (total_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "live global COUNT exceeds the admitted memory budget");
+                  "live global aggregate exceeds the admitted memory budget");
   }
 
   const std::string aggregate_implementation_id =
       count_star ? "aggregate.count-star.v1" : "aggregate.registry-core.v1";
   const std::string aggregate_transformation_id =
       count_star ? "canonical.aggregate.global-count-star.v1"
-                 : "canonical.aggregate.global-count-expression.v1";
+      : count_expression
+          ? "canonical.aggregate.global-count-expression.v1"
+          : "canonical.aggregate.global-sum-expression.v1";
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
@@ -2483,7 +2511,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
   aggregate_registration.accepts_optimizer_publication_v2 = true;
   aggregate_registration.execute =
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
-       count_column = prepared_root.count_column,
+       result_column = prepared_root.result_column,
        count_star = prepared_root.count_star,
        value_column = prepared_root.value_column,
        value_descriptor_id = prepared_root.value_descriptor_id,
@@ -2503,7 +2531,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
-              "global COUNT executor did not receive one typed input batch";
+              "global aggregate executor did not receive one typed input batch";
           return step;
         }
         const auto& input_batch = *inputs.front().materialized_output_batch;
@@ -2512,7 +2540,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
           step.diagnostic.detail =
-              "global COUNT input cardinality differs from its selected cost";
+              "global aggregate input cardinality differs from its selected cost";
           return step;
         }
         exec::DescriptorBatch output_batch;
@@ -2521,7 +2549,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
           aggregate_request.physical_dag = dag;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
           aggregate_request.input_batch = input_batch;
-          aggregate_request.count_column = count_column;
+          aggregate_request.count_column = result_column;
           const auto aggregate_result =
               exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
@@ -2538,7 +2566,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
           aggregate_request.value_columns = {value_column};
           aggregate_request.value_expression_descriptor_ids = {
               value_descriptor_id};
-          aggregate_request.result_column = count_column;
+          aggregate_request.result_column = result_column;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
           const auto aggregate_result =
@@ -2602,7 +2630,7 @@ ExecuteCanonicalObjectFreeGlobalCountQuery(
             ? "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1"
             : execution.issues.front().diagnostic_id,
         execution.issues.empty()
-            ? "live global COUNT selected DAG was not completed"
+            ? "live global aggregate selected DAG was not completed"
             : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
@@ -3146,7 +3174,7 @@ ExecuteCanonicalObjectFreeSortQuery(
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
-  auto aggregate = ExecuteCanonicalObjectFreeGlobalCountQuery(request);
+  auto aggregate = ExecuteCanonicalObjectFreeGlobalAggregateQuery(request);
   if (aggregate.profile_matched) return aggregate;
   auto sort = ExecuteCanonicalObjectFreeSortQuery(request);
   if (sort.profile_matched) return sort;
