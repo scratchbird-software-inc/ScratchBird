@@ -168,6 +168,17 @@ struct PreparedGlobalAggregateRoot {
   std::string detail;
 };
 
+struct PreparedGroupedCountSumRoot {
+  bool ok{false};
+  std::size_t key_column{0};
+  exec::CanonicalDescriptorOrderTerm key_term;
+  exec::ExecutorColumnDescriptor key_result_column;
+  PreparedGlobalAggregateRoot count;
+  PreparedGlobalAggregateRoot sum;
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  std::string detail;
+};
+
 struct LiveUnaryAggregateExpressionProfile {
   bool matched{false};
   bool count_star{false};
@@ -660,7 +671,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     const exec::CanonicalAggregateFunction function,
     const bool count_star,
     const bool distinct,
-    const bool has_filter) {
+    const bool has_filter,
+    const std::uint32_t expected_output_ordinal = 0,
+    const bool allow_sibling_outputs = false) {
   PreparedGlobalAggregateRoot result;
   result.count_star = count_star;
   result.distinct = distinct;
@@ -795,13 +808,20 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const api::RelationalOutputRecord* output = nullptr;
   for (const auto& candidate : dag.outputs) {
     if (candidate.relation_node_id != root.logical_node_id) continue;
+    if (allow_sibling_outputs &&
+        (candidate.ordinal != expected_output_ordinal ||
+         candidate.descriptor_id != root.output_descriptor_ids.front() ||
+         candidate.expression_id != root.bound_expression_ids.front())) {
+      continue;
+    }
     if (output != nullptr) {
       result.detail = "global aggregate requires exactly one bound output";
       return result;
     }
     output = &candidate;
   }
-  if (output == nullptr || output->ordinal != 0 || !output->visible ||
+  if (output == nullptr || output->ordinal != expected_output_ordinal ||
+      !output->visible ||
       output->output_name_utf8.empty() ||
       output->descriptor_id != root.output_descriptor_ids.front() ||
       output->expression_id != root.bound_expression_ids.front()) {
@@ -1394,10 +1414,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   result.result_column = {output->output_name_utf8, engine_descriptor,
                           result_nullable, descriptor->descriptor_id};
   exec::CanonicalResultColumnBinding binding;
-  binding.physical_column_ordinal = 0;
+  binding.physical_column_ordinal = expected_output_ordinal;
   binding.visible = true;
   binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
-      0,
+      expected_output_ordinal,
       output->output_name_utf8,
       descriptor->descriptor_uuid,
       descriptor->type_uuid,
@@ -1409,6 +1429,132 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   if (is_listagg_profile) {
     result.listagg_overflow_mode = listagg_profile.overflow_mode;
   }
+  result.ok = true;
+  return result;
+}
+
+PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& root,
+    const plan::CanonicalLogicalRelationalNode& input_node,
+    const MaterializedValues& input) {
+  PreparedGroupedCountSumRoot result;
+  if (root.output_descriptor_ids.size() != 3 ||
+      root.bound_expression_ids.size() != 3 ||
+      input.result_bindings.size() != input.batch.columns.size() ||
+      input_node.output_descriptor_ids.size() != input.batch.columns.size() ||
+      root.output_descriptor_ids[1] == root.output_descriptor_ids[2]) {
+    result.detail =
+        "grouped COUNT/SUM shape requires one key and two aggregate outputs";
+    return result;
+  }
+
+  const auto key_expression = std::ranges::find_if(
+      dag.expressions, [&](const auto& candidate) {
+        return candidate.expression_id == root.bound_expression_ids[0];
+      });
+  const auto key_descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& candidate) {
+        return key_expression != dag.expressions.end() &&
+               candidate.descriptor_id == key_expression->result_descriptor_id;
+      });
+  const auto key_output = std::ranges::find_if(
+      dag.outputs, [&](const auto& candidate) {
+        return key_expression != dag.expressions.end() &&
+               candidate.relation_node_id == root.logical_node_id &&
+               candidate.expression_id == key_expression->expression_id &&
+               candidate.descriptor_id == key_expression->result_descriptor_id;
+      });
+  if (key_expression == dag.expressions.end() ||
+      key_descriptor == dag.descriptors.end() || key_output == dag.outputs.end() ||
+      key_expression->expression_kind !=
+          api::RelationalExpressionKind::kIdentifier ||
+      !key_expression->child_expression_ids.empty() ||
+      !key_expression->bound_name_uuid.has_value() ||
+      key_expression->function_uuid.has_value() ||
+      key_expression->literal_kind.has_value() ||
+      key_expression->operator_name.has_value() ||
+      key_expression->literal_or_parameter_ref.has_value() ||
+      root.output_descriptor_ids[0] != key_expression->result_descriptor_id ||
+      key_output->ordinal != 0 || !key_output->visible ||
+      key_output->output_name_utf8.empty()) {
+    result.detail =
+        "grouped COUNT/SUM key lineage is not one exact bound identifier";
+    return result;
+  }
+  const auto supplied_key = std::ranges::find(
+      input_node.output_descriptor_ids, key_expression->result_descriptor_id);
+  if (supplied_key == input_node.output_descriptor_ids.end() ||
+      std::ranges::count(input_node.output_descriptor_ids,
+                         key_expression->result_descriptor_id) != 1) {
+    result.detail =
+        "grouped COUNT/SUM key descriptor is not uniquely supplied by input";
+    return result;
+  }
+  result.key_column = static_cast<std::size_t>(std::distance(
+      input_node.output_descriptor_ids.begin(), supplied_key));
+  if (result.key_column >= input.batch.columns.size() ||
+      input.batch.columns[result.key_column].descriptor_id !=
+          key_expression->result_descriptor_id ||
+      input.batch.columns[result.key_column]
+              .descriptor.canonical_type_name != "int64") {
+    result.detail =
+        "grouped COUNT/SUM key must be one descriptor-exact int64 column";
+    return result;
+  }
+
+  result.key_term.column = result.key_column;
+  result.key_term.expression_descriptor_id = key_expression->result_descriptor_id;
+  result.key_term.direction =
+      exec::CanonicalDescriptorOrderDirection::ascending;
+  result.key_term.null_placement =
+      exec::CanonicalDescriptorNullPlacement::last;
+  const auto key_validation = exec::ValidateCanonicalDescriptorOrderTerm(
+      result.key_term, input.batch.columns[result.key_column]);
+  if (!key_validation.ok) {
+    result.detail = key_validation.detail;
+    return result;
+  }
+  result.key_result_column = input.batch.columns[result.key_column];
+  result.key_result_column.stable_name = key_output->output_name_utf8;
+
+  exec::CanonicalResultColumnBinding key_binding;
+  key_binding.physical_column_ordinal = 0;
+  key_binding.visible = true;
+  key_binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+      0,
+      key_output->output_name_utf8,
+      key_descriptor->descriptor_uuid,
+      key_descriptor->type_uuid,
+      ResultNullability(key_descriptor->nullability),
+      key_descriptor->collation_uuid,
+      key_descriptor->timezone_profile_id};
+
+  auto count_root = root;
+  count_root.output_descriptor_ids = {root.output_descriptor_ids[1]};
+  count_root.bound_expression_ids = {root.bound_expression_ids[1]};
+  result.count = PrepareGlobalAggregateRoot(
+      dag, count_root, input_node, input,
+      exec::CanonicalAggregateFunction::count, true, false, false, 1, true);
+  if (!result.count.ok) {
+    result.detail = "grouped COUNT: " + result.count.detail;
+    return result;
+  }
+
+  auto sum_root = root;
+  sum_root.output_descriptor_ids = {root.output_descriptor_ids[2]};
+  sum_root.bound_expression_ids = {root.bound_expression_ids[2]};
+  result.sum = PrepareGlobalAggregateRoot(
+      dag, sum_root, input_node, input,
+      exec::CanonicalAggregateFunction::sum, false, false, false, 2, true);
+  if (!result.sum.ok) {
+    result.detail = "grouped SUM: " + result.sum.detail;
+    return result;
+  }
+
+  result.result_bindings.push_back(std::move(key_binding));
+  result.result_bindings.push_back(result.count.result_bindings.front());
+  result.result_bindings.push_back(result.sum.result_bindings.front());
   result.ok = true;
   return result;
 }
@@ -3447,6 +3593,310 @@ ExecuteCanonicalObjectFreeProjectQuery(
 }
 
 CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeGroupedCountSumQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  constexpr std::string_view kSemanticVariant =
+      "aggregate.grouped-int64-key-count-sum.v1";
+  if (root == graph.nodes.end() ||
+      root->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
+      root->semantic_variant_id != kSemanticVariant) {
+    return result;
+  }
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+
+  if (graph.nodes.size() != 2 || root->input_logical_node_ids.size() != 1 ||
+      root->bound_expression_ids.size() != 3 ||
+      root->output_descriptor_ids.size() != 3 ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
+                  "grouped COUNT/SUM root shape is not exact");
+  }
+  const auto input_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (input_node == graph.nodes.end() || input_node == root ||
+      input_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      input_node->semantic_variant_id != "values.literal-table.v1" ||
+      !input_node->input_logical_node_ids.empty()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
+                  "grouped COUNT/SUM input is not one literal VALUES leaf");
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty() ||
+        !node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty()) {
+      return refuse(
+          "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
+          "grouped COUNT/SUM does not admit object or property authority");
+    }
+  }
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse(
+        "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-ADMISSION-V1",
+        "live grouped COUNT/SUM execution lacks optimizer admission");
+  }
+
+  auto input = MaterializeValues(request.relational_dag, *input_node);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
+                  "grouped COUNT/SUM input VALUES: " + input.detail);
+  }
+  auto prepared_root = PrepareGroupedCountSumRoot(
+      request.relational_dag, *root, *input_node, input);
+  if (!prepared_root.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
+                  prepared_root.detail);
+  }
+
+  const auto input_row_count = input.batch.rows.size();
+  std::uint64_t input_memory = 1;
+  std::uint64_t per_group_memory = 0;
+  std::uint64_t total_memory = 0;
+  constexpr std::uint64_t kGroupedStateOverhead = 256;
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedMultiply(static_cast<std::uint64_t>(input_row_count),
+                       kGroupedStateOverhead, &per_group_memory) ||
+      !CheckedAdd(input_memory, per_group_memory, &total_memory) ||
+      !CheckedAdd(total_memory, input_memory, &total_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live grouped COUNT/SUM memory size overflowed");
+  }
+  if (total_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live grouped COUNT/SUM exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto aggregate_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "grouped-aggregate.capability");
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {input_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       input_row_count,
+       input_memory,
+       0,
+       0},
+      {root->logical_node_id,
+       "aggregate.registry-grouping-sets.v1",
+       aggregate_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kAggregate,
+       exec::PhysicalNodeKind::kAggregate,
+       "canonical.aggregate.grouped-int64-key-count-sum.v1",
+       input_row_count,
+       total_memory,
+       1,
+       1}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "grouped-aggregate.selected-plan",
+      "GROUPED AGGREGATE");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(input_node->logical_node_id, std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-VALUES-V1",
+      "GROUPED AGGREGATE");
+
+  exec::CanonicalPhysicalExecutorRegistration aggregate_registration;
+  aggregate_registration.node_kind = exec::PhysicalNodeKind::kAggregate;
+  aggregate_registration.implementation_id =
+      "aggregate.registry-grouping-sets.v1";
+  aggregate_registration.executor_capability_uuid = aggregate_capability_uuid;
+  aggregate_registration.executor_capability_abi_version = 1;
+  aggregate_registration.engine_owned = true;
+  aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.execute =
+      [prepared_root, input_row_count](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped COUNT/SUM executor did not receive one typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        if (input_batch.rows.size() != input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped COUNT/SUM cardinality differs from selected cost";
+          return step;
+        }
+
+        const auto make_aggregate = [](const PreparedGlobalAggregateRoot& prepared) {
+          exec::CanonicalAggregateRuntimeRequest aggregate;
+          aggregate.descriptor = prepared.aggregate_descriptor;
+          aggregate.value_columns = prepared.value_columns;
+          aggregate.value_expression_descriptor_ids =
+              prepared.value_descriptor_ids;
+          aggregate.direct_arguments = prepared.direct_arguments;
+          aggregate.result_column = prepared.result_column;
+          aggregate.distinct = prepared.distinct;
+          aggregate.aggregate_order_terms = prepared.aggregate_order_terms;
+          aggregate.aggregate_separator = prepared.aggregate_separator;
+          aggregate.listagg_overflow_mode = prepared.listagg_overflow_mode;
+          aggregate.listagg_max_output_bytes =
+              prepared.listagg_max_output_bytes;
+          aggregate.listagg_truncation_indicator =
+              prepared.listagg_truncation_indicator;
+          aggregate.listagg_with_count = prepared.listagg_with_count;
+          aggregate.forced_strategy =
+              exec::CanonicalAggregateExecutionStrategy::serial;
+          return aggregate;
+        };
+
+        exec::CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
+        auto& first = grouped_request.first_aggregate;
+        first.aggregate_request = make_aggregate(prepared_root.count);
+        first.aggregate_request.physical_dag = dag;
+        first.aggregate_request.selected_physical_node_id =
+            node.physical_node_id;
+        first.aggregate_request.input_batch = input_batch;
+        first.group_key_terms = {prepared_root.key_term};
+        first.group_result_columns = {prepared_root.key_result_column};
+        first.grouping_sets = {{{0}}};
+        grouped_request.additional_aggregates = {
+            make_aggregate(prepared_root.sum)};
+
+        const auto aggregate_result =
+            exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
+        if (!aggregate_result.diagnostic.ok) {
+          step.diagnostic = aggregate_result.diagnostic;
+          return step;
+        }
+        if (!aggregate_result.group_identity_proven ||
+            !aggregate_result.shared_state_authority_used ||
+            aggregate_result.aggregate_count != 2) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "grouped COUNT/SUM runtime did not prove shared group identity";
+          return step;
+        }
+        step.authority = aggregate_result.authority;
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = aggregate_result.output_batch.rows.size();
+        step.materialized_output_batch = aggregate_result.output_batch;
+        return step;
+      };
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.inventory_local_transaction_id =
+      planning.physical_dag.local_transaction_id;
+  execution_request.inventory_statement_snapshot_id =
+      planning.physical_dag.statement_snapshot_id;
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(aggregate_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "grouped-aggregate.execution-attempt");
+  execution_request.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(request.context.local_transaction_id) + ":" +
+              std::to_string(
+                  request.context.snapshot_visible_through_local_transaction_id),
+          "grouped-aggregate.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(prepared_root.result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, input_row_count);
+
+  const auto execution =
+      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "live grouped COUNT/SUM selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
+CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
@@ -4576,6 +5026,9 @@ ExecuteCanonicalObjectFreeSortQuery(
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
+  auto grouped_aggregate =
+      ExecuteCanonicalObjectFreeGroupedCountSumQuery(request);
+  if (grouped_aggregate.profile_matched) return grouped_aggregate;
   auto aggregate = ExecuteCanonicalObjectFreeGlobalAggregateQuery(request);
   if (aggregate.profile_matched) return aggregate;
   auto sort = ExecuteCanonicalObjectFreeSortQuery(request);

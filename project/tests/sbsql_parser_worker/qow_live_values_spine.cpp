@@ -1193,6 +1193,88 @@ std::string EncodeHex(const std::string_view value) {
   return encoded;
 }
 
+sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
+    const bool one_group = false) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      one_group ? "qow.live.values.grouped-count-sum-one-group"
+                : "qow.live.values.grouped-count-sum-many-groups");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       one_group ? "019f0000-0000-7000-8000-00000000e100"
+                 : "019f0000-0000-7000-8000-00000000e000"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000e001|"
+       "019f0000-0000-7400-8000-00000000e002|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000e003|"
+       "019f0000-0000-7400-8000-00000000e004|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000e005|"
+       "019f0000-0000-7400-8000-00000000e006|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000e007|"
+       "019f0000-0000-7400-8000-00000000e008|2|-|-|-|-|-"},
+  };
+
+  constexpr std::string_view kManyGroupKeys[] = {
+      "31", "31", "32", "2d", "32", "31"};
+  constexpr std::string_view kOneGroupKeys[] = {
+      "31", "31", "31", "31", "31", "31"};
+  constexpr std::string_view kAmounts[] = {
+      "3130", "3230", "35", "37", "2d", "2d35"};
+  for (std::size_t row = 0; row < std::size(kAmounts); ++row) {
+    const auto key_expression_id = row * 2 + 1;
+    const auto amount_expression_id = key_expression_id + 1;
+    const auto key = one_group ? kOneGroupKeys[row] : kManyGroupKeys[row];
+    const bool null_key = !one_group && row == 3;
+    const bool null_amount = row == 4;
+    envelope.operands.push_back(
+        {"relational_expression_v1", std::to_string(key_expression_id),
+         "1|-|1|-|-|" + std::string(null_key ? "7" : "1") + "|-|" +
+             std::string(key)});
+    envelope.operands.push_back(
+        {"relational_expression_v1", std::to_string(amount_expression_id),
+         "1|-|2|-|-|" + std::string(null_amount ? "7" : "1") + "|-|" +
+             std::string(kAmounts[row])});
+    envelope.operands.push_back(
+        {"relational_values_row_v1", std::to_string(row + 1),
+         std::to_string(key_expression_id) + "," +
+             std::to_string(amount_expression_id)});
+  }
+  envelope.operands.insert(
+      envelope.operands.end(),
+      {{"relational_expression_v1", "13",
+        "3|-|1|-|019f0000-0000-7500-8000-00000000e009|-|-|-"},
+       {"relational_expression_v1", "14",
+        "4|-|3|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-"},
+       {"relational_expression_v1", "15",
+        "3|-|2|-|019f0000-0000-7500-8000-00000000e00a|-|-|-"},
+       {"relational_expression_v1", "16",
+        "4|15|4|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+       {"relational_output_v1", "1", "1|1|1|1|0|67726f75705f6b6579"},
+       {"relational_output_v1", "2", "1|2|2|1|1|616d6f756e74"},
+       {"relational_output_v1", "3", "2|13|1|1|0|67726f75705f6b6579"},
+       {"relational_output_v1", "4", "2|14|3|1|1|726f775f636f756e74"},
+       {"relational_output_v1", "5", "2|16|4|1|2|746f74616c5f616d6f756e74"},
+       {"relational_node_v1", "1", "13|0|-|1,2|1,2,3,4,5,6"},
+       {"relational_node_v1", "2", "5|0|1|1,3,4|-"},
+       {"relational_node_binding_v1", "1",
+        "76616c7565732e6c69746572616c2d7461626c652e7631|"
+        "1,2,3,4,5,6,7,8,9,10,11,12|-|-|-"},
+       {"relational_node_binding_v1", "2",
+        EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
+            "|13,14,16|-|-|-"}});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
     const StatisticalAggregateProfile& profile) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -3647,6 +3729,192 @@ bool ValidateLimitRefusalIsAtomic() {
           refused_atomically(std::move(null_count)) &&
           refused_atomically(std::move(schema_drift)),
       "invalid bound-count LIMIT published partial evidence");
+}
+
+bool ValidateGroupedCountSumValuesSpine() {
+  const auto many = sblr::DispatchSblrOperation(
+      {Context(), GroupedCountSumValuesEnvelope(), {}});
+  const auto many_repeated = sblr::DispatchSblrOperation(
+      {Context(), GroupedCountSumValuesEnvelope(), {}});
+  const auto one = sblr::DispatchSblrOperation(
+      {Context(), GroupedCountSumValuesEnvelope(true), {}});
+  const auto one_repeated = sblr::DispatchSblrOperation(
+      {Context(), GroupedCountSumValuesEnvelope(true), {}});
+  if (!many.api_result.ok) {
+    for (const auto& diagnostic : many.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+
+  const auto traversed = [](const auto& result,
+                            const std::size_t expected_rows) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed &&
+           result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 2 &&
+           result.logical_property_count == 0 &&
+           result.physical_node_count == 2 &&
+           result.canonical_result_column_count == 3 &&
+           result.canonical_result_row_count == expected_rows;
+  };
+  bool passed = true;
+  passed &= Require(
+      traversed(many, 3) && traversed(one, 1),
+      "VALUES grouped COUNT/SUM did not traverse its selected physical DAG");
+
+  const auto& columns = many.api_result.result_shape.columns;
+  const auto& rows = many.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 3 && rows.size() == 3 &&
+          columns[0].canonical_type_name == "int64" &&
+          columns[0].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos &&
+          columns[1].canonical_type_name == "int64" &&
+          columns[1].encoded_descriptor.find("nullability=non_null") !=
+              std::string::npos &&
+          columns[2].canonical_type_name == "int64" &&
+          columns[2].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos,
+      "grouped COUNT/SUM result descriptors lost key or aggregate identity");
+  passed &= Require(
+      rows.size() == 3 && rows[0].fields.size() == 3 &&
+          rows[0].fields[0].first == "group_key" &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[0].fields[1].first == "row_count" &&
+          rows[0].fields[1].second.encoded_value == "3" &&
+          rows[0].fields[2].first == "total_amount" &&
+          rows[0].fields[2].second.encoded_value == "25" &&
+          rows[1].fields.size() == 3 &&
+          rows[1].fields[0].second.encoded_value == "2" &&
+          rows[1].fields[1].second.encoded_value == "2" &&
+          rows[1].fields[2].second.encoded_value == "5" &&
+          rows[2].fields.size() == 3 &&
+          rows[2].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          rows[2].fields[0].second.is_null &&
+          rows[2].fields[1].second.encoded_value == "1" &&
+          rows[2].fields[2].second.encoded_value == "7",
+      "grouped COUNT/SUM did not preserve NULL grouping, COUNT(*), or SUM "
+      "state");
+
+  const auto& one_rows = one.api_result.result_shape.rows;
+  passed &= Require(
+      one_rows.size() == 1 && one_rows[0].fields.size() == 3 &&
+          one_rows[0].fields[0].second.encoded_value == "1" &&
+          one_rows[0].fields[1].second.encoded_value == "6" &&
+          one_rows[0].fields[2].second.encoded_value == "37",
+      "single-group COUNT/SUM did not share one physical group state");
+  passed &= Require(
+      many_repeated.api_result.ok && one_repeated.api_result.ok &&
+          many_repeated.selected_plan_uuid == many.selected_plan_uuid &&
+          many_repeated.canonical_result_bytes ==
+              many.canonical_result_bytes &&
+          one_repeated.selected_plan_uuid == one.selected_plan_uuid &&
+          one_repeated.canonical_result_bytes == one.canonical_result_bytes,
+      "identical grouped COUNT/SUM input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateGroupedCountSumRefusalIsAtomic() {
+  auto missing_sum = GroupedCountSumValuesEnvelope();
+  auto bound_order_drift = GroupedCountSumValuesEnvelope();
+  auto count_function_drift = GroupedCountSumValuesEnvelope();
+  auto sum_function_drift = GroupedCountSumValuesEnvelope();
+  auto non_identifier_key = GroupedCountSumValuesEnvelope();
+  auto output_order_drift = GroupedCountSumValuesEnvelope();
+  for (auto& operand : missing_sum.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "2") {
+      operand.value =
+          EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
+          "|13,14|-|-|-";
+    }
+  }
+  for (auto& operand : bound_order_drift.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "2") {
+      operand.value =
+          EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
+          "|14,13,16|-|-|-";
+    }
+  }
+  for (auto& operand : count_function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "14") {
+      operand.value =
+          "4|-|3|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-";
+    }
+  }
+  for (auto& operand : sum_function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "16") {
+      operand.value =
+          "4|15|4|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-";
+    }
+  }
+  for (auto& operand : non_identifier_key.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "13") {
+      operand.value = "1|-|1|-|-|1|-|31";
+    }
+  }
+  for (auto& operand : output_order_drift.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "5|0|1|3,1,4|-";
+    }
+  }
+
+  const auto refused_atomically = [](const std::string_view label,
+                                     sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    const bool refused =
+        result.accepted && result.optimizer_admitted &&
+        !result.optimizer_selected && !result.physical_dag_published &&
+        !result.physical_dag_executed && !result.runtime_actuals_attached &&
+        !result.canonical_result_published && !result.api_result.ok &&
+        result.physical_node_count == 0 &&
+        result.canonical_result_bytes.empty() &&
+        HasApiDiagnostic(
+            result,
+            "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1");
+    if (!refused) {
+      std::cerr << "grouped COUNT/SUM refusal mismatch (" << label
+                << "): accepted=" << result.accepted
+                << ", admitted=" << result.optimizer_admitted
+                << ", selected=" << result.optimizer_selected
+                << ", published=" << result.physical_dag_published
+                << ", executed=" << result.physical_dag_executed
+                << ", api_ok=" << result.api_result.ok << '\n';
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    return refused;
+  };
+  const auto refused_before_admission =
+      [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return !result.accepted && !result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, "SBLR.PLAN_TREE.INVALID_HANDLE");
+  };
+  return Require(
+      refused_atomically("missing_sum", std::move(missing_sum)) &&
+          refused_atomically("bound_order", std::move(bound_order_drift)) &&
+          refused_atomically("count_function",
+                             std::move(count_function_drift)) &&
+          refused_atomically("sum_function", std::move(sum_function_drift)) &&
+          refused_atomically("non_identifier_key",
+                             std::move(non_identifier_key)) &&
+          refused_before_admission(std::move(output_order_drift)),
+      "shape-, lineage-, function-, key-, or output-order-drifted grouped "
+      "COUNT/SUM published partial evidence");
 }
 
 bool ValidateGlobalCountStarValuesSpine() {
@@ -7147,6 +7415,8 @@ int main() {
                       ValidateProjectRefusalIsAtomic() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
+                      ValidateGroupedCountSumValuesSpine() &&
+                      ValidateGroupedCountSumRefusalIsAtomic() &&
                       ValidateGlobalCountStarValuesSpine() &&
                       ValidateGlobalCountStarRefusalIsAtomic() &&
                       ValidateGlobalCountExpressionValuesSpine() &&
