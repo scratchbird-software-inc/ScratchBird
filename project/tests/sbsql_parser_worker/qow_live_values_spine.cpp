@@ -809,6 +809,152 @@ sblr::SblrOperationEnvelope GlobalBooleanAggregateExpressionValuesEnvelope(
   return envelope;
 }
 
+struct StatisticalAggregateProfile {
+  std::string_view name;
+  std::string_view operation;
+  std::string_view semantic_variant;
+  std::string_view tree_uuid;
+  std::string_view input_descriptor_uuid;
+  std::string_view input_type_uuid;
+  std::string_view result_descriptor_uuid;
+  std::string_view result_type_uuid;
+  std::string_view bound_name_uuid;
+  std::string_view function_uuid;
+  std::string_view output_name;
+  double expected;
+};
+
+constexpr StatisticalAggregateProfile kStatisticalAggregateProfiles[] = {
+    {"STDDEV_POP",
+     "qow.live.values.stddev-pop-expression",
+     "aggregate.global-stddev-pop-expression.v1",
+     "019f0000-0000-7000-8000-000000009900",
+     "019f0000-0000-7300-8000-000000009901",
+     "019f0000-0000-7400-8000-000000009902",
+     "019f0000-0000-7300-8000-000000009903",
+     "019f0000-0000-7400-8000-000000009904",
+     "019f0000-0000-7500-8000-000000009905",
+     "019de5fc-2400-73c9-ba10-4665f741215d",
+     "stddev_pop_value",
+     0.816496580927726},
+    {"VARIANCE_POP",
+     "qow.live.values.variance-pop-expression",
+     "aggregate.global-variance-pop-expression.v1",
+     "019f0000-0000-7000-8000-000000009a00",
+     "019f0000-0000-7300-8000-000000009a01",
+     "019f0000-0000-7400-8000-000000009a02",
+     "019f0000-0000-7300-8000-000000009a03",
+     "019f0000-0000-7400-8000-000000009a04",
+     "019f0000-0000-7500-8000-000000009a05",
+     "019de5fc-2400-7fda-b470-e85414dcb314",
+     "variance_pop_value",
+     2.0 / 3.0},
+    {"STDDEV",
+     "qow.live.values.stddev-expression",
+     "aggregate.global-stddev-expression.v1",
+     "019f0000-0000-7000-8000-000000009b00",
+     "019f0000-0000-7300-8000-000000009b01",
+     "019f0000-0000-7400-8000-000000009b02",
+     "019f0000-0000-7300-8000-000000009b03",
+     "019f0000-0000-7400-8000-000000009b04",
+     "019f0000-0000-7500-8000-000000009b05",
+     "019dffbb-f000-7475-8516-ff003b2bdad9",
+     "stddev_value",
+     1.0},
+    {"VARIANCE",
+     "qow.live.values.variance-expression",
+     "aggregate.global-variance-expression.v1",
+     "019f0000-0000-7000-8000-000000009c00",
+     "019f0000-0000-7300-8000-000000009c01",
+     "019f0000-0000-7400-8000-000000009c02",
+     "019f0000-0000-7300-8000-000000009c03",
+     "019f0000-0000-7400-8000-000000009c04",
+     "019f0000-0000-7500-8000-000000009c05",
+     "019dffbb-f000-7968-82c5-04cffbeb971b",
+     "variance_value",
+     1.0},
+    {"STDDEV_SAMP",
+     "qow.live.values.stddev-samp-expression",
+     "aggregate.global-stddev-samp-expression.v1",
+     "019f0000-0000-7000-8000-000000009d00",
+     "019f0000-0000-7300-8000-000000009d01",
+     "019f0000-0000-7400-8000-000000009d02",
+     "019f0000-0000-7300-8000-000000009d03",
+     "019f0000-0000-7400-8000-000000009d04",
+     "019f0000-0000-7500-8000-000000009d05",
+     "019dffbb-f000-7d99-a495-70f9c3b1b587",
+     "stddev_samp_value",
+     1.0},
+    {"VARIANCE_SAMP",
+     "qow.live.values.variance-samp-expression",
+     "aggregate.global-variance-samp-expression.v1",
+     "019f0000-0000-7000-8000-000000009e00",
+     "019f0000-0000-7300-8000-000000009e01",
+     "019f0000-0000-7400-8000-000000009e02",
+     "019f0000-0000-7300-8000-000000009e03",
+     "019f0000-0000-7400-8000-000000009e04",
+     "019f0000-0000-7500-8000-000000009e05",
+     "019dffbb-f000-732b-8a0c-2aa88b04f3c5",
+     "variance_samp_value",
+     1.0},
+};
+
+std::string EncodeHex(const std::string_view value) {
+  constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const auto byte : value) {
+    const auto octet = static_cast<unsigned char>(byte);
+    encoded.push_back(kHex[octet >> 4]);
+    encoded.push_back(kHex[octet & 0x0f]);
+  }
+  return encoded;
+}
+
+sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
+    const StatisticalAggregateProfile& profile) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", std::string(profile.operation));
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", std::string(profile.tree_uuid)},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       std::string(profile.input_descriptor_uuid) + "|" +
+           std::string(profile.input_type_uuid) + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       std::string(profile.result_descriptor_uuid) + "|" +
+           std::string(profile.result_type_uuid) + "|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|33"},
+      {"relational_expression_v1", "5",
+       "3|-|1|-|" + std::string(profile.bound_name_uuid) + "|-|-|-"},
+      {"relational_expression_v1", "6",
+       "4|5|2|" + std::string(profile.function_uuid) + "|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2",
+       "2|6|2|1|0|" + EncodeHex(profile.output_name)},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4"},
+      {"relational_node_v1", "2", "5|0|1|2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex(profile.semantic_variant) + "|6|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -1925,6 +2071,125 @@ bool ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
           "(expression) published evidence");
 }
 
+bool ValidateGlobalStatisticalAggregateExpressionValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kStatisticalAggregateProfiles) {
+    const auto first = sblr::DispatchSblrOperation(
+        {Context(),
+         GlobalStatisticalAggregateExpressionValuesEnvelope(profile), {}});
+    const auto repeated = sblr::DispatchSblrOperation(
+        {Context(),
+         GlobalStatisticalAggregateExpressionValuesEnvelope(profile), {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed &&
+            first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 2 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 2 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1,
+        "VALUES global " + std::string(profile.name) +
+            "(expression) did not traverse its selected physical DAG");
+
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    bool typed_result =
+        columns.size() == 1 && rows.size() == 1 &&
+        columns[0].canonical_type_name == "real64" &&
+        columns[0].encoded_descriptor.find("nullability=nullable") !=
+            std::string::npos &&
+        rows[0].fields.size() == 1 &&
+        rows[0].fields[0].first == profile.output_name &&
+        rows[0].fields[0].second.state == api::EngineValueState::value &&
+        !rows[0].fields[0].second.is_null;
+    if (typed_result) {
+      const auto& encoded = rows[0].fields[0].second.encoded_value;
+      char* end = nullptr;
+      const double observed = std::strtod(encoded.c_str(), &end);
+      const double delta = observed - profile.expected;
+      typed_result = end == encoded.c_str() + encoded.size() &&
+                     delta >= -1e-12 && delta <= 1e-12;
+    }
+    passed &= Require(
+        typed_result,
+        "global " + std::string(profile.name) +
+            "(expression) did not ignore SQL NULL or publish its typed "
+            "statistical result");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "identical global " + std::string(profile.name) +
+            "(expression) input changed canonical plan/result bytes");
+  }
+  return passed;
+}
+
+bool ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() {
+  bool passed = true;
+  for (const auto& profile : kStatisticalAggregateProfiles) {
+    auto function_drift =
+        GlobalStatisticalAggregateExpressionValuesEnvelope(profile);
+    auto result_nullability_drift =
+        GlobalStatisticalAggregateExpressionValuesEnvelope(profile);
+    auto non_integer_input =
+        GlobalStatisticalAggregateExpressionValuesEnvelope(profile);
+    for (auto& operand : function_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "6") {
+        operand.value =
+            "4|5|2|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+      }
+    }
+    for (auto& operand : result_nullability_drift.operands) {
+      if (operand.type == "relational_descriptor_v1" &&
+          operand.name == "2") {
+        operand.value = std::string(profile.result_descriptor_uuid) + "|" +
+                        std::string(profile.result_type_uuid) +
+                        "|1|-|-|-|-|-";
+      }
+    }
+    for (auto& operand : non_integer_input.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "1" || operand.name == "3" ||
+           operand.name == "4")) {
+        const std::string encoded = operand.name == "1"
+                                        ? "31"
+                                        : (operand.name == "3" ? "32" : "33");
+        operand.value = "1|-|1|-|-|2|-|" + encoded;
+      }
+    }
+    const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+      const auto result = sblr::DispatchSblrOperation(
+          {Context(), std::move(envelope), {}});
+      return result.accepted && result.optimizer_admitted &&
+             !result.optimizer_selected && !result.physical_dag_published &&
+             !result.physical_dag_executed &&
+             !result.runtime_actuals_attached &&
+             !result.canonical_result_published && !result.api_result.ok &&
+             result.physical_node_count == 0 &&
+             result.canonical_result_bytes.empty() &&
+             HasApiDiagnostic(
+                 result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+    };
+    passed &= Require(
+        refused_atomically(std::move(function_drift)) &&
+            refused_atomically(std::move(result_nullability_drift)) &&
+            refused_atomically(std::move(non_integer_input)),
+        "function-, result-, or input-type-drifted " +
+            std::string(profile.name) + "(expression) published evidence");
+  }
+  return passed;
+}
+
 bool ValidateSortValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), SortValuesEnvelope(), {}});
@@ -2107,6 +2372,8 @@ int main() {
                           BooleanAggregateKind::kEvery) &&
                       ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
                           BooleanAggregateKind::kEvery) &&
+                      ValidateGlobalStatisticalAggregateExpressionValuesSpine() &&
+                      ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&

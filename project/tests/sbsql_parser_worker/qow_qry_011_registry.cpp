@@ -450,20 +450,29 @@ bool ValidateCanonicalAggregateRegistry() {
                       "pair statistical state or merge parity failed");
   }
 
-  auto singleton = StatisticalRequest(
-      exec::CanonicalAggregateFunction::stddev_samp);
-  singleton.input_batch.rows.resize(1);
-  auto boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
-  passed &= Require(boundary.diagnostic.ok &&
-                        boundary.output_batch.rows[0].values[0].state ==
-                            api::EngineValueState::sql_null,
-                    "sample standard deviation singleton was not NULL");
-  singleton = StatisticalRequest(
-      exec::CanonicalAggregateFunction::variance_pop);
-  singleton.input_batch.rows.resize(1);
-  boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
-  passed &= Require(NearScalar(boundary, 0.0),
-                    "population variance singleton was not zero");
+  exec::CanonicalAggregateRuntimeResult boundary;
+  for (const auto function : {
+           exec::CanonicalAggregateFunction::variance_pop,
+           exec::CanonicalAggregateFunction::stddev_pop}) {
+    auto singleton = StatisticalRequest(function);
+    singleton.input_batch.rows.resize(1);
+    boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
+    passed &= Require(NearScalar(boundary, 0.0),
+                      "population statistic singleton was not zero");
+  }
+  for (const auto function : {
+           exec::CanonicalAggregateFunction::variance,
+           exec::CanonicalAggregateFunction::stddev,
+           exec::CanonicalAggregateFunction::variance_samp,
+           exec::CanonicalAggregateFunction::stddev_samp}) {
+    auto singleton = StatisticalRequest(function);
+    singleton.input_batch.rows.resize(1);
+    boundary = exec::ExecuteCanonicalAggregateRuntime(singleton);
+    passed &= Require(boundary.diagnostic.ok &&
+                          boundary.output_batch.rows[0].values[0].state ==
+                              api::EngineValueState::sql_null,
+                      "sample statistic singleton was not NULL");
+  }
 
   auto pair_singleton =
       PairStatisticalRequest(exec::CanonicalAggregateFunction::corr);
@@ -768,6 +777,21 @@ bool ValidateCanonicalAggregateRegistry() {
                               api::EngineValueState::sql_null,
                       "empty BOOL_AND/BOOL_OR/EVERY did not produce typed SQL "
                       "NULL");
+  }
+  for (const auto function : {
+           exec::CanonicalAggregateFunction::variance_pop,
+           exec::CanonicalAggregateFunction::stddev_pop,
+           exec::CanonicalAggregateFunction::variance,
+           exec::CanonicalAggregateFunction::stddev,
+           exec::CanonicalAggregateFunction::variance_samp,
+           exec::CanonicalAggregateFunction::stddev_samp}) {
+    auto empty_statistic = Request(function, 0, 2101, "real64");
+    empty_statistic.input_batch.rows.clear();
+    empty = exec::ExecuteCanonicalAggregateRuntime(empty_statistic);
+    passed &= Require(empty.diagnostic.ok &&
+                          empty.output_batch.rows[0].values[0].state ==
+                              api::EngineValueState::sql_null,
+                      "empty unary statistic did not produce typed SQL NULL");
   }
   auto empty_count = Request(exec::CanonicalAggregateFunction::count, 0, 0,
                              "int64", true);

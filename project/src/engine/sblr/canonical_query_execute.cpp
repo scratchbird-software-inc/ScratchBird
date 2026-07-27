@@ -177,8 +177,23 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::bool_or;
   const bool is_every = function == exec::CanonicalAggregateFunction::every;
   const bool is_boolean = is_bool_and || is_bool_or || is_every;
+  const bool is_stddev_pop =
+      function == exec::CanonicalAggregateFunction::stddev_pop;
+  const bool is_variance_pop =
+      function == exec::CanonicalAggregateFunction::variance_pop;
+  const bool is_stddev =
+      function == exec::CanonicalAggregateFunction::stddev;
+  const bool is_variance =
+      function == exec::CanonicalAggregateFunction::variance;
+  const bool is_stddev_samp =
+      function == exec::CanonicalAggregateFunction::stddev_samp;
+  const bool is_variance_samp =
+      function == exec::CanonicalAggregateFunction::variance_samp;
+  const bool is_statistical =
+      is_stddev_pop || is_variance_pop || is_stddev || is_variance ||
+      is_stddev_samp || is_variance_samp;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
-       !is_boolean) ||
+       !is_boolean && !is_statistical) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -283,13 +298,16 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       return result;
     }
     result.value_descriptor_id = argument->result_descriptor_id;
-    if ((is_sum || is_avg || is_min || is_max) &&
+    if ((is_sum || is_avg || is_min || is_max || is_statistical) &&
         input.batch.columns[result.value_column]
                 .descriptor.canonical_type_name != "int64") {
       if (is_sum) {
         result.detail = "global SUM input must be a canonical int64 column";
       } else if (is_avg) {
         result.detail = "global AVG input must be a canonical int64 column";
+      } else if (is_statistical) {
+        result.detail =
+            "global unary statistical input must be a canonical int64 column";
       } else {
         result.detail =
             "global MIN/MAX input must be a canonical int64 column";
@@ -306,7 +324,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     }
   }
   const bool result_nullable =
-      is_sum || is_avg || is_min || is_max || is_boolean;
+      is_sum || is_avg || is_min || is_max || is_boolean || is_statistical;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -328,6 +346,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       result.detail =
           "global BOOL_AND/BOOL_OR/EVERY result must be an unqualified "
           "nullable boolean";
+    } else if (is_statistical) {
+      result.detail =
+          "global unary statistical result must be an unqualified nullable "
+          "real64";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -342,7 +364,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   engine_descriptor.canonical_type_name =
-      is_avg ? "real64" : (is_boolean ? "boolean" : "int64");
+      (is_avg || is_statistical)
+          ? "real64"
+          : (is_boolean ? "boolean" : "int64");
   engine_descriptor.encoded_descriptor =
       "type_uuid=" + descriptor->type_uuid + ";nullability=" +
       (result_nullable ? "nullable" : "non_null");
@@ -2432,9 +2456,30 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-bool-or-expression.v1";
   const bool every_expression =
       root->semantic_variant_id == "aggregate.global-every-expression.v1";
+  const bool stddev_pop_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-stddev-pop-expression.v1";
+  const bool variance_pop_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-variance-pop-expression.v1";
+  const bool stddev_expression =
+      root->semantic_variant_id == "aggregate.global-stddev-expression.v1";
+  const bool variance_expression =
+      root->semantic_variant_id == "aggregate.global-variance-expression.v1";
+  const bool stddev_samp_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-stddev-samp-expression.v1";
+  const bool variance_samp_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-variance-samp-expression.v1";
+  const bool statistical_expression =
+      stddev_pop_expression || variance_pop_expression || stddev_expression ||
+      variance_expression || stddev_samp_expression ||
+      variance_samp_expression;
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
-      !bool_and_expression && !bool_or_expression && !every_expression) {
+      !bool_and_expression && !bool_or_expression && !every_expression &&
+      !statistical_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -2450,6 +2495,24 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (every_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::every;
+  }
+  if (stddev_pop_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::stddev_pop;
+  }
+  if (variance_pop_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::variance_pop;
+  }
+  if (stddev_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::stddev;
+  }
+  if (variance_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::variance;
+  }
+  if (stddev_samp_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::stddev_samp;
+  }
+  if (variance_samp_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::variance_samp;
   }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
@@ -2512,11 +2575,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   constexpr std::uint64_t kRealAggregateResultMemory = 64;
   constexpr std::uint64_t kBooleanAggregateResultMemory = 5;
   const auto aggregate_result_memory =
-      avg_expression ? kRealAggregateResultMemory
-                     : ((bool_and_expression || bool_or_expression ||
-                         every_expression)
-                            ? kBooleanAggregateResultMemory
-                            : kIntegerAggregateResultMemory);
+      (avg_expression || statistical_expression)
+          ? kRealAggregateResultMemory
+          : ((bool_and_expression || bool_or_expression || every_expression)
+                 ? kBooleanAggregateResultMemory
+                 : kIntegerAggregateResultMemory);
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -2555,9 +2618,27 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (bool_or_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-bool-or-expression.v1";
-  } else {
+  } else if (every_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-every-expression.v1";
+  } else if (stddev_pop_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-stddev-pop-expression.v1";
+  } else if (variance_pop_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-variance-pop-expression.v1";
+  } else if (stddev_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-stddev-expression.v1";
+  } else if (variance_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-variance-expression.v1";
+  } else if (stddev_samp_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-stddev-samp-expression.v1";
+  } else {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-variance-samp-expression.v1";
   }
 
   const auto identity_scope =
