@@ -4597,6 +4597,229 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   return result;
 }
 
+// QOW-SOURCE-WIN-012-REGISTRY-BRIDGE-V1
+// Recompute every effective window frame through the exact canonical aggregate
+// registry/state runtime.  The optimizer-admitted aggregate-kernel DAG is
+// bound to the frame's plan, MGA statement, physical node, and causal counter;
+// the frame rows are the sole input authority.
+CanonicalRegistryWindowAggregateResult
+ExecuteCanonicalRegistryWindowAggregate(
+    const CanonicalRegistryWindowAggregateRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalRegistryWindowAggregateResult result;
+  result.descriptor = request.aggregate_template.descriptor;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+  if (!CanonicalWindowFrameEvidenceValid(request.frames)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-FRAME",
+                  "aggregate registry bridge lacks canonical frame evidence");
+  }
+  const auto row_count = request.frames.ordered_batch.rows.size();
+  if (request.maximum_output_rows == 0 ||
+      row_count > request.maximum_output_rows ||
+      request.maximum_frame_input_row_count == 0 ||
+      request.maximum_transition_count == 0 ||
+      request.maximum_distinct_tuple_count == 0 ||
+      request.maximum_order_comparison_count == 0 ||
+      request.maximum_combined_state_bytes == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                  "aggregate registry window resource contract is invalid");
+  }
+
+  const auto& aggregate_template = request.aggregate_template;
+  const auto aggregate_registry = CanonicalAggregateRuntimeRegistryV1();
+  const auto aggregate_registry_row = std::ranges::find_if(
+      aggregate_registry, [&](const CanonicalAggregateRegistryEntry& row) {
+        return row.abi_version == aggregate_template.descriptor.abi_version &&
+               row.function == aggregate_template.descriptor.function &&
+               row.builtin_id == aggregate_template.descriptor.builtin_id &&
+               row.function_uuid == aggregate_template.descriptor.function_uuid;
+      });
+  if (aggregate_registry_row == aggregate_registry.end() ||
+      !aggregate_registry_row->executable ||
+      !aggregate_registry_row->aggregate_as_window) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
+                  "aggregate descriptor is not admitted for the window bridge");
+  }
+  if (!aggregate_template.input_batch.columns.empty() ||
+      !aggregate_template.input_batch.rows.empty()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  "aggregate template carries input outside the effective frame");
+  }
+  if (aggregate_template.filter_truth_values.has_value() &&
+      aggregate_template.filter_truth_values->size() != row_count) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-FILTER",
+                  "aggregate FILTER cardinality does not match window rows");
+  }
+
+  const auto dag_validation =
+      ValidateTypedPhysicalNodeDag(aggregate_template.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.field_id);
+  }
+  const PhysicalNodeRecord* aggregate_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : aggregate_template.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        aggregate_template.selected_physical_node_id) {
+      aggregate_node = &node;
+    }
+  }
+  if (aggregate_template.selected_physical_node_id == 0 ||
+      aggregate_template.selected_physical_node_id !=
+          aggregate_template.physical_dag.root_physical_node_id ||
+      aggregate_node == nullptr ||
+      aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
+      aggregate_node->implementation_id !=
+          "window.aggregate-registry-kernel.v1" ||
+      aggregate_node->input_physical_node_ids.size() != 1 ||
+      aggregate_node->output_descriptor_ids !=
+          std::vector<std::uint32_t>{
+              aggregate_template.result_column.descriptor_id}) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
+                  "aggregate window kernel node is not exactly bound");
+  }
+  for (const auto& node : aggregate_template.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        aggregate_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  std::vector<std::uint32_t> frame_descriptor_ids;
+  frame_descriptor_ids.reserve(request.frames.ordered_batch.columns.size());
+  for (const auto& column : request.frames.ordered_batch.columns) {
+    frame_descriptor_ids.push_back(column.descriptor_id);
+  }
+  if (input_node == nullptr ||
+      input_node->output_descriptor_ids != frame_descriptor_ids ||
+      aggregate_template.physical_dag.selected_plan_uuid !=
+          request.frames.selected_plan_uuid ||
+      aggregate_template.physical_dag.local_transaction_id !=
+          request.frames.inventory_local_transaction_id ||
+      aggregate_template.physical_dag.statement_snapshot_id !=
+          request.frames.inventory_statement_snapshot_id ||
+      aggregate_node->physical_node_id !=
+          request.frames.executed_physical_node_id ||
+      aggregate_node->causal_counter_id != request.frames.causal_counter_id) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  "aggregate kernel and window frame authority diverge");
+  }
+
+  const auto make_frame_request = [&]() {
+    auto aggregate = aggregate_template;
+    aggregate.input_batch.columns = request.frames.ordered_batch.columns;
+    return aggregate;
+  };
+  auto preflight_request = make_frame_request();
+  if (preflight_request.filter_truth_values.has_value()) {
+    preflight_request.filter_truth_values =
+        std::vector<api::EngineSqlTruthValue>{};
+  }
+  const auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  if (!preflight.diagnostic.ok) {
+    return refuse(preflight.diagnostic.diagnostic_code,
+                  preflight.diagnostic.detail);
+  }
+
+  const auto within_total = [](const std::size_t next,
+                               const std::size_t current,
+                               const std::size_t maximum) {
+    return current <= maximum && next <= maximum - current;
+  };
+  result.values.reserve(row_count);
+  result.frame_row_indices.reserve(row_count);
+  for (const auto& frame : request.frames.effective_frames) {
+    if (!within_total(frame.effective_row_indices.size(),
+                      result.frame_input_row_count,
+                      request.maximum_frame_input_row_count)) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                    "aggregate window frame-input bound is exceeded");
+    }
+    auto aggregate = make_frame_request();
+    aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
+    for (const auto row : frame.effective_row_indices) {
+      aggregate.input_batch.rows.push_back(
+          request.frames.ordered_batch.rows[row]);
+    }
+    if (aggregate_template.filter_truth_values.has_value()) {
+      std::vector<api::EngineSqlTruthValue> filter;
+      filter.reserve(frame.effective_row_indices.size());
+      for (const auto row : frame.effective_row_indices) {
+        filter.push_back((*aggregate_template.filter_truth_values)[row]);
+      }
+      aggregate.filter_truth_values = std::move(filter);
+    }
+    auto frame_result = ExecuteCanonicalAggregateRuntime(aggregate);
+    if (!frame_result.diagnostic.ok) {
+      return refuse(frame_result.diagnostic.diagnostic_code,
+                    frame_result.diagnostic.detail);
+    }
+    if (!frame_result.shared_state_authority_used ||
+        frame_result.output_batch.rows.size() != 1 ||
+        frame_result.output_batch.rows.front().values.size() != 1 ||
+        frame_result.selected_plan_uuid != request.frames.selected_plan_uuid ||
+        frame_result.executed_physical_node_id !=
+            request.frames.executed_physical_node_id ||
+        frame_result.causal_counter_id != request.frames.causal_counter_id) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                    "aggregate frame result evidence is inconsistent");
+    }
+    if (!within_total(frame_result.transition_count, result.transition_count,
+                      request.maximum_transition_count) ||
+        !within_total(frame_result.distinct_tuple_count,
+                      result.distinct_tuple_count,
+                      request.maximum_distinct_tuple_count) ||
+        !within_total(frame_result.order_comparison_count,
+                      result.order_comparison_count,
+                      request.maximum_order_comparison_count) ||
+        !within_total(frame_result.state_bytes, result.combined_state_bytes,
+                      request.maximum_combined_state_bytes)) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                    "combined aggregate window state bound is exceeded");
+    }
+    result.frame_input_row_count += frame.effective_row_indices.size();
+    result.transition_count += frame_result.transition_count;
+    result.distinct_tuple_count += frame_result.distinct_tuple_count;
+    result.order_comparison_count += frame_result.order_comparison_count;
+    result.combined_state_bytes += frame_result.state_bytes;
+    result.frame_row_indices.push_back(frame.effective_row_indices);
+    result.values.push_back(
+        std::move(frame_result.output_batch.rows.front().values.front()));
+  }
+
+  DescriptorBatch output;
+  output.columns = {aggregate_template.result_column};
+  output.rows.reserve(result.values.size());
+  for (const auto& value : result.values) output.rows.push_back({{value}});
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, {aggregate_template.result_column.descriptor_id});
+  if (!output_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                  output_validation.diagnostic_code + ":" +
+                      output_validation.detail);
+  }
+
+  result.diagnostic = {};
+  result.descriptor = aggregate_template.descriptor;
+  result.effective_frame_recomputed = true;
+  result.shared_aggregate_state_authority_used = true;
+  result.authority = request.frames.authority;
+  result.window_property_uuid = request.frames.window_property_uuid;
+  result.selected_plan_uuid = request.frames.selected_plan_uuid;
+  result.executed_physical_node_id =
+      request.frames.executed_physical_node_id;
+  result.causal_counter_id = request.frames.causal_counter_id;
+  return result;
+}
+
 std::vector<CanonicalWindowRuntimeDescriptor>
 CanonicalWindowRuntimeRegistryV1() {
   return {

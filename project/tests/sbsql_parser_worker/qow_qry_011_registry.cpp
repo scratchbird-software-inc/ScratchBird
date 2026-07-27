@@ -329,8 +329,10 @@ bool ValidateCanonicalAggregateRegistry() {
     if (entry.aggregate_as_window) ++aggregate_window_count;
   }
   passed &= Require(registry.size() == 43 && executable_count == 43 &&
-                        aggregate_window_count == 1 &&
-                        Entry(exec::CanonicalAggregateFunction::sum)
+                        aggregate_window_count == registry.size() &&
+                        Entry(exec::CanonicalAggregateFunction::count)
+                                .aggregate_as_window &&
+                        Entry(exec::CanonicalAggregateFunction::regr_syy)
                             .aggregate_as_window,
                     "registry did not reconcile exact row, executable, and aggregate-window dispositions");
   passed &= Require(Entry(exec::CanonicalAggregateFunction::count).builtin_id ==
