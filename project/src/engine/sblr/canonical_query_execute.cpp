@@ -264,12 +264,28 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_percentile_disc =
       function == exec::CanonicalAggregateFunction::percentile_disc;
   const bool is_exact_percentile = is_percentile_cont || is_percentile_disc;
+  const bool is_approx_count_distinct =
+      function == exec::CanonicalAggregateFunction::approx_count_distinct;
+  const bool is_approx_median =
+      function == exec::CanonicalAggregateFunction::approx_median;
+  const bool is_approx_percentile_cont =
+      function == exec::CanonicalAggregateFunction::approx_percentile_cont;
+  const bool is_approx_percentile_disc =
+      function == exec::CanonicalAggregateFunction::approx_percentile_disc;
+  const bool is_approx_percentile =
+      is_approx_percentile_cont || is_approx_percentile_disc;
+  const bool is_approx_top_k =
+      function == exec::CanonicalAggregateFunction::approx_top_k;
+  const bool is_approximate =
+      is_approx_count_distinct || is_approx_median ||
+      is_approx_percentile || is_approx_top_k;
   const bool is_ordered_set =
-      is_hypothetical || is_mode || is_exact_percentile;
+      is_hypothetical || is_mode || is_exact_percentile ||
+      is_approx_percentile;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
        !is_string_agg && !is_listagg_profile && !is_ordered_collection &&
-       !is_ordered_set) ||
+       !is_ordered_set && !is_approximate) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -325,7 +341,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     expected_argument_count = 4;
   } else if (is_listagg_ordered) {
     expected_argument_count = 3;
-  } else if (is_hypothetical || is_exact_percentile) {
+  } else if (is_hypothetical || is_exact_percentile ||
+             is_approx_percentile || is_approx_top_k) {
     expected_argument_count = 2;
   } else if (is_json_object_agg || is_ordered_string_agg) {
     expected_argument_count = 3;
@@ -362,7 +379,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           dag.expressions, [&](const auto& candidate) {
             return candidate.expression_id == child_expression_id;
           });
-      if ((is_hypothetical || is_exact_percentile) &&
+      if ((is_hypothetical || is_exact_percentile ||
+           is_approx_percentile || is_approx_top_k) &&
           argument_ordinal == 0) {
         const auto direct_descriptor = std::ranges::find_if(
             dag.descriptors, [&](const auto& candidate) {
@@ -401,19 +419,27 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         api::EngineTypedValue direct_argument;
         std::string direct_detail;
         const std::string_view direct_type =
-            is_exact_percentile ? std::string_view("real64")
-                                : std::string_view("int64");
+            (is_exact_percentile || is_approx_percentile)
+                ? std::string_view("real64")
+                : std::string_view("int64");
         if (!expression_runtime.Evaluate(child_expression_id, direct_type,
                                          &direct_argument, &direct_detail) ||
             direct_argument.state != api::EngineValueState::value ||
             direct_argument.is_null ||
             direct_argument.descriptor.canonical_type_name != direct_type) {
-          result.detail =
-              is_exact_percentile
-                  ? "global exact percentile fraction must be a canonical "
-                    "real64 literal"
-                  : "global hypothetical-set direct argument must be a "
-                    "canonical int64 literal";
+          if (is_exact_percentile || is_approx_percentile) {
+            result.detail =
+                "global percentile fraction must be a canonical real64 "
+                "literal";
+          } else if (is_approx_top_k) {
+            result.detail =
+                "global approximate top-k bound must be a canonical int64 "
+                "literal";
+          } else {
+            result.detail =
+                "global hypothetical-set direct argument must be a canonical "
+                "int64 literal";
+          }
           if (!direct_detail.empty()) result.detail += ": " + direct_detail;
           return result;
         }
@@ -608,7 +634,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           (is_ordered_single_collection && argument_ordinal == 1) ||
           (is_json_object_agg && argument_ordinal == 2) ||
           (is_mode && argument_ordinal == 0) ||
-          ((is_hypothetical || is_exact_percentile) &&
+          ((is_hypothetical || is_exact_percentile ||
+            is_approx_percentile) &&
            argument_ordinal == 1);
       if (is_order_argument) {
         if (input_type != "int64") {
@@ -696,13 +723,26 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global JSON_OBJECT_AGG value must be a canonical int64 column";
         return result;
       }
+      if (is_approx_median && input_type != "int64") {
+        result.detail =
+            "global APPROX_MEDIAN input must be a canonical int64 column";
+        return result;
+      }
+      if ((is_approx_count_distinct || is_approx_top_k) &&
+          input_type != "text") {
+        result.detail =
+            "global APPROX_COUNT_DISTINCT/APPROX_TOP_K input must be a "
+            "canonical text column";
+        return result;
+      }
     }
   }
   const bool result_nullable =
       is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
       (is_pair_statistical && !is_regr_count) || is_string_agg ||
       is_listagg_profile || is_ordered_collection || is_mode ||
-      is_exact_percentile;
+      is_exact_percentile || is_approx_median || is_approx_percentile ||
+      is_approx_top_k;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -759,6 +799,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       result.detail =
           "global exact percentile result must be an unqualified nullable "
           "real64";
+    } else if (is_approx_median || is_approx_percentile) {
+      result.detail =
+          "global approximate quantile result must be an unqualified "
+          "nullable real64";
+    } else if (is_approx_top_k) {
+      result.detail =
+          "global APPROX_TOP_K result must be an unqualified nullable json";
+    } else if (is_approx_count_distinct) {
+      result.detail =
+          "global APPROX_COUNT_DISTINCT result must be an unqualified "
+          "non-null int64";
     } else if (is_hypothetical_rank || is_hypothetical_dense_rank) {
       result.detail =
           "global hypothetical RANK/DENSE_RANK result must be an unqualified "
@@ -783,13 +834,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.descriptor_kind = "scalar";
   if (is_array_agg) {
     engine_descriptor.canonical_type_name = "list<text nullable>";
-  } else if (is_json_agg || is_json_object_agg) {
+  } else if (is_json_agg || is_json_object_agg || is_approx_top_k) {
     engine_descriptor.canonical_type_name = "json";
   } else if (is_string_agg || is_listagg_profile) {
     engine_descriptor.canonical_type_name = "text";
   } else if (is_avg || is_statistical ||
              (is_pair_statistical && !is_regr_count) ||
-             is_exact_percentile || is_hypothetical_percent_rank ||
+             is_exact_percentile || is_approx_median ||
+             is_approx_percentile || is_hypothetical_percent_rank ||
              is_hypothetical_cume_dist) {
     engine_descriptor.canonical_type_name = "real64";
   } else if (is_boolean) {
@@ -3031,13 +3083,43 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       });
   const bool ordered_set_expression =
       ordered_set_profile != kOrderedSetExpressionProfiles.end();
+  struct ApproximateExpressionProfile {
+    std::string_view semantic_variant;
+    exec::CanonicalAggregateFunction function;
+    std::string_view transformation_id;
+  };
+  static constexpr std::array<ApproximateExpressionProfile, 5>
+      kApproximateExpressionProfiles = {{
+          {"aggregate.global-approx-count-distinct-expression.v1",
+           exec::CanonicalAggregateFunction::approx_count_distinct,
+           "canonical.aggregate.global-approx-count-distinct-expression.v1"},
+          {"aggregate.global-approx-median-expression.v1",
+           exec::CanonicalAggregateFunction::approx_median,
+           "canonical.aggregate.global-approx-median-expression.v1"},
+          {"aggregate.global-approx-percentile-cont-ordered-expression.v1",
+           exec::CanonicalAggregateFunction::approx_percentile_cont,
+           "canonical.aggregate.global-approx-percentile-cont-ordered-expression.v1"},
+          {"aggregate.global-approx-percentile-disc-ordered-expression.v1",
+           exec::CanonicalAggregateFunction::approx_percentile_disc,
+           "canonical.aggregate.global-approx-percentile-disc-ordered-expression.v1"},
+          {"aggregate.global-approx-top-k-expression.v1",
+           exec::CanonicalAggregateFunction::approx_top_k,
+           "canonical.aggregate.global-approx-top-k-expression.v1"},
+      }};
+  const auto approximate_profile = std::ranges::find_if(
+      kApproximateExpressionProfiles, [&](const auto& profile) {
+        return root->semantic_variant_id == profile.semantic_variant;
+      });
+  const bool approximate_expression =
+      approximate_profile != kApproximateExpressionProfiles.end();
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
       !string_agg_expression && !listagg_expression &&
       !ordered_collection_expression &&
       !statistical_expression &&
-      !pair_statistical_expression && !ordered_set_expression) {
+      !pair_statistical_expression && !ordered_set_expression &&
+      !approximate_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -3092,6 +3174,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (ordered_set_expression) {
     aggregate_function = ordered_set_profile->function;
+  }
+  if (approximate_expression) {
+    aggregate_function = approximate_profile->function;
   }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
@@ -3161,9 +3246,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       aggregate_function == exec::CanonicalAggregateFunction::cume_dist ||
       aggregate_function == exec::CanonicalAggregateFunction::percentile_cont ||
       aggregate_function == exec::CanonicalAggregateFunction::percentile_disc;
+  const bool approximate_real_result =
+      aggregate_function == exec::CanonicalAggregateFunction::approx_median ||
+      aggregate_function ==
+          exec::CanonicalAggregateFunction::approx_percentile_cont ||
+      aggregate_function ==
+          exec::CanonicalAggregateFunction::approx_percentile_disc;
   std::uint64_t aggregate_result_memory =
       (avg_expression || statistical_expression || pair_real_result ||
-       ordered_set_real_result)
+       ordered_set_real_result || approximate_real_result)
           ? kRealAggregateResultMemory
           : ((bool_and_expression || bool_or_expression || every_expression)
                  ? kBooleanAggregateResultMemory
@@ -3222,6 +3313,34 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                     &aggregate_result_memory)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live ordered-set aggregate state size overflowed");
+    }
+  }
+  if (approximate_expression) {
+    std::uint64_t approximate_state_memory = 0;
+    std::uint64_t row_overhead_memory = 0;
+    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+                         &row_overhead_memory) ||
+        !CheckedAdd(input_memory, row_overhead_memory,
+                    &approximate_state_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live approximate aggregate state size overflowed");
+    }
+    if (aggregate_function ==
+        exec::CanonicalAggregateFunction::approx_top_k) {
+      std::uint64_t rendered_value_memory = 0;
+      if (!CheckedMultiply(input_memory, 6U, &rendered_value_memory) ||
+          !CheckedAdd(rendered_value_memory, row_overhead_memory,
+                      &rendered_value_memory) ||
+          !CheckedAdd(rendered_value_memory, 2U,
+                      &aggregate_result_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live approximate top-k result size overflowed");
+      }
+    }
+    if (!CheckedAdd(aggregate_result_memory, approximate_state_memory,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live approximate aggregate result size overflowed");
     }
   }
   if (!CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
@@ -3309,6 +3428,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (ordered_set_expression) {
     aggregate_transformation_id =
         std::string(ordered_set_profile->transformation_id);
+  } else if (approximate_expression) {
+    aggregate_transformation_id =
+        std::string(approximate_profile->transformation_id);
   } else {
     aggregate_transformation_id =
         "canonical.aggregate.global-variance-samp-expression.v1";
