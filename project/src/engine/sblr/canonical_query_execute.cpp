@@ -149,8 +149,8 @@ struct PreparedSortRoot {
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
-  std::size_t value_column{0};
-  std::uint32_t value_descriptor_id{0};
+  std::vector<std::size_t> value_columns;
+  std::vector<std::uint32_t> value_descriptor_ids;
   exec::CanonicalAggregateDescriptor aggregate_descriptor;
   exec::ExecutorColumnDescriptor result_column;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
@@ -192,8 +192,23 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_statistical =
       is_stddev_pop || is_variance_pop || is_stddev || is_variance ||
       is_stddev_samp || is_variance_samp;
+  const bool is_regr_count =
+      function == exec::CanonicalAggregateFunction::regr_count;
+  const bool is_pair_statistical =
+      function == exec::CanonicalAggregateFunction::corr ||
+      function == exec::CanonicalAggregateFunction::covar_pop ||
+      function == exec::CanonicalAggregateFunction::covar_samp ||
+      is_regr_count ||
+      function == exec::CanonicalAggregateFunction::regr_avgx ||
+      function == exec::CanonicalAggregateFunction::regr_avgy ||
+      function == exec::CanonicalAggregateFunction::regr_intercept ||
+      function == exec::CanonicalAggregateFunction::regr_r2 ||
+      function == exec::CanonicalAggregateFunction::regr_slope ||
+      function == exec::CanonicalAggregateFunction::regr_sxx ||
+      function == exec::CanonicalAggregateFunction::regr_sxy ||
+      function == exec::CanonicalAggregateFunction::regr_syy;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
-       !is_boolean && !is_statistical) ||
+       !is_boolean && !is_statistical && !is_pair_statistical) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -240,12 +255,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       registry, [&](const auto& candidate) {
         return candidate.function == function;
       });
+  const auto expected_argument_count =
+      count_star ? 0U : (is_pair_statistical ? 2U : 1U);
   if (expression == dag.expressions.end() ||
       descriptor == dag.descriptors.end() || aggregate == registry.end() ||
       !aggregate->executable ||
       expression->expression_kind !=
           api::RelationalExpressionKind::kFunctionCall ||
-      expression->child_expression_ids.size() != (count_star ? 0 : 1) ||
+      expression->child_expression_ids.size() != expected_argument_count ||
       expression->result_descriptor_id != descriptor->descriptor_id ||
       !expression->function_uuid.has_value() ||
       *expression->function_uuid != aggregate->function_uuid ||
@@ -259,72 +276,83 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   }
 
   if (!count_star) {
-    const auto argument = std::ranges::find_if(
-        dag.expressions, [&](const auto& candidate) {
-          return candidate.expression_id ==
-                 expression->child_expression_ids.front();
-        });
-    if (argument == dag.expressions.end() ||
-        argument->expression_kind !=
-            api::RelationalExpressionKind::kIdentifier ||
-        !argument->child_expression_ids.empty() ||
-        !argument->bound_name_uuid.has_value() ||
-        argument->function_uuid.has_value() ||
-        argument->literal_kind.has_value() ||
-        argument->operator_name.has_value() ||
-        argument->literal_or_parameter_ref.has_value()) {
-      result.detail =
-          "global aggregate expression is not one bound input identifier";
-      return result;
-    }
-    const auto input_descriptor = std::ranges::find(
-        input_node.output_descriptor_ids, argument->result_descriptor_id);
-    if (input_descriptor == input_node.output_descriptor_ids.end() ||
-        std::ranges::count(input_node.output_descriptor_ids,
-                           argument->result_descriptor_id) != 1) {
-      result.detail =
-          "global aggregate expression descriptor is not uniquely supplied by "
-          "its input";
-      return result;
-    }
-    result.value_column = static_cast<std::size_t>(
-        std::distance(input_node.output_descriptor_ids.begin(),
-                      input_descriptor));
-    if (result.value_column >= input.batch.columns.size() ||
-        input.batch.columns[result.value_column].descriptor_id !=
-            argument->result_descriptor_id) {
-      result.detail =
-          "global aggregate expression input ordinal is not descriptor-exact";
-      return result;
-    }
-    result.value_descriptor_id = argument->result_descriptor_id;
-    if ((is_sum || is_avg || is_min || is_max || is_statistical) &&
-        input.batch.columns[result.value_column]
-                .descriptor.canonical_type_name != "int64") {
-      if (is_sum) {
-        result.detail = "global SUM input must be a canonical int64 column";
-      } else if (is_avg) {
-        result.detail = "global AVG input must be a canonical int64 column";
-      } else if (is_statistical) {
+    for (const auto child_expression_id :
+         expression->child_expression_ids) {
+      const auto argument = std::ranges::find_if(
+          dag.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == child_expression_id;
+          });
+      if (argument == dag.expressions.end() ||
+          argument->expression_kind !=
+              api::RelationalExpressionKind::kIdentifier ||
+          !argument->child_expression_ids.empty() ||
+          !argument->bound_name_uuid.has_value() ||
+          argument->function_uuid.has_value() ||
+          argument->literal_kind.has_value() ||
+          argument->operator_name.has_value() ||
+          argument->literal_or_parameter_ref.has_value()) {
         result.detail =
-            "global unary statistical input must be a canonical int64 column";
-      } else {
-        result.detail =
-            "global MIN/MAX input must be a canonical int64 column";
+            "global aggregate expression arguments are not exact bound input "
+            "identifiers";
+        return result;
       }
-      return result;
-    }
-    if (is_boolean &&
-        input.batch.columns[result.value_column]
-                .descriptor.canonical_type_name != "boolean") {
-      result.detail =
-          "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
-          "column";
-      return result;
+      const auto input_descriptor = std::ranges::find(
+          input_node.output_descriptor_ids, argument->result_descriptor_id);
+      if (input_descriptor == input_node.output_descriptor_ids.end() ||
+          std::ranges::count(input_node.output_descriptor_ids,
+                             argument->result_descriptor_id) != 1) {
+        result.detail =
+            "global aggregate expression descriptor is not uniquely supplied "
+            "by its input";
+        return result;
+      }
+      const auto value_column = static_cast<std::size_t>(
+          std::distance(input_node.output_descriptor_ids.begin(),
+                        input_descriptor));
+      if (value_column >= input.batch.columns.size() ||
+          input.batch.columns[value_column].descriptor_id !=
+              argument->result_descriptor_id) {
+        result.detail =
+            "global aggregate expression input ordinal is not "
+            "descriptor-exact";
+        return result;
+      }
+      result.value_columns.push_back(value_column);
+      result.value_descriptor_ids.push_back(argument->result_descriptor_id);
+      const auto input_type =
+          input.batch.columns[value_column].descriptor.canonical_type_name;
+      if ((is_sum || is_avg || is_min || is_max || is_statistical ||
+           is_pair_statistical) &&
+          input_type != "int64") {
+        if (is_sum) {
+          result.detail = "global SUM input must be a canonical int64 column";
+        } else if (is_avg) {
+          result.detail = "global AVG input must be a canonical int64 column";
+        } else if (is_statistical) {
+          result.detail =
+              "global unary statistical input must be a canonical int64 "
+              "column";
+        } else if (is_pair_statistical) {
+          result.detail =
+              "global pair statistical inputs must be canonical int64 "
+              "columns";
+        } else {
+          result.detail =
+              "global MIN/MAX input must be a canonical int64 column";
+        }
+        return result;
+      }
+      if (is_boolean && input_type != "boolean") {
+        result.detail =
+            "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
+            "column";
+        return result;
+      }
     }
   }
   const bool result_nullable =
-      is_sum || is_avg || is_min || is_max || is_boolean || is_statistical;
+      is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
+      (is_pair_statistical && !is_regr_count);
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -350,6 +378,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       result.detail =
           "global unary statistical result must be an unqualified nullable "
           "real64";
+    } else if (is_pair_statistical) {
+      result.detail =
+          is_regr_count
+              ? "global REGR_COUNT result must be an unqualified non-null "
+                "int64"
+              : "global pair statistical result must be an unqualified "
+                "nullable real64";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -364,7 +399,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   engine_descriptor.canonical_type_name =
-      (is_avg || is_statistical)
+      (is_avg || is_statistical ||
+       (is_pair_statistical && !is_regr_count))
           ? "real64"
           : (is_boolean ? "boolean" : "int64");
   engine_descriptor.encoded_descriptor =
@@ -2476,10 +2512,60 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       stddev_pop_expression || variance_pop_expression || stddev_expression ||
       variance_expression || stddev_samp_expression ||
       variance_samp_expression;
+  struct PairStatisticalExpressionProfile {
+    std::string_view semantic_variant;
+    exec::CanonicalAggregateFunction function;
+    std::string_view transformation_id;
+  };
+  static constexpr std::array<PairStatisticalExpressionProfile, 12>
+      kPairStatisticalExpressionProfiles = {{
+          {"aggregate.global-corr-expression.v1",
+           exec::CanonicalAggregateFunction::corr,
+           "canonical.aggregate.global-corr-expression.v1"},
+          {"aggregate.global-covar-pop-expression.v1",
+           exec::CanonicalAggregateFunction::covar_pop,
+           "canonical.aggregate.global-covar-pop-expression.v1"},
+          {"aggregate.global-covar-samp-expression.v1",
+           exec::CanonicalAggregateFunction::covar_samp,
+           "canonical.aggregate.global-covar-samp-expression.v1"},
+          {"aggregate.global-regr-count-expression.v1",
+           exec::CanonicalAggregateFunction::regr_count,
+           "canonical.aggregate.global-regr-count-expression.v1"},
+          {"aggregate.global-regr-avgx-expression.v1",
+           exec::CanonicalAggregateFunction::regr_avgx,
+           "canonical.aggregate.global-regr-avgx-expression.v1"},
+          {"aggregate.global-regr-avgy-expression.v1",
+           exec::CanonicalAggregateFunction::regr_avgy,
+           "canonical.aggregate.global-regr-avgy-expression.v1"},
+          {"aggregate.global-regr-intercept-expression.v1",
+           exec::CanonicalAggregateFunction::regr_intercept,
+           "canonical.aggregate.global-regr-intercept-expression.v1"},
+          {"aggregate.global-regr-r2-expression.v1",
+           exec::CanonicalAggregateFunction::regr_r2,
+           "canonical.aggregate.global-regr-r2-expression.v1"},
+          {"aggregate.global-regr-slope-expression.v1",
+           exec::CanonicalAggregateFunction::regr_slope,
+           "canonical.aggregate.global-regr-slope-expression.v1"},
+          {"aggregate.global-regr-sxx-expression.v1",
+           exec::CanonicalAggregateFunction::regr_sxx,
+           "canonical.aggregate.global-regr-sxx-expression.v1"},
+          {"aggregate.global-regr-sxy-expression.v1",
+           exec::CanonicalAggregateFunction::regr_sxy,
+           "canonical.aggregate.global-regr-sxy-expression.v1"},
+          {"aggregate.global-regr-syy-expression.v1",
+           exec::CanonicalAggregateFunction::regr_syy,
+           "canonical.aggregate.global-regr-syy-expression.v1"},
+      }};
+  const auto pair_statistical_profile = std::ranges::find_if(
+      kPairStatisticalExpressionProfiles, [&](const auto& profile) {
+        return root->semantic_variant_id == profile.semantic_variant;
+      });
+  const bool pair_statistical_expression =
+      pair_statistical_profile != kPairStatisticalExpressionProfiles.end();
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
-      !statistical_expression) {
+      !statistical_expression && !pair_statistical_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -2513,6 +2599,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (variance_samp_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::variance_samp;
+  }
+  if (pair_statistical_expression) {
+    aggregate_function = pair_statistical_profile->function;
   }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
@@ -2574,8 +2663,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       std::numeric_limits<std::int64_t>::digits10 + 2;
   constexpr std::uint64_t kRealAggregateResultMemory = 64;
   constexpr std::uint64_t kBooleanAggregateResultMemory = 5;
+  const bool pair_real_result =
+      pair_statistical_expression &&
+      aggregate_function != exec::CanonicalAggregateFunction::regr_count;
   const auto aggregate_result_memory =
-      (avg_expression || statistical_expression)
+      (avg_expression || statistical_expression || pair_real_result)
           ? kRealAggregateResultMemory
           : ((bool_and_expression || bool_or_expression || every_expression)
                  ? kBooleanAggregateResultMemory
@@ -2636,6 +2728,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (stddev_samp_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-stddev-samp-expression.v1";
+  } else if (pair_statistical_expression) {
+    aggregate_transformation_id =
+        std::string(pair_statistical_profile->transformation_id);
   } else {
     aggregate_transformation_id =
         "canonical.aggregate.global-variance-samp-expression.v1";
@@ -2696,8 +2791,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       [aggregate_descriptor = prepared_root.aggregate_descriptor,
        result_column = prepared_root.result_column,
        count_star = prepared_root.count_star,
-       value_column = prepared_root.value_column,
-       value_descriptor_id = prepared_root.value_descriptor_id,
+       value_columns = prepared_root.value_columns,
+       value_descriptor_ids = prepared_root.value_descriptor_ids,
        input_row_count](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -2746,9 +2841,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.selected_physical_node_id = node.physical_node_id;
           aggregate_request.descriptor = aggregate_descriptor;
           aggregate_request.input_batch = input_batch;
-          aggregate_request.value_columns = {value_column};
-          aggregate_request.value_expression_descriptor_ids = {
-              value_descriptor_id};
+          aggregate_request.value_columns = value_columns;
+          aggregate_request.value_expression_descriptor_ids =
+              value_descriptor_ids;
           aggregate_request.result_column = result_column;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
