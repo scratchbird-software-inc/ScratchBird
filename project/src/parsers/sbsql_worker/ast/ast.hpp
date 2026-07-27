@@ -80,6 +80,25 @@ enum class NativeLiteralAstKind {
   kRange,
 };
 
+enum class NativeTemporalTableAxis {
+  kSystemTime,
+  kValidTime,
+};
+
+enum class NativeTemporalTableForm {
+  kUnspecified,
+  kAsOf,
+  kAll,
+  kBetween,
+  kFromTo,
+};
+
+struct NativeTemporalTableSourceRefusal {
+  NativeTemporalTableAxis axis{NativeTemporalTableAxis::kSystemTime};
+  NativeTemporalTableForm form{NativeTemporalTableForm::kUnspecified};
+  SourceRange range;
+};
+
 struct NativeExpressionAstNode {
   std::uint32_t expression_id{0};
   NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
@@ -110,6 +129,7 @@ struct NativeRelationalAstDocument {
   std::vector<NativeRelationAstNode> relations;
   std::vector<NativeValuesRowAstNode> values_rows;
   std::vector<NativeExpressionAstNode> expressions;
+  std::optional<NativeTemporalTableSourceRefusal> temporal_table_source_refusal;
   MessageVectorSet messages;
 
   [[nodiscard]] bool recognized() const {

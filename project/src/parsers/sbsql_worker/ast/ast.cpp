@@ -1490,6 +1490,25 @@ AstDocument BuildAst(const CstDocument& cst) {
         ast.messages.diagnostics.end(),
         ast.native_relational.messages.diagnostics.begin(),
         ast.native_relational.messages.diagnostics.end());
+    if (ast.native_relational.temporal_table_source_refusal.has_value()) {
+      ast.family = StatementFamily::kQuery;
+      ast.registry_family = "sbsql.query.relational.v3";
+      ast.operation_family = "sblr.query.relational.v3";
+      ast.requires_name_resolution = true;
+      ast.produces_sblr = false;
+      ast.exact_refusal_required = true;
+      ApplyStatementDescriptorMetadata(&ast,
+                                       DescriptorForStatementTokens(cst, "SELECT"));
+      ast.exact_refusal_required = true;
+      ast.produces_sblr = false;
+      ast.diagnostic_key =
+          "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1";
+      ast.statement_kind = StatementFamilyName(ast.family);
+      if (!ast.nodes.empty()) {
+        ast.nodes[ast.root_node_index].text = ast.statement_kind;
+      }
+      return ast;
+    }
     ast.family = StatementFamily::kValues;
     ast.registry_family = "sbsql.query.values.v3";
     ast.operation_family = "sblr.query.relational.v3";

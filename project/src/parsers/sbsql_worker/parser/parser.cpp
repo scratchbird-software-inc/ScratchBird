@@ -88,6 +88,27 @@ class NativeRelationalParser final {
   }
 
   NativeRelationalAstDocument Parse() {
+    // QOW-SOURCE-QRY-006-TEMPORAL-REFUSAL-V1
+    // Temporal table sources are a closed, unapproved native-query profile.
+    // Recognize their tokenized grammar only to publish the canonical refusal;
+    // never translate them through a donor parser or a generic query route.
+    if (!tokens_.empty() &&
+        (IsWord(*tokens_.front(), "SELECT") ||
+         IsWord(*tokens_.front(), "WITH"))) {
+      if (const auto temporal = FindTemporalTableSource();
+          temporal.has_value()) {
+        document_.status = NativeRelationalParseStatus::kRefused;
+        document_.temporal_table_source_refusal = *temporal;
+        document_.messages.diagnostics.push_back(MakeDiagnostic(
+            "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1", "ERROR",
+            "unapproved temporal table source is outside the native relational profile",
+            "sbp_sbsql.native_relational_parser",
+            {{"axis", TemporalAxisName(temporal->axis)},
+             {"form", TemporalFormName(temporal->form)},
+             {"authority", "QOW-AUTH-QRY-006-TEMPORAL-REFUSAL-V1"}}));
+        return FinishRefusal();
+      }
+    }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
     }
@@ -151,6 +172,102 @@ class NativeRelationalParser final {
   }
 
  private:
+  static std::string TemporalAxisName(const NativeTemporalTableAxis axis) {
+    switch (axis) {
+      case NativeTemporalTableAxis::kSystemTime: return "system_time";
+      case NativeTemporalTableAxis::kValidTime: return "valid_time";
+    }
+    return "unknown";
+  }
+
+  static std::string TemporalFormName(const NativeTemporalTableForm form) {
+    switch (form) {
+      case NativeTemporalTableForm::kUnspecified: return "unspecified";
+      case NativeTemporalTableForm::kAsOf: return "as_of";
+      case NativeTemporalTableForm::kAll: return "all";
+      case NativeTemporalTableForm::kBetween: return "between";
+      case NativeTemporalTableForm::kFromTo: return "from_to";
+    }
+    return "unknown";
+  }
+
+  std::optional<NativeTemporalTableSourceRefusal>
+  FindTemporalTableSource() const {
+    bool table_source_domain = false;
+    int depth = 0;
+    for (std::size_t index = 0; index < tokens_.size(); ++index) {
+      const auto& token = *tokens_[index];
+      if (token.text == "(") {
+        ++depth;
+        continue;
+      }
+      if (token.text == ")") {
+        if (depth > 0) --depth;
+        continue;
+      }
+      const auto word = CanonicalTokenText(token);
+      if (word == "FROM" || word == "JOIN") {
+        table_source_domain = true;
+        continue;
+      }
+      if (!table_source_domain || word != "FOR") continue;
+
+      std::size_t axis_index = index + 1;
+      bool leading_all = false;
+      if (axis_index < tokens_.size() &&
+          IsWord(*tokens_[axis_index], "ALL")) {
+        leading_all = true;
+        ++axis_index;
+      }
+      if (axis_index >= tokens_.size()) continue;
+
+      NativeTemporalTableAxis axis;
+      std::size_t after_axis = axis_index + 1;
+      if (IsWord(*tokens_[axis_index], "SYSTEM_TIME")) {
+        axis = NativeTemporalTableAxis::kSystemTime;
+      } else if (IsWord(*tokens_[axis_index], "VALID_TIME")) {
+        axis = NativeTemporalTableAxis::kValidTime;
+      } else if (after_axis < tokens_.size() &&
+                 IsWord(*tokens_[axis_index], "SYSTEM") &&
+                 IsWord(*tokens_[after_axis], "TIME")) {
+        axis = NativeTemporalTableAxis::kSystemTime;
+        ++after_axis;
+      } else if (after_axis < tokens_.size() &&
+                 IsWord(*tokens_[axis_index], "VALID") &&
+                 IsWord(*tokens_[after_axis], "TIME")) {
+        axis = NativeTemporalTableAxis::kValidTime;
+        ++after_axis;
+      } else {
+        continue;
+      }
+
+      NativeTemporalTableForm form = leading_all
+                                         ? NativeTemporalTableForm::kAll
+                                         : NativeTemporalTableForm::kUnspecified;
+      std::size_t range_end = after_axis - 1;
+      if (after_axis < tokens_.size()) {
+        if (IsWord(*tokens_[after_axis], "ALL")) {
+          form = NativeTemporalTableForm::kAll;
+          range_end = after_axis;
+        } else if (IsWord(*tokens_[after_axis], "BETWEEN")) {
+          form = NativeTemporalTableForm::kBetween;
+          range_end = after_axis;
+        } else if (IsWord(*tokens_[after_axis], "FROM")) {
+          form = NativeTemporalTableForm::kFromTo;
+          range_end = after_axis;
+        } else if (after_axis + 1 < tokens_.size() &&
+                   IsWord(*tokens_[after_axis], "AS") &&
+                   IsWord(*tokens_[after_axis + 1], "OF")) {
+          form = NativeTemporalTableForm::kAsOf;
+          range_end = after_axis + 1;
+        }
+      }
+      return NativeTemporalTableSourceRefusal{
+          axis, form, Span(*tokens_[index], *tokens_[range_end])};
+    }
+    return std::nullopt;
+  }
+
   bool AtEnd() const { return cursor_ >= tokens_.size(); }
 
   const Token& Current() const { return *tokens_[cursor_]; }

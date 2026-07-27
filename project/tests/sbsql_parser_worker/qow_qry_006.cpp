@@ -15,7 +15,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace sbsql = scratchbird::parser::sbsql;
 namespace sblr = scratchbird::engine::sblr;
@@ -256,13 +258,96 @@ bool ValidateCompositionRefusal() {
   return passed;
 }
 
+bool ValidateTemporalTableSourceRefusal() {
+  struct RefusalCase {
+    std::string sql;
+    sbsql::NativeTemporalTableAxis axis;
+    sbsql::NativeTemporalTableForm form;
+  };
+  const std::vector<RefusalCase> cases = {
+      {"SELECT * FROM account_history FOR SYSTEM_TIME AS OF "
+       "TIMESTAMP '2026-07-26T00:00:00Z';",
+       sbsql::NativeTemporalTableAxis::kSystemTime,
+       sbsql::NativeTemporalTableForm::kAsOf},
+      {"SELECT * FROM account_history FOR VALID_TIME BETWEEN "
+       "DATE '2026-01-01' AND DATE '2026-12-31';",
+       sbsql::NativeTemporalTableAxis::kValidTime,
+       sbsql::NativeTemporalTableForm::kBetween},
+      {"WITH requested AS (SELECT * FROM account_history FOR ALL VALID_TIME) "
+       "SELECT * FROM requested;",
+       sbsql::NativeTemporalTableAxis::kValidTime,
+       sbsql::NativeTemporalTableForm::kAll},
+      {"SELECT * FROM account_history h JOIN audit_history a "
+       "FOR SYSTEM TIME FROM TIMESTAMP '2026-01-01T00:00:00Z' "
+       "TO TIMESTAMP '2026-02-01T00:00:00Z' ON h.id = a.id;",
+       sbsql::NativeTemporalTableAxis::kSystemTime,
+       sbsql::NativeTemporalTableForm::kFromTo},
+  };
+
+  bool passed = true;
+  for (const auto& refusal_case : cases) {
+    const auto cst = sbsql::BuildCst(refusal_case.sql);
+    const auto native = sbsql::ParseNativeRelationalAst(cst);
+    const auto ast = sbsql::BuildAst(cst);
+    const auto bound = sbsql::BindAst(ast, cst, ParserConfigForTest(),
+                                      SessionForTest(), {});
+    const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+
+    passed &= Require(
+        native.status == sbsql::NativeRelationalParseStatus::kRefused &&
+            native.temporal_table_source_refusal.has_value() &&
+            native.temporal_table_source_refusal->axis == refusal_case.axis &&
+            native.temporal_table_source_refusal->form == refusal_case.form &&
+            native.relations.empty() && native.values_rows.empty() &&
+            native.expressions.empty() &&
+            HasParserDiagnostic(
+                native.messages,
+                "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1"),
+        "temporal source did not produce the typed parser-profile refusal");
+    passed &= Require(
+        ast.family == sbsql::StatementFamily::kQuery &&
+            ast.exact_refusal_required && !ast.produces_sblr &&
+            ast.diagnostic_key ==
+                "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1" &&
+            !bound.bound && lowered.payload.empty() &&
+            HasParserDiagnostic(
+                lowered.messages,
+                "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1"),
+        "temporal source crossed the AST, binding, or SBLR refusal boundary");
+  }
+
+  const auto temporal_literal =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(
+          "VALUES (TIMESTAMP '2026-07-26T00:00:00Z');"));
+  passed &= Require(
+      temporal_literal.accepted() &&
+          !temporal_literal.temporal_table_source_refusal.has_value() &&
+          temporal_literal.expressions.size() == 1 &&
+          temporal_literal.expressions.front().literal_kind ==
+              sbsql::NativeLiteralAstKind::kTemporal,
+      "ordinary temporal scalar literal was confused with a table source");
+
+  const auto ordinary_select = sbsql::BuildAst(
+      sbsql::BuildCst("SELECT system_time FROM account_history;"));
+  passed &= Require(
+      !ordinary_select.native_relational.recognized() &&
+          !ordinary_select.exact_refusal_required &&
+          !HasParserDiagnostic(
+              ordinary_select.messages,
+              "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1"),
+      "ordinary temporal-named projection was confused with a table source");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-ROUTE-STAGE-QRY-006-V1
 // QOW-TEST-QRY-006-V1
+// QOW-TEST-QRY-006-TEMPORAL-REFUSAL-V1
 int main() {
   bool passed = true;
   passed &= ValidateComposableScalarLowering();
   passed &= ValidateCompositionRefusal();
+  passed &= ValidateTemporalTableSourceRefusal();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
