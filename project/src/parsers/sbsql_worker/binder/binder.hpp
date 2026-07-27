@@ -54,6 +54,12 @@ struct NativeOutputBindingInput {
   std::uint32_t descriptor_id{0};
   bool visible{true};
   std::uint32_t ordinal{0};
+  std::uint32_t relation_id{0};
+};
+
+struct NativeRelationBindingInput {
+  std::uint32_t relation_id{0};
+  std::string semantic_variant_id;
 };
 
 struct NativeRelationalBindingContext {
@@ -63,6 +69,7 @@ struct NativeRelationalBindingContext {
   std::vector<NativeDescriptorBindingInput> descriptors;
   std::vector<NativeExpressionBindingInput> expressions;
   std::vector<NativeOutputBindingInput> outputs;
+  std::vector<NativeRelationBindingInput> relations;
 };
 
 struct BoundDescriptorAstRecord {
@@ -94,6 +101,7 @@ struct BoundValuesRowAstRecord {
 
 struct BoundOutputAstRecord {
   std::uint32_t output_id{0};
+  std::uint32_t relation_id{0};
   std::uint32_t expression_id{0};
   std::string output_name_utf8;
   std::uint32_t descriptor_id{0};
@@ -101,11 +109,22 @@ struct BoundOutputAstRecord {
   std::uint32_t ordinal{0};
 };
 
+struct BoundGroupingSetAstRecord {
+  std::uint32_t relation_id{0};
+  std::uint32_t ordinal{0};
+  std::vector<std::uint32_t> expression_ids;
+};
+
 struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
+  std::vector<std::uint32_t> output_expression_ids;
+  std::vector<std::uint32_t> grouping_key_expression_ids;
+  std::vector<std::uint32_t> aggregate_expression_ids;
+  std::vector<std::uint32_t> bound_expression_ids;
+  std::string semantic_variant_id;
   std::optional<std::string> bound_object_uuid;
   bool lateral{false};
 };
@@ -127,6 +146,7 @@ struct BoundNativeRelationalDocument {
   std::vector<BoundDescriptorAstRecord> descriptors;
   std::vector<BoundExpressionAstRecord> expressions;
   std::vector<BoundValuesRowAstRecord> values_rows;
+  std::vector<BoundGroupingSetAstRecord> grouping_sets;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
   std::vector<BoundScopeAstRecord> scopes;
@@ -135,6 +155,7 @@ struct BoundNativeRelationalDocument {
 
 struct BoundStatement {
   bool bound{false};
+  bool native_relational_recognized{false};
   std::uint32_t bound_ast_format_version{1};
   std::uint32_t parser_api_major{0};
   std::uint32_t protocol_version{0};

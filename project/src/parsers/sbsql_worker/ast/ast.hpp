@@ -53,6 +53,7 @@ enum class NativeRelationalParseStatus {
 
 enum class NativeRelationAstKind {
   kValues,
+  kAggregate,
 };
 
 enum class NativeExpressionAstKind {
@@ -115,11 +116,21 @@ struct NativeValuesRowAstNode {
   SourceRange range;
 };
 
+struct NativeGroupingSetAstNode {
+  std::uint32_t relation_id{0};
+  std::uint32_t ordinal{0};
+  std::vector<std::uint32_t> expression_ids;
+  SourceRange range;
+};
+
 struct NativeRelationAstNode {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
+  std::vector<std::uint32_t> output_expression_ids;
+  std::vector<std::uint32_t> grouping_key_expression_ids;
+  std::vector<std::uint32_t> aggregate_expression_ids;
   SourceRange range;
 };
 
@@ -128,6 +139,7 @@ struct NativeRelationalAstDocument {
   std::uint32_t root_relation_id{0};
   std::vector<NativeRelationAstNode> relations;
   std::vector<NativeValuesRowAstNode> values_rows;
+  std::vector<NativeGroupingSetAstNode> grouping_sets;
   std::vector<NativeExpressionAstNode> expressions;
   std::optional<NativeTemporalTableSourceRefusal> temporal_table_source_refusal;
   MessageVectorSet messages;

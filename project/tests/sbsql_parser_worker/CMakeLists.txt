@@ -74,7 +74,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   )
   add_test(NAME qow_qry_005_v1 COMMAND qow_qry_005_test_v1)
   set_tests_properties(qow_qry_005_v1 PROPERTIES
-    LABELS "qow_closure;QOW-104;QOW-LEAF-QRY-005;development_candidate"
+    LABELS "qow_closure;QOW-101;QOW-102;QOW-104;QOW-LEAF-QRY-001-AST;QOW-LEAF-QRY-001-BINDING;QOW-LEAF-QRY-005;development_candidate"
   )
 
   # QOW-ROUTE-STAGE-QRY-006-V1

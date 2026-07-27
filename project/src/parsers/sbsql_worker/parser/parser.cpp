@@ -109,6 +109,10 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeGroupingSetsQuery()) {
+      return ParseGroupingSetsSelect();
+    }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
     }
@@ -165,6 +169,8 @@ class NativeRelationalParser final {
     for (const auto& row : document_.values_rows) {
       relation.values_row_ids.push_back(row.row_id);
     }
+    relation.output_expression_ids =
+        document_.values_rows.front().expression_ids;
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;
@@ -284,6 +290,313 @@ class NativeRelationalParser final {
     return CanonicalTokenText(token) == word;
   }
 
+  static bool IsNameToken(const Token& token) {
+    return token.kind == TokenKind::kIdentifier ||
+           token.kind == TokenKind::kKeyword;
+  }
+
+  bool LooksLikeGroupingSetsQuery() const {
+    for (std::size_t index = 0; index + 3 < tokens_.size(); ++index) {
+      if (IsWord(*tokens_[index], "GROUP") &&
+          IsWord(*tokens_[index + 1], "BY") &&
+          IsWord(*tokens_[index + 2], "GROUPING") &&
+          IsWord(*tokens_[index + 3], "SETS")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool RequireWord(const std::string_view word,
+                   const std::string_view reason,
+                   const std::string_view message) {
+    if (AtEnd() || !IsWord(Current(), word)) {
+      Refuse(reason, message);
+      return false;
+    }
+    Consume();
+    return true;
+  }
+
+  bool RequireSymbol(const std::string_view symbol,
+                     const std::string_view reason,
+                     const std::string_view message) {
+    if (!AtSymbol(symbol)) {
+      Refuse(reason, message);
+      return false;
+    }
+    Consume();
+    return true;
+  }
+
+  std::optional<std::uint32_t> ParseCountStar() {
+    if (AtEnd() || !IsWord(Current(), "COUNT")) {
+      Refuse("count_star_required",
+             "native GROUPING SETS profile requires COUNT(*)");
+      return std::nullopt;
+    }
+    const Token& first = Consume();
+    if (!RequireSymbol("(", "count_star_open_required",
+                       "COUNT(*) requires an opening parenthesis") ||
+        !RequireSymbol("*", "count_star_wildcard_required",
+                       "native GROUPING SETS profile requires COUNT(*)") ||
+        !AtSymbol(")")) {
+      if (!document_.messages.has_errors()) {
+        Refuse("count_star_close_required",
+               "COUNT(*) requires a closing parenthesis");
+      }
+      return std::nullopt;
+    }
+    const Token& last = Consume();
+    NativeExpressionAstNode count;
+    count.expression_id = NextExpressionId();
+    count.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    count.operator_name = "COUNT";
+    count.spelling = SourceSpelling(first, last);
+    count.range = Span(first, last);
+    document_.expressions.push_back(std::move(count));
+    return document_.expressions.back().expression_id;
+  }
+
+  NativeRelationalAstDocument ParseGroupingSetsSelect() {
+    // QOW-SOURCE-QRY-001-GROUPING-SETS-V1
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select_token = Consume();
+    const auto key_a = ParseExpression(0, 0);
+    if (!key_a.has_value() ||
+        !RequireSymbol(",", "select_separator_required",
+                       "native GROUPING SETS projection requires four expressions")) {
+      return FinishRefusal();
+    }
+    const auto key_b = ParseExpression(0, 0);
+    if (!key_b.has_value() ||
+        !RequireSymbol(",", "select_separator_required",
+                       "native GROUPING SETS projection requires four expressions")) {
+      return FinishRefusal();
+    }
+    const auto count = ParseCountStar();
+    if (!count.has_value() ||
+        !RequireSymbol(",", "select_separator_required",
+                       "native GROUPING SETS projection requires SUM after COUNT(*)")) {
+      return FinishRefusal();
+    }
+    const auto sum = ParseExpression(0, 0);
+    if (!sum.has_value() ||
+        !RequireWord("FROM", "inline_values_source_required",
+                     "native GROUPING SETS profile requires an inline VALUES source")) {
+      return FinishRefusal();
+    }
+
+    const auto& key_a_expression = document_.expressions[*key_a - 1];
+    const auto& key_b_expression = document_.expressions[*key_b - 1];
+    const auto& sum_expression = document_.expressions[*sum - 1];
+    if (key_a_expression.expression_kind != NativeExpressionAstKind::kIdentifier ||
+        key_b_expression.expression_kind != NativeExpressionAstKind::kIdentifier ||
+        sum_expression.expression_kind != NativeExpressionAstKind::kFunctionCall ||
+        ToUpperAscii(sum_expression.operator_name) != "SUM" ||
+        sum_expression.child_expression_ids.size() != 1) {
+      Refuse("grouping_projection_shape_invalid",
+             "native GROUPING SETS profile requires key_a, key_b, COUNT(*), SUM(value)");
+      return FinishRefusal();
+    }
+    const auto key_a_spelling = key_a_expression.spelling;
+    const auto key_b_spelling = key_b_expression.spelling;
+    const auto sum_child = sum_expression.child_expression_ids.front();
+
+    if (!RequireSymbol("(", "inline_values_open_required",
+                       "inline VALUES source requires an opening parenthesis") ||
+        !RequireWord("VALUES", "inline_values_source_required",
+                     "native GROUPING SETS profile requires VALUES")) {
+      return FinishRefusal();
+    }
+    const Token& values_token = Previous();
+    std::optional<std::size_t> row_arity;
+    while (!AtEnd()) {
+      const auto row_id = ParseValuesRow();
+      if (!row_id.has_value()) return FinishRefusal();
+      const auto& row = document_.values_rows[*row_id - 1];
+      if (!row_arity.has_value()) {
+        row_arity = row.expression_ids.size();
+      } else if (*row_arity != row.expression_ids.size()) {
+        Refuse("row_arity_mismatch",
+               "VALUES rows must contain the same number of expressions");
+        return FinishRefusal();
+      }
+      if (!AtSymbol(",")) break;
+      Consume();
+      if (!AtSymbol("(")) {
+        Refuse("row_constructor_expected",
+               "VALUES row separator must be followed by a row constructor");
+        return FinishRefusal();
+      }
+    }
+    if (document_.values_rows.empty() || row_arity != 3) {
+      Refuse("inline_values_arity_invalid",
+             "native GROUPING SETS profile requires three VALUES columns");
+      return FinishRefusal();
+    }
+    const Token& values_end = Previous();
+    if (!RequireSymbol(")", "inline_values_not_closed",
+                       "inline VALUES source is not closed") ||
+        !RequireWord("AS", "inline_values_alias_required",
+                     "inline VALUES source requires an explicit alias") ||
+        AtEnd() || !IsNameToken(Current())) {
+      if (!document_.messages.has_errors()) {
+        Refuse("inline_values_alias_required",
+               "inline VALUES source requires an explicit alias");
+      }
+      return FinishRefusal();
+    }
+    Consume();  // relation alias; binding resolves column UUIDs, not this spelling.
+    if (!RequireSymbol("(", "inline_values_columns_required",
+                       "inline VALUES alias requires three column names")) {
+      return FinishRefusal();
+    }
+    std::vector<std::string> column_names;
+    while (!AtEnd() && !AtSymbol(")")) {
+      if (!IsNameToken(Current())) {
+        Refuse("inline_values_column_invalid",
+               "inline VALUES column alias must be an identifier");
+        return FinishRefusal();
+      }
+      column_names.push_back(CanonicalTokenText(Consume()));
+      if (AtSymbol(")")) break;
+      if (!RequireSymbol(",", "inline_values_column_separator_required",
+                         "inline VALUES column aliases must be comma separated")) {
+        return FinishRefusal();
+      }
+    }
+    if (!RequireSymbol(")", "inline_values_columns_not_closed",
+                       "inline VALUES column alias list is not closed") ||
+        column_names.size() != 3 || column_names[0] == column_names[1] ||
+        column_names[0] == column_names[2] || column_names[1] == column_names[2]) {
+      if (!document_.messages.has_errors()) {
+        Refuse("inline_values_columns_invalid",
+               "inline VALUES source requires three unique column aliases");
+      }
+      return FinishRefusal();
+    }
+    const auto& sum_argument = document_.expressions[sum_child - 1];
+    if (ToUpperAscii(key_a_spelling) != column_names[0] ||
+        ToUpperAscii(key_b_spelling) != column_names[1] ||
+        sum_argument.expression_kind != NativeExpressionAstKind::kIdentifier ||
+        ToUpperAscii(sum_argument.spelling) != column_names[2]) {
+      Refuse("inline_values_projection_mismatch",
+             "GROUPING SETS projection must bind the declared inline VALUES columns");
+      return FinishRefusal();
+    }
+
+    if (!RequireWord("GROUP", "grouping_clause_required",
+                     "native aggregate profile requires GROUP BY") ||
+        !RequireWord("BY", "grouping_clause_required",
+                     "native aggregate profile requires GROUP BY") ||
+        !RequireWord("GROUPING", "grouping_sets_required",
+                     "native aggregate profile requires GROUPING SETS") ||
+        !RequireWord("SETS", "grouping_sets_required",
+                     "native aggregate profile requires GROUPING SETS") ||
+        !RequireSymbol("(", "grouping_sets_open_required",
+                       "GROUPING SETS requires an opening parenthesis")) {
+      return FinishRefusal();
+    }
+
+    std::uint32_t ordinal = 0;
+    while (!AtEnd() && !AtSymbol(")")) {
+      if (!AtSymbol("(")) {
+        Refuse("grouping_set_open_required",
+               "each GROUPING SETS item must be parenthesized");
+        return FinishRefusal();
+      }
+      const Token& set_open = Consume();
+      NativeGroupingSetAstNode grouping_set;
+      grouping_set.relation_id = 2;
+      grouping_set.ordinal = ordinal++;
+      while (!AtEnd() && !AtSymbol(")")) {
+        if (!IsNameToken(Current())) {
+          Refuse("grouping_set_member_invalid",
+                 "native grouping-set members must be projected key identifiers");
+          return FinishRefusal();
+        }
+        const auto member = CanonicalTokenText(Consume());
+        if (member == column_names[0]) {
+          grouping_set.expression_ids.push_back(*key_a);
+        } else if (member == column_names[1]) {
+          grouping_set.expression_ids.push_back(*key_b);
+        } else {
+          Refuse("grouping_set_member_unbound",
+                 "grouping-set member is not a projected grouping key");
+          return FinishRefusal();
+        }
+        if (AtSymbol(")")) break;
+        if (!RequireSymbol(",", "grouping_set_member_separator_required",
+                           "grouping-set members must be comma separated")) {
+          return FinishRefusal();
+        }
+      }
+      if (!AtSymbol(")")) {
+        Refuse("grouping_set_not_closed", "grouping set is not closed");
+        return FinishRefusal();
+      }
+      const Token& set_close = Consume();
+      grouping_set.range = Span(set_open, set_close);
+      document_.grouping_sets.push_back(std::move(grouping_set));
+      if (AtSymbol(")")) break;
+      if (!RequireSymbol(",", "grouping_sets_separator_required",
+                         "GROUPING SETS items must be comma separated")) {
+        return FinishRefusal();
+      }
+      if (AtSymbol(")")) {
+        Refuse("grouping_set_missing_after_separator",
+               "GROUPING SETS separator must be followed by a grouping set");
+        return FinishRefusal();
+      }
+    }
+    if (document_.grouping_sets.empty() || !AtSymbol(")")) {
+      Refuse("grouping_sets_empty_or_unclosed",
+             "GROUPING SETS requires at least one closed grouping set");
+      return FinishRefusal();
+    }
+    const Token& query_end = Consume();
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("trailing_input",
+             "unexpected input follows the native GROUPING SETS query");
+      return FinishRefusal();
+    }
+
+    NativeRelationAstNode values_relation;
+    values_relation.relation_id = 1;
+    values_relation.relation_kind = NativeRelationAstKind::kValues;
+    values_relation.range = Span(values_token, values_end);
+    for (const auto& row : document_.values_rows) {
+      values_relation.values_row_ids.push_back(row.row_id);
+    }
+    values_relation.output_expression_ids =
+        document_.values_rows.front().expression_ids;
+
+    NativeRelationAstNode aggregate_relation;
+    aggregate_relation.relation_id = 2;
+    aggregate_relation.relation_kind = NativeRelationAstKind::kAggregate;
+    aggregate_relation.input_relation_ids = {1};
+    aggregate_relation.output_expression_ids = {*key_a, *key_b, *count, *sum};
+    aggregate_relation.grouping_key_expression_ids = {*key_a, *key_b};
+    aggregate_relation.aggregate_expression_ids = {*count, *sum};
+    aggregate_relation.range = Span(select_token, query_end);
+    document_.relations.push_back(std::move(values_relation));
+    document_.relations.push_back(std::move(aggregate_relation));
+    document_.root_relation_id = 2;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
   std::string SourceSpelling(const Token& first, const Token& last) const {
     const auto offset = first.offset;
     const auto length = last.offset + last.length - offset;
@@ -310,6 +623,7 @@ class NativeRelationalParser final {
     document_.root_relation_id = 0;
     document_.relations.clear();
     document_.values_rows.clear();
+    document_.grouping_sets.clear();
     document_.expressions.clear();
     return std::move(document_);
   }

@@ -11,6 +11,7 @@
 #include "meta/meta_command_surface.hpp"
 #include "statement/statement_catalog.hpp"
 
+#include <algorithm>
 #include <initializer_list>
 #include <utility>
 #include <vector>
@@ -1509,11 +1510,26 @@ AstDocument BuildAst(const CstDocument& cst) {
       }
       return ast;
     }
-    ast.family = StatementFamily::kValues;
-    ast.registry_family = "sbsql.query.values.v3";
+    const bool aggregate_query =
+        ToUpperAscii(first->text) == "SELECT" ||
+        (ast.native_relational.root_relation_id != 0 &&
+         std::ranges::any_of(
+             ast.native_relational.relations, [&](const auto& relation) {
+               return relation.relation_id ==
+                          ast.native_relational.root_relation_id &&
+                      relation.relation_kind ==
+                          NativeRelationAstKind::kAggregate;
+             }));
+    ast.family = aggregate_query ? StatementFamily::kQuery
+                                 : StatementFamily::kValues;
+    ast.registry_family = aggregate_query ? "sbsql.query.relational.v3"
+                                          : "sbsql.query.values.v3";
     ast.operation_family = "sblr.query.relational.v3";
     ast.produces_sblr = ast.native_relational.accepted();
-    ApplyStatementDescriptorMetadata(&ast, DescriptorForStatementTokens(cst, "VALUES"));
+    ApplyStatementDescriptorMetadata(
+        &ast, DescriptorForStatementTokens(cst,
+                                            aggregate_query ? "SELECT"
+                                                            : "VALUES"));
     ast.statement_kind = StatementFamilyName(ast.family);
     if (!ast.nodes.empty()) {
       ast.nodes[ast.root_node_index].text = ast.statement_kind;

@@ -283,6 +283,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.descriptors.clear();
   document.expressions.clear();
   document.values_rows.clear();
+  document.grouping_sets.clear();
   document.outputs.clear();
   document.relations.clear();
   document.scopes.clear();
@@ -476,9 +477,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound.expressions.push_back(std::move(record));
   }
 
-  if (ast.values_rows.empty()) {
+  if (ast.values_rows.empty() || ast.relations.empty() ||
+      ast.root_relation_id == 0) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                          "VALUES relation has no typed row handles");
+                          "typed relational AST requires a reachable VALUES-backed root");
     return RefusedBoundAst(std::move(bound));
   }
   std::unordered_set<std::uint32_t> values_row_ids;
@@ -507,22 +509,168 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     bound.values_rows.push_back({row.row_id, row.expression_ids});
   }
-  if (context.outputs.size() != first_row.expression_ids.size()) {
-    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
-                          "VALUES output bindings must match the row arity");
+
+  std::unordered_map<std::uint32_t, const NativeRelationAstNode*>
+      ast_relation_by_id;
+  for (const auto& relation : ast.relations) {
+    if (relation.relation_id == 0 ||
+        !ast_relation_by_id.emplace(relation.relation_id, &relation).second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "typed relation handles must be nonzero and unique");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+  const auto root_relation = ast_relation_by_id.find(ast.root_relation_id);
+  if (root_relation == ast_relation_by_id.end() ||
+      (ast.relations.size() != 1 && ast.relations.size() != 2)) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "native relation graph is outside the bounded profile");
     return RefusedBoundAst(std::move(bound));
   }
 
+  std::unordered_map<std::uint32_t, const NativeRelationBindingInput*>
+      relation_binding_by_id;
+  for (const auto& relation_binding : context.relations) {
+    if (relation_binding.relation_id == 0 ||
+        relation_binding.semantic_variant_id.empty() ||
+        !ast_relation_by_id.contains(relation_binding.relation_id) ||
+        !relation_binding_by_id
+             .emplace(relation_binding.relation_id, &relation_binding)
+             .second) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "relation semantic binding is missing or contradictory");
+      return RefusedBoundAst(std::move(bound));
+    }
+  }
+
+  std::size_t expected_output_count = 0;
+  const NativeRelationAstNode* values_relation_ast = nullptr;
+  const NativeRelationAstNode* aggregate_relation_ast = nullptr;
+  bound.relations.reserve(ast.relations.size());
+  for (const auto& relation : ast.relations) {
+    for (const auto input_id : relation.input_relation_ids) {
+      if (input_id == 0 || input_id == relation.relation_id ||
+          !ast_relation_by_id.contains(input_id)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "relation graph contains a dangling or cyclic input");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+    for (const auto expression_id : relation.output_expression_ids) {
+      if (!ast_expression_by_id.contains(expression_id)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "relation output contains a dangling expression");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+
+    BoundRelationAstRecord record;
+    record.relation_id = relation.relation_id;
+    record.relation_kind = relation.relation_kind;
+    record.input_relation_ids = relation.input_relation_ids;
+    record.values_row_ids = relation.values_row_ids;
+    record.output_expression_ids = relation.output_expression_ids;
+    record.grouping_key_expression_ids = relation.grouping_key_expression_ids;
+    record.aggregate_expression_ids = relation.aggregate_expression_ids;
+    record.bound_object_uuid = std::nullopt;
+    record.lateral = false;
+
+    if (relation.relation_kind == NativeRelationAstKind::kValues) {
+      if (values_relation_ast != nullptr || !relation.input_relation_ids.empty() ||
+          relation.values_row_ids.size() != bound.values_rows.size() ||
+          relation.output_expression_ids != first_row.expression_ids ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "typed VALUES relation graph is not canonical");
+        return RefusedBoundAst(std::move(bound));
+      }
+      for (std::size_t index = 0; index < relation.values_row_ids.size(); ++index) {
+        if (relation.values_row_ids[index] != bound.values_rows[index].row_id) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "VALUES relation row handles are not canonical");
+          return RefusedBoundAst(std::move(bound));
+        }
+      }
+      values_relation_ast = &relation;
+      record.semantic_variant_id = "values.literal-table.v1";
+      for (const auto& row : bound.values_rows) {
+        record.bound_expression_ids.insert(record.bound_expression_ids.end(),
+                                           row.expression_ids.begin(),
+                                           row.expression_ids.end());
+      }
+    } else if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      if (aggregate_relation_ast != nullptr ||
+          relation.relation_id != ast.root_relation_id ||
+          relation.input_relation_ids.size() != 1 ||
+          !relation.values_row_ids.empty() ||
+          relation.grouping_key_expression_ids.size() != 2 ||
+          relation.aggregate_expression_ids.size() != 2 ||
+          relation.output_expression_ids.size() != 4 ||
+          relation.output_expression_ids[0] !=
+              relation.grouping_key_expression_ids[0] ||
+          relation.output_expression_ids[1] !=
+              relation.grouping_key_expression_ids[1] ||
+          relation.output_expression_ids[2] !=
+              relation.aggregate_expression_ids[0] ||
+          relation.output_expression_ids[3] !=
+              relation.aggregate_expression_ids[1]) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "typed aggregate relation is outside the bounded profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+      const auto semantic_binding =
+          relation_binding_by_id.find(relation.relation_id);
+      if (semantic_binding == relation_binding_by_id.end()) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "typed aggregate requires an authoritative semantic binding");
+        return RefusedBoundAst(std::move(bound));
+      }
+      aggregate_relation_ast = &relation;
+      record.semantic_variant_id =
+          semantic_binding->second->semantic_variant_id;
+      record.bound_expression_ids = relation.output_expression_ids;
+    }
+    expected_output_count += relation.output_expression_ids.size();
+    bound.relations.push_back(std::move(record));
+  }
+  if (values_relation_ast == nullptr ||
+      (aggregate_relation_ast == nullptr && ast.relations.size() != 1) ||
+      (aggregate_relation_ast != nullptr &&
+       (ast.relations.size() != 2 ||
+        aggregate_relation_ast->input_relation_ids.front() !=
+            values_relation_ast->relation_id)) ||
+      relation_binding_by_id.size() != (aggregate_relation_ast == nullptr ? 0 : 1)) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "native VALUES/aggregate graph is not canonical");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  if (context.outputs.size() != expected_output_count) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                          "output bindings must cover every relation output");
+    return RefusedBoundAst(std::move(bound));
+  }
   std::unordered_set<std::uint32_t> output_ids;
-  std::unordered_set<std::uint32_t> output_ordinals;
+  std::unordered_map<std::uint32_t, std::unordered_set<std::uint32_t>>
+      output_ordinals_by_relation;
   bound.outputs.reserve(context.outputs.size());
   for (const auto& output : context.outputs) {
-    if (output.output_id == 0 || output.ordinal >= first_row.expression_ids.size() ||
-        first_row.expression_ids[output.ordinal] != output.expression_id ||
+    const auto relation_id =
+        output.relation_id == 0 && ast.relations.size() == 1
+            ? ast.root_relation_id
+            : output.relation_id;
+    const auto relation = ast_relation_by_id.find(relation_id);
+    if (relation == ast_relation_by_id.end() || output.output_id == 0 ||
+        output.ordinal >= relation->second->output_expression_ids.size() ||
+        relation->second->output_expression_ids[output.ordinal] !=
+            output.expression_id ||
         !output_ids.insert(output.output_id).second ||
-        !output_ordinals.insert(output.ordinal).second) {
+        !output_ordinals_by_relation[relation_id]
+             .insert(output.ordinal)
+             .second) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
-                            "output IDs, ordinals, and expression handles must be exact");
+                            "output relation, ID, ordinal, and expression must be exact");
       return RefusedBoundAst(std::move(bound));
     }
     const auto expression_binding =
@@ -535,6 +683,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     BoundOutputAstRecord record;
     record.output_id = output.output_id;
+    record.relation_id = relation_id;
     record.expression_id = output.expression_id;
     record.output_name_utf8 = output.output_name_utf8;
     record.descriptor_id = output.descriptor_id;
@@ -543,10 +692,63 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     used_descriptor_ids.insert(record.descriptor_id);
     bound.outputs.push_back(std::move(record));
   }
-  std::ranges::sort(bound.outputs,
-                    [](const auto& left, const auto& right) {
-                      return left.ordinal < right.ordinal;
-                    });
+  std::ranges::sort(bound.outputs, [](const auto& left, const auto& right) {
+    return left.relation_id != right.relation_id
+               ? left.relation_id < right.relation_id
+               : left.ordinal < right.ordinal;
+  });
+
+  if (aggregate_relation_ast == nullptr) {
+    if (!ast.grouping_sets.empty()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "VALUES leaf cannot own grouping sets");
+      return RefusedBoundAst(std::move(bound));
+    }
+  } else {
+    // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-V1
+    if (ast.grouping_sets.empty()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "GROUPING SETS aggregate requires typed set records");
+      return RefusedBoundAst(std::move(bound));
+    }
+    bound.grouping_sets.reserve(ast.grouping_sets.size());
+    for (std::size_t ordinal = 0; ordinal < ast.grouping_sets.size(); ++ordinal) {
+      const auto& grouping_set = ast.grouping_sets[ordinal];
+      if (grouping_set.relation_id != aggregate_relation_ast->relation_id ||
+          grouping_set.ordinal != ordinal) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "grouping-set relation and ordinals must be exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      std::vector<std::pair<std::size_t, std::uint32_t>> canonical_members;
+      std::unordered_set<std::uint32_t> members;
+      for (const auto expression_id : grouping_set.expression_ids) {
+        const auto key = std::ranges::find(
+            aggregate_relation_ast->grouping_key_expression_ids,
+            expression_id);
+        if (key == aggregate_relation_ast->grouping_key_expression_ids.end() ||
+            !members.insert(expression_id).second) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                                "grouping-set member must be a unique bound key");
+          return RefusedBoundAst(std::move(bound));
+        }
+        canonical_members.emplace_back(
+            static_cast<std::size_t>(std::distance(
+                aggregate_relation_ast->grouping_key_expression_ids.begin(),
+                key)),
+            expression_id);
+      }
+      std::ranges::sort(canonical_members);
+      BoundGroupingSetAstRecord record;
+      record.relation_id = grouping_set.relation_id;
+      record.ordinal = grouping_set.ordinal;
+      for (const auto& [key_ordinal, expression_id] : canonical_members) {
+        (void)key_ordinal;
+        record.expression_ids.push_back(expression_id);
+      }
+      bound.grouping_sets.push_back(std::move(record));
+    }
+  }
 
   if (used_descriptor_ids.size() != descriptor_by_id.size()) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
@@ -570,37 +772,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                       return left.descriptor_id < right.descriptor_id;
                     });
 
-  if (ast.relations.size() != 1 || ast.root_relation_id == 0 ||
-      ast.relations.front().relation_id != ast.root_relation_id ||
-      ast.relations.front().relation_kind != NativeRelationAstKind::kValues ||
-      !ast.relations.front().input_relation_ids.empty() ||
-      ast.relations.front().values_row_ids.size() != bound.values_rows.size()) {
-    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                          "typed VALUES relation graph is not canonical");
-    return RefusedBoundAst(std::move(bound));
-  }
-  BoundRelationAstRecord relation;
-  relation.relation_id = ast.root_relation_id;
-  relation.relation_kind = NativeRelationAstKind::kValues;
-  relation.input_relation_ids = ast.relations.front().input_relation_ids;
-  relation.values_row_ids = ast.relations.front().values_row_ids;
-  for (std::size_t index = 0; index < relation.values_row_ids.size(); ++index) {
-    if (relation.values_row_ids[index] != bound.values_rows[index].row_id) {
-      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "VALUES relation row handles are not canonical");
-      return RefusedBoundAst(std::move(bound));
-    }
-  }
-  relation.bound_object_uuid = std::nullopt;
-  relation.lateral = false;
-  bound.relations.push_back(std::move(relation));
-
   BoundScopeAstRecord scope;
   scope.scope_id = 1;
   scope.parent_scope_id = std::nullopt;
   scope.visible_relation_ids = {ast.root_relation_id};
   for (const auto& output : bound.outputs) {
-    if (output.visible) scope.visible_projection_ids.push_back(output.output_id);
+    if (output.relation_id == ast.root_relation_id && output.visible) {
+      scope.visible_projection_ids.push_back(output.output_id);
+    }
   }
   std::ranges::sort(scope.visible_projection_ids);
   scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
@@ -638,6 +817,7 @@ BoundStatement BindAst(const AstDocument& ast,
   bound.registry_family = ast.registry_family;
   bound.operation_family = ast.operation_family;
   bound.statement_hash = Fnv1a64(cst.source);
+  bound.native_relational_recognized = ast.native_relational.recognized();
   bound.messages = ast.messages;
   PopulateAuthorityMetadata(&bound, ast);
   if (bound.messages.has_errors()) return bound;
