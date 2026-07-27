@@ -189,6 +189,7 @@ struct CanonicalWindowAggregateResult {
 };
 
 enum class CanonicalRegistryWindowAggregateStateStrategy : std::uint8_t {
+  unknown = 0,
   frame_recompute = 1,
   moving_inverse,
 };
@@ -199,8 +200,6 @@ struct CanonicalRegistryWindowAggregateRequest {
   // admitted aggregate-kernel DAG.  Its input batch must be empty because
   // effective frame rows are the only runtime input authority.
   CanonicalAggregateRuntimeRequest aggregate_template;
-  CanonicalRegistryWindowAggregateStateStrategy state_strategy =
-      CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
   std::size_t maximum_output_rows = 1048576;
   std::size_t maximum_frame_input_row_count = 8388608;
   std::size_t maximum_transition_count = 8388608;
@@ -223,6 +222,11 @@ struct CanonicalRegistryWindowAggregateResult {
   std::size_t combined_state_bytes = 0;
   bool effective_frame_recomputed = false;
   bool moving_inverse_state_used = false;
+  bool state_strategy_selected_from_physical_plan = false;
+  bool frame_membership_spill_required = false;
+  CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
+      CanonicalRegistryWindowAggregateStateStrategy::unknown;
+  std::string selected_state_implementation_id;
   bool shared_aggregate_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
@@ -295,6 +299,8 @@ struct CanonicalWindowRuntimeRequest {
   std::optional<CanonicalWindowRankingRequest> ranking;
   std::optional<CanonicalWindowValueRequest> value;
   std::optional<CanonicalRegistryWindowAggregateRequest> registry_aggregate;
+  std::optional<CanonicalRegistryWindowAggregateSpillRequest>
+      registry_aggregate_spill;
   std::optional<CanonicalWindowRuntimeStrategy> forced_strategy;
 };
 
@@ -310,8 +316,17 @@ struct CanonicalWindowRuntimeResult {
   bool aggregate_registry_bridge_used = false;
   bool moving_inverse_state_used = false;
   bool effective_frame_recomputed = false;
+  bool aggregate_state_strategy_selected_from_physical_plan = false;
+  bool aggregate_frame_membership_spill_used = false;
+  bool aggregate_spill_reopened = false;
+  bool aggregate_spill_cleanup_proven = false;
+  CanonicalRegistryWindowAggregateStateStrategy
+      selected_aggregate_state_strategy =
+          CanonicalRegistryWindowAggregateStateStrategy::unknown;
+  std::string selected_aggregate_state_implementation_id;
   std::size_t aggregate_transition_count = 0;
   std::size_t aggregate_inverse_transition_count = 0;
+  std::size_t aggregate_spilled_frame_reference_count = 0;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
   std::string selected_plan_uuid;

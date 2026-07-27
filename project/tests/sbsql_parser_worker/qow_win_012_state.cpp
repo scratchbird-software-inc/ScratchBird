@@ -72,7 +72,7 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryAverageWindowRequest(
   aggregate.physical_dag.nodes[1].node_kind =
       exec::PhysicalNodeKind::kAggregate;
   aggregate.physical_dag.nodes[1].implementation_id =
-      "window.aggregate-registry-kernel.v1";
+      "window.aggregate-registry-frame-recompute.v1";
   aggregate.physical_dag.nodes[1].output_descriptor_ids = {5998};
   aggregate.selected_physical_node_id =
       request.frames.executed_physical_node_id;
@@ -88,6 +88,25 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryAverageWindowRequest(
           "type_uuid=" + WindowUuid(5201) + ";nullability=nullable"),
       true, 5998};
   return request;
+}
+
+void SelectRegistryWindowStateStrategy(
+    exec::CanonicalRegistryWindowAggregateRequest* request,
+    const exec::CanonicalRegistryWindowAggregateStateStrategy strategy) {
+  if (request == nullptr) return;
+  auto& implementation_id =
+      request->aggregate_template.physical_dag.nodes[1].implementation_id;
+  switch (strategy) {
+    case exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute:
+      implementation_id = "window.aggregate-registry-frame-recompute.v1";
+      break;
+    case exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse:
+      implementation_id = "window.aggregate-registry-moving-inverse.v1";
+      break;
+    case exec::CanonicalRegistryWindowAggregateStateStrategy::unknown:
+      implementation_id = "window.aggregate-registry-unknown.v1";
+      break;
+  }
 }
 
 std::vector<std::string> RegistryAggregateTexts(
@@ -236,6 +255,12 @@ bool ValidateRegistryAggregateWindowState() {
           result.frame_row_indices == EffectiveFrameRows(request.frames) &&
           result.shared_aggregate_state_authority_used &&
           result.effective_frame_recomputed &&
+          result.state_strategy_selected_from_physical_plan &&
+          result.selected_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+          result.selected_state_implementation_id ==
+              "window.aggregate-registry-frame-recompute.v1" &&
+          !result.frame_membership_spill_required &&
           result.descriptor.function == exec::CanonicalAggregateFunction::avg &&
           result.selected_plan_uuid == request.frames.selected_plan_uuid &&
           result.executed_physical_node_id ==
@@ -287,8 +312,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
   const auto recomputed =
       exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
   auto moving_request = recompute_request;
-  moving_request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   auto moving = exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
   bool passed = Require401(
       SameRegistryAggregateValues(recomputed, moving) &&
@@ -300,6 +326,11 @@ bool ValidateRegistryAggregateMovingInverseState() {
           !recomputed.moving_inverse_state_used &&
           moving.moving_inverse_state_used &&
           !moving.effective_frame_recomputed &&
+          moving.state_strategy_selected_from_physical_plan &&
+          moving.selected_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+          moving.selected_state_implementation_id ==
+              "window.aggregate-registry-moving-inverse.v1" &&
           moving.transition_count == 9 &&
           moving.inverse_transition_count == 8 &&
           moving.transition_count < recomputed.transition_count &&
@@ -322,8 +353,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
   const auto sum_recomputed =
       exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
   moving_request = recompute_request;
-  moving_request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   const auto sum_moving =
       exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
   passed &= Require401(
@@ -342,8 +374,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
   const auto filtered_recomputed =
       exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
   moving_request = recompute_request;
-  moving_request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   moving = exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
   passed &= Require401(
       SameRegistryAggregateValues(filtered_recomputed, moving) &&
@@ -368,8 +401,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
   const auto count_recomputed =
       exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
   moving_request = recompute_request;
-  moving_request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &moving_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   const auto count_moving =
       exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
   passed &= Require401(
@@ -387,8 +421,9 @@ bool ValidateRegistryAggregateMovingInverseState() {
 bool ValidateRegistryAggregateMovingInverseRefusals() {
   bool passed = true;
   auto request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.aggregate_template.distinct = true;
   passed &= Require401(
       RegistryAggregateRefused(
@@ -397,8 +432,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "moving aggregate state admitted DISTINCT without inverse authority");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.aggregate_template.aggregate_order_terms = {
       {.column = 4, .expression_descriptor_id = 4005}};
   passed &= Require401(
@@ -408,8 +444,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "moving aggregate state admitted aggregate ordering without inverse authority");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.aggregate_template.forced_strategy =
       exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
   passed &= Require401(
@@ -419,8 +456,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "moving aggregate state admitted partition combine without inverse authority");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.aggregate_template.descriptor = {
       1, exec::CanonicalAggregateFunction::min, "sb.aggregate.min",
       std::string(kMinimumUuid), false};
@@ -435,8 +473,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "moving aggregate state invented inverse authority for MIN");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.maximum_inverse_transition_count = 7;
   passed &= Require401(
       RegistryAggregateRefused(
@@ -445,8 +484,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "moving aggregate state published after inverse resource exhaustion");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      static_cast<exec::CanonicalRegistryWindowAggregateStateStrategy>(0);
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::unknown);
   passed &= Require401(
       RegistryAggregateRefused(
           exec::ExecuteCanonicalRegistryWindowAggregate(request),
@@ -454,8 +494,9 @@ bool ValidateRegistryAggregateMovingInverseRefusals() {
       "aggregate window admitted an unknown state strategy");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
-  request.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   request.frames.authority.owns_transaction_finality = true;
   passed &= Require401(
       RegistryAggregateRefused(
@@ -516,6 +557,8 @@ exec::CanonicalRegistryWindowAggregateSpillRequest RegistryWindowSpillRequest(
     const std::filesystem::path& root) {
   exec::CanonicalRegistryWindowAggregateSpillRequest request;
   request.aggregate_request = RegistryAverageWindowRequest(PrefixFrame());
+  request.aggregate_request.aggregate_template.physical_dag.nodes[1]
+      .implementation_id = "window.aggregate-registry-frame-spill.v1";
   request.spill_root = root;
   request.spill_owner_uuid = WindowUuid(5301);
   request.runtime_generation = 5302;
@@ -570,6 +613,12 @@ bool ValidateRegistryAggregateWindowSpill(
   passed &= Require401(
       result.diagnostic.ok && result.spilled && result.spill_reopened &&
           result.cleanup_proven &&
+          result.aggregate_result.state_strategy_selected_from_physical_plan &&
+          result.aggregate_result.frame_membership_spill_required &&
+          result.aggregate_result.selected_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+          result.aggregate_result.selected_state_implementation_id ==
+              "window.aggregate-registry-frame-spill.v1" &&
           result.spilled_frame_reference_count == 20 &&
           RegistryAggregateTexts(result.aggregate_result) ==
               std::vector<std::string>({"101", "103", "103", "102",
@@ -587,6 +636,23 @@ bool ValidateRegistryAggregateWindowSpill(
           !HasWindowSpillArtifact(root) &&
           std::filesystem::exists(sentinel),
       "aggregate window spill did not reopen exact frame membership");
+
+  auto direct_spill = RegistryWindowSpillRequest(root).aggregate_request;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(direct_spill),
+          {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY"}),
+      "selected spill implementation bypassed the spill runtime");
+
+  auto mismatched_spill = RegistryWindowSpillRequest(root);
+  SelectRegistryWindowStateStrategy(
+      &mismatched_spill.aggregate_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute);
+  result =
+      exec::ExecuteCanonicalRegistryWindowAggregateSpill(mismatched_spill);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
+      "spill payload overrode the optimizer-selected recomputation implementation");
 
   auto request = RegistryWindowSpillRequest(root);
   request.cancellation_requested = true;

@@ -249,6 +249,11 @@ bool ValidateAggregateStrategyAndRefusals() {
           runtime.aggregate_registry_bridge_used &&
           runtime.effective_frame_recomputed &&
           !runtime.moving_inverse_state_used &&
+          runtime.aggregate_state_strategy_selected_from_physical_plan &&
+          runtime.selected_aggregate_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+          runtime.selected_aggregate_state_implementation_id ==
+              "window.aggregate-registry-frame-recompute.v1" &&
           runtime.aggregate_transition_count == direct.transition_count,
       "SUM seed did not adopt the aggregate-registry window bridge");
 
@@ -291,8 +296,9 @@ bool ValidateAggregateStrategyAndRefusals() {
       "retained int64 SUM seed admitted a broader SUM result profile");
 
   aggregate = RegistryAverageWindowRequest(PrefixFrame());
-  aggregate.state_strategy =
-      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  SelectRegistryWindowStateStrategy(
+      &aggregate,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse);
   const auto average_direct =
       exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
   request = {};
@@ -308,6 +314,11 @@ bool ValidateAggregateStrategyAndRefusals() {
           runtime.aggregate_registry_bridge_used &&
           runtime.moving_inverse_state_used &&
           !runtime.effective_frame_recomputed &&
+          runtime.aggregate_state_strategy_selected_from_physical_plan &&
+          runtime.selected_aggregate_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+          runtime.selected_aggregate_state_implementation_id ==
+              "window.aggregate-registry-moving-inverse.v1" &&
           runtime.aggregate_transition_count == 9 &&
           runtime.aggregate_inverse_transition_count == 8,
       "generic AVG identity did not reach moving state through the unified runtime");
@@ -330,6 +341,42 @@ bool ValidateAggregateStrategyAndRefusals() {
           !runtime.moving_inverse_state_used &&
           runtime.aggregate_inverse_transition_count == 0,
       "generic MIN identity did not retain canonical frame recomputation");
+
+  const auto spill_root = std::filesystem::temp_directory_path() /
+                          ("scratchbird_qow406_window_runtime_spill_" +
+                           std::to_string(std::chrono::steady_clock::now()
+                                              .time_since_epoch()
+                                              .count()));
+  std::error_code filesystem_error;
+  std::filesystem::create_directories(
+      spill_root / WindowUuid(5301), filesystem_error);
+  const auto spill_expected =
+      exec::ExecuteCanonicalRegistryWindowAggregate(
+          RegistryAverageWindowRequest(PrefixFrame()));
+  auto spill_payload = RegistryWindowSpillRequest(spill_root);
+  request = {};
+  request.descriptor =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::avg);
+  request.registry_aggregate_spill = spill_payload;
+  request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
+  runtime = exec::ExecuteCanonicalWindowRuntime(request);
+  passed &= Require401(
+      spill_expected.diagnostic.ok &&
+          RuntimeResultAccepted(runtime, *request.forced_strategy,
+                                spill_expected.values) &&
+          runtime.aggregate_registry_bridge_used &&
+          runtime.aggregate_frame_membership_spill_used &&
+          runtime.aggregate_spill_reopened &&
+          runtime.aggregate_spill_cleanup_proven &&
+          runtime.aggregate_spilled_frame_reference_count == 20 &&
+          runtime.aggregate_state_strategy_selected_from_physical_plan &&
+          runtime.selected_aggregate_state_strategy ==
+              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+          runtime.selected_aggregate_state_implementation_id ==
+              "window.aggregate-registry-frame-spill.v1" &&
+          !HasWindowSpillArtifact(spill_root),
+      "unified runtime did not consume the optimizer-selected spill implementation");
+  std::filesystem::remove_all(spill_root, filesystem_error);
 
   request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::ranking;
   refused = exec::ExecuteCanonicalWindowRuntime(request);

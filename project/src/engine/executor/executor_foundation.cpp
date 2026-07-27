@@ -4598,13 +4598,13 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
 }
 
 // QOW-SOURCE-WIN-012-REGISTRY-BRIDGE-V1
-// Recompute every effective window frame through the exact canonical aggregate
-// registry/state runtime.  The optimizer-admitted aggregate-kernel DAG is
-// bound to the frame's plan, MGA statement, physical node, and causal counter;
-// the frame rows are the sole input authority.
-CanonicalRegistryWindowAggregateResult
-ExecuteCanonicalRegistryWindowAggregate(
-    const CanonicalRegistryWindowAggregateRequest& request) {
+// Execute the exact state strategy named by the optimizer-published aggregate
+// window node.  Direct execution admits recomputation or moving inverse state;
+// the spill wrapper alone may consume the frame-spill implementation.
+static CanonicalRegistryWindowAggregateResult
+ExecuteCanonicalRegistryWindowAggregateSelected(
+    const CanonicalRegistryWindowAggregateRequest& request,
+    const bool spill_execution_context) {
   namespace api = scratchbird::engine::internal_api;
 
   CanonicalRegistryWindowAggregateResult result;
@@ -4639,20 +4639,6 @@ ExecuteCanonicalRegistryWindowAggregate(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                   "aggregate registry window resource contract is invalid");
   }
-  if (request.state_strategy !=
-          CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
-      request.state_strategy !=
-          CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
-                  "aggregate registry window state strategy is invalid");
-  }
-  if (request.state_strategy ==
-          CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
-      request.maximum_inverse_transition_count == 0) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
-                  "moving aggregate inverse resource contract is invalid");
-  }
-
   const auto& aggregate_template = request.aggregate_template;
   const auto aggregate_registry = CanonicalAggregateRuntimeRegistryV1();
   const auto aggregate_registry_row = std::ranges::find_if(
@@ -4698,14 +4684,50 @@ ExecuteCanonicalRegistryWindowAggregate(
           aggregate_template.physical_dag.root_physical_node_id ||
       aggregate_node == nullptr ||
       aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
-      aggregate_node->implementation_id !=
-          "window.aggregate-registry-kernel.v1" ||
       aggregate_node->input_physical_node_ids.size() != 1 ||
       aggregate_node->output_descriptor_ids !=
           std::vector<std::uint32_t>{
               aggregate_template.result_column.descriptor_id}) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
                   "aggregate window kernel node is not exactly bound");
+  }
+  CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
+      CanonicalRegistryWindowAggregateStateStrategy::unknown;
+  bool frame_membership_spill_required = false;
+  if (aggregate_node->implementation_id.rfind(
+          "window.aggregate-registry-", 0) != 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
+                  "aggregate implementation is not a window state strategy");
+  }
+  if (aggregate_node->implementation_id ==
+      "window.aggregate-registry-frame-recompute.v1") {
+    selected_state_strategy =
+        CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
+  } else if (aggregate_node->implementation_id ==
+             "window.aggregate-registry-moving-inverse.v1") {
+    selected_state_strategy =
+        CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  } else if (aggregate_node->implementation_id ==
+             "window.aggregate-registry-frame-spill.v1") {
+    selected_state_strategy =
+        CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
+    frame_membership_spill_required = true;
+  } else {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
+                  "optimizer selected an unknown aggregate window state implementation");
+  }
+  if (frame_membership_spill_required != spill_execution_context) {
+    return refuse(
+        "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
+        frame_membership_spill_required
+            ? "selected aggregate window spill requires the spill runtime"
+            : "aggregate window spill payload does not match the selected implementation");
+  }
+  if (selected_state_strategy ==
+          CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+      request.maximum_inverse_transition_count == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                  "moving aggregate inverse resource contract is invalid");
   }
   for (const auto& node : aggregate_template.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -4768,7 +4790,7 @@ ExecuteCanonicalRegistryWindowAggregate(
     result.frame_row_indices.push_back(frame.effective_row_indices);
   }
 
-  if (request.state_strategy ==
+  if (selected_state_strategy ==
       CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
     CanonicalAggregateMovingRuntimeRequest moving_request;
     moving_request.aggregate_request = make_frame_request();
@@ -4870,8 +4892,14 @@ ExecuteCanonicalRegistryWindowAggregate(
   result.diagnostic = {};
   result.descriptor = aggregate_template.descriptor;
   result.effective_frame_recomputed =
-      request.state_strategy ==
+      selected_state_strategy ==
       CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
+  result.state_strategy_selected_from_physical_plan = true;
+  result.frame_membership_spill_required =
+      frame_membership_spill_required;
+  result.selected_state_strategy = selected_state_strategy;
+  result.selected_state_implementation_id =
+      aggregate_node->implementation_id;
   result.shared_aggregate_state_authority_used = true;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
@@ -4880,6 +4908,12 @@ ExecuteCanonicalRegistryWindowAggregate(
       request.frames.executed_physical_node_id;
   result.causal_counter_id = request.frames.causal_counter_id;
   return result;
+}
+
+CanonicalRegistryWindowAggregateResult
+ExecuteCanonicalRegistryWindowAggregate(
+    const CanonicalRegistryWindowAggregateRequest& request) {
+  return ExecuteCanonicalRegistryWindowAggregateSelected(request, false);
 }
 
 // QOW-SOURCE-WIN-012-REGISTRY-SPILL-V1
@@ -4900,11 +4934,17 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
     return result;
   };
 
-  const auto canonical = ExecuteCanonicalRegistryWindowAggregate(
-      request.aggregate_request);
+  const auto canonical = ExecuteCanonicalRegistryWindowAggregateSelected(
+      request.aggregate_request, true);
   if (!canonical.diagnostic.ok) {
     return refuse(canonical.diagnostic.diagnostic_code,
                   canonical.diagnostic.detail);
+  }
+  if (!canonical.frame_membership_spill_required ||
+      canonical.selected_state_implementation_id !=
+          "window.aggregate-registry-frame-spill.v1") {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
+                  "window aggregate spill did not consume its selected physical implementation");
   }
   if (request.spill_root.empty() || !request.spill_root.is_absolute() ||
       !IsCanonicalUuid(request.spill_owner_uuid) ||
@@ -5014,8 +5054,8 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                   "reopened frame-reference stream differs from canonical input");
   }
 
-  const auto reopened = ExecuteCanonicalRegistryWindowAggregate(
-      request.aggregate_request);
+  const auto reopened = ExecuteCanonicalRegistryWindowAggregateSelected(
+      request.aggregate_request, true);
   const auto descriptor_equal = [](const auto& left, const auto& right) {
     return left.descriptor_uuid.canonical ==
                right.descriptor_uuid.canonical &&
@@ -5213,14 +5253,19 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
   const auto payload_count = static_cast<unsigned>(request.ranking.has_value()) +
                              static_cast<unsigned>(request.value.has_value()) +
                              static_cast<unsigned>(
-                                 request.registry_aggregate.has_value());
+                                 request.registry_aggregate.has_value()) +
+                             static_cast<unsigned>(
+                                 request.registry_aggregate_spill.has_value());
+  const auto aggregate_payload_count =
+      static_cast<unsigned>(request.registry_aggregate.has_value()) +
+      static_cast<unsigned>(request.registry_aggregate_spill.has_value());
   if (payload_count != 1 ||
       (expected_strategy == CanonicalWindowRuntimeStrategy::ranking) !=
           request.ranking.has_value() ||
       (expected_strategy == CanonicalWindowRuntimeStrategy::value) !=
           request.value.has_value() ||
       (expected_strategy == CanonicalWindowRuntimeStrategy::aggregate) !=
-          request.registry_aggregate.has_value()) {
+          (aggregate_payload_count == 1)) {
     return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                   "window runtime requires exactly one class-matching strategy payload");
   }
@@ -5257,7 +5302,10 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
     }
     if (!publish(ExecuteCanonicalWindowValue(*request.value))) return result;
   } else {
-    const auto& aggregate = *request.registry_aggregate;
+    const auto& aggregate = request.registry_aggregate.has_value()
+                                ? *request.registry_aggregate
+                                : request.registry_aggregate_spill
+                                      ->aggregate_request;
     const auto& aggregate_descriptor = aggregate.aggregate_template.descriptor;
     if (!expected_aggregate.has_value() ||
         aggregate_descriptor.abi_version != request.descriptor.abi_version ||
@@ -5282,14 +5330,37 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                     "retained int64 SUM seed received a broader SUM profile");
     }
-    const auto aggregate_result =
-        ExecuteCanonicalRegistryWindowAggregate(aggregate);
+    CanonicalRegistryWindowAggregateResult aggregate_result;
+    if (request.registry_aggregate_spill.has_value()) {
+      const auto spill_result =
+          ExecuteCanonicalRegistryWindowAggregateSpill(
+              *request.registry_aggregate_spill);
+      if (!spill_result.diagnostic.ok) {
+        result.diagnostic = spill_result.diagnostic;
+        result.values.clear();
+        return result;
+      }
+      aggregate_result = spill_result.aggregate_result;
+      result.aggregate_frame_membership_spill_used = spill_result.spilled;
+      result.aggregate_spill_reopened = spill_result.spill_reopened;
+      result.aggregate_spill_cleanup_proven = spill_result.cleanup_proven;
+      result.aggregate_spilled_frame_reference_count =
+          spill_result.spilled_frame_reference_count;
+    } else {
+      aggregate_result = ExecuteCanonicalRegistryWindowAggregate(aggregate);
+    }
     if (!publish(aggregate_result)) return result;
     result.aggregate_registry_bridge_used = true;
     result.moving_inverse_state_used =
         aggregate_result.moving_inverse_state_used;
     result.effective_frame_recomputed =
         aggregate_result.effective_frame_recomputed;
+    result.aggregate_state_strategy_selected_from_physical_plan =
+        aggregate_result.state_strategy_selected_from_physical_plan;
+    result.selected_aggregate_state_strategy =
+        aggregate_result.selected_state_strategy;
+    result.selected_aggregate_state_implementation_id =
+        aggregate_result.selected_state_implementation_id;
     result.aggregate_transition_count = aggregate_result.transition_count;
     result.aggregate_inverse_transition_count =
         aggregate_result.inverse_transition_count;
