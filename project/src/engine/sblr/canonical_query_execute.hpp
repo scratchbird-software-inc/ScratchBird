@@ -50,7 +50,8 @@ struct CanonicalObjectFreeValuesExecutionResult {
 // exact two-int64-input pair statistical/regression aggregate, or text
 // STRING_AGG(input-column, literal-separator), ordered text
 // ARRAY_AGG(input-column, int64-order-column), or ordered text
-// JSON_AGG(input-column, int64-order-column) shape,
+// JSON_AGG(input-column, int64-order-column), or ordered text-key/int64-value
+// JSON_OBJECT_AGG(key-column, value-column, int64-order-column) shape,
 // the exact three-node VALUES/VALUES/UNION ALL ordinal shape, or the exact
 // three-node VALUES/VALUES/INNER JOIN shape.
 // FILTER and INNER JOIN each require one object-free bound boolean predicate.

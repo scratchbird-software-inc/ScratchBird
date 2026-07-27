@@ -587,6 +587,8 @@ bool ValidateCanonicalAggregateRegistry() {
   const std::vector<CollectionCase> nullable_collection_boundaries = {
       {exec::CanonicalAggregateFunction::array_agg, "list[text:a]"},
       {exec::CanonicalAggregateFunction::json_agg, R"(["a"])"},
+      {exec::CanonicalAggregateFunction::json_object_agg,
+       R"({"dup":1.5})"},
   };
   for (const auto& test_case : nullable_collection_boundaries) {
     auto singleton = CollectionRequest(test_case.function);
@@ -605,7 +607,8 @@ bool ValidateCanonicalAggregateRegistry() {
             empty_result.diagnostic.ok &&
             empty_result.output_batch.rows[0].values[0].state ==
                 api::EngineValueState::sql_null,
-        "ARRAY_AGG/JSON_AGG singleton or empty-input boundary drifted");
+        "ARRAY_AGG/JSON_AGG/JSON_OBJECT_AGG singleton or empty-input "
+        "boundary drifted");
   }
 
   auto singleton_string =
