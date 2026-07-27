@@ -1378,6 +1378,45 @@ sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope RollupCountSumGroupingValuesEnvelope() {
+  auto envelope = RollupCountSumValuesEnvelope();
+  envelope.operands.insert(
+      envelope.operands.end(),
+      {{"relational_descriptor_v1", "6",
+        "019f0000-0000-7300-8000-00000000e20e|"
+        "019f0000-0000-7400-8000-00000000e20f|1|-|-|-|-|-"},
+       {"relational_descriptor_v1", "7",
+        "019f0000-0000-7300-8000-00000000e210|"
+        "019f0000-0000-7400-8000-00000000e211|1|-|-|-|-|-"},
+       {"relational_descriptor_v1", "8",
+        "019f0000-0000-7300-8000-00000000e212|"
+        "019f0000-0000-7400-8000-00000000e213|1|-|-|-|-|-"},
+       {"relational_expression_v1", "24",
+        "5|19|6|-|-|-|67726f7570696e67|-"},
+       {"relational_expression_v1", "25",
+        "5|20|7|-|-|-|67726f7570696e67|-"},
+       {"relational_expression_v1", "26",
+        "6|19,20|8|-|-|-|67726f7570696e675f6964|-"},
+       {"relational_output_v1", "8",
+        "2|24|6|1|4|67726f7570696e675f61"},
+       {"relational_output_v1", "9",
+        "2|25|7|1|5|67726f7570696e675f62"},
+       {"relational_output_v1", "10",
+        "2|26|8|1|6|67726f7570696e675f6964"}});
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "5|0|1|1,2,4,5,6,7,8|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.value =
+          EncodeHex(
+              "aggregate.rollup-int64-keys-count-sum-grouping.v1") +
+          "|19,20,21,23,24,25,26|-|-|-";
+    }
+  }
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
     const StatisticalAggregateProfile& profile) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -4216,6 +4255,208 @@ bool ValidateRollupCountSumRefusalIsAtomic() {
           refused_before_admission(std::move(output_order_drift)),
       "shape-, key-, function-, nullability-, semantic-, or output-order-"
       "drifted two-key ROLLUP published partial evidence");
+}
+
+bool ValidateRollupCountSumGroupingValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), RollupCountSumGroupingValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), RollupCountSumGroupingValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 2 &&
+          first.logical_property_count == 0 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 7 &&
+          first.canonical_result_row_count == 9,
+      "VALUES ROLLUP grouping projections did not traverse the selected DAG");
+
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 7 && rows.size() == 9 &&
+          columns[4].canonical_type_name == "int64" &&
+          columns[4].encoded_descriptor.find("nullability=non_null") !=
+              std::string::npos &&
+          columns[5].canonical_type_name == "int64" &&
+          columns[5].encoded_descriptor.find("nullability=non_null") !=
+              std::string::npos &&
+          columns[6].canonical_type_name == "int64" &&
+          columns[6].encoded_descriptor.find("nullability=non_null") !=
+              std::string::npos,
+      "GROUPING/GROUPING_ID result descriptors lost non-null int64 identity");
+
+  const auto value_matches = [](
+                                 const api::EngineTypedValue& value,
+                                 const std::optional<std::string_view> expected) {
+    if (!expected.has_value()) {
+      return value.state == api::EngineValueState::sql_null && value.is_null;
+    }
+    return value.state == api::EngineValueState::value && !value.is_null &&
+           value.encoded_value == *expected;
+  };
+  const auto row_matches = [&](const std::size_t ordinal,
+                               const std::optional<std::string_view> key_a,
+                               const std::optional<std::string_view> key_b,
+                               const std::string_view count,
+                               const std::string_view sum,
+                               const std::string_view grouping_a,
+                               const std::string_view grouping_b,
+                               const std::string_view grouping_id) {
+    return ordinal < rows.size() && rows[ordinal].fields.size() == 7 &&
+           rows[ordinal].fields[0].first == "key_a" &&
+           rows[ordinal].fields[1].first == "key_b" &&
+           rows[ordinal].fields[2].first == "row_count" &&
+           rows[ordinal].fields[3].first == "total_amount" &&
+           rows[ordinal].fields[4].first == "grouping_a" &&
+           rows[ordinal].fields[5].first == "grouping_b" &&
+           rows[ordinal].fields[6].first == "grouping_id" &&
+           value_matches(rows[ordinal].fields[0].second, key_a) &&
+           value_matches(rows[ordinal].fields[1].second, key_b) &&
+           value_matches(rows[ordinal].fields[2].second, count) &&
+           value_matches(rows[ordinal].fields[3].second, sum) &&
+           value_matches(rows[ordinal].fields[4].second, grouping_a) &&
+           value_matches(rows[ordinal].fields[5].second, grouping_b) &&
+           value_matches(rows[ordinal].fields[6].second, grouping_id);
+  };
+  passed &= Require(
+      row_matches(0, "1", "10", "2", "5", "0", "0", "0") &&
+          row_matches(1, "1", "20", "1", "7", "0", "0", "0") &&
+          row_matches(2, "1", std::nullopt, "1", "3", "0", "0", "0") &&
+          row_matches(3, "2", "10", "1", "4", "0", "0", "0") &&
+          row_matches(4, std::nullopt, "10", "1", "8", "0", "0", "0") &&
+          row_matches(5, "1", std::nullopt, "4", "15", "0", "1", "1") &&
+          row_matches(6, "2", std::nullopt, "1", "4", "0", "1", "1") &&
+          row_matches(7, std::nullopt, std::nullopt, "1", "8", "0", "1",
+                      "1") &&
+          row_matches(8, std::nullopt, std::nullopt, "6", "27", "1", "1",
+                      "3"),
+      "GROUPING/GROUPING_ID lost data-NULL versus structural-NULL identity");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical grouping projections changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateRollupCountSumGroupingRefusalIsAtomic() {
+  auto missing_projection = RollupCountSumGroupingValuesEnvelope();
+  auto grouping_operator_drift = RollupCountSumGroupingValuesEnvelope();
+  auto grouping_child_drift = RollupCountSumGroupingValuesEnvelope();
+  auto grouping_id_order_drift = RollupCountSumGroupingValuesEnvelope();
+  auto nullable_indicator = RollupCountSumGroupingValuesEnvelope();
+  auto semantic_shape_drift = RollupCountSumGroupingValuesEnvelope();
+  auto output_order_drift = RollupCountSumGroupingValuesEnvelope();
+  const auto grouping_semantic = EncodeHex(
+      "aggregate.rollup-int64-keys-count-sum-grouping.v1");
+  for (auto* envelope : {&missing_projection, &semantic_shape_drift}) {
+    for (auto& operand : envelope->operands) {
+      if (operand.type == "relational_node_binding_v1" &&
+          operand.name == "2") {
+        operand.value =
+            (envelope == &missing_projection
+                 ? grouping_semantic
+                 : EncodeHex("aggregate.rollup-int64-keys-count-sum.v1")) +
+            "|19,20,21,23,24,25|-|-|-";
+      }
+    }
+  }
+  for (auto& operand : grouping_operator_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "24") {
+      operand.value = "5|19|6|-|-|-|67726f7570696e675f6964|-";
+    }
+  }
+  for (auto& operand : grouping_child_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "24") {
+      operand.value = "5|20|6|-|-|-|67726f7570696e67|-";
+    }
+  }
+  for (auto& operand : grouping_id_order_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "26") {
+      operand.value = "6|20,19|8|-|-|-|67726f7570696e675f6964|-";
+    }
+  }
+  for (auto& operand : nullable_indicator.operands) {
+    if (operand.type == "relational_descriptor_v1" && operand.name == "6") {
+      operand.value =
+          "019f0000-0000-7300-8000-00000000e20e|"
+          "019f0000-0000-7400-8000-00000000e20f|2|-|-|-|-|-";
+    }
+  }
+  for (auto& operand : output_order_drift.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "5|0|1|1,2,4,5,7,6,8|-";
+    }
+  }
+
+  const auto refused_atomically = [](const std::string_view label,
+                                     sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    const bool refused =
+        result.accepted && result.optimizer_admitted &&
+        !result.optimizer_selected && !result.physical_dag_published &&
+        !result.physical_dag_executed && !result.runtime_actuals_attached &&
+        !result.canonical_result_published && !result.api_result.ok &&
+        result.physical_node_count == 0 &&
+        result.canonical_result_bytes.empty() &&
+        HasApiDiagnostic(
+            result,
+            "QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1");
+    if (!refused) {
+      std::cerr << "grouping projection refusal mismatch (" << label
+                << "): accepted=" << result.accepted
+                << ", admitted=" << result.optimizer_admitted
+                << ", selected=" << result.optimizer_selected
+                << ", published=" << result.physical_dag_published
+                << ", executed=" << result.physical_dag_executed
+                << ", api_ok=" << result.api_result.ok << '\n';
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    return refused;
+  };
+  const auto refused_before_admission =
+      [](sblr::SblrOperationEnvelope envelope) {
+        const auto result = sblr::DispatchSblrOperation(
+            {Context(), std::move(envelope), {}});
+        return !result.accepted && !result.optimizer_admitted &&
+               !result.optimizer_selected &&
+               !result.physical_dag_published &&
+               !result.physical_dag_executed &&
+               !result.runtime_actuals_attached &&
+               !result.canonical_result_published && !result.api_result.ok &&
+               result.physical_node_count == 0 &&
+               result.canonical_result_bytes.empty() &&
+               HasApiDiagnostic(result, "SBLR.PLAN_TREE.INVALID_HANDLE");
+      };
+  return Require(
+      refused_atomically("missing_projection", std::move(missing_projection)) &&
+          refused_atomically("grouping_operator",
+                             std::move(grouping_operator_drift)) &&
+          refused_atomically("grouping_child",
+                             std::move(grouping_child_drift)) &&
+          refused_atomically("grouping_id_order",
+                             std::move(grouping_id_order_drift)) &&
+          refused_atomically("nullable_indicator",
+                             std::move(nullable_indicator)) &&
+          refused_atomically("semantic_shape",
+                             std::move(semantic_shape_drift)) &&
+          refused_before_admission(std::move(output_order_drift)),
+      "shape-, operator-, child-, descriptor-, semantic-, or output-drifted "
+      "grouping projection published partial evidence");
 }
 
 bool ValidateGlobalCountStarValuesSpine() {
@@ -7720,6 +7961,8 @@ int main() {
                       ValidateGroupedCountSumRefusalIsAtomic() &&
                       ValidateRollupCountSumValuesSpine() &&
                       ValidateRollupCountSumRefusalIsAtomic() &&
+                      ValidateRollupCountSumGroupingValuesSpine() &&
+                      ValidateRollupCountSumGroupingRefusalIsAtomic() &&
                       ValidateGlobalCountStarValuesSpine() &&
                       ValidateGlobalCountStarRefusalIsAtomic() &&
                       ValidateGlobalCountExpressionValuesSpine() &&
