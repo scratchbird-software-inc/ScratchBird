@@ -747,6 +747,14 @@ bool ValidateCanonicalAggregateRegistry() {
                         empty.output_batch.rows[0].values[0].encoded_value ==
                             "0",
                     "empty COUNT(*) did not produce zero");
+  auto empty_count_expression = Request(
+      exec::CanonicalAggregateFunction::count, 0, 2101, "int64");
+  empty_count_expression.input_batch.rows.clear();
+  empty = exec::ExecuteCanonicalAggregateRuntime(empty_count_expression);
+  passed &= Require(empty.diagnostic.ok &&
+                        empty.output_batch.rows[0].values[0].encoded_value ==
+                            "0",
+                    "empty COUNT(expression) did not produce zero");
   auto empty_regr_count =
       PairStatisticalRequest(exec::CanonicalAggregateFunction::regr_count);
   empty_regr_count.input_batch.rows.clear();

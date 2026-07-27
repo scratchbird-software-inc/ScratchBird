@@ -506,6 +506,52 @@ sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values.count-expression");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000009100"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000009101|"
+       "019f0000-0000-7400-8000-000000009102|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000009103|"
+       "019f0000-0000-7400-8000-000000009104|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|39"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "5",
+       "3|-|1|-|019f0000-0000-7500-8000-000000009105|-|-|-"},
+      {"relational_expression_v1", "6",
+       "4|5|2|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2",
+       "2|6|2|1|0|6e6f6e5f6e756c6c5f636f756e74"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4"},
+      {"relational_node_v1", "2", "5|0|1|2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "6167677265676174652e676c6f62616c2d636f756e742d65787072657373696f6e2e7631|"
+       "6|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -1143,6 +1189,90 @@ bool ValidateGlobalCountStarRefusalIsAtomic() {
       "function-, descriptor-, or arity-drifted COUNT(*) published evidence");
 }
 
+bool ValidateGlobalCountExpressionValuesSpine() {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), GlobalCountExpressionValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), GlobalCountExpressionValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.logical_property_count == 0 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 1 &&
+          first.canonical_result_row_count == 1,
+      "VALUES global COUNT(expression) did not traverse its selected "
+      "physical DAG");
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name == "int64" &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == "non_null_count" &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null &&
+          rows[0].fields[0].second.encoded_value == "2",
+      "global COUNT(expression) did not exclude SQL NULL input values");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical global COUNT(expression) input changed canonical plan/result "
+      "bytes");
+  return passed;
+}
+
+bool ValidateGlobalCountExpressionRefusalIsAtomic() {
+  auto function_drift = GlobalCountExpressionValuesEnvelope();
+  auto descriptor_drift = GlobalCountExpressionValuesEnvelope();
+  auto non_identifier_argument = GlobalCountExpressionValuesEnvelope();
+  for (auto& operand : function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "6") {
+      operand.value =
+          "4|5|2|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+    }
+  }
+  for (auto& operand : descriptor_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value =
+          "3|-|2|-|019f0000-0000-7500-8000-000000009105|-|-|-";
+    }
+  }
+  for (auto& operand : non_identifier_argument.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "5") {
+      operand.value = "1|-|1|-|-|1|-|31";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(function_drift)) &&
+          refused_atomically(std::move(descriptor_drift)) &&
+          refused_atomically(std::move(non_identifier_argument)),
+      "function-, descriptor-, or argument-kind-drifted COUNT(expression) "
+      "published evidence");
+}
+
 bool ValidateSortValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), SortValuesEnvelope(), {}});
@@ -1303,6 +1433,8 @@ int main() {
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGlobalCountStarValuesSpine() &&
                       ValidateGlobalCountStarRefusalIsAtomic() &&
+                      ValidateGlobalCountExpressionValuesSpine() &&
+                      ValidateGlobalCountExpressionRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
