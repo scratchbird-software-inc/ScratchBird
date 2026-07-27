@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <numeric>
 #include <set>
@@ -560,6 +561,81 @@ bool TransitionCanonicalAggregateCore(
                             "aggregate has no canonical core state");
       return false;
   }
+}
+
+bool InverseCanonicalAggregateCore(
+    const CanonicalAggregateDescriptor& descriptor,
+    const std::vector<EngineTypedValue>& values,
+    CanonicalAggregateCoreState* state,
+    DescriptorRuntimeDiagnostic* diagnostic) {
+  if (state == nullptr || diagnostic == nullptr) return false;
+  if (descriptor.function != CanonicalAggregateFunction::count &&
+      descriptor.function != CanonicalAggregateFunction::sum &&
+      descriptor.function != CanonicalAggregateFunction::avg) {
+    *diagnostic = Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1",
+        "aggregate has no admitted inverse transition state");
+    return false;
+  }
+  if (state->transition_count == 0) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-INVERSE-STATE-V1",
+                          "inverse transition underflowed aggregate state");
+    return false;
+  }
+  if (descriptor.function == CanonicalAggregateFunction::count &&
+      descriptor.count_star) {
+    if (!values.empty() || state->non_null_count == 0) {
+      *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-INVERSE-STATE-V1",
+                            "COUNT(*) inverse state is inconsistent");
+      return false;
+    }
+    --state->transition_count;
+    --state->non_null_count;
+    return true;
+  }
+  if (values.size() != 1) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-ARITY-V1",
+                          "inverse aggregate transition arity is not bound");
+    return false;
+  }
+  const auto& value = values.front();
+  if (value.state == EngineValueState::sql_null) {
+    --state->transition_count;
+    return true;
+  }
+  if (state->non_null_count == 0) {
+    *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-INVERSE-STATE-V1",
+                          "inverse non-NULL transition underflowed state");
+    return false;
+  }
+  std::int64_t decoded_value = 0;
+  if (descriptor.function == CanonicalAggregateFunction::sum ||
+      descriptor.function == CanonicalAggregateFunction::avg) {
+    if (!IsType(value, "int64")) {
+      *diagnostic = Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
+          "moving SUM and AVG inverse state currently requires int64 input");
+      return false;
+    }
+    const auto decoded = DecodeInt64Value(value);
+    if (!decoded.ok()) {
+      *diagnostic = decoded.diagnostic;
+      return false;
+    }
+    decoded_value = decoded.value;
+  }
+  --state->transition_count;
+  --state->non_null_count;
+  if (descriptor.function == CanonicalAggregateFunction::sum ||
+      descriptor.function == CanonicalAggregateFunction::avg) {
+    state->int64_sum -= static_cast<__int128>(decoded_value);
+    state->real_sum -= static_cast<long double>(decoded_value);
+    if (state->non_null_count == 0) {
+      state->int64_sum = 0;
+      state->real_sum = 0.0L;
+    }
+  }
+  return true;
 }
 
 bool MergeCanonicalAggregateCore(
@@ -1428,9 +1504,9 @@ std::vector<CanonicalAggregateRegistryEntry>
 CanonicalAggregateRuntimeRegistryV1() {
   using Function = CanonicalAggregateFunction;
   return {
-      {1, Function::count, "sb.aggregate.count", "019de5fc-2400-784a-9aec-371f8b95b7ea", true, true},
-      {1, Function::sum, "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777", true, true},
-      {1, Function::avg, "sb.aggregate.avg", "019de5fc-2400-78ac-b50c-45b832831004", true, true},
+      {1, Function::count, "sb.aggregate.count", "019de5fc-2400-784a-9aec-371f8b95b7ea", true, true, true},
+      {1, Function::sum, "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777", true, true, true},
+      {1, Function::avg, "sb.aggregate.avg", "019de5fc-2400-78ac-b50c-45b832831004", true, true, true},
       {1, Function::min, "sb.aggregate.min", "019de5fc-2400-781c-881b-4af4d55d402b", true, true},
       {1, Function::max, "sb.aggregate.max", "019de5fc-2400-7d1e-8aa4-80bc647fbd9a", true, true},
       {1, Function::bool_and, "sb.aggregate.bool_and", "019de5fc-2400-78b0-ad98-a681e93b4c49", true, true},
@@ -1851,6 +1927,212 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-REGISTRY-MOVING-INVERSE-V1
+// Maintain one exact COUNT/SUM/AVG state across an ordered sequence of window
+// frames.  Additions use the canonical transition function, removals use an
+// explicitly admitted inverse transition, and every output uses the same
+// canonical finalizer.  Unsupported functions and modifiers fail closed
+// rather than relabelling frame recomputation as inverse execution.
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request) {
+  using scratchbird::engine::internal_api::EnginePredicateConsumer;
+  using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
+
+  CanonicalAggregateMovingRuntimeResult result;
+  result.descriptor = request.aggregate_request.descriptor;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    const auto descriptor = result.descriptor;
+    result = {};
+    result.descriptor = descriptor;
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  const auto& aggregate = request.aggregate_request;
+  const auto registry = CanonicalAggregateRuntimeRegistryV1();
+  const auto entry = std::find_if(
+      registry.begin(), registry.end(), [&](const auto& candidate) {
+        return candidate.abi_version == aggregate.descriptor.abi_version &&
+               candidate.function == aggregate.descriptor.function &&
+               candidate.builtin_id == aggregate.descriptor.builtin_id &&
+               candidate.function_uuid == aggregate.descriptor.function_uuid;
+      });
+  if (entry == registry.end() || !entry->executable ||
+      !entry->aggregate_as_window || !entry->moving_window_inverse) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1",
+        "aggregate registry row is not admitted for moving inverse state"));
+  }
+  if (aggregate.forced_strategy !=
+          CanonicalAggregateExecutionStrategy::serial ||
+      aggregate.distinct || !aggregate.aggregate_order_terms.empty()) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-MODIFIER-V1",
+        "moving inverse state does not admit combine, DISTINCT, or aggregate ordering"));
+  }
+  if (request.maximum_output_rows == 0 ||
+      request.effective_frame_row_indices.size() >
+          request.maximum_output_rows ||
+      request.maximum_addition_transition_count == 0 ||
+      request.maximum_inverse_transition_count == 0 ||
+      request.maximum_cumulative_state_bytes == 0) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "moving aggregate resource contract is invalid"));
+  }
+  if ((aggregate.descriptor.function == CanonicalAggregateFunction::sum ||
+       aggregate.descriptor.function == CanonicalAggregateFunction::avg) &&
+      (aggregate.value_columns.size() != 1 ||
+       aggregate.value_columns.front() >= aggregate.input_batch.columns.size() ||
+       aggregate.input_batch.columns[aggregate.value_columns.front()]
+               .descriptor.canonical_type_name != "int64")) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
+        "moving SUM and AVG inverse state currently requires one int64 input"));
+  }
+  if (aggregate.filter_truth_values.has_value() &&
+      aggregate.filter_truth_values->size() != aggregate.input_batch.rows.size()) {
+    return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                          "moving aggregate FILTER cardinality is not bound"));
+  }
+  std::vector<std::uint32_t> input_descriptor_ids;
+  input_descriptor_ids.reserve(aggregate.input_batch.columns.size());
+  for (const auto& column : aggregate.input_batch.columns) {
+    input_descriptor_ids.push_back(column.descriptor_id);
+  }
+  auto input_validation = ValidateCanonicalDescriptorBatch(
+      aggregate.input_batch, input_descriptor_ids);
+  if (!input_validation.ok) return refuse(std::move(input_validation));
+  for (const auto& frame : request.effective_frame_row_indices) {
+    if (!std::is_sorted(frame.begin(), frame.end()) ||
+        std::adjacent_find(frame.begin(), frame.end()) != frame.end() ||
+        (!frame.empty() && frame.back() >= aggregate.input_batch.rows.size())) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-011-REGISTRY-INVERSE-FRAME-V1",
+          "moving aggregate frame rows are not sorted unique input handles"));
+    }
+  }
+
+  auto preflight_request = aggregate;
+  preflight_request.input_batch.rows.clear();
+  if (preflight_request.filter_truth_values.has_value()) {
+    preflight_request.filter_truth_values =
+        std::vector<scratchbird::engine::internal_api::EngineSqlTruthValue>{};
+  }
+  const auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
+  if (!preflight.diagnostic.ok) {
+    return refuse(preflight.diagnostic);
+  }
+
+  DescriptorRuntimeDiagnostic state_diagnostic;
+  CanonicalAggregateCoreState state;
+  std::vector<std::size_t> active_frame;
+  result.values.reserve(request.effective_frame_row_indices.size());
+  const auto row_passes_filter = [&](const std::size_t row,
+                                     bool* passes) {
+    if (passes == nullptr) return false;
+    *passes = true;
+    if (!aggregate.filter_truth_values.has_value()) return true;
+    std::string detail;
+    if (!QowPredicateConsumerPassesV1(
+            (*aggregate.filter_truth_values)[row],
+            EnginePredicateConsumer::filter, passes, &detail)) {
+      state_diagnostic = Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                                 std::move(detail));
+      return false;
+    }
+    return true;
+  };
+  const auto transition_values = [&](const std::size_t row) {
+    std::vector<EngineTypedValue> values;
+    values.reserve(aggregate.value_columns.size());
+    for (const auto column : aggregate.value_columns) {
+      values.push_back(aggregate.input_batch.rows[row].values[column]);
+    }
+    return values;
+  };
+  const auto within_total = [](const std::size_t next,
+                               const std::size_t current,
+                               const std::size_t maximum) {
+    return current <= maximum && next <= maximum - current;
+  };
+  for (const auto& frame : request.effective_frame_row_indices) {
+    std::vector<std::size_t> removals;
+    std::vector<std::size_t> additions;
+    std::set_difference(active_frame.begin(), active_frame.end(),
+                        frame.begin(), frame.end(),
+                        std::back_inserter(removals));
+    std::set_difference(frame.begin(), frame.end(), active_frame.begin(),
+                        active_frame.end(), std::back_inserter(additions));
+    for (const auto row : removals) {
+      bool passes = true;
+      if (!row_passes_filter(row, &passes)) {
+        return refuse(std::move(state_diagnostic));
+      }
+      if (!passes) continue;
+      if (result.inverse_transition_count >=
+          request.maximum_inverse_transition_count) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "moving aggregate inverse bound is exceeded"));
+      }
+      if (!InverseCanonicalAggregateCore(
+              aggregate.descriptor, transition_values(row), &state,
+              &state_diagnostic)) {
+        return refuse(std::move(state_diagnostic));
+      }
+      ++result.inverse_transition_count;
+    }
+    for (const auto row : additions) {
+      bool passes = true;
+      if (!row_passes_filter(row, &passes)) {
+        return refuse(std::move(state_diagnostic));
+      }
+      if (!passes) continue;
+      if (result.addition_transition_count >=
+          request.maximum_addition_transition_count) {
+        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "moving aggregate addition bound is exceeded"));
+      }
+      if (!TransitionCanonicalAggregateCore(
+              aggregate.descriptor, transition_values(row), &state,
+              &state_diagnostic)) {
+        return refuse(std::move(state_diagnostic));
+      }
+      ++result.addition_transition_count;
+    }
+    const auto state_bytes = EstimateCanonicalAggregateStateBytes(state);
+    if (state_bytes > aggregate.maximum_state_bytes ||
+        !within_total(state_bytes, result.cumulative_state_bytes,
+                      request.maximum_cumulative_state_bytes)) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "moving aggregate state byte bound is exceeded"));
+    }
+    result.cumulative_state_bytes += state_bytes;
+    result.maximum_retained_state_bytes =
+        std::max(result.maximum_retained_state_bytes, state_bytes);
+    auto value = FinalizeCanonicalAggregateCore(aggregate, state,
+                                                &state_diagnostic);
+    if (!state_diagnostic.ok) return refuse(std::move(state_diagnostic));
+    result.values.push_back(std::move(value));
+    active_frame = frame;
+  }
+
+  DescriptorBatch output;
+  output.columns = {aggregate.result_column};
+  output.rows.reserve(result.values.size());
+  for (const auto& value : result.values) output.rows.push_back({{value}});
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, {aggregate.result_column.descriptor_id});
+  if (!output_validation.ok) return refuse(output_validation);
+
+  result.diagnostic = {};
+  result.moving_inverse_state_used = true;
+  result.frame_recomputation_used = false;
+  result.authority = preflight.authority;
+  result.selected_plan_uuid = preflight.selected_plan_uuid;
+  result.executed_physical_node_id = preflight.executed_physical_node_id;
+  result.causal_counter_id = preflight.causal_counter_id;
   return result;
 }
 

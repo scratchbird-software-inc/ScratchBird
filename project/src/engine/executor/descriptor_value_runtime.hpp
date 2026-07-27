@@ -1107,6 +1107,7 @@ struct CanonicalAggregateRegistryEntry {
   std::string function_uuid;
   bool executable = false;
   bool aggregate_as_window = false;
+  bool moving_window_inverse = false;
 };
 
 struct CanonicalAggregateDescriptor {
@@ -1167,6 +1168,31 @@ struct CanonicalAggregateRuntimeResult {
   bool filter_applied_before_distinct = false;
   bool aggregate_order_applied = false;
   bool shared_state_authority_used = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+struct CanonicalAggregateMovingRuntimeRequest {
+  CanonicalAggregateRuntimeRequest aggregate_request;
+  std::vector<std::vector<std::size_t>> effective_frame_row_indices;
+  std::size_t maximum_output_rows = 1048576;
+  std::size_t maximum_addition_transition_count = 8388608;
+  std::size_t maximum_inverse_transition_count = 8388608;
+  std::size_t maximum_cumulative_state_bytes = 268435456;
+};
+
+struct CanonicalAggregateMovingRuntimeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalAggregateDescriptor descriptor;
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+  std::size_t addition_transition_count = 0;
+  std::size_t inverse_transition_count = 0;
+  std::size_t cumulative_state_bytes = 0;
+  std::size_t maximum_retained_state_bytes = 0;
+  bool moving_inverse_state_used = false;
+  bool frame_recomputation_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
@@ -1583,6 +1609,8 @@ std::vector<CanonicalAggregateRegistryEntry>
 CanonicalAggregateRuntimeRegistryV1();
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
+    const CanonicalAggregateMovingRuntimeRequest& request);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request);
 CanonicalGroupedAggregateSetRuntimeResult

@@ -317,6 +317,7 @@ bool ValidateCanonicalAggregateRegistry() {
   std::set<exec::CanonicalAggregateFunction> functions;
   std::size_t executable_count = 0;
   std::size_t aggregate_window_count = 0;
+  std::size_t moving_inverse_count = 0;
   for (const auto& entry : registry) {
     passed &= Require(entry.abi_version == 1 &&
                           entry.function !=
@@ -327,13 +328,21 @@ bool ValidateCanonicalAggregateRegistry() {
                       "registry row is incomplete or duplicated");
     if (entry.executable) ++executable_count;
     if (entry.aggregate_as_window) ++aggregate_window_count;
+    if (entry.moving_window_inverse) ++moving_inverse_count;
   }
   passed &= Require(registry.size() == 43 && executable_count == 43 &&
                         aggregate_window_count == registry.size() &&
+                        moving_inverse_count == 3 &&
                         Entry(exec::CanonicalAggregateFunction::count)
                                 .aggregate_as_window &&
+                        Entry(exec::CanonicalAggregateFunction::count)
+                                .moving_window_inverse &&
+                        Entry(exec::CanonicalAggregateFunction::avg)
+                                .moving_window_inverse &&
                         Entry(exec::CanonicalAggregateFunction::regr_syy)
-                            .aggregate_as_window,
+                                .aggregate_as_window &&
+                        !Entry(exec::CanonicalAggregateFunction::regr_syy)
+                             .moving_window_inverse,
                     "registry did not reconcile exact row, executable, and aggregate-window dispositions");
   passed &= Require(Entry(exec::CanonicalAggregateFunction::count).builtin_id ==
                             "sb.aggregate.count" &&

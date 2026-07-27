@@ -19,6 +19,10 @@ constexpr std::string_view kInt64SumUuid =
     "019de5fc-2400-72e4-8549-82b2eef5a777";
 constexpr std::string_view kAverageUuid =
     "019de5fc-2400-78ac-b50c-45b832831004";
+constexpr std::string_view kCountUuid =
+    "019de5fc-2400-784a-9aec-371f8b95b7ea";
+constexpr std::string_view kMinimumUuid =
+    "019de5fc-2400-781c-881b-4af4d55d402b";
 
 exec::CanonicalWindowAggregateRequest AggregateWindowRequest(
     exec::CanonicalWindowFrameDescriptor frame = WholePartitionFrame()) {
@@ -119,6 +123,41 @@ std::vector<std::vector<std::size_t>> EffectiveFrameRows(
     rows.push_back(frame.effective_row_indices);
   }
   return rows;
+}
+
+std::vector<api::EngineSqlTruthValue> AggregateFilterTruthValues() {
+  return {api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::false_value,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::unknown,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::false_value,
+          api::EngineSqlTruthValue::true_value,
+          api::EngineSqlTruthValue::false_value,
+          api::EngineSqlTruthValue::true_value};
+}
+
+bool SameRegistryAggregateValues(
+    const exec::CanonicalRegistryWindowAggregateResult& left,
+    const exec::CanonicalRegistryWindowAggregateResult& right) {
+  if (!left.diagnostic.ok || !right.diagnostic.ok ||
+      left.values.size() != right.values.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.values.size(); ++index) {
+    const auto& lhs = left.values[index];
+    const auto& rhs = right.values[index];
+    if (lhs.descriptor.descriptor_uuid.canonical !=
+            rhs.descriptor.descriptor_uuid.canonical ||
+        lhs.descriptor.canonical_type_name !=
+            rhs.descriptor.canonical_type_name ||
+        lhs.state != rhs.state || lhs.is_null != rhs.is_null ||
+        lhs.encoded_value != rhs.encoded_value ||
+        lhs.binary_value != rhs.binary_value) {
+      return false;
+    }
+  }
+  return true;
 }
 
 bool ValidateAggregateWindowState() {
@@ -227,16 +266,7 @@ bool ValidateRegistryAggregateWindowState() {
 
   request = RegistryAverageWindowRequest();
   request.aggregate_template.filter_truth_values =
-      std::vector<api::EngineSqlTruthValue>{
-          api::EngineSqlTruthValue::true_value,
-          api::EngineSqlTruthValue::false_value,
-          api::EngineSqlTruthValue::true_value,
-          api::EngineSqlTruthValue::unknown,
-          api::EngineSqlTruthValue::true_value,
-          api::EngineSqlTruthValue::false_value,
-          api::EngineSqlTruthValue::true_value,
-          api::EngineSqlTruthValue::false_value,
-          api::EngineSqlTruthValue::true_value};
+      AggregateFilterTruthValues();
   request.aggregate_template.distinct = true;
   request.aggregate_template.aggregate_order_terms = {
       {.column = 4, .expression_descriptor_id = 4005}};
@@ -249,6 +279,189 @@ bool ValidateRegistryAggregateWindowState() {
           result.distinct_tuple_count > 0 &&
           result.order_comparison_count > 0,
       "aggregate window did not preserve frame-local FILTER/DISTINCT/order semantics");
+  return passed;
+}
+
+bool ValidateRegistryAggregateMovingInverseState() {
+  auto recompute_request = RegistryAverageWindowRequest(PrefixFrame());
+  const auto recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  auto moving_request = recompute_request;
+  moving_request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  auto moving = exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  bool passed = Require401(
+      SameRegistryAggregateValues(recomputed, moving) &&
+          RegistryAggregateTexts(moving) ==
+              std::vector<std::string>({"101", "103", "103", "102",
+                                        "103.25", "102", "103", "103.5",
+                                        "106"}) &&
+          recomputed.effective_frame_recomputed &&
+          !recomputed.moving_inverse_state_used &&
+          moving.moving_inverse_state_used &&
+          !moving.effective_frame_recomputed &&
+          moving.transition_count == 9 &&
+          moving.inverse_transition_count == 8 &&
+          moving.transition_count < recomputed.transition_count &&
+          moving.frame_row_indices == EffectiveFrameRows(moving_request.frames) &&
+          moving.shared_aggregate_state_authority_used &&
+          moving.authority.engine_mga_snapshot_bound &&
+          moving.selected_plan_uuid == moving_request.frames.selected_plan_uuid &&
+          moving.executed_physical_node_id ==
+              moving_request.frames.executed_physical_node_id &&
+          moving.causal_counter_id == moving_request.frames.causal_counter_id,
+      "AVG moving state did not match canonical frame recomputation");
+
+  recompute_request = RegistryAverageWindowRequest(PrefixFrame());
+  auto& sum = recompute_request.aggregate_template;
+  sum.descriptor = {1, exec::CanonicalAggregateFunction::sum,
+                    "sb.aggregate.sum", std::string(kInt64SumUuid), false};
+  sum.result_column = recompute_request.frames.ordered_batch.columns[4];
+  sum.result_column.stable_name = "window_sum";
+  sum.result_column.descriptor_id = 5998;
+  const auto sum_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  moving_request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  const auto sum_moving =
+      exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(sum_recomputed, sum_moving) &&
+          RegistryAggregateTexts(sum_moving) ==
+              std::vector<std::string>({"101", "206", "206", "306", "413",
+                                        "102", "103", "207", "106"}) &&
+          sum_moving.moving_inverse_state_used &&
+          sum_moving.transition_count == 9 &&
+          sum_moving.inverse_transition_count == 8,
+      "SUM moving state did not match canonical frame recomputation");
+
+  recompute_request = RegistryAverageWindowRequest(PrefixFrame());
+  recompute_request.aggregate_template.filter_truth_values =
+      AggregateFilterTruthValues();
+  const auto filtered_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  moving_request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  moving = exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(filtered_recomputed, moving) &&
+          moving.moving_inverse_state_used &&
+          moving.transition_count == 5 &&
+          moving.inverse_transition_count == 4 &&
+          moving.transition_count < filtered_recomputed.transition_count,
+      "AVG moving state did not preserve shared FILTER truth semantics");
+
+  recompute_request = RegistryAverageWindowRequest(PrefixFrame());
+  auto& count = recompute_request.aggregate_template;
+  count.descriptor = {1, exec::CanonicalAggregateFunction::count,
+                      "sb.aggregate.count", std::string(kCountUuid), true};
+  count.value_columns.clear();
+  count.value_expression_descriptor_ids.clear();
+  count.result_column = {
+      "window_count",
+      WindowDescriptor(
+          5102, "int64",
+          "type_uuid=" + WindowUuid(5202) + ";nullability=non_null"),
+      false, 5998};
+  const auto count_recomputed =
+      exec::ExecuteCanonicalRegistryWindowAggregate(recompute_request);
+  moving_request = recompute_request;
+  moving_request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  const auto count_moving =
+      exec::ExecuteCanonicalRegistryWindowAggregate(moving_request);
+  passed &= Require401(
+      SameRegistryAggregateValues(count_recomputed, count_moving) &&
+          RegistryAggregateTexts(count_moving) ==
+              std::vector<std::string>({"1", "2", "3", "4", "5", "1",
+                                        "1", "2", "1"}) &&
+          count_moving.moving_inverse_state_used &&
+          count_moving.transition_count == 9 &&
+          count_moving.inverse_transition_count == 8,
+      "COUNT(*) moving state did not add and remove exact frame membership");
+  return passed;
+}
+
+bool ValidateRegistryAggregateMovingInverseRefusals() {
+  bool passed = true;
+  auto request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.aggregate_template.distinct = true;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-MODIFIER-V1"}),
+      "moving aggregate state admitted DISTINCT without inverse authority");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.aggregate_template.aggregate_order_terms = {
+      {.column = 4, .expression_descriptor_id = 4005}};
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-MODIFIER-V1"}),
+      "moving aggregate state admitted aggregate ordering without inverse authority");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.aggregate_template.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-MODIFIER-V1"}),
+      "moving aggregate state admitted partition combine without inverse authority");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.aggregate_template.descriptor = {
+      1, exec::CanonicalAggregateFunction::min, "sb.aggregate.min",
+      std::string(kMinimumUuid), false};
+  request.aggregate_template.result_column =
+      request.frames.ordered_batch.columns[4];
+  request.aggregate_template.result_column.stable_name = "window_min";
+  request.aggregate_template.result_column.descriptor_id = 5998;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1"}),
+      "moving aggregate state invented inverse authority for MIN");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.maximum_inverse_transition_count = 7;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"SBLR.PLAN_TREE.RESOURCE_LIMIT"}),
+      "moving aggregate state published after inverse resource exhaustion");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      static_cast<exec::CanonicalRegistryWindowAggregateStateStrategy>(0);
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY"}),
+      "aggregate window admitted an unknown state strategy");
+
+  request = RegistryAverageWindowRequest(PrefixFrame());
+  request.state_strategy =
+      exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
+  request.frames.authority.owns_transaction_finality = true;
+  passed &= Require401(
+      RegistryAggregateRefused(
+          exec::ExecuteCanonicalRegistryWindowAggregate(request),
+          {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY"}),
+      "moving aggregate window claimed engine transaction finality");
   return passed;
 }
 
@@ -454,6 +667,8 @@ int main() {
                       ValidateAggregateWindowStateRefusals() &&
                       ValidateRegistryAggregateWindowState() &&
                       ValidateRegistryAggregateWindowRefusals() &&
+                      ValidateRegistryAggregateMovingInverseState() &&
+                      ValidateRegistryAggregateMovingInverseRefusals() &&
                       ValidateRegistryAggregateWindowSpill(root);
   std::filesystem::remove_all(root, error);
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

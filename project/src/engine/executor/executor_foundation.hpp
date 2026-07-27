@@ -188,15 +188,23 @@ struct CanonicalWindowAggregateResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalRegistryWindowAggregateStateStrategy : std::uint8_t {
+  frame_recompute = 1,
+  moving_inverse,
+};
+
 struct CanonicalRegistryWindowAggregateRequest {
   CanonicalWindowFrameResult frames;
   // The template supplies the exact aggregate descriptor/options and an
   // admitted aggregate-kernel DAG.  Its input batch must be empty because
   // effective frame rows are the only runtime input authority.
   CanonicalAggregateRuntimeRequest aggregate_template;
+  CanonicalRegistryWindowAggregateStateStrategy state_strategy =
+      CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
   std::size_t maximum_output_rows = 1048576;
   std::size_t maximum_frame_input_row_count = 8388608;
   std::size_t maximum_transition_count = 8388608;
+  std::size_t maximum_inverse_transition_count = 8388608;
   std::size_t maximum_distinct_tuple_count = 8388608;
   std::size_t maximum_order_comparison_count = 8388608;
   std::size_t maximum_combined_state_bytes = 268435456;
@@ -209,10 +217,12 @@ struct CanonicalRegistryWindowAggregateResult {
   std::vector<std::vector<std::size_t>> frame_row_indices;
   std::size_t frame_input_row_count = 0;
   std::size_t transition_count = 0;
+  std::size_t inverse_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t combined_state_bytes = 0;
   bool effective_frame_recomputed = false;
+  bool moving_inverse_state_used = false;
   bool shared_aggregate_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;

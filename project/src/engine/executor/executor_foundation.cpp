@@ -4620,6 +4620,14 @@ ExecuteCanonicalRegistryWindowAggregate(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-FRAME",
                   "aggregate registry bridge lacks canonical frame evidence");
   }
+  if (request.frames.authority.owns_transaction_finality ||
+      request.frames.authority.owns_recovery ||
+      request.frames.authority.owns_parser_execution ||
+      request.frames.authority.owns_visibility_outside_engine_mga ||
+      request.frames.authority.wal_is_transaction_or_recovery_authority) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  "aggregate registry window claimed authority outside engine MGA");
+  }
   const auto row_count = request.frames.ordered_batch.rows.size();
   if (request.maximum_output_rows == 0 ||
       row_count > request.maximum_output_rows ||
@@ -4630,6 +4638,19 @@ ExecuteCanonicalRegistryWindowAggregate(
       request.maximum_combined_state_bytes == 0) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                   "aggregate registry window resource contract is invalid");
+  }
+  if (request.state_strategy !=
+          CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+      request.state_strategy !=
+          CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
+                  "aggregate registry window state strategy is invalid");
+  }
+  if (request.state_strategy ==
+          CanonicalRegistryWindowAggregateStateStrategy::moving_inverse &&
+      request.maximum_inverse_transition_count == 0) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                  "moving aggregate inverse resource contract is invalid");
   }
 
   const auto& aggregate_template = request.aggregate_template;
@@ -4743,56 +4764,95 @@ ExecuteCanonicalRegistryWindowAggregate(
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                     "aggregate window frame-input bound is exceeded");
     }
-    auto aggregate = make_frame_request();
-    aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
-    for (const auto row : frame.effective_row_indices) {
-      aggregate.input_batch.rows.push_back(
-          request.frames.ordered_batch.rows[row]);
-    }
-    if (aggregate_template.filter_truth_values.has_value()) {
-      std::vector<api::EngineSqlTruthValue> filter;
-      filter.reserve(frame.effective_row_indices.size());
-      for (const auto row : frame.effective_row_indices) {
-        filter.push_back((*aggregate_template.filter_truth_values)[row]);
-      }
-      aggregate.filter_truth_values = std::move(filter);
-    }
-    auto frame_result = ExecuteCanonicalAggregateRuntime(aggregate);
-    if (!frame_result.diagnostic.ok) {
-      return refuse(frame_result.diagnostic.diagnostic_code,
-                    frame_result.diagnostic.detail);
-    }
-    if (!frame_result.shared_state_authority_used ||
-        frame_result.output_batch.rows.size() != 1 ||
-        frame_result.output_batch.rows.front().values.size() != 1 ||
-        frame_result.selected_plan_uuid != request.frames.selected_plan_uuid ||
-        frame_result.executed_physical_node_id !=
-            request.frames.executed_physical_node_id ||
-        frame_result.causal_counter_id != request.frames.causal_counter_id) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
-                    "aggregate frame result evidence is inconsistent");
-    }
-    if (!within_total(frame_result.transition_count, result.transition_count,
-                      request.maximum_transition_count) ||
-        !within_total(frame_result.distinct_tuple_count,
-                      result.distinct_tuple_count,
-                      request.maximum_distinct_tuple_count) ||
-        !within_total(frame_result.order_comparison_count,
-                      result.order_comparison_count,
-                      request.maximum_order_comparison_count) ||
-        !within_total(frame_result.state_bytes, result.combined_state_bytes,
-                      request.maximum_combined_state_bytes)) {
-      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
-                    "combined aggregate window state bound is exceeded");
-    }
     result.frame_input_row_count += frame.effective_row_indices.size();
-    result.transition_count += frame_result.transition_count;
-    result.distinct_tuple_count += frame_result.distinct_tuple_count;
-    result.order_comparison_count += frame_result.order_comparison_count;
-    result.combined_state_bytes += frame_result.state_bytes;
     result.frame_row_indices.push_back(frame.effective_row_indices);
-    result.values.push_back(
-        std::move(frame_result.output_batch.rows.front().values.front()));
+  }
+
+  if (request.state_strategy ==
+      CanonicalRegistryWindowAggregateStateStrategy::moving_inverse) {
+    CanonicalAggregateMovingRuntimeRequest moving_request;
+    moving_request.aggregate_request = make_frame_request();
+    moving_request.aggregate_request.input_batch.rows =
+        request.frames.ordered_batch.rows;
+    moving_request.effective_frame_row_indices = result.frame_row_indices;
+    moving_request.maximum_output_rows = request.maximum_output_rows;
+    moving_request.maximum_addition_transition_count =
+        request.maximum_transition_count;
+    moving_request.maximum_inverse_transition_count =
+        request.maximum_inverse_transition_count;
+    moving_request.maximum_cumulative_state_bytes =
+        request.maximum_combined_state_bytes;
+    auto moving = ExecuteCanonicalAggregateMovingRuntime(moving_request);
+    if (!moving.diagnostic.ok) {
+      return refuse(moving.diagnostic.diagnostic_code,
+                    moving.diagnostic.detail);
+    }
+    if (!moving.moving_inverse_state_used ||
+        moving.frame_recomputation_used ||
+        moving.values.size() != row_count ||
+        moving.selected_plan_uuid != request.frames.selected_plan_uuid ||
+        moving.executed_physical_node_id !=
+            request.frames.executed_physical_node_id ||
+        moving.causal_counter_id != request.frames.causal_counter_id) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                    "moving aggregate window evidence is inconsistent");
+    }
+    result.values = std::move(moving.values);
+    result.transition_count = moving.addition_transition_count;
+    result.inverse_transition_count = moving.inverse_transition_count;
+    result.combined_state_bytes = moving.cumulative_state_bytes;
+    result.moving_inverse_state_used = true;
+  } else {
+    for (const auto& frame : request.frames.effective_frames) {
+      auto aggregate = make_frame_request();
+      aggregate.input_batch.rows.reserve(frame.effective_row_indices.size());
+      for (const auto row : frame.effective_row_indices) {
+        aggregate.input_batch.rows.push_back(
+            request.frames.ordered_batch.rows[row]);
+      }
+      if (aggregate_template.filter_truth_values.has_value()) {
+        std::vector<api::EngineSqlTruthValue> filter;
+        filter.reserve(frame.effective_row_indices.size());
+        for (const auto row : frame.effective_row_indices) {
+          filter.push_back((*aggregate_template.filter_truth_values)[row]);
+        }
+        aggregate.filter_truth_values = std::move(filter);
+      }
+      auto frame_result = ExecuteCanonicalAggregateRuntime(aggregate);
+      if (!frame_result.diagnostic.ok) {
+        return refuse(frame_result.diagnostic.diagnostic_code,
+                      frame_result.diagnostic.detail);
+      }
+      if (!frame_result.shared_state_authority_used ||
+          frame_result.output_batch.rows.size() != 1 ||
+          frame_result.output_batch.rows.front().values.size() != 1 ||
+          frame_result.selected_plan_uuid != request.frames.selected_plan_uuid ||
+          frame_result.executed_physical_node_id !=
+              request.frames.executed_physical_node_id ||
+          frame_result.causal_counter_id != request.frames.causal_counter_id) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
+                      "aggregate frame result evidence is inconsistent");
+      }
+      if (!within_total(frame_result.transition_count, result.transition_count,
+                        request.maximum_transition_count) ||
+          !within_total(frame_result.distinct_tuple_count,
+                        result.distinct_tuple_count,
+                        request.maximum_distinct_tuple_count) ||
+          !within_total(frame_result.order_comparison_count,
+                        result.order_comparison_count,
+                        request.maximum_order_comparison_count) ||
+          !within_total(frame_result.state_bytes, result.combined_state_bytes,
+                        request.maximum_combined_state_bytes)) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
+                      "combined aggregate window state bound is exceeded");
+      }
+      result.transition_count += frame_result.transition_count;
+      result.distinct_tuple_count += frame_result.distinct_tuple_count;
+      result.order_comparison_count += frame_result.order_comparison_count;
+      result.combined_state_bytes += frame_result.state_bytes;
+      result.values.push_back(
+          std::move(frame_result.output_batch.rows.front().values.front()));
+    }
   }
 
   DescriptorBatch output;
@@ -4809,7 +4869,9 @@ ExecuteCanonicalRegistryWindowAggregate(
 
   result.diagnostic = {};
   result.descriptor = aggregate_template.descriptor;
-  result.effective_frame_recomputed = true;
+  result.effective_frame_recomputed =
+      request.state_strategy ==
+      CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
   result.shared_aggregate_state_authority_used = true;
   result.authority = request.frames.authority;
   result.window_property_uuid = request.frames.window_property_uuid;
