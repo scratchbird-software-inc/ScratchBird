@@ -1713,9 +1713,11 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
 }
 
 // QOW-SOURCE-QRY-012-STRATEGY-V1
-// Execute admitted nested-loop, hash, or merge inner strategies and prove the
+// Execute admitted nested-loop, hash, or merge strategies and prove the
 // resulting physical-pair multiset equals the canonical key/residual route.
-// Candidate work, retained state, and output remain independently bounded.
+// Non-inner output is published only through the canonical join-kind
+// materializer after that proof. Candidate work, retained state, and output
+// remain independently bounded.
 CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     const CanonicalJoinStrategyRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -1733,6 +1735,12 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.retained_entry_count = 0;
     result.candidate_probe_count = 0;
     result.canonical_multiset_proven = false;
+    result.canonical_output_proven = false;
+    result.join_kind = CanonicalAcceptedJoinKind::kInner;
+    result.matched_pair_count = 0;
+    result.unmatched_left_row_count = 0;
+    result.unmatched_right_row_count = 0;
+    result.emitted_left_row_count = 0;
     result.strategy_id.clear();
     result.selected_plan_uuid.clear();
     result.executed_physical_node_id = 0;
@@ -1740,16 +1748,44 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     return result;
   };
 
-  std::string_view strategy_id;
+  std::string_view join_kind_id;
+  switch (request.join_kind) {
+    case CanonicalAcceptedJoinKind::kInner:
+      join_kind_id = "inner";
+      break;
+    case CanonicalAcceptedJoinKind::kLeftOuter:
+      join_kind_id = "left-outer";
+      break;
+    case CanonicalAcceptedJoinKind::kRightOuter:
+      join_kind_id = "right-outer";
+      break;
+    case CanonicalAcceptedJoinKind::kFullOuter:
+      join_kind_id = "full-outer";
+      break;
+    case CanonicalAcceptedJoinKind::kLeftSemi:
+      join_kind_id = "left-semi";
+      break;
+    case CanonicalAcceptedJoinKind::kLeftAnti:
+      join_kind_id = "left-anti";
+      break;
+    case CanonicalAcceptedJoinKind::kCross:
+      return refuse("cross join does not admit a keyed physical strategy");
+    default:
+      return refuse("join kind is outside the accepted strategy profile");
+  }
+
+  std::string strategy_id;
   switch (request.strategy) {
     case CanonicalJoinStrategyKind::kNestedLoopInner:
-      strategy_id = "join.nested-loop-inner.v1";
+      strategy_id = "join.nested-loop-" + std::string(join_kind_id) + ".v1";
       break;
     case CanonicalJoinStrategyKind::kHashInnerInt64Equality:
-      strategy_id = "join.hash-inner.int64-equality.v1";
+      strategy_id = "join.hash-" + std::string(join_kind_id) +
+                    ".int64-equality.v1";
       break;
     case CanonicalJoinStrategyKind::kMergeInnerInt64Equality:
-      strategy_id = "join.merge-inner.int64-equality.v1";
+      strategy_id = "join.merge-" + std::string(join_kind_id) +
+                    ".int64-equality.v1";
       break;
     default:
       return refuse("join strategy is outside the accepted canonical profile");
@@ -1810,41 +1846,25 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
       return refuse("join strategy output row bound was exceeded");
     }
 
-    DescriptorBatch output;
-    output.columns = key_request.left_batch.columns;
-    output.columns.insert(output.columns.end(),
-                          key_request.right_batch.columns.begin(),
-                          key_request.right_batch.columns.end());
-    const auto right_count = key_request.right_batch.rows.size();
-    output.rows.reserve(strategy_pair_indices.size());
-    for (const auto pair : strategy_pair_indices) {
-      if (right_count == 0 ||
-          pair / right_count >= key_request.left_batch.rows.size()) {
-        return refuse("join strategy produced an invalid physical pair");
-      }
-      DescriptorTuple joined;
-      joined.values =
-          key_request.left_batch.rows[pair / right_count].values;
-      joined.values.insert(
-          joined.values.end(),
-          key_request.right_batch.rows[pair % right_count].values.begin(),
-          key_request.right_batch.rows[pair % right_count].values.end());
-      output.rows.push_back(std::move(joined));
+    CanonicalJoinKindRequest kind_request;
+    kind_request.residual_request = request.residual_request;
+    kind_request.join_kind = request.join_kind;
+    kind_request.maximum_output_rows = request.maximum_output_rows;
+    auto canonical_output = ExecuteCanonicalJoinKind(kind_request);
+    if (!canonical_output.diagnostic.ok) {
+      return refuse(canonical_output.diagnostic.diagnostic_code + ":" +
+                    canonical_output.diagnostic.detail);
     }
-
-    std::vector<std::uint32_t> output_descriptor_ids;
-    output_descriptor_ids.reserve(output.columns.size());
-    for (const auto& column : output.columns) {
-      output_descriptor_ids.push_back(column.descriptor_id);
-    }
-    auto validation =
-        ValidateCanonicalDescriptorBatch(output, output_descriptor_ids);
-    if (!validation.ok) {
-      return refuse(validation.diagnostic_code + ":" + validation.detail);
+    if (canonical_output.matched_pair_count != strategy_pair_indices.size() ||
+        canonical_output.selected_plan_uuid != canonical.selected_plan_uuid ||
+        canonical_output.executed_physical_node_id !=
+            canonical.executed_physical_node_id ||
+        canonical_output.causal_counter_id != canonical.causal_counter_id) {
+      return refuse("canonical join-kind output identity drifted from strategy");
     }
 
     result.diagnostic = {};
-    result.output_batch = std::move(output);
+    result.output_batch = std::move(canonical_output.output_batch);
     result.canonical_pair_indices = canonical_multiset;
     result.strategy_pair_indices = std::move(strategy_pair_indices);
     result.hash_entry_count =
@@ -1854,7 +1874,15 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.retained_entry_count = retained_entry_count;
     result.candidate_probe_count = candidate_probe_count;
     result.canonical_multiset_proven = true;
-    result.strategy_id = std::string(strategy_id);
+    result.canonical_output_proven = true;
+    result.join_kind = request.join_kind;
+    result.matched_pair_count = canonical_output.matched_pair_count;
+    result.unmatched_left_row_count =
+        canonical_output.unmatched_left_row_count;
+    result.unmatched_right_row_count =
+        canonical_output.unmatched_right_row_count;
+    result.emitted_left_row_count = canonical_output.emitted_left_row_count;
+    result.strategy_id = strategy_id;
     result.selected_plan_uuid = canonical.selected_plan_uuid;
     result.executed_physical_node_id = canonical.executed_physical_node_id;
     result.causal_counter_id = canonical.causal_counter_id;
@@ -2085,6 +2113,11 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
 
   const auto& physical_dag =
       request.strategy_request.residual_request.key_request.physical_dag;
+  if (request.strategy_request.join_kind !=
+      CanonicalAcceptedJoinKind::kInner) {
+    return refuse(
+        "MGA join candidate evidence currently admits inner output only");
+  }
   if (request.transaction_inventory_id == 0 ||
       request.inventory_local_transaction_id == 0 ||
       request.inventory_statement_snapshot_id == 0 ||

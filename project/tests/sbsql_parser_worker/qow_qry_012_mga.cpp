@@ -250,6 +250,17 @@ bool ValidateJoinMgaBoundary() {
                     "MGA boundary recheck bound was exceeded");
 
   request = Request();
+  request.strategy_request.join_kind =
+      exec::CanonicalAcceptedJoinKind::kLeftOuter;
+  request.strategy_request.residual_request.key_request.physical_dag.nodes
+      .back()
+      .implementation_id = "join.hash-left-outer.int64-equality.v1";
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(!result.diagnostic.ok && !result.mga_boundary_proven &&
+                        result.output_batch.rows.empty(),
+                    "non-inner output bypassed its absent MGA evidence model");
+
+  request = Request();
   request.strategy_request.residual_request.key_request.physical_dag
       .local_transaction_id = 0;
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);

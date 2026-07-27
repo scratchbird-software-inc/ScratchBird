@@ -644,6 +644,10 @@ struct CanonicalJoinStrategyRequest {
   CanonicalJoinResidualRequest residual_request;
   CanonicalJoinStrategyKind strategy =
       CanonicalJoinStrategyKind::kHashInnerInt64Equality;
+  // The algorithm enum retains its V1 inner-oriented names for ABI stability;
+  // this field binds the accepted non-cross join semantics selected for it.
+  CanonicalAcceptedJoinKind join_kind =
+      CanonicalAcceptedJoinKind::kInner;
   std::size_t maximum_hash_entries = 1048576;
   std::size_t maximum_retained_entries = 1048576;
   std::size_t maximum_candidate_probes = 1048576;
@@ -659,6 +663,13 @@ struct CanonicalJoinStrategyResult {
   std::size_t retained_entry_count = 0;
   std::size_t candidate_probe_count = 0;
   bool canonical_multiset_proven = false;
+  bool canonical_output_proven = false;
+  CanonicalAcceptedJoinKind join_kind =
+      CanonicalAcceptedJoinKind::kInner;
+  std::size_t matched_pair_count = 0;
+  std::size_t unmatched_left_row_count = 0;
+  std::size_t unmatched_right_row_count = 0;
+  std::size_t emitted_left_row_count = 0;
   std::string strategy_id;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;

@@ -154,6 +154,68 @@ void SelectStrategy(exec::CanonicalJoinStrategyRequest* request,
       .implementation_id = implementation_id;
 }
 
+bool DescriptorEquals(const api::EngineDescriptor& left,
+                      const api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool ValueEquals(const api::EngineTypedValue& left,
+                 const api::EngineTypedValue& right) {
+  return DescriptorEquals(left.descriptor, right.descriptor) &&
+         left.encoded_value == right.encoded_value &&
+         left.binary_value == right.binary_value &&
+         left.is_null == right.is_null && left.state == right.state;
+}
+
+bool BatchEquals(const exec::DescriptorBatch& left,
+                 const exec::DescriptorBatch& right) {
+  if (left.columns.size() != right.columns.size() ||
+      left.rows.size() != right.rows.size()) {
+    return false;
+  }
+  for (std::size_t column = 0; column < left.columns.size(); ++column) {
+    const auto& left_column = left.columns[column];
+    const auto& right_column = right.columns[column];
+    if (left_column.stable_name != right_column.stable_name ||
+        left_column.nullable != right_column.nullable ||
+        left_column.descriptor_id != right_column.descriptor_id ||
+        !DescriptorEquals(left_column.descriptor, right_column.descriptor)) {
+      return false;
+    }
+  }
+  for (std::size_t row = 0; row < left.rows.size(); ++row) {
+    if (left.rows[row].values.size() != right.rows[row].values.size()) {
+      return false;
+    }
+    for (std::size_t column = 0; column < left.rows[row].values.size();
+         ++column) {
+      if (!ValueEquals(left.rows[row].values[column],
+                       right.rows[row].values[column])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+std::string StrategyId(const exec::CanonicalJoinStrategyKind strategy,
+                       const std::string_view join_kind) {
+  switch (strategy) {
+    case exec::CanonicalJoinStrategyKind::kNestedLoopInner:
+      return "join.nested-loop-" + std::string(join_kind) + ".v1";
+    case exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality:
+      return "join.hash-" + std::string(join_kind) +
+             ".int64-equality.v1";
+    case exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality:
+      return "join.merge-" + std::string(join_kind) +
+             ".int64-equality.v1";
+  }
+  return {};
+}
+
 // QOW-TEST-QRY-012-STRATEGY-V1
 bool ValidateJoinStrategy() {
   bool passed = true;
@@ -161,6 +223,7 @@ bool ValidateJoinStrategy() {
   const std::vector<std::size_t> expected_pairs = {0, 6, 9};
   passed &= Require(
       result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_output_proven &&
           result.canonical_pair_indices == expected_pairs &&
           result.strategy_pair_indices == expected_pairs &&
           result.hash_entry_count == 3 &&
@@ -199,6 +262,107 @@ bool ValidateJoinStrategy() {
           result.output_batch.rows.size() == 3 &&
           result.strategy_id == "join.merge-inner.int64-equality.v1",
       "merge strategy did not prove the canonical physical-pair multiset");
+
+  // QOW-TEST-QRY-012-STRATEGY-KIND-V1
+  struct JoinKindCase {
+    exec::CanonicalAcceptedJoinKind kind;
+    std::string_view implementation_component;
+    std::size_t expected_output_rows;
+    std::size_t expected_emitted_left_rows;
+  };
+  const std::vector<JoinKindCase> non_inner_kinds = {
+      {exec::CanonicalAcceptedJoinKind::kLeftOuter, "left-outer", 4, 4},
+      {exec::CanonicalAcceptedJoinKind::kRightOuter, "right-outer", 4, 3},
+      {exec::CanonicalAcceptedJoinKind::kFullOuter, "full-outer", 5, 4},
+      {exec::CanonicalAcceptedJoinKind::kLeftSemi, "left-semi", 3, 3},
+      {exec::CanonicalAcceptedJoinKind::kLeftAnti, "left-anti", 1, 1},
+  };
+  const std::vector<exec::CanonicalJoinStrategyKind> strategies = {
+      exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+      exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality,
+      exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+  };
+  for (const auto& join_case : non_inner_kinds) {
+    for (const auto strategy : strategies) {
+      request = Request();
+      request.join_kind = join_case.kind;
+      const auto implementation_id =
+          StrategyId(strategy, join_case.implementation_component);
+      SelectStrategy(&request, strategy, implementation_id);
+      result = exec::ExecuteCanonicalJoinStrategy(request);
+
+      exec::CanonicalJoinKindRequest baseline_request;
+      baseline_request.residual_request = request.residual_request;
+      baseline_request.join_kind = join_case.kind;
+      baseline_request.maximum_output_rows = request.maximum_output_rows;
+      const auto baseline =
+          exec::ExecuteCanonicalJoinKind(baseline_request);
+
+      const auto expected_hash_entries =
+          strategy ==
+                  exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality
+              ? 3U
+              : 0U;
+      const auto expected_retained_entries =
+          strategy ==
+                  exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality
+              ? 3U
+              : strategy == exec::CanonicalJoinStrategyKind::
+                                    kMergeInnerInt64Equality
+                    ? 6U
+                    : 0U;
+      passed &= Require(
+          result.diagnostic.ok && baseline.diagnostic.ok &&
+              result.canonical_multiset_proven &&
+              result.canonical_output_proven &&
+              result.join_kind == join_case.kind &&
+              result.canonical_pair_indices == expected_pairs &&
+              result.strategy_pair_indices == expected_pairs &&
+              result.matched_pair_count == 3 &&
+              result.unmatched_left_row_count == 1 &&
+              result.unmatched_right_row_count == 1 &&
+              result.emitted_left_row_count ==
+                  join_case.expected_emitted_left_rows &&
+              result.hash_entry_count == expected_hash_entries &&
+              result.retained_entry_count == expected_retained_entries &&
+              result.candidate_probe_count == 5 &&
+              result.output_batch.rows.size() ==
+                  join_case.expected_output_rows &&
+              result.strategy_id == implementation_id &&
+              result.selected_plan_uuid == baseline.selected_plan_uuid &&
+              result.executed_physical_node_id ==
+                  baseline.executed_physical_node_id &&
+              result.causal_counter_id == baseline.causal_counter_id &&
+              BatchEquals(result.output_batch, baseline.output_batch),
+          "non-inner physical strategy did not match the exact canonical "
+          "typed output");
+    }
+  }
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok &&
+                        !result.canonical_multiset_proven &&
+                        !result.canonical_output_proven,
+                    "cross join entered the keyed strategy route");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "non-inner strategy identity drift was accepted");
+
+  request = Request();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kHashInnerInt64Equality,
+                 "join.hash-full-outer.int64-equality.v1");
+  request.maximum_output_rows = 4;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        !result.canonical_output_proven,
+                    "full-outer null extension exceeded the output bound");
 
   request = Request();
   request.strategy = static_cast<exec::CanonicalJoinStrategyKind>(99);
