@@ -433,6 +433,62 @@ MatchLiveJsonObjectAggregateExpressionProfile(
   return result;
 }
 
+struct LiveListaggExpressionProfile {
+  bool matched{false};
+  bool distinct{false};
+  bool has_filter{false};
+  std::size_t base_argument_count{0};
+  exec::CanonicalListaggOverflowMode overflow_mode =
+      exec::CanonicalListaggOverflowMode::none;
+  std::string transformation_id;
+};
+
+LiveListaggExpressionProfile MatchLiveListaggExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LiveListaggExpressionProfile result;
+  struct FormProfile {
+    std::string_view prefix;
+    std::size_t base_argument_count;
+    exec::CanonicalListaggOverflowMode overflow_mode;
+  };
+  static constexpr std::array<FormProfile, 3> kFormProfiles = {{
+      {"aggregate.global-listagg-ordered", 3,
+       exec::CanonicalListaggOverflowMode::none},
+      {"aggregate.global-listagg-ordered-overflow-error", 4,
+       exec::CanonicalListaggOverflowMode::error},
+      {"aggregate.global-listagg-ordered-overflow-truncate", 6,
+       exec::CanonicalListaggOverflowMode::truncate},
+  }};
+
+  for (const auto& profile : kFormProfiles) {
+    if (semantic_variant_id ==
+        std::string(profile.prefix) + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) +
+                   "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.base_argument_count = profile.base_argument_count;
+    result.overflow_mode = profile.overflow_mode;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -540,21 +596,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       string_aggregate_profile.ordered;
   const bool is_listagg =
       function == exec::CanonicalAggregateFunction::listagg;
-  const bool is_listagg_ordered =
-      is_listagg &&
-      root.semantic_variant_id ==
-          "aggregate.global-listagg-ordered-expression.v1";
-  const bool is_listagg_overflow_error =
-      is_listagg &&
-      root.semantic_variant_id ==
-          "aggregate.global-listagg-ordered-overflow-error-expression.v1";
-  const bool is_listagg_overflow_truncate =
-      is_listagg &&
-      root.semantic_variant_id ==
-          "aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
-  const bool is_listagg_profile =
-      is_listagg_ordered || is_listagg_overflow_error ||
-      is_listagg_overflow_truncate;
+  const auto listagg_profile =
+      MatchLiveListaggExpressionProfile(root.semantic_variant_id);
+  const bool is_listagg_profile = is_listagg && listagg_profile.matched;
   const auto ordered_single_collection_profile =
       MatchLiveOrderedSingleCollectionExpressionProfile(
           root.semantic_variant_id);
@@ -663,6 +707,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::size_t expected_argument_count = 1;
   if (count_star) {
     expected_argument_count = 0;
+  } else if (is_listagg_profile) {
+    expected_argument_count = listagg_profile.base_argument_count +
+                              (has_filter ? 1U : 0U);
   } else if (has_filter) {
     expected_argument_count = 2;
     if (is_pair_statistical) {
@@ -674,12 +721,6 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     } else if (is_json_object_agg) {
       expected_argument_count = 4;
     }
-  } else if (is_listagg_overflow_truncate) {
-    expected_argument_count = 6;
-  } else if (is_listagg_overflow_error) {
-    expected_argument_count = 4;
-  } else if (is_listagg_ordered) {
-    expected_argument_count = 3;
   } else if (is_hypothetical || is_exact_percentile ||
              is_approx_percentile || is_approx_top_k) {
     expected_argument_count = 2;
@@ -832,7 +873,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         result.aggregate_separator = separator.encoded_value;
         continue;
       }
-      if (is_listagg_profile && argument_ordinal >= 3) {
+      if (is_listagg_profile && argument_ordinal >= 3 &&
+          argument_ordinal < listagg_profile.base_argument_count) {
         const auto option_descriptor = std::ranges::find_if(
             dag.descriptors, [&](const auto& candidate) {
               return argument != dag.expressions.end() &&
@@ -976,6 +1018,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         filter_argument_ordinal = 2;
       } else if (is_json_object_agg) {
         filter_argument_ordinal = 3;
+      } else if (is_listagg_profile) {
+        filter_argument_ordinal = listagg_profile.base_argument_count;
       }
       const bool is_filter_argument =
           has_filter && argument_ordinal == filter_argument_ordinal;
@@ -1235,12 +1279,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       std::nullopt,
       std::nullopt};
   result.result_bindings.push_back(std::move(binding));
-  if (is_listagg_overflow_error) {
-    result.listagg_overflow_mode =
-        exec::CanonicalListaggOverflowMode::error;
-  } else if (is_listagg_overflow_truncate) {
-    result.listagg_overflow_mode =
-        exec::CanonicalListaggOverflowMode::truncate;
+  if (is_listagg_profile) {
+    result.listagg_overflow_mode = listagg_profile.overflow_mode;
   }
   result.ok = true;
   return result;
@@ -3334,18 +3374,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       string_aggregate_profile.matched && string_aggregate_profile.ordered;
   const bool string_agg_expression =
       unordered_string_agg_expression || ordered_string_agg_expression;
-  const bool listagg_ordered_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-listagg-ordered-expression.v1";
-  const bool listagg_overflow_error_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-listagg-ordered-overflow-error-expression.v1";
-  const bool listagg_overflow_truncate_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
-  const bool listagg_expression =
-      listagg_ordered_expression || listagg_overflow_error_expression ||
-      listagg_overflow_truncate_expression;
+  const auto listagg_profile =
+      MatchLiveListaggExpressionProfile(root->semantic_variant_id);
+  const bool listagg_expression = listagg_profile.matched;
   const auto ordered_single_collection_profile =
       MatchLiveOrderedSingleCollectionExpressionProfile(
           root->semantic_variant_id);
@@ -3533,12 +3564,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       unary_aggregate_profile.distinct || pair_statistical_profile.distinct ||
           string_aggregate_profile.distinct ||
           ordered_single_collection_profile.distinct ||
-          json_object_aggregate_profile.distinct,
+          json_object_aggregate_profile.distinct || listagg_profile.distinct,
       unary_aggregate_profile.has_filter ||
           pair_statistical_profile.has_filter ||
           string_aggregate_profile.has_filter ||
           ordered_single_collection_profile.has_filter ||
-          json_object_aggregate_profile.has_filter);
+          json_object_aggregate_profile.has_filter ||
+          listagg_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3696,15 +3728,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (string_agg_expression) {
     aggregate_transformation_id =
         string_aggregate_profile.transformation_id;
-  } else if (listagg_overflow_error_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-listagg-ordered-overflow-error-expression.v1";
-  } else if (listagg_overflow_truncate_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
-  } else if (listagg_ordered_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-listagg-ordered-expression.v1";
+  } else if (listagg_expression) {
+    aggregate_transformation_id = listagg_profile.transformation_id;
   } else if (array_agg_expression) {
     aggregate_transformation_id =
         ordered_single_collection_profile.transformation_id;
