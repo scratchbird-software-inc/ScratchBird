@@ -9,6 +9,10 @@
 #define QOW_WIN_007_FIXTURE_ONLY
 #include "qow_win_007.cpp"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+
 namespace {
 
 constexpr std::string_view kInt64SumUuid =
@@ -295,16 +299,163 @@ bool ValidateRegistryAggregateWindowRefusals() {
   return passed;
 }
 
+exec::CanonicalRegistryWindowAggregateSpillRequest RegistryWindowSpillRequest(
+    const std::filesystem::path& root) {
+  exec::CanonicalRegistryWindowAggregateSpillRequest request;
+  request.aggregate_request = RegistryAverageWindowRequest(PrefixFrame());
+  request.spill_root = root;
+  request.spill_owner_uuid = WindowUuid(5301);
+  request.runtime_generation = 5302;
+  request.memory_quota_bytes = 128;
+  return request;
+}
+
+bool HasWindowSpillArtifact(const std::filesystem::path& root) {
+  const auto directory = root / WindowUuid(5301);
+  std::error_code error;
+  if (!std::filesystem::exists(directory, error)) return false;
+  for (std::filesystem::directory_iterator iterator(directory, error), end;
+       !error && iterator != end; iterator.increment(error)) {
+    const auto filename = iterator->path().filename().string();
+    if (filename.rfind("orh283_temp_spill-", 0) == 0 &&
+        iterator->path().extension() == ".sbtmpidx") {
+      return true;
+    }
+  }
+  return error ? true : false;
+}
+
+bool HasSpillEvidence(const std::vector<std::string>& evidence,
+                      const std::string_view expected) {
+  for (const auto& item : evidence) {
+    if (item == expected) return true;
+  }
+  return false;
+}
+
+bool RegistryWindowSpillRefused(
+    const exec::CanonicalRegistryWindowAggregateSpillResult& result) {
+  return !result.diagnostic.ok &&
+         result.aggregate_result.values.empty() &&
+         result.aggregate_result.frame_row_indices.empty();
+}
+
+bool ValidateRegistryAggregateWindowSpill(
+    const std::filesystem::path& root) {
+  bool passed = true;
+  const auto owner_directory = root / WindowUuid(5301);
+  std::error_code error;
+  std::filesystem::create_directories(owner_directory, error);
+  const auto sentinel = owner_directory / "unrelated.sentinel";
+  {
+    std::ofstream output(sentinel);
+    output << "preserve";
+  }
+
+  auto result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(
+      RegistryWindowSpillRequest(root));
+  passed &= Require401(
+      result.diagnostic.ok && result.spilled && result.spill_reopened &&
+          result.cleanup_proven &&
+          result.spilled_frame_reference_count == 20 &&
+          RegistryAggregateTexts(result.aggregate_result) ==
+              std::vector<std::string>({"101", "103", "103", "102",
+                                        "103.25", "102", "103", "103.5",
+                                        "106"}) &&
+          HasSpillEvidence(
+              result.spill_evidence,
+              "temporary_work.spill_payload_checksum=validated") &&
+          HasSpillEvidence(
+              result.spill_evidence,
+              "orh283.temp_metadata.finality_authority=false") &&
+          HasSpillEvidence(
+              result.spill_evidence,
+              "orh283.mga_finality_authority=engine_transaction_inventory") &&
+          !HasWindowSpillArtifact(root) &&
+          std::filesystem::exists(sentinel),
+      "aggregate window spill did not reopen exact frame membership");
+
+  auto request = RegistryWindowSpillRequest(root);
+  request.cancellation_requested = true;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && result.cancellation_observed &&
+          result.cleanup_proven && !HasWindowSpillArtifact(root),
+      "aggregate window cancellation left spill state or published values");
+
+  request = RegistryWindowSpillRequest(root);
+  request.reopen_runtime_generation = 5303;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && result.cleanup_proven &&
+          !HasWindowSpillArtifact(root),
+      "aggregate window stale-generation refusal left spill state");
+
+  request = RegistryWindowSpillRequest(root);
+  request.restart_recovery_proof_available = false;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && result.cleanup_proven &&
+          !HasWindowSpillArtifact(root),
+      "aggregate window missing-recheck refusal left spill state");
+
+  request = RegistryWindowSpillRequest(root);
+  request.memory_quota_bytes = 1048576;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && result.cleanup_proven &&
+          !HasWindowSpillArtifact(root),
+      "aggregate window non-spilled route published benchmark values");
+
+  request = RegistryWindowSpillRequest(root);
+  request.maximum_spill_record_count = 19;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
+      "aggregate window exceeded the frame-reference spill bound");
+
+  request = RegistryWindowSpillRequest(root);
+  request.aggregate_request.aggregate_template.physical_dag.spill_allowed =
+      false;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
+      "aggregate window spilled without optimizer permission");
+
+  const auto preexisting =
+      owner_directory / "orh283_temp_spill-preexisting.sbtmpidx";
+  {
+    std::ofstream output(preexisting);
+    output << "foreign";
+  }
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(
+      RegistryWindowSpillRequest(root));
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) &&
+          std::filesystem::exists(preexisting),
+      "aggregate window spill overwrote a preexisting owner artifact");
+  std::filesystem::remove(preexisting, error);
+  return passed;
+}
+
 }  // namespace
 
 #ifndef QOW_WIN_012_STATE_FIXTURE_ONLY
 // QOW-TEST-WIN-012-STATE-V1
 int main() {
-  return ValidateAggregateWindowState() &&
-                 ValidateAggregateWindowStateRefusals() &&
-                 ValidateRegistryAggregateWindowState() &&
-                 ValidateRegistryAggregateWindowRefusals()
-             ? EXIT_SUCCESS
-             : EXIT_FAILURE;
+  const auto root = std::filesystem::temp_directory_path() /
+                    ("scratchbird_qow405_window_aggregate_spill_" +
+                     std::to_string(std::chrono::steady_clock::now()
+                                        .time_since_epoch()
+                                        .count()));
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  const bool passed = ValidateAggregateWindowState() &&
+                      ValidateAggregateWindowStateRefusals() &&
+                      ValidateRegistryAggregateWindowState() &&
+                      ValidateRegistryAggregateWindowRefusals() &&
+                      ValidateRegistryAggregateWindowSpill(root);
+  std::filesystem::remove_all(root, error);
+  return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 #endif

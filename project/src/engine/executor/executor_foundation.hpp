@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -220,6 +221,30 @@ struct CanonicalRegistryWindowAggregateResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalRegistryWindowAggregateSpillRequest {
+  CanonicalRegistryWindowAggregateRequest aggregate_request;
+  std::filesystem::path spill_root;
+  std::string spill_owner_uuid;
+  std::uint64_t runtime_generation = 0;
+  std::uint64_t reopen_runtime_generation = 0;
+  std::uint64_t memory_quota_bytes = 0;
+  std::size_t maximum_spill_record_count = 8388608;
+  bool cancellation_requested = false;
+  bool cleanup_after_cancellation = true;
+  bool restart_recovery_proof_available = true;
+};
+
+struct CanonicalRegistryWindowAggregateSpillResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalRegistryWindowAggregateResult aggregate_result;
+  std::size_t spilled_frame_reference_count = 0;
+  bool spilled = false;
+  bool spill_reopened = false;
+  bool cleanup_proven = false;
+  bool cancellation_observed = false;
+  std::vector<std::string> spill_evidence;
+};
+
 enum class CanonicalWindowRuntimeFunction : std::uint8_t {
   unknown = 0,
   row_number,
@@ -375,6 +400,9 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
 CanonicalRegistryWindowAggregateResult
 ExecuteCanonicalRegistryWindowAggregate(
     const CanonicalRegistryWindowAggregateRequest& request);
+CanonicalRegistryWindowAggregateSpillResult
+ExecuteCanonicalRegistryWindowAggregateSpill(
+    const CanonicalRegistryWindowAggregateSpillRequest& request);
 std::vector<CanonicalWindowRuntimeDescriptor>
 CanonicalWindowRuntimeRegistryV1();
 CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(

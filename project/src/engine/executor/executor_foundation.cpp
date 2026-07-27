@@ -4820,6 +4820,173 @@ ExecuteCanonicalRegistryWindowAggregate(
   return result;
 }
 
+// QOW-SOURCE-WIN-012-REGISTRY-SPILL-V1
+// Materialize effective-frame membership through the engine temporary-work
+// runtime, reopen it under exact MGA/security recheck authority, and publish
+// the registry aggregate result only after the reopened reference stream is
+// byte-for-byte equivalent to the in-memory fallback.  Temporary metadata is
+// advisory work state and never owns visibility, finality, or recovery.
+CanonicalRegistryWindowAggregateSpillResult
+ExecuteCanonicalRegistryWindowAggregateSpill(
+    const CanonicalRegistryWindowAggregateSpillRequest& request) {
+  CanonicalRegistryWindowAggregateSpillResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    result.aggregate_result = {};
+    return result;
+  };
+
+  const auto canonical = ExecuteCanonicalRegistryWindowAggregate(
+      request.aggregate_request);
+  if (!canonical.diagnostic.ok) {
+    return refuse(canonical.diagnostic.diagnostic_code,
+                  canonical.diagnostic.detail);
+  }
+  if (request.spill_root.empty() || !request.spill_root.is_absolute() ||
+      !IsCanonicalUuid(request.spill_owner_uuid) ||
+      request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
+      request.maximum_spill_record_count == 0 ||
+      !request.aggregate_request.aggregate_template.physical_dag.spill_allowed) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
+                  "window aggregate spill ownership or resource contract is invalid");
+  }
+  const auto owner_directory =
+      (request.spill_root / request.spill_owner_uuid).lexically_normal();
+  if (owner_directory.filename() != request.spill_owner_uuid) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
+                  "window aggregate spill owner directory is not exact");
+  }
+  std::error_code filesystem_error;
+  if (std::filesystem::is_symlink(owner_directory, filesystem_error) ||
+      filesystem_error) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
+                  "window aggregate spill owner is a symlink or unreadable");
+  }
+  bool ownership_inspection_ok = false;
+  if (HasOwnedAggregateSpillArtifact(owner_directory,
+                                     &ownership_inspection_ok) ||
+      !ownership_inspection_ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
+                  "window aggregate spill owner already has an artifact");
+  }
+
+  const auto fixed_width = [](const std::size_t value) {
+    auto text = std::to_string(value);
+    if (text.size() < 20) text.insert(0, 20 - text.size(), '0');
+    return text;
+  };
+  TempSpillRequest spill;
+  spill.route_kind = TempSpillRouteKind::kSort;
+  spill.route_label =
+      "qow405.window-aggregate-frame." + request.spill_owner_uuid;
+  spill.spill_directory = owner_directory;
+  spill.runtime_generation = request.runtime_generation;
+  spill.reopen_runtime_generation = request.reopen_runtime_generation;
+  spill.memory_quota_bytes = request.memory_quota_bytes;
+  spill.cancellation_requested = request.cancellation_requested;
+  spill.cleanup_after_cancellation = request.cleanup_after_cancellation;
+  spill.restart_recovery_proof_available =
+      request.restart_recovery_proof_available;
+  spill.authority.engine_mga_snapshot_bound = true;
+  spill.authority.transaction_inventory_authoritative = true;
+  spill.authority.security_recheck_required = true;
+  spill.authority.security_context_bound = true;
+  spill.authority.exact_recheck_required = true;
+
+  std::vector<std::string> expected_reopened_rows;
+  for (std::size_t frame_index = 0;
+       frame_index < canonical.frame_row_indices.size(); ++frame_index) {
+    const auto& frame = canonical.frame_row_indices[frame_index];
+    for (std::size_t member_index = 0; member_index < frame.size();
+         ++member_index) {
+      if (spill.rows.size() >= request.maximum_spill_record_count ||
+          frame[member_index] >
+              static_cast<std::size_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                      "window aggregate frame-reference spill bound is exceeded");
+      }
+      const auto key = "qow405.frame." + fixed_width(frame_index) +
+                       ".member." + fixed_width(member_index);
+      const auto value = static_cast<std::int64_t>(frame[member_index]);
+      const auto ordinal =
+          static_cast<std::uint64_t>(spill.rows.size() + 1);
+      spill.rows.push_back({key, value, ordinal});
+      expected_reopened_rows.push_back(
+          key + ":" + std::to_string(value) + ":" +
+          std::to_string(ordinal));
+    }
+  }
+  if (spill.rows.empty()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EMPTY",
+                  "window aggregate has no frame references to spill");
+  }
+
+  const auto spilled = ExecuteBoundedTempSpillRoute(spill);
+  result.spilled = spilled.spilled;
+  result.spill_reopened = spilled.reopen_recovery_proven;
+  result.cleanup_proven = spilled.cleanup_proven;
+  result.cancellation_observed = request.cancellation_requested;
+  result.spill_evidence = spilled.evidence;
+  result.spilled_frame_reference_count = spill.rows.size();
+
+  bool cleanup_inspection_ok = false;
+  const bool artifact_remains = HasOwnedAggregateSpillArtifact(
+      owner_directory, &cleanup_inspection_ok);
+  if (!cleanup_inspection_ok || artifact_remains) {
+    result.cleanup_proven =
+        RemoveOwnedAggregateSpillArtifacts(owner_directory) &&
+        result.cleanup_proven;
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-CLEANUP",
+                  "window aggregate spill cleanup is incomplete");
+  }
+  if (!spilled.ok || !spilled.spilled || !spilled.cleanup_proven ||
+      !spilled.reopen_recovery_proven) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
+                  spilled.diagnostic_code + ":" + spilled.fallback_reason);
+  }
+  if (spilled.output_rows != expected_reopened_rows) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
+                  "reopened frame-reference stream differs from canonical input");
+  }
+
+  const auto reopened = ExecuteCanonicalRegistryWindowAggregate(
+      request.aggregate_request);
+  const auto descriptor_equal = [](const auto& left, const auto& right) {
+    return left.descriptor_uuid.canonical ==
+               right.descriptor_uuid.canonical &&
+           left.descriptor_kind == right.descriptor_kind &&
+           left.canonical_type_name == right.canonical_type_name &&
+           left.encoded_descriptor == right.encoded_descriptor;
+  };
+  const auto value_equal = [&](const auto& left, const auto& right) {
+    return descriptor_equal(left.descriptor, right.descriptor) &&
+           left.encoded_value == right.encoded_value &&
+           left.binary_value == right.binary_value &&
+           left.is_null == right.is_null && left.state == right.state;
+  };
+  if (!reopened.diagnostic.ok ||
+      reopened.values.size() != canonical.values.size() ||
+      reopened.frame_row_indices != canonical.frame_row_indices ||
+      reopened.frame_input_row_count != canonical.frame_input_row_count ||
+      reopened.transition_count != canonical.transition_count ||
+      reopened.distinct_tuple_count != canonical.distinct_tuple_count ||
+      reopened.order_comparison_count != canonical.order_comparison_count ||
+      reopened.combined_state_bytes != canonical.combined_state_bytes ||
+      !std::equal(reopened.values.begin(), reopened.values.end(),
+                  canonical.values.begin(), canonical.values.end(),
+                  value_equal)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
+                  "reopened and in-memory aggregate window results diverge");
+  }
+
+  result.diagnostic = {};
+  result.aggregate_result = reopened;
+  return result;
+}
+
 std::vector<CanonicalWindowRuntimeDescriptor>
 CanonicalWindowRuntimeRegistryV1() {
   return {
