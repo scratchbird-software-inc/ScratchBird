@@ -747,6 +747,16 @@ bool ValidateCanonicalAggregateRegistry() {
                         empty.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::sql_null,
                     "empty AVG did not produce typed SQL NULL");
+  for (const auto function : {exec::CanonicalAggregateFunction::min,
+                              exec::CanonicalAggregateFunction::max}) {
+    auto empty_extremum = Request(function, 3, 2104, "int64");
+    empty_extremum.input_batch.rows.clear();
+    empty = exec::ExecuteCanonicalAggregateRuntime(empty_extremum);
+    passed &= Require(empty.diagnostic.ok &&
+                          empty.output_batch.rows[0].values[0].state ==
+                              api::EngineValueState::sql_null,
+                      "empty MIN/MAX did not produce typed SQL NULL");
+  }
   auto empty_count = Request(exec::CanonicalAggregateFunction::count, 0, 0,
                              "int64", true);
   empty_count.input_batch.rows.clear();

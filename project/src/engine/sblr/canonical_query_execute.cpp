@@ -169,7 +169,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_count = function == exec::CanonicalAggregateFunction::count;
   const bool is_sum = function == exec::CanonicalAggregateFunction::sum;
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
-  if ((!is_count && !is_sum && !is_avg) || (count_star && !is_count)) {
+  const bool is_min = function == exec::CanonicalAggregateFunction::min;
+  const bool is_max = function == exec::CanonicalAggregateFunction::max;
+  if ((!is_count && !is_sum && !is_avg && !is_min && !is_max) ||
+      (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
   }
@@ -273,16 +276,21 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       return result;
     }
     result.value_descriptor_id = argument->result_descriptor_id;
-    if ((is_sum || is_avg) &&
+    if ((is_sum || is_avg || is_min || is_max) &&
         input.batch.columns[result.value_column]
                 .descriptor.canonical_type_name != "int64") {
-      result.detail = is_sum
-                          ? "global SUM input must be a canonical int64 column"
-                          : "global AVG input must be a canonical int64 column";
+      if (is_sum) {
+        result.detail = "global SUM input must be a canonical int64 column";
+      } else if (is_avg) {
+        result.detail = "global AVG input must be a canonical int64 column";
+      } else {
+        result.detail =
+            "global MIN/MAX input must be a canonical int64 column";
+      }
       return result;
     }
   }
-  const bool result_nullable = is_sum || is_avg;
+  const bool result_nullable = is_sum || is_avg || is_min || is_max;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -297,6 +305,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     } else if (is_avg) {
       result.detail =
           "global AVG result must be an unqualified nullable real64";
+    } else if (is_min || is_max) {
+      result.detail =
+          "global MIN/MAX result must be an unqualified nullable int64";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -2390,13 +2401,19 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-sum-expression.v1";
   const bool avg_expression =
       root->semantic_variant_id == "aggregate.global-avg-expression.v1";
+  const bool min_expression =
+      root->semantic_variant_id == "aggregate.global-min-expression.v1";
+  const bool max_expression =
+      root->semantic_variant_id == "aggregate.global-max-expression.v1";
   if (!count_star && !count_expression && !sum_expression &&
-      !avg_expression) {
+      !avg_expression && !min_expression && !max_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
   if (sum_expression) aggregate_function = exec::CanonicalAggregateFunction::sum;
   if (avg_expression) aggregate_function = exec::CanonicalAggregateFunction::avg;
+  if (min_expression) aggregate_function = exec::CanonicalAggregateFunction::min;
+  if (max_expression) aggregate_function = exec::CanonicalAggregateFunction::max;
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
         return node.logical_node_id == root->input_logical_node_ids.front();
@@ -2482,9 +2499,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (sum_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-sum-expression.v1";
-  } else {
+  } else if (avg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-avg-expression.v1";
+  } else if (min_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-min-expression.v1";
+  } else {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-max-expression.v1";
   }
 
   const auto identity_scope =

@@ -45,7 +45,8 @@ struct CanonicalObjectFreeValuesExecutionResult {
 // the exact two-node VALUES/FILTER, descriptor-direct VALUES/PROJECT, or
 // bound-count VALUES/LIMIT shape, the exact property-bound VALUES/SORT shape,
 // the exact VALUES/global COUNT(*), COUNT(input-column), integer
-// SUM(input-column), or integer-input AVG(input-column) aggregate shape,
+// SUM(input-column), integer-input AVG(input-column), or integer MIN/MAX
+// aggregate shape,
 // the exact three-node VALUES/VALUES/UNION ALL ordinal shape, or the exact
 // three-node VALUES/VALUES/INNER JOIN shape.
 // FILTER and INNER JOIN each require one object-free bound boolean predicate.
