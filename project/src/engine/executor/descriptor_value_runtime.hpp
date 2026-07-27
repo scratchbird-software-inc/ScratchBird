@@ -634,6 +634,7 @@ struct CanonicalJoinKindRequest {
   CanonicalJoinResidualRequest residual_request;
   CanonicalAcceptedJoinKind join_kind =
       CanonicalAcceptedJoinKind::kLeftOuter;
+  bool conditionless_predicate = false;
   std::size_t maximum_output_rows = 1048576;
 };
 

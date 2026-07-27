@@ -215,6 +215,7 @@ exec::CanonicalLateralSubqueryRequest RequestFor(
   return request;
 }
 
+// QOW-TEST-QRY-013-LATERAL-V1
 // QOW-TEST-QRY-013-LATERAL-V2
 bool ValidateLateralSubquery() {
   bool passed = true;

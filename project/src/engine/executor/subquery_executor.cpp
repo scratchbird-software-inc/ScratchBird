@@ -756,6 +756,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   return result;
 }
 
+// QOW-SOURCE-QRY-013-LATERAL-V1
 // QOW-SOURCE-QRY-013-LATERAL-V2
 // Bind and execute INNER/LEFT LATERAL and CROSS/OUTER APPLY table expansion by
 // consuming proven correlated scopes. The lateral physical plan shares the

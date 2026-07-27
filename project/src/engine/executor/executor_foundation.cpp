@@ -1538,7 +1538,46 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
-  if (request.join_kind == CanonicalAcceptedJoinKind::kCross) {
+  if (request.conditionless_predicate) {
+    const PhysicalNodeRecord* conditionless_node = nullptr;
+    for (const auto& node : key_request.physical_dag.nodes) {
+      if (node.physical_node_id ==
+          key_request.selected_physical_node_id) {
+        conditionless_node = &node;
+        break;
+      }
+    }
+    if (request.join_kind == CanonicalAcceptedJoinKind::kCross ||
+        !key_request.key_terms.empty() ||
+        !request.residual_request.residual_truth_values.empty() ||
+        request.residual_request.maximum_candidate_rechecks == 0 ||
+        conditionless_node == nullptr ||
+        conditionless_node->node_kind != PhysicalNodeKind::kJoin ||
+        conditionless_node->implementation_id !=
+            "join.natural-conditionless.typed.v1" ||
+        pair_count >
+            request.residual_request.maximum_candidate_rechecks) {
+      return refuse("conditionless join contract is invalid or exhausted");
+    }
+    CanonicalDescriptorInnerJoinRequest conditionless;
+    conditionless.physical_dag = key_request.physical_dag;
+    conditionless.selected_physical_node_id =
+        key_request.selected_physical_node_id;
+    conditionless.left_batch = key_request.left_batch;
+    conditionless.right_batch = key_request.right_batch;
+    conditionless.pair_truth_values.assign(
+        pair_count, api::EngineSqlTruthValue::true_value);
+    auto joined = ExecuteCanonicalDescriptorInnerJoin(conditionless);
+    if (!joined.diagnostic.ok) {
+      return refuse(joined.diagnostic.diagnostic_code + ":" +
+                    joined.diagnostic.detail);
+    }
+    accepted_pair_indices.resize(pair_count);
+    std::iota(accepted_pair_indices.begin(), accepted_pair_indices.end(), 0);
+    selected_plan_uuid = std::move(joined.selected_plan_uuid);
+    executed_physical_node_id = joined.executed_physical_node_id;
+    causal_counter_id = joined.causal_counter_id;
+  } else if (request.join_kind == CanonicalAcceptedJoinKind::kCross) {
     CanonicalDescriptorInnerJoinRequest cross;
     cross.physical_dag = key_request.physical_dag;
     cross.selected_physical_node_id = key_request.selected_physical_node_id;
@@ -1762,9 +1801,10 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
 }
 
 // QOW-SOURCE-QRY-012-NAMED-V1
-// Consume binder-owned USING/NATURAL column bindings, lower them to the
-// canonical composite-key/join-kind route, then execute the bound projection
-// that coalesces named keys and removes duplicate right-side key columns.
+// QOW-SOURCE-QRY-012-NAMED-V2
+// Consume binder-owned USING/NATURAL column bindings, lower nonempty bindings
+// to the canonical composite-key route and zero-common NATURAL to an explicit
+// conditionless join-kind route, then execute the bound named projection.
 CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
     const CanonicalNamedJoinRequest& request) {
   namespace api = scratchbird::engine::internal_api;
@@ -1800,9 +1840,13 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
       request.join_kind != CanonicalAcceptedJoinKind::kFullOuter) {
     return refuse("named join kind is outside the accepted profile");
   }
+  const bool conditionless_natural =
+      request.form == CanonicalNamedJoinForm::kNatural &&
+      request.bindings.empty();
   if (!IsCanonicalUuid(request.binding_evidence_uuid) ||
       request.maximum_binding_count == 0 ||
-      request.bindings.empty() ||
+      (request.form == CanonicalNamedJoinForm::kUsing &&
+       request.bindings.empty()) ||
       request.bindings.size() > request.maximum_binding_count ||
       request.maximum_candidate_rechecks == 0 ||
       request.maximum_output_rows == 0 ||
@@ -2000,6 +2044,11 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
           projection_join_node->causal_counter_id) {
     return refuse("named join projection node identity or schema is invalid");
   }
+  if (conditionless_natural &&
+      key_join_node->implementation_id !=
+          "join.natural-conditionless.typed.v1") {
+    return refuse("zero-common NATURAL physical identity is not bound");
+  }
 
   const auto left_count = request.key_request.left_batch.rows.size();
   const auto right_count = request.key_request.right_batch.rows.size();
@@ -2009,11 +2058,14 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
   }
   CanonicalJoinKindRequest kind_request;
   kind_request.residual_request.key_request = request.key_request;
-  kind_request.residual_request.residual_truth_values.assign(
-      left_count * right_count, api::EngineSqlTruthValue::true_value);
+  if (!conditionless_natural) {
+    kind_request.residual_request.residual_truth_values.assign(
+        left_count * right_count, api::EngineSqlTruthValue::true_value);
+  }
   kind_request.residual_request.maximum_candidate_rechecks =
       request.maximum_candidate_rechecks;
   kind_request.join_kind = request.join_kind;
+  kind_request.conditionless_predicate = conditionless_natural;
   kind_request.maximum_output_rows = request.maximum_output_rows;
   auto joined = ExecuteCanonicalJoinKind(kind_request);
   if (!joined.diagnostic.ok) {

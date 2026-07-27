@@ -229,6 +229,21 @@ exec::CanonicalNamedJoinRequest Request(
   return request;
 }
 
+exec::CanonicalNamedJoinRequest ZeroCommonNaturalRequest() {
+  auto request = Request(exec::CanonicalNamedJoinForm::kNatural);
+  request.key_request.right_batch.columns[0].stable_name = "right_id";
+  request.key_request.right_batch.columns[1].stable_name = "right_name";
+  request.key_request.key_terms.clear();
+  request.bindings.clear();
+  request.key_request.physical_dag.nodes[2].implementation_id =
+      "join.natural-conditionless.typed.v1";
+  request.projection_dag.nodes[2].implementation_id =
+      "join.natural-conditionless.typed.v1";
+  request.projection_dag.nodes.back().output_descriptor_ids =
+      {2701, 2702, 2703, 2704, 2705, 2706};
+  return request;
+}
+
 bool Encoded(const api::EngineTypedValue& value,
              const std::string_view expected) {
   return value.state == api::EngineValueState::value && !value.is_null &&
@@ -241,6 +256,7 @@ bool IsNull(const api::EngineTypedValue& value) {
 }
 
 // QOW-TEST-QRY-012-NAMED-V1
+// QOW-TEST-QRY-012-NAMED-V2
 bool ValidateNamedJoin() {
   bool passed = true;
   auto result =
@@ -298,6 +314,74 @@ bool ValidateNamedJoin() {
           IsNull(result.output_batch.rows[3].values[2]) &&
           Encoded(result.output_batch.rows[3].values[3], "21"),
       "NATURAL FULL OUTER did not bind all common columns in left order");
+
+  request = ZeroCommonNaturalRequest();
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(
+      result.diagnostic.ok &&
+          result.form == exec::CanonicalNamedJoinForm::kNatural &&
+          result.binding_count == 0 && result.matched_pair_count == 9 &&
+          result.unmatched_left_row_count == 0 &&
+          result.unmatched_right_row_count == 0 &&
+          result.output_batch.columns.size() == 6 &&
+          result.output_batch.rows.size() == 9 &&
+          result.output_batch.columns[0].descriptor_id == 2701 &&
+          result.output_batch.columns[3].descriptor_id == 2704 &&
+          Encoded(result.output_batch.rows[0].values[0], "1") &&
+          Encoded(result.output_batch.rows[0].values[3], "1") &&
+          Encoded(result.output_batch.rows[2].values[5], "22") &&
+          Encoded(result.output_batch.rows[3].values[0], "2") &&
+          Encoded(result.output_batch.rows[8].values[3], "4"),
+      "zero-common NATURAL did not execute as a conditionless join");
+
+  request = ZeroCommonNaturalRequest();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+  request.key_request.right_batch.rows.clear();
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(
+      result.diagnostic.ok && result.matched_pair_count == 0 &&
+          result.unmatched_left_row_count == 3 &&
+          result.unmatched_right_row_count == 0 &&
+          result.output_batch.rows.size() == 3 &&
+          result.output_batch.columns[3].nullable &&
+          IsNull(result.output_batch.rows[0].values[3]) &&
+          IsNull(result.output_batch.rows[2].values[5]),
+      "zero-common NATURAL LEFT did not retain an empty-right outer side");
+
+  request = ZeroCommonNaturalRequest();
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+  request.key_request.left_batch.rows.clear();
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(
+      result.diagnostic.ok && result.matched_pair_count == 0 &&
+          result.unmatched_left_row_count == 0 &&
+          result.unmatched_right_row_count == 3 &&
+          result.output_batch.rows.size() == 3 &&
+          result.output_batch.columns[0].nullable &&
+          IsNull(result.output_batch.rows[0].values[0]) &&
+          IsNull(result.output_batch.rows[2].values[2]) &&
+          Encoded(result.output_batch.rows[2].values[3], "4"),
+      "zero-common NATURAL RIGHT did not retain an empty-left outer side");
+
+  request = ZeroCommonNaturalRequest();
+  request.maximum_output_rows = 8;
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "zero-common NATURAL exceeded its Cartesian output bound");
+
+  request = ZeroCommonNaturalRequest();
+  request.key_request.physical_dag.nodes[2].implementation_id =
+      "join.named-key.v1";
+  request.projection_dag.nodes[2].implementation_id = "join.named-key.v1";
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "zero-common NATURAL used a keyed physical identity");
+
+  request = ZeroCommonNaturalRequest();
+  request.form = exec::CanonicalNamedJoinForm::kUsing;
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "empty USING binding list was accepted as NATURAL");
 
   request = Request(exec::CanonicalNamedJoinForm::kNatural);
   request.bindings.pop_back();
