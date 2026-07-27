@@ -224,17 +224,28 @@ struct CanonicalCorrelatedSubqueryResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalLateralJoinForm : std::uint8_t {
+  kInnerLateral = 0,
+  kLeftLateral = 1,
+  kCrossApply = 2,
+  kOuterApply = 3,
+};
+
 struct CanonicalLateralSubqueryRequest {
   CanonicalCorrelatedSubqueryRequest correlated_request;
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
+  CanonicalLateralJoinForm form = CanonicalLateralJoinForm::kInnerLateral;
   std::size_t maximum_output_row_count = 1048576;
 };
 
 struct CanonicalLateralSubqueryResult {
   DescriptorRuntimeDiagnostic diagnostic;
   DescriptorBatch output_batch;
+  CanonicalLateralJoinForm form = CanonicalLateralJoinForm::kInnerLateral;
   std::size_t scope_execution_count = 0;
+  std::size_t matched_scope_count = 0;
+  std::size_t null_extended_outer_row_count = 0;
   std::size_t output_row_count = 0;
   std::string correlated_plan_uuid;
   std::string selected_plan_uuid;

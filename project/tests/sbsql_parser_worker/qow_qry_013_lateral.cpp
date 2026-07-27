@@ -190,12 +190,40 @@ exec::CanonicalLateralSubqueryRequest Request() {
   return request;
 }
 
-// QOW-TEST-QRY-013-LATERAL-V1
+exec::CanonicalLateralSubqueryRequest RequestFor(
+    const exec::CanonicalLateralJoinForm form) {
+  auto request = Request();
+  request.form = form;
+  switch (form) {
+    case exec::CanonicalLateralJoinForm::kInnerLateral:
+      break;
+    case exec::CanonicalLateralJoinForm::kLeftLateral:
+      request.physical_dag.nodes[2].implementation_id =
+          "join.lateral-left.correlated.typed.v1";
+      request.maximum_output_row_count = 6;
+      break;
+    case exec::CanonicalLateralJoinForm::kCrossApply:
+      request.physical_dag.nodes[2].implementation_id =
+          "join.cross-apply.correlated.typed.v1";
+      break;
+    case exec::CanonicalLateralJoinForm::kOuterApply:
+      request.physical_dag.nodes[2].implementation_id =
+          "join.outer-apply.correlated.typed.v1";
+      request.maximum_output_row_count = 6;
+      break;
+  }
+  return request;
+}
+
+// QOW-TEST-QRY-013-LATERAL-V2
 bool ValidateLateralSubquery() {
   bool passed = true;
   auto result = exec::ExecuteCanonicalLateralSubquery(Request());
   passed &= Require(
       result.diagnostic.ok && result.scope_execution_count == 4 &&
+          result.form == exec::CanonicalLateralJoinForm::kInnerLateral &&
+          result.matched_scope_count == 3 &&
+          result.null_extended_outer_row_count == 0 &&
           result.output_row_count == 5 &&
           result.output_batch.columns.size() == 4 &&
           result.output_batch.rows.size() == 5 &&
@@ -233,6 +261,73 @@ bool ValidateLateralSubquery() {
                         result.output_row_count == 0,
                     "empty outer relation invented LATERAL output");
 
+  request = RequestFor(exec::CanonicalLateralJoinForm::kLeftLateral);
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok &&
+          result.form == exec::CanonicalLateralJoinForm::kLeftLateral &&
+          result.scope_execution_count == 4 &&
+          result.matched_scope_count == 3 &&
+          result.null_extended_outer_row_count == 1 &&
+          result.output_row_count == 6 && result.output_batch.rows.size() == 6 &&
+          result.output_batch.columns[2].nullable &&
+          result.output_batch.columns[3].nullable &&
+          result.output_batch.rows[2].values[1].encoded_value ==
+              "outer-null" &&
+          result.output_batch.rows[2].values[2].state ==
+              api::EngineValueState::sql_null &&
+          result.output_batch.rows[2].values[3].state ==
+              api::EngineValueState::sql_null &&
+          result.output_batch.rows[3].values[1].encoded_value == "outer-b" &&
+          result.output_batch.rows[5].values[3].encoded_value == "inner-c",
+      "left-LATERAL did not null-extend an empty correlated scope");
+
+  request = RequestFor(exec::CanonicalLateralJoinForm::kCrossApply);
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok &&
+          result.form == exec::CanonicalLateralJoinForm::kCrossApply &&
+          result.matched_scope_count == 3 &&
+          result.null_extended_outer_row_count == 0 &&
+          result.output_row_count == 5 &&
+          result.output_batch.rows[2].values[1].encoded_value == "outer-b",
+      "CROSS APPLY did not retain inner-LATERAL cardinality and order");
+
+  request = RequestFor(exec::CanonicalLateralJoinForm::kOuterApply);
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok &&
+          result.form == exec::CanonicalLateralJoinForm::kOuterApply &&
+          result.matched_scope_count == 3 &&
+          result.null_extended_outer_row_count == 1 &&
+          result.output_row_count == 6 &&
+          result.output_batch.rows[2].values[2].state ==
+              api::EngineValueState::sql_null,
+      "OUTER APPLY did not retain left-LATERAL cardinality and null extension");
+
+  request = RequestFor(exec::CanonicalLateralJoinForm::kLeftLateral);
+  request.correlated_request.inner_batch.rows.clear();
+  request.maximum_output_row_count = 4;
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(
+      result.diagnostic.ok && result.scope_execution_count == 4 &&
+          result.matched_scope_count == 0 &&
+          result.null_extended_outer_row_count == 4 &&
+          result.output_row_count == 4 &&
+          result.output_batch.rows[0].values[2].state ==
+              api::EngineValueState::sql_null &&
+          result.output_batch.rows[3].values[3].state ==
+              api::EngineValueState::sql_null,
+      "left-LATERAL empty inner input did not retain every outer row");
+
+  request = RequestFor(exec::CanonicalLateralJoinForm::kLeftLateral);
+  request.maximum_output_row_count = 5;
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        result.scope_execution_count == 0 &&
+                        result.null_extended_outer_row_count == 0,
+                    "left-LATERAL bound ignored null-extended rows");
+
   request = Request();
   request.maximum_output_row_count = 4;
   result = exec::ExecuteCanonicalLateralSubquery(request);
@@ -252,6 +347,18 @@ bool ValidateLateralSubquery() {
   result = exec::ExecuteCanonicalLateralSubquery(request);
   passed &= Require(!result.diagnostic.ok,
                     "wrong LATERAL physical profile was accepted");
+
+  request = Request();
+  request.form = exec::CanonicalLateralJoinForm::kCrossApply;
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "APPLY form was relabelled onto an inner-LATERAL plan");
+
+  request = Request();
+  request.form = static_cast<exec::CanonicalLateralJoinForm>(99);
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok,
+                    "unknown LATERAL/APPLY form was accepted");
 
   request = Request();
   request.physical_dag.nodes[2].output_descriptor_ids =

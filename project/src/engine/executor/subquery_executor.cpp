@@ -15,6 +15,8 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <limits>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -754,11 +756,12 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   return result;
 }
 
-// QOW-SOURCE-QRY-013-LATERAL-V1
-// Bind and execute one inner-LATERAL table expansion by consuming the proven
-// correlated scopes. The lateral physical plan shares the exact engine MGA
-// statement boundary and owns only the outer-plus-inner relational flattening;
-// correlation remains authoritative in ExecuteCanonicalCorrelatedSubquery.
+// QOW-SOURCE-QRY-013-LATERAL-V2
+// Bind and execute INNER/LEFT LATERAL and CROSS/OUTER APPLY table expansion by
+// consuming proven correlated scopes. The lateral physical plan shares the
+// exact engine MGA statement boundary and owns only outer-plus-inner relational
+// flattening/null extension; correlation remains authoritative in
+// ExecuteCanonicalCorrelatedSubquery.
 CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     const CanonicalLateralSubqueryRequest& request) {
   CanonicalLateralSubqueryResult result;
@@ -768,7 +771,10 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
         "QOW-DIAG-QRY-013-LATERAL-REFUSAL-V1";
     result.diagnostic.detail = std::move(detail);
     result.output_batch = {};
+    result.form = CanonicalLateralJoinForm::kInnerLateral;
     result.scope_execution_count = 0;
+    result.matched_scope_count = 0;
+    result.null_extended_outer_row_count = 0;
     result.output_row_count = 0;
     result.correlated_plan_uuid.clear();
     result.selected_plan_uuid.clear();
@@ -803,12 +809,35 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
       break;
     }
   }
+  std::string_view expected_implementation;
+  bool null_extend_empty_scopes = false;
+  switch (request.form) {
+    case CanonicalLateralJoinForm::kInnerLateral:
+      expected_implementation =
+          "join.lateral-inner.correlated.typed.v1";
+      break;
+    case CanonicalLateralJoinForm::kLeftLateral:
+      expected_implementation =
+          "join.lateral-left.correlated.typed.v1";
+      null_extend_empty_scopes = true;
+      break;
+    case CanonicalLateralJoinForm::kCrossApply:
+      expected_implementation =
+          "join.cross-apply.correlated.typed.v1";
+      break;
+    case CanonicalLateralJoinForm::kOuterApply:
+      expected_implementation =
+          "join.outer-apply.correlated.typed.v1";
+      null_extend_empty_scopes = true;
+      break;
+    default:
+      return refuse("LATERAL/APPLY form is outside the accepted profile");
+  }
   if (selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kJoin ||
-      selected_node->implementation_id !=
-          "join.lateral-inner.correlated.typed.v1" ||
+      selected_node->implementation_id != expected_implementation ||
       selected_node->input_physical_node_ids.size() != 2) {
-    return refuse("inner-LATERAL physical profile is not bound");
+    return refuse("LATERAL/APPLY physical profile is not exactly bound");
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==
@@ -856,7 +885,29 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return refuse(correlated.diagnostic.diagnostic_code + ":" +
                   correlated.diagnostic.detail);
   }
-  if (correlated.result_row_count > request.maximum_output_row_count) {
+  if (correlated.scopes.size() !=
+      request.correlated_request.outer_batch.rows.size()) {
+    return refuse("correlated scopes do not cover the outer relation");
+  }
+  std::size_t matched_scope_count = 0;
+  std::size_t null_extended_outer_row_count = 0;
+  for (std::size_t scope_index = 0; scope_index < correlated.scopes.size();
+       ++scope_index) {
+    const auto& scope = correlated.scopes[scope_index];
+    if (scope.outer_row_index != scope_index) {
+      return refuse("correlated scope lost canonical outer-row order");
+    }
+    if (scope.output_batch.rows.empty()) {
+      if (null_extend_empty_scopes) ++null_extended_outer_row_count;
+    } else {
+      ++matched_scope_count;
+    }
+  }
+  if (correlated.result_row_count >
+          std::numeric_limits<std::size_t>::max() -
+              null_extended_outer_row_count ||
+      correlated.result_row_count + null_extended_outer_row_count >
+          request.maximum_output_row_count) {
     return refuse("LATERAL output resource bound was exceeded");
   }
 
@@ -865,14 +916,33 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   output.columns.insert(output.columns.end(),
                         request.correlated_request.inner_batch.columns.begin(),
                         request.correlated_request.inner_batch.columns.end());
-  output.rows.reserve(correlated.result_row_count);
-  for (const auto& scope : correlated.scopes) {
-    if (scope.outer_row_index >=
-        request.correlated_request.outer_batch.rows.size()) {
-      return refuse("correlated scope lost physical outer-row identity");
+  if (null_extend_empty_scopes) {
+    for (std::size_t column =
+             request.correlated_request.outer_batch.columns.size();
+         column < output.columns.size(); ++column) {
+      output.columns[column].nullable = true;
     }
+  }
+  output.rows.reserve(correlated.result_row_count +
+                      null_extended_outer_row_count);
+  for (const auto& scope : correlated.scopes) {
     const auto& outer_row =
         request.correlated_request.outer_batch.rows[scope.outer_row_index];
+    if (scope.output_batch.rows.empty() && null_extend_empty_scopes) {
+      DescriptorTuple lateral_row;
+      lateral_row.values = outer_row.values;
+      for (const auto& column :
+           request.correlated_request.inner_batch.columns) {
+        scratchbird::engine::internal_api::EngineTypedValue null_value;
+        null_value.descriptor = column.descriptor;
+        null_value.is_null = true;
+        null_value.state = scratchbird::engine::internal_api::
+            EngineValueState::sql_null;
+        lateral_row.values.push_back(std::move(null_value));
+      }
+      output.rows.push_back(std::move(lateral_row));
+      continue;
+    }
     for (const auto& inner_row : scope.output_batch.rows) {
       DescriptorTuple lateral_row;
       lateral_row.values = outer_row.values;
@@ -891,7 +961,10 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
+  result.form = request.form;
   result.scope_execution_count = correlated.scope_execution_count;
+  result.matched_scope_count = matched_scope_count;
+  result.null_extended_outer_row_count = null_extended_outer_row_count;
   result.output_row_count = result.output_batch.rows.size();
   result.correlated_plan_uuid = std::move(correlated.selected_plan_uuid);
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
