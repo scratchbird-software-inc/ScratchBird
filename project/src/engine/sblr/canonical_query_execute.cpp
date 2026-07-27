@@ -296,6 +296,54 @@ LivePairStatisticalExpressionProfile MatchLivePairStatisticalExpressionProfile(
   return result;
 }
 
+struct LiveStringAggregateExpressionProfile {
+  bool matched{false};
+  bool ordered{false};
+  bool distinct{false};
+  bool has_filter{false};
+  std::string transformation_id;
+};
+
+LiveStringAggregateExpressionProfile MatchLiveStringAggregateExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LiveStringAggregateExpressionProfile result;
+  struct OrderProfile {
+    std::string_view prefix;
+    bool ordered;
+  };
+  static constexpr std::array<OrderProfile, 2> kOrderProfiles = {{
+      {"aggregate.global-string-agg", false},
+      {"aggregate.global-string-agg-ordered", true},
+  }};
+
+  for (const auto& profile : kOrderProfiles) {
+    if (semantic_variant_id ==
+        std::string(profile.prefix) + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) +
+                   "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.ordered = profile.ordered;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -396,10 +444,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_syy;
   const bool is_string_agg =
       function == exec::CanonicalAggregateFunction::string_agg;
+  const auto string_aggregate_profile =
+      MatchLiveStringAggregateExpressionProfile(root.semantic_variant_id);
   const bool is_ordered_string_agg =
-      is_string_agg &&
-      root.semantic_variant_id ==
-          "aggregate.global-string-agg-ordered-expression.v1";
+      is_string_agg && string_aggregate_profile.matched &&
+      string_aggregate_profile.ordered;
   const bool is_listagg =
       function == exec::CanonicalAggregateFunction::listagg;
   const bool is_listagg_ordered =
@@ -515,7 +564,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   if (count_star) {
     expected_argument_count = 0;
   } else if (has_filter) {
-    expected_argument_count = is_pair_statistical ? 3 : 2;
+    expected_argument_count = 2;
+    if (is_pair_statistical) {
+      expected_argument_count = 3;
+    } else if (is_string_agg) {
+      expected_argument_count = is_ordered_string_agg ? 4 : 3;
+    }
   } else if (is_listagg_overflow_truncate) {
     expected_argument_count = 6;
   } else if (is_listagg_overflow_error) {
@@ -809,9 +863,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       const auto input_type =
           input.batch.columns[value_column].descriptor.canonical_type_name;
+      std::size_t filter_argument_ordinal = 1;
+      if (is_pair_statistical) {
+        filter_argument_ordinal = 2;
+      } else if (is_string_agg) {
+        filter_argument_ordinal = is_ordered_string_agg ? 3 : 2;
+      }
       const bool is_filter_argument =
-          has_filter &&
-          argument_ordinal == (is_pair_statistical ? 2U : 1U);
+          has_filter && argument_ordinal == filter_argument_ordinal;
       if (is_filter_argument) {
         if (input_type != "boolean") {
           result.detail =
@@ -3159,12 +3218,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       unary_aggregate_profile.matched &&
       unary_aggregate_profile.function ==
           exec::CanonicalAggregateFunction::every;
+  const auto string_aggregate_profile =
+      MatchLiveStringAggregateExpressionProfile(root->semantic_variant_id);
   const bool unordered_string_agg_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-string-agg-expression.v1";
+      string_aggregate_profile.matched && !string_aggregate_profile.ordered;
   const bool ordered_string_agg_expression =
-      root->semantic_variant_id ==
-      "aggregate.global-string-agg-ordered-expression.v1";
+      string_aggregate_profile.matched && string_aggregate_profile.ordered;
   const bool string_agg_expression =
       unordered_string_agg_expression || ordered_string_agg_expression;
   const bool listagg_ordered_expression =
@@ -3356,9 +3415,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   auto prepared_root = PrepareGlobalAggregateRoot(
       request.relational_dag, *root, *input_node, input, aggregate_function,
       count_star,
-      unary_aggregate_profile.distinct || pair_statistical_profile.distinct,
+      unary_aggregate_profile.distinct || pair_statistical_profile.distinct ||
+          string_aggregate_profile.distinct,
       unary_aggregate_profile.has_filter ||
-          pair_statistical_profile.has_filter);
+          pair_statistical_profile.has_filter ||
+          string_aggregate_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3513,9 +3574,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   std::string aggregate_transformation_id;
   if (unary_aggregate_profile.matched) {
     aggregate_transformation_id = unary_aggregate_profile.transformation_id;
-  } else if (ordered_string_agg_expression) {
+  } else if (string_agg_expression) {
     aggregate_transformation_id =
-        "canonical.aggregate.global-string-agg-ordered-expression.v1";
+        string_aggregate_profile.transformation_id;
   } else if (listagg_overflow_error_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-listagg-ordered-overflow-error-expression.v1";
@@ -3525,9 +3586,6 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (listagg_ordered_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-listagg-ordered-expression.v1";
-  } else if (string_agg_expression) {
-    aggregate_transformation_id =
-        "canonical.aggregate.global-string-agg-expression.v1";
   } else if (array_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-array-agg-ordered-expression.v1";
