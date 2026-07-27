@@ -146,6 +146,111 @@ struct PreparedSortRoot {
   std::string detail;
 };
 
+struct PreparedGlobalCountStarRoot {
+  bool ok{false};
+  exec::ExecutorColumnDescriptor count_column;
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  std::string detail;
+};
+
+PreparedGlobalCountStarRoot PrepareGlobalCountStarRoot(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& root,
+    const plan::CanonicalLogicalRelationalNode& input_node,
+    const MaterializedValues& input) {
+  PreparedGlobalCountStarRoot result;
+  if (root.output_descriptor_ids.size() != 1 ||
+      root.bound_expression_ids.size() != 1 ||
+      input.result_bindings.size() != input.batch.columns.size() ||
+      input_node.output_descriptor_ids.size() != input.batch.columns.size() ||
+      std::ranges::find(input_node.output_descriptor_ids,
+                        root.output_descriptor_ids.front()) !=
+          input_node.output_descriptor_ids.end()) {
+    result.detail =
+        "global COUNT(*) input or output descriptor coverage is unresolved";
+    return result;
+  }
+
+  const api::RelationalOutputRecord* output = nullptr;
+  for (const auto& candidate : dag.outputs) {
+    if (candidate.relation_node_id != root.logical_node_id) continue;
+    if (output != nullptr) {
+      result.detail = "global COUNT(*) requires exactly one bound output";
+      return result;
+    }
+    output = &candidate;
+  }
+  if (output == nullptr || output->ordinal != 0 || !output->visible ||
+      output->output_name_utf8.empty() ||
+      output->descriptor_id != root.output_descriptor_ids.front() ||
+      output->expression_id != root.bound_expression_ids.front()) {
+    result.detail = "global COUNT(*) output lineage is not exact";
+    return result;
+  }
+
+  const auto expression = std::ranges::find_if(
+      dag.expressions, [&](const auto& candidate) {
+        return candidate.expression_id == root.bound_expression_ids.front();
+      });
+  const auto descriptor = std::ranges::find_if(
+      dag.descriptors, [&](const auto& candidate) {
+        return candidate.descriptor_id == root.output_descriptor_ids.front();
+      });
+  const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  const auto count = std::ranges::find_if(registry, [](const auto& candidate) {
+    return candidate.function == exec::CanonicalAggregateFunction::count;
+  });
+  if (expression == dag.expressions.end() ||
+      descriptor == dag.descriptors.end() || count == registry.end() ||
+      !count->executable ||
+      expression->expression_kind !=
+          api::RelationalExpressionKind::kFunctionCall ||
+      !expression->child_expression_ids.empty() ||
+      expression->result_descriptor_id != descriptor->descriptor_id ||
+      !expression->function_uuid.has_value() ||
+      *expression->function_uuid != count->function_uuid ||
+      expression->bound_name_uuid.has_value() ||
+      expression->literal_kind.has_value() ||
+      expression->operator_name.has_value() ||
+      expression->literal_or_parameter_ref.has_value()) {
+    result.detail =
+        "global COUNT(*) function identity or zero-argument binding is invalid";
+    return result;
+  }
+  if (descriptor->nullability != api::RelationalNullability::kNonNull ||
+      descriptor->collation_uuid.has_value() ||
+      descriptor->timezone_profile_id.has_value() ||
+      descriptor->width.has_value() || descriptor->precision.has_value() ||
+      descriptor->scale.has_value()) {
+    result.detail =
+        "global COUNT(*) result must be an unqualified non-null int64";
+    return result;
+  }
+
+  api::EngineDescriptor engine_descriptor;
+  engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+  engine_descriptor.descriptor_kind = "scalar";
+  engine_descriptor.canonical_type_name = "int64";
+  engine_descriptor.encoded_descriptor =
+      "type_uuid=" + descriptor->type_uuid + ";nullability=non_null";
+  result.count_column = {output->output_name_utf8, engine_descriptor, false,
+                         descriptor->descriptor_id};
+  exec::CanonicalResultColumnBinding binding;
+  binding.physical_column_ordinal = 0;
+  binding.visible = true;
+  binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+      0,
+      output->output_name_utf8,
+      descriptor->descriptor_uuid,
+      descriptor->type_uuid,
+      exec::CanonicalResultNullability::kNonNull,
+      std::nullopt,
+      std::nullopt};
+  result.result_bindings.push_back(std::move(binding));
+  result.ok = true;
+  return result;
+}
+
 PreparedSortRoot PrepareSortRoot(
     const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
@@ -2180,6 +2285,250 @@ ExecuteCanonicalObjectFreeProjectQuery(
 }
 
 CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeGlobalCountStarQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 2 || root == graph.nodes.end() ||
+      root->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
+      root->semantic_variant_id != "aggregate.global-count-star.v1" ||
+      root->input_logical_node_ids.size() != 1 ||
+      root->bound_expression_ids.size() != 1 ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return result;
+  }
+  const auto input_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (input_node == graph.nodes.end() || input_node == root ||
+      input_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      input_node->semantic_variant_id != "values.literal-table.v1" ||
+      !input_node->input_logical_node_ids.empty()) {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty() ||
+        !node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty()) {
+      return result;
+    }
+  }
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-ADMISSION-V1",
+                  "live global COUNT(*) execution lacks optimizer admission");
+  }
+
+  auto input = MaterializeValues(request.relational_dag, *input_node);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+                  "global COUNT(*) input VALUES: " + input.detail);
+  }
+  auto prepared_root = PrepareGlobalCountStarRoot(
+      request.relational_dag, *root, *input_node, input);
+  if (!prepared_root.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
+                  prepared_root.detail);
+  }
+
+  const auto input_row_count = input.batch.rows.size();
+  std::uint64_t input_memory = 1;
+  std::uint64_t total_memory = 0;
+  constexpr std::uint64_t kCountResultMemory =
+      std::numeric_limits<std::int64_t>::digits10 + 2;
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedAdd(input_memory, kCountResultMemory, &total_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live global COUNT(*) input or result size overflowed");
+  }
+  if (total_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live global COUNT(*) exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto aggregate_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "aggregate.capability");
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {input_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       input_row_count,
+       input_memory,
+       0,
+       0},
+      {root->logical_node_id,
+       "aggregate.count-star.v1",
+       aggregate_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kAggregate,
+       exec::PhysicalNodeKind::kAggregate,
+       "canonical.aggregate.global-count-star.v1",
+       input_row_count,
+       total_memory,
+       1,
+       1}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "aggregate.selected-plan", "AGGREGATE");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(input_node->logical_node_id, std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-VALUES-V1", "AGGREGATE");
+
+  exec::CanonicalPhysicalExecutorRegistration aggregate_registration;
+  aggregate_registration.node_kind = exec::PhysicalNodeKind::kAggregate;
+  aggregate_registration.implementation_id = "aggregate.count-star.v1";
+  aggregate_registration.executor_capability_uuid =
+      aggregate_capability_uuid;
+  aggregate_registration.executor_capability_abi_version = 1;
+  aggregate_registration.engine_owned = true;
+  aggregate_registration.accepts_optimizer_publication_v2 = true;
+  aggregate_registration.execute =
+      [count_column = prepared_root.count_column, input_row_count](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "global COUNT(*) executor did not receive one typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        if (input_batch.rows.size() != input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "global COUNT(*) input cardinality differs from its selected cost";
+          return step;
+        }
+        exec::CanonicalDescriptorCountRequest aggregate_request;
+        aggregate_request.physical_dag = dag;
+        aggregate_request.selected_physical_node_id = node.physical_node_id;
+        aggregate_request.input_batch = input_batch;
+        aggregate_request.count_column = count_column;
+        const auto aggregate_result =
+            exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
+        if (!aggregate_result.diagnostic.ok) {
+          step.diagnostic = aggregate_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = aggregate_result.output_batch.rows.size();
+        step.materialized_output_batch = aggregate_result.output_batch;
+        return step;
+      };
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.inventory_local_transaction_id =
+      planning.physical_dag.local_transaction_id;
+  execution_request.inventory_statement_snapshot_id =
+      planning.physical_dag.statement_snapshot_id;
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(aggregate_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "aggregate.execution-attempt");
+  execution_request.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(request.context.local_transaction_id) + ":" +
+              std::to_string(
+                  request.context.snapshot_visible_through_local_transaction_id),
+          "aggregate.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(prepared_root.result_bindings);
+  execution_request.result_publication_request.maximum_row_count = 1;
+
+  const auto execution =
+      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "live global COUNT(*) selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
+CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeLimitQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
@@ -2707,6 +3056,8 @@ ExecuteCanonicalObjectFreeSortQuery(
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
+  auto aggregate = ExecuteCanonicalObjectFreeGlobalCountStarQuery(request);
+  if (aggregate.profile_matched) return aggregate;
   auto sort = ExecuteCanonicalObjectFreeSortQuery(request);
   if (sort.profile_matched) return sort;
   auto limit = ExecuteCanonicalObjectFreeLimitQuery(request);
