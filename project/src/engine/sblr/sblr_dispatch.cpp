@@ -8,6 +8,7 @@
 
 #include "sblr_dispatch.hpp"
 
+#include "canonical_query_execute.hpp"
 #include "sblr_opcode_registry.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/canonical_relational_bridge.hpp"
@@ -150,9 +151,19 @@ struct CanonicalQueryRouteResult {
   bool optimizer_admitted{false};
   bool optimizer_admission_degraded{false};
   bool optimizer_benchmark_clean_ready{false};
+  bool optimizer_selected{false};
+  bool physical_dag_published{false};
+  bool physical_dag_executed{false};
+  bool runtime_actuals_attached{false};
+  bool canonical_result_published{false};
   std::size_t optimizer_admission_stage_count{0};
   std::size_t logical_node_count{0};
   std::size_t logical_property_count{0};
+  std::size_t physical_node_count{0};
+  std::size_t canonical_result_column_count{0};
+  std::size_t canonical_result_row_count{0};
+  std::string selected_plan_uuid;
+  std::string canonical_result_bytes;
   api::EngineApiResult api_result;
 };
 
@@ -976,6 +987,28 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
       optimizer_admission.admission.benchmark_clean_ready;
   routed.optimizer_admission_stage_count =
       optimizer_admission.admission.evidence.size();
+  const auto values_execution = ExecuteCanonicalObjectFreeValuesQuery(
+      {request.context, decoded.request.relational_dag,
+       optimizer_admission.request, optimizer_admission.admission});
+  if (values_execution.profile_matched) {
+    routed.optimizer_selected = values_execution.optimizer_selected;
+    routed.physical_dag_published =
+        values_execution.physical_dag_published;
+    routed.physical_dag_executed = values_execution.physical_dag_executed;
+    routed.runtime_actuals_attached =
+        values_execution.runtime_actuals_attached;
+    routed.canonical_result_published =
+        values_execution.canonical_result_published;
+    routed.physical_node_count = values_execution.physical_node_count;
+    routed.canonical_result_column_count =
+        values_execution.canonical_result_column_count;
+    routed.canonical_result_row_count =
+        values_execution.canonical_result_row_count;
+    routed.selected_plan_uuid = values_execution.selected_plan_uuid;
+    routed.canonical_result_bytes = values_execution.canonical_result_bytes;
+    routed.api_result = values_execution.api_result;
+    return routed;
+  }
   routed.api_result = QueryRouteFailure(
       request.context,
       request.envelope.operation_id,
@@ -1077,10 +1110,23 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
       routed.optimizer_admission_degraded;
   result.optimizer_benchmark_clean_ready =
       routed.optimizer_benchmark_clean_ready;
+  result.optimizer_selected = routed.optimizer_selected;
+  result.physical_dag_published = routed.physical_dag_published;
+  result.physical_dag_executed = routed.physical_dag_executed;
+  result.runtime_actuals_attached = routed.runtime_actuals_attached;
+  result.canonical_result_published = routed.canonical_result_published;
   result.optimizer_admission_stage_count =
       routed.optimizer_admission_stage_count;
+  result.physical_node_count = routed.physical_node_count;
+  result.canonical_result_column_count =
+      routed.canonical_result_column_count;
+  result.canonical_result_row_count = routed.canonical_result_row_count;
+  result.selected_plan_uuid = routed.selected_plan_uuid;
+  result.canonical_result_bytes = routed.canonical_result_bytes;
   result.api_result = routed.api_result;
-  result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+  if (!result.api_result.ok) {
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+  }
   return result;
 }
 
@@ -1123,8 +1169,23 @@ std::string SerializeSblrDispatchResultToJson(
       << (result.optimizer_admission_degraded ? "true" : "false")
       << ",\"optimizer_benchmark_clean_ready\":"
       << (result.optimizer_benchmark_clean_ready ? "true" : "false")
+      << ",\"optimizer_selected\":"
+      << (result.optimizer_selected ? "true" : "false")
+      << ",\"physical_dag_published\":"
+      << (result.physical_dag_published ? "true" : "false")
+      << ",\"physical_dag_executed\":"
+      << (result.physical_dag_executed ? "true" : "false")
+      << ",\"runtime_actuals_attached\":"
+      << (result.runtime_actuals_attached ? "true" : "false")
+      << ",\"canonical_result_published\":"
+      << (result.canonical_result_published ? "true" : "false")
       << ",\"optimizer_admission_stage_count\":"
       << result.optimizer_admission_stage_count
+      << ",\"physical_node_count\":" << result.physical_node_count
+      << ",\"canonical_result_column_count\":"
+      << result.canonical_result_column_count
+      << ",\"canonical_result_row_count\":"
+      << result.canonical_result_row_count
       << ",\"api_ok\":" << (result.api_result.ok ? "true" : "false")
       << "}";
   return out.str();
@@ -7690,10 +7751,23 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         routed.optimizer_admission_degraded;
     result.optimizer_benchmark_clean_ready =
         routed.optimizer_benchmark_clean_ready;
+    result.optimizer_selected = routed.optimizer_selected;
+    result.physical_dag_published = routed.physical_dag_published;
+    result.physical_dag_executed = routed.physical_dag_executed;
+    result.runtime_actuals_attached = routed.runtime_actuals_attached;
+    result.canonical_result_published = routed.canonical_result_published;
     result.optimizer_admission_stage_count =
         routed.optimizer_admission_stage_count;
+    result.physical_node_count = routed.physical_node_count;
+    result.canonical_result_column_count =
+        routed.canonical_result_column_count;
+    result.canonical_result_row_count = routed.canonical_result_row_count;
+    result.selected_plan_uuid = routed.selected_plan_uuid;
+    result.canonical_result_bytes = routed.canonical_result_bytes;
     result.api_result = routed.api_result;
-    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    if (!result.api_result.ok) {
+      result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    }
     return result;
   }
 
@@ -8205,8 +8279,24 @@ std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) 
   out << "  \"optimizer_benchmark_clean_ready\": "
       << (result.optimizer_benchmark_clean_ready ? "true" : "false")
       << ",\n";
+  out << "  \"optimizer_selected\": "
+      << (result.optimizer_selected ? "true" : "false") << ",\n";
+  out << "  \"physical_dag_published\": "
+      << (result.physical_dag_published ? "true" : "false") << ",\n";
+  out << "  \"physical_dag_executed\": "
+      << (result.physical_dag_executed ? "true" : "false") << ",\n";
+  out << "  \"runtime_actuals_attached\": "
+      << (result.runtime_actuals_attached ? "true" : "false") << ",\n";
+  out << "  \"canonical_result_published\": "
+      << (result.canonical_result_published ? "true" : "false") << ",\n";
   out << "  \"optimizer_admission_stage_count\": "
       << result.optimizer_admission_stage_count << ",\n";
+  out << "  \"physical_node_count\": " << result.physical_node_count
+      << ",\n";
+  out << "  \"canonical_result_column_count\": "
+      << result.canonical_result_column_count << ",\n";
+  out << "  \"canonical_result_row_count\": "
+      << result.canonical_result_row_count << ",\n";
   out << "  \"api_ok\": " << (result.api_result.ok ? "true" : "false") << ",\n";
   out << "  \"operation_id\": \"" << JsonEscape(result.api_result.operation_id) << "\",\n";
   out << "  \"diagnostics\": [\n";

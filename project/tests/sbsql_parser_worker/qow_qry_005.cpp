@@ -36,14 +36,6 @@ bool HasParserDiagnostic(const sbsql::MessageVectorSet& messages,
       });
 }
 
-bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
-                      const std::string_view code) {
-  return std::ranges::any_of(
-      result.api_result.diagnostics, [code](const auto& diagnostic) {
-        return diagnostic.code == code;
-      });
-}
-
 sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000501";
@@ -218,11 +210,20 @@ bool ValidateCanonicalLoweringAndDispatch() {
                         dispatched.logical_property_count == 0,
                     "lowered payload did not reach the canonical typed dispatch seam");
   passed &= Require(
-      !dispatched.api_result.ok &&
-          HasApiDiagnostic(
-              dispatched,
-              "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING"),
-      "structural lowering synthesized completion or bypassed the pending seam");
+      dispatched.optimizer_selected && dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published &&
+          dispatched.api_result.ok && dispatched.physical_node_count == 1 &&
+          dispatched.canonical_result_column_count == 2 &&
+          dispatched.canonical_result_row_count == 2 &&
+          dispatched.api_result.result_shape.rows.size() == 2 &&
+          dispatched.api_result.result_shape.rows[0].fields.size() == 2 &&
+          dispatched.api_result.result_shape.rows[0].fields[0].second
+                  .encoded_value == "1" &&
+          dispatched.api_result.result_shape.rows[1].fields[1].second
+                  .encoded_value == "b",
+      "structurally lowered literal VALUES did not complete the live spine");
   return passed;
 }
 

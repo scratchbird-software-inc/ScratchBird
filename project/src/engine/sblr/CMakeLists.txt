@@ -16,6 +16,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-003-V1
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_library(sb_qow_sblr_query_route_contract STATIC
+    canonical_query_execute.cpp
     sblr_dispatch.cpp
     sblr_engine_envelope.cpp
     sblr_opcode_registry.cpp
@@ -38,6 +39,7 @@ endif()
 
 add_library(sb_engine_sblr
   aggregates/sblr_aggregate_family_landing_zone.cpp
+  canonical_query_execute.cpp
   dispatch/sblr_family_dispatch_landing_zone.cpp
   operators/sblr_operator_family_landing_zone.cpp
   special_forms/sblr_special_form_family_landing_zone.cpp

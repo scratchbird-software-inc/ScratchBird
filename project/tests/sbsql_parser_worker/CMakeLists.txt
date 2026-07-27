@@ -103,6 +103,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-302;QOW-INTEGRATION-302-PROPERTY-BRIDGE;development_candidate"
   )
 
+  # QOW-CMAKE-INTEGRATION-306-211-LIVE-VALUES-V1
+  add_executable(qow_live_values_spine_test_v1
+    qow_live_values_spine.cpp)
+  target_compile_features(qow_live_values_spine_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_live_values_spine_test_v1 PRIVATE
+    sb_qow_sblr_query_route_contract
+  )
+  add_test(NAME qow_live_values_spine_v1
+    COMMAND qow_live_values_spine_test_v1)
+  set_tests_properties(qow_live_values_spine_v1 PROPERTIES
+    LABELS "qow_closure;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;development_candidate"
+  )
+
   # QOW-CMAKE-QRY-007-AGGREGATE-V1
   add_executable(qow_qry_007_aggregate_test_v1 qow_qry_007_aggregate.cpp)
   target_compile_features(qow_qry_007_aggregate_test_v1 PRIVATE cxx_std_20)

@@ -146,14 +146,19 @@ bool ValidateCanonicalDispatchSeam() {
                         result.logical_node_count == 1 &&
                         result.logical_property_count == 0,
                     "typed DAG did not populate the canonical logical graph");
-  passed &= Require(!result.api_result.ok,
-                    "QRY-003 synthesized query execution success");
   passed &= Require(
-      HasDispatchDiagnostic(
-          result, "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING") &&
-          HasApiDiagnostic(
-              result, "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING"),
-      "physical-dispatch seam diagnostic did not reach both result paths");
+      result.optimizer_selected && result.physical_dag_published &&
+          result.physical_dag_executed && result.runtime_actuals_attached &&
+          result.canonical_result_published && result.api_result.ok &&
+          result.physical_node_count == 1 &&
+          result.canonical_result_column_count == 1 &&
+          result.canonical_result_row_count == 1 &&
+          result.api_result.result_shape.rows.size() == 1 &&
+          result.api_result.result_shape.rows[0].fields.size() == 1 &&
+          result.api_result.result_shape.rows[0].fields[0].second.encoded_value ==
+              "1" &&
+          result.diagnostics.empty(),
+      "canonical literal VALUES did not traverse the physical/result spine");
   return passed;
 }
 
@@ -267,11 +272,14 @@ bool ValidateDecodePath() {
   passed &= Require(result.envelope_validated && result.accepted &&
                         result.dispatched_to_api,
                     "decoded canonical query did not reach the typed seam");
-  passed &= Require(!result.api_result.ok &&
-                        HasApiDiagnostic(
-                            result,
-                            "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING"),
-                    "decoded canonical query synthesized completion or lost its diagnostic");
+  passed &= Require(result.optimizer_selected &&
+                        result.physical_dag_published &&
+                        result.physical_dag_executed &&
+                        result.runtime_actuals_attached &&
+                        result.canonical_result_published &&
+                        result.api_result.ok &&
+                        result.canonical_result_row_count == 1,
+                    "decoded canonical VALUES query did not complete the live spine");
   return passed;
 }
 

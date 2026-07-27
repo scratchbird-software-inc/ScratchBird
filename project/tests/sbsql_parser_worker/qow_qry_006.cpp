@@ -217,11 +217,18 @@ bool ValidateComposableScalarLowering() {
           dispatched.optimizer_admission_stage_count == 8 &&
           dispatched.logical_node_count == 1 &&
           dispatched.logical_property_count == 0 &&
+          !dispatched.optimizer_selected &&
+          !dispatched.physical_dag_published &&
+          !dispatched.physical_dag_executed &&
+          !dispatched.runtime_actuals_attached &&
+          !dispatched.canonical_result_published &&
+          dispatched.physical_node_count == 0 &&
+          dispatched.canonical_result_bytes.empty() &&
           !dispatched.api_result.ok &&
           HasApiDiagnostic(
               dispatched,
-              "QOW-DIAG-RELATIONAL-PHYSICAL-DISPATCH-PENDING"),
-      "composed typed scalar records did not reach validated engine dispatch");
+              "QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1"),
+      "composed VALUES expressions did not fail closed before plan publication");
   return passed;
 }
 
