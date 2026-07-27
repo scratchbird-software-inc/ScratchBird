@@ -12,9 +12,12 @@
 #include "query/expression_api.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 
@@ -48,6 +51,24 @@ bool ParseInt64(const std::string& encoded, std::int64_t* value) {
   const auto [end, error] = std::from_chars(
       encoded.data(), encoded.data() + encoded.size(), *value);
   return error == std::errc{} && end == encoded.data() + encoded.size();
+}
+
+bool ParseReal64(const std::string& encoded, double* value) {
+  if (value == nullptr || encoded.empty()) return false;
+  const auto [end, error] = std::from_chars(
+      encoded.data(), encoded.data() + encoded.size(), *value,
+      std::chars_format::general);
+  return error == std::errc{} && end == encoded.data() + encoded.size() &&
+         std::isfinite(*value);
+}
+
+std::string FormatReal64(const double value) {
+  std::array<char, 64> encoded{};
+  const auto [end, error] = std::to_chars(
+      encoded.data(), encoded.data() + encoded.size(), value,
+      std::chars_format::general, std::numeric_limits<double>::max_digits10);
+  if (error != std::errc{}) return {};
+  return std::string(encoded.data(), end);
 }
 
 bool TruthFromValue(const api::EngineTypedValue& value,
@@ -191,6 +212,16 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
       }
       switch (*expression.literal_kind) {
         case api::RelationalLiteralKind::kNumeric: {
+          if (expected_type.has_value() && *expected_type == "real64") {
+            double decoded = 0.0;
+            if (!ParseReal64(*expression.literal_or_parameter_ref,
+                             &decoded)) {
+              *refusal_detail =
+                  "numeric literal is outside exact real64 admission";
+              return leave(false);
+            }
+            return finish_type("real64");
+          }
           std::int64_t decoded = 0;
           if (!ParseInt64(*expression.literal_or_parameter_ref, &decoded)) {
             *refusal_detail = "numeric literal is outside exact int64 admission";
@@ -513,6 +544,15 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     literal.setState(api::EngineValueState::value);
     switch (*expression.literal_kind) {
       case api::RelationalLiteralKind::kNumeric: {
+        if (inferred_type == "real64") {
+          double decoded = 0.0;
+          if (!ParseReal64(*expression.literal_or_parameter_ref, &decoded)) {
+            return false;
+          }
+          literal.encoded_value = FormatReal64(decoded);
+          if (literal.encoded_value.empty()) return false;
+          break;
+        }
         std::int64_t decoded = 0;
         if (!ParseInt64(*expression.literal_or_parameter_ref, &decoded)) return false;
         literal.encoded_value = std::to_string(decoded);

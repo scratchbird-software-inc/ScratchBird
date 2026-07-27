@@ -151,6 +151,7 @@ struct PreparedGlobalAggregateRoot {
   bool count_star{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
+  std::vector<api::EngineTypedValue> direct_arguments;
   std::vector<exec::CanonicalDescriptorOrderTerm> aggregate_order_terms;
   std::string aggregate_separator{","};
   exec::CanonicalListaggOverflowMode listagg_overflow_mode =
@@ -246,9 +247,29 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_ordered_single_collection = is_array_agg || is_json_agg;
   const bool is_ordered_collection =
       is_ordered_single_collection || is_json_object_agg;
+  const bool is_hypothetical_rank =
+      function == exec::CanonicalAggregateFunction::rank;
+  const bool is_hypothetical_dense_rank =
+      function == exec::CanonicalAggregateFunction::dense_rank;
+  const bool is_hypothetical_percent_rank =
+      function == exec::CanonicalAggregateFunction::percent_rank;
+  const bool is_hypothetical_cume_dist =
+      function == exec::CanonicalAggregateFunction::cume_dist;
+  const bool is_hypothetical =
+      is_hypothetical_rank || is_hypothetical_dense_rank ||
+      is_hypothetical_percent_rank || is_hypothetical_cume_dist;
+  const bool is_mode = function == exec::CanonicalAggregateFunction::mode;
+  const bool is_percentile_cont =
+      function == exec::CanonicalAggregateFunction::percentile_cont;
+  const bool is_percentile_disc =
+      function == exec::CanonicalAggregateFunction::percentile_disc;
+  const bool is_exact_percentile = is_percentile_cont || is_percentile_disc;
+  const bool is_ordered_set =
+      is_hypothetical || is_mode || is_exact_percentile;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
-       !is_string_agg && !is_listagg_profile && !is_ordered_collection) ||
+       !is_string_agg && !is_listagg_profile && !is_ordered_collection &&
+       !is_ordered_set) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -304,6 +325,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     expected_argument_count = 4;
   } else if (is_listagg_ordered) {
     expected_argument_count = 3;
+  } else if (is_hypothetical || is_exact_percentile) {
+    expected_argument_count = 2;
   } else if (is_json_object_agg || is_ordered_string_agg) {
     expected_argument_count = 3;
   } else if (is_pair_statistical || is_string_agg ||
@@ -339,6 +362,64 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           dag.expressions, [&](const auto& candidate) {
             return candidate.expression_id == child_expression_id;
           });
+      if ((is_hypothetical || is_exact_percentile) &&
+          argument_ordinal == 0) {
+        const auto direct_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return argument != dag.expressions.end() &&
+                     candidate.descriptor_id == argument->result_descriptor_id;
+            });
+        const bool exact_literal =
+            argument != dag.expressions.end() &&
+            argument->expression_kind ==
+                api::RelationalExpressionKind::kLiteral &&
+            argument->child_expression_ids.empty() &&
+            !argument->bound_name_uuid.has_value() &&
+            !argument->function_uuid.has_value() &&
+            argument->literal_kind == api::RelationalLiteralKind::kNumeric &&
+            !argument->operator_name.has_value() &&
+            argument->literal_or_parameter_ref.has_value() &&
+            direct_descriptor != dag.descriptors.end() &&
+            direct_descriptor->nullability ==
+                api::RelationalNullability::kNonNull &&
+            !direct_descriptor->collation_uuid.has_value() &&
+            !direct_descriptor->timezone_profile_id.has_value() &&
+            !direct_descriptor->width.has_value() &&
+            !direct_descriptor->precision.has_value() &&
+            !direct_descriptor->scale.has_value() &&
+            argument->result_descriptor_id !=
+                root.output_descriptor_ids.front() &&
+            std::ranges::find(input_node.output_descriptor_ids,
+                              argument->result_descriptor_id) ==
+                input_node.output_descriptor_ids.end();
+        if (!exact_literal) {
+          result.detail =
+              "global ordered-set direct argument must be one standalone, "
+              "unqualified, non-NULL canonical numeric literal";
+          return result;
+        }
+        api::EngineTypedValue direct_argument;
+        std::string direct_detail;
+        const std::string_view direct_type =
+            is_exact_percentile ? std::string_view("real64")
+                                : std::string_view("int64");
+        if (!expression_runtime.Evaluate(child_expression_id, direct_type,
+                                         &direct_argument, &direct_detail) ||
+            direct_argument.state != api::EngineValueState::value ||
+            direct_argument.is_null ||
+            direct_argument.descriptor.canonical_type_name != direct_type) {
+          result.detail =
+              is_exact_percentile
+                  ? "global exact percentile fraction must be a canonical "
+                    "real64 literal"
+                  : "global hypothetical-set direct argument must be a "
+                    "canonical int64 literal";
+          if (!direct_detail.empty()) result.detail += ": " + direct_detail;
+          return result;
+        }
+        result.direct_arguments.push_back(std::move(direct_argument));
+        continue;
+      }
       if ((is_string_agg || is_listagg_profile) && argument_ordinal == 1) {
         const auto separator_descriptor = std::ranges::find_if(
             dag.descriptors, [&](const auto& candidate) {
@@ -525,12 +606,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           (is_ordered_string_agg && argument_ordinal == 2) ||
           (is_listagg_profile && argument_ordinal == 2) ||
           (is_ordered_single_collection && argument_ordinal == 1) ||
-          (is_json_object_agg && argument_ordinal == 2);
+          (is_json_object_agg && argument_ordinal == 2) ||
+          (is_mode && argument_ordinal == 0) ||
+          ((is_hypothetical || is_exact_percentile) &&
+           argument_ordinal == 1);
       if (is_order_argument) {
         if (input_type != "int64") {
-          result.detail =
-              "global aggregate order input must be a "
-              "canonical int64 column";
+          result.detail = is_ordered_set
+                              ? "global ordered-set value/order input must be "
+                                "a canonical int64 column"
+                              : "global aggregate order input must be a "
+                                "canonical int64 column";
           return result;
         }
         exec::CanonicalDescriptorOrderTerm order_term;
@@ -547,6 +633,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           return result;
         }
         result.aggregate_order_terms.push_back(std::move(order_term));
+        if (is_ordered_set) {
+          result.value_columns.push_back(value_column);
+          result.value_descriptor_ids.push_back(
+              argument->result_descriptor_id);
+        }
         continue;
       }
       result.value_columns.push_back(value_column);
@@ -610,7 +701,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool result_nullable =
       is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
       (is_pair_statistical && !is_regr_count) || is_string_agg ||
-      is_listagg_profile || is_ordered_collection;
+      is_listagg_profile || is_ordered_collection || is_mode ||
+      is_exact_percentile;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -660,6 +752,22 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       result.detail =
           "global JSON_OBJECT_AGG result must be an unqualified nullable "
           "json";
+    } else if (is_mode) {
+      result.detail =
+          "global MODE result must be an unqualified nullable int64";
+    } else if (is_exact_percentile) {
+      result.detail =
+          "global exact percentile result must be an unqualified nullable "
+          "real64";
+    } else if (is_hypothetical_rank || is_hypothetical_dense_rank) {
+      result.detail =
+          "global hypothetical RANK/DENSE_RANK result must be an unqualified "
+          "non-null int64";
+    } else if (is_hypothetical_percent_rank ||
+               is_hypothetical_cume_dist) {
+      result.detail =
+          "global hypothetical PERCENT_RANK/CUME_DIST result must be an "
+          "unqualified non-null real64";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -680,7 +788,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   } else if (is_string_agg || is_listagg_profile) {
     engine_descriptor.canonical_type_name = "text";
   } else if (is_avg || is_statistical ||
-             (is_pair_statistical && !is_regr_count)) {
+             (is_pair_statistical && !is_regr_count) ||
+             is_exact_percentile || is_hypothetical_percent_rank ||
+             is_hypothetical_cume_dist) {
     engine_descriptor.canonical_type_name = "real64";
   } else if (is_boolean) {
     engine_descriptor.canonical_type_name = "boolean";
@@ -2886,13 +2996,48 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       });
   const bool pair_statistical_expression =
       pair_statistical_profile != kPairStatisticalExpressionProfiles.end();
+  struct OrderedSetExpressionProfile {
+    std::string_view semantic_variant;
+    exec::CanonicalAggregateFunction function;
+    std::string_view transformation_id;
+  };
+  static constexpr std::array<OrderedSetExpressionProfile, 7>
+      kOrderedSetExpressionProfiles = {{
+          {"aggregate.global-rank-hypothetical-expression.v1",
+           exec::CanonicalAggregateFunction::rank,
+           "canonical.aggregate.global-rank-hypothetical-expression.v1"},
+          {"aggregate.global-dense-rank-hypothetical-expression.v1",
+           exec::CanonicalAggregateFunction::dense_rank,
+           "canonical.aggregate.global-dense-rank-hypothetical-expression.v1"},
+          {"aggregate.global-percent-rank-hypothetical-expression.v1",
+           exec::CanonicalAggregateFunction::percent_rank,
+           "canonical.aggregate.global-percent-rank-hypothetical-expression.v1"},
+          {"aggregate.global-cume-dist-hypothetical-expression.v1",
+           exec::CanonicalAggregateFunction::cume_dist,
+           "canonical.aggregate.global-cume-dist-hypothetical-expression.v1"},
+          {"aggregate.global-mode-ordered-expression.v1",
+           exec::CanonicalAggregateFunction::mode,
+           "canonical.aggregate.global-mode-ordered-expression.v1"},
+          {"aggregate.global-percentile-cont-ordered-expression.v1",
+           exec::CanonicalAggregateFunction::percentile_cont,
+           "canonical.aggregate.global-percentile-cont-ordered-expression.v1"},
+          {"aggregate.global-percentile-disc-ordered-expression.v1",
+           exec::CanonicalAggregateFunction::percentile_disc,
+           "canonical.aggregate.global-percentile-disc-ordered-expression.v1"},
+      }};
+  const auto ordered_set_profile = std::ranges::find_if(
+      kOrderedSetExpressionProfiles, [&](const auto& profile) {
+        return root->semantic_variant_id == profile.semantic_variant;
+      });
+  const bool ordered_set_expression =
+      ordered_set_profile != kOrderedSetExpressionProfiles.end();
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
       !string_agg_expression && !listagg_expression &&
       !ordered_collection_expression &&
       !statistical_expression &&
-      !pair_statistical_expression) {
+      !pair_statistical_expression && !ordered_set_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -2944,6 +3089,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (pair_statistical_expression) {
     aggregate_function = pair_statistical_profile->function;
+  }
+  if (ordered_set_expression) {
+    aggregate_function = ordered_set_profile->function;
   }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
@@ -3008,8 +3156,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const bool pair_real_result =
       pair_statistical_expression &&
       aggregate_function != exec::CanonicalAggregateFunction::regr_count;
+  const bool ordered_set_real_result =
+      aggregate_function == exec::CanonicalAggregateFunction::percent_rank ||
+      aggregate_function == exec::CanonicalAggregateFunction::cume_dist ||
+      aggregate_function == exec::CanonicalAggregateFunction::percentile_cont ||
+      aggregate_function == exec::CanonicalAggregateFunction::percentile_disc;
   std::uint64_t aggregate_result_memory =
-      (avg_expression || statistical_expression || pair_real_result)
+      (avg_expression || statistical_expression || pair_real_result ||
+       ordered_set_real_result)
           ? kRealAggregateResultMemory
           : ((bool_and_expression || bool_or_expression || every_expression)
                  ? kBooleanAggregateResultMemory
@@ -3058,6 +3212,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                     "live ordered collection aggregate result size "
                     "overflowed");
+    }
+  }
+  if (ordered_set_expression) {
+    std::uint64_t ordered_state_memory = 0;
+    if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
+                         &ordered_state_memory) ||
+        !CheckedAdd(aggregate_result_memory, ordered_state_memory,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live ordered-set aggregate state size overflowed");
     }
   }
   if (!CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
@@ -3142,6 +3306,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (pair_statistical_expression) {
     aggregate_transformation_id =
         std::string(pair_statistical_profile->transformation_id);
+  } else if (ordered_set_expression) {
+    aggregate_transformation_id =
+        std::string(ordered_set_profile->transformation_id);
   } else {
     aggregate_transformation_id =
         "canonical.aggregate.global-variance-samp-expression.v1";
@@ -3204,6 +3371,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        count_star = prepared_root.count_star,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
+       direct_arguments = prepared_root.direct_arguments,
        aggregate_order_terms = prepared_root.aggregate_order_terms,
        aggregate_separator = prepared_root.aggregate_separator,
        listagg_overflow_mode = prepared_root.listagg_overflow_mode,
@@ -3262,6 +3430,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.value_columns = value_columns;
           aggregate_request.value_expression_descriptor_ids =
               value_descriptor_ids;
+          aggregate_request.direct_arguments = direct_arguments;
           aggregate_request.result_column = result_column;
           aggregate_request.aggregate_order_terms = aggregate_order_terms;
           aggregate_request.aggregate_separator = aggregate_separator;

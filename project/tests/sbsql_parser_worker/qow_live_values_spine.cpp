@@ -1142,6 +1142,182 @@ GlobalPairStatisticalAggregateExpressionValuesEnvelope(
   return envelope;
 }
 
+struct OrderedSetAggregateProfile {
+  std::string_view name;
+  std::string_view operation;
+  std::string_view semantic_variant;
+  std::string_view uuid_family;
+  std::string_view function_uuid;
+  std::string_view output_name;
+  double expected;
+  bool direct_argument;
+  bool percentile_fraction;
+  bool real_result;
+  bool nullable_result;
+};
+
+constexpr OrderedSetAggregateProfile kOrderedSetAggregateProfiles[] = {
+    {"RANK",
+     "qow.live.values.rank-hypothetical-expression",
+     "aggregate.global-rank-hypothetical-expression.v1",
+     "b0",
+     "019dffbb-f000-7336-ab53-fef5316220d7",
+     "rank_value",
+     4.0,
+     true,
+     false,
+     false,
+     false},
+    {"DENSE_RANK",
+     "qow.live.values.dense-rank-hypothetical-expression",
+     "aggregate.global-dense-rank-hypothetical-expression.v1",
+     "b1",
+     "019dffbb-f000-7bd3-a731-1734581eb8ce",
+     "dense_rank_value",
+     3.0,
+     true,
+     false,
+     false,
+     false},
+    {"PERCENT_RANK",
+     "qow.live.values.percent-rank-hypothetical-expression",
+     "aggregate.global-percent-rank-hypothetical-expression.v1",
+     "b2",
+     "019dffbb-f000-7817-911f-9f8b2e66ebec",
+     "percent_rank_value",
+     0.6,
+     true,
+     false,
+     true,
+     false},
+    {"CUME_DIST",
+     "qow.live.values.cume-dist-hypothetical-expression",
+     "aggregate.global-cume-dist-hypothetical-expression.v1",
+     "b3",
+     "019dffbb-f000-7244-89fd-8fa66ae930d5",
+     "cume_dist_value",
+     2.0 / 3.0,
+     true,
+     false,
+     true,
+     false},
+    {"MODE",
+     "qow.live.values.mode-ordered-expression",
+     "aggregate.global-mode-ordered-expression.v1",
+     "b4",
+     "019dffbb-f000-7150-9be6-bcf97f8facf5",
+     "mode_value",
+     20.0,
+     false,
+     false,
+     false,
+     true},
+    {"PERCENTILE_CONT",
+     "qow.live.values.percentile-cont-ordered-expression",
+     "aggregate.global-percentile-cont-ordered-expression.v1",
+     "b5",
+     "019dffbb-f000-7cfd-83dd-15435fe55bf5",
+     "percentile_cont_value",
+     20.0,
+     true,
+     true,
+     true,
+     true},
+    {"PERCENTILE_DISC",
+     "qow.live.values.percentile-disc-ordered-expression",
+     "aggregate.global-percentile-disc-ordered-expression.v1",
+     "b6",
+     "019dffbb-f000-7081-b766-7db818a89c04",
+     "percentile_disc_value",
+     20.0,
+     true,
+     true,
+     true,
+     true},
+};
+
+std::string OrderedSetProfileUuid(const std::string_view group,
+                                  const std::string_view family,
+                                  const std::string_view ordinal) {
+  return "019f0000-0000-" + std::string(group) + "-8000-00000000" +
+         std::string(family) + std::string(ordinal);
+}
+
+sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
+    const OrderedSetAggregateProfile& profile) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", std::string(profile.operation));
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  const auto tree_uuid =
+      OrderedSetProfileUuid("7000", profile.uuid_family, "00");
+  const auto input_descriptor =
+      OrderedSetProfileUuid("7300", profile.uuid_family, "01");
+  const auto input_type =
+      OrderedSetProfileUuid("7400", profile.uuid_family, "02");
+  const auto direct_descriptor =
+      OrderedSetProfileUuid("7300", profile.uuid_family, "03");
+  const auto direct_type =
+      OrderedSetProfileUuid("7400", profile.uuid_family, "04");
+  const auto result_descriptor =
+      OrderedSetProfileUuid("7300", profile.uuid_family, "05");
+  const auto result_type =
+      OrderedSetProfileUuid("7400", profile.uuid_family, "06");
+  const auto bound_name =
+      OrderedSetProfileUuid("7500", profile.uuid_family, "07");
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       input_descriptor + "|" + input_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       result_descriptor + "|" + result_type +
+           (profile.nullable_result ? "|2|-|-|-|-|-" : "|1|-|-|-|-|-")},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3130"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|3330"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "6",
+       "3|-|1|-|" + bound_name + "|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_values_row_v1", "5", "5"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4,5"},
+      {"relational_node_v1", "2", "5|0|1|3|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5|-|-|-"},
+  };
+  if (profile.direct_argument) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "2",
+         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "7",
+         profile.percentile_fraction ? "1|-|2|-|-|1|-|302e3235"
+                                     : "1|-|2|-|-|1|-|3235"});
+  }
+  envelope.operands.push_back(
+      {"relational_expression_v1", "8",
+       "4|" + std::string(profile.direct_argument ? "7,6" : "6") +
+           "|3|" + std::string(profile.function_uuid) + "|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_output_v1", "2",
+       "2|8|3|1|0|" + EncodeHex(profile.output_name)});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "2",
+       EncodeHex(profile.semantic_variant) + "|8|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope GlobalStringAggExpressionValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -2945,6 +3121,200 @@ bool ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() {
   return passed;
 }
 
+bool ValidateGlobalOrderedSetAggregateValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    const auto first = sblr::DispatchSblrOperation(
+        {Context(), GlobalOrderedSetAggregateValuesEnvelope(profile), {}});
+    const auto repeated = sblr::DispatchSblrOperation(
+        {Context(), GlobalOrderedSetAggregateValuesEnvelope(profile), {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed &&
+            first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 2 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 2 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1,
+        "VALUES global " + std::string(profile.name) +
+            " ordered-set expression did not traverse its selected physical "
+            "DAG");
+
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    bool typed_result =
+        columns.size() == 1 && rows.size() == 1 &&
+        columns[0].canonical_type_name ==
+            (profile.real_result ? "real64" : "int64") &&
+        columns[0].encoded_descriptor.find(
+            profile.nullable_result ? "nullability=nullable"
+                                    : "nullability=non_null") !=
+            std::string::npos &&
+        rows[0].fields.size() == 1 &&
+        rows[0].fields[0].first == profile.output_name &&
+        rows[0].fields[0].second.state == api::EngineValueState::value &&
+        !rows[0].fields[0].second.is_null;
+    if (typed_result && profile.real_result) {
+      const auto& encoded = rows[0].fields[0].second.encoded_value;
+      char* end = nullptr;
+      const double observed = std::strtod(encoded.c_str(), &end);
+      const double delta = observed - profile.expected;
+      typed_result = end == encoded.c_str() + encoded.size() &&
+                     delta >= -1e-12 && delta <= 1e-12;
+    } else if (typed_result) {
+      typed_result = rows[0].fields[0].second.encoded_value ==
+                     std::to_string(
+                         static_cast<std::int64_t>(profile.expected));
+    }
+    passed &= Require(
+        typed_result,
+        "global " + std::string(profile.name) +
+            " ordered-set expression did not publish its exact typed result");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "identical global " + std::string(profile.name) +
+            " ordered-set input changed canonical plan/result bytes");
+  }
+  return passed;
+}
+
+bool ValidateGlobalOrderedSetAggregateRefusalIsAtomic() {
+  bool passed = true;
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope,
+                                     const std::string_view diagnostic_id) {
+    const auto result =
+        sblr::DispatchSblrOperation({Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, diagnostic_id);
+  };
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    auto function_drift = GlobalOrderedSetAggregateValuesEnvelope(profile);
+    auto result_nullability_drift =
+        GlobalOrderedSetAggregateValuesEnvelope(profile);
+    auto non_integer_input = GlobalOrderedSetAggregateValuesEnvelope(profile);
+    auto non_identifier_order =
+        GlobalOrderedSetAggregateValuesEnvelope(profile);
+    auto arity_drift = GlobalOrderedSetAggregateValuesEnvelope(profile);
+    for (auto& operand : function_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "8") {
+        operand.value =
+            "4|" + std::string(profile.direct_argument ? "7,6" : "6") +
+            "|3|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+      }
+    }
+    for (auto& operand : result_nullability_drift.operands) {
+      if (operand.type == "relational_descriptor_v1" &&
+          operand.name == "3") {
+        operand.value =
+            OrderedSetProfileUuid("7300", profile.uuid_family, "05") + "|" +
+            OrderedSetProfileUuid("7400", profile.uuid_family, "06") +
+            (profile.nullable_result ? "|1|-|-|-|-|-" : "|2|-|-|-|-|-");
+      }
+    }
+    for (auto& operand : non_integer_input.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "1" || operand.name == "2" ||
+           operand.name == "3" || operand.name == "4" ||
+           operand.name == "5")) {
+        const std::string encoded =
+            operand.name == "1"   ? "3130"
+            : operand.name == "2" ? "3230"
+            : operand.name == "3" ? "3230"
+            : operand.name == "4" ? "3330"
+                                    : "3430";
+        operand.value = "1|-|1|-|-|2|-|" + encoded;
+      }
+    }
+    for (auto& operand : non_identifier_order.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "6") {
+        operand.value = "1|-|1|-|-|1|-|3230";
+      }
+    }
+    for (auto& operand : arity_drift.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "8") {
+        operand.value =
+            "4|" + std::string(profile.direct_argument ? "7" : "6,6") +
+            "|3|" + std::string(profile.function_uuid) + "|-|-|-|-";
+      }
+    }
+    bool profile_refused =
+        refused_atomically(
+            std::move(function_drift),
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1") &&
+        refused_atomically(
+            std::move(result_nullability_drift),
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1") &&
+        refused_atomically(
+            std::move(non_integer_input),
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1") &&
+        refused_atomically(
+            std::move(non_identifier_order),
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1") &&
+        refused_atomically(
+            std::move(arity_drift),
+            "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+    if (profile.direct_argument) {
+      auto direct_literal_drift =
+          GlobalOrderedSetAggregateValuesEnvelope(profile);
+      for (auto& operand : direct_literal_drift.operands) {
+        if (operand.type == "relational_descriptor_v1" &&
+            operand.name == "2") {
+          operand.value =
+              OrderedSetProfileUuid("7300", profile.uuid_family, "03") +
+              "|" +
+              OrderedSetProfileUuid("7400", profile.uuid_family, "04") +
+              "|2|-|-|-|-|-";
+        }
+      }
+      profile_refused &= refused_atomically(
+          std::move(direct_literal_drift),
+          "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+    }
+    passed &= Require(
+        profile_refused,
+        "identity-, descriptor-, order-, direct-argument-, input-, or "
+        "arity-drifted global " +
+            std::string(profile.name) +
+            " ordered-set expression published evidence");
+  }
+
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    if (!profile.percentile_fraction) continue;
+    auto invalid_fraction = GlobalOrderedSetAggregateValuesEnvelope(profile);
+    for (auto& operand : invalid_fraction.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          operand.name == "7") {
+        operand.value = "1|-|2|-|-|1|-|312e35";
+      }
+    }
+    passed &= Require(
+        refused_atomically(std::move(invalid_fraction),
+                           "QOW-DIAG-QRY-011-REGISTRY-DIRECT-V1"),
+        "out-of-range global " + std::string(profile.name) +
+            " fraction did not preserve shared-runtime atomic refusal");
+  }
+  return passed;
+}
+
 bool ValidateGlobalStringAggExpressionValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), GlobalStringAggExpressionValuesEnvelope(), {}});
@@ -3851,6 +4221,8 @@ int main() {
                       ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() &&
                       ValidateGlobalPairStatisticalAggregateExpressionValuesSpine() &&
                       ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() &&
+                      ValidateGlobalOrderedSetAggregateValuesSpine() &&
+                      ValidateGlobalOrderedSetAggregateRefusalIsAtomic() &&
                       ValidateGlobalStringAggExpressionValuesSpine() &&
                       ValidateGlobalStringAggExpressionRefusalIsAtomic() &&
                       ValidateOrderedStringAggExpressionValuesSpine() &&
