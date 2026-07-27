@@ -1174,6 +1174,35 @@ struct CanonicalAggregateRuntimeResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalAggregateStateSpillRequest {
+  CanonicalAggregateRuntimeRequest aggregate_request;
+  std::filesystem::path spill_root;
+  std::string spill_owner_uuid;
+  std::uint64_t runtime_generation = 0;
+  std::uint64_t reopen_runtime_generation = 0;
+  std::uint64_t memory_quota_bytes = 0;
+  std::size_t maximum_serialized_state_bytes = 16777216;
+  std::size_t maximum_spill_record_count = 16777216;
+  bool cancellation_requested = false;
+  bool cleanup_after_cancellation = true;
+  bool restart_recovery_proof_available = true;
+};
+
+struct CanonicalAggregateStateSpillResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  CanonicalAggregateRuntimeResult aggregate_result;
+  std::size_t serialized_state_bytes = 0;
+  std::size_t spilled_state_record_count = 0;
+  bool state_serialized = false;
+  bool spilled = false;
+  bool spill_reopened = false;
+  bool state_restored = false;
+  bool restored_result_equivalent = false;
+  bool cleanup_proven = false;
+  bool cancellation_observed = false;
+  std::vector<std::string> spill_evidence;
+};
+
 struct CanonicalAggregateMovingRuntimeRequest {
   CanonicalAggregateRuntimeRequest aggregate_request;
   std::vector<std::vector<std::size_t>> effective_frame_row_indices;
@@ -1609,6 +1638,8 @@ std::vector<CanonicalAggregateRegistryEntry>
 CanonicalAggregateRuntimeRegistryV1();
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(

@@ -776,6 +776,8 @@ bool ValidateCanonicalAggregateRegistry() {
 
 }  // namespace
 
+#ifndef QOW_QRY_011_REGISTRY_FIXTURE_ONLY
 int main() {
   return ValidateCanonicalAggregateRegistry() ? EXIT_SUCCESS : EXIT_FAILURE;
 }
+#endif

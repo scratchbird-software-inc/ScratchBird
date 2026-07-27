@@ -8,7 +8,11 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "temp_spill_executor.hpp"
+
 #include <algorithm>
+#include <charconv>
+#include <cctype>
 #include <cmath>
 #include <iomanip>
 #include <iterator>
@@ -1407,6 +1411,559 @@ std::string AggregateDistinctKey(const std::vector<EngineTypedValue>& values) {
   return key;
 }
 
+struct BoundAggregateTransition {
+  std::size_t input_row = 0;
+  std::vector<EngineTypedValue> values;
+};
+
+struct PreparedAggregateTransitions {
+  std::vector<BoundAggregateTransition> transitions;
+  std::size_t input_row_count = 0;
+  std::size_t filtered_row_count = 0;
+  std::size_t distinct_tuple_count = 0;
+  std::size_t order_comparison_count = 0;
+  bool aggregate_order_applied = false;
+};
+
+bool PrepareCanonicalAggregateTransitions(
+    const CanonicalAggregateRuntimeRequest& request,
+    PreparedAggregateTransitions* prepared,
+    DescriptorRuntimeDiagnostic* diagnostic) {
+  using scratchbird::engine::internal_api::EnginePredicateConsumer;
+  using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
+  if (prepared == nullptr || diagnostic == nullptr) return false;
+  *prepared = {};
+  prepared->input_row_count = request.input_batch.rows.size();
+  prepared->transitions.reserve(request.input_batch.rows.size());
+  std::set<std::string> distinct_keys;
+  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+    bool passes = true;
+    if (request.filter_truth_values.has_value()) {
+      std::string detail;
+      if (!QowPredicateConsumerPassesV1(
+              (*request.filter_truth_values)[row],
+              EnginePredicateConsumer::filter, &passes, &detail)) {
+        *diagnostic = Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                              std::move(detail));
+        return false;
+      }
+    }
+    if (!passes) continue;
+    ++prepared->filtered_row_count;
+    std::vector<EngineTypedValue> values;
+    values.reserve(request.value_columns.size());
+    for (const auto column : request.value_columns) {
+      values.push_back(request.input_batch.rows[row].values[column]);
+    }
+    if (request.distinct) {
+      if (!distinct_keys.insert(AggregateDistinctKey(values)).second) continue;
+      if (distinct_keys.size() > request.maximum_distinct_value_count) {
+        *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "aggregate DISTINCT bound is exceeded");
+        return false;
+      }
+    }
+    prepared->transitions.push_back({row, std::move(values)});
+  }
+  prepared->distinct_tuple_count = request.distinct ? distinct_keys.size() : 0;
+
+  if (request.aggregate_order_terms.empty()) return true;
+  const auto row_count = prepared->transitions.size();
+  const auto term_count = request.aggregate_order_terms.size();
+  if (request.maximum_order_comparison_count == 0 ||
+      (row_count != 0 &&
+       row_count > std::numeric_limits<std::size_t>::max() / row_count) ||
+      (row_count * row_count != 0 &&
+       term_count > std::numeric_limits<std::size_t>::max() /
+                        (row_count * row_count)) ||
+      row_count * row_count * term_count >
+          request.maximum_order_comparison_count) {
+    *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "aggregate order comparison bound is exceeded");
+    return false;
+  }
+  std::vector<std::int8_t> comparisons(row_count * row_count, 0);
+  for (std::size_t left = 0; left < row_count; ++left) {
+    for (std::size_t right = left + 1; right < row_count; ++right) {
+      int comparison = 0;
+      for (const auto& term : request.aggregate_order_terms) {
+        const auto compared = CompareCanonicalDescriptorOrderValues(
+            request.input_batch.rows[prepared->transitions[left].input_row]
+                .values[term.column],
+            request.input_batch.rows[prepared->transitions[right].input_row]
+                .values[term.column],
+            term);
+        ++prepared->order_comparison_count;
+        if (!compared.diagnostic.ok) {
+          *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-ORDER-V1",
+                                compared.diagnostic.detail);
+          return false;
+        }
+        comparison = compared.comparison;
+        if (comparison != 0) break;
+      }
+      comparisons[left * row_count + right] =
+          static_cast<std::int8_t>(comparison);
+      comparisons[right * row_count + left] =
+          static_cast<std::int8_t>(-comparison);
+    }
+  }
+  std::vector<std::size_t> order(row_count);
+  std::iota(order.begin(), order.end(), 0);
+  std::stable_sort(order.begin(), order.end(), [&](const auto left,
+                                                    const auto right) {
+    return comparisons[left * row_count + right] < 0;
+  });
+  std::vector<BoundAggregateTransition> ordered;
+  ordered.reserve(row_count);
+  for (const auto index : order) {
+    ordered.push_back(std::move(prepared->transitions[index]));
+  }
+  prepared->transitions = std::move(ordered);
+  prepared->aggregate_order_applied = true;
+  return true;
+}
+
+bool BuildCanonicalAggregateCoreState(
+    const CanonicalAggregateRuntimeRequest& request,
+    const std::vector<BoundAggregateTransition>& transitions,
+    CanonicalAggregateCoreState* state,
+    DescriptorRuntimeDiagnostic* diagnostic) {
+  if (state == nullptr || diagnostic == nullptr) return false;
+  *state = {};
+  const auto state_within_bound = [&](const CanonicalAggregateCoreState& value) {
+    return EstimateCanonicalAggregateStateBytes(value) <=
+           request.maximum_state_bytes;
+  };
+  if (request.forced_strategy == CanonicalAggregateExecutionStrategy::serial) {
+    for (const auto& transition : transitions) {
+      if (!TransitionCanonicalAggregateCore(request.descriptor,
+                                            transition.values, state,
+                                            diagnostic)) {
+        return false;
+      }
+      if (!state_within_bound(*state)) {
+        *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                              "aggregate state byte bound is exceeded");
+        return false;
+      }
+    }
+    return true;
+  }
+
+  CanonicalAggregateCoreState left;
+  CanonicalAggregateCoreState right;
+  const auto split = transitions.size() / 2;
+  for (std::size_t index = 0; index < transitions.size(); ++index) {
+    auto* partition = index < split ? &left : &right;
+    if (!TransitionCanonicalAggregateCore(request.descriptor,
+                                          transitions[index].values,
+                                          partition, diagnostic)) {
+      return false;
+    }
+    if (!state_within_bound(*partition)) {
+      *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "aggregate partial-state byte bound is exceeded");
+      return false;
+    }
+  }
+  if (!MergeCanonicalAggregateCore(request.descriptor, state, left,
+                                   diagnostic) ||
+      !MergeCanonicalAggregateCore(request.descriptor, state, right,
+                                   diagnostic)) {
+    return false;
+  }
+  if (!state_within_bound(*state)) {
+    *diagnostic = Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "aggregate merged-state byte bound is exceeded");
+    return false;
+  }
+  return true;
+}
+
+using AggregateStateBytes = std::vector<std::uint8_t>;
+
+void AppendStateU64(AggregateStateBytes* bytes, const std::uint64_t value) {
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    bytes->push_back(static_cast<std::uint8_t>(value >> shift));
+  }
+}
+
+void AppendStateString(AggregateStateBytes* bytes,
+                       const std::string_view value) {
+  AppendStateU64(bytes, value.size());
+  bytes->insert(bytes->end(), value.begin(), value.end());
+}
+
+std::string Int128StateText(const __int128 value) {
+  if (value == 0) return "0";
+  const bool negative = value < 0;
+  unsigned __int128 magnitude = negative
+                                    ? static_cast<unsigned __int128>(
+                                          -(value + 1)) + 1
+                                    : static_cast<unsigned __int128>(value);
+  std::string text;
+  while (magnitude != 0) {
+    text.push_back(static_cast<char>('0' + magnitude % 10));
+    magnitude /= 10;
+  }
+  if (negative) text.push_back('-');
+  std::reverse(text.begin(), text.end());
+  return text;
+}
+
+std::string LongDoubleStateText(const long double value) {
+  std::ostringstream stream;
+  stream << std::scientific
+         << std::setprecision(std::numeric_limits<long double>::max_digits10)
+         << value;
+  return stream.str();
+}
+
+void AppendStateValue(AggregateStateBytes* bytes,
+                      const EngineTypedValue& value) {
+  AppendStateString(bytes, value.descriptor.descriptor_uuid.canonical);
+  AppendStateString(bytes, value.descriptor.descriptor_kind);
+  AppendStateString(bytes, value.descriptor.canonical_type_name);
+  AppendStateString(bytes, value.descriptor.encoded_descriptor);
+  AppendStateString(bytes, value.encoded_value);
+  AppendStateU64(bytes, value.binary_value.size());
+  bytes->insert(bytes->end(), value.binary_value.begin(),
+                value.binary_value.end());
+  bytes->push_back(value.is_null ? 1 : 0);
+  bytes->push_back(static_cast<std::uint8_t>(value.state));
+}
+
+bool SerializeCanonicalAggregateCoreState(
+    const CanonicalAggregateRuntimeRequest& request,
+    const CanonicalAggregateCoreState& state,
+    const std::size_t maximum_bytes,
+    AggregateStateBytes* bytes) {
+  if (bytes == nullptr || maximum_bytes == 0) return false;
+  bytes->clear();
+  AppendStateString(bytes, "scratchbird.aggregate-state.v1");
+  AppendStateU64(bytes, request.descriptor.abi_version);
+  AppendStateU64(bytes,
+                 static_cast<std::uint8_t>(request.descriptor.function));
+  AppendStateString(bytes, request.descriptor.builtin_id);
+  AppendStateString(bytes, request.descriptor.function_uuid);
+  bytes->push_back(request.descriptor.count_star ? 1 : 0);
+  AppendStateU64(bytes,
+                 static_cast<std::uint8_t>(request.forced_strategy));
+  AppendStateU64(bytes, state.transition_count);
+  AppendStateU64(bytes, state.non_null_count);
+  AppendStateString(bytes, Int128StateText(state.int64_sum));
+  for (const auto value :
+       {state.real_sum, state.numeric_mean, state.numeric_m2,
+        state.pair_mean_x, state.pair_mean_y, state.pair_m2_x,
+        state.pair_m2_y, state.pair_comoment}) {
+    if (!std::isfinite(value)) return false;
+    AppendStateString(bytes, LongDoubleStateText(value));
+  }
+  bytes->push_back(state.saw_true ? 1 : 0);
+  bytes->push_back(state.saw_false ? 1 : 0);
+  bytes->push_back(state.extremum.has_value() ? 1 : 0);
+  if (state.extremum.has_value()) AppendStateValue(bytes, *state.extremum);
+  AppendStateU64(bytes, state.collection_values.size());
+  for (const auto& value : state.collection_values) {
+    AppendStateValue(bytes, value);
+  }
+  AppendStateU64(bytes, state.text_values.size());
+  for (const auto& value : state.text_values) AppendStateString(bytes, value);
+  AppendStateU64(bytes, state.json_object_values.size());
+  for (const auto& [key, value] : state.json_object_values) {
+    AppendStateString(bytes, key);
+    AppendStateString(bytes, value);
+  }
+  AppendStateU64(bytes, state.ordered_numeric_values.size());
+  for (const auto value : state.ordered_numeric_values) {
+    if (!std::isfinite(value)) return false;
+    AppendStateString(bytes, LongDoubleStateText(value));
+  }
+  AppendStateU64(bytes, state.approximate_distinct_values.size());
+  for (const auto& value : state.approximate_distinct_values) {
+    AppendStateString(bytes, value);
+  }
+  AppendStateU64(bytes, state.frequency_values.size());
+  for (const auto& [value, count] : state.frequency_values) {
+    AppendStateValue(bytes, value);
+    AppendStateU64(bytes, count);
+  }
+  return bytes->size() <= maximum_bytes;
+}
+
+class AggregateStateReader {
+ public:
+  AggregateStateReader(const AggregateStateBytes& bytes,
+                       const std::size_t maximum_bytes)
+      : bytes_(bytes), maximum_bytes_(maximum_bytes) {}
+
+  bool ReadU64(std::uint64_t* value) {
+    if (value == nullptr || Remaining() < 8) return false;
+    *value = 0;
+    for (unsigned shift = 0; shift < 64; shift += 8) {
+      *value |= static_cast<std::uint64_t>(bytes_[offset_++]) << shift;
+    }
+    return true;
+  }
+
+  bool ReadSize(std::size_t* value) {
+    std::uint64_t decoded = 0;
+    if (!ReadU64(&decoded) ||
+        decoded > std::numeric_limits<std::size_t>::max()) {
+      return false;
+    }
+    *value = static_cast<std::size_t>(decoded);
+    return true;
+  }
+
+  bool ReadString(std::string* value) {
+    std::size_t size = 0;
+    if (value == nullptr || !ReadSize(&size) || size > Remaining() ||
+        size > maximum_bytes_) {
+      return false;
+    }
+    value->assign(reinterpret_cast<const char*>(bytes_.data() + offset_),
+                  size);
+    offset_ += size;
+    return true;
+  }
+
+  bool ReadByte(std::uint8_t* value) {
+    if (value == nullptr || Remaining() == 0) return false;
+    *value = bytes_[offset_++];
+    return true;
+  }
+
+  bool ReadValue(EngineTypedValue* value) {
+    if (value == nullptr ||
+        !ReadString(&value->descriptor.descriptor_uuid.canonical) ||
+        !ReadString(&value->descriptor.descriptor_kind) ||
+        !ReadString(&value->descriptor.canonical_type_name) ||
+        !ReadString(&value->descriptor.encoded_descriptor) ||
+        !ReadString(&value->encoded_value)) {
+      return false;
+    }
+    std::size_t binary_size = 0;
+    if (!ReadSize(&binary_size) || binary_size > Remaining() ||
+        binary_size > maximum_bytes_) {
+      return false;
+    }
+    value->binary_value.assign(bytes_.begin() + offset_,
+                               bytes_.begin() + offset_ + binary_size);
+    offset_ += binary_size;
+    std::uint8_t is_null = 0;
+    std::uint8_t state = 0;
+    if (!ReadByte(&is_null) || is_null > 1 || !ReadByte(&state) ||
+        state > static_cast<std::uint8_t>(EngineValueState::protected_value)) {
+      return false;
+    }
+    value->is_null = is_null != 0;
+    value->state = static_cast<EngineValueState>(state);
+    return true;
+  }
+
+  std::size_t Remaining() const { return bytes_.size() - offset_; }
+
+ private:
+  const AggregateStateBytes& bytes_;
+  std::size_t maximum_bytes_ = 0;
+  std::size_t offset_ = 0;
+};
+
+bool ParseInt128StateText(const std::string_view text, __int128* value) {
+  if (value == nullptr || text.empty()) return false;
+  const bool negative = text.front() == '-';
+  std::size_t index = negative ? 1 : 0;
+  if (index == text.size()) return false;
+  const unsigned __int128 negative_limit =
+      static_cast<unsigned __int128>(1) << 127;
+  const unsigned __int128 limit =
+      negative ? negative_limit : negative_limit - 1;
+  unsigned __int128 magnitude = 0;
+  for (; index < text.size(); ++index) {
+    if (text[index] < '0' || text[index] > '9') return false;
+    const auto digit =
+        static_cast<unsigned __int128>(text[index] - '0');
+    if (magnitude > (limit - digit) / 10) return false;
+    magnitude = magnitude * 10 + digit;
+  }
+  if (!negative) {
+    *value = static_cast<__int128>(magnitude);
+  } else if (magnitude == negative_limit) {
+    *value = -static_cast<__int128>(magnitude - 1) - 1;
+  } else {
+    *value = -static_cast<__int128>(magnitude);
+  }
+  return true;
+}
+
+bool ParseLongDoubleStateText(const std::string& text, long double* value) {
+  if (value == nullptr || text.empty()) return false;
+  std::istringstream stream(text);
+  stream >> *value;
+  return stream && stream.peek() == std::char_traits<char>::eof() &&
+         std::isfinite(*value);
+}
+
+bool DeserializeCanonicalAggregateCoreState(
+    const CanonicalAggregateRuntimeRequest& request,
+    const AggregateStateBytes& bytes,
+    const std::size_t maximum_bytes,
+    CanonicalAggregateCoreState* state) {
+  if (state == nullptr || bytes.empty() || bytes.size() > maximum_bytes) {
+    return false;
+  }
+  *state = {};
+  AggregateStateReader reader(bytes, maximum_bytes);
+  std::string text;
+  std::uint64_t abi_version = 0;
+  std::uint64_t function = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  std::uint8_t count_star = 0;
+  std::uint64_t strategy = 0;
+  if (!reader.ReadString(&text) || text != "scratchbird.aggregate-state.v1" ||
+      !reader.ReadU64(&abi_version) ||
+      abi_version != request.descriptor.abi_version ||
+      !reader.ReadU64(&function) ||
+      function != static_cast<std::uint8_t>(request.descriptor.function) ||
+      !reader.ReadString(&builtin_id) ||
+      builtin_id != request.descriptor.builtin_id ||
+      !reader.ReadString(&function_uuid) ||
+      function_uuid != request.descriptor.function_uuid ||
+      !reader.ReadByte(&count_star) || count_star > 1 ||
+      (count_star != 0) != request.descriptor.count_star ||
+      !reader.ReadU64(&strategy) ||
+      strategy != static_cast<std::uint8_t>(request.forced_strategy) ||
+      !reader.ReadSize(&state->transition_count) ||
+      !reader.ReadSize(&state->non_null_count) ||
+      !reader.ReadString(&text) ||
+      !ParseInt128StateText(text, &state->int64_sum)) {
+    return false;
+  }
+  for (auto* value :
+       {&state->real_sum, &state->numeric_mean, &state->numeric_m2,
+        &state->pair_mean_x, &state->pair_mean_y, &state->pair_m2_x,
+        &state->pair_m2_y, &state->pair_comoment}) {
+    if (!reader.ReadString(&text) ||
+        !ParseLongDoubleStateText(text, value)) {
+      return false;
+    }
+  }
+  std::uint8_t saw_true = 0;
+  std::uint8_t saw_false = 0;
+  std::uint8_t has_extremum = 0;
+  if (!reader.ReadByte(&saw_true) || saw_true > 1 ||
+      !reader.ReadByte(&saw_false) || saw_false > 1 ||
+      !reader.ReadByte(&has_extremum) || has_extremum > 1) {
+    return false;
+  }
+  state->saw_true = saw_true != 0;
+  state->saw_false = saw_false != 0;
+  if (has_extremum != 0) {
+    EngineTypedValue extremum;
+    if (!reader.ReadValue(&extremum)) return false;
+    state->extremum = std::move(extremum);
+  }
+  const auto read_values = [&](std::vector<EngineTypedValue>* values) {
+    std::size_t count = 0;
+    if (!reader.ReadSize(&count) || count > maximum_bytes) return false;
+    values->reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      EngineTypedValue value;
+      if (!reader.ReadValue(&value)) return false;
+      values->push_back(std::move(value));
+    }
+    return true;
+  };
+  if (!read_values(&state->collection_values)) return false;
+  const auto read_strings = [&](std::vector<std::string>* values) {
+    std::size_t count = 0;
+    if (!reader.ReadSize(&count) || count > maximum_bytes) return false;
+    values->reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+      std::string value;
+      if (!reader.ReadString(&value)) return false;
+      values->push_back(std::move(value));
+    }
+    return true;
+  };
+  if (!read_strings(&state->text_values)) return false;
+  std::size_t json_count = 0;
+  if (!reader.ReadSize(&json_count) || json_count > maximum_bytes) return false;
+  state->json_object_values.reserve(json_count);
+  for (std::size_t index = 0; index < json_count; ++index) {
+    std::string key;
+    std::string value;
+    if (!reader.ReadString(&key) || !reader.ReadString(&value)) return false;
+    state->json_object_values.emplace_back(std::move(key), std::move(value));
+  }
+  std::size_t numeric_count = 0;
+  if (!reader.ReadSize(&numeric_count) || numeric_count > maximum_bytes) {
+    return false;
+  }
+  state->ordered_numeric_values.reserve(numeric_count);
+  for (std::size_t index = 0; index < numeric_count; ++index) {
+    long double value = 0.0L;
+    if (!reader.ReadString(&text) ||
+        !ParseLongDoubleStateText(text, &value)) {
+      return false;
+    }
+    state->ordered_numeric_values.push_back(value);
+  }
+  if (!read_strings(&state->approximate_distinct_values)) return false;
+  std::size_t frequency_count = 0;
+  if (!reader.ReadSize(&frequency_count) || frequency_count > maximum_bytes) {
+    return false;
+  }
+  state->frequency_values.reserve(frequency_count);
+  for (std::size_t index = 0; index < frequency_count; ++index) {
+    EngineTypedValue value;
+    std::size_t count = 0;
+    if (!reader.ReadValue(&value) || !reader.ReadSize(&count)) return false;
+    state->frequency_values.emplace_back(std::move(value), count);
+  }
+  return reader.Remaining() == 0 &&
+         state->non_null_count <= state->transition_count;
+}
+
+bool SameCanonicalAggregateRuntimeScalar(
+    const CanonicalAggregateRuntimeResult& left,
+    const CanonicalAggregateRuntimeResult& right) {
+  if (!left.diagnostic.ok || !right.diagnostic.ok ||
+      left.output_batch.columns.size() != 1 ||
+      right.output_batch.columns.size() != 1 ||
+      left.output_batch.rows.size() != 1 || right.output_batch.rows.size() != 1 ||
+      left.output_batch.rows.front().values.size() != 1 ||
+      right.output_batch.rows.front().values.size() != 1) {
+    return false;
+  }
+  return SameAggregateValueIdentity(
+             left.output_batch.rows.front().values.front(),
+             right.output_batch.rows.front().values.front()) &&
+         left.output_batch.columns.front().descriptor_id ==
+             right.output_batch.columns.front().descriptor_id &&
+         left.transition_count == right.transition_count &&
+         left.non_null_transition_count == right.non_null_transition_count &&
+         left.selected_plan_uuid == right.selected_plan_uuid &&
+         left.executed_physical_node_id == right.executed_physical_node_id &&
+         left.causal_counter_id == right.causal_counter_id;
+}
+
+bool IsCanonicalAggregateStateSpillUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto byte = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(byte) || std::isupper(byte)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 // QOW-SOURCE-QRY-007-AGGREGATE-V1
@@ -1552,9 +2109,6 @@ CanonicalAggregateRuntimeRegistryV1() {
 
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request) {
-  using scratchbird::engine::internal_api::EnginePredicateConsumer;
-  using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
-
   CanonicalAggregateRuntimeResult result;
   result.descriptor = request.descriptor;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
@@ -1762,143 +2316,23 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     return refuse(std::move(type_diagnostic));
   }
 
-  struct BoundAggregateTransition {
-    std::size_t input_row = 0;
-    std::vector<EngineTypedValue> values;
-  };
-  std::vector<BoundAggregateTransition> transitions;
-  transitions.reserve(request.input_batch.rows.size());
-  std::set<std::string> distinct_keys;
-  result.input_row_count = request.input_batch.rows.size();
-  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
-    bool passes = true;
-    if (request.filter_truth_values.has_value()) {
-      std::string detail;
-      if (!QowPredicateConsumerPassesV1(
-              (*request.filter_truth_values)[row],
-              EnginePredicateConsumer::filter, &passes, &detail)) {
-        return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
-                              std::move(detail)));
-      }
-    }
-    if (!passes) continue;
-    ++result.filtered_row_count;
-    std::vector<EngineTypedValue> values;
-    values.reserve(request.value_columns.size());
-    for (const auto column : request.value_columns) {
-      values.push_back(request.input_batch.rows[row].values[column]);
-    }
-    if (request.distinct) {
-      if (!distinct_keys.insert(AggregateDistinctKey(values)).second) continue;
-      if (distinct_keys.size() > request.maximum_distinct_value_count) {
-        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                              "aggregate DISTINCT bound is exceeded"));
-      }
-    }
-    transitions.push_back({row, std::move(values)});
+  PreparedAggregateTransitions prepared;
+  DescriptorRuntimeDiagnostic state_diagnostic;
+  if (!PrepareCanonicalAggregateTransitions(request, &prepared,
+                                            &state_diagnostic)) {
+    return refuse(std::move(state_diagnostic));
   }
-  result.distinct_tuple_count = request.distinct ? distinct_keys.size() : 0;
+  result.input_row_count = prepared.input_row_count;
+  result.filtered_row_count = prepared.filtered_row_count;
+  result.distinct_tuple_count = prepared.distinct_tuple_count;
+  result.order_comparison_count = prepared.order_comparison_count;
+  result.aggregate_order_applied = prepared.aggregate_order_applied;
   result.filter_applied_before_distinct = true;
 
-  if (!request.aggregate_order_terms.empty()) {
-    const auto row_count = transitions.size();
-    const auto term_count = request.aggregate_order_terms.size();
-    if (request.maximum_order_comparison_count == 0 ||
-        (row_count != 0 &&
-         row_count > std::numeric_limits<std::size_t>::max() / row_count) ||
-        (row_count * row_count != 0 &&
-         term_count > std::numeric_limits<std::size_t>::max() /
-                          (row_count * row_count)) ||
-        row_count * row_count * term_count >
-            request.maximum_order_comparison_count) {
-      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "aggregate order comparison bound is exceeded"));
-    }
-    std::vector<std::int8_t> comparisons(row_count * row_count, 0);
-    for (std::size_t left = 0; left < row_count; ++left) {
-      for (std::size_t right = left + 1; right < row_count; ++right) {
-        int comparison = 0;
-        for (const auto& term : request.aggregate_order_terms) {
-          const auto compared = CompareCanonicalDescriptorOrderValues(
-              request.input_batch.rows[transitions[left].input_row]
-                  .values[term.column],
-              request.input_batch.rows[transitions[right].input_row]
-                  .values[term.column],
-              term);
-          ++result.order_comparison_count;
-          if (!compared.diagnostic.ok) {
-            return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-ORDER-V1",
-                                  compared.diagnostic.detail));
-          }
-          comparison = compared.comparison;
-          if (comparison != 0) break;
-        }
-        comparisons[left * row_count + right] =
-            static_cast<std::int8_t>(comparison);
-        comparisons[right * row_count + left] =
-            static_cast<std::int8_t>(-comparison);
-      }
-    }
-    std::vector<std::size_t> order(row_count);
-    std::iota(order.begin(), order.end(), 0);
-    std::stable_sort(order.begin(), order.end(),
-                     [&](const auto left, const auto right) {
-                       return comparisons[left * row_count + right] < 0;
-                     });
-    std::vector<BoundAggregateTransition> ordered;
-    ordered.reserve(row_count);
-    for (const auto index : order) {
-      ordered.push_back(std::move(transitions[index]));
-    }
-    transitions = std::move(ordered);
-    result.aggregate_order_applied = true;
-  }
-
-  DescriptorRuntimeDiagnostic state_diagnostic;
   CanonicalAggregateCoreState state;
-  const auto state_within_bound = [&](const CanonicalAggregateCoreState& value) {
-    return EstimateCanonicalAggregateStateBytes(value) <=
-           request.maximum_state_bytes;
-  };
-  if (request.forced_strategy == CanonicalAggregateExecutionStrategy::serial) {
-    for (const auto& transition : transitions) {
-      if (!TransitionCanonicalAggregateCore(request.descriptor,
-                                            transition.values, &state,
-                                            &state_diagnostic)) {
-        return refuse(std::move(state_diagnostic));
-      }
-      if (!state_within_bound(state)) {
-        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                              "aggregate state byte bound is exceeded"));
-      }
-    }
-  } else {
-    CanonicalAggregateCoreState left;
-    CanonicalAggregateCoreState right;
-    const auto split = transitions.size() / 2;
-    for (std::size_t index = 0; index < transitions.size(); ++index) {
-      auto* partition = index < split ? &left : &right;
-      if (!TransitionCanonicalAggregateCore(request.descriptor,
-                                            transitions[index].values,
-                                            partition,
-                                            &state_diagnostic)) {
-        return refuse(std::move(state_diagnostic));
-      }
-      if (!state_within_bound(*partition)) {
-        return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                              "aggregate partial-state byte bound is exceeded"));
-      }
-    }
-    if (!MergeCanonicalAggregateCore(request.descriptor, &state, left,
-                                     &state_diagnostic) ||
-        !MergeCanonicalAggregateCore(request.descriptor, &state, right,
-                                     &state_diagnostic)) {
-      return refuse(std::move(state_diagnostic));
-    }
-    if (!state_within_bound(state)) {
-      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                            "aggregate merged-state byte bound is exceeded"));
-    }
+  if (!BuildCanonicalAggregateCoreState(request, prepared.transitions, &state,
+                                        &state_diagnostic)) {
+    return refuse(std::move(state_diagnostic));
   }
 
   auto value = FinalizeCanonicalAggregateCore(request, state,
@@ -1927,6 +2361,266 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  return result;
+}
+
+// QOW-SOURCE-QRY-011-REGISTRY-STATE-SPILL-V1
+// Serialize the complete versioned aggregate transition state, spill and
+// reopen it through engine-owned temporary work, restore the state, and run
+// the ordinary canonical finalizer. The optimizer-selected physical node and
+// exact MGA/security/recheck contract govern the route; temporary metadata
+// never owns row visibility, transaction finality, or recovery.
+CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
+    const CanonicalAggregateStateSpillRequest& request) {
+  CanonicalAggregateStateSpillResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    result.aggregate_result = {};
+    result.state_restored = false;
+    result.restored_result_equivalent = false;
+    return result;
+  };
+
+  const auto baseline =
+      ExecuteCanonicalAggregateRuntime(request.aggregate_request);
+  if (!baseline.diagnostic.ok) {
+    return refuse(baseline.diagnostic.diagnostic_code,
+                  baseline.diagnostic.detail);
+  }
+  const PhysicalNodeRecord* selected_node = nullptr;
+  for (const auto& node : request.aggregate_request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        request.aggregate_request.selected_physical_node_id) {
+      selected_node = &node;
+      break;
+    }
+  }
+  if (selected_node == nullptr ||
+      selected_node->implementation_id !=
+          "aggregate.registry-state-spill.v1" ||
+      !request.aggregate_request.physical_dag.spill_allowed) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
+                  "aggregate state spill was not selected and permitted by the physical plan");
+  }
+  if (request.spill_root.empty() || !request.spill_root.is_absolute() ||
+      !IsCanonicalAggregateStateSpillUuid(request.spill_owner_uuid) ||
+      request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
+      request.maximum_serialized_state_bytes == 0 ||
+      request.maximum_spill_record_count == 0) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-OWNERSHIP-V1",
+                  "aggregate state spill ownership or resource context is invalid");
+  }
+  const auto owner_directory =
+      (request.spill_root / request.spill_owner_uuid).lexically_normal();
+  if (owner_directory.filename() != request.spill_owner_uuid) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-OWNERSHIP-V1",
+                  "aggregate state spill owner directory is not exact");
+  }
+  const auto has_owned_artifact = [&]() {
+    std::error_code error;
+    if (!std::filesystem::exists(owner_directory, error)) {
+      return static_cast<bool>(error);
+    }
+    if (!std::filesystem::is_directory(owner_directory, error) || error) {
+      return true;
+    }
+    for (std::filesystem::directory_iterator iterator(owner_directory, error),
+         end;
+         !error && iterator != end; iterator.increment(error)) {
+      const auto filename = iterator->path().filename().string();
+      if (filename.rfind("orh283_temp_spill-", 0) == 0 &&
+          iterator->path().extension() == ".sbtmpidx") {
+        return true;
+      }
+    }
+    return static_cast<bool>(error);
+  };
+  const auto remove_owned_artifacts = [&]() {
+    std::error_code error;
+    if (!std::filesystem::exists(owner_directory, error)) return !error;
+    for (std::filesystem::directory_iterator iterator(owner_directory, error),
+         end;
+         !error && iterator != end; iterator.increment(error)) {
+      const auto filename = iterator->path().filename().string();
+      if (filename.rfind("orh283_temp_spill-", 0) == 0 &&
+          iterator->path().extension() == ".sbtmpidx") {
+        std::filesystem::remove(iterator->path(), error);
+      }
+    }
+    return !error && !has_owned_artifact();
+  };
+  std::error_code filesystem_error;
+  if (std::filesystem::is_symlink(owner_directory, filesystem_error) ||
+      filesystem_error || has_owned_artifact()) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-OWNERSHIP-V1",
+                  "aggregate state spill owner is unsafe or already occupied");
+  }
+
+  PreparedAggregateTransitions prepared;
+  DescriptorRuntimeDiagnostic state_diagnostic;
+  if (!PrepareCanonicalAggregateTransitions(request.aggregate_request,
+                                            &prepared,
+                                            &state_diagnostic)) {
+    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
+  }
+  CanonicalAggregateCoreState state;
+  if (!BuildCanonicalAggregateCoreState(request.aggregate_request,
+                                        prepared.transitions, &state,
+                                        &state_diagnostic)) {
+    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
+  }
+  AggregateStateBytes serialized;
+  if (!SerializeCanonicalAggregateCoreState(
+          request.aggregate_request, state,
+          request.maximum_serialized_state_bytes, &serialized)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SERIALIZE-V1",
+                  "aggregate state cannot be canonically serialized within its bound");
+  }
+  result.state_serialized = true;
+  result.serialized_state_bytes = serialized.size();
+  constexpr std::size_t kBytesPerSpillRecord = 7;
+  const auto record_count =
+      (serialized.size() + kBytesPerSpillRecord - 1) /
+      kBytesPerSpillRecord;
+  if (record_count == 0 ||
+      record_count > request.maximum_spill_record_count) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-RESOURCE-V1",
+                  "serialized aggregate state exceeds its spill record bound");
+  }
+
+  TempSpillRequest spill;
+  spill.route_kind = TempSpillRouteKind::kSort;
+  spill.route_label =
+      "qow205.aggregate-registry-state." + request.spill_owner_uuid;
+  spill.spill_directory = owner_directory;
+  spill.runtime_generation = request.runtime_generation;
+  spill.reopen_runtime_generation = request.reopen_runtime_generation;
+  spill.memory_quota_bytes = request.memory_quota_bytes;
+  spill.cancellation_requested = request.cancellation_requested;
+  spill.cleanup_after_cancellation = request.cleanup_after_cancellation;
+  spill.restart_recovery_proof_available =
+      request.restart_recovery_proof_available;
+  spill.authority.engine_mga_snapshot_bound = true;
+  spill.authority.transaction_inventory_authoritative = true;
+  spill.authority.security_recheck_required = true;
+  spill.authority.security_context_bound = true;
+  spill.authority.exact_recheck_required = true;
+  spill.rows.reserve(record_count);
+  const auto record_key = [](const std::size_t index) {
+    std::ostringstream stream;
+    stream << "qow205.state." << std::setw(20) << std::setfill('0') << index;
+    return stream.str();
+  };
+  for (std::size_t record = 0; record < record_count; ++record) {
+    std::int64_t payload = 0;
+    for (std::size_t byte = 0; byte < kBytesPerSpillRecord; ++byte) {
+      const auto offset = record * kBytesPerSpillRecord + byte;
+      if (offset == serialized.size()) break;
+      payload |= static_cast<std::int64_t>(serialized[offset]) << (byte * 8);
+    }
+    spill.rows.push_back(
+        {record_key(record), payload, static_cast<std::uint64_t>(record + 1)});
+  }
+
+  const auto spilled = ExecuteBoundedTempSpillRoute(spill);
+  result.spilled = spilled.spilled;
+  result.spill_reopened = spilled.reopen_recovery_proven;
+  result.cleanup_proven = spilled.cleanup_proven;
+  result.cancellation_observed = request.cancellation_requested;
+  result.spill_evidence = spilled.evidence;
+  result.spilled_state_record_count = spill.rows.size();
+  if (has_owned_artifact()) {
+    result.cleanup_proven =
+        remove_owned_artifacts() && result.cleanup_proven;
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-CLEANUP-V1",
+                  "aggregate state spill artifact survived cleanup");
+  }
+  if (!spilled.ok || !spilled.spilled || !spilled.cleanup_proven ||
+      !spilled.reopen_recovery_proven ||
+      spilled.output_rows.size() != record_count) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-V1",
+                  spilled.diagnostic_code + ":" + spilled.fallback_reason);
+  }
+
+  AggregateStateBytes reopened_bytes;
+  reopened_bytes.reserve(serialized.size());
+  for (std::size_t record = 0; record < spilled.output_rows.size(); ++record) {
+    const auto& output = spilled.output_rows[record];
+    const auto first_separator = output.find(':');
+    const auto last_separator = output.rfind(':');
+    if (first_separator == std::string::npos ||
+        last_separator == std::string::npos ||
+        first_separator == last_separator ||
+        output.substr(0, first_separator) != record_key(record)) {
+      return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-RESTORE-V1",
+                    "reopened aggregate state record is malformed");
+    }
+    std::int64_t payload = 0;
+    std::uint64_t ordinal = 0;
+    const auto payload_text = std::string_view(output).substr(
+        first_separator + 1, last_separator - first_separator - 1);
+    const auto ordinal_text =
+        std::string_view(output).substr(last_separator + 1);
+    const auto payload_parse = std::from_chars(
+        payload_text.data(), payload_text.data() + payload_text.size(),
+        payload);
+    const auto ordinal_parse = std::from_chars(
+        ordinal_text.data(), ordinal_text.data() + ordinal_text.size(),
+        ordinal);
+    if (payload_parse.ec != std::errc{} ||
+        payload_parse.ptr != payload_text.data() + payload_text.size() ||
+        ordinal_parse.ec != std::errc{} ||
+        ordinal_parse.ptr != ordinal_text.data() + ordinal_text.size() ||
+        ordinal != record + 1 || payload < 0) {
+      return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-RESTORE-V1",
+                    "reopened aggregate state record fields are invalid");
+    }
+    for (std::size_t byte = 0;
+         byte < kBytesPerSpillRecord &&
+         reopened_bytes.size() < serialized.size();
+         ++byte) {
+      reopened_bytes.push_back(
+          static_cast<std::uint8_t>(payload >> (byte * 8)));
+    }
+  }
+  if (reopened_bytes != serialized) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-RESTORE-V1",
+                  "reopened aggregate state bytes differ from the serialized state");
+  }
+
+  CanonicalAggregateCoreState restored_state;
+  if (!DeserializeCanonicalAggregateCoreState(
+          request.aggregate_request, reopened_bytes,
+          request.maximum_serialized_state_bytes, &restored_state)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-RESTORE-V1",
+                  "reopened aggregate state cannot be decoded");
+  }
+  result.state_restored = true;
+  state_diagnostic = {};
+  auto restored_value = FinalizeCanonicalAggregateCore(
+      request.aggregate_request, restored_state, &state_diagnostic);
+  if (!state_diagnostic.ok) {
+    return refuse(state_diagnostic.diagnostic_code, state_diagnostic.detail);
+  }
+  auto restored = baseline;
+  restored.output_batch.rows = {{{std::move(restored_value)}}};
+  restored.transition_count = restored_state.transition_count;
+  restored.non_null_transition_count = restored_state.non_null_count;
+  restored.state_bytes = EstimateCanonicalAggregateStateBytes(restored_state);
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      restored.output_batch,
+      {request.aggregate_request.result_column.descriptor_id});
+  if (!output_validation.ok ||
+      !SameCanonicalAggregateRuntimeScalar(baseline, restored)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-EQUIVALENCE-V1",
+                  "restored aggregate state finalization differs from the in-memory route");
+  }
+
+  result.diagnostic = {};
+  result.aggregate_result = std::move(restored);
+  result.restored_result_equivalent = true;
   return result;
 }
 
