@@ -638,6 +638,46 @@ struct CanonicalJoinKindResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+enum class CanonicalNamedJoinForm : std::uint8_t {
+  kUsing = 1,
+  kNatural,
+};
+
+struct CanonicalNamedJoinBinding {
+  std::string normalized_name;
+  CanonicalCompositeJoinKeyTerm key_term;
+  ExecutorColumnDescriptor result_column;
+};
+
+struct CanonicalNamedJoinRequest {
+  CanonicalCompositeJoinKeyRequest key_request;
+  CanonicalAcceptedJoinKind join_kind = CanonicalAcceptedJoinKind::kInner;
+  CanonicalNamedJoinForm form = CanonicalNamedJoinForm::kUsing;
+  std::vector<CanonicalNamedJoinBinding> bindings;
+  std::string binding_evidence_uuid;
+  TypedPhysicalNodeDag projection_dag;
+  std::uint64_t selected_projection_node_id = 0;
+  std::size_t maximum_binding_count = 64;
+  std::size_t maximum_candidate_rechecks = 1048576;
+  std::size_t maximum_output_rows = 1048576;
+};
+
+struct CanonicalNamedJoinResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  CanonicalNamedJoinForm form = CanonicalNamedJoinForm::kUsing;
+  std::size_t binding_count = 0;
+  std::size_t matched_pair_count = 0;
+  std::size_t unmatched_left_row_count = 0;
+  std::size_t unmatched_right_row_count = 0;
+  std::string binding_evidence_uuid;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_join_node_id = 0;
+  std::uint64_t join_causal_counter_id = 0;
+  std::uint64_t executed_projection_node_id = 0;
+  std::uint64_t projection_causal_counter_id = 0;
+};
+
 enum class CanonicalJoinStrategyKind : std::uint8_t {
   kHashInnerInt64Equality = 1,
   kNestedLoopInner,
@@ -1751,6 +1791,8 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
     const CanonicalJoinResidualRequest& request);
 CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     const CanonicalJoinKindRequest& request);
+CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
+    const CanonicalNamedJoinRequest& request);
 CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     const CanonicalJoinStrategyRequest& request);
 CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(

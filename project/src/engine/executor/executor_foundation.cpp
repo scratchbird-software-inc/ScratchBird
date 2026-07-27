@@ -1761,6 +1761,345 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   return result;
 }
 
+// QOW-SOURCE-QRY-012-NAMED-V1
+// Consume binder-owned USING/NATURAL column bindings, lower them to the
+// canonical composite-key/join-kind route, then execute the bound projection
+// that coalesces named keys and removes duplicate right-side key columns.
+CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
+    const CanonicalNamedJoinRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalNamedJoinResult result;
+  const auto refuse = [&](std::string detail) {
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-012-NAMED-REFUSAL-V1";
+    result.diagnostic.detail = std::move(detail);
+    result.output_batch = {};
+    result.form = CanonicalNamedJoinForm::kUsing;
+    result.binding_count = 0;
+    result.matched_pair_count = 0;
+    result.unmatched_left_row_count = 0;
+    result.unmatched_right_row_count = 0;
+    result.binding_evidence_uuid.clear();
+    result.selected_plan_uuid.clear();
+    result.executed_join_node_id = 0;
+    result.join_causal_counter_id = 0;
+    result.executed_projection_node_id = 0;
+    result.projection_causal_counter_id = 0;
+    return result;
+  };
+
+  if (request.form != CanonicalNamedJoinForm::kUsing &&
+      request.form != CanonicalNamedJoinForm::kNatural) {
+    return refuse("named join form is outside the accepted profile");
+  }
+  if (request.join_kind != CanonicalAcceptedJoinKind::kInner &&
+      request.join_kind != CanonicalAcceptedJoinKind::kLeftOuter &&
+      request.join_kind != CanonicalAcceptedJoinKind::kRightOuter &&
+      request.join_kind != CanonicalAcceptedJoinKind::kFullOuter) {
+    return refuse("named join kind is outside the accepted profile");
+  }
+  if (!IsCanonicalUuid(request.binding_evidence_uuid) ||
+      request.maximum_binding_count == 0 ||
+      request.bindings.empty() ||
+      request.bindings.size() > request.maximum_binding_count ||
+      request.maximum_candidate_rechecks == 0 ||
+      request.maximum_output_rows == 0 ||
+      request.key_request.key_terms.size() != request.bindings.size()) {
+    return refuse("named join binding or resource contract is invalid");
+  }
+
+  const auto seed_equal = [](const auto& left, const auto& right) {
+    return left.active == right.active &&
+           left.seed_pack_name == right.seed_pack_name &&
+           left.seed_pack_version == right.seed_pack_version &&
+           left.charset_name == right.charset_name &&
+           left.collation_name == right.collation_name &&
+           left.collation_case_insensitive ==
+               right.collation_case_insensitive &&
+           left.collation_accent_insensitive ==
+               right.collation_accent_insensitive;
+  };
+  const auto term_equal = [&](const auto& left, const auto& right) {
+    return left.left_column == right.left_column &&
+           left.left_expression_descriptor_id ==
+               right.left_expression_descriptor_id &&
+           left.right_column == right.right_column &&
+           left.right_expression_descriptor_id ==
+               right.right_expression_descriptor_id &&
+           left.collation_uuid == right.collation_uuid &&
+           left.resource_epoch == right.resource_epoch &&
+           left.collation_epoch == right.collation_epoch &&
+           seed_equal(left.text_seed, right.text_seed);
+  };
+
+  const auto& left_columns = request.key_request.left_batch.columns;
+  const auto& right_columns = request.key_request.right_batch.columns;
+  std::map<std::string, std::vector<std::size_t>> left_names;
+  std::map<std::string, std::vector<std::size_t>> right_names;
+  for (std::size_t column = 0; column < left_columns.size(); ++column) {
+    if (left_columns[column].stable_name.empty()) {
+      return refuse("named join left column lacks a bound stable name");
+    }
+    left_names[left_columns[column].stable_name].push_back(column);
+  }
+  for (std::size_t column = 0; column < right_columns.size(); ++column) {
+    if (right_columns[column].stable_name.empty()) {
+      return refuse("named join right column lacks a bound stable name");
+    }
+    right_names[right_columns[column].stable_name].push_back(column);
+  }
+
+  std::vector<bool> bound_left(left_columns.size(), false);
+  std::vector<bool> bound_right(right_columns.size(), false);
+  std::set<std::string> bound_names;
+  std::set<std::uint32_t> result_descriptor_ids;
+  for (std::size_t index = 0; index < request.bindings.size(); ++index) {
+    const auto& binding = request.bindings[index];
+    const auto& term = binding.key_term;
+    if (binding.normalized_name.empty() ||
+        !bound_names.insert(binding.normalized_name).second ||
+        term.left_column >= left_columns.size() ||
+        term.right_column >= right_columns.size() ||
+        bound_left[term.left_column] || bound_right[term.right_column] ||
+        !term_equal(term, request.key_request.key_terms[index])) {
+      return refuse("named join binding identity is duplicated or drifted");
+    }
+    const auto& left_column = left_columns[term.left_column];
+    const auto& right_column = right_columns[term.right_column];
+    if (left_names[binding.normalized_name].size() != 1 ||
+        right_names[binding.normalized_name].size() != 1 ||
+        left_names[binding.normalized_name].front() != term.left_column ||
+        right_names[binding.normalized_name].front() != term.right_column ||
+        binding.result_column.stable_name != binding.normalized_name ||
+        binding.result_column.descriptor_id == 0 ||
+        !result_descriptor_ids
+             .insert(binding.result_column.descriptor_id)
+             .second ||
+        binding.result_column.descriptor.canonical_type_name !=
+            left_column.descriptor.canonical_type_name ||
+        binding.result_column.descriptor.canonical_type_name !=
+            right_column.descriptor.canonical_type_name) {
+      return refuse("named join binding is not exact for both input schemas");
+    }
+    bound_left[term.left_column] = true;
+    bound_right[term.right_column] = true;
+  }
+
+  if (request.form == CanonicalNamedJoinForm::kNatural) {
+    std::vector<std::pair<std::string, std::pair<std::size_t, std::size_t>>>
+        natural_bindings;
+    for (std::size_t left = 0; left < left_columns.size(); ++left) {
+      const auto& name = left_columns[left].stable_name;
+      if (left_names[name].size() != 1) {
+        return refuse("NATURAL join left names are ambiguous");
+      }
+      const auto right = right_names.find(name);
+      if (right == right_names.end()) continue;
+      if (right->second.size() != 1) {
+        return refuse("NATURAL join right names are ambiguous");
+      }
+      natural_bindings.push_back({name, {left, right->second.front()}});
+    }
+    if (natural_bindings.size() != request.bindings.size()) {
+      return refuse("NATURAL join binding set omits or invents common names");
+    }
+    for (std::size_t index = 0; index < natural_bindings.size(); ++index) {
+      const auto& binding = request.bindings[index];
+      if (binding.normalized_name != natural_bindings[index].first ||
+          binding.key_term.left_column != natural_bindings[index].second.first ||
+          binding.key_term.right_column !=
+              natural_bindings[index].second.second) {
+        return refuse("NATURAL join bindings are not in left schema order");
+      }
+    }
+  }
+
+  std::vector<std::uint32_t> expected_projection_ids;
+  expected_projection_ids.reserve(request.bindings.size() +
+                                  left_columns.size() + right_columns.size());
+  for (const auto& binding : request.bindings) {
+    expected_projection_ids.push_back(binding.result_column.descriptor_id);
+  }
+  for (std::size_t column = 0; column < left_columns.size(); ++column) {
+    if (!bound_left[column]) {
+      if (!result_descriptor_ids.insert(left_columns[column].descriptor_id)
+               .second) {
+        return refuse("named join output descriptor identity is duplicated");
+      }
+      expected_projection_ids.push_back(left_columns[column].descriptor_id);
+    }
+  }
+  for (std::size_t column = 0; column < right_columns.size(); ++column) {
+    if (!bound_right[column]) {
+      if (!result_descriptor_ids.insert(right_columns[column].descriptor_id)
+               .second) {
+        return refuse("named join output descriptor identity is duplicated");
+      }
+      expected_projection_ids.push_back(right_columns[column].descriptor_id);
+    }
+  }
+
+  const auto projection_validation =
+      ValidateTypedPhysicalNodeDag(request.projection_dag);
+  if (!projection_validation.accepted) {
+    const auto& issue = projection_validation.issues.front();
+    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  }
+  if (request.projection_dag.selected_plan_uuid !=
+          request.key_request.physical_dag.selected_plan_uuid ||
+      request.projection_dag.local_transaction_id !=
+          request.key_request.physical_dag.local_transaction_id ||
+      request.projection_dag.statement_snapshot_id !=
+          request.key_request.physical_dag.statement_snapshot_id ||
+      request.selected_projection_node_id == 0 ||
+      request.selected_projection_node_id !=
+          request.projection_dag.root_physical_node_id) {
+    return refuse("named join projection does not share the admitted plan");
+  }
+  const PhysicalNodeRecord* projection_node = nullptr;
+  const PhysicalNodeRecord* projection_join_node = nullptr;
+  const PhysicalNodeRecord* key_join_node = nullptr;
+  for (const auto& node : request.key_request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        request.key_request.selected_physical_node_id) {
+      key_join_node = &node;
+      break;
+    }
+  }
+  for (const auto& node : request.projection_dag.nodes) {
+    if (node.physical_node_id == request.selected_projection_node_id) {
+      projection_node = &node;
+    }
+    if (node.physical_node_id ==
+        request.key_request.selected_physical_node_id) {
+      projection_join_node = &node;
+    }
+  }
+  const auto expected_implementation =
+      request.form == CanonicalNamedJoinForm::kUsing
+          ? std::string_view("join.using-projection.v1")
+          : std::string_view("join.natural-projection.v1");
+  if (projection_node == nullptr || projection_join_node == nullptr ||
+      key_join_node == nullptr ||
+      projection_node->node_kind != PhysicalNodeKind::kProject ||
+      projection_node->implementation_id != expected_implementation ||
+      projection_node->input_physical_node_ids.size() != 1 ||
+      projection_node->input_physical_node_ids.front() !=
+          projection_join_node->physical_node_id ||
+      projection_join_node->node_kind != PhysicalNodeKind::kJoin ||
+      projection_join_node->implementation_id !=
+          key_join_node->implementation_id ||
+      projection_join_node->output_descriptor_ids !=
+          key_join_node->output_descriptor_ids ||
+      projection_join_node->causal_counter_id !=
+          key_join_node->causal_counter_id ||
+      projection_node->output_descriptor_ids != expected_projection_ids ||
+      projection_node->causal_counter_id <=
+          projection_join_node->causal_counter_id) {
+    return refuse("named join projection node identity or schema is invalid");
+  }
+
+  const auto left_count = request.key_request.left_batch.rows.size();
+  const auto right_count = request.key_request.right_batch.rows.size();
+  if (left_count != 0 &&
+      right_count > std::numeric_limits<std::size_t>::max() / left_count) {
+    return refuse("named join pair cardinality overflowed");
+  }
+  CanonicalJoinKindRequest kind_request;
+  kind_request.residual_request.key_request = request.key_request;
+  kind_request.residual_request.residual_truth_values.assign(
+      left_count * right_count, api::EngineSqlTruthValue::true_value);
+  kind_request.residual_request.maximum_candidate_rechecks =
+      request.maximum_candidate_rechecks;
+  kind_request.join_kind = request.join_kind;
+  kind_request.maximum_output_rows = request.maximum_output_rows;
+  auto joined = ExecuteCanonicalJoinKind(kind_request);
+  if (!joined.diagnostic.ok) {
+    return refuse(joined.diagnostic.diagnostic_code + ":" +
+                  joined.diagnostic.detail);
+  }
+  if (joined.executed_physical_node_id !=
+          projection_join_node->physical_node_id ||
+      joined.causal_counter_id != projection_join_node->causal_counter_id) {
+    return refuse("named join execution drifted from its projection input");
+  }
+
+  DescriptorBatch output;
+  for (const auto& binding : request.bindings) {
+    output.columns.push_back(binding.result_column);
+  }
+  const auto left_width = left_columns.size();
+  for (std::size_t column = 0; column < left_width; ++column) {
+    if (!bound_left[column]) output.columns.push_back(joined.output_batch.columns[column]);
+  }
+  for (std::size_t column = 0; column < right_columns.size(); ++column) {
+    if (!bound_right[column]) {
+      output.columns.push_back(joined.output_batch.columns[left_width + column]);
+    }
+  }
+  output.rows.reserve(joined.output_batch.rows.size());
+  for (const auto& joined_row : joined.output_batch.rows) {
+    if (joined_row.values.size() != left_width + right_columns.size()) {
+      return refuse("named join input row width is invalid");
+    }
+    DescriptorTuple projected;
+    projected.values.reserve(output.columns.size());
+    for (const auto& binding : request.bindings) {
+      const auto& left = joined_row.values[binding.key_term.left_column];
+      const auto& right = joined_row.values[
+          left_width + binding.key_term.right_column];
+      api::EngineTypedValue value;
+      if (left.state != api::EngineValueState::sql_null) {
+        value = left;
+      } else if (right.state != api::EngineValueState::sql_null) {
+        value = right;
+      } else {
+        value.is_null = true;
+        value.state = api::EngineValueState::sql_null;
+      }
+      value.descriptor = binding.result_column.descriptor;
+      if (value.state == api::EngineValueState::sql_null) {
+        value.is_null = true;
+        value.encoded_value.clear();
+        value.binary_value.clear();
+      }
+      projected.values.push_back(std::move(value));
+    }
+    for (std::size_t column = 0; column < left_width; ++column) {
+      if (!bound_left[column]) projected.values.push_back(joined_row.values[column]);
+    }
+    for (std::size_t column = 0; column < right_columns.size(); ++column) {
+      if (!bound_right[column]) {
+        projected.values.push_back(joined_row.values[left_width + column]);
+      }
+    }
+    output.rows.push_back(std::move(projected));
+  }
+
+  const auto output_validation =
+      ValidateCanonicalDescriptorBatch(output, expected_projection_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code + ":" +
+                  output_validation.detail);
+  }
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.form = request.form;
+  result.binding_count = request.bindings.size();
+  result.matched_pair_count = joined.matched_pair_count;
+  result.unmatched_left_row_count = joined.unmatched_left_row_count;
+  result.unmatched_right_row_count = joined.unmatched_right_row_count;
+  result.binding_evidence_uuid = request.binding_evidence_uuid;
+  result.selected_plan_uuid = request.projection_dag.selected_plan_uuid;
+  result.executed_join_node_id = joined.executed_physical_node_id;
+  result.join_causal_counter_id = joined.causal_counter_id;
+  result.executed_projection_node_id = projection_node->physical_node_id;
+  result.projection_causal_counter_id = projection_node->causal_counter_id;
+  return result;
+}
+
 // QOW-SOURCE-QRY-012-STRATEGY-V1
 // Execute admitted nested-loop, hash, or merge strategies and prove the
 // resulting physical-pair multiset equals the canonical key/residual route.
