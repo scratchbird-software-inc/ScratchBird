@@ -25,6 +25,47 @@ bool Require008(const bool condition, const std::string_view detail) {
   return condition;
 }
 
+api::EngineDescriptor RootResultDescriptor() {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical = Uuid(8201);
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor =
+      "type_uuid=" + Uuid(8202) + ";nullability=non_null";
+  return descriptor;
+}
+
+exec::DescriptorBatch RootResultBatch() {
+  const auto descriptor = RootResultDescriptor();
+  const auto value = [&](const std::string& encoded) {
+    api::EngineTypedValue typed;
+    typed.descriptor = descriptor;
+    typed.state = api::EngineValueState::value;
+    typed.encoded_value = encoded;
+    return typed;
+  };
+  return exec::MakeDescriptorBatch(
+      {{"projected_id", descriptor, false, 104}},
+      {{{value("7")}}, {{value("11")}}});
+}
+
+exec::CanonicalResultPublicationRequest ResultPublicationRequest() {
+  exec::CanonicalResultPublicationRequest request;
+  request.statement_uuid = Uuid(8210);
+  request.execution_attempt_uuid = Uuid(8211);
+  request.transaction_effect_evidence_uuid = Uuid(8212);
+  request.result_kind = exec::CanonicalResultKind::kRows;
+  request.column_bindings = {{
+      0,
+      true,
+      exec::CanonicalResultColumnDescriptor{
+          0, "projected_id", Uuid(8201), Uuid(8202),
+          exec::CanonicalResultNullability::kNonNull, std::nullopt,
+          std::nullopt},
+  }};
+  return request;
+}
+
 exec::CanonicalPhysicalDispatchStepResult Step008(
     const exec::TypedPhysicalNodeDag& dag,
     const exec::PhysicalNodeRecord& node, const std::uint64_t result_handle,
@@ -76,6 +117,7 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
   request.inventory_statement_snapshot_id =
       publication.physical_dag.statement_snapshot_id;
   request.engine_execution_authorized = true;
+  request.result_publication_request = ResultPublicationRequest();
 
   const auto* scan = PhysicalNode(publication.physical_dag, 1);
   const auto* values = PhysicalNode(publication.physical_dag, 2);
@@ -92,7 +134,9 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
           result.diagnostic.diagnostic_code = "TEST_PROJECT_INPUT_IDENTITY";
           return result;
         }
-        return Step008(dag, node, 20'004, 2, 2, 2, 0);
+        auto result = Step008(dag, node, 20'004, 2, 2, 2, 0);
+        result.materialized_output_batch = RootResultBatch();
+        return result;
       }));
   request.available_executors.push_back(Registration(
       *scan, [invocation_order](const auto& dag, const auto& node,
@@ -176,7 +220,8 @@ bool ValidateExactSelectedExecution() {
   bool passed = true;
   passed &= Require008(
       result.accepted && result.exact_selected_nodes_executed &&
-          result.causal_counters_attached && result.data_access_observed &&
+          result.causal_counters_attached &&
+          result.canonical_result_published && result.data_access_observed &&
           !result.replan_required && result.issues.empty(),
       "ABI-v2 selected physical DAG did not execute canonically");
   passed &= Require008(
@@ -201,6 +246,19 @@ bool ValidateExactSelectedExecution() {
           result.runtime_actuals.selected_plan_uuid == Uuid(900) &&
           result.runtime_actuals.node_actuals.size() == 4,
       "runtime actuals were not attached to the selected physical identities");
+  passed &= Require008(
+      result.result_publication.published &&
+          result.result_publication.envelope.result_kind ==
+              exec::CanonicalResultKind::kRows &&
+          result.result_publication.envelope.row_count == 2 &&
+          result.result_publication.envelope.column_descriptors.size() == 1 &&
+          result.result_publication.envelope.column_descriptors[0].name_utf8 ==
+              "projected_id" &&
+          result.result_publication.row_stream.rows.size() == 2 &&
+          result.result_publication.delivery_records.size() == 3 &&
+          result.result_publication.delivery_records.front().kind ==
+              exec::CanonicalResultDeliveryKind::kMetadata,
+      "selected root batch did not publish through the canonical result ABI");
   passed &= Require008(
       result.runtime_actuals.node_actuals[0].physical_node_id == 1 &&
           result.runtime_actuals.node_actuals[0].causal_counter_id == 10'000 &&
@@ -300,6 +358,39 @@ bool ValidatePostStartFailureIsTruthful() {
       "post-start executor failure falsely reported a pre-read refusal");
 }
 
+// QOW-TEST-INTEGRATION-306-211-V1
+bool ValidateResultPublicationRefusalIsTruthful() {
+  std::vector<std::uint64_t> invocation_order;
+  auto request = SelectedExecutionRequest(&invocation_order);
+  request.result_publication_request.column_bindings[0]
+      .published_descriptor->type_uuid = Uuid(8299);
+  auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  bool passed = true;
+  passed &= Require008(
+      !result.accepted && result.data_access_observed &&
+          !result.canonical_result_published &&
+          result.result_publication.canonical_envelope_bytes.empty() &&
+          invocation_order == std::vector<std::uint64_t>({1, 2, 3, 4}) &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-QRY-021-REFUSAL-V1",
+      "result descriptor drift published output or hid completed execution");
+
+  invocation_order.clear();
+  request = SelectedExecutionRequest(&invocation_order);
+  request.result_publication_request.physical_output_batch =
+      RootResultBatch();
+  result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  passed &= Require008(
+      !result.accepted && result.data_access_observed &&
+          !result.canonical_result_published &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-OPTIMIZER-SELECTED-RESULT-PAYLOAD-V1",
+      "caller-supplied substitute root batch bypassed executor output");
+  return passed;
+}
+
 bool ValidateCanonicalRouteIsolation() {
   std::ifstream source_file(SB_QOW_PLAN_API_SOURCE_FILE);
   const std::string source((std::istreambuf_iterator<char>(source_file)),
@@ -344,6 +435,7 @@ int main() {
   passed &= ValidatePreflightReplan();
   passed &= ValidateAuthorityAndAbiRefusal();
   passed &= ValidatePostStartFailureIsTruthful();
+  passed &= ValidateResultPublicationRefusalIsTruthful();
   passed &= ValidateCanonicalRouteIsolation();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

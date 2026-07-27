@@ -254,7 +254,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   )
   add_test(NAME qow_opt_008_v1 COMMAND qow_opt_008_test_v1)
   set_tests_properties(qow_opt_008_v1 PROPERTIES
-    LABELS "qow_closure;QOW-306;QOW-LEAF-OPT-008;development_candidate"
+    LABELS "qow_closure;QOW-306;QOW-211;QOW-LEAF-OPT-008;QOW-INTEGRATION-306-211;development_candidate"
   )
   # Dependency-ordered QOW optimizer targets are added above this return by
   # their owning leaves. The broad optimizer suite remains disabled.

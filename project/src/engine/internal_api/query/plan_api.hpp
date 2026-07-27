@@ -274,6 +274,8 @@ struct CanonicalOptimizerSelectedExecutionRequest {
   std::vector<
       scratchbird::engine::executor::CanonicalPhysicalExecutorRegistration>
       available_executors;
+  scratchbird::engine::executor::CanonicalResultPublicationRequest
+      result_publication_request;
   bool engine_execution_authorized{false};
   bool parser_execution_authority_claimed{false};
   bool transaction_finality_claimed{false};
@@ -290,9 +292,12 @@ struct CanonicalOptimizerSelectedExecutionResult {
   bool accepted{false};
   bool exact_selected_nodes_executed{false};
   bool causal_counters_attached{false};
+  bool canonical_result_published{false};
   bool data_access_observed{false};
   bool replan_required{false};
   scratchbird::engine::executor::CanonicalPhysicalDagDispatchResult dispatch;
+  scratchbird::engine::executor::CanonicalResultPublicationResult
+      result_publication;
   CanonicalRuntimeOptimizerStatisticsResult runtime_actuals;
   std::vector<CanonicalOptimizerSelectedExecutionIssue> issues;
 };

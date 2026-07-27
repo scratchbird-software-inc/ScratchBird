@@ -983,6 +983,10 @@ struct CanonicalPhysicalDispatchStepResult {
   std::uint64_t rows_examined = 0;
   std::uint64_t pages_read = 0;
   std::uint64_t spill_bytes = 0;
+  // Only an engine executor may attach a materialized typed batch. The
+  // canonical selected-DAG route consumes the root batch at the shared result
+  // ABI boundary; the dispatcher never reconstructs it from an opaque handle.
+  std::optional<DescriptorBatch> materialized_output_batch;
   bool execution_started = false;
   bool execution_finished = false;
   bool counters_captured_after_finish = false;

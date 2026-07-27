@@ -982,6 +982,30 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
                   "complete_dispatch_identity");
   }
 
+  // QOW-SOURCE-INTEGRATION-306-211-V1
+  // The executed root is the only payload source for result publication.
+  // Runtime-actual evidence is validated before the shared ABI may publish.
+  const auto root_step = std::ranges::find_if(
+      dispatch.executed_steps, [&](const auto& step) {
+        return step.executed_physical_node_id ==
+               request.selected_physical_dag.root_physical_node_id;
+      });
+  if (root_step == dispatch.executed_steps.end() ||
+      !root_step->materialized_output_batch.has_value() ||
+      root_step->materialized_output_batch->columns.size() !=
+          root_step->output_descriptor_ids.size() ||
+      root_step->materialized_output_batch->rows.size() !=
+          root_step->output_row_count ||
+      !request.result_publication_request.physical_output_batch.columns.empty() ||
+      !request.result_publication_request.physical_output_batch.rows.empty()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SELECTED-RESULT-PAYLOAD-V1",
+                  request.selected_physical_dag.root_physical_node_id,
+                  "root_materialized_output_batch", false, true);
+  }
+  auto publication_request = request.result_publication_request;
+  publication_request.physical_output_batch =
+      *root_step->materialized_output_batch;
+
   CanonicalRuntimeOptimizerStatisticsRequest actuals_request;
   actuals_request.selected_physical_dag = request.selected_physical_dag;
   actuals_request.pre_access_statistics_snapshot_uuid =
@@ -1027,12 +1051,21 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
     return refuse(issue.diagnostic_id, issue.physical_node_id,
                   issue.field_id);
   }
+  auto result_publication =
+      executor::PublishCanonicalResultEnvelope(publication_request);
+  if (!result_publication.diagnostic.ok || !result_publication.published) {
+    return refuse(result_publication.diagnostic.diagnostic_code,
+                  request.selected_physical_dag.root_physical_node_id,
+                  result_publication.diagnostic.detail, false, true);
+  }
 
   result.accepted = true;
   result.exact_selected_nodes_executed = true;
   result.causal_counters_attached = true;
+  result.canonical_result_published = true;
   result.data_access_observed = true;
   result.dispatch = std::move(dispatch);
+  result.result_publication = std::move(result_publication);
   result.runtime_actuals = std::move(actuals);
   return result;
 }
