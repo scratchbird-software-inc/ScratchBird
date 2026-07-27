@@ -151,6 +151,7 @@ struct PreparedGlobalAggregateRoot {
   bool count_star{false};
   std::vector<std::size_t> value_columns;
   std::vector<std::uint32_t> value_descriptor_ids;
+  std::string aggregate_separator{","};
   exec::CanonicalAggregateDescriptor aggregate_descriptor;
   exec::ExecutorColumnDescriptor result_column;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
@@ -207,8 +208,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       function == exec::CanonicalAggregateFunction::regr_sxx ||
       function == exec::CanonicalAggregateFunction::regr_sxy ||
       function == exec::CanonicalAggregateFunction::regr_syy;
+  const bool is_string_agg =
+      function == exec::CanonicalAggregateFunction::string_agg;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
-       !is_boolean && !is_statistical && !is_pair_statistical) ||
+       !is_boolean && !is_statistical && !is_pair_statistical &&
+       !is_string_agg) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -256,7 +260,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         return candidate.function == function;
       });
   const auto expected_argument_count =
-      count_star ? 0U : (is_pair_statistical ? 2U : 1U);
+      count_star ? 0U : ((is_pair_statistical || is_string_agg) ? 2U : 1U);
   if (expression == dag.expressions.end() ||
       descriptor == dag.descriptors.end() || aggregate == registry.end() ||
       !aggregate->executable ||
@@ -276,12 +280,63 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   }
 
   if (!count_star) {
-    for (const auto child_expression_id :
-         expression->child_expression_ids) {
+    CanonicalRelationalExpressionRuntime expression_runtime(dag);
+    for (std::size_t argument_ordinal = 0;
+         argument_ordinal < expression->child_expression_ids.size();
+         ++argument_ordinal) {
+      const auto child_expression_id =
+          expression->child_expression_ids[argument_ordinal];
       const auto argument = std::ranges::find_if(
           dag.expressions, [&](const auto& candidate) {
             return candidate.expression_id == child_expression_id;
           });
+      if (is_string_agg && argument_ordinal == 1) {
+        const auto separator_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return argument != dag.expressions.end() &&
+                     candidate.descriptor_id ==
+                         argument->result_descriptor_id;
+            });
+        api::EngineTypedValue separator;
+        std::string separator_detail;
+        if (argument == dag.expressions.end() ||
+            argument->expression_kind !=
+                api::RelationalExpressionKind::kLiteral ||
+            !argument->child_expression_ids.empty() ||
+            argument->bound_name_uuid.has_value() ||
+            argument->function_uuid.has_value() ||
+            !argument->literal_kind.has_value() ||
+            argument->operator_name.has_value() ||
+            !argument->literal_or_parameter_ref.has_value() ||
+            separator_descriptor == dag.descriptors.end() ||
+            separator_descriptor->nullability !=
+                api::RelationalNullability::kNonNull ||
+            separator_descriptor->collation_uuid.has_value() ||
+            separator_descriptor->timezone_profile_id.has_value() ||
+            separator_descriptor->width.has_value() ||
+            separator_descriptor->precision.has_value() ||
+            separator_descriptor->scale.has_value() ||
+            argument->result_descriptor_id ==
+                root.output_descriptor_ids.front() ||
+            std::ranges::find(input_node.output_descriptor_ids,
+                              argument->result_descriptor_id) !=
+                input_node.output_descriptor_ids.end() ||
+            !expression_runtime.Evaluate(child_expression_id, "text",
+                                         &separator, &separator_detail) ||
+            separator.state != api::EngineValueState::value ||
+            separator.is_null ||
+            separator.descriptor.canonical_type_name != "text") {
+          result.detail =
+              "global STRING_AGG separator must be one standalone, "
+              "unqualified, non-NULL canonical text literal";
+          if (!separator_detail.empty()) {
+            result.detail += ": " + separator_detail;
+          }
+          return result;
+        }
+        result.aggregate_separator = separator.encoded_value;
+        continue;
+      }
       if (argument == dag.expressions.end() ||
           argument->expression_kind !=
               api::RelationalExpressionKind::kIdentifier ||
@@ -348,11 +403,16 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "column";
         return result;
       }
+      if (is_string_agg && input_type != "text") {
+        result.detail =
+            "global STRING_AGG input must be a canonical text column";
+        return result;
+      }
     }
   }
   const bool result_nullable =
       is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
-      (is_pair_statistical && !is_regr_count);
+      (is_pair_statistical && !is_regr_count) || is_string_agg;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -385,6 +445,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
                 "int64"
               : "global pair statistical result must be an unqualified "
                 "nullable real64";
+    } else if (is_string_agg) {
+      result.detail =
+          "global STRING_AGG result must be an unqualified nullable text";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -399,10 +462,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
   engine_descriptor.canonical_type_name =
-      (is_avg || is_statistical ||
-       (is_pair_statistical && !is_regr_count))
-          ? "real64"
-          : (is_boolean ? "boolean" : "int64");
+      is_string_agg
+          ? "text"
+          : ((is_avg || is_statistical ||
+              (is_pair_statistical && !is_regr_count))
+                 ? "real64"
+                 : (is_boolean ? "boolean" : "int64"));
   engine_descriptor.encoded_descriptor =
       "type_uuid=" + descriptor->type_uuid + ";nullability=" +
       (result_nullable ? "nullable" : "non_null");
@@ -2492,6 +2557,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-bool-or-expression.v1";
   const bool every_expression =
       root->semantic_variant_id == "aggregate.global-every-expression.v1";
+  const bool string_agg_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-string-agg-expression.v1";
   const bool stddev_pop_expression =
       root->semantic_variant_id ==
       "aggregate.global-stddev-pop-expression.v1";
@@ -2565,7 +2633,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
-      !statistical_expression && !pair_statistical_expression) {
+      !string_agg_expression && !statistical_expression &&
+      !pair_statistical_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -2581,6 +2650,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (every_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::every;
+  }
+  if (string_agg_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::string_agg;
   }
   if (stddev_pop_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::stddev_pop;
@@ -2666,14 +2738,31 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const bool pair_real_result =
       pair_statistical_expression &&
       aggregate_function != exec::CanonicalAggregateFunction::regr_count;
-  const auto aggregate_result_memory =
+  std::uint64_t aggregate_result_memory =
       (avg_expression || statistical_expression || pair_real_result)
           ? kRealAggregateResultMemory
           : ((bool_and_expression || bool_or_expression || every_expression)
                  ? kBooleanAggregateResultMemory
                  : kIntegerAggregateResultMemory);
-  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
+  if (!AddBatchMemoryBytes(input.batch, &input_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live global aggregate input size overflowed");
+  }
+  if (string_agg_expression) {
+    std::uint64_t separator_memory = 0;
+    aggregate_result_memory = input_memory;
+    if (!CheckedMultiply(
+            static_cast<std::uint64_t>(input_row_count),
+            static_cast<std::uint64_t>(
+                prepared_root.aggregate_separator.size()),
+            &separator_memory) ||
+        !CheckedAdd(aggregate_result_memory, separator_memory,
+                    &aggregate_result_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live STRING_AGG result size overflowed");
+    }
+  }
+  if (!CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input or result size overflowed");
   }
@@ -2713,6 +2802,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (every_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-every-expression.v1";
+  } else if (string_agg_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-string-agg-expression.v1";
   } else if (stddev_pop_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-stddev-pop-expression.v1";
@@ -2793,6 +2885,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        count_star = prepared_root.count_star,
        value_columns = prepared_root.value_columns,
        value_descriptor_ids = prepared_root.value_descriptor_ids,
+       aggregate_separator = prepared_root.aggregate_separator,
        input_row_count](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -2845,6 +2938,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.value_expression_descriptor_ids =
               value_descriptor_ids;
           aggregate_request.result_column = result_column;
+          aggregate_request.aggregate_separator = aggregate_separator;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
           const auto aggregate_result =

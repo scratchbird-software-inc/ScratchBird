@@ -46,8 +46,9 @@ struct CanonicalObjectFreeValuesExecutionResult {
 // bound-count VALUES/LIMIT shape, the exact property-bound VALUES/SORT shape,
 // the exact VALUES/global COUNT(*), COUNT(input-column), integer
 // SUM(input-column), integer-input AVG(input-column), integer MIN/MAX,
-// boolean BOOL_AND/BOOL_OR/EVERY, int64-input unary statistical aggregate, or
-// exact two-int64-input pair statistical/regression aggregate shape,
+// boolean BOOL_AND/BOOL_OR/EVERY, int64-input unary statistical aggregate,
+// exact two-int64-input pair statistical/regression aggregate, or text
+// STRING_AGG(input-column, literal-separator) shape,
 // the exact three-node VALUES/VALUES/UNION ALL ordinal shape, or the exact
 // three-node VALUES/VALUES/INNER JOIN shape.
 // FILTER and INNER JOIN each require one object-free bound boolean predicate.

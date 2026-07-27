@@ -584,6 +584,26 @@ bool ValidateCanonicalAggregateRegistry() {
                       "ordered collection state or merge parity failed");
   }
 
+  auto singleton_string =
+      CollectionRequest(exec::CanonicalAggregateFunction::string_agg);
+  singleton_string.input_batch.rows.resize(1);
+  auto collection = exec::ExecuteCanonicalAggregateRuntime(singleton_string);
+  passed &= Require(collection.diagnostic.ok &&
+                        collection.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::value &&
+                        collection.output_batch.rows[0].values[0]
+                                .encoded_value == "a",
+                    "STRING_AGG singleton incorrectly applied its separator");
+
+  auto empty_string =
+      CollectionRequest(exec::CanonicalAggregateFunction::string_agg);
+  empty_string.input_batch.rows.clear();
+  collection = exec::ExecuteCanonicalAggregateRuntime(empty_string);
+  passed &= Require(collection.diagnostic.ok &&
+                        collection.output_batch.rows[0].values[0].state ==
+                            api::EngineValueState::sql_null,
+                    "empty STRING_AGG did not produce typed SQL NULL");
+
   auto listagg = CollectionRequest(
       exec::CanonicalAggregateFunction::listagg);
   const auto text_descriptor = listagg.input_batch.columns[0].descriptor;
@@ -594,7 +614,7 @@ bool ValidateCanonicalAggregateRegistry() {
   listagg.listagg_overflow_mode =
       exec::CanonicalListaggOverflowMode::truncate;
   listagg.listagg_max_output_bytes = 12;
-  auto collection = exec::ExecuteCanonicalAggregateRuntime(listagg);
+  collection = exec::ExecuteCanonicalAggregateRuntime(listagg);
   passed &= Require(collection.diagnostic.ok &&
                         collection.output_batch.rows[0].values[0]
                                 .encoded_value == "east|...(2)",
