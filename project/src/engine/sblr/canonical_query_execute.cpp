@@ -171,7 +171,14 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool is_avg = function == exec::CanonicalAggregateFunction::avg;
   const bool is_min = function == exec::CanonicalAggregateFunction::min;
   const bool is_max = function == exec::CanonicalAggregateFunction::max;
-  if ((!is_count && !is_sum && !is_avg && !is_min && !is_max) ||
+  const bool is_bool_and =
+      function == exec::CanonicalAggregateFunction::bool_and;
+  const bool is_bool_or =
+      function == exec::CanonicalAggregateFunction::bool_or;
+  const bool is_every = function == exec::CanonicalAggregateFunction::every;
+  const bool is_boolean = is_bool_and || is_bool_or || is_every;
+  if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
+       !is_boolean) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -289,8 +296,17 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       }
       return result;
     }
+    if (is_boolean &&
+        input.batch.columns[result.value_column]
+                .descriptor.canonical_type_name != "boolean") {
+      result.detail =
+          "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
+          "column";
+      return result;
+    }
   }
-  const bool result_nullable = is_sum || is_avg || is_min || is_max;
+  const bool result_nullable =
+      is_sum || is_avg || is_min || is_max || is_boolean;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -308,6 +324,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     } else if (is_min || is_max) {
       result.detail =
           "global MIN/MAX result must be an unqualified nullable int64";
+    } else if (is_boolean) {
+      result.detail =
+          "global BOOL_AND/BOOL_OR/EVERY result must be an unqualified "
+          "nullable boolean";
     } else {
       result.detail =
           "global COUNT result must be an unqualified non-null int64";
@@ -321,7 +341,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   api::EngineDescriptor engine_descriptor;
   engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
   engine_descriptor.descriptor_kind = "scalar";
-  engine_descriptor.canonical_type_name = is_avg ? "real64" : "int64";
+  engine_descriptor.canonical_type_name =
+      is_avg ? "real64" : (is_boolean ? "boolean" : "int64");
   engine_descriptor.encoded_descriptor =
       "type_uuid=" + descriptor->type_uuid + ";nullability=" +
       (result_nullable ? "nullable" : "non_null");
@@ -2405,8 +2426,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       root->semantic_variant_id == "aggregate.global-min-expression.v1";
   const bool max_expression =
       root->semantic_variant_id == "aggregate.global-max-expression.v1";
+  const bool bool_and_expression =
+      root->semantic_variant_id == "aggregate.global-bool-and-expression.v1";
+  const bool bool_or_expression =
+      root->semantic_variant_id == "aggregate.global-bool-or-expression.v1";
+  const bool every_expression =
+      root->semantic_variant_id == "aggregate.global-every-expression.v1";
   if (!count_star && !count_expression && !sum_expression &&
-      !avg_expression && !min_expression && !max_expression) {
+      !avg_expression && !min_expression && !max_expression &&
+      !bool_and_expression && !bool_or_expression && !every_expression) {
     return result;
   }
   auto aggregate_function = exec::CanonicalAggregateFunction::count;
@@ -2414,6 +2442,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   if (avg_expression) aggregate_function = exec::CanonicalAggregateFunction::avg;
   if (min_expression) aggregate_function = exec::CanonicalAggregateFunction::min;
   if (max_expression) aggregate_function = exec::CanonicalAggregateFunction::max;
+  if (bool_and_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::bool_and;
+  }
+  if (bool_or_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::bool_or;
+  }
+  if (every_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::every;
+  }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
         return node.logical_node_id == root->input_logical_node_ids.front();
@@ -2473,9 +2510,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   constexpr std::uint64_t kIntegerAggregateResultMemory =
       std::numeric_limits<std::int64_t>::digits10 + 2;
   constexpr std::uint64_t kRealAggregateResultMemory = 64;
+  constexpr std::uint64_t kBooleanAggregateResultMemory = 5;
   const auto aggregate_result_memory =
       avg_expression ? kRealAggregateResultMemory
-                     : kIntegerAggregateResultMemory;
+                     : ((bool_and_expression || bool_or_expression ||
+                         every_expression)
+                            ? kBooleanAggregateResultMemory
+                            : kIntegerAggregateResultMemory);
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
       !CheckedAdd(input_memory, aggregate_result_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -2505,9 +2546,18 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (min_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-min-expression.v1";
-  } else {
+  } else if (max_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-max-expression.v1";
+  } else if (bool_and_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-bool-and-expression.v1";
+  } else if (bool_or_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-bool-or-expression.v1";
+  } else {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-every-expression.v1";
   }
 
   const auto identity_scope =

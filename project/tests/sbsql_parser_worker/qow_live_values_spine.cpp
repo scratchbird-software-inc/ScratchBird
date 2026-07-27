@@ -705,6 +705,110 @@ sblr::SblrOperationEnvelope GlobalExtremumExpressionValuesEnvelope(
   return envelope;
 }
 
+enum class BooleanAggregateKind {
+  kBoolAnd,
+  kBoolOr,
+  kEvery,
+};
+
+std::string_view BooleanAggregateName(const BooleanAggregateKind kind) {
+  switch (kind) {
+    case BooleanAggregateKind::kBoolAnd:
+      return "BOOL_AND";
+    case BooleanAggregateKind::kBoolOr:
+      return "BOOL_OR";
+    case BooleanAggregateKind::kEvery:
+      return "EVERY";
+  }
+  return "UNKNOWN";
+}
+
+sblr::SblrOperationEnvelope GlobalBooleanAggregateExpressionValuesEnvelope(
+    const BooleanAggregateKind kind) {
+  const bool bool_and = kind == BooleanAggregateKind::kBoolAnd;
+  const bool bool_or = kind == BooleanAggregateKind::kBoolOr;
+  const std::string operation =
+      bool_and ? "qow.live.values.bool-and-expression"
+               : (bool_or ? "qow.live.values.bool-or-expression"
+                          : "qow.live.values.every-expression");
+  const std::string tree_uuid =
+      bool_and ? "019f0000-0000-7000-8000-000000009600"
+               : (bool_or ? "019f0000-0000-7000-8000-000000009700"
+                          : "019f0000-0000-7000-8000-000000009800");
+  const std::string input_descriptor =
+      bool_and ? "019f0000-0000-7300-8000-000000009601"
+               : (bool_or ? "019f0000-0000-7300-8000-000000009701"
+                          : "019f0000-0000-7300-8000-000000009801");
+  const std::string input_type =
+      bool_and ? "019f0000-0000-7400-8000-000000009602"
+               : (bool_or ? "019f0000-0000-7400-8000-000000009702"
+                          : "019f0000-0000-7400-8000-000000009802");
+  const std::string result_descriptor =
+      bool_and ? "019f0000-0000-7300-8000-000000009603"
+               : (bool_or ? "019f0000-0000-7300-8000-000000009703"
+                          : "019f0000-0000-7300-8000-000000009803");
+  const std::string result_type =
+      bool_and ? "019f0000-0000-7400-8000-000000009604"
+               : (bool_or ? "019f0000-0000-7400-8000-000000009704"
+                          : "019f0000-0000-7400-8000-000000009804");
+  const std::string bound_name =
+      bool_and ? "019f0000-0000-7500-8000-000000009605"
+               : (bool_or ? "019f0000-0000-7500-8000-000000009705"
+                          : "019f0000-0000-7500-8000-000000009805");
+  const std::string function_uuid =
+      bool_and ? "019de5fc-2400-78b0-ad98-a681e93b4c49"
+               : (bool_or ? "019de5fc-2400-7c2a-a3f2-e4b9d36df403"
+                          : "019dffbb-f000-7876-9644-ae83b363d3bc");
+  const std::string output_name =
+      bool_and ? "626f6f6c5f616e645f76616c7565"
+               : (bool_or ? "626f6f6c5f6f725f76616c7565"
+                          : "65766572795f76616c7565");
+  const std::string semantic_variant =
+      bool_and
+          ? "6167677265676174652e676c6f62616c2d626f6f6c2d616e642d65787072657373696f6e2e7631"
+          : (bool_or
+                 ? "6167677265676174652e676c6f62616c2d626f6f6c2d6f722d65787072657373696f6e2e7631"
+                 : "6167677265676174652e676c6f62616c2d65766572792d65787072657373696f6e2e7631");
+
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", operation);
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       input_descriptor + "|" + input_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       result_descriptor + "|" + result_type + "|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|6|-|74727565"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|6|-|66616c7365"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|6|-|74727565"},
+      {"relational_expression_v1", "5",
+       "3|-|1|-|" + bound_name + "|-|-|-"},
+      {"relational_expression_v1", "6",
+       "4|5|2|" + function_uuid + "|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|666c6167"},
+      {"relational_output_v1", "2", "2|6|2|1|0|" + output_name},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3,4"},
+      {"relational_node_v1", "2", "5|0|1|2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       semantic_variant + "|6|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
@@ -1710,6 +1814,117 @@ bool ValidateGlobalExtremumExpressionRefusalIsAtomic(const bool maximum) {
           "(expression) published evidence");
 }
 
+bool ValidateGlobalBooleanAggregateExpressionValuesSpine(
+    const BooleanAggregateKind kind) {
+  const auto first = sblr::DispatchSblrOperation(
+      {Context(), GlobalBooleanAggregateExpressionValuesEnvelope(kind), {}});
+  const auto repeated = sblr::DispatchSblrOperation(
+      {Context(), GlobalBooleanAggregateExpressionValuesEnvelope(kind), {}});
+  const auto aggregate_name = BooleanAggregateName(kind);
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached && first.canonical_result_published &&
+          first.api_result.ok && first.diagnostics.empty() &&
+          first.logical_node_count == 2 && first.logical_property_count == 0 &&
+          first.physical_node_count == 2 &&
+          first.canonical_result_column_count == 1 &&
+          first.canonical_result_row_count == 1,
+      "VALUES global " + std::string(aggregate_name) +
+          "(expression) did not traverse its selected physical DAG");
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  const bool bool_or = kind == BooleanAggregateKind::kBoolOr;
+  const std::string expected_name =
+      kind == BooleanAggregateKind::kBoolAnd
+          ? "bool_and_value"
+          : (bool_or ? "bool_or_value" : "every_value");
+  passed &= Require(
+      columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name == "boolean" &&
+          columns[0].encoded_descriptor.find("nullability=nullable") !=
+              std::string::npos &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == expected_name &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null &&
+          rows[0].fields[0].second.encoded_value ==
+              (bool_or ? "true" : "false"),
+      "global " + std::string(aggregate_name) +
+          "(expression) did not ignore SQL NULL or publish its typed boolean "
+          "state");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "identical global " + std::string(aggregate_name) +
+          "(expression) input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
+    const BooleanAggregateKind kind) {
+  auto function_drift = GlobalBooleanAggregateExpressionValuesEnvelope(kind);
+  auto result_nullability_drift =
+      GlobalBooleanAggregateExpressionValuesEnvelope(kind);
+  auto non_boolean_input =
+      GlobalBooleanAggregateExpressionValuesEnvelope(kind);
+  for (auto& operand : function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "6") {
+      operand.value =
+          "4|5|2|019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+    }
+  }
+  const bool bool_and = kind == BooleanAggregateKind::kBoolAnd;
+  const bool bool_or = kind == BooleanAggregateKind::kBoolOr;
+  for (auto& operand : result_nullability_drift.operands) {
+    if (operand.type == "relational_descriptor_v1" && operand.name == "2") {
+      operand.value =
+          (bool_and ? "019f0000-0000-7300-8000-000000009603|"
+                      "019f0000-0000-7400-8000-000000009604|1|-|-|-|-|-"
+                    : (bool_or
+                           ? "019f0000-0000-7300-8000-000000009703|"
+                             "019f0000-0000-7400-8000-000000009704|1|-|-|-|-|-"
+                           : "019f0000-0000-7300-8000-000000009803|"
+                             "019f0000-0000-7400-8000-000000009804|1|-|-|-|-|-"));
+    }
+  }
+  for (auto& operand : non_boolean_input.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "1" || operand.name == "3" ||
+         operand.name == "4")) {
+      operand.value = operand.name == "3" ? "1|-|1|-|-|1|-|30"
+                                           : "1|-|1|-|-|1|-|31";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(function_drift)) &&
+          refused_atomically(std::move(result_nullability_drift)) &&
+          refused_atomically(std::move(non_boolean_input)),
+      "function-, result-, or input-type-drifted " +
+          std::string(BooleanAggregateName(kind)) +
+          "(expression) published evidence");
+}
+
 bool ValidateSortValuesSpine() {
   const auto first = sblr::DispatchSblrOperation(
       {Context(), SortValuesEnvelope(), {}});
@@ -1880,6 +2095,18 @@ int main() {
                       ValidateGlobalExtremumExpressionRefusalIsAtomic(false) &&
                       ValidateGlobalExtremumExpressionValuesSpine(true) &&
                       ValidateGlobalExtremumExpressionRefusalIsAtomic(true) &&
+                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
+                          BooleanAggregateKind::kBoolAnd) &&
+                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
+                          BooleanAggregateKind::kBoolAnd) &&
+                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
+                          BooleanAggregateKind::kBoolOr) &&
+                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
+                          BooleanAggregateKind::kBoolOr) &&
+                      ValidateGlobalBooleanAggregateExpressionValuesSpine(
+                          BooleanAggregateKind::kEvery) &&
+                      ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
+                          BooleanAggregateKind::kEvery) &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&

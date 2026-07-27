@@ -757,6 +757,18 @@ bool ValidateCanonicalAggregateRegistry() {
                               api::EngineValueState::sql_null,
                       "empty MIN/MAX did not produce typed SQL NULL");
   }
+  for (const auto function : {exec::CanonicalAggregateFunction::bool_and,
+                              exec::CanonicalAggregateFunction::bool_or,
+                              exec::CanonicalAggregateFunction::every}) {
+    auto empty_boolean = Request(function, 2, 2103, "boolean");
+    empty_boolean.input_batch.rows.clear();
+    empty = exec::ExecuteCanonicalAggregateRuntime(empty_boolean);
+    passed &= Require(empty.diagnostic.ok &&
+                          empty.output_batch.rows[0].values[0].state ==
+                              api::EngineValueState::sql_null,
+                      "empty BOOL_AND/BOOL_OR/EVERY did not produce typed SQL "
+                      "NULL");
+  }
   auto empty_count = Request(exec::CanonicalAggregateFunction::count, 0, 0,
                              "int64", true);
   empty_count.input_batch.rows.clear();
