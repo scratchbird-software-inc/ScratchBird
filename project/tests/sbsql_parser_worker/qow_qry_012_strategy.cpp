@@ -146,6 +146,14 @@ exec::CanonicalJoinStrategyRequest Request() {
   return request;
 }
 
+void SelectStrategy(exec::CanonicalJoinStrategyRequest* request,
+                    const exec::CanonicalJoinStrategyKind strategy,
+                    const std::string& implementation_id) {
+  request->strategy = strategy;
+  request->residual_request.key_request.physical_dag.nodes.back()
+      .implementation_id = implementation_id;
+}
+
 // QOW-TEST-QRY-012-STRATEGY-V1
 bool ValidateJoinStrategy() {
   bool passed = true;
@@ -156,6 +164,7 @@ bool ValidateJoinStrategy() {
           result.canonical_pair_indices == expected_pairs &&
           result.strategy_pair_indices == expected_pairs &&
           result.hash_entry_count == 3 &&
+          result.retained_entry_count == 3 &&
           result.candidate_probe_count == 5 &&
           result.output_batch.rows.size() == 3 &&
           result.strategy_id == "join.hash-inner.int64-equality.v1" &&
@@ -163,6 +172,35 @@ bool ValidateJoinStrategy() {
       "hash-inner strategy did not prove the canonical physical-pair multiset");
 
   auto request = Request();
+  SelectStrategy(&request, exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+                 "join.nested-loop-inner.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_pair_indices == expected_pairs &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.hash_entry_count == 0 && result.retained_entry_count == 0 &&
+          result.candidate_probe_count == 5 &&
+          result.output_batch.rows.size() == 3 &&
+          result.strategy_id == "join.nested-loop-inner.v1",
+      "nested-loop strategy did not prove the canonical physical-pair multiset");
+
+  request = Request();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+                 "join.merge-inner.int64-equality.v1");
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(
+      result.diagnostic.ok && result.canonical_multiset_proven &&
+          result.canonical_pair_indices == expected_pairs &&
+          result.strategy_pair_indices == expected_pairs &&
+          result.hash_entry_count == 0 && result.retained_entry_count == 6 &&
+          result.candidate_probe_count == 5 &&
+          result.output_batch.rows.size() == 3 &&
+          result.strategy_id == "join.merge-inner.int64-equality.v1",
+      "merge strategy did not prove the canonical physical-pair multiset");
+
+  request = Request();
   request.strategy = static_cast<exec::CanonicalJoinStrategyKind>(99);
   result = exec::ExecuteCanonicalJoinStrategy(request);
   passed &= Require(!result.diagnostic.ok && !result.canonical_multiset_proven &&
@@ -184,10 +222,39 @@ bool ValidateJoinStrategy() {
                     "composite key entered the one-key strategy profile");
 
   request = Request();
+  SelectStrategy(&request, exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+                 "join.nested-loop-inner.v1");
+  request.residual_request.key_request.key_terms.push_back(
+      {.left_column = 1,
+       .left_expression_descriptor_id = 2302,
+       .right_column = 1,
+       .right_expression_descriptor_id = 2304});
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(result.diagnostic.ok && result.canonical_multiset_proven &&
+                        result.strategy_pair_indices.empty() &&
+                        result.candidate_probe_count == 0,
+                    "nested-loop strategy rejected a valid composite key");
+
+  request = Request();
   request.maximum_hash_entries = 2;
   result = exec::ExecuteCanonicalJoinStrategy(request);
   passed &= Require(!result.diagnostic.ok && result.hash_entry_count == 0,
                     "hash strategy entry bound was exceeded");
+
+  request = Request();
+  request.maximum_retained_entries = 2;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.retained_entry_count == 0,
+                    "hash strategy retained-state bound was exceeded");
+
+  request = Request();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+                 "join.merge-inner.int64-equality.v1");
+  request.maximum_retained_entries = 5;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.retained_entry_count == 0,
+                    "merge strategy retained-state bound was exceeded");
 
   request = Request();
   request.maximum_candidate_probes = 4;
@@ -196,10 +263,44 @@ bool ValidateJoinStrategy() {
                     "hash strategy probe bound was exceeded");
 
   request = Request();
+  SelectStrategy(&request, exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+                 "join.nested-loop-inner.v1");
+  request.maximum_candidate_probes = 4;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.candidate_probe_count == 0,
+                    "nested-loop strategy probe bound was exceeded");
+
+  request = Request();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+                 "join.merge-inner.int64-equality.v1");
+  request.maximum_candidate_probes = 4;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.candidate_probe_count == 0,
+                    "merge strategy probe bound was exceeded");
+
+  request = Request();
   request.maximum_output_rows = 2;
   result = exec::ExecuteCanonicalJoinStrategy(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
                     "hash strategy output bound was exceeded");
+
+  request = Request();
+  SelectStrategy(&request, exec::CanonicalJoinStrategyKind::kNestedLoopInner,
+                 "join.nested-loop-inner.v1");
+  request.maximum_output_rows = 2;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "nested-loop strategy output bound was exceeded");
+
+  request = Request();
+  SelectStrategy(&request,
+                 exec::CanonicalJoinStrategyKind::kMergeInnerInt64Equality,
+                 "join.merge-inner.int64-equality.v1");
+  request.maximum_output_rows = 2;
+  result = exec::ExecuteCanonicalJoinStrategy(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "merge strategy output bound was exceeded");
 
   request = Request();
   request.residual_request.key_request.left_batch.rows[0]

@@ -636,6 +636,8 @@ struct CanonicalJoinKindResult {
 
 enum class CanonicalJoinStrategyKind : std::uint8_t {
   kHashInnerInt64Equality = 1,
+  kNestedLoopInner,
+  kMergeInnerInt64Equality,
 };
 
 struct CanonicalJoinStrategyRequest {
@@ -643,6 +645,7 @@ struct CanonicalJoinStrategyRequest {
   CanonicalJoinStrategyKind strategy =
       CanonicalJoinStrategyKind::kHashInnerInt64Equality;
   std::size_t maximum_hash_entries = 1048576;
+  std::size_t maximum_retained_entries = 1048576;
   std::size_t maximum_candidate_probes = 1048576;
   std::size_t maximum_output_rows = 1048576;
 };
@@ -653,6 +656,7 @@ struct CanonicalJoinStrategyResult {
   std::vector<std::size_t> canonical_pair_indices;
   std::vector<std::size_t> strategy_pair_indices;
   std::size_t hash_entry_count = 0;
+  std::size_t retained_entry_count = 0;
   std::size_t candidate_probe_count = 0;
   bool canonical_multiset_proven = false;
   std::string strategy_id;
