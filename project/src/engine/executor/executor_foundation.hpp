@@ -192,6 +192,7 @@ enum class CanonicalRegistryWindowAggregateStateStrategy : std::uint8_t {
   unknown = 0,
   frame_recompute = 1,
   moving_inverse,
+  state_spill,
 };
 
 struct CanonicalRegistryWindowAggregateRequest {
@@ -223,7 +224,7 @@ struct CanonicalRegistryWindowAggregateResult {
   bool effective_frame_recomputed = false;
   bool moving_inverse_state_used = false;
   bool state_strategy_selected_from_physical_plan = false;
-  bool frame_membership_spill_required = false;
+  bool aggregate_state_spill_required = false;
   CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
       CanonicalRegistryWindowAggregateStateStrategy::unknown;
   std::string selected_state_implementation_id;
@@ -242,6 +243,7 @@ struct CanonicalRegistryWindowAggregateSpillRequest {
   std::uint64_t runtime_generation = 0;
   std::uint64_t reopen_runtime_generation = 0;
   std::uint64_t memory_quota_bytes = 0;
+  std::size_t maximum_serialized_state_bytes = 16777216;
   std::size_t maximum_spill_record_count = 8388608;
   bool cancellation_requested = false;
   bool cleanup_after_cancellation = true;
@@ -251,7 +253,9 @@ struct CanonicalRegistryWindowAggregateSpillRequest {
 struct CanonicalRegistryWindowAggregateSpillResult {
   DescriptorRuntimeDiagnostic diagnostic;
   CanonicalRegistryWindowAggregateResult aggregate_result;
-  std::size_t spilled_frame_reference_count = 0;
+  std::size_t spilled_aggregate_state_count = 0;
+  std::size_t serialized_aggregate_state_bytes = 0;
+  std::size_t spilled_aggregate_state_record_count = 0;
   bool spilled = false;
   bool spill_reopened = false;
   bool cleanup_proven = false;
@@ -317,7 +321,7 @@ struct CanonicalWindowRuntimeResult {
   bool moving_inverse_state_used = false;
   bool effective_frame_recomputed = false;
   bool aggregate_state_strategy_selected_from_physical_plan = false;
-  bool aggregate_frame_membership_spill_used = false;
+  bool aggregate_state_spill_used = false;
   bool aggregate_spill_reopened = false;
   bool aggregate_spill_cleanup_proven = false;
   CanonicalRegistryWindowAggregateStateStrategy
@@ -326,7 +330,9 @@ struct CanonicalWindowRuntimeResult {
   std::string selected_aggregate_state_implementation_id;
   std::size_t aggregate_transition_count = 0;
   std::size_t aggregate_inverse_transition_count = 0;
-  std::size_t aggregate_spilled_frame_reference_count = 0;
+  std::size_t aggregate_spilled_state_count = 0;
+  std::size_t aggregate_serialized_state_bytes = 0;
+  std::size_t aggregate_spilled_state_record_count = 0;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string window_property_uuid;
   std::string selected_plan_uuid;

@@ -103,6 +103,9 @@ void SelectRegistryWindowStateStrategy(
     case exec::CanonicalRegistryWindowAggregateStateStrategy::moving_inverse:
       implementation_id = "window.aggregate-registry-moving-inverse.v1";
       break;
+    case exec::CanonicalRegistryWindowAggregateStateStrategy::state_spill:
+      implementation_id = "window.aggregate-registry-state-spill.v1";
+      break;
     case exec::CanonicalRegistryWindowAggregateStateStrategy::unknown:
       implementation_id = "window.aggregate-registry-unknown.v1";
       break;
@@ -260,7 +263,7 @@ bool ValidateRegistryAggregateWindowState() {
               exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
           result.selected_state_implementation_id ==
               "window.aggregate-registry-frame-recompute.v1" &&
-          !result.frame_membership_spill_required &&
+          !result.aggregate_state_spill_required &&
           result.descriptor.function == exec::CanonicalAggregateFunction::avg &&
           result.selected_plan_uuid == request.frames.selected_plan_uuid &&
           result.executed_physical_node_id ==
@@ -558,7 +561,7 @@ exec::CanonicalRegistryWindowAggregateSpillRequest RegistryWindowSpillRequest(
   exec::CanonicalRegistryWindowAggregateSpillRequest request;
   request.aggregate_request = RegistryAverageWindowRequest(PrefixFrame());
   request.aggregate_request.aggregate_template.physical_dag.nodes[1]
-      .implementation_id = "window.aggregate-registry-frame-spill.v1";
+      .implementation_id = "window.aggregate-registry-state-spill.v1";
   request.spill_root = root;
   request.spill_owner_uuid = WindowUuid(5301);
   request.runtime_generation = 5302;
@@ -614,12 +617,14 @@ bool ValidateRegistryAggregateWindowSpill(
       result.diagnostic.ok && result.spilled && result.spill_reopened &&
           result.cleanup_proven &&
           result.aggregate_result.state_strategy_selected_from_physical_plan &&
-          result.aggregate_result.frame_membership_spill_required &&
+          result.aggregate_result.aggregate_state_spill_required &&
           result.aggregate_result.selected_state_strategy ==
-              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+              exec::CanonicalRegistryWindowAggregateStateStrategy::state_spill &&
           result.aggregate_result.selected_state_implementation_id ==
-              "window.aggregate-registry-frame-spill.v1" &&
-          result.spilled_frame_reference_count == 20 &&
+              "window.aggregate-registry-state-spill.v1" &&
+          result.spilled_aggregate_state_count == 9 &&
+          result.serialized_aggregate_state_bytes != 0 &&
+          result.spilled_aggregate_state_record_count != 0 &&
           RegistryAggregateTexts(result.aggregate_result) ==
               std::vector<std::string>({"101", "103", "103", "102",
                                         "103.25", "102", "103", "103.5",
@@ -635,7 +640,34 @@ bool ValidateRegistryAggregateWindowSpill(
               "orh283.mga_finality_authority=engine_transaction_inventory") &&
           !HasWindowSpillArtifact(root) &&
           std::filesystem::exists(sentinel),
-      "aggregate window spill did not reopen exact frame membership");
+      "aggregate window spill did not restore exact frame aggregate state");
+
+  auto modifier_spill = RegistryWindowSpillRequest(root);
+  modifier_spill.aggregate_request.aggregate_template.filter_truth_values =
+      AggregateFilterTruthValues();
+  modifier_spill.aggregate_request.aggregate_template.distinct = true;
+  modifier_spill.aggregate_request.aggregate_template.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  modifier_spill.aggregate_request.aggregate_template.aggregate_order_terms = {
+      {.column = 4, .expression_descriptor_id = 4005}};
+  auto modifier_baseline_request = modifier_spill.aggregate_request;
+  SelectRegistryWindowStateStrategy(
+      &modifier_baseline_request,
+      exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute);
+  const auto modifier_baseline =
+      exec::ExecuteCanonicalRegistryWindowAggregate(modifier_baseline_request);
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(modifier_spill);
+  passed &= Require401(
+      result.diagnostic.ok && result.spilled && result.spill_reopened &&
+          result.cleanup_proven && result.spilled_aggregate_state_count == 9 &&
+          SameRegistryAggregateValues(result.aggregate_result,
+                                      modifier_baseline) &&
+          result.aggregate_result.distinct_tuple_count ==
+              modifier_baseline.distinct_tuple_count &&
+          result.aggregate_result.order_comparison_count ==
+              modifier_baseline.order_comparison_count &&
+          !HasWindowSpillArtifact(root),
+      "aggregate state spill lost frame-local FILTER/DISTINCT/order semantics");
 
   auto direct_spill = RegistryWindowSpillRequest(root).aggregate_request;
   passed &= Require401(
@@ -643,6 +675,16 @@ bool ValidateRegistryAggregateWindowSpill(
           exec::ExecuteCanonicalRegistryWindowAggregate(direct_spill),
           {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY"}),
       "selected spill implementation bypassed the spill runtime");
+
+  auto retired_membership_spill = RegistryWindowSpillRequest(root);
+  retired_membership_spill.aggregate_request.aggregate_template.physical_dag
+      .nodes[1]
+      .implementation_id = "window.aggregate-registry-frame-spill.v1";
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(
+      retired_membership_spill);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
+      "retired frame-membership spill implementation remained executable");
 
   auto mismatched_spill = RegistryWindowSpillRequest(root);
   SelectRegistryWindowStateStrategy(
@@ -687,11 +729,18 @@ bool ValidateRegistryAggregateWindowSpill(
       "aggregate window non-spilled route published benchmark values");
 
   request = RegistryWindowSpillRequest(root);
-  request.maximum_spill_record_count = 19;
+  request.maximum_spill_record_count = 1;
   result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
   passed &= Require401(
       RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
-      "aggregate window exceeded the frame-reference spill bound");
+      "aggregate window exceeded the transition-state spill bound");
+
+  request = RegistryWindowSpillRequest(root);
+  request.maximum_serialized_state_bytes = 1;
+  result = exec::ExecuteCanonicalRegistryWindowAggregateSpill(request);
+  passed &= Require401(
+      RegistryWindowSpillRefused(result) && !HasWindowSpillArtifact(root),
+      "aggregate window exceeded the serialized-state byte bound");
 
   request = RegistryWindowSpillRequest(root);
   request.aggregate_request.aggregate_template.physical_dag.spill_allowed =

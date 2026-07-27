@@ -2398,8 +2398,10 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     }
   }
   if (selected_node == nullptr ||
-      selected_node->implementation_id !=
-          "aggregate.registry-state-spill.v1" ||
+      (selected_node->implementation_id !=
+           "aggregate.registry-state-spill.v1" &&
+       selected_node->implementation_id !=
+           "window.aggregate-registry-state-spill.v1") ||
       !request.aggregate_request.physical_dag.spill_allowed) {
     return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-STRATEGY-V1",
                   "aggregate state spill was not selected and permitted by the physical plan");

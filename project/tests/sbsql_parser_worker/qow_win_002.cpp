@@ -365,15 +365,17 @@ bool ValidateAggregateStrategyAndRefusals() {
           RuntimeResultAccepted(runtime, *request.forced_strategy,
                                 spill_expected.values) &&
           runtime.aggregate_registry_bridge_used &&
-          runtime.aggregate_frame_membership_spill_used &&
+          runtime.aggregate_state_spill_used &&
           runtime.aggregate_spill_reopened &&
           runtime.aggregate_spill_cleanup_proven &&
-          runtime.aggregate_spilled_frame_reference_count == 20 &&
+          runtime.aggregate_spilled_state_count == 9 &&
+          runtime.aggregate_serialized_state_bytes != 0 &&
+          runtime.aggregate_spilled_state_record_count != 0 &&
           runtime.aggregate_state_strategy_selected_from_physical_plan &&
           runtime.selected_aggregate_state_strategy ==
-              exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
+              exec::CanonicalRegistryWindowAggregateStateStrategy::state_spill &&
           runtime.selected_aggregate_state_implementation_id ==
-              "window.aggregate-registry-frame-spill.v1" &&
+              "window.aggregate-registry-state-spill.v1" &&
           !HasWindowSpillArtifact(spill_root),
       "unified runtime did not consume the optimizer-selected spill implementation");
   std::filesystem::remove_all(spill_root, filesystem_error);

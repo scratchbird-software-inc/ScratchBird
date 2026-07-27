@@ -4599,8 +4599,8 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
 
 // QOW-SOURCE-WIN-012-REGISTRY-BRIDGE-V1
 // Execute the exact state strategy named by the optimizer-published aggregate
-// window node.  Direct execution admits recomputation or moving inverse state;
-// the spill wrapper alone may consume the frame-spill implementation.
+// window node. Direct execution admits recomputation or moving inverse state;
+// the spill wrapper alone may consume the aggregate-state-spill implementation.
 static CanonicalRegistryWindowAggregateResult
 ExecuteCanonicalRegistryWindowAggregateSelected(
     const CanonicalRegistryWindowAggregateRequest& request,
@@ -4693,7 +4693,7 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   }
   CanonicalRegistryWindowAggregateStateStrategy selected_state_strategy =
       CanonicalRegistryWindowAggregateStateStrategy::unknown;
-  bool frame_membership_spill_required = false;
+  bool aggregate_state_spill_required = false;
   if (aggregate_node->implementation_id.rfind(
           "window.aggregate-registry-", 0) != 0) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-PHYSICAL",
@@ -4708,18 +4708,18 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     selected_state_strategy =
         CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
   } else if (aggregate_node->implementation_id ==
-             "window.aggregate-registry-frame-spill.v1") {
+             "window.aggregate-registry-state-spill.v1") {
     selected_state_strategy =
-        CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
-    frame_membership_spill_required = true;
+        CanonicalRegistryWindowAggregateStateStrategy::state_spill;
+    aggregate_state_spill_required = true;
   } else {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
                   "optimizer selected an unknown aggregate window state implementation");
   }
-  if (frame_membership_spill_required != spill_execution_context) {
+  if (aggregate_state_spill_required != spill_execution_context) {
     return refuse(
         "QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
-        frame_membership_spill_required
+        aggregate_state_spill_required
             ? "selected aggregate window spill requires the spill runtime"
             : "aggregate window spill payload does not match the selected implementation");
   }
@@ -4892,11 +4892,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   result.diagnostic = {};
   result.descriptor = aggregate_template.descriptor;
   result.effective_frame_recomputed =
-      selected_state_strategy ==
-      CanonicalRegistryWindowAggregateStateStrategy::frame_recompute;
+      selected_state_strategy !=
+      CanonicalRegistryWindowAggregateStateStrategy::moving_inverse;
   result.state_strategy_selected_from_physical_plan = true;
-  result.frame_membership_spill_required =
-      frame_membership_spill_required;
+  result.aggregate_state_spill_required = aggregate_state_spill_required;
   result.selected_state_strategy = selected_state_strategy;
   result.selected_state_implementation_id =
       aggregate_node->implementation_id;
@@ -4917,11 +4916,11 @@ ExecuteCanonicalRegistryWindowAggregate(
 }
 
 // QOW-SOURCE-WIN-012-REGISTRY-SPILL-V1
-// Materialize effective-frame membership through the engine temporary-work
-// runtime, reopen it under exact MGA/security recheck authority, and publish
-// the registry aggregate result only after the reopened reference stream is
-// byte-for-byte equivalent to the in-memory fallback.  Temporary metadata is
-// advisory work state and never owns visibility, finality, or recovery.
+// Recompute each effective frame through the canonical aggregate authority,
+// serialize its complete transition state, and restore/finalize that state
+// through engine-owned temporary work. The already optimizer-published window
+// implementation owns selection of this route; temporary metadata remains
+// advisory and never owns visibility, finality, or recovery.
 CanonicalRegistryWindowAggregateSpillResult
 ExecuteCanonicalRegistryWindowAggregateSpill(
     const CanonicalRegistryWindowAggregateSpillRequest& request) {
@@ -4940,15 +4939,16 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
     return refuse(canonical.diagnostic.diagnostic_code,
                   canonical.diagnostic.detail);
   }
-  if (!canonical.frame_membership_spill_required ||
+  if (!canonical.aggregate_state_spill_required ||
       canonical.selected_state_implementation_id !=
-          "window.aggregate-registry-frame-spill.v1") {
+          "window.aggregate-registry-state-spill.v1") {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-STRATEGY",
                   "window aggregate spill did not consume its selected physical implementation");
   }
   if (request.spill_root.empty() || !request.spill_root.is_absolute() ||
       !IsCanonicalUuid(request.spill_owner_uuid) ||
       request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
+      request.maximum_serialized_state_bytes == 0 ||
       request.maximum_spill_record_count == 0 ||
       !request.aggregate_request.aggregate_template.physical_dag.spill_allowed) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
@@ -4974,65 +4974,136 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                   "window aggregate spill owner already has an artifact");
   }
 
-  const auto fixed_width = [](const std::size_t value) {
-    auto text = std::to_string(value);
-    if (text.size() < 20) text.insert(0, 20 - text.size(), '0');
-    return text;
-  };
-  TempSpillRequest spill;
-  spill.route_kind = TempSpillRouteKind::kSort;
-  spill.route_label =
-      "qow405.window-aggregate-frame." + request.spill_owner_uuid;
-  spill.spill_directory = owner_directory;
-  spill.runtime_generation = request.runtime_generation;
-  spill.reopen_runtime_generation = request.reopen_runtime_generation;
-  spill.memory_quota_bytes = request.memory_quota_bytes;
-  spill.cancellation_requested = request.cancellation_requested;
-  spill.cleanup_after_cancellation = request.cleanup_after_cancellation;
-  spill.restart_recovery_proof_available =
-      request.restart_recovery_proof_available;
-  spill.authority.engine_mga_snapshot_bound = true;
-  spill.authority.transaction_inventory_authoritative = true;
-  spill.authority.security_recheck_required = true;
-  spill.authority.security_context_bound = true;
-  spill.authority.exact_recheck_required = true;
+  if (canonical.frame_row_indices.empty()) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EMPTY",
+                  "window aggregate has no transition states to spill");
+  }
 
-  std::vector<std::string> expected_reopened_rows;
+  namespace api = scratchbird::engine::internal_api;
+  auto reopened = canonical;
+  reopened.values.clear();
+  reopened.transition_count = 0;
+  reopened.inverse_transition_count = 0;
+  reopened.distinct_tuple_count = 0;
+  reopened.order_comparison_count = 0;
+  reopened.combined_state_bytes = 0;
+  const auto within_total = [](const std::size_t next,
+                               const std::size_t current,
+                               const std::size_t maximum) {
+    return current <= maximum && next <= maximum - current;
+  };
   for (std::size_t frame_index = 0;
        frame_index < canonical.frame_row_indices.size(); ++frame_index) {
-    const auto& frame = canonical.frame_row_indices[frame_index];
-    for (std::size_t member_index = 0; member_index < frame.size();
-         ++member_index) {
-      if (spill.rows.size() >= request.maximum_spill_record_count ||
-          frame[member_index] >
-              static_cast<std::size_t>(
-                  std::numeric_limits<std::int64_t>::max())) {
-        return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
-                      "window aggregate frame-reference spill bound is exceeded");
-      }
-      const auto key = "qow405.frame." + fixed_width(frame_index) +
-                       ".member." + fixed_width(member_index);
-      const auto value = static_cast<std::int64_t>(frame[member_index]);
-      const auto ordinal =
-          static_cast<std::uint64_t>(spill.rows.size() + 1);
-      spill.rows.push_back({key, value, ordinal});
-      expected_reopened_rows.push_back(
-          key + ":" + std::to_string(value) + ":" +
-          std::to_string(ordinal));
+    const auto remaining_bytes = request.maximum_serialized_state_bytes -
+                                 result.serialized_aggregate_state_bytes;
+    const auto remaining_records = request.maximum_spill_record_count -
+                                   result.spilled_aggregate_state_record_count;
+    if (remaining_bytes == 0 || remaining_records == 0) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                    "window aggregate state spill bound is exhausted");
     }
-  }
-  if (spill.rows.empty()) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EMPTY",
-                  "window aggregate has no frame references to spill");
-  }
 
-  const auto spilled = ExecuteBoundedTempSpillRoute(spill);
-  result.spilled = spilled.spilled;
-  result.spill_reopened = spilled.reopen_recovery_proven;
-  result.cleanup_proven = spilled.cleanup_proven;
-  result.cancellation_observed = request.cancellation_requested;
-  result.spill_evidence = spilled.evidence;
-  result.spilled_frame_reference_count = spill.rows.size();
+    auto aggregate = request.aggregate_request.aggregate_template;
+    aggregate.input_batch.columns =
+        request.aggregate_request.frames.ordered_batch.columns;
+    const auto& frame = canonical.frame_row_indices[frame_index];
+    aggregate.input_batch.rows.reserve(frame.size());
+    for (const auto row : frame) {
+      aggregate.input_batch.rows.push_back(
+          request.aggregate_request.frames.ordered_batch.rows[row]);
+    }
+    if (request.aggregate_request.aggregate_template.filter_truth_values
+            .has_value()) {
+      std::vector<api::EngineSqlTruthValue> filter;
+      filter.reserve(frame.size());
+      for (const auto row : frame) {
+        filter.push_back(
+            (*request.aggregate_request.aggregate_template.filter_truth_values)
+                [row]);
+      }
+      aggregate.filter_truth_values = std::move(filter);
+    }
+
+    CanonicalAggregateStateSpillRequest state_request;
+    state_request.aggregate_request = std::move(aggregate);
+    state_request.spill_root = request.spill_root;
+    state_request.spill_owner_uuid = request.spill_owner_uuid;
+    state_request.runtime_generation = request.runtime_generation;
+    state_request.reopen_runtime_generation =
+        request.reopen_runtime_generation;
+    state_request.memory_quota_bytes = request.memory_quota_bytes;
+    state_request.maximum_serialized_state_bytes = remaining_bytes;
+    state_request.maximum_spill_record_count = remaining_records;
+    state_request.cancellation_requested = request.cancellation_requested;
+    state_request.cleanup_after_cancellation =
+        request.cleanup_after_cancellation;
+    state_request.restart_recovery_proof_available =
+        request.restart_recovery_proof_available;
+    auto state = ExecuteCanonicalAggregateStateSpill(state_request);
+
+    result.spilled = result.spilled || state.spilled;
+    result.spill_reopened = result.spill_reopened || state.spill_reopened;
+    result.cleanup_proven =
+        frame_index == 0
+            ? state.cleanup_proven
+            : result.cleanup_proven && state.cleanup_proven;
+    result.cancellation_observed =
+        result.cancellation_observed || state.cancellation_observed;
+    result.spill_evidence.insert(result.spill_evidence.end(),
+                                 state.spill_evidence.begin(),
+                                 state.spill_evidence.end());
+    if (!state.diagnostic.ok) {
+      return refuse(state.diagnostic.diagnostic_code,
+                    state.diagnostic.detail);
+    }
+    if (!state.state_serialized || !state.spilled ||
+        !state.spill_reopened || !state.state_restored ||
+        !state.restored_result_equivalent || !state.cleanup_proven ||
+        state.aggregate_result.output_batch.rows.size() != 1 ||
+        state.aggregate_result.output_batch.rows.front().values.size() != 1 ||
+        state.aggregate_result.selected_plan_uuid !=
+            canonical.selected_plan_uuid ||
+        state.aggregate_result.executed_physical_node_id !=
+            canonical.executed_physical_node_id ||
+        state.aggregate_result.causal_counter_id != canonical.causal_counter_id) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EVIDENCE",
+                    "restored aggregate frame state evidence is inconsistent");
+    }
+    if (!within_total(state.serialized_state_bytes,
+                      result.serialized_aggregate_state_bytes,
+                      request.maximum_serialized_state_bytes) ||
+        !within_total(state.spilled_state_record_count,
+                      result.spilled_aggregate_state_record_count,
+                      request.maximum_spill_record_count) ||
+        !within_total(state.aggregate_result.transition_count,
+                      reopened.transition_count,
+                      request.aggregate_request.maximum_transition_count) ||
+        !within_total(state.aggregate_result.distinct_tuple_count,
+                      reopened.distinct_tuple_count,
+                      request.aggregate_request.maximum_distinct_tuple_count) ||
+        !within_total(
+            state.aggregate_result.order_comparison_count,
+            reopened.order_comparison_count,
+            request.aggregate_request.maximum_order_comparison_count) ||
+        !within_total(state.aggregate_result.state_bytes,
+                      reopened.combined_state_bytes,
+                      request.aggregate_request.maximum_combined_state_bytes)) {
+      return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
+                    "restored aggregate frame state exceeds its combined bound");
+    }
+    ++result.spilled_aggregate_state_count;
+    result.serialized_aggregate_state_bytes += state.serialized_state_bytes;
+    result.spilled_aggregate_state_record_count +=
+        state.spilled_state_record_count;
+    reopened.transition_count += state.aggregate_result.transition_count;
+    reopened.distinct_tuple_count +=
+        state.aggregate_result.distinct_tuple_count;
+    reopened.order_comparison_count +=
+        state.aggregate_result.order_comparison_count;
+    reopened.combined_state_bytes += state.aggregate_result.state_bytes;
+    reopened.values.push_back(std::move(
+        state.aggregate_result.output_batch.rows.front().values.front()));
+  }
 
   bool cleanup_inspection_ok = false;
   const bool artifact_remains = HasOwnedAggregateSpillArtifact(
@@ -5042,20 +5113,9 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
         RemoveOwnedAggregateSpillArtifacts(owner_directory) &&
         result.cleanup_proven;
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-CLEANUP",
-                  "window aggregate spill cleanup is incomplete");
-  }
-  if (!spilled.ok || !spilled.spilled || !spilled.cleanup_proven ||
-      !spilled.reopen_recovery_proven) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
-                  spilled.diagnostic_code + ":" + spilled.fallback_reason);
-  }
-  if (spilled.output_rows != expected_reopened_rows) {
-    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
-                  "reopened frame-reference stream differs from canonical input");
+                  "window aggregate state spill cleanup is incomplete");
   }
 
-  const auto reopened = ExecuteCanonicalRegistryWindowAggregateSelected(
-      request.aggregate_request, true);
   const auto descriptor_equal = [](const auto& left, const auto& right) {
     return left.descriptor_uuid.canonical ==
                right.descriptor_uuid.canonical &&
@@ -5074,6 +5134,7 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
       reopened.frame_row_indices != canonical.frame_row_indices ||
       reopened.frame_input_row_count != canonical.frame_input_row_count ||
       reopened.transition_count != canonical.transition_count ||
+      reopened.inverse_transition_count != canonical.inverse_transition_count ||
       reopened.distinct_tuple_count != canonical.distinct_tuple_count ||
       reopened.order_comparison_count != canonical.order_comparison_count ||
       reopened.combined_state_bytes != canonical.combined_state_bytes ||
@@ -5081,11 +5142,11 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                   canonical.values.begin(), canonical.values.end(),
                   value_equal)) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EQUIVALENCE",
-                  "reopened and in-memory aggregate window results diverge");
+                  "restored and in-memory aggregate window results diverge");
   }
 
   result.diagnostic = {};
-  result.aggregate_result = reopened;
+  result.aggregate_result = std::move(reopened);
   return result;
 }
 
@@ -5341,11 +5402,15 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
         return result;
       }
       aggregate_result = spill_result.aggregate_result;
-      result.aggregate_frame_membership_spill_used = spill_result.spilled;
+      result.aggregate_state_spill_used = spill_result.spilled;
       result.aggregate_spill_reopened = spill_result.spill_reopened;
       result.aggregate_spill_cleanup_proven = spill_result.cleanup_proven;
-      result.aggregate_spilled_frame_reference_count =
-          spill_result.spilled_frame_reference_count;
+      result.aggregate_spilled_state_count =
+          spill_result.spilled_aggregate_state_count;
+      result.aggregate_serialized_state_bytes =
+          spill_result.serialized_aggregate_state_bytes;
+      result.aggregate_spilled_state_record_count =
+          spill_result.spilled_aggregate_state_record_count;
     } else {
       aggregate_result = ExecuteCanonicalRegistryWindowAggregate(aggregate);
     }
