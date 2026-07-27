@@ -489,6 +489,67 @@ LiveListaggExpressionProfile MatchLiveListaggExpressionProfile(
   return result;
 }
 
+struct LiveOrderedSetExpressionProfile {
+  bool matched{false};
+  bool distinct{false};
+  bool has_filter{false};
+  exec::CanonicalAggregateFunction function =
+      exec::CanonicalAggregateFunction::unknown;
+  std::string transformation_id;
+};
+
+LiveOrderedSetExpressionProfile MatchLiveOrderedSetExpressionProfile(
+    const std::string_view semantic_variant_id) {
+  LiveOrderedSetExpressionProfile result;
+  struct FunctionProfile {
+    std::string_view prefix;
+    exec::CanonicalAggregateFunction function;
+  };
+  static constexpr std::array<FunctionProfile, 7> kFunctionProfiles = {{
+      {"aggregate.global-rank-hypothetical",
+       exec::CanonicalAggregateFunction::rank},
+      {"aggregate.global-dense-rank-hypothetical",
+       exec::CanonicalAggregateFunction::dense_rank},
+      {"aggregate.global-percent-rank-hypothetical",
+       exec::CanonicalAggregateFunction::percent_rank},
+      {"aggregate.global-cume-dist-hypothetical",
+       exec::CanonicalAggregateFunction::cume_dist},
+      {"aggregate.global-mode-ordered",
+       exec::CanonicalAggregateFunction::mode},
+      {"aggregate.global-percentile-cont-ordered",
+       exec::CanonicalAggregateFunction::percentile_cont},
+      {"aggregate.global-percentile-disc-ordered",
+       exec::CanonicalAggregateFunction::percentile_disc},
+  }};
+
+  for (const auto& profile : kFunctionProfiles) {
+    if (semantic_variant_id ==
+        std::string(profile.prefix) + "-expression.v1") {
+      result.matched = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-filter-expression.v1") {
+      result.matched = true;
+      result.has_filter = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) + "-distinct-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+    } else if (semantic_variant_id ==
+               std::string(profile.prefix) +
+                   "-distinct-filter-expression.v1") {
+      result.matched = true;
+      result.distinct = true;
+      result.has_filter = true;
+    }
+    if (!result.matched) continue;
+    result.function = profile.function;
+    result.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return result;
+  }
+  return result;
+}
+
 bool MaterializeAggregateFilterTruthValues(
     const exec::DescriptorBatch& input,
     const std::size_t filter_column,
@@ -709,6 +770,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     expected_argument_count = 0;
   } else if (is_listagg_profile) {
     expected_argument_count = listagg_profile.base_argument_count +
+                              (has_filter ? 1U : 0U);
+  } else if (is_ordered_set) {
+    expected_argument_count = (is_mode ? 1U : 2U) +
                               (has_filter ? 1U : 0U);
   } else if (has_filter) {
     expected_argument_count = 2;
@@ -1020,6 +1084,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         filter_argument_ordinal = 3;
       } else if (is_listagg_profile) {
         filter_argument_ordinal = listagg_profile.base_argument_count;
+      } else if (is_ordered_set) {
+        filter_argument_ordinal = is_mode ? 1U : 2U;
       }
       const bool is_filter_argument =
           has_filter && argument_ordinal == filter_argument_ordinal;
@@ -3414,41 +3480,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   const auto pair_statistical_profile =
       MatchLivePairStatisticalExpressionProfile(root->semantic_variant_id);
   const bool pair_statistical_expression = pair_statistical_profile.matched;
-  struct OrderedSetExpressionProfile {
-    std::string_view semantic_variant;
-    exec::CanonicalAggregateFunction function;
-    std::string_view transformation_id;
-  };
-  static constexpr std::array<OrderedSetExpressionProfile, 7>
-      kOrderedSetExpressionProfiles = {{
-          {"aggregate.global-rank-hypothetical-expression.v1",
-           exec::CanonicalAggregateFunction::rank,
-           "canonical.aggregate.global-rank-hypothetical-expression.v1"},
-          {"aggregate.global-dense-rank-hypothetical-expression.v1",
-           exec::CanonicalAggregateFunction::dense_rank,
-           "canonical.aggregate.global-dense-rank-hypothetical-expression.v1"},
-          {"aggregate.global-percent-rank-hypothetical-expression.v1",
-           exec::CanonicalAggregateFunction::percent_rank,
-           "canonical.aggregate.global-percent-rank-hypothetical-expression.v1"},
-          {"aggregate.global-cume-dist-hypothetical-expression.v1",
-           exec::CanonicalAggregateFunction::cume_dist,
-           "canonical.aggregate.global-cume-dist-hypothetical-expression.v1"},
-          {"aggregate.global-mode-ordered-expression.v1",
-           exec::CanonicalAggregateFunction::mode,
-           "canonical.aggregate.global-mode-ordered-expression.v1"},
-          {"aggregate.global-percentile-cont-ordered-expression.v1",
-           exec::CanonicalAggregateFunction::percentile_cont,
-           "canonical.aggregate.global-percentile-cont-ordered-expression.v1"},
-          {"aggregate.global-percentile-disc-ordered-expression.v1",
-           exec::CanonicalAggregateFunction::percentile_disc,
-           "canonical.aggregate.global-percentile-disc-ordered-expression.v1"},
-      }};
-  const auto ordered_set_profile = std::ranges::find_if(
-      kOrderedSetExpressionProfiles, [&](const auto& profile) {
-        return root->semantic_variant_id == profile.semantic_variant;
-      });
-  const bool ordered_set_expression =
-      ordered_set_profile != kOrderedSetExpressionProfiles.end();
+  const auto ordered_set_profile =
+      MatchLiveOrderedSetExpressionProfile(root->semantic_variant_id);
+  const bool ordered_set_expression = ordered_set_profile.matched;
   struct ApproximateExpressionProfile {
     std::string_view semantic_variant;
     exec::CanonicalAggregateFunction function;
@@ -3508,7 +3542,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     aggregate_function = pair_statistical_profile.function;
   }
   if (ordered_set_expression) {
-    aggregate_function = ordered_set_profile->function;
+    aggregate_function = ordered_set_profile.function;
   }
   if (approximate_expression) {
     aggregate_function = approximate_profile->function;
@@ -3564,13 +3598,14 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       unary_aggregate_profile.distinct || pair_statistical_profile.distinct ||
           string_aggregate_profile.distinct ||
           ordered_single_collection_profile.distinct ||
-          json_object_aggregate_profile.distinct || listagg_profile.distinct,
+          json_object_aggregate_profile.distinct || listagg_profile.distinct ||
+          ordered_set_profile.distinct,
       unary_aggregate_profile.has_filter ||
           pair_statistical_profile.has_filter ||
           string_aggregate_profile.has_filter ||
           ordered_single_collection_profile.has_filter ||
           json_object_aggregate_profile.has_filter ||
-          listagg_profile.has_filter);
+          listagg_profile.has_filter || ordered_set_profile.has_filter);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
@@ -3742,8 +3777,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (pair_statistical_expression) {
     aggregate_transformation_id = pair_statistical_profile.transformation_id;
   } else if (ordered_set_expression) {
-    aggregate_transformation_id =
-        std::string(ordered_set_profile->transformation_id);
+    aggregate_transformation_id = ordered_set_profile.transformation_id;
   } else if (approximate_expression) {
     aggregate_transformation_id =
         std::string(approximate_profile->transformation_id);

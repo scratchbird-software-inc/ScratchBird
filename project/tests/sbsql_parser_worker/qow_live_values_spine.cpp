@@ -1742,6 +1742,119 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
   return envelope;
 }
 
+sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
+    const OrderedSetAggregateProfile& profile,
+    const AggregateModifierProfile modifier) {
+  const bool has_filter = modifier != AggregateModifierProfile::kDistinct;
+  const std::string modifier_digit =
+      modifier == AggregateModifierProfile::kFilter
+          ? "1"
+          : modifier == AggregateModifierProfile::kDistinct ? "2" : "3";
+  const std::string modifier_suffix =
+      modifier == AggregateModifierProfile::kFilter
+          ? "-filter"
+          : modifier == AggregateModifierProfile::kDistinct
+                ? "-distinct"
+                : "-distinct-filter";
+  const auto fixture_uuid = [&](const std::string_view ordinal) {
+    return OrderedSetProfileUuid("91" + modifier_digit + "0",
+                                 profile.uuid_family, ordinal);
+  };
+  constexpr std::string_view kExpressionSuffix = "-expression.v1";
+  const std::string semantic_base =
+      std::string(profile.semantic_variant).substr(
+          0, profile.semantic_variant.size() - kExpressionSuffix.size());
+  const std::string semantic_variant =
+      semantic_base + modifier_suffix + std::string(kExpressionSuffix);
+  const auto tree_uuid = fixture_uuid("00");
+  const auto input_descriptor = fixture_uuid("01");
+  const auto input_type = fixture_uuid("02");
+  const auto direct_descriptor = fixture_uuid("03");
+  const auto direct_type = fixture_uuid("04");
+  const auto filter_descriptor = fixture_uuid("05");
+  const auto filter_type = fixture_uuid("06");
+  const auto result_descriptor = fixture_uuid("07");
+  const auto result_type = fixture_uuid("08");
+  const auto input_bound_name = fixture_uuid("09");
+  const auto filter_bound_name = fixture_uuid("0a");
+
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      std::string(profile.operation) + modifier_suffix);
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       input_descriptor + "|" + input_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       filter_descriptor + "|" + filter_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       result_descriptor + "|" + result_type +
+           (profile.nullable_result ? "|2|-|-|-|-|-" : "|1|-|-|-|-|-")},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|3130"},
+      {"relational_expression_v1", "2", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|3135"},
+      {"relational_expression_v1", "4", "1|-|3|-|-|6|-|66616c7365"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|3230"},
+      {"relational_expression_v1", "8", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "9", "1|-|1|-|-|1|-|3330"},
+      {"relational_expression_v1", "10", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "11", "1|-|1|-|-|1|-|3430"},
+      {"relational_expression_v1", "12", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "14", "1|-|3|-|-|6|-|74727565"},
+      {"relational_expression_v1", "15",
+       "3|-|1|-|" + input_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "17",
+       "3|-|3|-|" + filter_bound_name + "|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"},
+      {"relational_output_v1", "2", "1|2|3|1|1|73656c6563746564"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_values_row_v1", "5", "9,10"},
+      {"relational_values_row_v1", "6", "11,12"},
+      {"relational_values_row_v1", "7", "13,14"},
+      {"relational_node_v1", "1", "13|0|-|1,3|1,2,3,4,5,6,7"},
+      {"relational_node_v1", "2", "5|0|1|4|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14|-|-|-"},
+  };
+  std::string function_children = "15";
+  if (profile.direct_argument) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "2",
+         direct_descriptor + "|" + direct_type + "|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "16",
+         profile.percentile_fraction ? "1|-|2|-|-|1|-|302e3235"
+                                     : "1|-|2|-|-|1|-|3235"});
+    function_children = "16,15";
+  }
+  if (has_filter) function_children += ",17";
+  envelope.operands.push_back(
+      {"relational_expression_v1", "18",
+       "4|" + function_children + "|4|" + std::string(profile.function_uuid) +
+           "|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_output_v1", "3",
+       "2|18|4|1|0|" + EncodeHex(profile.output_name)});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "2",
+       EncodeHex(semantic_variant) + "|18|-|-|-"});
+  return envelope;
+}
+
 struct ApproximateAggregateProfile {
   std::string_view name;
   std::string_view operation;
@@ -4885,6 +4998,184 @@ bool ValidateGlobalOrderedSetAggregateRefusalIsAtomic() {
   return passed;
 }
 
+double OrderedSetAggregateModifierExpected(
+    const OrderedSetAggregateProfile& profile,
+    const AggregateModifierProfile modifier) {
+  if (profile.name == "RANK") {
+    return modifier == AggregateModifierProfile::kDistinctFilter ? 3.0 : 4.0;
+  }
+  if (profile.name == "DENSE_RANK") {
+    return modifier == AggregateModifierProfile::kDistinct ? 4.0 : 3.0;
+  }
+  if (profile.name == "PERCENT_RANK") {
+    if (modifier == AggregateModifierProfile::kFilter) return 0.75;
+    if (modifier == AggregateModifierProfile::kDistinct) return 0.6;
+    return 2.0 / 3.0;
+  }
+  if (profile.name == "CUME_DIST") {
+    if (modifier == AggregateModifierProfile::kFilter) return 0.8;
+    if (modifier == AggregateModifierProfile::kDistinct) return 2.0 / 3.0;
+    return 0.75;
+  }
+  if (profile.name == "MODE") {
+    return modifier == AggregateModifierProfile::kFilter ? 20.0 : 10.0;
+  }
+  if (profile.name == "PERCENTILE_CONT") {
+    return modifier == AggregateModifierProfile::kFilter ? 17.5 : 15.0;
+  }
+  if (profile.name == "PERCENTILE_DISC") {
+    return modifier == AggregateModifierProfile::kDistinct ? 15.0 : 10.0;
+  }
+  return 0.0;
+}
+
+bool ValidateGlobalOrderedSetAggregateModifierValuesSpine() {
+  bool passed = true;
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      const auto first = sblr::DispatchSblrOperation(
+          {Context(),
+           GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
+           {}});
+      const auto repeated = sblr::DispatchSblrOperation(
+          {Context(),
+           GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
+           {}});
+      if (!first.api_result.ok) {
+        for (const auto& diagnostic : first.api_result.diagnostics) {
+          std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+        }
+      }
+      const auto& columns = first.api_result.result_shape.columns;
+      const auto& rows = first.api_result.result_shape.rows;
+      bool exact_output =
+          columns.size() == 1 && rows.size() == 1 &&
+          columns[0].canonical_type_name ==
+              (profile.real_result ? "real64" : "int64") &&
+          columns[0].encoded_descriptor.find(
+              profile.nullable_result ? "nullability=nullable"
+                                      : "nullability=non_null") !=
+              std::string::npos &&
+          rows[0].fields.size() == 1 &&
+          rows[0].fields[0].first == profile.output_name &&
+          rows[0].fields[0].second.state == api::EngineValueState::value &&
+          !rows[0].fields[0].second.is_null;
+      if (exact_output && profile.real_result) {
+        const auto& encoded = rows[0].fields[0].second.encoded_value;
+        char* end = nullptr;
+        const double observed = std::strtod(encoded.c_str(), &end);
+        const double delta =
+            observed - OrderedSetAggregateModifierExpected(profile, modifier);
+        exact_output = end == encoded.c_str() + encoded.size() &&
+                       delta >= -1e-12 && delta <= 1e-12;
+      } else if (exact_output) {
+        exact_output =
+            rows[0].fields[0].second.encoded_value ==
+            std::to_string(static_cast<std::int64_t>(
+                OrderedSetAggregateModifierExpected(profile, modifier)));
+      }
+      passed &= Require(
+          first.accepted && first.optimizer_admitted &&
+              first.optimizer_selected && first.physical_dag_published &&
+              first.physical_dag_executed &&
+              first.runtime_actuals_attached &&
+              first.canonical_result_published && first.api_result.ok &&
+              first.diagnostics.empty() && first.logical_node_count == 2 &&
+              first.logical_property_count == 0 &&
+              first.physical_node_count == 2 && exact_output,
+          "global " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " did not execute through the selected canonical spine");
+      passed &= Require(
+          repeated.api_result.ok &&
+              repeated.selected_plan_uuid == first.selected_plan_uuid &&
+              repeated.canonical_result_bytes == first.canonical_result_bytes,
+          "identical global " + std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)) +
+              " input changed canonical plan/result bytes");
+    }
+  }
+  return passed;
+}
+
+bool ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic() {
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  const auto set_function_children =
+      [](sblr::SblrOperationEnvelope& envelope,
+         const OrderedSetAggregateProfile& profile,
+         const std::string& children) {
+        for (auto& operand : envelope.operands) {
+          if (operand.type == "relational_expression_v1" &&
+              operand.name == "18") {
+            operand.value = "4|" + children + "|4|" +
+                            std::string(profile.function_uuid) + "|-|-|-|-";
+          }
+        }
+      };
+
+  bool passed = true;
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    auto non_boolean_filter =
+        GlobalOrderedSetAggregateModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kFilter);
+    auto non_identifier_filter =
+        GlobalOrderedSetAggregateModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kFilter);
+    auto missing_filter = GlobalOrderedSetAggregateModifierValuesEnvelope(
+        profile, AggregateModifierProfile::kFilter);
+    auto distinct_extra_filter =
+        GlobalOrderedSetAggregateModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kDistinct);
+    auto direct_order_filter_inversion =
+        GlobalOrderedSetAggregateModifierValuesEnvelope(
+            profile, AggregateModifierProfile::kDistinctFilter);
+    for (auto& operand : non_boolean_filter.operands) {
+      if (operand.type == "relational_expression_v1" &&
+          (operand.name == "2" || operand.name == "4" ||
+           operand.name == "6" || operand.name == "8" ||
+           operand.name == "10" || operand.name == "12" ||
+           operand.name == "14")) {
+        operand.value = "1|-|3|-|-|1|-|31";
+      }
+    }
+    if (profile.direct_argument) {
+      set_function_children(non_identifier_filter, profile, "16,15,2");
+      set_function_children(missing_filter, profile, "16,15");
+      set_function_children(distinct_extra_filter, profile, "16,15,17");
+      set_function_children(direct_order_filter_inversion, profile,
+                            "16,17,15");
+    } else {
+      set_function_children(non_identifier_filter, profile, "15,2");
+      set_function_children(missing_filter, profile, "15");
+      set_function_children(distinct_extra_filter, profile, "15,17");
+      set_function_children(direct_order_filter_inversion, profile, "17,15");
+    }
+    passed &= refused_atomically(std::move(non_boolean_filter)) &&
+              refused_atomically(std::move(non_identifier_filter)) &&
+              refused_atomically(std::move(missing_filter)) &&
+              refused_atomically(std::move(distinct_extra_filter)) &&
+              refused_atomically(std::move(direct_order_filter_inversion));
+  }
+  return Require(
+      passed,
+      "type-, expression-shape-, arity-, or direct/order/FILTER-drifted "
+      "ordered-set modifiers published evidence");
+}
+
 bool ValidateGlobalApproximateAggregateValuesSpine() {
   bool passed = true;
   for (const auto& profile : kApproximateAggregateProfiles) {
@@ -6600,6 +6891,8 @@ int main() {
                       ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() &&
                       ValidateGlobalOrderedSetAggregateValuesSpine() &&
                       ValidateGlobalOrderedSetAggregateRefusalIsAtomic() &&
+                      ValidateGlobalOrderedSetAggregateModifierValuesSpine() &&
+                      ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic() &&
                       ValidateGlobalApproximateAggregateValuesSpine() &&
                       ValidateGlobalApproximateAggregateRefusalIsAtomic() &&
                       ValidateGlobalStringAggExpressionValuesSpine() &&
