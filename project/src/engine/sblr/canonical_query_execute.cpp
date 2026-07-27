@@ -153,6 +153,11 @@ struct PreparedGlobalAggregateRoot {
   std::vector<std::uint32_t> value_descriptor_ids;
   std::vector<exec::CanonicalDescriptorOrderTerm> aggregate_order_terms;
   std::string aggregate_separator{","};
+  exec::CanonicalListaggOverflowMode listagg_overflow_mode =
+      exec::CanonicalListaggOverflowMode::none;
+  std::size_t listagg_max_output_bytes{0};
+  std::string listagg_truncation_indicator{"..."};
+  bool listagg_with_count{true};
   exec::CanonicalAggregateDescriptor aggregate_descriptor;
   exec::ExecutorColumnDescriptor result_column;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
@@ -215,6 +220,23 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       is_string_agg &&
       root.semantic_variant_id ==
           "aggregate.global-string-agg-ordered-expression.v1";
+  const bool is_listagg =
+      function == exec::CanonicalAggregateFunction::listagg;
+  const bool is_listagg_ordered =
+      is_listagg &&
+      root.semantic_variant_id ==
+          "aggregate.global-listagg-ordered-expression.v1";
+  const bool is_listagg_overflow_error =
+      is_listagg &&
+      root.semantic_variant_id ==
+          "aggregate.global-listagg-ordered-overflow-error-expression.v1";
+  const bool is_listagg_overflow_truncate =
+      is_listagg &&
+      root.semantic_variant_id ==
+          "aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
+  const bool is_listagg_profile =
+      is_listagg_ordered || is_listagg_overflow_error ||
+      is_listagg_overflow_truncate;
   const bool is_array_agg =
       function == exec::CanonicalAggregateFunction::array_agg;
   const bool is_json_agg =
@@ -226,7 +248,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       is_ordered_single_collection || is_json_object_agg;
   if ((!is_count && !is_sum && !is_avg && !is_min && !is_max &&
        !is_boolean && !is_statistical && !is_pair_statistical &&
-       !is_string_agg && !is_ordered_collection) ||
+       !is_string_agg && !is_listagg_profile && !is_ordered_collection) ||
       (count_star && !is_count)) {
     result.detail = "global aggregate function profile is not admitted";
     return result;
@@ -276,6 +298,12 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   std::size_t expected_argument_count = 1;
   if (count_star) {
     expected_argument_count = 0;
+  } else if (is_listagg_overflow_truncate) {
+    expected_argument_count = 6;
+  } else if (is_listagg_overflow_error) {
+    expected_argument_count = 4;
+  } else if (is_listagg_ordered) {
+    expected_argument_count = 3;
   } else if (is_json_object_agg || is_ordered_string_agg) {
     expected_argument_count = 3;
   } else if (is_pair_statistical || is_string_agg ||
@@ -311,7 +339,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           dag.expressions, [&](const auto& candidate) {
             return candidate.expression_id == child_expression_id;
           });
-      if (is_string_agg && argument_ordinal == 1) {
+      if ((is_string_agg || is_listagg_profile) && argument_ordinal == 1) {
         const auto separator_descriptor = std::ranges::find_if(
             dag.descriptors, [&](const auto& candidate) {
               return argument != dag.expressions.end() &&
@@ -348,7 +376,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             separator.is_null ||
             separator.descriptor.canonical_type_name != "text") {
           result.detail =
-              "global STRING_AGG separator must be one standalone, "
+              "global STRING_AGG/LISTAGG separator must be one standalone, "
               "unqualified, non-NULL canonical text literal";
           if (!separator_detail.empty()) {
             result.detail += ": " + separator_detail;
@@ -357,6 +385,104 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         }
         result.aggregate_separator = separator.encoded_value;
         continue;
+      }
+      if (is_listagg_profile && argument_ordinal >= 3) {
+        const auto option_descriptor = std::ranges::find_if(
+            dag.descriptors, [&](const auto& candidate) {
+              return argument != dag.expressions.end() &&
+                     candidate.descriptor_id == argument->result_descriptor_id;
+            });
+        const bool exact_literal =
+            argument != dag.expressions.end() &&
+            argument->expression_kind ==
+                api::RelationalExpressionKind::kLiteral &&
+            argument->child_expression_ids.empty() &&
+            !argument->bound_name_uuid.has_value() &&
+            !argument->function_uuid.has_value() &&
+            argument->literal_kind.has_value() &&
+            !argument->operator_name.has_value() &&
+            argument->literal_or_parameter_ref.has_value() &&
+            option_descriptor != dag.descriptors.end() &&
+            option_descriptor->nullability ==
+                api::RelationalNullability::kNonNull &&
+            !option_descriptor->collation_uuid.has_value() &&
+            !option_descriptor->timezone_profile_id.has_value() &&
+            !option_descriptor->width.has_value() &&
+            !option_descriptor->precision.has_value() &&
+            !option_descriptor->scale.has_value() &&
+            argument->result_descriptor_id !=
+                root.output_descriptor_ids.front() &&
+            std::ranges::find(input_node.output_descriptor_ids,
+                              argument->result_descriptor_id) ==
+                input_node.output_descriptor_ids.end();
+        if (!exact_literal) {
+          result.detail =
+              "global LISTAGG overflow options must be standalone, "
+              "unqualified, non-NULL canonical literals";
+          return result;
+        }
+        api::EngineTypedValue option;
+        std::string option_detail;
+        if (argument_ordinal == 3) {
+          if (!expression_runtime.Evaluate(child_expression_id, "int64",
+                                           &option, &option_detail) ||
+              option.state != api::EngineValueState::value || option.is_null ||
+              option.descriptor.canonical_type_name != "int64") {
+            result.detail =
+                "global LISTAGG overflow bound must be a positive canonical "
+                "int64 literal";
+            if (!option_detail.empty()) result.detail += ": " + option_detail;
+            return result;
+          }
+          std::int64_t decoded = 0;
+          const auto [end, error] = std::from_chars(
+              option.encoded_value.data(),
+              option.encoded_value.data() + option.encoded_value.size(),
+              decoded);
+          if (error != std::errc{} ||
+              end != option.encoded_value.data() + option.encoded_value.size() ||
+              decoded <= 0 ||
+              static_cast<std::uint64_t>(decoded) >
+                  std::numeric_limits<std::size_t>::max()) {
+            result.detail =
+                "global LISTAGG overflow bound must be a positive canonical "
+                "int64 literal";
+            return result;
+          }
+          result.listagg_max_output_bytes =
+              static_cast<std::size_t>(decoded);
+          continue;
+        }
+        if (argument_ordinal == 4) {
+          if (!expression_runtime.Evaluate(child_expression_id, "text", &option,
+                                           &option_detail) ||
+              option.state != api::EngineValueState::value || option.is_null ||
+              option.descriptor.canonical_type_name != "text") {
+            result.detail =
+                "global LISTAGG truncation indicator must be a canonical "
+                "text literal";
+            if (!option_detail.empty()) result.detail += ": " + option_detail;
+            return result;
+          }
+          result.listagg_truncation_indicator = option.encoded_value;
+          continue;
+        }
+        if (argument_ordinal == 5) {
+          if (!expression_runtime.Evaluate(child_expression_id, "boolean",
+                                           &option, &option_detail) ||
+              option.state != api::EngineValueState::value || option.is_null ||
+              option.descriptor.canonical_type_name != "boolean" ||
+              (option.encoded_value != "true" &&
+               option.encoded_value != "false")) {
+            result.detail =
+                "global LISTAGG WITH/WITHOUT COUNT option must be a canonical "
+                "boolean literal";
+            if (!option_detail.empty()) result.detail += ": " + option_detail;
+            return result;
+          }
+          result.listagg_with_count = option.encoded_value == "true";
+          continue;
+        }
       }
       if (argument == dag.expressions.end() ||
           argument->expression_kind !=
@@ -397,6 +523,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           input.batch.columns[value_column].descriptor.canonical_type_name;
       const bool is_order_argument =
           (is_ordered_string_agg && argument_ordinal == 2) ||
+          (is_listagg_profile && argument_ordinal == 2) ||
           (is_ordered_single_collection && argument_ordinal == 1) ||
           (is_json_object_agg && argument_ordinal == 2);
       if (is_order_argument) {
@@ -456,6 +583,11 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             "global STRING_AGG input must be a canonical text column";
         return result;
       }
+      if (is_listagg_profile && input_type != "text") {
+        result.detail =
+            "global LISTAGG input must be a canonical text column";
+        return result;
+      }
       if (is_ordered_single_collection && input_type != "text") {
         result.detail =
             "global ARRAY_AGG/JSON_AGG input must be a canonical text column";
@@ -478,7 +610,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
   const bool result_nullable =
       is_sum || is_avg || is_min || is_max || is_boolean || is_statistical ||
       (is_pair_statistical && !is_regr_count) || is_string_agg ||
-      is_ordered_collection;
+      is_listagg_profile || is_ordered_collection;
   const auto expected_nullability =
       result_nullable ? api::RelationalNullability::kNullable
                       : api::RelationalNullability::kNonNull;
@@ -514,6 +646,9 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     } else if (is_string_agg) {
       result.detail =
           "global STRING_AGG result must be an unqualified nullable text";
+    } else if (is_listagg_profile) {
+      result.detail =
+          "global LISTAGG result must be an unqualified nullable text";
     } else if (is_array_agg) {
       result.detail =
           "global ARRAY_AGG result must be an unqualified nullable "
@@ -542,7 +677,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     engine_descriptor.canonical_type_name = "list<text nullable>";
   } else if (is_json_agg || is_json_object_agg) {
     engine_descriptor.canonical_type_name = "json";
-  } else if (is_string_agg) {
+  } else if (is_string_agg || is_listagg_profile) {
     engine_descriptor.canonical_type_name = "text";
   } else if (is_avg || is_statistical ||
              (is_pair_statistical && !is_regr_count)) {
@@ -570,6 +705,13 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       std::nullopt,
       std::nullopt};
   result.result_bindings.push_back(std::move(binding));
+  if (is_listagg_overflow_error) {
+    result.listagg_overflow_mode =
+        exec::CanonicalListaggOverflowMode::error;
+  } else if (is_listagg_overflow_truncate) {
+    result.listagg_overflow_mode =
+        exec::CanonicalListaggOverflowMode::truncate;
+  }
   result.ok = true;
   return result;
 }
@@ -2649,6 +2791,18 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
       "aggregate.global-string-agg-ordered-expression.v1";
   const bool string_agg_expression =
       unordered_string_agg_expression || ordered_string_agg_expression;
+  const bool listagg_ordered_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-listagg-ordered-expression.v1";
+  const bool listagg_overflow_error_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-listagg-ordered-overflow-error-expression.v1";
+  const bool listagg_overflow_truncate_expression =
+      root->semantic_variant_id ==
+      "aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
+  const bool listagg_expression =
+      listagg_ordered_expression || listagg_overflow_error_expression ||
+      listagg_overflow_truncate_expression;
   const bool array_agg_expression =
       root->semantic_variant_id ==
       "aggregate.global-array-agg-ordered-expression.v1";
@@ -2735,7 +2889,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   if (!count_star && !count_expression && !sum_expression &&
       !avg_expression && !min_expression && !max_expression &&
       !bool_and_expression && !bool_or_expression && !every_expression &&
-      !string_agg_expression && !ordered_collection_expression &&
+      !string_agg_expression && !listagg_expression &&
+      !ordered_collection_expression &&
       !statistical_expression &&
       !pair_statistical_expression) {
     return result;
@@ -2756,6 +2911,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   }
   if (string_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::string_agg;
+  }
+  if (listagg_expression) {
+    aggregate_function = exec::CanonicalAggregateFunction::listagg;
   }
   if (array_agg_expression) {
     aggregate_function = exec::CanonicalAggregateFunction::array_agg;
@@ -2860,7 +3018,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live global aggregate input size overflowed");
   }
-  if (string_agg_expression) {
+  if (string_agg_expression || listagg_expression) {
     std::uint64_t separator_memory = 0;
     aggregate_result_memory = input_memory;
     if (!CheckedMultiply(
@@ -2871,16 +3029,16 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
         !CheckedAdd(aggregate_result_memory, separator_memory,
                     &aggregate_result_memory)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live STRING_AGG result size overflowed");
+                    "live STRING_AGG/LISTAGG result size overflowed");
     }
-    if (ordered_string_agg_expression) {
+    if (ordered_string_agg_expression || listagg_expression) {
       std::uint64_t row_overhead_memory = 0;
       if (!CheckedMultiply(static_cast<std::uint64_t>(input_row_count), 64U,
                            &row_overhead_memory) ||
           !CheckedAdd(aggregate_result_memory, row_overhead_memory,
                       &aggregate_result_memory)) {
         return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                      "live ordered STRING_AGG state size overflowed");
+                      "live ordered STRING_AGG/LISTAGG state size overflowed");
       }
     }
   }
@@ -2945,6 +3103,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   } else if (ordered_string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-ordered-expression.v1";
+  } else if (listagg_overflow_error_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-listagg-ordered-overflow-error-expression.v1";
+  } else if (listagg_overflow_truncate_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-listagg-ordered-overflow-truncate-expression.v1";
+  } else if (listagg_ordered_expression) {
+    aggregate_transformation_id =
+        "canonical.aggregate.global-listagg-ordered-expression.v1";
   } else if (string_agg_expression) {
     aggregate_transformation_id =
         "canonical.aggregate.global-string-agg-expression.v1";
@@ -3039,6 +3206,11 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        value_descriptor_ids = prepared_root.value_descriptor_ids,
        aggregate_order_terms = prepared_root.aggregate_order_terms,
        aggregate_separator = prepared_root.aggregate_separator,
+       listagg_overflow_mode = prepared_root.listagg_overflow_mode,
+       listagg_max_output_bytes = prepared_root.listagg_max_output_bytes,
+       listagg_truncation_indicator =
+           prepared_root.listagg_truncation_indicator,
+       listagg_with_count = prepared_root.listagg_with_count,
        input_row_count](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -3093,6 +3265,12 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.result_column = result_column;
           aggregate_request.aggregate_order_terms = aggregate_order_terms;
           aggregate_request.aggregate_separator = aggregate_separator;
+          aggregate_request.listagg_overflow_mode = listagg_overflow_mode;
+          aggregate_request.listagg_max_output_bytes =
+              listagg_max_output_bytes;
+          aggregate_request.listagg_truncation_indicator =
+              listagg_truncation_indicator;
+          aggregate_request.listagg_with_count = listagg_with_count;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
           const auto aggregate_result =

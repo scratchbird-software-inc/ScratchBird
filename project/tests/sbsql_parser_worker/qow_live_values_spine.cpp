@@ -1259,6 +1259,135 @@ sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
   return envelope;
 }
 
+enum class LiveListaggProfile {
+  kOrdered,
+  kOverflowError,
+  kOverflowTruncateWithCount,
+  kOverflowTruncateWithoutCount,
+};
+
+sblr::SblrOperationEnvelope OrderedListaggExpressionValuesEnvelope(
+    const LiveListaggProfile profile) {
+  const bool overflow_error = profile == LiveListaggProfile::kOverflowError;
+  const bool overflow_truncate =
+      profile == LiveListaggProfile::kOverflowTruncateWithCount ||
+      profile == LiveListaggProfile::kOverflowTruncateWithoutCount;
+  const bool with_count =
+      profile != LiveListaggProfile::kOverflowTruncateWithoutCount;
+  const std::string semantic_variant =
+      overflow_error
+          ? "aggregate.global-listagg-ordered-overflow-error-expression.v1"
+      : overflow_truncate
+          ? "aggregate.global-listagg-ordered-overflow-truncate-expression.v1"
+          : "aggregate.global-listagg-ordered-expression.v1";
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values.listagg-ordered-expression");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  const auto tree_uuid = PairProfileUuid("7f00", "b4", "00");
+  const auto value_descriptor = PairProfileUuid("7f10", "b4", "01");
+  const auto value_type = PairProfileUuid("7f20", "b4", "02");
+  const auto separator_descriptor = PairProfileUuid("7f10", "b4", "03");
+  const auto separator_type = PairProfileUuid("7f20", "b4", "04");
+  const auto order_descriptor = PairProfileUuid("7f10", "b4", "05");
+  const auto order_type = PairProfileUuid("7f20", "b4", "06");
+  const auto maximum_descriptor = PairProfileUuid("7f10", "b4", "07");
+  const auto maximum_type = PairProfileUuid("7f20", "b4", "08");
+  const auto indicator_descriptor = PairProfileUuid("7f10", "b4", "09");
+  const auto indicator_type = PairProfileUuid("7f20", "b4", "0a");
+  const auto count_descriptor = PairProfileUuid("7f10", "b4", "0b");
+  const auto count_type = PairProfileUuid("7f20", "b4", "0c");
+  const auto result_descriptor = PairProfileUuid("7f10", "b4", "0d");
+  const auto result_type = PairProfileUuid("7f20", "b4", "0e");
+  const auto value_bound_name = PairProfileUuid("7f30", "b4", "0f");
+  const auto order_bound_name = PairProfileUuid("7f30", "b4", "10");
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       value_descriptor + "|" + value_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       separator_descriptor + "|" + separator_type + "|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       order_descriptor + "|" + order_type + "|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "7",
+       result_descriptor + "|" + result_type + "|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|2|-|6e6f727468"},
+      {"relational_expression_v1", "2", "1|-|3|-|-|1|-|33"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|2|-|65617374"},
+      {"relational_expression_v1", "4", "1|-|3|-|-|1|-|31"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|2|-|736f757468"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "8", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "9",
+       "3|-|1|-|" + value_bound_name + "|-|-|-"},
+      {"relational_expression_v1", "10", "1|-|2|-|-|2|-|7c"},
+      {"relational_expression_v1", "11",
+       "3|-|3|-|" + order_bound_name + "|-|-|-"},
+  };
+  std::string function_children = "9,10,11";
+  if (overflow_error || overflow_truncate) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "4",
+         maximum_descriptor + "|" + maximum_type + "|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "12", "1|-|4|-|-|1|-|3132"});
+    function_children += ",12";
+  }
+  if (overflow_truncate) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "5",
+         indicator_descriptor + "|" + indicator_type + "|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "6",
+         count_descriptor + "|" + count_type + "|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "13", "1|-|5|-|-|2|-|2e2e2e"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "14",
+         with_count ? "1|-|6|-|-|6|-|74727565"
+                    : "1|-|6|-|-|6|-|66616c7365"});
+    function_children += ",13,14";
+  }
+  envelope.operands.push_back(
+      {"relational_expression_v1", "15",
+       "4|" + function_children +
+           "|7|019dffbb-f000-7e93-8e4d-6063849de049|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_output_v1", "1", "1|1|1|1|0|76616c7565"});
+  envelope.operands.push_back(
+      {"relational_output_v1", "2", "1|2|3|1|1|6f72646572"});
+  envelope.operands.push_back(
+      {"relational_output_v1", "3",
+       "2|15|7|1|0|6c6973746167675f76616c7565"});
+  envelope.operands.push_back(
+      {"relational_values_row_v1", "1", "1,2"});
+  envelope.operands.push_back(
+      {"relational_values_row_v1", "2", "3,4"});
+  envelope.operands.push_back(
+      {"relational_values_row_v1", "3", "5,6"});
+  envelope.operands.push_back(
+      {"relational_values_row_v1", "4", "7,8"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "1", "13|0|-|1,3|1,2,3,4"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "2", "5|0|1|7|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "2",
+       EncodeHex(semantic_variant) + "|15|-|-|-"});
+  return envelope;
+}
+
 struct OrderedSingleCollectionProfile {
   std::string_view name;
   std::string_view operation;
@@ -3060,6 +3189,204 @@ bool ValidateOrderedStringAggExpressionRefusalIsAtomic() {
       "ordered STRING_AGG published evidence");
 }
 
+bool ValidateOrderedListaggExpressionValuesSpine() {
+  struct SuccessCase {
+    LiveListaggProfile profile;
+    const char* expected;
+    const char* label;
+  };
+  static constexpr SuccessCase kSuccessCases[] = {
+      {LiveListaggProfile::kOrdered, "east|north|south", "ordered"},
+      {LiveListaggProfile::kOverflowTruncateWithCount, "east|...(2)",
+       "overflow truncate with count"},
+      {LiveListaggProfile::kOverflowTruncateWithoutCount, "east|...",
+       "overflow truncate without count"},
+  };
+  bool passed = true;
+  for (const auto& test_case : kSuccessCases) {
+    const auto first = sblr::DispatchSblrOperation(
+        {Context(), OrderedListaggExpressionValuesEnvelope(test_case.profile),
+         {}});
+    const auto repeated = sblr::DispatchSblrOperation(
+        {Context(), OrderedListaggExpressionValuesEnvelope(test_case.profile),
+         {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed && first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 2 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 2 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1,
+        "VALUES global " + std::string(test_case.label) +
+            " LISTAGG did not traverse its selected physical DAG");
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    passed &= Require(
+        columns.size() == 1 && rows.size() == 1 &&
+            columns[0].canonical_type_name == "text" &&
+            columns[0].encoded_descriptor.find("nullability=nullable") !=
+                std::string::npos &&
+            rows[0].fields.size() == 1 &&
+            rows[0].fields[0].first == "listagg_value" &&
+            rows[0].fields[0].second.state ==
+                api::EngineValueState::value &&
+            !rows[0].fields[0].second.is_null &&
+            rows[0].fields[0].second.encoded_value == test_case.expected,
+        "global " + std::string(test_case.label) +
+            " LISTAGG ordering or overflow result drifted");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "identical global " + std::string(test_case.label) +
+            " LISTAGG input changed canonical plan/result bytes");
+  }
+
+  const auto overflow_error = sblr::DispatchSblrOperation(
+      {Context(), OrderedListaggExpressionValuesEnvelope(
+                      LiveListaggProfile::kOverflowError),
+       {}});
+  passed &= Require(
+      overflow_error.accepted && overflow_error.optimizer_admitted &&
+          !overflow_error.optimizer_selected &&
+          !overflow_error.physical_dag_published &&
+          !overflow_error.physical_dag_executed &&
+          !overflow_error.runtime_actuals_attached &&
+          !overflow_error.canonical_result_published &&
+          !overflow_error.api_result.ok &&
+          overflow_error.physical_node_count == 0 &&
+          overflow_error.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              overflow_error,
+              "QOW-DIAG-QRY-011-REGISTRY-LISTAGG-OVERFLOW-V1"),
+      "LISTAGG ON OVERFLOW ERROR published partial selected-plan or result "
+      "evidence");
+  return passed;
+}
+
+bool ValidateOrderedListaggExpressionRefusalIsAtomic() {
+  auto function_drift = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto result_nullability_drift = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto non_text_input = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto numeric_separator = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto null_separator = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto non_integer_order = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto zero_overflow_bound = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto null_indicator = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto numeric_count_option = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  auto arity_drift = OrderedListaggExpressionValuesEnvelope(
+      LiveListaggProfile::kOverflowTruncateWithCount);
+  for (auto& operand : function_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "15") {
+      operand.value =
+          "4|9,10,11,12,13,14|7|"
+          "019de5fc-2400-78ac-b50c-45b832831004|-|-|-|-";
+    }
+  }
+  for (auto& operand : result_nullability_drift.operands) {
+    if (operand.type == "relational_descriptor_v1" && operand.name == "7") {
+      operand.value = PairProfileUuid("7f10", "b4", "0d") + "|" +
+                      PairProfileUuid("7f20", "b4", "0e") +
+                      "|1|-|-|-|-|-";
+    }
+  }
+  for (auto& operand : non_text_input.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "1" || operand.name == "3" ||
+         operand.name == "5")) {
+      operand.value =
+          operand.name == "1"   ? "1|-|1|-|-|1|-|31"
+          : operand.name == "3" ? "1|-|1|-|-|1|-|32"
+                                  : "1|-|1|-|-|1|-|33";
+    }
+  }
+  for (auto& operand : numeric_separator.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "10") {
+      operand.value = "1|-|2|-|-|1|-|31";
+    }
+  }
+  for (auto& operand : null_separator.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "10") {
+      operand.value = "1|-|2|-|-|7|-|2d";
+    }
+  }
+  for (auto& operand : non_integer_order.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "2" || operand.name == "4" ||
+         operand.name == "8")) {
+      operand.value =
+          operand.name == "2"   ? "1|-|3|-|-|2|-|63"
+          : operand.name == "4" ? "1|-|3|-|-|2|-|61"
+                                  : "1|-|3|-|-|2|-|62";
+    }
+  }
+  for (auto& operand : zero_overflow_bound.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "12") {
+      operand.value = "1|-|4|-|-|1|-|30";
+    }
+  }
+  for (auto& operand : null_indicator.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "13") {
+      operand.value = "1|-|5|-|-|7|-|2d";
+    }
+  }
+  for (auto& operand : numeric_count_option.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "14") {
+      operand.value = "1|-|6|-|-|1|-|31";
+    }
+  }
+  for (auto& operand : arity_drift.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "15") {
+      operand.value =
+          "4|9,10,11,12,13|7|"
+          "019dffbb-f000-7e93-8e4d-6063849de049|-|-|-|-";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchSblrOperation(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(function_drift)) &&
+          refused_atomically(std::move(result_nullability_drift)) &&
+          refused_atomically(std::move(non_text_input)) &&
+          refused_atomically(std::move(numeric_separator)) &&
+          refused_atomically(std::move(null_separator)) &&
+          refused_atomically(std::move(non_integer_order)) &&
+          refused_atomically(std::move(zero_overflow_bound)) &&
+          refused_atomically(std::move(null_indicator)) &&
+          refused_atomically(std::move(numeric_count_option)) &&
+          refused_atomically(std::move(arity_drift)),
+      "function-, result-, input-, separator-, order-, overflow-option-, or "
+      "arity-drifted LISTAGG published evidence");
+}
+
 bool ValidateOrderedSingleCollectionValuesSpine() {
   bool passed = true;
   for (const auto& profile : kOrderedSingleCollectionProfiles) {
@@ -3528,6 +3855,8 @@ int main() {
                       ValidateGlobalStringAggExpressionRefusalIsAtomic() &&
                       ValidateOrderedStringAggExpressionValuesSpine() &&
                       ValidateOrderedStringAggExpressionRefusalIsAtomic() &&
+                      ValidateOrderedListaggExpressionValuesSpine() &&
+                      ValidateOrderedListaggExpressionRefusalIsAtomic() &&
                       ValidateOrderedSingleCollectionValuesSpine() &&
                       ValidateOrderedSingleCollectionRefusalIsAtomic() &&
                       ValidateOrderedJsonObjectAggValuesSpine() &&
