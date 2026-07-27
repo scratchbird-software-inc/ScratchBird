@@ -13,6 +13,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace exec = scratchbird::engine::executor;
@@ -225,6 +226,31 @@ exec::CanonicalGroupedAggregateRuntimeRequest GroupedRegistryRequest() {
   return request;
 }
 
+exec::CanonicalGroupedAggregateSetRuntimeRequest GroupedAggregateSetRequest() {
+  exec::CanonicalGroupedAggregateSetRuntimeRequest request;
+  request.first_aggregate = GroupedRegistryRequest();
+  const auto count_result = Descriptor(
+      "019f0000-0000-7200-8000-000000001442",
+      "019f0000-0000-7300-8000-000000001443", "required");
+  request.first_aggregate.aggregate_request.physical_dag.nodes.back()
+      .output_descriptor_ids.push_back(1427);
+
+  exec::CanonicalAggregateRuntimeRequest count;
+  count.descriptor =
+      {.abi_version = 1,
+       .function = exec::CanonicalAggregateFunction::count,
+       .builtin_id = "sb.aggregate.count",
+       .function_uuid = "019de5fc-2400-784a-9aec-371f8b95b7ea",
+       .count_star = true};
+  count.result_column = {"filtered_count", count_result, false, 1427};
+  using Truth = api::EngineSqlTruthValue;
+  count.filter_truth_values = std::vector<Truth>{
+      Truth::true_value, Truth::true_value, Truth::false_value,
+      Truth::true_value, Truth::false_value};
+  request.additional_aggregates = {std::move(count)};
+  return request;
+}
+
 bool SameGroupedOutput(const exec::CanonicalGroupedAggregateRuntimeResult& left,
                        const exec::CanonicalGroupedAggregateRuntimeResult& right) {
   if (!left.diagnostic.ok || !right.diagnostic.ok ||
@@ -373,6 +399,63 @@ bool ValidateGroupedRegistryState() {
   return passed;
 }
 
+bool ValidateGroupedAggregateSetState() {
+  bool passed = true;
+  auto request = GroupedAggregateSetRequest();
+  auto result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(result.diagnostic.ok && result.aggregate_count == 2 &&
+                        result.group_identity_proven &&
+                        result.shared_state_authority_used &&
+                        result.groups.size() == 8 &&
+                        result.output_batch.columns.size() == 4 &&
+                        result.output_batch.rows.size() == 8,
+                    "multiple grouped registry aggregates did not execute");
+  passed &= Require(
+      result.output_batch.rows[0].values[2].encoded_value == "4" &&
+          result.output_batch.rows[0].values[3].encoded_value == "1" &&
+          result.output_batch.rows[3].values[3].encoded_value == "0" &&
+          result.output_batch.rows[7].values[2].encoded_value == "5" &&
+          result.output_batch.rows[7].values[3].encoded_value == "3" &&
+          result.groups[7].aggregate_transition_counts ==
+              std::vector<std::size_t>({5, 3}) &&
+          result.groups[7].aggregate_state_bytes.size() == 2,
+      "independent AVG/filtered COUNT states or evidence are wrong");
+
+  request = GroupedAggregateSetRequest();
+  request.maximum_aggregate_count = 1;
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "aggregate-count bound was exceeded");
+
+  request = GroupedAggregateSetRequest();
+  request.maximum_combined_state_bytes = 1;
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "aggregate-set combined state bound was exceeded");
+
+  request = GroupedAggregateSetRequest();
+  request.additional_aggregates[0].result_column.descriptor_id = 1426;
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "duplicate aggregate result handle was accepted");
+
+  request = GroupedAggregateSetRequest();
+  request.additional_aggregates[0].physical_dag.root_physical_node_id = 99;
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "additional aggregate shadow authority was accepted");
+
+  request = GroupedAggregateSetRequest();
+  std::swap(request.first_aggregate.aggregate_request.physical_dag.nodes.back()
+                .output_descriptor_ids[2],
+            request.first_aggregate.aggregate_request.physical_dag.nodes.back()
+                .output_descriptor_ids[3]);
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "aggregate physical result order drift was accepted");
+  return passed;
+}
+
 // QOW-TEST-QRY-011-GROUP-V1
 bool ValidateTypedGroupingState() {
   bool passed = true;
@@ -467,7 +550,8 @@ bool ValidateTypedGroupingState() {
 }  // namespace
 
 int main() {
-  return ValidateTypedGroupingState() && ValidateGroupedRegistryState()
+  return ValidateTypedGroupingState() && ValidateGroupedRegistryState() &&
+                 ValidateGroupedAggregateSetState()
              ? EXIT_SUCCESS
              : EXIT_FAILURE;
 }

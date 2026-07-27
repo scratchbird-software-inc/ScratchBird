@@ -1220,6 +1220,48 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalGroupedAggregateSetRuntimeRequest {
+  CanonicalGroupedAggregateRuntimeRequest first_aggregate;
+  // Additional aggregate specifications must not carry a second physical DAG,
+  // selected node, or input batch; those authorities are shared from first.
+  std::vector<CanonicalAggregateRuntimeRequest> additional_aggregates;
+  std::size_t maximum_aggregate_count = 64;
+  std::size_t maximum_combined_grouping_set_transition_count = 8388608;
+  std::size_t maximum_combined_grouping_key_comparison_count = 8388608;
+  std::size_t maximum_combined_aggregate_transition_count = 8388608;
+  std::size_t maximum_combined_distinct_tuple_count = 8388608;
+  std::size_t maximum_combined_order_comparison_count = 8388608;
+  std::size_t maximum_combined_state_bytes = 268435456;
+};
+
+struct CanonicalGroupedAggregateSetMetadata {
+  std::uint32_t grouping_set_ordinal = 0;
+  std::uint64_t grouping_id = 0;
+  std::vector<bool> grouping_indicators;
+  std::size_t source_row_count = 0;
+  std::vector<std::size_t> aggregate_transition_counts;
+  std::vector<std::size_t> aggregate_state_bytes;
+};
+
+struct CanonicalGroupedAggregateSetRuntimeResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<CanonicalGroupedAggregateSetMetadata> groups;
+  std::size_t aggregate_count = 0;
+  std::size_t grouping_set_transition_count = 0;
+  std::size_t grouping_key_comparison_count = 0;
+  std::size_t aggregate_transition_count = 0;
+  std::size_t aggregate_distinct_tuple_count = 0;
+  std::size_t aggregate_order_comparison_count = 0;
+  std::size_t combined_state_bytes = 0;
+  bool group_identity_proven = false;
+  bool shared_state_authority_used = false;
+  CanonicalPhysicalDispatchAuthorityEvidence authority;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
 struct CanonicalDescriptorOrderComparisonResult {
   DescriptorRuntimeDiagnostic diagnostic;
   int comparison = 0;
@@ -1543,6 +1585,9 @@ CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request);
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(

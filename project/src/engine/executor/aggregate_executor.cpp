@@ -2292,4 +2292,288 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-GROUPED-SET-V1
+// Compose several registry aggregates over one exact grouped physical node.
+// Group identity must match across every independently filtered/ordered state;
+// aggregate values are then appended in the physical output-descriptor order.
+CanonicalGroupedAggregateSetRuntimeResult
+ExecuteCanonicalGroupedAggregateSetRuntime(
+    const CanonicalGroupedAggregateSetRuntimeRequest& request) {
+  CanonicalGroupedAggregateSetRuntimeResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result.diagnostic = std::move(diagnostic);
+    result.output_batch = {};
+    result.groups.clear();
+    result.aggregate_count = 0;
+    result.grouping_set_transition_count = 0;
+    result.grouping_key_comparison_count = 0;
+    result.aggregate_transition_count = 0;
+    result.aggregate_distinct_tuple_count = 0;
+    result.aggregate_order_comparison_count = 0;
+    result.combined_state_bytes = 0;
+    result.group_identity_proven = false;
+    result.shared_state_authority_used = false;
+    result.authority = {};
+    result.selected_plan_uuid.clear();
+    result.executed_physical_node_id = 0;
+    result.causal_counter_id = 0;
+    return result;
+  };
+  const auto set_refusal = [&](std::string detail) {
+    return refuse(Refusal("QOW-DIAG-QRY-011-GROUPED-SET-REFUSAL-V1",
+                          std::move(detail)));
+  };
+
+  const auto aggregate_count = request.additional_aggregates.size() + 1;
+  if (aggregate_count == 0 ||
+      aggregate_count > request.maximum_aggregate_count ||
+      request.maximum_combined_grouping_set_transition_count == 0 ||
+      request.maximum_combined_grouping_key_comparison_count == 0 ||
+      request.maximum_combined_aggregate_transition_count == 0 ||
+      request.maximum_combined_distinct_tuple_count == 0 ||
+      request.maximum_combined_order_comparison_count == 0 ||
+      request.maximum_combined_state_bytes == 0) {
+    return set_refusal("aggregate-set shape or resource contract is invalid");
+  }
+
+  const auto& first = request.first_aggregate;
+  const auto& common = first.aggregate_request;
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(common.physical_dag);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  }
+  const PhysicalNodeRecord* aggregate_node = nullptr;
+  for (const auto& node : common.physical_dag.nodes) {
+    if (node.physical_node_id == common.selected_physical_node_id) {
+      aggregate_node = &node;
+      break;
+    }
+  }
+  if (common.selected_physical_node_id == 0 ||
+      common.selected_physical_node_id !=
+          common.physical_dag.root_physical_node_id ||
+      aggregate_node == nullptr ||
+      aggregate_node->node_kind != PhysicalNodeKind::kAggregate ||
+      aggregate_node->implementation_id !=
+          "aggregate.registry-grouping-sets.v1" ||
+      aggregate_node->output_descriptor_ids.size() !=
+          first.group_result_columns.size() + aggregate_count) {
+    return set_refusal(
+        "selected physical node is not the exact grouped aggregate set");
+  }
+
+  std::vector<const CanonicalAggregateRuntimeRequest*> aggregate_specs = {
+      &common};
+  aggregate_specs.reserve(aggregate_count);
+  const auto has_shadow_authority = [](const auto& specification) {
+    const auto& dag = specification.physical_dag;
+    return specification.selected_physical_node_id != 0 ||
+           !specification.input_batch.columns.empty() ||
+           !specification.input_batch.rows.empty() || dag.abi_version != 1 ||
+           !dag.selected_plan_uuid.empty() || dag.root_physical_node_id != 0 ||
+           dag.local_transaction_id != 0 || dag.statement_snapshot_id != 0 ||
+           !dag.admission_evidence.empty() || !dag.nodes.empty() ||
+           !dag.bound_sblr_tree_uuid.empty() ||
+           !dag.catalog_epoch_uuid.empty() ||
+           !dag.security_context_uuid.empty() ||
+           !dag.capability_snapshot_uuid.empty() ||
+           !dag.resource_snapshot_uuid.empty() ||
+           !dag.statistics_snapshot_uuid.empty() ||
+           !dag.route_snapshot_uuid.empty() || dag.catalog_generation != 0 ||
+           dag.security_epoch != 0 || dag.policy_epoch != 0 ||
+           dag.resource_epoch != 0 || dag.statistics_generation != 0 ||
+           dag.route_epoch != 0 || dag.route_generation != 0 ||
+           dag.memory_budget_bytes != 0 || dag.spill_allowed ||
+           dag.optimizer_published || dag.immutable_node_identity_validated ||
+           dag.capability_validated_before_access || dag.data_access_observed ||
+           dag.parser_execution_authority_claimed ||
+           dag.transaction_finality_authority_claimed;
+  };
+  for (const auto& specification : request.additional_aggregates) {
+    if (has_shadow_authority(specification)) {
+      return set_refusal(
+          "additional aggregate carries shadow physical or input authority");
+    }
+    aggregate_specs.push_back(&specification);
+  }
+
+  std::vector<std::uint32_t> expected_output_ids;
+  expected_output_ids.reserve(first.group_result_columns.size() +
+                              aggregate_count);
+  for (const auto& column : first.group_result_columns) {
+    expected_output_ids.push_back(column.descriptor_id);
+  }
+  std::set<std::uint32_t> aggregate_result_ids;
+  for (const auto* specification : aggregate_specs) {
+    if (specification->result_column.descriptor_id == 0 ||
+        !aggregate_result_ids
+             .insert(specification->result_column.descriptor_id)
+             .second) {
+      return set_refusal(
+          "aggregate result descriptor handles are zero or repeated");
+    }
+    expected_output_ids.push_back(specification->result_column.descriptor_id);
+  }
+  if (aggregate_node->output_descriptor_ids != expected_output_ids) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "aggregate-set result order is not physically bound"));
+  }
+
+  const auto within_total = [](const std::size_t next,
+                               const std::size_t current,
+                               const std::size_t maximum) {
+    return current <= maximum && next <= maximum - current;
+  };
+  std::vector<CanonicalGroupedAggregateRuntimeResult> executions;
+  executions.reserve(aggregate_count);
+  for (std::size_t index = 0; index < aggregate_specs.size(); ++index) {
+    auto grouped_request = first;
+    grouped_request.aggregate_request = *aggregate_specs[index];
+    grouped_request.aggregate_request.physical_dag = common.physical_dag;
+    grouped_request.aggregate_request.selected_physical_node_id =
+        common.selected_physical_node_id;
+    grouped_request.aggregate_request.input_batch = common.input_batch;
+    for (auto& node : grouped_request.aggregate_request.physical_dag.nodes) {
+      if (node.physical_node_id == common.selected_physical_node_id) {
+        node.output_descriptor_ids.clear();
+        for (const auto& column : first.group_result_columns) {
+          node.output_descriptor_ids.push_back(column.descriptor_id);
+        }
+        node.output_descriptor_ids.push_back(
+            grouped_request.aggregate_request.result_column.descriptor_id);
+        break;
+      }
+    }
+    auto execution =
+        ExecuteCanonicalGroupedAggregateRuntime(grouped_request);
+    if (!execution.diagnostic.ok) {
+      return refuse(std::move(execution.diagnostic));
+    }
+    if (!within_total(execution.grouping_set_transition_count,
+                      result.grouping_set_transition_count,
+                      request.maximum_combined_grouping_set_transition_count) ||
+        !within_total(execution.grouping_key_comparison_count,
+                      result.grouping_key_comparison_count,
+                      request.maximum_combined_grouping_key_comparison_count) ||
+        !within_total(execution.aggregate_transition_count,
+                      result.aggregate_transition_count,
+                      request.maximum_combined_aggregate_transition_count) ||
+        !within_total(execution.aggregate_distinct_tuple_count,
+                      result.aggregate_distinct_tuple_count,
+                      request.maximum_combined_distinct_tuple_count) ||
+        !within_total(execution.aggregate_order_comparison_count,
+                      result.aggregate_order_comparison_count,
+                      request.maximum_combined_order_comparison_count) ||
+        !within_total(execution.combined_state_bytes,
+                      result.combined_state_bytes,
+                      request.maximum_combined_state_bytes)) {
+      return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                            "combined aggregate-set resource bound is exceeded"));
+    }
+    result.grouping_set_transition_count +=
+        execution.grouping_set_transition_count;
+    result.grouping_key_comparison_count +=
+        execution.grouping_key_comparison_count;
+    result.aggregate_transition_count += execution.aggregate_transition_count;
+    result.aggregate_distinct_tuple_count +=
+        execution.aggregate_distinct_tuple_count;
+    result.aggregate_order_comparison_count +=
+        execution.aggregate_order_comparison_count;
+    result.combined_state_bytes += execution.combined_state_bytes;
+    executions.push_back(std::move(execution));
+  }
+
+  const auto& identity = executions.front();
+  const auto key_count = first.group_result_columns.size();
+  for (std::size_t execution_index = 1;
+       execution_index < executions.size(); ++execution_index) {
+    const auto& candidate = executions[execution_index];
+    if (candidate.groups.size() != identity.groups.size() ||
+        candidate.output_batch.rows.size() !=
+            identity.output_batch.rows.size()) {
+      return set_refusal("aggregate group cardinalities diverged");
+    }
+    for (std::size_t group = 0; group < identity.groups.size(); ++group) {
+      const auto& expected = identity.groups[group];
+      const auto& actual = candidate.groups[group];
+      if (actual.grouping_set_ordinal != expected.grouping_set_ordinal ||
+          actual.grouping_id != expected.grouping_id ||
+          actual.grouping_indicators != expected.grouping_indicators ||
+          actual.source_row_count != expected.source_row_count) {
+        return set_refusal("aggregate grouping metadata diverged");
+      }
+      for (std::size_t key = 0; key < key_count; ++key) {
+        const auto& expected_value =
+            identity.output_batch.rows[group].values[key];
+        const auto& actual_value =
+            candidate.output_batch.rows[group].values[key];
+        if (actual_value.state != expected_value.state ||
+            actual_value.is_null != expected_value.is_null ||
+            actual_value.encoded_value != expected_value.encoded_value ||
+            actual_value.binary_value != expected_value.binary_value ||
+            actual_value.descriptor.descriptor_uuid.canonical !=
+                expected_value.descriptor.descriptor_uuid.canonical ||
+            actual_value.descriptor.canonical_type_name !=
+                expected_value.descriptor.canonical_type_name ||
+            actual_value.descriptor.encoded_descriptor !=
+                expected_value.descriptor.encoded_descriptor) {
+          return set_refusal("aggregate group key values diverged");
+        }
+      }
+    }
+  }
+
+  result.output_batch.columns = first.group_result_columns;
+  for (const auto* specification : aggregate_specs) {
+    result.output_batch.columns.push_back(specification->result_column);
+  }
+  result.output_batch.rows.reserve(identity.output_batch.rows.size());
+  result.groups.reserve(identity.groups.size());
+  for (std::size_t group = 0; group < identity.groups.size(); ++group) {
+    DescriptorTuple row;
+    row.values.insert(row.values.end(),
+                      identity.output_batch.rows[group].values.begin(),
+                      identity.output_batch.rows[group].values.begin() +
+                          static_cast<std::ptrdiff_t>(key_count));
+    CanonicalGroupedAggregateSetMetadata metadata;
+    metadata.grouping_set_ordinal =
+        identity.groups[group].grouping_set_ordinal;
+    metadata.grouping_id = identity.groups[group].grouping_id;
+    metadata.grouping_indicators =
+        identity.groups[group].grouping_indicators;
+    metadata.source_row_count = identity.groups[group].source_row_count;
+    metadata.aggregate_transition_counts.reserve(aggregate_count);
+    metadata.aggregate_state_bytes.reserve(aggregate_count);
+    for (const auto& execution : executions) {
+      row.values.push_back(execution.output_batch.rows[group].values[key_count]);
+      metadata.aggregate_transition_counts.push_back(
+          execution.groups[group].aggregate_transition_count);
+      metadata.aggregate_state_bytes.push_back(
+          execution.groups[group].aggregate_state_bytes);
+    }
+    result.output_batch.rows.push_back(std::move(row));
+    result.groups.push_back(std::move(metadata));
+  }
+
+  auto output_validation = ValidateCanonicalDescriptorBatch(
+      result.output_batch, aggregate_node->output_descriptor_ids);
+  if (!output_validation.ok) return refuse(std::move(output_validation));
+
+  result.diagnostic = {};
+  result.aggregate_count = aggregate_count;
+  result.group_identity_proven = true;
+  result.shared_state_authority_used = true;
+  result.authority.engine_mga_snapshot_bound = true;
+  result.authority.owns_transaction_finality = false;
+  result.authority.owns_recovery = false;
+  result.authority.owns_parser_execution = false;
+  result.authority.owns_visibility_outside_engine_mga = false;
+  result.authority.wal_is_transaction_or_recovery_authority = false;
+  result.selected_plan_uuid = common.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = aggregate_node->physical_node_id;
+  result.causal_counter_id = aggregate_node->causal_counter_id;
+  return result;
+}
+
 }  // namespace scratchbird::engine::executor
