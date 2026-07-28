@@ -808,6 +808,7 @@ class NativeRelationalParser final {
     if (!AtEnd() && IsWord(Current(), "HAVING")) {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
+      // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-OR-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
@@ -930,10 +931,18 @@ class NativeRelationalParser final {
           count_conjunct != nullptr && sum_conjunct != nullptr &&
           match_count_comparison(*count_conjunct) &&
           match_sum_comparison(*sum_conjunct);
-      if (!simple_sum_profile && !count_sum_and_profile) {
+      const bool count_sum_or_profile =
+          predicate.expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate.operator_name == "OR" &&
+          predicate.child_expression_ids.size() == 2 &&
+          count_conjunct != nullptr && sum_conjunct != nullptr &&
+          match_count_comparison(*count_conjunct) &&
+          match_sum_comparison(*sum_conjunct);
+      if (!simple_sum_profile && !count_sum_and_profile &&
+          !count_sum_or_profile) {
         Refuse("having_predicate_shape_invalid",
                "native HAVING profile requires SUM(value) > numeric literal "
-               "or COUNT(*) > numeric literal AND SUM(value) > numeric literal");
+               "or ordered COUNT(*)/SUM(value) AND/OR comparisons");
         return FinishRefusal();
       }
       const bool ordinary_two_key_sum_profile =

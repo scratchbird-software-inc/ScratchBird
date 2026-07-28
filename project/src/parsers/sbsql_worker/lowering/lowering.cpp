@@ -35030,7 +35030,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (relation.semantic_variant_id !=
                "filter.having-sum-gt-int64-literal.v1" &&
            relation.semantic_variant_id !=
-               "filter.having-count-sum-and-gt-int64-literals.v1")) {
+               "filter.having-count-sum-and-gt-int64-literals.v1" &&
+           relation.semantic_variant_id !=
+               "filter.having-count-sum-or-gt-int64-literals.v1")) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed HAVING filter fields are outside the bounded native profile");
@@ -35381,17 +35383,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool count_sum_and_profile =
         filter_relation->semantic_variant_id ==
         "filter.having-count-sum-and-gt-int64-literals.v1";
+    const bool count_sum_or_profile =
+        filter_relation->semantic_variant_id ==
+        "filter.having-count-sum-or-gt-int64-literals.v1";
+    const bool count_sum_boolean_profile =
+        count_sum_and_profile || count_sum_or_profile;
     if (predicate != expressions_by_id.end()) {
-      if (!count_sum_and_profile &&
+      if (!count_sum_boolean_profile &&
           predicate->second->expression_kind ==
               NativeExpressionAstKind::kBinary &&
           predicate->second->canonical_operator_name == ">" &&
           predicate->second->child_expression_ids.size() == 2) {
         sum_comparison = predicate->second;
-      } else if (count_sum_and_profile &&
+      } else if (count_sum_boolean_profile &&
                  predicate->second->expression_kind ==
                      NativeExpressionAstKind::kBinary &&
-                 predicate->second->canonical_operator_name == "AND" &&
+                 predicate->second->canonical_operator_name ==
+                     (count_sum_or_profile ? "OR" : "AND") &&
                  predicate->second->child_expression_ids.size() == 2) {
         count_comparison = expressions_by_id.at(
             predicate->second->child_expression_ids[0]);
@@ -35452,50 +35460,58 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     };
     // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-SUM-GT-V1
     const bool admitted_simple_having =
+        !count_sum_or_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kSimple &&
         (aggregate_relation->aggregate_projection_form ==
              NativeAggregateProjectionForm::kKeyCountSum ||
          aggregate_relation->aggregate_projection_form ==
              NativeAggregateProjectionForm::kKeysCountSum);
+    // QOW-SOURCE-QRY-001-LOWERING-HAVING-COUNT-SUM-OR-GT-V1
+    const bool admitted_one_key_or_having =
+        count_sum_or_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeyCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_metadata_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSumGrouping;
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-HAVING-SUM-GT-V1
     const bool admitted_rollup_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kRollup &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_rollup_metadata_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kRollup &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSumGrouping;
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-HAVING-SUM-GT-V1
     const bool admitted_cube_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kCube &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_cube_metadata_sum_having =
-        !count_sum_and_profile &&
+        !count_sum_boolean_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kCube &&
         aggregate_relation->aggregate_projection_form ==
@@ -35523,7 +35539,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeAggregateGroupingForm::kCube) &&
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
-    if ((!admitted_simple_having && !admitted_grouping_sets_sum_having &&
+    if ((!admitted_one_key_or_having && !admitted_simple_having &&
+         !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&
          !admitted_rollup_sum_having &&
          !admitted_rollup_metadata_sum_having &&
@@ -35565,7 +35582,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !descriptor_is(predicate->second, BoundNullability::kNullable) ||
         !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
         !descriptor_is(sum_threshold, BoundNullability::kNonNull) ||
-        (count_sum_and_profile &&
+        (count_sum_boolean_profile &&
          (predicate->second->child_expression_ids !=
               std::vector<std::uint32_t>{count_comparison->expression_id,
                                          sum_comparison->expression_id} ||

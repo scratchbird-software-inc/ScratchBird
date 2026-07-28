@@ -183,6 +183,7 @@ struct PreparedGroupedCountSumRoot {
 struct PreparedGroupedHavingRoot {
   bool ok{false};
   bool count_sum_and{false};
+  bool count_sum_or{false};
   std::size_t count_column{0};
   std::size_t sum_column{0};
   std::size_t output_column_count{0};
@@ -1860,6 +1861,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 
 // QOW-SOURCE-QRY-001-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-OR-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-LIVE-V1
@@ -1887,6 +1889,11 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const bool count_sum_and_profile =
       filter_root.semantic_variant_id ==
       "filter.having-count-sum-and-gt-int64-literals.v1";
+  const bool count_sum_or_profile =
+      filter_root.semantic_variant_id ==
+      "filter.having-count-sum-or-gt-int64-literals.v1";
+  const bool count_sum_boolean_profile =
+      count_sum_and_profile || count_sum_or_profile;
   std::size_t key_count = 0;
   std::size_t grouping_projection_count = 0;
   if (aggregate_root.semantic_variant_id ==
@@ -1943,7 +1950,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
-      (!simple_sum_profile && !count_sum_and_profile) ||
+      (!simple_sum_profile && !count_sum_boolean_profile) ||
+      (count_sum_or_profile && key_count != 1) ||
       (key_count == 2 && !count_sum_and_profile &&
        !admitted_two_key_sum_profile) ||
       filter_root.input_logical_node_ids !=
@@ -2047,19 +2055,21 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const api::RelationalExpressionRecord* sum_comparison = nullptr;
   if (simple_sum_profile && exact_binary_operator(predicate, ">")) {
     sum_comparison = predicate;
-  } else if (count_sum_and_profile && exact_binary_operator(predicate, "AND")) {
+  } else if (count_sum_boolean_profile &&
+             exact_binary_operator(
+                 predicate, count_sum_or_profile ? "OR" : "AND")) {
     count_comparison = expression_by_id(predicate->child_expression_ids[0]);
     sum_comparison = expression_by_id(predicate->child_expression_ids[1]);
   }
   if (!exact_binary_operator(sum_comparison, ">") ||
-      (count_sum_and_profile &&
+      (count_sum_boolean_profile &&
        (!exact_binary_operator(count_comparison, ">") ||
         predicate->result_descriptor_id !=
             count_comparison->result_descriptor_id ||
         predicate->result_descriptor_id !=
             sum_comparison->result_descriptor_id))) {
     result.detail =
-        "HAVING predicate is not the exact SUM comparison or ordered COUNT/SUM AND profile";
+        "HAVING predicate is not the exact SUM comparison or ordered COUNT/SUM Boolean profile";
     return result;
   }
 
@@ -2166,7 +2176,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     return result;
   }
 
-  if (count_sum_and_profile) {
+  if (count_sum_boolean_profile) {
     const auto* having_count =
         expression_by_id(count_comparison->child_expression_ids[0]);
     const auto* count_threshold =
@@ -2201,6 +2211,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     }
   }
   result.count_sum_and = count_sum_and_profile;
+  result.count_sum_or = count_sum_or_profile;
   result.count_column = key_count;
   result.sum_column = key_count + 1;
   result.output_column_count = expected_output_count;
@@ -4257,7 +4268,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       (root->semantic_variant_id ==
            "filter.having-sum-gt-int64-literal.v1" ||
        root->semantic_variant_id ==
-           "filter.having-count-sum-and-gt-int64-literals.v1");
+           "filter.having-count-sum-and-gt-int64-literals.v1" ||
+       root->semantic_variant_id ==
+           "filter.having-count-sum-or-gt-int64-literals.v1");
   auto aggregate_root = root;
   if (has_having) {
     if (root->input_logical_node_ids.size() != 1) return result;
@@ -4437,7 +4450,10 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
          root->semantic_variant_id ==
                  "filter.having-count-sum-and-gt-int64-literals.v1"
              ? "canonical.filter.having-count-sum-and-gt-int64-literals.v1"
-             : "canonical.filter.having-sum-gt-int64-literal.v1",
+             : (root->semantic_variant_id ==
+                        "filter.having-count-sum-or-gt-int64-literals.v1"
+                    ? "canonical.filter.having-count-sum-or-gt-int64-literals.v1"
+                    : "canonical.filter.having-sum-gt-int64-literal.v1"),
          output_row_bound, filter_memory, 1, 1});
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
@@ -4806,7 +4822,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                   "HAVING SUM comparison refused: " + predicate_detail;
               return step;
             }
-            if (!prepared_having.count_sum_and) {
+            if (!prepared_having.count_sum_and &&
+                !prepared_having.count_sum_or) {
               row_truth_values.push_back(sum_truth);
               continue;
             }
@@ -4823,7 +4840,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
               return step;
             }
             row_truth_values.push_back(
-                api::QowSqlAndV1(count_truth, sum_truth));
+                prepared_having.count_sum_or
+                    ? api::QowSqlOrV1(count_truth, sum_truth)
+                    : api::QowSqlAndV1(count_truth, sum_truth));
           }
 
           exec::CanonicalDescriptorFilterRequest filter_request;
