@@ -35460,7 +35460,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (aggregate_relation->aggregate_grouping_form ==
              NativeAggregateGroupingForm::kSimple ||
          aggregate_relation->aggregate_grouping_form ==
-             NativeAggregateGroupingForm::kGroupingSets) &&
+             NativeAggregateGroupingForm::kGroupingSets ||
+         aggregate_relation->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kRollup) &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     if ((!one_key_simple_having && !admitted_multi_key_boolean_having) ||

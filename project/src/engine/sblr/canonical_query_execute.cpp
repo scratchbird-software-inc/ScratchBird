@@ -1861,6 +1861,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1884,9 +1885,12 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   } else if (aggregate_root.semantic_variant_id ==
              "aggregate.grouping-sets-int64-keys-count-sum.v1") {
     key_count = 2;
+  } else if (aggregate_root.semantic_variant_id ==
+             "aggregate.rollup-int64-keys-count-sum.v1") {
+    key_count = 2;
   } else {
     result.detail =
-        "HAVING aggregate is not an admitted one-key, two-key, or grouping-set profile";
+        "HAVING aggregate is not an admitted one-key, two-key, grouping-set, or ROLLUP profile";
     return result;
   }
   const auto expected_output_count = key_count + 2;
