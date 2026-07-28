@@ -813,6 +813,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
+      // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-V1
@@ -941,6 +942,11 @@ class NativeRelationalParser final {
           !one_key_grouping_profile && simple_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+      const bool grouping_sets_metadata_sum_profile =
+          !one_key_grouping_profile && simple_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
+          projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping;
       const bool rollup_sum_profile =
           !one_key_grouping_profile && simple_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kRollup &&
@@ -951,7 +957,8 @@ class NativeRelationalParser final {
           projection_form == NativeAggregateProjectionForm::kKeysCountSum;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
           !ordinary_two_key_sum_profile && !grouping_sets_sum_profile &&
-          !rollup_sum_profile && !cube_sum_profile) {
+          !grouping_sets_metadata_sum_profile && !rollup_sum_profile &&
+          !cube_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native multi-key HAVING profile requires an exact admitted "
                "SUM comparison or ordered COUNT/SUM AND predicate");
