@@ -63,6 +63,12 @@ enum class NativeAggregateGroupingForm {
   kCube,
 };
 
+enum class NativeAggregateProjectionForm {
+  kNone,
+  kKeysCountSum,
+  kKeysCountSumGrouping,
+};
+
 enum class NativeExpressionAstKind {
   kLiteral,
   kParameter,
@@ -135,6 +141,8 @@ struct NativeRelationAstNode {
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
   NativeAggregateGroupingForm aggregate_grouping_form{
       NativeAggregateGroupingForm::kNone};
+  NativeAggregateProjectionForm aggregate_projection_form{
+      NativeAggregateProjectionForm::kNone};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> output_expression_ids;
@@ -204,6 +212,8 @@ AstDocument BuildAst(const CstDocument& cst);
 std::string StatementFamilyName(StatementFamily family);
 std::string NativeRelationAstKindName(NativeRelationAstKind kind);
 std::string NativeAggregateGroupingFormName(NativeAggregateGroupingForm form);
+std::string NativeAggregateProjectionFormName(
+    NativeAggregateProjectionForm form);
 std::string NativeExpressionAstKindName(NativeExpressionAstKind kind);
 std::string NativeLiteralAstKindName(NativeLiteralAstKind kind);
 

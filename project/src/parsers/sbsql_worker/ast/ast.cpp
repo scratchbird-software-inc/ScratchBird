@@ -1448,6 +1448,18 @@ std::string NativeAggregateGroupingFormName(
   return "unknown";
 }
 
+std::string NativeAggregateProjectionFormName(
+    NativeAggregateProjectionForm form) {
+  switch (form) {
+    case NativeAggregateProjectionForm::kNone: return "none";
+    case NativeAggregateProjectionForm::kKeysCountSum:
+      return "keys_count_sum";
+    case NativeAggregateProjectionForm::kKeysCountSumGrouping:
+      return "keys_count_sum_grouping";
+  }
+  return "unknown";
+}
+
 std::string NativeExpressionAstKindName(NativeExpressionAstKind kind) {
   switch (kind) {
     case NativeExpressionAstKind::kLiteral: return "literal";

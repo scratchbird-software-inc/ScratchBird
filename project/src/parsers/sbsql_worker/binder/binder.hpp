@@ -120,6 +120,8 @@ struct BoundRelationAstRecord {
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
   NativeAggregateGroupingForm aggregate_grouping_form{
       NativeAggregateGroupingForm::kNone};
+  NativeAggregateProjectionForm aggregate_projection_form{
+      NativeAggregateProjectionForm::kNone};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> output_expression_ids;

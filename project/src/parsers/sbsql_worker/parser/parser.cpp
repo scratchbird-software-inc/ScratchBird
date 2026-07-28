@@ -361,6 +361,57 @@ class NativeRelationalParser final {
     return document_.expressions.back().expression_id;
   }
 
+  std::optional<std::uint32_t> ParseGroupingSpecialForm(
+      const std::string_view surface_name,
+      const std::string_view canonical_operator,
+      const NativeExpressionAstKind expression_kind,
+      const std::vector<std::uint32_t>& child_expression_ids,
+      const std::vector<std::string>& expected_argument_names) {
+    if (child_expression_ids.empty() ||
+        child_expression_ids.size() != expected_argument_names.size() ||
+        (expression_kind != NativeExpressionAstKind::kUnary &&
+         expression_kind != NativeExpressionAstKind::kBinary) ||
+        AtEnd() || !IsWord(Current(), surface_name)) {
+      Refuse("grouping_metadata_function_required",
+             "native grouping metadata projection is incomplete or out of order");
+      return std::nullopt;
+    }
+    const Token& first = Consume();
+    if (!RequireSymbol("(", "grouping_metadata_open_required",
+                       "grouping metadata special form requires an opening parenthesis")) {
+      return std::nullopt;
+    }
+    for (std::size_t index = 0; index < expected_argument_names.size(); ++index) {
+      if (AtEnd() || !IsNameToken(Current()) ||
+          CanonicalTokenText(Current()) != expected_argument_names[index]) {
+        Refuse("grouping_metadata_argument_invalid",
+               "grouping metadata arguments must be the projected keys in exact order");
+        return std::nullopt;
+      }
+      Consume();
+      if (index + 1 < expected_argument_names.size() &&
+          !RequireSymbol(",", "grouping_metadata_separator_required",
+                         "GROUPING_ID keys must be comma separated")) {
+        return std::nullopt;
+      }
+    }
+    if (!AtSymbol(")")) {
+      Refuse("grouping_metadata_close_required",
+             "grouping metadata special form has unexpected arguments");
+      return std::nullopt;
+    }
+    const Token& last = Consume();
+    NativeExpressionAstNode expression;
+    expression.expression_id = NextExpressionId();
+    expression.expression_kind = expression_kind;
+    expression.child_expression_ids = child_expression_ids;
+    expression.operator_name = std::string(canonical_operator);
+    expression.spelling = SourceSpelling(first, last);
+    expression.range = Span(first, last);
+    document_.expressions.push_back(std::move(expression));
+    return document_.expressions.back().expression_id;
+  }
+
   NativeRelationalAstDocument ParseGroupedAggregateSelect() {
     // QOW-SOURCE-QRY-001-GROUPING-SETS-V1
     document_.status = NativeRelationalParseStatus::kRefused;
@@ -393,9 +444,7 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
     const auto sum = ParseExpression(0, 0);
-    if (!sum.has_value() ||
-        !RequireWord("FROM", "inline_values_source_required",
-                     "native grouped aggregate profile requires an inline VALUES source")) {
+    if (!sum.has_value()) {
       return FinishRefusal();
     }
 
@@ -414,6 +463,42 @@ class NativeRelationalParser final {
     const auto key_a_spelling = key_a_expression.spelling;
     const auto key_b_spelling = key_b_expression.spelling;
     const auto sum_child = sum_expression.child_expression_ids.front();
+
+    NativeAggregateProjectionForm projection_form =
+        NativeAggregateProjectionForm::kKeysCountSum;
+    std::vector<std::uint32_t> grouping_projection_ids;
+    if (AtSymbol(",")) {
+      // QOW-SOURCE-QRY-001-GROUPING-METADATA-V1
+      projection_form =
+          NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      Consume();
+      const auto grouping_a = ParseGroupingSpecialForm(
+          "GROUPING", "grouping", NativeExpressionAstKind::kUnary,
+          {*key_a}, {ToUpperAscii(key_a_spelling)});
+      if (!grouping_a.has_value() ||
+          !RequireSymbol(",", "grouping_metadata_separator_required",
+                         "GROUPING(key_a) must be followed by GROUPING(key_b)")) {
+        return FinishRefusal();
+      }
+      const auto grouping_b = ParseGroupingSpecialForm(
+          "GROUPING", "grouping", NativeExpressionAstKind::kUnary,
+          {*key_b}, {ToUpperAscii(key_b_spelling)});
+      if (!grouping_b.has_value() ||
+          !RequireSymbol(",", "grouping_metadata_separator_required",
+                         "GROUPING(key_b) must be followed by GROUPING_ID")) {
+        return FinishRefusal();
+      }
+      const auto grouping_id = ParseGroupingSpecialForm(
+          "GROUPING_ID", "grouping_id", NativeExpressionAstKind::kBinary,
+          {*key_a, *key_b},
+          {ToUpperAscii(key_a_spelling), ToUpperAscii(key_b_spelling)});
+      if (!grouping_id.has_value()) return FinishRefusal();
+      grouping_projection_ids = {*grouping_a, *grouping_b, *grouping_id};
+    }
+    if (!RequireWord("FROM", "inline_values_source_required",
+                     "native grouped aggregate profile requires an inline VALUES source")) {
+      return FinishRefusal();
+    }
 
     if (!RequireSymbol("(", "inline_values_open_required",
                        "inline VALUES source requires an opening parenthesis") ||
@@ -666,8 +751,12 @@ class NativeRelationalParser final {
     aggregate_relation.relation_id = 2;
     aggregate_relation.relation_kind = NativeRelationAstKind::kAggregate;
     aggregate_relation.aggregate_grouping_form = grouping_form;
+    aggregate_relation.aggregate_projection_form = projection_form;
     aggregate_relation.input_relation_ids = {1};
     aggregate_relation.output_expression_ids = {*key_a, *key_b, *count, *sum};
+    aggregate_relation.output_expression_ids.insert(
+        aggregate_relation.output_expression_ids.end(),
+        grouping_projection_ids.begin(), grouping_projection_ids.end());
     aggregate_relation.grouping_key_expression_ids = {*key_a, *key_b};
     aggregate_relation.aggregate_expression_ids = {*count, *sum};
     aggregate_relation.range = Span(select_token, *query_end);

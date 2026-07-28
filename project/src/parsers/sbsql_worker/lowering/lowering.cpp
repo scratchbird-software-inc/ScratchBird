@@ -34764,6 +34764,35 @@ std::string EncodeOptionalCanonicalU32(
   return value.has_value() ? std::to_string(*value) : "-";
 }
 
+std::string_view ExpectedNativeAggregateSemanticVariant(
+    const NativeAggregateGroupingForm grouping_form,
+    const NativeAggregateProjectionForm projection_form) {
+  const bool projects_grouping_metadata =
+      projection_form ==
+      NativeAggregateProjectionForm::kKeysCountSumGrouping;
+  if (projection_form != NativeAggregateProjectionForm::kKeysCountSum &&
+      !projects_grouping_metadata) {
+    return {};
+  }
+  switch (grouping_form) {
+    case NativeAggregateGroupingForm::kGroupingSets:
+      return projects_grouping_metadata
+                 ? "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.grouping-sets-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kRollup:
+      return projects_grouping_metadata
+                 ? "aggregate.rollup-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.rollup-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kCube:
+      return projects_grouping_metadata
+                 ? "aggregate.cube-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.cube-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kNone:
+      return {};
+  }
+  return {};
+}
+
 std::string EscapeCanonicalSblrField(std::string_view value) {
   std::string escaped;
   escaped.reserve(value.size());
@@ -34912,6 +34941,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.semantic_variant_id != "values.literal-table.v1" ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty()) {
         AddNativeRelationalLoweringError(
@@ -34921,20 +34952,33 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
       values_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      const bool projects_keys_count_sum =
+          relation.aggregate_projection_form ==
+          NativeAggregateProjectionForm::kKeysCountSum;
+      const bool projects_grouping_metadata =
+          relation.aggregate_projection_form ==
+          NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      const std::size_t expected_output_count =
+          projects_grouping_metadata ? 7 : 4;
       if (aggregate_relation != nullptr ||
           relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
           relation.grouping_key_expression_ids.size() != 2 ||
           relation.aggregate_expression_ids.size() != 2 ||
-          relation.output_expression_ids.size() != 4 ||
+          (!projects_keys_count_sum && !projects_grouping_metadata) ||
+          relation.output_expression_ids.size() != expected_output_count ||
           (relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kGroupingSets &&
            relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kRollup &&
            relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kCube) ||
-          relation.bound_expression_ids != relation.output_expression_ids) {
+          relation.bound_expression_ids != relation.output_expression_ids ||
+          relation.semantic_variant_id !=
+              ExpectedNativeAggregateSemanticVariant(
+                  relation.aggregate_grouping_form,
+                  relation.aggregate_projection_form)) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed aggregate fields are outside the bounded native profile");
@@ -35149,6 +35193,42 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed aggregate output expressions do not match its keys and states");
       return envelope;
+    }
+    const bool projects_grouping_metadata =
+        aggregate_relation->aggregate_projection_form ==
+        NativeAggregateProjectionForm::kKeysCountSumGrouping;
+    if (projects_grouping_metadata) {
+      const auto grouping_a =
+          expressions_by_id.find(aggregate_relation->output_expression_ids[4]);
+      const auto grouping_b =
+          expressions_by_id.find(aggregate_relation->output_expression_ids[5]);
+      const auto grouping_id =
+          expressions_by_id.find(aggregate_relation->output_expression_ids[6]);
+      if (grouping_a == expressions_by_id.end() ||
+          grouping_b == expressions_by_id.end() ||
+          grouping_id == expressions_by_id.end() ||
+          grouping_a->second->expression_kind !=
+              NativeExpressionAstKind::kUnary ||
+          grouping_a->second->canonical_operator_name != "grouping" ||
+          grouping_a->second->child_expression_ids !=
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[0]} ||
+          grouping_b->second->expression_kind !=
+              NativeExpressionAstKind::kUnary ||
+          grouping_b->second->canonical_operator_name != "grouping" ||
+          grouping_b->second->child_expression_ids !=
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[1]} ||
+          grouping_id->second->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          grouping_id->second->canonical_operator_name != "grouping_id" ||
+          grouping_id->second->child_expression_ids !=
+              aggregate_relation->grouping_key_expression_ids) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed grouping metadata projections do not match the ordered keys");
+        return envelope;
+      }
     }
     for (const auto expression_id : aggregate_relation->bound_expression_ids) {
       if (!expressions_by_id.contains(expression_id)) {

@@ -33,6 +33,17 @@ bool Require(const bool condition, const std::string_view message) {
   return condition;
 }
 
+std::string EncodeHex(const std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string encoded;
+  encoded.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    encoded.push_back(kHex[ch >> 4]);
+    encoded.push_back(kHex[ch & 0x0f]);
+  }
+  return encoded;
+}
+
 bool HasParserDiagnostic(const sbsql::MessageVectorSet& messages,
                          const std::string_view code) {
   return std::ranges::any_of(
@@ -126,6 +137,28 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
        "019f0000-0000-7300-8000-0000000005ac",
        sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}},
   };
+  const auto aggregate_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               sbsql::NativeRelationAstKind::kAggregate;
+      });
+  const bool projects_grouping_metadata =
+      aggregate_relation != ast.relations.end() &&
+      aggregate_relation->aggregate_projection_form ==
+          sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping;
+  if (projects_grouping_metadata) {
+    context.descriptors.insert(
+        context.descriptors.end(),
+        {{6, "019f0000-0000-7200-8000-0000000005b0",
+          "019f0000-0000-7300-8000-0000000005b1",
+          sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
+         {7, "019f0000-0000-7200-8000-0000000005b2",
+          "019f0000-0000-7300-8000-0000000005b3",
+          sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
+         {8, "019f0000-0000-7200-8000-0000000005b4",
+          "019f0000-0000-7300-8000-0000000005b5",
+          sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}}});
+  }
 
   std::unordered_map<std::uint32_t, std::uint32_t> descriptor_by_expression;
   for (const auto& row : ast.values_rows) {
@@ -159,6 +192,21 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
         descriptor_id = 5;
         function_uuid = "019de5fc-2400-72e4-8549-82b2eef5a777";
       }
+    } else if (projects_grouping_metadata &&
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kUnary &&
+               expression.operator_name == "grouping" &&
+               expression.child_expression_ids.size() == 1) {
+      descriptor_id =
+          expression.child_expression_ids[0] ==
+                  aggregate_relation->grouping_key_expression_ids[0]
+              ? 6
+              : 7;
+    } else if (projects_grouping_metadata &&
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kBinary &&
+               expression.operator_name == "grouping_id") {
+      descriptor_id = 8;
     }
     context.expressions.push_back({expression.expression_id, descriptor_id,
                                    std::move(function_uuid),
@@ -168,8 +216,9 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
 
   std::uint32_t output_id = 1;
   for (const auto& relation : ast.relations) {
-    const std::array<std::string_view, 4> aggregate_names = {
-        "key_a", "key_b", "row_count", "total_amount"};
+    const std::array<std::string_view, 7> aggregate_names = {
+        "key_a", "key_b", "row_count", "total_amount",
+        "grouping_a", "grouping_b", "grouping_id"};
     const std::array<std::string_view, 3> values_names = {
         "key_a", "key_b", "amount"};
     for (std::size_t ordinal = 0;
@@ -770,6 +819,236 @@ bool ValidateCubeParserBindingLoweringAndDispatch() {
   return passed;
 }
 
+bool ValidateGroupingMetadataParserBindingLoweringAndDispatch() {
+  const auto validate_form = [](
+                                 const std::string_view grouping_clause,
+                                 const sbsql::NativeAggregateGroupingForm
+                                     expected_grouping_form,
+                                 const std::string_view semantic_variant,
+                                 const std::size_t expected_row_count,
+                                 const bool expects_grouping_set_records) {
+    const std::string sql =
+        "SELECT key_a, key_b, COUNT(*), SUM(amount), "
+        "GROUPING(key_a), GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+        "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+        "(NULL,10,8), (1,10,NULL)) AS input(key_a,key_b,amount) GROUP BY " +
+        std::string(grouping_clause) + ";";
+    const auto cst = sbsql::BuildCst(sql);
+    const auto ast = sbsql::BuildAst(cst);
+
+    bool passed = true;
+    const bool ast_shape =
+        ast.native_relational.accepted() &&
+        ast.native_relational.relations.size() == 2 &&
+        ast.native_relational.relations[1].aggregate_grouping_form ==
+            expected_grouping_form &&
+        ast.native_relational.relations[1].aggregate_projection_form ==
+            sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+        ast.native_relational.relations[1].output_expression_ids.size() == 7 &&
+        (ast.native_relational.grouping_sets.empty() !=
+         expects_grouping_set_records);
+    passed &= Require(
+        ast_shape,
+        "native parser did not retain the exact grouping metadata projection form");
+    if (!ast_shape) return false;
+
+    const auto& aggregate = ast.native_relational.relations[1];
+    const auto grouping_a = std::ranges::find_if(
+        ast.native_relational.expressions, [&](const auto& expression) {
+          return expression.expression_id == aggregate.output_expression_ids[4];
+        });
+    const auto grouping_b = std::ranges::find_if(
+        ast.native_relational.expressions, [&](const auto& expression) {
+          return expression.expression_id == aggregate.output_expression_ids[5];
+        });
+    const auto grouping_id = std::ranges::find_if(
+        ast.native_relational.expressions, [&](const auto& expression) {
+          return expression.expression_id == aggregate.output_expression_ids[6];
+        });
+    passed &= Require(
+        grouping_a != ast.native_relational.expressions.end() &&
+            grouping_b != ast.native_relational.expressions.end() &&
+            grouping_id != ast.native_relational.expressions.end() &&
+            grouping_a->expression_kind ==
+                sbsql::NativeExpressionAstKind::kUnary &&
+            grouping_a->operator_name == "grouping" &&
+            grouping_a->child_expression_ids ==
+                std::vector<std::uint32_t>{
+                    aggregate.grouping_key_expression_ids[0]} &&
+            grouping_b->expression_kind ==
+                sbsql::NativeExpressionAstKind::kUnary &&
+            grouping_b->operator_name == "grouping" &&
+            grouping_b->child_expression_ids ==
+                std::vector<std::uint32_t>{
+                    aggregate.grouping_key_expression_ids[1]} &&
+            grouping_id->expression_kind ==
+                sbsql::NativeExpressionAstKind::kBinary &&
+            grouping_id->operator_name == "grouping_id" &&
+            grouping_id->child_expression_ids ==
+                aggregate.grouping_key_expression_ids,
+        "GROUPING/GROUPING_ID did not retain exact ordered key lineage");
+
+    const auto context = GroupedAggregateBindingContext(
+        ast.native_relational, semantic_variant);
+    const auto bound = sbsql::BindAst(
+        ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+    const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+    const auto verified = sbsql::VerifySblrEnvelope(lowered);
+    passed &= Require(
+        bound.bound && bound.native_relational.bound &&
+            bound.native_relational.relations.size() == 2 &&
+            bound.native_relational.relations[1].aggregate_projection_form ==
+                sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+            bound.native_relational.relations[1].semantic_variant_id ==
+                semantic_variant,
+        "native binder did not retain the authoritative grouping metadata profile");
+    if (!bound.native_relational.bound) return false;
+
+    const auto has_operand_type = [&](const std::string_view type) {
+      return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+        return operand.type == type;
+      });
+    };
+    const auto has_operand = [&](const std::string_view type,
+                                 const std::string_view name,
+                                 const std::string_view value) {
+      return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+        return operand.type == type && operand.name == name &&
+               operand.value == value;
+      });
+    };
+    passed &= Require(
+        !lowered.messages.has_errors() && verified.admitted &&
+            !verified.messages.has_errors() &&
+            has_operand("relational_node_v1", "2",
+                        "5|0|1|1,2,4,5,6,7,8|-") &&
+            has_operand("relational_node_binding_v1", "2",
+                        EncodeHex(semantic_variant) +
+                            "|1,2,3,5,6,7,8|-|-|-") &&
+            has_operand("relational_expression_v1", "6",
+                        "5|1|6|-|-|-|67726f7570696e67|-") &&
+            has_operand("relational_expression_v1", "7",
+                        "5|2|7|-|-|-|67726f7570696e67|-") &&
+            has_operand("relational_expression_v1", "8",
+                        "6|1,2|8|-|-|-|67726f7570696e675f6964|-") &&
+            (has_operand_type("relational_grouping_set_v1") ==
+             expects_grouping_set_records) &&
+            lowered.payload.find("SELECT key_a") == std::string::npos &&
+            lowered.payload.find("query.plan_operation") == std::string::npos,
+        "grouping metadata did not lower to the exact canonical wire-v2 form");
+
+    const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+        lowered.payload, GroupingSetsEngineContext());
+    passed &= Require(
+        dispatched.envelope_validated && dispatched.accepted &&
+            dispatched.dispatched_to_api &&
+            dispatched.logical_graph_populated &&
+            dispatched.logical_properties_populated &&
+            dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+            dispatched.physical_dag_published &&
+            dispatched.physical_dag_executed &&
+            dispatched.runtime_actuals_attached &&
+            dispatched.canonical_result_published &&
+            dispatched.api_result.ok &&
+            dispatched.logical_node_count == 2 &&
+            dispatched.physical_node_count == 2 &&
+            dispatched.canonical_result_column_count == 7 &&
+            dispatched.canonical_result_row_count == expected_row_count &&
+            dispatched.api_result.result_shape.rows.size() ==
+                expected_row_count &&
+            dispatched.api_result.result_shape.columns.size() == 7 &&
+            dispatched.api_result.result_shape.columns[4]
+                    .canonical_type_name == "int64" &&
+            dispatched.api_result.result_shape.columns[5]
+                    .canonical_type_name == "int64" &&
+            dispatched.api_result.result_shape.columns[6]
+                    .canonical_type_name == "int64",
+        "parser-produced grouping metadata profile did not complete the live engine spine");
+    return passed;
+  };
+
+  bool passed = true;
+  passed &= validate_form(
+      "GROUPING SETS ((key_b), (), (key_b,key_a), (key_b))",
+      sbsql::NativeAggregateGroupingForm::kGroupingSets,
+      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1", 12,
+      true);
+  passed &= validate_form(
+      "ROLLUP(key_a,key_b)",
+      sbsql::NativeAggregateGroupingForm::kRollup,
+      "aggregate.rollup-int64-keys-count-sum-grouping.v1", 9, false);
+  passed &= validate_form(
+      "CUBE(key_a,key_b)", sbsql::NativeAggregateGroupingForm::kCube,
+      "aggregate.cube-int64-keys-count-sum-grouping.v1", 12, false);
+
+  constexpr std::string_view kValidSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), "
+      "GROUPING(key_a), GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY ROLLUP(key_a,key_b);";
+  const auto cst = sbsql::BuildCst(std::string(kValidSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational,
+      "aggregate.rollup-int64-keys-count-sum-grouping.v1");
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+
+  const auto malformed_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), "
+      "GROUPING(key_a), GROUPING(key_b), GROUPING_ID(key_b,key_a) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY ROLLUP(key_a,key_b);" );
+  const auto malformed_ast = sbsql::BuildAst(malformed_cst);
+
+  auto mismatched_context = context;
+  mismatched_context.relations[0].semantic_variant_id =
+      "aggregate.rollup-int64-keys-count-sum.v1";
+  const auto mismatched_semantic = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &mismatched_context);
+
+  auto key_drift_ast = ast;
+  const auto& drift_aggregate = key_drift_ast.native_relational.relations[1];
+  const auto grouping_a_id = drift_aggregate.output_expression_ids[4];
+  const auto grouping_a = std::ranges::find_if(
+      key_drift_ast.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == grouping_a_id;
+      });
+  grouping_a->child_expression_ids = {
+      drift_aggregate.grouping_key_expression_ids[1]};
+  const auto key_drift_bound = sbsql::BindAst(
+      key_drift_ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &context);
+
+  auto operator_drift_bound = bound;
+  const auto bound_grouping_a = std::ranges::find_if(
+      operator_drift_bound.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == grouping_a_id;
+      });
+  bound_grouping_a->canonical_operator_name = "grouping_id";
+  const auto refused_lowering = sbsql::LowerToSblr(
+      operator_drift_bound, cst, SessionForTest());
+
+  passed &= Require(
+      malformed_ast.native_relational.recognized() &&
+          !malformed_ast.native_relational.accepted() &&
+          malformed_ast.native_relational.relations.empty() &&
+          malformed_ast.native_relational.expressions.empty() &&
+          HasParserDiagnostic(malformed_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          !mismatched_semantic.bound &&
+          mismatched_semantic.messages.has_errors() &&
+          !key_drift_bound.bound && key_drift_bound.messages.has_errors() &&
+          refused_lowering.payload.empty() &&
+          HasParserDiagnostic(refused_lowering.messages,
+                              "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "grouping metadata syntax, semantic, key, or operator drift did not fail closed");
+  return passed;
+}
+
 bool ValidateFailClosedLowering() {
   const auto cst = sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');");
 
@@ -818,6 +1097,8 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-001-BINDING-ROLLUP-V1
 // QOW-TEST-QRY-001-CUBE-V1
 // QOW-TEST-QRY-001-BINDING-CUBE-V1
+// QOW-TEST-QRY-001-GROUPING-METADATA-V1
+// QOW-TEST-QRY-001-BINDING-GROUPING-METADATA-V1
 // QOW-TEST-QRY-005-V1
 int main() {
   bool passed = true;
@@ -825,6 +1106,7 @@ int main() {
   passed &= ValidateGroupingSetsParserBindingLoweringAndDispatch();
   passed &= ValidateRollupParserBindingLoweringAndDispatch();
   passed &= ValidateCubeParserBindingLoweringAndDispatch();
+  passed &= ValidateGroupingMetadataParserBindingLoweringAndDispatch();
   passed &= ValidateFailClosedLowering();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

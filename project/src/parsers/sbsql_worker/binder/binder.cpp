@@ -274,14 +274,28 @@ bool LooksLikeUuidV7(const std::string_view value) {
 }
 
 std::string_view ExpectedAggregateSemanticVariant(
-    const NativeAggregateGroupingForm form) {
-  switch (form) {
+    const NativeAggregateGroupingForm grouping_form,
+    const NativeAggregateProjectionForm projection_form) {
+  const bool projects_grouping_metadata =
+      projection_form ==
+      NativeAggregateProjectionForm::kKeysCountSumGrouping;
+  if (projection_form != NativeAggregateProjectionForm::kKeysCountSum &&
+      !projects_grouping_metadata) {
+    return {};
+  }
+  switch (grouping_form) {
     case NativeAggregateGroupingForm::kGroupingSets:
-      return "aggregate.grouping-sets-int64-keys-count-sum.v1";
+      return projects_grouping_metadata
+                 ? "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.grouping-sets-int64-keys-count-sum.v1";
     case NativeAggregateGroupingForm::kRollup:
-      return "aggregate.rollup-int64-keys-count-sum.v1";
+      return projects_grouping_metadata
+                 ? "aggregate.rollup-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.rollup-int64-keys-count-sum.v1";
     case NativeAggregateGroupingForm::kCube:
-      return "aggregate.cube-int64-keys-count-sum.v1";
+      return projects_grouping_metadata
+                 ? "aggregate.cube-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.cube-int64-keys-count-sum.v1";
     case NativeAggregateGroupingForm::kNone:
       return {};
   }
@@ -583,6 +597,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     record.relation_id = relation.relation_id;
     record.relation_kind = relation.relation_kind;
     record.aggregate_grouping_form = relation.aggregate_grouping_form;
+    record.aggregate_projection_form = relation.aggregate_projection_form;
     record.input_relation_ids = relation.input_relation_ids;
     record.values_row_ids = relation.values_row_ids;
     record.output_expression_ids = relation.output_expression_ids;
@@ -597,6 +612,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation.output_expression_ids != first_row.expression_ids ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -618,13 +635,22 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                            row.expression_ids.end());
       }
     } else if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      const bool projects_keys_count_sum =
+          relation.aggregate_projection_form ==
+          NativeAggregateProjectionForm::kKeysCountSum;
+      const bool projects_grouping_metadata =
+          relation.aggregate_projection_form ==
+          NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      const std::size_t expected_output_count =
+          projects_grouping_metadata ? 7 : 4;
       if (aggregate_relation_ast != nullptr ||
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
           relation.grouping_key_expression_ids.size() != 2 ||
           relation.aggregate_expression_ids.size() != 2 ||
-          relation.output_expression_ids.size() != 4 ||
+          (!projects_keys_count_sum && !projects_grouping_metadata) ||
+          relation.output_expression_ids.size() != expected_output_count ||
           (relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kGroupingSets &&
            relation.aggregate_grouping_form !=
@@ -643,6 +669,39 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                               "typed aggregate relation is outside the bounded profile");
         return RefusedBoundAst(std::move(bound));
       }
+      if (projects_grouping_metadata) {
+        const auto grouping_a =
+            ast_expression_by_id.find(relation.output_expression_ids[4]);
+        const auto grouping_b =
+            ast_expression_by_id.find(relation.output_expression_ids[5]);
+        const auto grouping_id =
+            ast_expression_by_id.find(relation.output_expression_ids[6]);
+        if (grouping_a == ast_expression_by_id.end() ||
+            grouping_b == ast_expression_by_id.end() ||
+            grouping_id == ast_expression_by_id.end() ||
+            grouping_a->second->expression_kind !=
+                NativeExpressionAstKind::kUnary ||
+            grouping_a->second->operator_name != "grouping" ||
+            grouping_a->second->child_expression_ids !=
+                std::vector<std::uint32_t>{
+                    relation.grouping_key_expression_ids[0]} ||
+            grouping_b->second->expression_kind !=
+                NativeExpressionAstKind::kUnary ||
+            grouping_b->second->operator_name != "grouping" ||
+            grouping_b->second->child_expression_ids !=
+                std::vector<std::uint32_t>{
+                    relation.grouping_key_expression_ids[1]} ||
+            grouping_id->second->expression_kind !=
+                NativeExpressionAstKind::kBinary ||
+            grouping_id->second->operator_name != "grouping_id" ||
+            grouping_id->second->child_expression_ids !=
+                relation.grouping_key_expression_ids) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-RELATION",
+              "grouping metadata projections must bind the two ordered keys exactly");
+          return RefusedBoundAst(std::move(bound));
+        }
+      }
       const auto semantic_binding =
           relation_binding_by_id.find(relation.relation_id);
       if (semantic_binding == relation_binding_by_id.end()) {
@@ -651,7 +710,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
       const auto expected_semantic =
-          ExpectedAggregateSemanticVariant(relation.aggregate_grouping_form);
+          ExpectedAggregateSemanticVariant(
+              relation.aggregate_grouping_form,
+              relation.aggregate_projection_form);
       if (expected_semantic.empty() ||
           semantic_binding->second->semantic_variant_id != expected_semantic) {
         AddBoundAstDiagnostic(
