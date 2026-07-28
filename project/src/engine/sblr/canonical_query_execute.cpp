@@ -1861,6 +1861,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-LIVE-V1
@@ -1916,11 +1917,15 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   }
   const auto expected_output_count =
       key_count + 2 + grouping_projection_count;
+  const bool ordinary_two_key_sum_profile =
+      simple_sum_profile && aggregate_root.semantic_variant_id ==
+                                "aggregate.grouped-int64-keys-count-sum.v1";
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
       (!simple_sum_profile && !count_sum_and_profile) ||
-      (key_count == 2 && !count_sum_and_profile) ||
+      (key_count == 2 && !count_sum_and_profile &&
+       !ordinary_two_key_sum_profile) ||
       filter_root.input_logical_node_ids !=
           std::vector<std::uint32_t>{aggregate_root.logical_node_id} ||
       filter_root.output_descriptor_ids !=

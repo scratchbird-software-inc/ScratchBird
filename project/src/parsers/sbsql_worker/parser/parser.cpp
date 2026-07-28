@@ -809,6 +809,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-V1
@@ -929,7 +930,12 @@ class NativeRelationalParser final {
                "or COUNT(*) > numeric literal AND SUM(value) > numeric literal");
         return FinishRefusal();
       }
-      if (!one_key_grouping_profile && !count_sum_and_profile) {
+      const bool ordinary_two_key_sum_profile =
+          !one_key_grouping_profile && simple_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+      if (!one_key_grouping_profile && !count_sum_and_profile &&
+          !ordinary_two_key_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native multi-key HAVING profile requires the ordered COUNT/SUM AND predicate");
         return FinishRefusal();

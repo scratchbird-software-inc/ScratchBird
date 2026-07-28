@@ -866,12 +866,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           count_sum_and_profile
               ? "filter.having-count-sum-and-gt-int64-literals.v1"
               : "filter.having-sum-gt-int64-literal.v1";
-      const bool one_key_simple_having =
+      // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
+      const bool admitted_simple_having =
           aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kSimple &&
-          aggregate_relation_ast->aggregate_projection_form ==
-              NativeAggregateProjectionForm::kKeyCountSum;
+          (aggregate_relation_ast->aggregate_projection_form ==
+               NativeAggregateProjectionForm::kKeyCountSum ||
+           aggregate_relation_ast->aggregate_projection_form ==
+               NativeAggregateProjectionForm::kKeysCountSum);
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-BINDING-ROLLUP-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-BINDING-CUBE-GROUPING-METADATA-HAVING-V1
@@ -896,7 +899,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             aggregate_relation_ast->aggregate_projection_form ==
                 NativeAggregateProjectionForm::kKeysCountSumGrouping));
       if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
-          (!one_key_simple_having &&
+          (!admitted_simple_having &&
            !admitted_multi_key_boolean_having) ||
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids !=
