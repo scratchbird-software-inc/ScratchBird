@@ -1994,6 +1994,19 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           std::vector<std::size_t>{0, 1} &&
       prepared_aggregate.grouping_sets[3].key_term_ordinals ==
           prepared_aggregate.grouping_sets[0].key_term_ordinals;
+  // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-COUNT-SUM-AND-GT-LIVE-V1
+  const bool exact_grouping_sets_metadata_not_count_sum_and_profile =
+      not_count_sum_and_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1" &&
+      prepared_aggregate.grouping_sets.size() == 4 &&
+      prepared_aggregate.grouping_sets[0].key_term_ordinals ==
+          std::vector<std::size_t>{1} &&
+      prepared_aggregate.grouping_sets[1].key_term_ordinals.empty() &&
+      prepared_aggregate.grouping_sets[2].key_term_ordinals ==
+          std::vector<std::size_t>{0, 1} &&
+      prepared_aggregate.grouping_sets[3].key_term_ordinals ==
+          prepared_aggregate.grouping_sets[0].key_term_ordinals;
   // QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-COUNT-SUM-AND-GT-LIVE-V1
   const bool exact_rollup_not_count_sum_and_profile =
       not_count_sum_and_profile &&
@@ -2021,6 +2034,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const bool admitted_not_count_sum_and_profile =
       exact_ordinary_two_key_not_count_sum_and_profile ||
       exact_grouping_sets_not_count_sum_and_profile ||
+      exact_grouping_sets_metadata_not_count_sum_and_profile ||
       exact_rollup_not_count_sum_and_profile ||
       exact_cube_not_count_sum_and_profile;
   const bool exact_grouping_sets_not_sum_profile =
@@ -2278,7 +2292,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     result.detail = "HAVING output lineage coverage is incomplete";
     return result;
   }
-  if (exact_grouping_sets_metadata_not_sum_profile ||
+  if (exact_grouping_sets_metadata_not_count_sum_and_profile ||
+      exact_grouping_sets_metadata_not_sum_profile ||
       exact_rollup_metadata_not_sum_profile ||
       exact_cube_metadata_not_sum_profile) {
     constexpr std::array<std::string_view, 7> kOutputNames = {
@@ -2297,7 +2312,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       }
     }
   }
-  if (admitted_not_count_sum_and_profile) {
+  if (admitted_not_count_sum_and_profile &&
+      !exact_grouping_sets_metadata_not_count_sum_and_profile) {
     constexpr std::array<std::string_view, 4> kOutputNames = {
         "key_a", "key_b", "row_count", "total_amount"};
     for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
