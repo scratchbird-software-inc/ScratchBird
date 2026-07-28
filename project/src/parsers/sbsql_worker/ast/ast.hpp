@@ -54,6 +54,7 @@ enum class NativeRelationalParseStatus {
 enum class NativeRelationAstKind {
   kValues,
   kAggregate,
+  kFilter,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -150,6 +151,7 @@ struct NativeRelationAstNode {
   std::vector<std::uint32_t> output_expression_ids;
   std::vector<std::uint32_t> grouping_key_expression_ids;
   std::vector<std::uint32_t> aggregate_expression_ids;
+  std::vector<std::uint32_t> predicate_expression_ids;
   SourceRange range;
 };
 

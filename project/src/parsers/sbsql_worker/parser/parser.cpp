@@ -804,6 +804,48 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
 
+    std::optional<std::uint32_t> having_predicate;
+    if (!AtEnd() && IsWord(Current(), "HAVING")) {
+      // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
+      if (!one_key_grouping_profile ||
+          grouping_form != NativeAggregateGroupingForm::kSimple ||
+          projection_form != NativeAggregateProjectionForm::kKeyCountSum) {
+        Refuse("having_profile_not_admitted",
+               "native HAVING profile requires ordinary one-key GROUP BY");
+        return FinishRefusal();
+      }
+      Consume();
+      having_predicate = ParseExpression(0, 0);
+      if (!having_predicate.has_value()) return FinishRefusal();
+      const auto& predicate = document_.expressions[*having_predicate - 1];
+      if (predicate.expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate.operator_name != ">" ||
+          predicate.child_expression_ids.size() != 2) {
+        Refuse("having_predicate_shape_invalid",
+               "native HAVING profile requires SUM(value) > numeric literal");
+        return FinishRefusal();
+      }
+      const auto& having_sum = document_.expressions[
+          predicate.child_expression_ids[0] - 1];
+      const auto& threshold = document_.expressions[
+          predicate.child_expression_ids[1] - 1];
+      if (having_sum.expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(having_sum.operator_name) != "SUM" ||
+          having_sum.child_expression_ids.size() != 1 ||
+          document_.expressions[having_sum.child_expression_ids[0] - 1]
+                  .expression_kind != NativeExpressionAstKind::kIdentifier ||
+          ToUpperAscii(
+              document_.expressions[having_sum.child_expression_ids[0] - 1]
+                  .spelling) != column_names.back() ||
+          threshold.expression_kind != NativeExpressionAstKind::kLiteral ||
+          threshold.literal_kind != NativeLiteralAstKind::kNumeric) {
+        Refuse("having_predicate_shape_invalid",
+               "native HAVING profile requires SUM(value) > numeric literal");
+        return FinishRefusal();
+      }
+    }
+
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("trailing_input",
@@ -844,7 +886,22 @@ class NativeRelationalParser final {
     aggregate_relation.range = Span(select_token, *query_end);
     document_.relations.push_back(std::move(values_relation));
     document_.relations.push_back(std::move(aggregate_relation));
-    document_.root_relation_id = 2;
+    if (having_predicate.has_value()) {
+      NativeRelationAstNode filter_relation;
+      filter_relation.relation_id = 3;
+      filter_relation.relation_kind = NativeRelationAstKind::kFilter;
+      filter_relation.input_relation_ids = {2};
+      filter_relation.output_expression_ids =
+          document_.relations.back().output_expression_ids;
+      filter_relation.predicate_expression_ids = {*having_predicate};
+      filter_relation.range =
+          MergeRanges(document_.relations.back().range,
+                      document_.expressions[*having_predicate - 1].range);
+      document_.relations.push_back(std::move(filter_relation));
+      document_.root_relation_id = 3;
+    } else {
+      document_.root_relation_id = 2;
+    }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

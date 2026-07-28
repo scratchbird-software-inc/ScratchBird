@@ -129,6 +129,12 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
       aggregate_relation != ast.relations.end() &&
       aggregate_relation->aggregate_projection_form ==
           sbsql::NativeAggregateProjectionForm::kKeyCountSum;
+  const auto filter_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind ==
+               sbsql::NativeRelationAstKind::kFilter;
+      });
+  const bool has_having_filter = filter_relation != ast.relations.end();
   context.descriptors = {
       {1, "019f0000-0000-7200-8000-0000000005a3",
        "019f0000-0000-7300-8000-0000000005a4",
@@ -152,6 +158,16 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
         {5, "019f0000-0000-7200-8000-0000000005ab",
          "019f0000-0000-7300-8000-0000000005ac",
          sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}});
+  }
+  if (has_having_filter) {
+    context.descriptors.insert(
+        context.descriptors.end(),
+        {{9, "019f0000-0000-7200-8000-0000000005b6",
+          "019f0000-0000-7300-8000-0000000005a6",
+          sbsql::BoundNullability::kNonNull, std::nullopt, std::nullopt, {}},
+         {10, "019f0000-0000-7200-8000-0000000005b7",
+          "019f0000-0000-7300-8000-0000000005b8",
+          sbsql::BoundNullability::kNullable, std::nullopt, std::nullopt, {}}});
   }
   const bool projects_grouping_metadata =
       aggregate_relation != ast.relations.end() &&
@@ -218,6 +234,16 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
                    sbsql::NativeExpressionAstKind::kBinary &&
                expression.operator_name == "grouping_id") {
       descriptor_id = 8;
+    } else if (has_having_filter &&
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kLiteral &&
+               descriptor_id == 0) {
+      descriptor_id = 9;
+    } else if (has_having_filter &&
+               expression.expression_kind ==
+                   sbsql::NativeExpressionAstKind::kBinary &&
+               expression.operator_name == ">") {
+      descriptor_id = 10;
     }
     context.expressions.push_back({expression.expression_id, descriptor_id,
                                    std::move(function_uuid),
@@ -255,8 +281,15 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
            static_cast<std::uint32_t>(ordinal), relation.relation_id});
     }
   }
-  context.relations.push_back(
-      {ast.root_relation_id, std::string(semantic_variant_id)});
+  if (aggregate_relation != ast.relations.end()) {
+    context.relations.push_back(
+        {aggregate_relation->relation_id, std::string(semantic_variant_id)});
+  }
+  if (has_having_filter) {
+    context.relations.push_back(
+        {filter_relation->relation_id,
+         "filter.having-sum-gt-int64-literal.v1"});
+  }
   return context;
 }
 
@@ -579,6 +612,171 @@ bool ValidateSimpleGroupByParserBindingLoweringAndDispatch() {
           HasParserDiagnostic(refused_lowering.messages,
                               "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "ordinary GROUP BY syntax, semantic, set, or projection drift did not fail closed");
+  return passed;
+}
+
+bool ValidateHavingParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kSql =
+      "SELECT key_a, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10), (1,20), (2,5), (NULL,7), (2,NULL), "
+      "(1,5)) AS input(key_a,amount) GROUP BY key_a "
+      "HAVING SUM(amount) > 6;";
+  const auto cst = sbsql::BuildCst(std::string(kSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational,
+      "aggregate.grouped-int64-key-count-sum.v1");
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  bool passed = true;
+  passed &= Require(
+      ast.native_relational.accepted() &&
+          ast.native_relational.root_relation_id == 3 &&
+          ast.native_relational.relations.size() == 3 &&
+          ast.native_relational.relations[2].relation_kind ==
+              sbsql::NativeRelationAstKind::kFilter &&
+          ast.native_relational.relations[2].input_relation_ids ==
+              std::vector<std::uint32_t>{2} &&
+          ast.native_relational.relations[2].output_expression_ids ==
+              ast.native_relational.relations[1].output_expression_ids &&
+          ast.native_relational.relations[2]
+                  .predicate_expression_ids.size() == 1,
+      "native parser did not retain HAVING as a typed FILTER relation");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.root_relation_id == 3 &&
+          bound.native_relational.relations.size() == 3 &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              "aggregate.grouped-int64-key-count-sum.v1" &&
+          bound.native_relational.relations[2].semantic_variant_id ==
+              "filter.having-sum-gt-int64-literal.v1" &&
+          bound.native_relational.relations[2].bound_expression_ids ==
+              bound.native_relational.relations[2]
+                  .predicate_expression_ids,
+      "native binder did not preserve aggregate and HAVING authority separately");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 3) {
+    return false;
+  }
+
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  const auto predicate_id =
+      bound.native_relational.relations[2].bound_expression_ids.front();
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("uint32", "relational_root_node_id", "3") &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2|1,2,3,4,5,6") &&
+          has_operand("relational_node_v1", "2", "5|0|1|1,3,4|-") &&
+          has_operand("relational_node_v1", "3", "2|0|2|1,3,4|-") &&
+          has_operand(
+              "relational_node_binding_v1", "3",
+              EncodeHex("filter.having-sum-gt-int64-literal.v1") + "|" +
+                  std::to_string(predicate_id) + "|-|-|-") &&
+          lowered.payload.find("HAVING SUM") == std::string::npos,
+      "HAVING did not lower to the exact canonical three-node DAG");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  const auto has_value_group = [&](const std::string_view key,
+                                   const std::string_view count,
+                                   const std::string_view sum) {
+    return std::ranges::any_of(
+        dispatched.api_result.result_shape.rows, [&](const auto& row) {
+          return row.fields.size() == 3 &&
+                 row.fields[0].second.state == api::EngineValueState::value &&
+                 row.fields[0].second.encoded_value == key &&
+                 row.fields[1].second.encoded_value == count &&
+                 row.fields[2].second.encoded_value == sum;
+        });
+  };
+  const auto has_null_group = std::ranges::any_of(
+      dispatched.api_result.result_shape.rows, [](const auto& row) {
+        return row.fields.size() == 3 &&
+               row.fields[0].second.state ==
+                   api::EngineValueState::sql_null &&
+               row.fields[1].second.encoded_value == "1" &&
+               row.fields[2].second.encoded_value == "7";
+      });
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 3 &&
+          dispatched.physical_node_count == 3 &&
+          dispatched.canonical_result_column_count == 3 &&
+          dispatched.canonical_result_row_count == 2 &&
+          has_value_group("1", "3", "35") && has_null_group,
+      "parser-produced HAVING did not filter grouped output on the live spine");
+
+  const auto unsupported_cst = sbsql::BuildCst(
+      "SELECT key_a, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10)) AS input(key_a,amount) GROUP BY key_a "
+      "HAVING SUM(amount) >= 6;");
+  const auto unsupported_ast = sbsql::BuildAst(unsupported_cst);
+
+  auto semantic_drift_context = context;
+  semantic_drift_context.relations.back().semantic_variant_id =
+      "filter.where.v1";
+  const auto semantic_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &semantic_drift_context);
+
+  const auto ast_predicate = std::ranges::find_if(
+      ast.native_relational.expressions, [&](const auto& expression) {
+        return expression.expression_id == predicate_id;
+      });
+  auto function_drift_context = context;
+  const auto function_drift = std::ranges::find_if(
+      function_drift_context.expressions, [&](const auto& binding) {
+        return binding.expression_id ==
+               ast_predicate->child_expression_ids.front();
+      });
+  function_drift->function_uuid =
+      "019de5fc-2400-784a-9aec-371f8b95b7ea";
+  const auto function_identity_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &function_drift_context);
+
+  auto operator_drift_bound = bound;
+  const auto predicate = std::ranges::find_if(
+      operator_drift_bound.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == predicate_id;
+      });
+  predicate->canonical_operator_name = "<";
+  const auto refused_lowering = sbsql::LowerToSblr(
+      operator_drift_bound, cst, SessionForTest());
+
+  passed &= Require(
+      unsupported_ast.native_relational.recognized() &&
+          !unsupported_ast.native_relational.accepted() &&
+          HasParserDiagnostic(unsupported_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          !semantic_drift.bound && semantic_drift.messages.has_errors() &&
+          !function_identity_drift.bound &&
+          function_identity_drift.messages.has_errors() &&
+          refused_lowering.payload.empty() &&
+          HasParserDiagnostic(refused_lowering.messages,
+                              "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "HAVING syntax, semantic, function, or operator drift did not fail closed");
   return passed;
 }
 
@@ -1447,6 +1645,8 @@ bool ValidateFailClosedLowering() {
 // QOW-ROUTE-STAGE-QRY-005-V1
 // QOW-TEST-QRY-001-SIMPLE-GROUP-BY-V1
 // QOW-TEST-QRY-001-BINDING-SIMPLE-GROUP-BY-V1
+// QOW-TEST-QRY-001-HAVING-SUM-GT-V1
+// QOW-TEST-QRY-001-BINDING-HAVING-SUM-GT-V1
 // QOW-TEST-QRY-001-SIMPLE-TWO-KEY-GROUP-BY-V1
 // QOW-TEST-QRY-001-BINDING-SIMPLE-TWO-KEY-GROUP-BY-V1
 // QOW-TEST-QRY-001-GROUPING-SETS-V1
@@ -1462,6 +1662,7 @@ int main() {
   bool passed = true;
   passed &= ValidateCanonicalLoweringAndDispatch();
   passed &= ValidateSimpleGroupByParserBindingLoweringAndDispatch();
+  passed &= ValidateHavingParserBindingLoweringAndDispatch();
   passed &= ValidateSimpleTwoKeyGroupByParserBindingLoweringAndDispatch();
   passed &= ValidateGroupingSetsParserBindingLoweringAndDispatch();
   passed &= ValidateRollupParserBindingLoweringAndDispatch();

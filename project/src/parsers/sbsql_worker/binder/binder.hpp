@@ -127,6 +127,7 @@ struct BoundRelationAstRecord {
   std::vector<std::uint32_t> output_expression_ids;
   std::vector<std::uint32_t> grouping_key_expression_ids;
   std::vector<std::uint32_t> aggregate_expression_ids;
+  std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> bound_expression_ids;
   std::string semantic_variant_id;
   std::optional<std::string> bound_object_uuid;

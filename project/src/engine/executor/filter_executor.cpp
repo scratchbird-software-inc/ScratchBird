@@ -27,9 +27,10 @@ DescriptorRuntimeDiagnostic Refusal(std::string code,
 }  // namespace
 
 // QOW-SOURCE-QRY-007-FILTER-V1
-// Canonical typed filter-node consumer.  Predicate evaluation is supplied as
-// the shared QRY-017 SQL truth state; this node admits only TRUE after the
-// physical DAG, MGA context, and descriptor-preserving schema validate.
+// Canonical typed filter-node consumer. Predicate evaluation for WHERE or
+// HAVING is supplied as the shared QRY-017 SQL truth state; this node admits
+// only TRUE after the physical DAG, MGA context, and descriptor-preserving
+// schema validate.
 CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
     const CanonicalDescriptorFilterRequest& request) {
   using scratchbird::engine::internal_api::EnginePredicateConsumer;
@@ -84,11 +85,12 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
   auto input_validation = ValidateCanonicalDescriptorBatch(
       request.input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
-  if (request.consumer != EnginePredicateConsumer::filter ||
+  if ((request.consumer != EnginePredicateConsumer::filter &&
+       request.consumer != EnginePredicateConsumer::having) ||
       request.row_truth_values.size() != request.input_batch.rows.size()) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
-        "filter consumer or predicate cardinality is not bound"));
+        "filter/HAVING consumer or predicate cardinality is not bound"));
   }
 
   result.output_batch.columns = request.input_batch.columns;

@@ -114,6 +114,17 @@ bool ValidatePhysicalFilter() {
   passed &= Require(result.output_batch.columns[0].descriptor_id == 711,
                     "filter changed the bound output schema");
 
+  auto having = Request();
+  having.consumer = api::EnginePredicateConsumer::having;
+  const auto having_result =
+      exec::ExecuteCanonicalDescriptorFilter(having);
+  passed &= Require(
+      having_result.diagnostic.ok &&
+          having_result.output_batch.rows.size() == 1 &&
+          having_result.output_batch.rows[0].values[0].encoded_value ==
+              "1.00",
+      "HAVING consumer did not admit TRUE exclusively at the filter node");
+
   auto invalid = Request();
   invalid.row_truth_values[1] = api::EngineSqlTruthValue::unspecified;
   auto refused = exec::ExecuteCanonicalDescriptorFilter(invalid);

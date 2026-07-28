@@ -34918,7 +34918,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return envelope;
   }
   if (native.root_relation_id == 0 || native.relations.empty() ||
-      native.relations.size() > 2 ||
+      native.relations.size() > 3 ||
       native.descriptors.empty() || native.expressions.empty() ||
       native.outputs.empty() || native.values_rows.empty() ||
       native.bound_ast_uuid.empty() || native.security_context_uuid.empty() ||
@@ -34935,6 +34935,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       relations_by_id;
   const BoundRelationAstRecord* values_relation = nullptr;
   const BoundRelationAstRecord* aggregate_relation = nullptr;
+  const BoundRelationAstRecord* filter_relation = nullptr;
   for (const auto& relation : native.relations) {
     if (relation.relation_id == 0 || relation.lateral ||
         relation.bound_object_uuid.has_value() ||
@@ -34954,7 +34955,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.aggregate_projection_form !=
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
-          !relation.aggregate_expression_ids.empty()) {
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty()) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed VALUES fields do not form the accepted canonical leaf");
@@ -34989,9 +34991,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const std::size_t expected_output_count =
           one_key_profile ? 3 : (projects_grouping_metadata ? 7 : 4);
       if (aggregate_relation != nullptr ||
-          relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
           relation.grouping_key_expression_ids.size() !=
               (one_key_profile ? 1 : 2) ||
           relation.aggregate_expression_ids.size() != 2 ||
@@ -35008,6 +35010,31 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       aggregate_relation = &relation;
+    } else if (relation.relation_kind == NativeRelationAstKind::kFilter) {
+      if (filter_relation != nullptr || aggregate_relation == nullptr ||
+          relation.relation_id != native.root_relation_id ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{aggregate_relation->relation_id} ||
+          !relation.values_row_ids.empty() ||
+          relation.output_expression_ids !=
+              aggregate_relation->output_expression_ids ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          relation.predicate_expression_ids.size() != 1 ||
+          relation.bound_expression_ids !=
+              relation.predicate_expression_ids ||
+          relation.semantic_variant_id !=
+              "filter.having-sum-gt-int64-literal.v1") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed HAVING filter fields are outside the bounded native profile");
+        return envelope;
+      }
+      filter_relation = &relation;
     }
   }
   if (values_relation == nullptr ||
@@ -35016,7 +35043,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         values_relation->relation_id != native.root_relation_id ||
         !native.grouping_sets.empty())) ||
       (aggregate_relation != nullptr &&
-       (native.relations.size() != 2 ||
+       ((filter_relation == nullptr &&
+         (native.relations.size() != 2 ||
+          aggregate_relation->relation_id != native.root_relation_id)) ||
+        (filter_relation != nullptr &&
+         (native.relations.size() != 3 ||
+          filter_relation->relation_id != native.root_relation_id ||
+          filter_relation->input_relation_ids.front() !=
+              aggregate_relation->relation_id)) ||
         aggregate_relation->input_relation_ids.front() !=
             values_relation->relation_id ||
         (aggregate_relation->aggregate_grouping_form ==
@@ -35329,6 +35363,95 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
 
+  if (filter_relation != nullptr) {
+    const auto predicate =
+        expressions_by_id.find(filter_relation->predicate_expression_ids.front());
+    const BoundExpressionAstRecord* having_sum = nullptr;
+    const BoundExpressionAstRecord* threshold = nullptr;
+    const BoundExpressionAstRecord* having_argument = nullptr;
+    const BoundExpressionAstRecord* projected_sum = nullptr;
+    const BoundExpressionAstRecord* projected_argument = nullptr;
+    if (predicate != expressions_by_id.end() &&
+        predicate->second->expression_kind ==
+            NativeExpressionAstKind::kBinary &&
+        predicate->second->canonical_operator_name == ">" &&
+        predicate->second->child_expression_ids.size() == 2) {
+      having_sum = expressions_by_id.at(
+          predicate->second->child_expression_ids[0]);
+      threshold = expressions_by_id.at(
+          predicate->second->child_expression_ids[1]);
+      if (having_sum->child_expression_ids.size() == 1) {
+        having_argument = expressions_by_id.at(
+            having_sum->child_expression_ids.front());
+      }
+    }
+    if (aggregate_relation->aggregate_expression_ids.size() == 2) {
+      projected_sum = expressions_by_id.at(
+          aggregate_relation->aggregate_expression_ids[1]);
+      if (projected_sum->child_expression_ids.size() == 1) {
+        projected_argument = expressions_by_id.at(
+            projected_sum->child_expression_ids.front());
+      }
+    }
+    const auto predicate_descriptor =
+        predicate == expressions_by_id.end()
+            ? native.descriptors.end()
+            : std::ranges::find_if(native.descriptors, [&](const auto& item) {
+                return item.descriptor_id ==
+                       predicate->second->result_descriptor_id;
+              });
+    const auto threshold_descriptor =
+        threshold == nullptr
+            ? native.descriptors.end()
+            : std::ranges::find_if(native.descriptors, [&](const auto& item) {
+                return item.descriptor_id == threshold->result_descriptor_id;
+              });
+    if (aggregate_relation->aggregate_grouping_form !=
+            NativeAggregateGroupingForm::kSimple ||
+        aggregate_relation->aggregate_projection_form !=
+            NativeAggregateProjectionForm::kKeyCountSum ||
+        predicate == expressions_by_id.end() || having_sum == nullptr ||
+        threshold == nullptr ||
+        having_sum->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        having_sum->bound_function_uuid !=
+            "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+        having_sum->child_expression_ids.size() != 1 ||
+        having_argument == nullptr || projected_sum == nullptr ||
+        projected_argument == nullptr ||
+        projected_sum->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        projected_sum->bound_function_uuid !=
+            having_sum->bound_function_uuid ||
+        projected_sum->child_expression_ids.size() != 1 ||
+        having_sum->result_descriptor_id !=
+            projected_sum->result_descriptor_id ||
+        having_argument->expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        projected_argument->expression_kind !=
+            NativeExpressionAstKind::kIdentifier ||
+        having_argument->result_descriptor_id !=
+            projected_argument->result_descriptor_id ||
+        having_argument->bound_name_uuid != projected_argument->bound_name_uuid ||
+        !having_argument->bound_name_uuid.has_value() ||
+        threshold->expression_kind != NativeExpressionAstKind::kLiteral ||
+        threshold->literal_kind != NativeLiteralAstKind::kNumeric ||
+        !threshold->child_expression_ids.empty() ||
+        predicate_descriptor == native.descriptors.end() ||
+        predicate_descriptor->nullability != BoundNullability::kNullable ||
+        predicate_descriptor->collation_uuid.has_value() ||
+        predicate_descriptor->timezone_profile_id.has_value() ||
+        threshold_descriptor == native.descriptors.end() ||
+        threshold_descriptor->nullability != BoundNullability::kNonNull ||
+        threshold_descriptor->collation_uuid.has_value() ||
+        threshold_descriptor->timezone_profile_id.has_value()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed HAVING predicate is outside the exact SUM comparison profile");
+      return envelope;
+    }
+  }
+
   envelope.operands.push_back(
       {"uint16", "relational_wire_version", "2"});
   envelope.operands.push_back(
@@ -35406,7 +35529,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       output_descriptor_ids.push_back(output->descriptor_id);
     }
     const auto node_kind =
-        relation.relation_kind == NativeRelationAstKind::kValues ? 13 : 5;
+        relation.relation_kind == NativeRelationAstKind::kValues
+            ? 13
+            : (relation.relation_kind == NativeRelationAstKind::kAggregate
+                   ? 5
+                   : 2);
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +

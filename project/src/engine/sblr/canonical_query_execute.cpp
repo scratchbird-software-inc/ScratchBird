@@ -180,6 +180,12 @@ struct PreparedGroupedCountSumRoot {
   std::string detail;
 };
 
+struct PreparedGroupedHavingRoot {
+  bool ok{false};
+  std::int64_t threshold{0};
+  std::string detail;
+};
+
 struct LiveGroupedCountSumProfile {
   bool matched{false};
   std::size_t key_count{0};
@@ -1842,6 +1848,195 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
           "GROUPING_ID projection is not an exact ordered-key special form";
       return result;
     }
+  }
+  result.ok = true;
+  return result;
+}
+
+// QOW-SOURCE-QRY-001-HAVING-SUM-GT-LIVE-V1
+PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& filter_root,
+    const plan::CanonicalLogicalRelationalNode& aggregate_root,
+    const plan::CanonicalLogicalRelationalNode& values_node,
+    const PreparedGroupedCountSumRoot& prepared_aggregate) {
+  PreparedGroupedHavingRoot result;
+  if (!prepared_aggregate.ok || aggregate_root.output_descriptor_ids.size() != 3 ||
+      aggregate_root.bound_expression_ids.size() != 3 ||
+      filter_root.semantic_variant_id !=
+          "filter.having-sum-gt-int64-literal.v1" ||
+      filter_root.input_logical_node_ids !=
+          std::vector<std::uint32_t>{aggregate_root.logical_node_id} ||
+      filter_root.output_descriptor_ids !=
+          aggregate_root.output_descriptor_ids ||
+      filter_root.bound_expression_ids.size() != 1 ||
+      prepared_aggregate.result_bindings.size() != 3) {
+    result.detail = "HAVING root does not preserve the grouped aggregate schema";
+    return result;
+  }
+
+  const auto expression_by_id = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(dag.expressions, [&](const auto& expression) {
+      return expression.expression_id == expression_id;
+    });
+  };
+  const auto descriptor_by_id = [&](const std::uint32_t descriptor_id) {
+    return std::ranges::find_if(dag.descriptors, [&](const auto& descriptor) {
+      return descriptor.descriptor_id == descriptor_id;
+    });
+  };
+
+  std::vector<const api::RelationalOutputRecord*> aggregate_outputs;
+  std::vector<const api::RelationalOutputRecord*> filter_outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == aggregate_root.logical_node_id) {
+      aggregate_outputs.push_back(&output);
+    } else if (output.relation_node_id == filter_root.logical_node_id) {
+      filter_outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(aggregate_outputs, {},
+                    &api::RelationalOutputRecord::ordinal);
+  std::ranges::sort(filter_outputs, {},
+                    &api::RelationalOutputRecord::ordinal);
+  if (aggregate_outputs.size() != 3 || filter_outputs.size() != 3) {
+    result.detail = "HAVING output lineage coverage is incomplete";
+    return result;
+  }
+  for (std::size_t ordinal = 0; ordinal < filter_outputs.size(); ++ordinal) {
+    const auto& aggregate_output = *aggregate_outputs[ordinal];
+    const auto& filter_output = *filter_outputs[ordinal];
+    if (aggregate_output.ordinal != ordinal || filter_output.ordinal != ordinal ||
+        aggregate_output.expression_id !=
+            aggregate_root.bound_expression_ids[ordinal] ||
+        filter_output.expression_id != aggregate_output.expression_id ||
+        filter_output.descriptor_id != aggregate_output.descriptor_id ||
+        filter_output.descriptor_id !=
+            filter_root.output_descriptor_ids[ordinal] ||
+        filter_output.visible != aggregate_output.visible ||
+        filter_output.output_name_utf8 != aggregate_output.output_name_utf8 ||
+        filter_output.output_name_utf8.empty()) {
+      result.detail = "HAVING output lineage does not exactly mirror its aggregate";
+      return result;
+    }
+  }
+
+  const auto predicate =
+      expression_by_id(filter_root.bound_expression_ids.front());
+  if (predicate == dag.expressions.end() ||
+      predicate->expression_kind != api::RelationalExpressionKind::kBinary ||
+      predicate->child_expression_ids.size() != 2 ||
+      predicate->operator_name != ">" || predicate->function_uuid.has_value() ||
+      predicate->bound_name_uuid.has_value() || predicate->literal_kind.has_value() ||
+      predicate->literal_or_parameter_ref.has_value()) {
+    result.detail = "HAVING predicate is not an exact greater-than expression";
+    return result;
+  }
+  const auto predicate_descriptor =
+      descriptor_by_id(predicate->result_descriptor_id);
+  if (predicate_descriptor == dag.descriptors.end() ||
+      predicate_descriptor->nullability != api::RelationalNullability::kNullable ||
+      predicate_descriptor->collation_uuid.has_value() ||
+      predicate_descriptor->timezone_profile_id.has_value() ||
+      predicate_descriptor->width.has_value() ||
+      predicate_descriptor->precision.has_value() ||
+      predicate_descriptor->scale.has_value() ||
+      std::ranges::find(filter_root.output_descriptor_ids,
+                        predicate->result_descriptor_id) !=
+          filter_root.output_descriptor_ids.end()) {
+    result.detail = "HAVING predicate descriptor is not an isolated nullable boolean";
+    return result;
+  }
+
+  const auto having_sum = expression_by_id(predicate->child_expression_ids[0]);
+  const auto threshold = expression_by_id(predicate->child_expression_ids[1]);
+  const auto projected_sum =
+      expression_by_id(aggregate_root.bound_expression_ids[2]);
+  if (having_sum == dag.expressions.end() || threshold == dag.expressions.end() ||
+      projected_sum == dag.expressions.end() ||
+      having_sum->expression_kind !=
+          api::RelationalExpressionKind::kFunctionCall ||
+      having_sum->function_uuid !=
+          "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+      having_sum->child_expression_ids.size() != 1 ||
+      having_sum->result_descriptor_id !=
+          aggregate_root.output_descriptor_ids[2] ||
+      having_sum->bound_name_uuid.has_value() ||
+      having_sum->literal_kind.has_value() || having_sum->operator_name.has_value() ||
+      having_sum->literal_or_parameter_ref.has_value() ||
+      projected_sum->expression_kind !=
+          api::RelationalExpressionKind::kFunctionCall ||
+      projected_sum->function_uuid != having_sum->function_uuid ||
+      projected_sum->child_expression_ids.size() != 1 ||
+      projected_sum->result_descriptor_id != having_sum->result_descriptor_id) {
+    result.detail = "HAVING SUM identity does not match the projected aggregate state";
+    return result;
+  }
+
+  const auto having_argument =
+      expression_by_id(having_sum->child_expression_ids.front());
+  const auto projected_argument =
+      expression_by_id(projected_sum->child_expression_ids.front());
+  if (having_argument == dag.expressions.end() ||
+      projected_argument == dag.expressions.end() ||
+      having_argument->expression_kind !=
+          api::RelationalExpressionKind::kIdentifier ||
+      projected_argument->expression_kind !=
+          api::RelationalExpressionKind::kIdentifier ||
+      having_argument->result_descriptor_id !=
+          projected_argument->result_descriptor_id ||
+      having_argument->bound_name_uuid != projected_argument->bound_name_uuid ||
+      !having_argument->bound_name_uuid.has_value() ||
+      std::ranges::find(values_node.output_descriptor_ids,
+                        having_argument->result_descriptor_id) ==
+          values_node.output_descriptor_ids.end()) {
+    result.detail = "HAVING SUM argument does not bind the aggregate input column";
+    return result;
+  }
+
+  const auto threshold_descriptor =
+      descriptor_by_id(threshold->result_descriptor_id);
+  if (threshold->expression_kind != api::RelationalExpressionKind::kLiteral ||
+      threshold->literal_kind != api::RelationalLiteralKind::kNumeric ||
+      !threshold->child_expression_ids.empty() ||
+      threshold->function_uuid.has_value() || threshold->bound_name_uuid.has_value() ||
+      threshold->operator_name.has_value() ||
+      !threshold->literal_or_parameter_ref.has_value() ||
+      threshold_descriptor == dag.descriptors.end() ||
+      threshold_descriptor->nullability != api::RelationalNullability::kNonNull ||
+      threshold_descriptor->collation_uuid.has_value() ||
+      threshold_descriptor->timezone_profile_id.has_value() ||
+      threshold_descriptor->width.has_value() ||
+      threshold_descriptor->precision.has_value() ||
+      threshold_descriptor->scale.has_value() ||
+      std::ranges::find(filter_root.output_descriptor_ids,
+                        threshold->result_descriptor_id) !=
+          filter_root.output_descriptor_ids.end()) {
+    result.detail = "HAVING threshold is not one standalone non-NULL numeric literal";
+    return result;
+  }
+
+  CanonicalRelationalExpressionRuntime expression_runtime(dag);
+  api::EngineTypedValue threshold_value;
+  if (!expression_runtime.Evaluate(threshold->expression_id, "int64",
+                                   &threshold_value, &result.detail) ||
+      threshold_value.state != api::EngineValueState::value ||
+      threshold_value.is_null ||
+      threshold_value.descriptor.canonical_type_name != "int64") {
+    if (result.detail.empty()) {
+      result.detail = "HAVING threshold is outside canonical int64";
+    }
+    return result;
+  }
+  const auto [end, error] = std::from_chars(
+      threshold_value.encoded_value.data(),
+      threshold_value.encoded_value.data() + threshold_value.encoded_value.size(),
+      result.threshold);
+  if (error != std::errc{} ||
+      end != threshold_value.encoded_value.data() +
+                 threshold_value.encoded_value.size()) {
+    result.detail = "HAVING threshold is outside exact int64 admission";
+    return result;
   }
   result.ok = true;
   return result;
@@ -3888,14 +4083,29 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
     return node.logical_node_id == graph.root_logical_node_id;
   });
+  if (root == graph.nodes.end()) {
+    return result;
+  }
+  const bool has_having =
+      root->node_kind == plan::CanonicalLogicalRelationalNodeKind::kFilter &&
+      root->semantic_variant_id ==
+          "filter.having-sum-gt-int64-literal.v1";
+  auto aggregate_root = root;
+  if (has_having) {
+    if (root->input_logical_node_ids.size() != 1) return result;
+    aggregate_root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+      return node.logical_node_id == root->input_logical_node_ids.front();
+    });
+  }
   const auto profile =
-      root == graph.nodes.end()
+      aggregate_root == graph.nodes.end()
           ? LiveGroupedCountSumProfile{}
-          : MatchLiveGroupedCountSumProfile(root->semantic_variant_id);
-  if (root == graph.nodes.end() ||
-      root->node_kind !=
+          : MatchLiveGroupedCountSumProfile(
+                aggregate_root->semantic_variant_id);
+  if (aggregate_root == graph.nodes.end() ||
+      aggregate_root->node_kind !=
           plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
-      !profile.matched) {
+      (!has_having && root != aggregate_root) || !profile.matched) {
     return result;
   }
 
@@ -3920,18 +4130,23 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       profile.projects_grouping_metadata ? profile.key_count + 1 : 0;
   const auto expected_output_count =
       profile.key_count + 2 + grouping_projection_count;
-  if (graph.nodes.size() != 2 || root->input_logical_node_ids.size() != 1 ||
-      root->bound_expression_ids.size() != expected_output_count ||
-      root->output_descriptor_ids.size() != expected_output_count ||
+  if (graph.nodes.size() != (has_having ? 3 : 2) ||
+      aggregate_root->input_logical_node_ids.size() != 1 ||
+      aggregate_root->bound_expression_ids.size() != expected_output_count ||
+      aggregate_root->output_descriptor_ids.size() != expected_output_count ||
+      (has_having &&
+       (root->bound_expression_ids.size() != 1 ||
+        root->output_descriptor_ids != aggregate_root->output_descriptor_ids)) ||
       !request.optimizer_request.logical_properties.properties.empty()) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
                   "grouped COUNT/SUM root shape is not exact");
   }
   const auto input_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
-        return node.logical_node_id == root->input_logical_node_ids.front();
+        return node.logical_node_id ==
+               aggregate_root->input_logical_node_ids.front();
       });
-  if (input_node == graph.nodes.end() || input_node == root ||
+  if (input_node == graph.nodes.end() || input_node == aggregate_root ||
       input_node->node_kind !=
           plan::CanonicalLogicalRelationalNodeKind::kValues ||
       input_node->semantic_variant_id != "values.literal-table.v1" ||
@@ -3961,10 +4176,21 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                   "grouped COUNT/SUM input VALUES: " + input.detail);
   }
   auto prepared_root = PrepareGroupedCountSumRoot(
-      request.relational_dag, *root, *input_node, input, profile);
+      request.relational_dag, *aggregate_root, *input_node, input, profile);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
                   prepared_root.detail);
+  }
+  PreparedGroupedHavingRoot prepared_having;
+  if (has_having) {
+    prepared_having = PrepareGroupedHavingRoot(
+        request.relational_dag, *root, *aggregate_root, *input_node,
+        prepared_root);
+    if (!prepared_having.ok) {
+      return refuse(
+          "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-PAYLOAD-V1",
+          prepared_having.detail);
+    }
   }
 
   const auto input_row_count = input.batch.rows.size();
@@ -4001,7 +4227,16 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
   const auto maximum_output_rows =
       static_cast<std::size_t>(output_row_bound);
-  if (total_memory >
+  std::uint64_t filter_truth_memory = 0;
+  std::uint64_t filter_memory = total_memory;
+  if ((has_having &&
+       (!CheckedMultiply(output_row_bound,
+                         sizeof(api::EngineSqlTruthValue),
+                         &filter_truth_memory) ||
+        !CheckedAdd(total_memory, filter_truth_memory, &filter_memory))) ||
+      total_memory >
+          request.optimizer_request.resource.memory_budget_bytes ||
+      filter_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                   "live grouped COUNT/SUM exceeds the admitted memory budget");
@@ -4013,30 +4248,32 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto aggregate_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "grouped-aggregate.capability");
-  const std::vector<LivePhysicalNodeProfile> profiles = {
-      {input_node->logical_node_id,
-       std::string(kValuesImplementationId),
+  const auto filter_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "grouped-having.capability");
+  std::vector<LivePhysicalNodeProfile> profiles = {
+      {input_node->logical_node_id, std::string(kValuesImplementationId),
        values_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kValues,
-       exec::PhysicalNodeKind::kValues,
-       "canonical.values.materialize.v1",
-       input_row_count,
-       input_memory,
-       0,
-       0},
-      {root->logical_node_id,
-       "aggregate.registry-grouping-sets.v1",
+       exec::PhysicalNodeKind::kValues, "canonical.values.materialize.v1",
+       input_row_count, input_memory, 0, 0},
+      {aggregate_root->logical_node_id, "aggregate.registry-grouping-sets.v1",
        aggregate_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kAggregate,
-       exec::PhysicalNodeKind::kAggregate,
-       profile.transformation_id,
-       output_row_bound,
-       total_memory,
-       1,
-       1}};
+       exec::PhysicalNodeKind::kAggregate, profile.transformation_id,
+       output_row_bound, total_memory, 1, 1}};
+  if (has_having) {
+    profiles.push_back(
+        {root->logical_node_id, "filter.3vl.row.v1", filter_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kFilter,
+         exec::PhysicalNodeKind::kFilter,
+         "canonical.filter.having-sum-gt-int64-literal.v1",
+         output_row_bound, filter_memory, 1, 1});
+  }
   const auto planning = PlanAndPublishLivePhysicalDag(
-      request, profiles, "grouped-aggregate.selected-plan",
-      "GROUPED AGGREGATE");
+      request, profiles,
+      has_having ? "grouped-having.selected-plan"
+                 : "grouped-aggregate.selected-plan",
+      has_having ? "GROUPED HAVING" : "GROUPED AGGREGATE");
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
   }
@@ -4061,7 +4298,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
   aggregate_registration.execute =
-      [prepared_root, input_row_count, maximum_output_rows](
+      [prepared_root, input_row_count, maximum_output_rows, has_having](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -4116,6 +4353,24 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         auto& first = grouped_request.first_aggregate;
         first.aggregate_request = make_aggregate(prepared_root.count);
         auto grouped_runtime_dag = dag;
+        if (has_having) {
+          const auto physical_filter = std::ranges::find_if(
+              grouped_runtime_dag.nodes, [&](const auto& candidate) {
+                return candidate.physical_node_id ==
+                           grouped_runtime_dag.root_physical_node_id &&
+                       candidate.node_kind == exec::PhysicalNodeKind::kFilter;
+              });
+          if (physical_filter == grouped_runtime_dag.nodes.end()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+            step.diagnostic.detail =
+                "grouped HAVING physical FILTER root is missing";
+            return step;
+          }
+          grouped_runtime_dag.nodes.erase(physical_filter);
+          grouped_runtime_dag.root_physical_node_id = node.physical_node_id;
+        }
         if (!prepared_root.grouping_projection_columns.empty()) {
           const auto runtime_node = std::ranges::find_if(
               grouped_runtime_dag.nodes, [&](const auto& candidate) {
@@ -4291,6 +4546,105 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         return step;
       };
 
+  exec::CanonicalPhysicalExecutorRegistration having_registration;
+  if (has_having) {
+    having_registration.node_kind = exec::PhysicalNodeKind::kFilter;
+    having_registration.implementation_id = "filter.3vl.row.v1";
+    having_registration.executor_capability_uuid = filter_capability_uuid;
+    having_registration.executor_capability_abi_version = 1;
+    having_registration.engine_owned = true;
+    having_registration.accepts_optimizer_publication_v2 = true;
+    having_registration.execute =
+        [threshold = prepared_having.threshold, maximum_output_rows](
+            const exec::TypedPhysicalNodeDag& dag,
+            const exec::PhysicalNodeRecord& node,
+            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+          exec::CanonicalPhysicalDispatchStepResult step;
+          step.selected_plan_uuid = dag.selected_plan_uuid;
+          step.executed_physical_node_id = node.physical_node_id;
+          step.causal_counter_id = node.causal_counter_id;
+          step.output_descriptor_ids = node.output_descriptor_ids;
+          step.authority.engine_mga_snapshot_bound = true;
+          if (inputs.size() != 1 ||
+              !inputs.front().materialized_output_batch.has_value()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+            step.diagnostic.detail =
+                "HAVING executor did not receive one grouped aggregate batch";
+            return step;
+          }
+          const auto& input_batch = *inputs.front().materialized_output_batch;
+          constexpr std::size_t kSumColumn = 2;
+          if (input_batch.rows.size() > maximum_output_rows ||
+              input_batch.columns.size() != 3 ||
+              input_batch.columns[kSumColumn].descriptor.canonical_type_name !=
+                  "int64") {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+            step.diagnostic.detail =
+                "HAVING grouped SUM input shape differs from the selected cost";
+            return step;
+          }
+
+          std::vector<api::EngineSqlTruthValue> row_truth_values;
+          row_truth_values.reserve(input_batch.rows.size());
+          for (const auto& row : input_batch.rows) {
+            if (row.values.size() != input_batch.columns.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+              step.diagnostic.detail =
+                  "HAVING grouped row width is not descriptor exact";
+              return step;
+            }
+            const auto& sum = row.values[kSumColumn];
+            if (sum.state == api::EngineValueState::sql_null && sum.is_null &&
+                sum.encoded_value.empty() && sum.binary_value.empty()) {
+              row_truth_values.push_back(api::EngineSqlTruthValue::unknown);
+              continue;
+            }
+            std::int64_t value = 0;
+            const auto [end, error] = std::from_chars(
+                sum.encoded_value.data(),
+                sum.encoded_value.data() + sum.encoded_value.size(), value);
+            if (sum.state != api::EngineValueState::value || sum.is_null ||
+                !sum.binary_value.empty() || error != std::errc{} ||
+                end != sum.encoded_value.data() + sum.encoded_value.size()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
+              step.diagnostic.detail =
+                  "HAVING SUM value is not exact canonical int64 or SQL NULL";
+              return step;
+            }
+            row_truth_values.push_back(
+                value > threshold ? api::EngineSqlTruthValue::true_value
+                                  : api::EngineSqlTruthValue::false_value);
+          }
+
+          exec::CanonicalDescriptorFilterRequest filter_request;
+          filter_request.physical_dag = dag;
+          filter_request.selected_physical_node_id = node.physical_node_id;
+          filter_request.input_batch = input_batch;
+          filter_request.row_truth_values = std::move(row_truth_values);
+          filter_request.consumer = api::EnginePredicateConsumer::having;
+          const auto filter_result =
+              exec::ExecuteCanonicalDescriptorFilter(filter_request);
+          if (!filter_result.diagnostic.ok) {
+            step.diagnostic = filter_result.diagnostic;
+            return step;
+          }
+          step.result_handle_id = node.physical_node_id;
+          step.input_row_count = input_batch.rows.size();
+          step.rows_examined = input_batch.rows.size();
+          step.output_row_count = filter_result.output_batch.rows.size();
+          step.materialized_output_batch = filter_result.output_batch;
+          return step;
+        };
+  }
+
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
@@ -4303,20 +4657,26 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       std::move(values_registration));
   execution_request.available_executors.push_back(
       std::move(aggregate_registration));
+  if (has_having) {
+    execution_request.available_executors.push_back(
+        std::move(having_registration));
+  }
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
       request.context.statement_uuid.canonical;
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
-          "grouped-aggregate.execution-attempt");
+          has_having ? "grouped-having.execution-attempt"
+                     : "grouped-aggregate.execution-attempt");
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" +
               std::to_string(request.context.local_transaction_id) + ":" +
               std::to_string(
                   request.context.snapshot_visible_through_local_transaction_id),
-          "grouped-aggregate.transaction-effect-unchanged");
+          has_having ? "grouped-having.transaction-effect-unchanged"
+                     : "grouped-aggregate.transaction-effect-unchanged");
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =

@@ -561,7 +561,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   }
   const auto root_relation = ast_relation_by_id.find(ast.root_relation_id);
   if (root_relation == ast_relation_by_id.end() ||
-      (ast.relations.size() != 1 && ast.relations.size() != 2)) {
+      ast.relations.size() < 1 || ast.relations.size() > 3) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                           "native relation graph is outside the bounded profile");
     return RefusedBoundAst(std::move(bound));
@@ -585,6 +585,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   std::size_t expected_output_count = 0;
   const NativeRelationAstNode* values_relation_ast = nullptr;
   const NativeRelationAstNode* aggregate_relation_ast = nullptr;
+  const NativeRelationAstNode* filter_relation_ast = nullptr;
   bound.relations.reserve(ast.relations.size());
   for (const auto& relation : ast.relations) {
     for (const auto input_id : relation.input_relation_ids) {
@@ -602,6 +603,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
     }
+    for (const auto expression_id : relation.predicate_expression_ids) {
+      if (!ast_expression_by_id.contains(expression_id)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "relation predicate contains a dangling expression");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
 
     BoundRelationAstRecord record;
     record.relation_id = relation.relation_id;
@@ -613,6 +621,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     record.output_expression_ids = relation.output_expression_ids;
     record.grouping_key_expression_ids = relation.grouping_key_expression_ids;
     record.aggregate_expression_ids = relation.aggregate_expression_ids;
+    record.predicate_expression_ids = relation.predicate_expression_ids;
     record.bound_object_uuid = std::nullopt;
     record.lateral = false;
 
@@ -625,7 +634,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation.aggregate_projection_form !=
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
-          !relation.aggregate_expression_ids.empty()) {
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                               "typed VALUES relation graph is not canonical");
         return RefusedBoundAst(std::move(bound));
@@ -699,9 +709,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 relation.aggregate_expression_ids[1];
       }
       if (aggregate_relation_ast != nullptr ||
-          relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
           (!one_key_profile && !two_key_profile) ||
           relation.output_expression_ids.size() != expected_output_count ||
           !output_shape_matches) {
@@ -764,6 +774,125 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       record.semantic_variant_id =
           semantic_binding->second->semantic_variant_id;
       record.bound_expression_ids = relation.output_expression_ids;
+    } else if (relation.relation_kind == NativeRelationAstKind::kFilter) {
+      const auto semantic_binding =
+          relation_binding_by_id.find(relation.relation_id);
+      const NativeExpressionAstNode* predicate = nullptr;
+      const NativeExpressionAstNode* having_sum = nullptr;
+      const NativeExpressionAstNode* threshold = nullptr;
+      const NativeExpressionAstNode* having_argument = nullptr;
+      const NativeExpressionAstNode* projected_sum = nullptr;
+      const NativeExpressionAstNode* projected_argument = nullptr;
+      if (relation.predicate_expression_ids.size() == 1) {
+        predicate = ast_expression_by_id.at(
+            relation.predicate_expression_ids.front());
+        if (predicate->expression_kind == NativeExpressionAstKind::kBinary &&
+            predicate->operator_name == ">" &&
+            predicate->child_expression_ids.size() == 2) {
+          having_sum =
+              ast_expression_by_id.at(predicate->child_expression_ids[0]);
+          threshold =
+              ast_expression_by_id.at(predicate->child_expression_ids[1]);
+          if (having_sum->child_expression_ids.size() == 1) {
+            having_argument = ast_expression_by_id.at(
+                having_sum->child_expression_ids.front());
+          }
+        }
+      }
+      if (aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_expression_ids.size() == 2) {
+        projected_sum = ast_expression_by_id.at(
+            aggregate_relation_ast->aggregate_expression_ids[1]);
+        if (projected_sum->child_expression_ids.size() == 1) {
+          projected_argument = ast_expression_by_id.at(
+              projected_sum->child_expression_ids.front());
+        }
+      }
+      const auto having_sum_binding =
+          having_sum == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(having_sum->expression_id);
+      const auto projected_sum_binding =
+          projected_sum == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(projected_sum->expression_id);
+      const auto having_argument_binding =
+          having_argument == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(having_argument->expression_id);
+      const auto projected_argument_binding =
+          projected_argument == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(projected_argument->expression_id);
+      const auto predicate_binding =
+          predicate == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(predicate->expression_id);
+      const auto threshold_binding =
+          threshold == nullptr
+              ? expression_binding_by_id.end()
+              : expression_binding_by_id.find(threshold->expression_id);
+      if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
+          aggregate_relation_ast->aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kSimple ||
+          aggregate_relation_ast->aggregate_projection_form !=
+              NativeAggregateProjectionForm::kKeyCountSum ||
+          relation.relation_id != ast.root_relation_id ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{aggregate_relation_ast->relation_id} ||
+          !relation.values_row_ids.empty() ||
+          relation.output_expression_ids !=
+              aggregate_relation_ast->output_expression_ids ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() || predicate == nullptr ||
+          having_sum == nullptr || threshold == nullptr ||
+          having_sum->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(having_sum->operator_name) != "SUM" ||
+          having_sum->child_expression_ids.size() != 1 ||
+          having_argument == nullptr || projected_sum == nullptr ||
+          projected_argument == nullptr ||
+          having_argument->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          projected_argument->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          threshold->expression_kind != NativeExpressionAstKind::kLiteral ||
+          threshold->literal_kind != NativeLiteralAstKind::kNumeric ||
+          having_sum_binding == expression_binding_by_id.end() ||
+          projected_sum_binding == expression_binding_by_id.end() ||
+          having_argument_binding == expression_binding_by_id.end() ||
+          projected_argument_binding == expression_binding_by_id.end() ||
+          predicate_binding == expression_binding_by_id.end() ||
+          threshold_binding == expression_binding_by_id.end() ||
+          having_sum_binding->second->function_uuid !=
+              "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+          projected_sum_binding->second->function_uuid !=
+              having_sum_binding->second->function_uuid ||
+          having_sum_binding->second->descriptor_id !=
+              projected_sum_binding->second->descriptor_id ||
+          having_argument_binding->second->bound_name_uuid !=
+              projected_argument_binding->second->bound_name_uuid ||
+          having_argument_binding->second->descriptor_id !=
+              projected_argument_binding->second->descriptor_id ||
+          descriptor_by_id.at(predicate_binding->second->descriptor_id)
+                  ->nullability != BoundNullability::kNullable ||
+          descriptor_by_id.at(threshold_binding->second->descriptor_id)
+                  ->nullability != BoundNullability::kNonNull ||
+          semantic_binding == relation_binding_by_id.end() ||
+          semantic_binding->second->semantic_variant_id !=
+              "filter.having-sum-gt-int64-literal.v1") {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "typed HAVING filter is outside the bounded profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+      filter_relation_ast = &relation;
+      record.semantic_variant_id =
+          semantic_binding->second->semantic_variant_id;
+      record.bound_expression_ids = relation.predicate_expression_ids;
     }
     expected_output_count += relation.output_expression_ids.size();
     bound.relations.push_back(std::move(record));
@@ -771,10 +900,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   if (values_relation_ast == nullptr ||
       (aggregate_relation_ast == nullptr && ast.relations.size() != 1) ||
       (aggregate_relation_ast != nullptr &&
-       (ast.relations.size() != 2 ||
+       ((filter_relation_ast == nullptr &&
+         (ast.relations.size() != 2 ||
+          ast.root_relation_id != aggregate_relation_ast->relation_id)) ||
+        (filter_relation_ast != nullptr &&
+         (ast.relations.size() != 3 ||
+          ast.root_relation_id != filter_relation_ast->relation_id ||
+          filter_relation_ast->input_relation_ids.front() !=
+              aggregate_relation_ast->relation_id)) ||
         aggregate_relation_ast->input_relation_ids.front() !=
             values_relation_ast->relation_id)) ||
-      relation_binding_by_id.size() != (aggregate_relation_ast == nullptr ? 0 : 1)) {
+      relation_binding_by_id.size() !=
+          (aggregate_relation_ast == nullptr
+               ? 0
+               : (filter_relation_ast == nullptr ? 1 : 2))) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                           "native VALUES/aggregate graph is not canonical");
     return RefusedBoundAst(std::move(bound));

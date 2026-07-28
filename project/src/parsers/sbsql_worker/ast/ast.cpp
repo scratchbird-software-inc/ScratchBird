@@ -1433,6 +1433,7 @@ std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
   switch (kind) {
     case NativeRelationAstKind::kValues: return "values";
     case NativeRelationAstKind::kAggregate: return "aggregate";
+    case NativeRelationAstKind::kFilter: return "filter";
   }
   return "unknown";
 }
