@@ -1865,6 +1865,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-OR-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-OR-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-OR-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-OR-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-LIVE-V1
@@ -1958,7 +1959,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        aggregate_root.semantic_variant_id ==
            "aggregate.grouping-sets-int64-keys-count-sum.v1" ||
        aggregate_root.semantic_variant_id ==
-           "aggregate.rollup-int64-keys-count-sum.v1");
+           "aggregate.rollup-int64-keys-count-sum.v1" ||
+       aggregate_root.semantic_variant_id ==
+           "aggregate.cube-int64-keys-count-sum.v1");
   const bool exact_grouping_sets_or_profile =
       count_sum_or_profile &&
       aggregate_root.semantic_variant_id ==
@@ -1981,6 +1984,18 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       prepared_aggregate.grouping_sets[1].key_term_ordinals ==
           std::vector<std::size_t>{0} &&
       prepared_aggregate.grouping_sets[2].key_term_ordinals.empty();
+  const bool exact_cube_or_profile =
+      count_sum_or_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.cube-int64-keys-count-sum.v1" &&
+      prepared_aggregate.grouping_sets.size() == 4 &&
+      prepared_aggregate.grouping_sets[0].key_term_ordinals ==
+          std::vector<std::size_t>{0, 1} &&
+      prepared_aggregate.grouping_sets[1].key_term_ordinals ==
+          std::vector<std::size_t>{0} &&
+      prepared_aggregate.grouping_sets[2].key_term_ordinals ==
+          std::vector<std::size_t>{1} &&
+      prepared_aggregate.grouping_sets[3].key_term_ordinals.empty();
 
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
@@ -1995,6 +2010,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        aggregate_root.semantic_variant_id ==
            "aggregate.rollup-int64-keys-count-sum.v1" &&
        !exact_rollup_or_profile) ||
+      (count_sum_or_profile &&
+       aggregate_root.semantic_variant_id ==
+           "aggregate.cube-int64-keys-count-sum.v1" &&
+       !exact_cube_or_profile) ||
       (key_count == 2 && !count_sum_and_profile && !admitted_or_profile &&
        !admitted_two_key_sum_profile) ||
       filter_root.input_logical_node_ids !=
