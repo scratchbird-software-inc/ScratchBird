@@ -185,6 +185,7 @@ struct PreparedGroupedHavingRoot {
   bool count_sum_and{false};
   std::size_t count_column{0};
   std::size_t sum_column{0};
+  std::size_t output_column_count{0};
   api::EngineTypedValue count_threshold;
   api::EngineTypedValue sum_threshold;
   std::string detail;
@@ -1861,6 +1862,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
@@ -1877,6 +1879,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       filter_root.semantic_variant_id ==
       "filter.having-count-sum-and-gt-int64-literals.v1";
   std::size_t key_count = 0;
+  std::size_t grouping_projection_count = 0;
   if (aggregate_root.semantic_variant_id ==
       "aggregate.grouped-int64-key-count-sum.v1") {
     key_count = 1;
@@ -1886,6 +1889,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   } else if (aggregate_root.semantic_variant_id ==
              "aggregate.grouping-sets-int64-keys-count-sum.v1") {
     key_count = 2;
+  } else if (aggregate_root.semantic_variant_id ==
+             "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1") {
+    key_count = 2;
+    grouping_projection_count = key_count + 1;
   } else if (aggregate_root.semantic_variant_id ==
              "aggregate.rollup-int64-keys-count-sum.v1") {
     key_count = 2;
@@ -1897,7 +1904,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
         "HAVING aggregate is not an admitted grouped COUNT/SUM profile";
     return result;
   }
-  const auto expected_output_count = key_count + 2;
+  const auto expected_output_count =
+      key_count + 2 + grouping_projection_count;
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
@@ -2160,6 +2168,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   result.count_sum_and = count_sum_and_profile;
   result.count_column = key_count;
   result.sum_column = key_count + 1;
+  result.output_column_count = expected_output_count;
   result.ok = true;
   return result;
 }
@@ -4705,7 +4714,10 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           const auto count_column = prepared_having.count_column;
           const auto sum_column = prepared_having.sum_column;
           if (input_batch.rows.size() > maximum_output_rows ||
-              input_batch.columns.size() != sum_column + 1 ||
+              input_batch.columns.size() !=
+                  prepared_having.output_column_count ||
+              node.output_descriptor_ids.size() !=
+                  prepared_having.output_column_count ||
               input_batch.columns[count_column]
                       .descriptor.canonical_type_name != "int64" ||
               input_batch.columns[sum_column].descriptor.canonical_type_name !=

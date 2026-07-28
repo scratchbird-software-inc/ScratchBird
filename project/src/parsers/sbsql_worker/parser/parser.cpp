@@ -810,6 +810,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
+      // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-V1
       const bool ordinary_count_sum_profile =
@@ -818,7 +819,9 @@ class NativeRelationalParser final {
            projection_form == NativeAggregateProjectionForm::kKeysCountSum);
       const bool grouping_sets_count_sum_profile =
           grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
-          projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+          (projection_form == NativeAggregateProjectionForm::kKeysCountSum ||
+           projection_form ==
+               NativeAggregateProjectionForm::kKeysCountSumGrouping);
       const bool rollup_count_sum_profile =
           grouping_form == NativeAggregateGroupingForm::kRollup &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum;
