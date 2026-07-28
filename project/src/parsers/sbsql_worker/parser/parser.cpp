@@ -809,6 +809,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-OR-GT-V1
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-OR-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
@@ -949,6 +950,10 @@ class NativeRelationalParser final {
           !one_key_grouping_profile && simple_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+      const bool ordinary_two_key_or_profile =
+          !one_key_grouping_profile && count_sum_or_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum;
       const bool grouping_sets_sum_profile =
           !one_key_grouping_profile && simple_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
@@ -977,13 +982,14 @@ class NativeRelationalParser final {
           projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
-          !ordinary_two_key_sum_profile && !grouping_sets_sum_profile &&
+          !ordinary_two_key_or_profile && !ordinary_two_key_sum_profile &&
+          !grouping_sets_sum_profile &&
           !grouping_sets_metadata_sum_profile && !rollup_sum_profile &&
           !rollup_metadata_sum_profile && !cube_sum_profile &&
           !cube_metadata_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native multi-key HAVING profile requires an exact admitted "
-               "SUM comparison or ordered COUNT/SUM AND predicate");
+               "SUM comparison or ordered COUNT/SUM AND/ordinary OR predicate");
         return FinishRefusal();
       }
     }
