@@ -1963,6 +1963,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        aggregate_root.semantic_variant_id ==
            "aggregate.rollup-int64-keys-count-sum.v1" ||
        aggregate_root.semantic_variant_id ==
+           "aggregate.rollup-int64-keys-count-sum-grouping.v1" ||
+       aggregate_root.semantic_variant_id ==
            "aggregate.cube-int64-keys-count-sum.v1");
   const bool exact_grouping_sets_or_profile =
       count_sum_or_profile &&
@@ -1980,8 +1982,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           prepared_aggregate.grouping_sets[0].key_term_ordinals;
   const bool exact_rollup_or_profile =
       count_sum_or_profile &&
-      aggregate_root.semantic_variant_id ==
-          "aggregate.rollup-int64-keys-count-sum.v1" &&
+      (aggregate_root.semantic_variant_id ==
+           "aggregate.rollup-int64-keys-count-sum.v1" ||
+       aggregate_root.semantic_variant_id ==
+           "aggregate.rollup-int64-keys-count-sum-grouping.v1") &&
       prepared_aggregate.grouping_sets.size() == 3 &&
       prepared_aggregate.grouping_sets[0].key_term_ordinals ==
           std::vector<std::size_t>{0, 1} &&
@@ -2013,8 +2017,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
             "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1") &&
        !exact_grouping_sets_or_profile) ||
       (count_sum_or_profile &&
-       aggregate_root.semantic_variant_id ==
-           "aggregate.rollup-int64-keys-count-sum.v1" &&
+       (aggregate_root.semantic_variant_id ==
+            "aggregate.rollup-int64-keys-count-sum.v1" ||
+        aggregate_root.semantic_variant_id ==
+            "aggregate.rollup-int64-keys-count-sum-grouping.v1") &&
        !exact_rollup_or_profile) ||
       (count_sum_or_profile &&
        aggregate_root.semantic_variant_id ==
