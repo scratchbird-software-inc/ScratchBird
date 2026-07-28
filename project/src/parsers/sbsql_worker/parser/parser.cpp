@@ -1010,6 +1010,13 @@ class NativeRelationalParser final {
           grouping_form == NativeAggregateGroupingForm::kCube &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           document_.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+      const bool cube_metadata_or_profile =
+          !one_key_grouping_profile && count_sum_or_profile &&
+          grouping_form == NativeAggregateGroupingForm::kCube &&
+          projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          document_.grouping_sets.empty();
       const bool grouping_sets_sum_profile =
           !one_key_grouping_profile && simple_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
@@ -1041,7 +1048,7 @@ class NativeRelationalParser final {
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
           !grouping_sets_metadata_or_profile &&
           !rollup_or_profile && !rollup_metadata_or_profile &&
-          !cube_or_profile &&
+          !cube_or_profile && !cube_metadata_or_profile &&
           !ordinary_two_key_sum_profile &&
           !grouping_sets_sum_profile &&
           !grouping_sets_metadata_sum_profile && !rollup_sum_profile &&

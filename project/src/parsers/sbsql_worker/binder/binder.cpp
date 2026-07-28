@@ -1002,6 +1002,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kKeysCountSum &&
           aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
           ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-CUBE-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+      const bool admitted_cube_metadata_or_having =
+          count_sum_or_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kCube &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
       const bool admitted_simple_having =
           !count_sum_or_profile && aggregate_relation_ast != nullptr &&
@@ -1083,6 +1092,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_rollup_or_having &&
            !admitted_rollup_metadata_or_having &&
            !admitted_cube_or_having &&
+           !admitted_cube_metadata_or_having &&
            !admitted_simple_having &&
            !admitted_grouping_sets_sum_having &&
            !admitted_grouping_sets_metadata_sum_having &&
