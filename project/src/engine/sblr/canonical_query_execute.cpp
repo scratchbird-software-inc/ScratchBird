@@ -183,6 +183,8 @@ struct PreparedGroupedCountSumRoot {
 struct PreparedGroupedHavingRoot {
   bool ok{false};
   bool count_sum_and{false};
+  std::size_t count_column{0};
+  std::size_t sum_column{0};
   api::EngineTypedValue count_threshold;
   api::EngineTypedValue sum_threshold;
   std::string detail;
@@ -1857,6 +1859,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 
 // QOW-SOURCE-QRY-001-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1870,15 +1873,30 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const bool count_sum_and_profile =
       filter_root.semantic_variant_id ==
       "filter.having-count-sum-and-gt-int64-literals.v1";
-  if (!prepared_aggregate.ok || aggregate_root.output_descriptor_ids.size() != 3 ||
-      aggregate_root.bound_expression_ids.size() != 3 ||
+  std::size_t key_count = 0;
+  if (aggregate_root.semantic_variant_id ==
+      "aggregate.grouped-int64-key-count-sum.v1") {
+    key_count = 1;
+  } else if (aggregate_root.semantic_variant_id ==
+             "aggregate.grouped-int64-keys-count-sum.v1") {
+    key_count = 2;
+  } else {
+    result.detail = "HAVING aggregate is not an ordinary one- or two-key profile";
+    return result;
+  }
+  const auto expected_output_count = key_count + 2;
+  if (!prepared_aggregate.ok ||
+      aggregate_root.output_descriptor_ids.size() != expected_output_count ||
+      aggregate_root.bound_expression_ids.size() != expected_output_count ||
       (!simple_sum_profile && !count_sum_and_profile) ||
+      (key_count == 2 && !count_sum_and_profile) ||
       filter_root.input_logical_node_ids !=
           std::vector<std::uint32_t>{aggregate_root.logical_node_id} ||
       filter_root.output_descriptor_ids !=
           aggregate_root.output_descriptor_ids ||
       filter_root.bound_expression_ids.size() != 1 ||
-      prepared_aggregate.result_bindings.size() != 3) {
+      prepared_aggregate.key_terms.size() != key_count ||
+      prepared_aggregate.result_bindings.size() != expected_output_count) {
     result.detail = "HAVING root does not preserve the grouped aggregate schema";
     return result;
   }
@@ -1944,7 +1962,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
                     &api::RelationalOutputRecord::ordinal);
   std::ranges::sort(filter_outputs, {},
                     &api::RelationalOutputRecord::ordinal);
-  if (aggregate_outputs.size() != 3 || filter_outputs.size() != 3) {
+  if (aggregate_outputs.size() != expected_output_count ||
+      filter_outputs.size() != expected_output_count) {
     result.detail = "HAVING output lineage coverage is incomplete";
     return result;
   }
@@ -1993,7 +2012,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const auto* sum_threshold =
       expression_by_id(sum_comparison->child_expression_ids[1]);
   const auto* projected_sum =
-      expression_by_id(aggregate_root.bound_expression_ids[2]);
+      expression_by_id(aggregate_root.bound_expression_ids[key_count + 1]);
   if (having_sum == nullptr || sum_threshold == nullptr ||
       projected_sum == nullptr ||
       having_sum->expression_kind !=
@@ -2002,7 +2021,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           "019de5fc-2400-72e4-8549-82b2eef5a777" ||
       having_sum->child_expression_ids.size() != 1 ||
       having_sum->result_descriptor_id !=
-          aggregate_root.output_descriptor_ids[2] ||
+          aggregate_root.output_descriptor_ids[key_count + 1] ||
       having_sum->bound_name_uuid.has_value() ||
       having_sum->literal_kind.has_value() || having_sum->operator_name.has_value() ||
       having_sum->literal_or_parameter_ref.has_value() ||
@@ -2097,7 +2116,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const auto* count_threshold =
         expression_by_id(count_comparison->child_expression_ids[1]);
     const auto* projected_count =
-        expression_by_id(aggregate_root.bound_expression_ids[1]);
+        expression_by_id(aggregate_root.bound_expression_ids[key_count]);
     if (having_count == nullptr || projected_count == nullptr ||
         having_count->expression_kind !=
             api::RelationalExpressionKind::kFunctionCall ||
@@ -2105,7 +2124,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
             "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
         !having_count->child_expression_ids.empty() ||
         having_count->result_descriptor_id !=
-            aggregate_root.output_descriptor_ids[1] ||
+            aggregate_root.output_descriptor_ids[key_count] ||
         having_count->bound_name_uuid.has_value() ||
         having_count->literal_kind.has_value() ||
         having_count->operator_name.has_value() ||
@@ -2126,6 +2145,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     }
   }
   result.count_sum_and = count_sum_and_profile;
+  result.count_column = key_count;
+  result.sum_column = key_count + 1;
   result.ok = true;
   return result;
 }
@@ -4668,13 +4689,13 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
           const auto& input_batch = *inputs.front().materialized_output_batch;
-          constexpr std::size_t kCountColumn = 1;
-          constexpr std::size_t kSumColumn = 2;
+          const auto count_column = prepared_having.count_column;
+          const auto sum_column = prepared_having.sum_column;
           if (input_batch.rows.size() > maximum_output_rows ||
-              input_batch.columns.size() != 3 ||
-              input_batch.columns[kCountColumn]
+              input_batch.columns.size() != sum_column + 1 ||
+              input_batch.columns[count_column]
                       .descriptor.canonical_type_name != "int64" ||
-              input_batch.columns[kSumColumn].descriptor.canonical_type_name !=
+              input_batch.columns[sum_column].descriptor.canonical_type_name !=
                   "int64") {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
@@ -4711,8 +4732,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
                   "HAVING grouped row width is not descriptor exact";
               return step;
             }
-            const auto& count = row.values[kCountColumn];
-            const auto& sum = row.values[kSumColumn];
+            const auto& count = row.values[count_column];
+            const auto& sum = row.values[sum_column];
             api::EngineSqlTruthValue sum_truth =
                 api::EngineSqlTruthValue::unknown;
             std::string predicate_detail;

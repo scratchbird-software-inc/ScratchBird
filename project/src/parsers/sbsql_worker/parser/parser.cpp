@@ -808,11 +808,14 @@ class NativeRelationalParser final {
     if (!AtEnd() && IsWord(Current(), "HAVING")) {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
-      if (!one_key_grouping_profile ||
-          grouping_form != NativeAggregateGroupingForm::kSimple ||
-          projection_form != NativeAggregateProjectionForm::kKeyCountSum) {
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
+      const bool ordinary_count_sum_profile =
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          (projection_form == NativeAggregateProjectionForm::kKeyCountSum ||
+           projection_form == NativeAggregateProjectionForm::kKeysCountSum);
+      if (!ordinary_count_sum_profile) {
         Refuse("having_profile_not_admitted",
-               "native HAVING profile requires ordinary one-key GROUP BY");
+               "native HAVING profile requires ordinary one- or two-key GROUP BY");
         return FinishRefusal();
       }
       Consume();
@@ -901,6 +904,11 @@ class NativeRelationalParser final {
         Refuse("having_predicate_shape_invalid",
                "native HAVING profile requires SUM(value) > numeric literal "
                "or COUNT(*) > numeric literal AND SUM(value) > numeric literal");
+        return FinishRefusal();
+      }
+      if (!one_key_grouping_profile && !count_sum_and_profile) {
+        Refuse("having_profile_not_admitted",
+               "native two-key HAVING profile requires the ordered COUNT/SUM AND predicate");
         return FinishRefusal();
       }
     }

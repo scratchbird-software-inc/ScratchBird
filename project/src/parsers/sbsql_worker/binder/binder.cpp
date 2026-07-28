@@ -869,8 +869,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
           aggregate_relation_ast->aggregate_grouping_form !=
               NativeAggregateGroupingForm::kSimple ||
-          aggregate_relation_ast->aggregate_projection_form !=
-              NativeAggregateProjectionForm::kKeyCountSum ||
+          (aggregate_relation_ast->aggregate_projection_form !=
+               NativeAggregateProjectionForm::kKeyCountSum &&
+           (aggregate_relation_ast->aggregate_projection_form !=
+                NativeAggregateProjectionForm::kKeysCountSum ||
+            !count_sum_and_profile)) ||
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{aggregate_relation_ast->relation_id} ||

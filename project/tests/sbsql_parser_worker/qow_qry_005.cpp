@@ -961,6 +961,195 @@ bool ValidateBooleanHavingParserBindingLoweringAndDispatch() {
   return passed;
 }
 
+bool ValidateTwoKeyBooleanHavingParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL), (3,30,NULL)) "
+      "AS input(key_a,key_b,amount) GROUP BY key_a,key_b "
+      "HAVING COUNT(*) > 1 AND SUM(amount) > 4;";
+  const auto cst = sbsql::BuildCst(std::string(kSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational,
+      "aggregate.grouped-int64-keys-count-sum.v1");
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  bool passed = true;
+  const auto* filter_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[2]
+          : nullptr;
+  const auto* predicate =
+      filter_relation != nullptr &&
+              filter_relation->predicate_expression_ids.size() == 1
+          ? &ast.native_relational.expressions[
+                filter_relation->predicate_expression_ids.front() - 1]
+          : nullptr;
+  passed &= Require(
+      ast.native_relational.accepted() && filter_relation != nullptr &&
+          ast.native_relational.root_relation_id == 3 &&
+          ast.native_relational.relations[1].aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kSimple &&
+          ast.native_relational.relations[1].aggregate_projection_form ==
+              sbsql::NativeAggregateProjectionForm::kKeysCountSum &&
+          ast.native_relational.relations[1]
+                  .grouping_key_expression_ids.size() == 2 &&
+          filter_relation->relation_kind ==
+              sbsql::NativeRelationAstKind::kFilter &&
+          predicate != nullptr &&
+          predicate->expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          predicate->operator_name == "AND" &&
+          predicate->child_expression_ids.size() == 2,
+      "native parser did not retain ordered Boolean HAVING over two grouping keys");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.relations.size() == 3 &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              "aggregate.grouped-int64-keys-count-sum.v1" &&
+          bound.native_relational.relations[2].semantic_variant_id ==
+              "filter.having-count-sum-and-gt-int64-literals.v1" &&
+          bound.native_relational.relations[2].output_expression_ids.size() ==
+              4,
+      "native binder did not preserve two-key Boolean HAVING authority");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 3 || predicate == nullptr) {
+    return false;
+  }
+
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  const auto predicate_id =
+      bound.native_relational.relations[2].bound_expression_ids.front();
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("uint32", "relational_root_node_id", "3") &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2,3|1,2,3,4,5,6,7") &&
+          has_operand("relational_node_v1", "2", "5|0|1|1,2,4,5|-") &&
+          has_operand("relational_node_v1", "3", "2|0|2|1,2,4,5|-") &&
+          has_operand(
+              "relational_node_binding_v1", "3",
+              EncodeHex(
+                  "filter.having-count-sum-and-gt-int64-literals.v1") +
+                  "|" + std::to_string(predicate_id) + "|-|-|-") &&
+          lowered.payload.find("HAVING COUNT") == std::string::npos,
+      "two-key Boolean HAVING did not lower to the exact canonical three-node DAG");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  const bool only_expected_group =
+      dispatched.api_result.result_shape.rows.size() == 1 &&
+      dispatched.api_result.result_shape.rows.front().fields.size() == 4 &&
+      dispatched.api_result.result_shape.rows.front()
+              .fields[0]
+              .second.encoded_value == "1" &&
+      dispatched.api_result.result_shape.rows.front()
+              .fields[1]
+              .second.encoded_value == "10" &&
+      dispatched.api_result.result_shape.rows.front()
+              .fields[2]
+              .second.encoded_value == "2" &&
+      dispatched.api_result.result_shape.rows.front()
+              .fields[3]
+              .second.encoded_value == "5";
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 3 &&
+          dispatched.physical_node_count == 3 &&
+          dispatched.canonical_result_column_count == 4 &&
+          dispatched.canonical_result_row_count == 1 && only_expected_group,
+      "parser-produced two-key Boolean HAVING did not complete the live engine spine");
+
+  const auto sum_only_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY key_a,key_b HAVING SUM(amount) > 4;");
+  const auto sum_only_ast = sbsql::BuildAst(sum_only_cst);
+  const auto reversed_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY key_a,key_b "
+      "HAVING SUM(amount) > 4 AND COUNT(*) > 1;");
+  const auto reversed_ast = sbsql::BuildAst(reversed_cst);
+
+  auto semantic_drift_context = context;
+  semantic_drift_context.relations.back().semantic_variant_id =
+      "filter.having-sum-gt-int64-literal.v1";
+  const auto semantic_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &semantic_drift_context);
+
+  auto aggregate_drift_context = context;
+  aggregate_drift_context.relations.front().semantic_variant_id =
+      "aggregate.grouped-int64-key-count-sum.v1";
+  const auto aggregate_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &aggregate_drift_context);
+
+  auto count_identity_drift_context = context;
+  const auto& count_comparison =
+      ast.native_relational.expressions[predicate->child_expression_ids[0] - 1];
+  const auto having_count_id = count_comparison.child_expression_ids[0];
+  const auto count_identity_drift = std::ranges::find_if(
+      count_identity_drift_context.expressions, [&](const auto& binding) {
+        return binding.expression_id == having_count_id;
+      });
+  count_identity_drift->function_uuid =
+      "019de5fc-2400-72e4-8549-82b2eef5a777";
+  const auto count_function_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &count_identity_drift_context);
+
+  auto operator_drift_bound = bound;
+  const auto bound_predicate = std::ranges::find_if(
+      operator_drift_bound.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == predicate_id;
+      });
+  bound_predicate->canonical_operator_name = "OR";
+  const auto refused_lowering = sbsql::LowerToSblr(
+      operator_drift_bound, cst, SessionForTest());
+
+  passed &= Require(
+      sum_only_ast.native_relational.recognized() &&
+          !sum_only_ast.native_relational.accepted() &&
+          HasParserDiagnostic(sum_only_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          reversed_ast.native_relational.recognized() &&
+          !reversed_ast.native_relational.accepted() &&
+          HasParserDiagnostic(reversed_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          !semantic_drift.bound && semantic_drift.messages.has_errors() &&
+          !aggregate_drift.bound && aggregate_drift.messages.has_errors() &&
+          !count_function_drift.bound &&
+          count_function_drift.messages.has_errors() &&
+          refused_lowering.payload.empty() &&
+          HasParserDiagnostic(refused_lowering.messages,
+                              "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "two-key Boolean HAVING syntax, semantic, aggregate, identity, or operator drift did not fail closed");
+  return passed;
+}
+
 bool ValidateSimpleTwoKeyGroupByParserBindingLoweringAndDispatch() {
   constexpr std::string_view kSql =
       "SELECT key_a, key_b, COUNT(*), SUM(amount) "
@@ -1830,6 +2019,8 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-001-BINDING-HAVING-SUM-GT-V1
 // QOW-TEST-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
 // QOW-TEST-QRY-001-BINDING-HAVING-COUNT-SUM-AND-GT-V1
+// QOW-TEST-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
+// QOW-TEST-QRY-001-BINDING-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
 // QOW-TEST-QRY-001-SIMPLE-TWO-KEY-GROUP-BY-V1
 // QOW-TEST-QRY-001-BINDING-SIMPLE-TWO-KEY-GROUP-BY-V1
 // QOW-TEST-QRY-001-GROUPING-SETS-V1
@@ -1847,6 +2038,7 @@ int main() {
   passed &= ValidateSimpleGroupByParserBindingLoweringAndDispatch();
   passed &= ValidateHavingParserBindingLoweringAndDispatch();
   passed &= ValidateBooleanHavingParserBindingLoweringAndDispatch();
+  passed &= ValidateTwoKeyBooleanHavingParserBindingLoweringAndDispatch();
   passed &= ValidateSimpleTwoKeyGroupByParserBindingLoweringAndDispatch();
   passed &= ValidateGroupingSetsParserBindingLoweringAndDispatch();
   passed &= ValidateRollupParserBindingLoweringAndDispatch();

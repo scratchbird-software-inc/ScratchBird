@@ -35452,8 +35452,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     };
     if (aggregate_relation->aggregate_grouping_form !=
             NativeAggregateGroupingForm::kSimple ||
-        aggregate_relation->aggregate_projection_form !=
-            NativeAggregateProjectionForm::kKeyCountSum ||
+        (aggregate_relation->aggregate_projection_form !=
+             NativeAggregateProjectionForm::kKeyCountSum &&
+         (aggregate_relation->aggregate_projection_form !=
+              NativeAggregateProjectionForm::kKeysCountSum ||
+          !count_sum_and_profile)) ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=
