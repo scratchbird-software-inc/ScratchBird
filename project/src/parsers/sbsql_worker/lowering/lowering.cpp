@@ -35298,6 +35298,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                          expression->second->result_descriptor_id;
                 });
             return descriptor != native.descriptors.end() &&
+                   !expression->second->bound_function_uuid.has_value() &&
+                   !expression->second->bound_name_uuid.has_value() &&
                    descriptor->nullability == BoundNullability::kNonNull &&
                    !descriptor->collation_uuid.has_value() &&
                    !descriptor->timezone_profile_id.has_value() &&
@@ -35622,12 +35624,41 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
+    // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
     const bool admitted_grouping_sets_not_sum_having =
         not_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.size() == 4 &&
+        native.grouping_sets[0].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[0].ordinal == 0 &&
+        native.grouping_sets[0].expression_ids ==
+            std::vector<std::uint32_t>{
+                aggregate_relation->grouping_key_expression_ids[1]} &&
+        native.grouping_sets[1].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[1].ordinal == 1 &&
+        native.grouping_sets[1].expression_ids.empty() &&
+        native.grouping_sets[2].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[2].ordinal == 2 &&
+        native.grouping_sets[2].expression_ids ==
+            aggregate_relation->grouping_key_expression_ids &&
+        native.grouping_sets[3].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[3].ordinal == 3 &&
+        native.grouping_sets[3].expression_ids ==
+            native.grouping_sets[0].expression_ids;
+    const bool admitted_grouping_sets_metadata_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kGroupingSets &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSumGrouping &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.size() == 4 &&
         native.grouping_sets[0].relation_id ==
@@ -35733,6 +35764,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeAggregateGroupingForm::kCube) &&
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
+    const auto grouping_sets_metadata_not_sum_outputs_are_exact = [&] {
+      if (!admitted_grouping_sets_metadata_not_sum_having) return true;
+      constexpr std::array<std::string_view, 7> kOutputNames = {
+          "key_a",      "key_b",     "row_count", "total_amount",
+          "grouping_a", "grouping_b", "grouping_id"};
+      for (const auto [relation_id, first_output_id] :
+           {std::pair{aggregate_relation->relation_id, 4U},
+            std::pair{filter_relation->relation_id, 11U}}) {
+        for (std::size_t ordinal = 0; ordinal < kOutputNames.size();
+             ++ordinal) {
+          const auto output = std::ranges::find_if(
+              native.outputs, [&](const auto& candidate) {
+                return candidate.relation_id == relation_id &&
+                       candidate.ordinal == ordinal;
+              });
+          if (output == native.outputs.end() ||
+              output->output_id != first_output_id + ordinal ||
+              output->output_name_utf8 != kOutputNames[ordinal]) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
     if ((!admitted_one_key_or_having && !admitted_two_key_or_having &&
          !admitted_grouping_sets_or_having &&
          !admitted_grouping_sets_metadata_or_having &&
@@ -35742,6 +35797,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_metadata_or_having &&
          !admitted_two_key_not_sum_having &&
          !admitted_grouping_sets_not_sum_having &&
+         !admitted_grouping_sets_metadata_not_sum_having &&
          !admitted_rollup_not_sum_having &&
          !admitted_cube_not_sum_having &&
          !admitted_simple_having &&
@@ -35752,11 +35808,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_sum_having &&
          !admitted_cube_metadata_sum_having &&
          !admitted_multi_key_boolean_having) ||
-        (admitted_cube_not_sum_having &&
+        ((admitted_grouping_sets_metadata_not_sum_having ||
+          admitted_cube_not_sum_having) &&
          std::ranges::any_of(native.outputs,
                              [](const auto& output) {
                                return !output.visible;
                              })) ||
+        !grouping_sets_metadata_not_sum_outputs_are_exact() ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=

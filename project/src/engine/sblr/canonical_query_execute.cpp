@@ -1883,6 +1883,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-NOT-SUM-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-HAVING-NOT-SUM-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
@@ -1977,6 +1978,18 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           std::vector<std::size_t>{0, 1} &&
       prepared_aggregate.grouping_sets[3].key_term_ordinals ==
           prepared_aggregate.grouping_sets[0].key_term_ordinals;
+  const bool exact_grouping_sets_metadata_not_sum_profile =
+      not_sum_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1" &&
+      prepared_aggregate.grouping_sets.size() == 4 &&
+      prepared_aggregate.grouping_sets[0].key_term_ordinals ==
+          std::vector<std::size_t>{1} &&
+      prepared_aggregate.grouping_sets[1].key_term_ordinals.empty() &&
+      prepared_aggregate.grouping_sets[2].key_term_ordinals ==
+          std::vector<std::size_t>{0, 1} &&
+      prepared_aggregate.grouping_sets[3].key_term_ordinals ==
+          prepared_aggregate.grouping_sets[0].key_term_ordinals;
   const bool exact_rollup_not_sum_profile =
       not_sum_profile &&
       aggregate_root.semantic_variant_id ==
@@ -2001,8 +2014,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       prepared_aggregate.grouping_sets[3].key_term_ordinals.empty();
   const bool admitted_not_sum_profile =
       exact_ordinary_two_key_not_sum_profile ||
-      exact_grouping_sets_not_sum_profile || exact_rollup_not_sum_profile ||
-      exact_cube_not_sum_profile;
+      exact_grouping_sets_not_sum_profile ||
+      exact_grouping_sets_metadata_not_sum_profile ||
+      exact_rollup_not_sum_profile || exact_cube_not_sum_profile;
   const bool admitted_or_profile =
       count_sum_or_profile &&
       (aggregate_root.semantic_variant_id ==
@@ -2180,6 +2194,23 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       filter_outputs.size() != expected_output_count) {
     result.detail = "HAVING output lineage coverage is incomplete";
     return result;
+  }
+  if (exact_grouping_sets_metadata_not_sum_profile) {
+    constexpr std::array<std::string_view, 7> kOutputNames = {
+        "key_a",      "key_b",     "row_count", "total_amount",
+        "grouping_a", "grouping_b", "grouping_id"};
+    for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
+      if (aggregate_outputs[ordinal]->output_id != 4U + ordinal ||
+          filter_outputs[ordinal]->output_id != 11U + ordinal ||
+          aggregate_outputs[ordinal]->output_name_utf8 !=
+              kOutputNames[ordinal] ||
+          filter_outputs[ordinal]->output_name_utf8 !=
+              kOutputNames[ordinal]) {
+        result.detail =
+            "metadata GROUPING SETS NOT-SUM output identity is not exact";
+        return result;
+      }
+    }
   }
   for (std::size_t ordinal = 0; ordinal < filter_outputs.size(); ++ordinal) {
     const auto& aggregate_output = *aggregate_outputs[ordinal];
