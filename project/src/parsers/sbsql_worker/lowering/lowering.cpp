@@ -35465,6 +35465,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
+    // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-HAVING-SUM-GT-V1
+    const bool admitted_rollup_sum_having =
+        !count_sum_and_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kRollup &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-GROUPING-METADATA-HAVING-V1
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-V1
@@ -35489,6 +35496,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
     if ((!admitted_simple_having && !admitted_grouping_sets_sum_having &&
+         !admitted_rollup_sum_having &&
          !admitted_multi_key_boolean_having) ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
