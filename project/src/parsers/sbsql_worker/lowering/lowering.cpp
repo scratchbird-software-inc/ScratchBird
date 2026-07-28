@@ -35032,6 +35032,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id !=
                "filter.having-not-sum-gt-int64-literal.v1" &&
            relation.semantic_variant_id !=
+               "filter.having-not-count-sum-and-gt-int64-literals.v1" &&
+           relation.semantic_variant_id !=
                "filter.having-count-sum-and-gt-int64-literals.v1" &&
            relation.semantic_variant_id !=
                "filter.having-count-sum-or-gt-int64-literals.v1")) {
@@ -35393,6 +35395,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   if (filter_relation != nullptr) {
     const auto predicate =
         expressions_by_id.find(filter_relation->predicate_expression_ids.front());
+    const BoundExpressionAstRecord* boolean_root = nullptr;
     const BoundExpressionAstRecord* count_comparison = nullptr;
     const BoundExpressionAstRecord* sum_comparison = nullptr;
     const BoundExpressionAstRecord* having_count = nullptr;
@@ -35409,6 +35412,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool not_sum_profile =
         filter_relation->semantic_variant_id ==
         "filter.having-not-sum-gt-int64-literal.v1";
+    const bool not_count_sum_and_profile =
+        filter_relation->semantic_variant_id ==
+        "filter.having-not-count-sum-and-gt-int64-literals.v1";
     const bool count_sum_and_profile =
         filter_relation->semantic_variant_id ==
         "filter.having-count-sum-and-gt-int64-literals.v1";
@@ -35416,7 +35422,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         filter_relation->semantic_variant_id ==
         "filter.having-count-sum-or-gt-int64-literals.v1";
     const bool count_sum_boolean_profile =
-        count_sum_and_profile || count_sum_or_profile;
+        count_sum_and_profile || count_sum_or_profile ||
+        not_count_sum_and_profile;
     if (predicate != expressions_by_id.end()) {
       if (simple_sum_profile &&
           predicate->second->expression_kind ==
@@ -35424,19 +35431,32 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           predicate->second->canonical_operator_name == ">" &&
           predicate->second->child_expression_ids.size() == 2) {
         sum_comparison = predicate->second;
-      } else if (not_sum_profile &&
+      } else if ((not_sum_profile || not_count_sum_and_profile) &&
                  predicate->second->expression_kind ==
                      NativeExpressionAstKind::kUnary &&
                  predicate->second->canonical_operator_name == "NOT" &&
                  predicate->second->child_expression_ids.size() == 1) {
-        sum_comparison = expressions_by_id.at(
+        const auto* operand = expressions_by_id.at(
             predicate->second->child_expression_ids.front());
+        if (not_count_sum_and_profile &&
+            operand->expression_kind == NativeExpressionAstKind::kBinary &&
+            operand->canonical_operator_name == "AND" &&
+            operand->child_expression_ids.size() == 2) {
+          boolean_root = operand;
+          count_comparison =
+              expressions_by_id.at(operand->child_expression_ids[0]);
+          sum_comparison =
+              expressions_by_id.at(operand->child_expression_ids[1]);
+        } else {
+          sum_comparison = operand;
+        }
       } else if (count_sum_boolean_profile &&
                  predicate->second->expression_kind ==
                      NativeExpressionAstKind::kBinary &&
                  predicate->second->canonical_operator_name ==
                      (count_sum_or_profile ? "OR" : "AND") &&
                  predicate->second->child_expression_ids.size() == 2) {
+        boolean_root = predicate->second;
         count_comparison = expressions_by_id.at(
             predicate->second->child_expression_ids[0]);
         sum_comparison = expressions_by_id.at(
@@ -35501,6 +35521,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                            : predicate->second,
                        BoundNullability::kNullable) &&
          descriptor_is(sum_comparison, BoundNullability::kNullable) &&
+         descriptor_is(sum_threshold, BoundNullability::kNonNull));
+    const bool not_count_sum_and_descriptors_are_exact =
+        !not_count_sum_and_profile ||
+        (descriptor_is(predicate == expressions_by_id.end()
+                           ? nullptr
+                           : predicate->second,
+                       BoundNullability::kNullable) &&
+         descriptor_is(boolean_root, BoundNullability::kNullable) &&
+         descriptor_is(count_comparison, BoundNullability::kNullable) &&
+         descriptor_is(sum_comparison, BoundNullability::kNullable) &&
+         descriptor_is(count_threshold, BoundNullability::kNonNull) &&
          descriptor_is(sum_threshold, BoundNullability::kNonNull));
     // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-SUM-GT-V1
     const bool admitted_simple_having =
@@ -35617,6 +35648,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-NOT-SUM-GT-V1
     const bool admitted_two_key_not_sum_having =
         not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-NOT-COUNT-SUM-AND-GT-V1
+    const bool admitted_two_key_not_count_sum_and_having =
+        not_count_sum_and_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kSimple &&
         aggregate_relation->aggregate_projection_form ==
@@ -35810,6 +35850,29 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
       return true;
     };
+    const auto ordinary_not_count_sum_and_outputs_are_exact = [&] {
+      if (!admitted_two_key_not_count_sum_and_having) return true;
+      constexpr std::array<std::string_view, 4> kOutputNames = {
+          "key_a", "key_b", "row_count", "total_amount"};
+      for (const auto [relation_id, first_output_id] :
+           {std::pair{aggregate_relation->relation_id, 4U},
+            std::pair{filter_relation->relation_id, 8U}}) {
+        for (std::size_t ordinal = 0; ordinal < kOutputNames.size(); ++ordinal) {
+          const auto output = std::ranges::find_if(
+              native.outputs, [&](const auto& candidate) {
+                return candidate.relation_id == relation_id &&
+                       candidate.ordinal == ordinal;
+              });
+          if (output == native.outputs.end() ||
+              output->output_id != first_output_id + ordinal ||
+              output->output_name_utf8 != kOutputNames[ordinal] ||
+              !output->visible) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
     if ((!admitted_one_key_or_having && !admitted_two_key_or_having &&
          !admitted_grouping_sets_or_having &&
          !admitted_grouping_sets_metadata_or_having &&
@@ -35818,6 +35881,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_or_having &&
          !admitted_cube_metadata_or_having &&
          !admitted_two_key_not_sum_having &&
+         !admitted_two_key_not_count_sum_and_having &&
          !admitted_grouping_sets_not_sum_having &&
          !admitted_grouping_sets_metadata_not_sum_having &&
          !admitted_rollup_not_sum_having &&
@@ -35841,6 +35905,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                return !output.visible;
                              })) ||
         !metadata_not_sum_outputs_are_exact() ||
+        !ordinary_not_count_sum_and_outputs_are_exact() ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=
@@ -35877,6 +35942,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
         !descriptor_is(sum_threshold, BoundNullability::kNonNull) ||
         !not_sum_descriptors_are_exact ||
+        !not_count_sum_and_descriptors_are_exact ||
         (not_sum_profile &&
          (predicate->second->expression_kind !=
               NativeExpressionAstKind::kUnary ||
@@ -35886,9 +35952,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           predicate->second->result_descriptor_id !=
               sum_comparison->result_descriptor_id)) ||
         (count_sum_boolean_profile &&
-         (predicate->second->child_expression_ids !=
+         (boolean_root == nullptr || count_comparison == nullptr ||
+          boolean_root->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          boolean_root->canonical_operator_name !=
+              (count_sum_or_profile ? "OR" : "AND") ||
+          boolean_root->child_expression_ids !=
               std::vector<std::uint32_t>{count_comparison->expression_id,
                                          sum_comparison->expression_id} ||
+          !descriptor_is(boolean_root, BoundNullability::kNullable) ||
           count_comparison->expression_kind !=
               NativeExpressionAstKind::kBinary ||
           count_comparison->canonical_operator_name != ">" ||
@@ -35913,10 +35985,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !count_threshold->child_expression_ids.empty() ||
           !descriptor_is(count_comparison, BoundNullability::kNullable) ||
           !descriptor_is(count_threshold, BoundNullability::kNonNull) ||
-          predicate->second->result_descriptor_id !=
+          boolean_root->result_descriptor_id !=
               count_comparison->result_descriptor_id ||
-          predicate->second->result_descriptor_id !=
-              sum_comparison->result_descriptor_id))) {
+          boolean_root->result_descriptor_id !=
+              sum_comparison->result_descriptor_id ||
+          (!not_count_sum_and_profile && boolean_root != predicate->second) ||
+          (not_count_sum_and_profile &&
+           (predicate->second->expression_kind !=
+                NativeExpressionAstKind::kUnary ||
+            predicate->second->canonical_operator_name != "NOT" ||
+            predicate->second->child_expression_ids !=
+                std::vector<std::uint32_t>{boolean_root->expression_id} ||
+            predicate->second->result_descriptor_id !=
+                boolean_root->result_descriptor_id))))) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed HAVING predicate is outside the exact COUNT/SUM comparison profile");

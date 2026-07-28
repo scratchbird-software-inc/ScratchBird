@@ -955,8 +955,31 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-V1
       const bool not_sum_profile =
           not_operand != nullptr && match_sum_comparison(*not_operand);
+      const auto* not_count_conjunct =
+          not_operand != nullptr &&
+                  not_operand->expression_kind ==
+                      NativeExpressionAstKind::kBinary &&
+                  not_operand->operator_name == "AND" &&
+                  not_operand->child_expression_ids.size() == 2
+              ? expression_by_id(not_operand->child_expression_ids[0])
+              : nullptr;
+      const auto* not_sum_conjunct =
+          not_operand != nullptr &&
+                  not_operand->expression_kind ==
+                      NativeExpressionAstKind::kBinary &&
+                  not_operand->operator_name == "AND" &&
+                  not_operand->child_expression_ids.size() == 2
+              ? expression_by_id(not_operand->child_expression_ids[1])
+              : nullptr;
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-COUNT-SUM-AND-GT-V1
+      const bool not_count_sum_and_profile =
+          not_operand != nullptr && not_count_conjunct != nullptr &&
+          not_sum_conjunct != nullptr &&
+          match_count_comparison(*not_count_conjunct) &&
+          match_sum_comparison(*not_sum_conjunct);
       if (!simple_sum_profile && !count_sum_and_profile &&
-          !count_sum_or_profile && !not_sum_profile) {
+          !count_sum_or_profile && !not_sum_profile &&
+          !not_count_sum_and_profile) {
         Refuse("having_predicate_shape_invalid",
                "native HAVING profile requires SUM(value) > numeric literal "
                "or an exact admitted Boolean wrapper");
@@ -964,6 +987,11 @@ class NativeRelationalParser final {
       }
       const bool ordinary_two_key_not_sum_profile =
           !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          document_.grouping_sets.empty();
+      const bool ordinary_two_key_not_count_sum_and_profile =
+          !one_key_grouping_profile && not_count_sum_and_profile &&
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           document_.grouping_sets.empty();
@@ -1034,7 +1062,8 @@ class NativeRelationalParser final {
               NativeAggregateProjectionForm::kKeysCountSumGrouping &&
           key_a.has_value() && key_b.has_value() &&
           document_.grouping_sets.empty();
-      if (one_key_grouping_profile && not_sum_profile) {
+      if (one_key_grouping_profile &&
+          (not_sum_profile || not_count_sum_and_profile)) {
         Refuse("having_profile_not_admitted",
                "native NOT SUM HAVING requires an exact admitted two-key grouping profile");
         return FinishRefusal();
@@ -1136,6 +1165,7 @@ class NativeRelationalParser final {
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
           !ordinary_two_key_not_sum_profile &&
+          !ordinary_two_key_not_count_sum_and_profile &&
           !grouping_sets_not_sum_profile &&
           !grouping_sets_metadata_not_sum_profile &&
           !rollup_not_sum_profile &&
