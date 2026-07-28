@@ -1869,6 +1869,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-CUBE-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
@@ -1926,7 +1927,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        aggregate_root.semantic_variant_id ==
            "aggregate.grouping-sets-int64-keys-count-sum.v1" ||
        aggregate_root.semantic_variant_id ==
-           "aggregate.rollup-int64-keys-count-sum.v1");
+           "aggregate.rollup-int64-keys-count-sum.v1" ||
+       aggregate_root.semantic_variant_id ==
+           "aggregate.cube-int64-keys-count-sum.v1");
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
