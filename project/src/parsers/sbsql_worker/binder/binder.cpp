@@ -890,6 +890,37 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateGroupingForm::kSimple &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSum;
+      // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-HAVING-COUNT-SUM-OR-GT-V1
+      const bool admitted_grouping_sets_or_having =
+          count_sum_or_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kGroupingSets &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.size() == 4 &&
+          ast.grouping_sets[0].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[0].ordinal == 0 &&
+          ast.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1]} &&
+          ast.grouping_sets[1].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[1].ordinal == 1 &&
+          ast.grouping_sets[1].expression_ids.empty() &&
+          ast.grouping_sets[2].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[2].ordinal == 2 &&
+          ast.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1],
+                  aggregate_relation_ast->grouping_key_expression_ids[0]} &&
+          ast.grouping_sets[3].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[3].ordinal == 3 &&
+          ast.grouping_sets[3].expression_ids ==
+              ast.grouping_sets[0].expression_ids;
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
       const bool admitted_simple_having =
           !count_sum_or_profile && aggregate_relation_ast != nullptr &&
@@ -966,6 +997,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 NativeAggregateProjectionForm::kKeysCountSumGrouping));
       if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
           (!admitted_one_key_or_having && !admitted_two_key_or_having &&
+           !admitted_grouping_sets_or_having &&
            !admitted_simple_having &&
            !admitted_grouping_sets_sum_having &&
            !admitted_grouping_sets_metadata_sum_having &&
