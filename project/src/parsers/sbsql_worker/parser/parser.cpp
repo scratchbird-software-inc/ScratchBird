@@ -809,13 +809,18 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
+      // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
       const bool ordinary_count_sum_profile =
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           (projection_form == NativeAggregateProjectionForm::kKeyCountSum ||
            projection_form == NativeAggregateProjectionForm::kKeysCountSum);
-      if (!ordinary_count_sum_profile) {
+      const bool grouping_sets_count_sum_profile =
+          grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+      if (!ordinary_count_sum_profile &&
+          !grouping_sets_count_sum_profile) {
         Refuse("having_profile_not_admitted",
-               "native HAVING profile requires ordinary one- or two-key GROUP BY");
+               "native HAVING profile requires admitted ordinary or GROUPING SETS grouping");
         return FinishRefusal();
       }
       Consume();
@@ -908,7 +913,7 @@ class NativeRelationalParser final {
       }
       if (!one_key_grouping_profile && !count_sum_and_profile) {
         Refuse("having_profile_not_admitted",
-               "native two-key HAVING profile requires the ordered COUNT/SUM AND predicate");
+               "native multi-key HAVING profile requires the ordered COUNT/SUM AND predicate");
         return FinishRefusal();
       }
     }

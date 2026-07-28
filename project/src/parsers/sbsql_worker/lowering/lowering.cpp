@@ -35450,13 +35450,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              !descriptor->width_precision_scale.precision.has_value() &&
              !descriptor->width_precision_scale.scale.has_value();
     };
-    if (aggregate_relation->aggregate_grouping_form !=
-            NativeAggregateGroupingForm::kSimple ||
-        (aggregate_relation->aggregate_projection_form !=
-             NativeAggregateProjectionForm::kKeyCountSum &&
-         (aggregate_relation->aggregate_projection_form !=
-              NativeAggregateProjectionForm::kKeysCountSum ||
-          !count_sum_and_profile)) ||
+    const bool one_key_simple_having =
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeyCountSum;
+    const bool admitted_multi_key_boolean_having =
+        count_sum_and_profile &&
+        (aggregate_relation->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kSimple ||
+         aggregate_relation->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kGroupingSets) &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum;
+    if ((!one_key_simple_having && !admitted_multi_key_boolean_having) ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=
