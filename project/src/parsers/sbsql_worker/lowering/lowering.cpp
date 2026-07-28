@@ -35621,6 +35621,35 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateProjectionForm::kKeysCountSum &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
+    const bool admitted_grouping_sets_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kGroupingSets &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.size() == 4 &&
+        native.grouping_sets[0].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[0].ordinal == 0 &&
+        native.grouping_sets[0].expression_ids ==
+            std::vector<std::uint32_t>{
+                aggregate_relation->grouping_key_expression_ids[1]} &&
+        native.grouping_sets[1].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[1].ordinal == 1 &&
+        native.grouping_sets[1].expression_ids.empty() &&
+        native.grouping_sets[2].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[2].ordinal == 2 &&
+        native.grouping_sets[2].expression_ids ==
+            aggregate_relation->grouping_key_expression_ids &&
+        native.grouping_sets[3].relation_id ==
+            aggregate_relation->relation_id &&
+        native.grouping_sets[3].ordinal == 3 &&
+        native.grouping_sets[3].expression_ids ==
+            native.grouping_sets[0].expression_ids;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
         simple_sum_profile &&
@@ -35694,6 +35723,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_or_having &&
          !admitted_cube_metadata_or_having &&
          !admitted_two_key_not_sum_having &&
+         !admitted_grouping_sets_not_sum_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&

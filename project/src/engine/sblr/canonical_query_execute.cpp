@@ -1882,6 +1882,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-NOT-SUM-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1955,13 +1956,28 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
            "aggregate.cube-int64-keys-count-sum.v1" ||
        aggregate_root.semantic_variant_id ==
            "aggregate.cube-int64-keys-count-sum-grouping.v1");
-  const bool admitted_two_key_not_sum_profile =
+  const bool exact_ordinary_two_key_not_sum_profile =
       not_sum_profile &&
       aggregate_root.semantic_variant_id ==
           "aggregate.grouped-int64-keys-count-sum.v1" &&
       prepared_aggregate.grouping_sets.size() == 1 &&
       prepared_aggregate.grouping_sets.front().key_term_ordinals ==
           std::vector<std::size_t>{0, 1};
+  const bool exact_grouping_sets_not_sum_profile =
+      not_sum_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.grouping-sets-int64-keys-count-sum.v1" &&
+      prepared_aggregate.grouping_sets.size() == 4 &&
+      prepared_aggregate.grouping_sets[0].key_term_ordinals ==
+          std::vector<std::size_t>{1} &&
+      prepared_aggregate.grouping_sets[1].key_term_ordinals.empty() &&
+      prepared_aggregate.grouping_sets[2].key_term_ordinals ==
+          std::vector<std::size_t>{0, 1} &&
+      prepared_aggregate.grouping_sets[3].key_term_ordinals ==
+          prepared_aggregate.grouping_sets[0].key_term_ordinals;
+  const bool admitted_not_sum_profile =
+      exact_ordinary_two_key_not_sum_profile ||
+      exact_grouping_sets_not_sum_profile;
   const bool admitted_or_profile =
       count_sum_or_profile &&
       (aggregate_root.semantic_variant_id ==
@@ -2026,7 +2042,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
       (!simple_sum_profile && !not_sum_profile &&
        !count_sum_boolean_profile) ||
-      (not_sum_profile && !admitted_two_key_not_sum_profile) ||
+      (not_sum_profile && !admitted_not_sum_profile) ||
       (count_sum_or_profile && !admitted_or_profile) ||
       (count_sum_or_profile &&
        (aggregate_root.semantic_variant_id ==
@@ -2048,7 +2064,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        !exact_cube_or_profile) ||
       (key_count == 2 && !count_sum_and_profile && !admitted_or_profile &&
        !admitted_two_key_sum_profile &&
-       !admitted_two_key_not_sum_profile) ||
+       !admitted_not_sum_profile) ||
       filter_root.input_logical_node_ids !=
           std::vector<std::uint32_t>{aggregate_root.logical_node_id} ||
       filter_root.output_descriptor_ids !=

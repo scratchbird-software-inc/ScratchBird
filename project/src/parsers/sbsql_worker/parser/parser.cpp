@@ -963,9 +963,27 @@ class NativeRelationalParser final {
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           document_.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
+      const bool grouping_sets_not_sum_profile =
+          !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          key_a.has_value() && key_b.has_value() &&
+          document_.grouping_sets.size() == 4 &&
+          document_.grouping_sets[0].ordinal == 0 &&
+          document_.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{*key_b} &&
+          document_.grouping_sets[1].ordinal == 1 &&
+          document_.grouping_sets[1].expression_ids.empty() &&
+          document_.grouping_sets[2].ordinal == 2 &&
+          document_.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{*key_b, *key_a} &&
+          document_.grouping_sets[3].ordinal == 3 &&
+          document_.grouping_sets[3].expression_ids ==
+              document_.grouping_sets[0].expression_ids;
       if (one_key_grouping_profile && not_sum_profile) {
         Refuse("having_profile_not_admitted",
-               "native NOT SUM HAVING requires exact ordinary two-key grouping");
+               "native NOT SUM HAVING requires an exact admitted two-key grouping profile");
         return FinishRefusal();
       }
       const bool ordinary_two_key_sum_profile =
@@ -1065,6 +1083,7 @@ class NativeRelationalParser final {
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
           !ordinary_two_key_not_sum_profile &&
+          !grouping_sets_not_sum_profile &&
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
           !grouping_sets_metadata_or_profile &&
           !rollup_or_profile && !rollup_metadata_or_profile &&
