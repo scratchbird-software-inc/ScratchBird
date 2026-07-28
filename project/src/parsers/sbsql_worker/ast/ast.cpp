@@ -1443,6 +1443,7 @@ std::string NativeAggregateGroupingFormName(
     case NativeAggregateGroupingForm::kNone: return "none";
     case NativeAggregateGroupingForm::kGroupingSets: return "grouping_sets";
     case NativeAggregateGroupingForm::kRollup: return "rollup";
+    case NativeAggregateGroupingForm::kCube: return "cube";
   }
   return "unknown";
 }

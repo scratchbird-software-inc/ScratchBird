@@ -34931,7 +34931,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kGroupingSets &&
            relation.aggregate_grouping_form !=
-               NativeAggregateGroupingForm::kRollup) ||
+               NativeAggregateGroupingForm::kRollup &&
+           relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kCube) ||
           relation.bound_expression_ids != relation.output_expression_ids) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -34953,8 +34955,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (aggregate_relation->aggregate_grouping_form ==
              NativeAggregateGroupingForm::kGroupingSets &&
          native.grouping_sets.empty()) ||
-        (aggregate_relation->aggregate_grouping_form ==
-             NativeAggregateGroupingForm::kRollup &&
+        ((aggregate_relation->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kRollup ||
+          aggregate_relation->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kCube) &&
          !native.grouping_sets.empty())))) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",

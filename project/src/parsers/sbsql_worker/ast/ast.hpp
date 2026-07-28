@@ -60,6 +60,7 @@ enum class NativeAggregateGroupingForm {
   kNone,
   kGroupingSets,
   kRollup,
+  kCube,
 };
 
 enum class NativeExpressionAstKind {

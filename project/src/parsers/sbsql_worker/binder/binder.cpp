@@ -280,6 +280,8 @@ std::string_view ExpectedAggregateSemanticVariant(
       return "aggregate.grouping-sets-int64-keys-count-sum.v1";
     case NativeAggregateGroupingForm::kRollup:
       return "aggregate.rollup-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kCube:
+      return "aggregate.cube-int64-keys-count-sum.v1";
     case NativeAggregateGroupingForm::kNone:
       return {};
   }
@@ -626,7 +628,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           (relation.aggregate_grouping_form !=
                NativeAggregateGroupingForm::kGroupingSets &&
            relation.aggregate_grouping_form !=
-               NativeAggregateGroupingForm::kRollup) ||
+               NativeAggregateGroupingForm::kRollup &&
+           relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kCube) ||
           relation.output_expression_ids[0] !=
               relation.grouping_key_expression_ids[0] ||
           relation.output_expression_ids[1] !=
@@ -779,11 +783,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound.grouping_sets.push_back(std::move(record));
     }
   } else if (aggregate_relation_ast->aggregate_grouping_form ==
-             NativeAggregateGroupingForm::kRollup) {
-    // QOW-SOURCE-QRY-001-BINDING-ROLLUP-V1
+                 NativeAggregateGroupingForm::kRollup ||
+             aggregate_relation_ast->aggregate_grouping_form ==
+                 NativeAggregateGroupingForm::kCube) {
+    // QOW-SOURCE-QRY-001-BINDING-FIXED-GROUPING-FORM-V1
     if (!ast.grouping_sets.empty()) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "fixed ROLLUP aggregate cannot own arbitrary grouping-set records");
+                            "fixed ROLLUP/CUBE aggregate cannot own arbitrary grouping-set records");
       return RefusedBoundAst(std::move(bound));
     }
   } else {

@@ -300,6 +300,7 @@ class NativeRelationalParser final {
       if (IsWord(*tokens_[index], "GROUP") &&
           IsWord(*tokens_[index + 1], "BY") &&
           (IsWord(*tokens_[index + 2], "ROLLUP") ||
+           IsWord(*tokens_[index + 2], "CUBE") ||
            (index + 3 < tokens_.size() &&
             IsWord(*tokens_[index + 2], "GROUPING") &&
             IsWord(*tokens_[index + 3], "SETS")))) {
@@ -606,9 +607,41 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       query_end = &Consume();
+    } else if (!AtEnd() && IsWord(Current(), "CUBE")) {
+      // QOW-SOURCE-QRY-001-CUBE-V1
+      grouping_form = NativeAggregateGroupingForm::kCube;
+      Consume();
+      if (!RequireSymbol("(", "cube_open_required",
+                         "CUBE requires an opening parenthesis") ||
+          AtEnd() || !IsNameToken(Current()) ||
+          CanonicalTokenText(Current()) != column_names[0]) {
+        if (!document_.messages.has_errors()) {
+          Refuse("cube_first_key_invalid",
+                 "native CUBE profile requires the first projected grouping key");
+        }
+        return FinishRefusal();
+      }
+      Consume();
+      if (!RequireSymbol(",", "cube_key_separator_required",
+                         "native CUBE profile requires two grouping keys") ||
+          AtEnd() || !IsNameToken(Current()) ||
+          CanonicalTokenText(Current()) != column_names[1]) {
+        if (!document_.messages.has_errors()) {
+          Refuse("cube_second_key_invalid",
+                 "native CUBE profile requires the second projected grouping key");
+        }
+        return FinishRefusal();
+      }
+      Consume();
+      if (!AtSymbol(")")) {
+        Refuse("cube_close_required",
+               "native CUBE profile requires exactly two grouping keys");
+        return FinishRefusal();
+      }
+      query_end = &Consume();
     } else {
       Refuse("grouping_form_required",
-             "native aggregate profile requires GROUPING SETS or ROLLUP");
+             "native aggregate profile requires GROUPING SETS, ROLLUP, or CUBE");
       return FinishRefusal();
     }
 
