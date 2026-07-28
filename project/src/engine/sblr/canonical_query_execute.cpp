@@ -182,6 +182,7 @@ struct PreparedGroupedCountSumRoot {
 
 struct PreparedGroupedHavingRoot {
   bool ok{false};
+  bool not_sum{false};
   bool count_sum_and{false};
   bool count_sum_or{false};
   std::size_t count_column{0};
@@ -1880,6 +1881,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-CUBE-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-SUM-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1890,6 +1892,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const bool simple_sum_profile =
       filter_root.semantic_variant_id ==
       "filter.having-sum-gt-int64-literal.v1";
+  const bool not_sum_profile =
+      filter_root.semantic_variant_id ==
+      "filter.having-not-sum-gt-int64-literal.v1";
   const bool count_sum_and_profile =
       filter_root.semantic_variant_id ==
       "filter.having-count-sum-and-gt-int64-literals.v1";
@@ -1950,6 +1955,13 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
            "aggregate.cube-int64-keys-count-sum.v1" ||
        aggregate_root.semantic_variant_id ==
            "aggregate.cube-int64-keys-count-sum-grouping.v1");
+  const bool admitted_two_key_not_sum_profile =
+      not_sum_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.grouped-int64-keys-count-sum.v1" &&
+      prepared_aggregate.grouping_sets.size() == 1 &&
+      prepared_aggregate.grouping_sets.front().key_term_ordinals ==
+          std::vector<std::size_t>{0, 1};
   const bool admitted_or_profile =
       count_sum_or_profile &&
       (aggregate_root.semantic_variant_id ==
@@ -2012,7 +2024,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   if (!prepared_aggregate.ok ||
       aggregate_root.output_descriptor_ids.size() != expected_output_count ||
       aggregate_root.bound_expression_ids.size() != expected_output_count ||
-      (!simple_sum_profile && !count_sum_boolean_profile) ||
+      (!simple_sum_profile && !not_sum_profile &&
+       !count_sum_boolean_profile) ||
+      (not_sum_profile && !admitted_two_key_not_sum_profile) ||
       (count_sum_or_profile && !admitted_or_profile) ||
       (count_sum_or_profile &&
        (aggregate_root.semantic_variant_id ==
@@ -2033,7 +2047,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
             "aggregate.cube-int64-keys-count-sum-grouping.v1") &&
        !exact_cube_or_profile) ||
       (key_count == 2 && !count_sum_and_profile && !admitted_or_profile &&
-       !admitted_two_key_sum_profile) ||
+       !admitted_two_key_sum_profile &&
+       !admitted_two_key_not_sum_profile) ||
       filter_root.input_logical_node_ids !=
           std::vector<std::uint32_t>{aggregate_root.logical_node_id} ||
       filter_root.output_descriptor_ids !=
@@ -2092,6 +2107,20 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
                !expression->literal_or_parameter_ref.has_value() &&
                isolated_predicate_descriptor(expression);
       };
+  const auto exact_unary_operator =
+      [&](const api::RelationalExpressionRecord* expression,
+          const std::string_view operator_name) {
+        return expression != nullptr &&
+               expression->expression_kind ==
+                   api::RelationalExpressionKind::kUnary &&
+               expression->child_expression_ids.size() == 1 &&
+               expression->operator_name == operator_name &&
+               !expression->function_uuid.has_value() &&
+               !expression->bound_name_uuid.has_value() &&
+               !expression->literal_kind.has_value() &&
+               !expression->literal_or_parameter_ref.has_value() &&
+               isolated_predicate_descriptor(expression);
+      };
 
   std::vector<const api::RelationalOutputRecord*> aggregate_outputs;
   std::vector<const api::RelationalOutputRecord*> filter_outputs;
@@ -2135,6 +2164,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const api::RelationalExpressionRecord* sum_comparison = nullptr;
   if (simple_sum_profile && exact_binary_operator(predicate, ">")) {
     sum_comparison = predicate;
+  } else if (not_sum_profile && exact_unary_operator(predicate, "NOT")) {
+    sum_comparison = expression_by_id(predicate->child_expression_ids.front());
   } else if (count_sum_boolean_profile &&
              exact_binary_operator(
                  predicate, count_sum_or_profile ? "OR" : "AND")) {
@@ -2142,6 +2173,9 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     sum_comparison = expression_by_id(predicate->child_expression_ids[1]);
   }
   if (!exact_binary_operator(sum_comparison, ">") ||
+      (not_sum_profile &&
+       predicate->result_descriptor_id !=
+           sum_comparison->result_descriptor_id) ||
       (count_sum_boolean_profile &&
        (!exact_binary_operator(count_comparison, ">") ||
         predicate->result_descriptor_id !=
@@ -2290,6 +2324,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       return result;
     }
   }
+  result.not_sum = not_sum_profile;
   result.count_sum_and = count_sum_and_profile;
   result.count_sum_or = count_sum_or_profile;
   result.count_column = key_count;
@@ -4348,6 +4383,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       (root->semantic_variant_id ==
            "filter.having-sum-gt-int64-literal.v1" ||
        root->semantic_variant_id ==
+           "filter.having-not-sum-gt-int64-literal.v1" ||
+       root->semantic_variant_id ==
            "filter.having-count-sum-and-gt-int64-literals.v1" ||
        root->semantic_variant_id ==
            "filter.having-count-sum-or-gt-int64-literals.v1");
@@ -4533,7 +4570,10 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
              : (root->semantic_variant_id ==
                         "filter.having-count-sum-or-gt-int64-literals.v1"
                     ? "canonical.filter.having-count-sum-or-gt-int64-literals.v1"
-                    : "canonical.filter.having-sum-gt-int64-literal.v1"),
+                    : (root->semantic_variant_id ==
+                               "filter.having-not-sum-gt-int64-literal.v1"
+                           ? "canonical.filter.having-not-sum-gt-int64-literal.v1"
+                           : "canonical.filter.having-sum-gt-int64-literal.v1")),
          output_row_bound, filter_memory, 1, 1});
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
@@ -4904,7 +4944,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             }
             if (!prepared_having.count_sum_and &&
                 !prepared_having.count_sum_or) {
-              row_truth_values.push_back(sum_truth);
+              row_truth_values.push_back(
+                  prepared_having.not_sum ? api::QowSqlNotV1(sum_truth)
+                                          : sum_truth);
               continue;
             }
             api::EngineSqlTruthValue count_truth =

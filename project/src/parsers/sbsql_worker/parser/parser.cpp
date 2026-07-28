@@ -942,11 +942,30 @@ class NativeRelationalParser final {
           count_conjunct != nullptr && sum_conjunct != nullptr &&
           match_count_comparison(*count_conjunct) &&
           match_sum_comparison(*sum_conjunct);
+      const auto* not_operand =
+          predicate.expression_kind == NativeExpressionAstKind::kUnary &&
+                  predicate.operator_name == "NOT" &&
+                  predicate.child_expression_ids.size() == 1
+              ? expression_by_id(predicate.child_expression_ids.front())
+              : nullptr;
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-V1
+      const bool not_sum_profile =
+          not_operand != nullptr && match_sum_comparison(*not_operand);
       if (!simple_sum_profile && !count_sum_and_profile &&
-          !count_sum_or_profile) {
+          !count_sum_or_profile && !not_sum_profile) {
         Refuse("having_predicate_shape_invalid",
                "native HAVING profile requires SUM(value) > numeric literal "
-               "or ordered COUNT(*)/SUM(value) AND/OR comparisons");
+               "or an exact admitted Boolean wrapper");
+        return FinishRefusal();
+      }
+      const bool ordinary_two_key_not_sum_profile =
+          !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          document_.grouping_sets.empty();
+      if (one_key_grouping_profile && not_sum_profile) {
+        Refuse("having_profile_not_admitted",
+               "native NOT SUM HAVING requires exact ordinary two-key grouping");
         return FinishRefusal();
       }
       const bool ordinary_two_key_sum_profile =
@@ -1045,6 +1064,7 @@ class NativeRelationalParser final {
           projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
+          !ordinary_two_key_not_sum_profile &&
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
           !grouping_sets_metadata_or_profile &&
           !rollup_or_profile && !rollup_metadata_or_profile &&
@@ -1056,7 +1076,7 @@ class NativeRelationalParser final {
           !cube_metadata_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native multi-key HAVING profile requires an exact admitted "
-               "SUM comparison or ordered COUNT/SUM AND/ordinary OR predicate");
+               "SUM comparison or Boolean predicate");
         return FinishRefusal();
       }
     }
@@ -1247,12 +1267,21 @@ class NativeRelationalParser final {
     const auto child_id = ParseUnary(depth + 1);
     if (!child_id.has_value()) return std::nullopt;
     const auto& child = document_.expressions[*child_id - 1];
+    auto canonical_child_id = *child_id;
+    const auto child_range = child.range;
+    if (allow_count_star_expression_ && word == "NOT" &&
+        child.expression_kind == NativeExpressionAstKind::kParenthesized &&
+        child.child_expression_ids.size() == 1 &&
+        child.expression_id == document_.expressions.size()) {
+      canonical_child_id = child.child_expression_ids.front();
+      document_.expressions.pop_back();
+    }
     NativeExpressionAstNode unary;
     unary.expression_id = NextExpressionId();
     unary.expression_kind = NativeExpressionAstKind::kUnary;
-    unary.child_expression_ids = {*child_id};
+    unary.child_expression_ids = {canonical_child_id};
     unary.operator_name = word;
-    unary.range = RangeFromTokenAndRange(first, child.range);
+    unary.range = RangeFromTokenAndRange(first, child_range);
     unary.spelling = SourceForRange(unary.range);
     document_.expressions.push_back(std::move(unary));
     return document_.expressions.back().expression_id;

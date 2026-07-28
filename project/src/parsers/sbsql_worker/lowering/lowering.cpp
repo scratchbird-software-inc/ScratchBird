@@ -35030,6 +35030,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           (relation.semantic_variant_id !=
                "filter.having-sum-gt-int64-literal.v1" &&
            relation.semantic_variant_id !=
+               "filter.having-not-sum-gt-int64-literal.v1" &&
+           relation.semantic_variant_id !=
                "filter.having-count-sum-and-gt-int64-literals.v1" &&
            relation.semantic_variant_id !=
                "filter.having-count-sum-or-gt-int64-literals.v1")) {
@@ -35399,6 +35401,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const BoundExpressionAstRecord* projected_count = nullptr;
     const BoundExpressionAstRecord* projected_sum = nullptr;
     const BoundExpressionAstRecord* projected_argument = nullptr;
+    const bool simple_sum_profile =
+        filter_relation->semantic_variant_id ==
+        "filter.having-sum-gt-int64-literal.v1";
+    const bool not_sum_profile =
+        filter_relation->semantic_variant_id ==
+        "filter.having-not-sum-gt-int64-literal.v1";
     const bool count_sum_and_profile =
         filter_relation->semantic_variant_id ==
         "filter.having-count-sum-and-gt-int64-literals.v1";
@@ -35408,12 +35416,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const bool count_sum_boolean_profile =
         count_sum_and_profile || count_sum_or_profile;
     if (predicate != expressions_by_id.end()) {
-      if (!count_sum_boolean_profile &&
+      if (simple_sum_profile &&
           predicate->second->expression_kind ==
               NativeExpressionAstKind::kBinary &&
           predicate->second->canonical_operator_name == ">" &&
           predicate->second->child_expression_ids.size() == 2) {
         sum_comparison = predicate->second;
+      } else if (not_sum_profile &&
+                 predicate->second->expression_kind ==
+                     NativeExpressionAstKind::kUnary &&
+                 predicate->second->canonical_operator_name == "NOT" &&
+                 predicate->second->child_expression_ids.size() == 1) {
+        sum_comparison = expressions_by_id.at(
+            predicate->second->child_expression_ids.front());
       } else if (count_sum_boolean_profile &&
                  predicate->second->expression_kind ==
                      NativeExpressionAstKind::kBinary &&
@@ -35477,9 +35492,20 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              !descriptor->width_precision_scale.precision.has_value() &&
              !descriptor->width_precision_scale.scale.has_value();
     };
+    const bool not_sum_descriptors_are_exact =
+        !not_sum_profile ||
+        (descriptor_is(predicate == expressions_by_id.end()
+                           ? nullptr
+                           : predicate->second,
+                       BoundNullability::kNullable) &&
+         descriptor_is(sum_comparison, BoundNullability::kNullable) &&
+         descriptor_is(sum_threshold, BoundNullability::kNonNull));
     // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-SUM-GT-V1
     const bool admitted_simple_having =
-        !count_sum_or_profile &&
+        (simple_sum_profile ||
+         (count_sum_and_profile &&
+          aggregate_relation->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeyCountSum)) &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kSimple &&
         (aggregate_relation->aggregate_projection_form ==
@@ -35586,44 +35612,53 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateProjectionForm::kKeysCountSumGrouping &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-TWO-KEY-HAVING-NOT-SUM-GT-V1
+    const bool admitted_two_key_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_metadata_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kGroupingSets &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSumGrouping;
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-HAVING-SUM-GT-V1
     const bool admitted_rollup_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kRollup &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_rollup_metadata_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kRollup &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSumGrouping;
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-HAVING-SUM-GT-V1
     const bool admitted_cube_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kCube &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-SUM-GT-V1
     const bool admitted_cube_metadata_sum_having =
-        !count_sum_boolean_profile &&
+        simple_sum_profile &&
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kCube &&
         aggregate_relation->aggregate_projection_form ==
@@ -35658,6 +35693,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_rollup_metadata_or_having &&
          !admitted_cube_or_having &&
          !admitted_cube_metadata_or_having &&
+         !admitted_two_key_not_sum_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&
@@ -35701,6 +35737,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         !descriptor_is(predicate->second, BoundNullability::kNullable) ||
         !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
         !descriptor_is(sum_threshold, BoundNullability::kNonNull) ||
+        !not_sum_descriptors_are_exact ||
+        (not_sum_profile &&
+         (predicate->second->expression_kind !=
+              NativeExpressionAstKind::kUnary ||
+          predicate->second->canonical_operator_name != "NOT" ||
+          predicate->second->child_expression_ids !=
+              std::vector<std::uint32_t>{sum_comparison->expression_id} ||
+          predicate->second->result_descriptor_id !=
+              sum_comparison->result_descriptor_id)) ||
         (count_sum_boolean_profile &&
          (predicate->second->child_expression_ids !=
               std::vector<std::uint32_t>{count_comparison->expression_id,

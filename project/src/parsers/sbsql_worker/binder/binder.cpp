@@ -819,6 +819,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             predicate->child_expression_ids.size() == 2) {
           sum_comparison = predicate;
         } else if (predicate->expression_kind ==
+                       NativeExpressionAstKind::kUnary &&
+                   predicate->operator_name == "NOT" &&
+                   predicate->child_expression_ids.size() == 1) {
+          sum_comparison = ast_expression_by_id.at(
+              predicate->child_expression_ids.front());
+        } else if (predicate->expression_kind ==
                        NativeExpressionAstKind::kBinary &&
                    (predicate->operator_name == "AND" ||
                     predicate->operator_name == "OR") &&
@@ -876,6 +882,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                descriptor_by_id.at(binding->second->descriptor_id)
                        ->nullability == nullability;
       };
+      const auto descriptor_is_unqualified =
+          [&](const NativeExpressionAstNode* expression,
+              const BoundNullability nullability) {
+            const auto binding = binding_for(expression);
+            if (binding == expression_binding_by_id.end()) return false;
+            const auto descriptor =
+                descriptor_by_id.at(binding->second->descriptor_id);
+            return descriptor->nullability == nullability &&
+                   !descriptor->collation_uuid.has_value() &&
+                   !descriptor->timezone_profile_id.has_value() &&
+                   !descriptor->width_precision_scale.width.has_value() &&
+                   !descriptor->width_precision_scale.precision.has_value() &&
+                   !descriptor->width_precision_scale.scale.has_value();
+          };
       const auto predicate_binding = binding_for(predicate);
       const auto count_comparison_binding = binding_for(count_comparison);
       const auto sum_comparison_binding = binding_for(sum_comparison);
@@ -885,6 +905,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto projected_sum_binding = binding_for(projected_sum);
       const auto having_argument_binding = binding_for(having_argument);
       const auto projected_argument_binding = binding_for(projected_argument);
+      const bool simple_sum_profile =
+          predicate != nullptr && sum_comparison == predicate;
       const bool count_sum_and_profile =
           count_comparison != nullptr && predicate != nullptr &&
           predicate->operator_name == "AND";
@@ -893,8 +915,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           predicate->operator_name == "OR";
       const bool count_sum_boolean_profile =
           count_sum_and_profile || count_sum_or_profile;
+      const bool not_sum_profile =
+          predicate != nullptr && sum_comparison != nullptr &&
+          predicate->expression_kind == NativeExpressionAstKind::kUnary &&
+          predicate->operator_name == "NOT" &&
+          predicate->child_expression_ids ==
+              std::vector<std::uint32_t>{sum_comparison->expression_id};
+      const bool not_sum_descriptors_are_exact =
+          !not_sum_profile ||
+          (descriptor_is_unqualified(predicate,
+                                     BoundNullability::kNullable) &&
+           descriptor_is_unqualified(sum_comparison,
+                                     BoundNullability::kNullable) &&
+           descriptor_is_unqualified(sum_threshold,
+                                     BoundNullability::kNonNull));
       const std::string_view expected_filter_semantic =
-          count_sum_or_profile
+          not_sum_profile
+              ? "filter.having-not-sum-gt-int64-literal.v1"
+              : count_sum_or_profile
               ? "filter.having-count-sum-or-gt-int64-literals.v1"
               : (count_sum_and_profile
                      ? "filter.having-count-sum-and-gt-int64-literals.v1"
@@ -1011,9 +1049,22 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kKeysCountSumGrouping &&
           aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
           ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-SUM-GT-V1
+      const bool admitted_two_key_not_sum_having =
+          not_sum_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
       const bool admitted_simple_having =
-          !count_sum_or_profile && aggregate_relation_ast != nullptr &&
+          (simple_sum_profile ||
+           (count_sum_and_profile && aggregate_relation_ast != nullptr &&
+            aggregate_relation_ast->aggregate_projection_form ==
+                NativeAggregateProjectionForm::kKeyCountSum)) &&
+          aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kSimple &&
           (aggregate_relation_ast->aggregate_projection_form ==
@@ -1022,42 +1073,42 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                NativeAggregateProjectionForm::kKeysCountSum);
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-HAVING-SUM-GT-V1
       const bool admitted_grouping_sets_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kGroupingSets &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSum;
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
       const bool admitted_grouping_sets_metadata_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kGroupingSets &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       // QOW-SOURCE-QRY-001-BINDING-ROLLUP-HAVING-SUM-GT-V1
       const bool admitted_rollup_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kRollup &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSum;
       // QOW-SOURCE-QRY-001-BINDING-ROLLUP-GROUPING-METADATA-HAVING-SUM-GT-V1
       const bool admitted_rollup_metadata_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kRollup &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       // QOW-SOURCE-QRY-001-BINDING-CUBE-HAVING-SUM-GT-V1
       const bool admitted_cube_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kCube &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSum;
       // QOW-SOURCE-QRY-001-BINDING-CUBE-GROUPING-METADATA-HAVING-SUM-GT-V1
       const bool admitted_cube_metadata_sum_having =
-          !count_sum_boolean_profile && aggregate_relation_ast != nullptr &&
+          simple_sum_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kCube &&
           aggregate_relation_ast->aggregate_projection_form ==
@@ -1093,6 +1144,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_rollup_metadata_or_having &&
            !admitted_cube_or_having &&
            !admitted_cube_metadata_or_having &&
+           !admitted_two_key_not_sum_having &&
            !admitted_simple_having &&
            !admitted_grouping_sets_sum_having &&
            !admitted_grouping_sets_metadata_sum_having &&
@@ -1150,6 +1202,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           !descriptor_is(predicate, BoundNullability::kNullable) ||
           !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
           !descriptor_is(sum_threshold, BoundNullability::kNonNull) ||
+          !not_sum_descriptors_are_exact ||
+          (not_sum_profile &&
+           (predicate->expression_kind != NativeExpressionAstKind::kUnary ||
+            predicate->operator_name != "NOT" ||
+            predicate->child_expression_ids !=
+                std::vector<std::uint32_t>{sum_comparison->expression_id} ||
+            predicate_binding->second->descriptor_id !=
+                sum_comparison_binding->second->descriptor_id)) ||
           (count_sum_boolean_profile &&
            (predicate->operator_name !=
                 (count_sum_or_profile ? "OR" : "AND") ||
