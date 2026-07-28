@@ -1108,6 +1108,37 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kKeysCountSum &&
           aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
           ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-HAVING-NOT-COUNT-SUM-AND-GT-V1
+      const bool admitted_grouping_sets_not_count_sum_and_having =
+          not_count_sum_and_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kGroupingSets &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.size() == 4 &&
+          ast.grouping_sets[0].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[0].ordinal == 0 &&
+          ast.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1]} &&
+          ast.grouping_sets[1].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[1].ordinal == 1 &&
+          ast.grouping_sets[1].expression_ids.empty() &&
+          ast.grouping_sets[2].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[2].ordinal == 2 &&
+          ast.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1],
+                  aggregate_relation_ast->grouping_key_expression_ids[0]} &&
+          ast.grouping_sets[3].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[3].ordinal == 3 &&
+          ast.grouping_sets[3].expression_ids ==
+              ast.grouping_sets[0].expression_ids;
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
       const bool admitted_grouping_sets_not_sum_having =
@@ -1312,8 +1343,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         }
         return true;
       };
-      const auto ordinary_not_count_sum_and_outputs_are_exact = [&] {
-        if (!admitted_two_key_not_count_sum_and_having) return true;
+      const auto not_count_sum_and_outputs_are_exact = [&] {
+        if (!admitted_two_key_not_count_sum_and_having &&
+            !admitted_grouping_sets_not_count_sum_and_having) {
+          return true;
+        }
         constexpr std::array<std::string_view, 4> kOutputNames = {
             "key_a", "key_b", "row_count", "total_amount"};
         for (const auto [relation_id, first_output_id] :
@@ -1346,6 +1380,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_cube_metadata_or_having &&
            !admitted_two_key_not_sum_having &&
            !admitted_two_key_not_count_sum_and_having &&
+           !admitted_grouping_sets_not_count_sum_and_having &&
            !admitted_grouping_sets_not_sum_having &&
            !admitted_grouping_sets_metadata_not_sum_having &&
            !admitted_rollup_not_sum_having &&
@@ -1369,7 +1404,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                  return !output.visible;
                                })) ||
           !metadata_not_sum_outputs_are_exact() ||
-          !ordinary_not_count_sum_and_outputs_are_exact() ||
+          !not_count_sum_and_outputs_are_exact() ||
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{aggregate_relation_ast->relation_id} ||
