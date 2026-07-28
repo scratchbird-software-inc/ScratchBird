@@ -821,6 +821,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-SUM-GT-V1
+      // QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-SUM-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-V1
@@ -981,6 +982,13 @@ class NativeRelationalParser final {
           document_.grouping_sets[3].ordinal == 3 &&
           document_.grouping_sets[3].expression_ids ==
               document_.grouping_sets[0].expression_ids;
+      // QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-SUM-GT-V1
+      const bool rollup_not_sum_profile =
+          !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kRollup &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          key_a.has_value() && key_b.has_value() &&
+          document_.grouping_sets.empty();
       if (one_key_grouping_profile && not_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native NOT SUM HAVING requires an exact admitted two-key grouping profile");
@@ -1084,6 +1092,7 @@ class NativeRelationalParser final {
       if (!one_key_grouping_profile && !count_sum_and_profile &&
           !ordinary_two_key_not_sum_profile &&
           !grouping_sets_not_sum_profile &&
+          !rollup_not_sum_profile &&
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
           !grouping_sets_metadata_or_profile &&
           !rollup_or_profile && !rollup_metadata_or_profile &&

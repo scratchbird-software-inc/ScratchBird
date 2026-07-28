@@ -1883,6 +1883,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-NOT-SUM-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-SUM-GT-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1975,9 +1976,19 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           std::vector<std::size_t>{0, 1} &&
       prepared_aggregate.grouping_sets[3].key_term_ordinals ==
           prepared_aggregate.grouping_sets[0].key_term_ordinals;
+  const bool exact_rollup_not_sum_profile =
+      not_sum_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.rollup-int64-keys-count-sum.v1" &&
+      prepared_aggregate.grouping_sets.size() == 3 &&
+      prepared_aggregate.grouping_sets[0].key_term_ordinals ==
+          std::vector<std::size_t>{0, 1} &&
+      prepared_aggregate.grouping_sets[1].key_term_ordinals ==
+          std::vector<std::size_t>{0} &&
+      prepared_aggregate.grouping_sets[2].key_term_ordinals.empty();
   const bool admitted_not_sum_profile =
       exact_ordinary_two_key_not_sum_profile ||
-      exact_grouping_sets_not_sum_profile;
+      exact_grouping_sets_not_sum_profile || exact_rollup_not_sum_profile;
   const bool admitted_or_profile =
       count_sum_or_profile &&
       (aggregate_root.semantic_variant_id ==

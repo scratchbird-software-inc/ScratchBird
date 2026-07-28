@@ -1089,6 +1089,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           ast.grouping_sets[3].ordinal == 3 &&
           ast.grouping_sets[3].expression_ids ==
               ast.grouping_sets[0].expression_ids;
+      // QOW-SOURCE-QRY-001-BINDING-ROLLUP-HAVING-NOT-SUM-GT-V1
+      const bool admitted_rollup_not_sum_having =
+          not_sum_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kRollup &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
       const bool admitted_simple_having =
           (simple_sum_profile ||
@@ -1177,6 +1186,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_cube_metadata_or_having &&
            !admitted_two_key_not_sum_having &&
            !admitted_grouping_sets_not_sum_having &&
+           !admitted_rollup_not_sum_having &&
            !admitted_simple_having &&
            !admitted_grouping_sets_sum_having &&
            !admitted_grouping_sets_metadata_sum_having &&
