@@ -10,14 +10,33 @@
 
 #include "query/plan_api.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace scratchbird::engine::sblr {
+
+// QOW-SOURCE-QRY-017-HAVING-ROW-BINDING-V1
+// A materialized row slot is an engine-owned execution binding. It names the
+// exact materialized function expression whose already-computed value occupies
+// one descriptor-exact physical row ordinal. It does not authorize evaluating
+// an identifier or a function that was not explicitly prepared by its
+// relational operator as an aggregate-result slot.
+struct CanonicalRelationalExpressionRowSlotBinding {
+  std::uint32_t expression_id{0};
+  std::uint32_t descriptor_id{0};
+  std::size_t row_ordinal{0};
+};
+
+struct CanonicalRelationalExpressionRowBinding {
+  std::vector<std::uint32_t> row_descriptor_ids;
+  std::vector<CanonicalRelationalExpressionRowSlotBinding> slots;
+};
 
 // Object-free first consumer of the canonical relational expression graph.
 // Catalog names, parameters, functions, collations, and temporal profiles are
@@ -45,7 +64,30 @@ class CanonicalRelationalExpressionRuntime {
       internal_api::EngineSqlTruthValue* truth,
       std::string* refusal_detail);
 
+  // Evaluates one canonical predicate against a materialized engine row.
+  // Only explicitly bound materialized function leaves may consume row values;
+  // the surrounding literal/operator graph still uses the ordinary canonical
+  // inference, typed comparison, and SQL three-valued runtime.
+  bool EvaluatePredicate(
+      std::uint32_t expression_id,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* refusal_detail);
+
  private:
+  struct ActiveRowBinding {
+    std::unordered_map<std::uint32_t,
+                       const internal_api::EngineTypedValue*>
+        values_by_expression;
+  };
+
+  bool PrepareRowBinding(
+      std::uint32_t root_expression_id,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      const std::vector<internal_api::EngineTypedValue>& row_values,
+      ActiveRowBinding* prepared,
+      std::string* refusal_detail) const;
   bool InferTypeInternal(std::uint32_t expression_id,
                          std::optional<std::string_view> expected_type,
                          std::string* canonical_type_name,
@@ -75,6 +117,7 @@ class CanonicalRelationalExpressionRuntime {
       expressions_;
   std::unordered_map<std::uint32_t, std::string> descriptor_type_names_;
   std::unordered_set<std::uint32_t> inference_stack_;
+  const ActiveRowBinding* active_row_binding_{nullptr};
 };
 
 }  // namespace scratchbird::engine::sblr

@@ -123,6 +123,14 @@ bool IsAdmittedComparisonType(const std::string_view type_name) {
   return type_name == "int64" || type_name == "boolean";
 }
 
+bool SameDescriptor(const api::EngineDescriptor& left,
+                    const api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
 }  // namespace
 
 CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
@@ -133,6 +141,186 @@ CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
   for (const auto& expression : dag.expressions) {
     expressions_.emplace(expression.expression_id, &expression);
   }
+}
+
+bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
+    const std::uint32_t root_expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<api::EngineTypedValue>& row_values,
+    ActiveRowBinding* prepared,
+    std::string* refusal_detail) const {
+  if (prepared == nullptr || refusal_detail == nullptr) return false;
+  prepared->values_by_expression.clear();
+  if (!expressions_.contains(root_expression_id)) {
+    *refusal_detail =
+        "materialized row predicate root is absent from the bound graph";
+    return false;
+  }
+  if (row_binding.row_descriptor_ids.empty() ||
+      row_binding.row_descriptor_ids.size() != row_values.size()) {
+    *refusal_detail =
+        "materialized row width differs from its bound descriptor width";
+    return false;
+  }
+
+  std::unordered_set<std::uint32_t> row_descriptor_ids;
+  for (std::size_t ordinal = 0;
+       ordinal < row_binding.row_descriptor_ids.size(); ++ordinal) {
+    const auto descriptor_id = row_binding.row_descriptor_ids[ordinal];
+    const auto descriptor = descriptors_.find(descriptor_id);
+    if (descriptor_id == 0 || descriptor == descriptors_.end() ||
+        !row_descriptor_ids.insert(descriptor_id).second ||
+        descriptor->second->nullability == api::RelationalNullability::kUnknown) {
+      *refusal_detail =
+          "materialized row descriptor identity is unresolved or ambiguous";
+      return false;
+    }
+
+    const auto& value = row_values[ordinal];
+    if (value.descriptor.canonical_type_name.empty()) {
+      *refusal_detail = "materialized row value type is unresolved";
+      return false;
+    }
+    api::EngineDescriptor expected_descriptor;
+    std::string descriptor_detail;
+    if (!BuildDescriptor(descriptor_id,
+                         value.descriptor.canonical_type_name,
+                         &expected_descriptor, &descriptor_detail) ||
+        !SameDescriptor(expected_descriptor, value.descriptor)) {
+      *refusal_detail =
+          "materialized row value lost its full canonical descriptor identity";
+      return false;
+    }
+    if (value.state == api::EngineValueState::sql_null) {
+      if (!value.is_null || !value.encoded_value.empty() ||
+          !value.binary_value.empty() ||
+          descriptor->second->nullability !=
+              api::RelationalNullability::kNullable) {
+        *refusal_detail =
+            "materialized row SQL NULL is malformed or non-nullable";
+        return false;
+      }
+    } else if (value.state != api::EngineValueState::value || value.is_null) {
+      *refusal_detail =
+          "materialized row contains a non-value runtime sentinel";
+      return false;
+    }
+  }
+
+  std::unordered_set<std::size_t> bound_ordinals;
+  std::unordered_set<std::uint32_t> bound_expression_ids;
+  for (const auto& slot : row_binding.slots) {
+    if (!bound_expression_ids.insert(slot.expression_id).second) {
+      prepared->values_by_expression.clear();
+      *refusal_detail = "materialized row slot expression is duplicated";
+      return false;
+    }
+    if (!bound_ordinals.insert(slot.row_ordinal).second) {
+      prepared->values_by_expression.clear();
+      *refusal_detail = "materialized row slot ordinal is duplicated";
+      return false;
+    }
+    const auto expression = expressions_.find(slot.expression_id);
+    if (slot.expression_id == 0 || expression == expressions_.end() ||
+        slot.descriptor_id == 0 ||
+        expression->second->result_descriptor_id != slot.descriptor_id ||
+        slot.row_ordinal >= row_values.size() ||
+        row_binding.row_descriptor_ids[slot.row_ordinal] !=
+            slot.descriptor_id) {
+      prepared->values_by_expression.clear();
+      *refusal_detail =
+          "materialized row slot identity, descriptor, or ordinal is invalid";
+      return false;
+    }
+    const auto& bound_expression = *expression->second;
+    const bool exact_materialized_function =
+        bound_expression.expression_kind ==
+            api::RelationalExpressionKind::kFunctionCall &&
+        bound_expression.function_uuid.has_value() &&
+        IsCanonicalUuid(*bound_expression.function_uuid) &&
+        !bound_expression.bound_name_uuid.has_value() &&
+        !bound_expression.literal_kind.has_value() &&
+        !bound_expression.operator_name.has_value() &&
+        !bound_expression.literal_or_parameter_ref.has_value();
+    if (!exact_materialized_function) {
+      prepared->values_by_expression.clear();
+      *refusal_detail =
+          "materialized row slot target is not an exact materialized function";
+      return false;
+    }
+    prepared->values_by_expression.emplace(slot.expression_id,
+                                           &row_values[slot.row_ordinal]);
+  }
+
+  std::unordered_set<std::uint32_t> reachable;
+  std::vector<std::uint32_t> pending{root_expression_id};
+  while (!pending.empty()) {
+    const auto expression_id = pending.back();
+    pending.pop_back();
+    if (!reachable.insert(expression_id).second) continue;
+    const auto expression = expressions_.find(expression_id);
+    if (expression == expressions_.end()) {
+      prepared->values_by_expression.clear();
+      *refusal_detail =
+          "materialized row predicate has a dangling expression child";
+      return false;
+    }
+    if (prepared->values_by_expression.contains(expression_id)) continue;
+    const auto& record = *expression->second;
+    const bool has_function = record.function_uuid.has_value();
+    const bool has_name = record.bound_name_uuid.has_value();
+    const bool has_literal = record.literal_kind.has_value();
+    const bool has_operator = record.operator_name.has_value();
+    const bool has_payload = record.literal_or_parameter_ref.has_value();
+    bool exact_shape = false;
+    switch (record.expression_kind) {
+      case api::RelationalExpressionKind::kLiteral:
+        exact_shape = record.child_expression_ids.empty() && has_literal &&
+                      has_payload && !has_function && !has_name &&
+                      !has_operator;
+        break;
+      case api::RelationalExpressionKind::kParenthesized:
+        exact_shape = record.child_expression_ids.size() == 1 &&
+                      !has_function && !has_name && !has_literal &&
+                      !has_operator && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kUnary:
+        exact_shape = record.child_expression_ids.size() == 1 &&
+                      has_operator && !has_function && !has_name &&
+                      !has_literal && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kBinary:
+        exact_shape = record.child_expression_ids.size() == 2 &&
+                      has_operator && !has_function && !has_name &&
+                      !has_literal && !has_payload;
+        break;
+      case api::RelationalExpressionKind::kParameter:
+      case api::RelationalExpressionKind::kIdentifier:
+      case api::RelationalExpressionKind::kFunctionCall:
+        exact_shape = false;
+        break;
+    }
+    if (!exact_shape) {
+      prepared->values_by_expression.clear();
+      *refusal_detail =
+          "reachable predicate expression is malformed or lacks a prepared slot";
+      return false;
+    }
+    pending.insert(pending.end(),
+                   record.child_expression_ids.begin(),
+                   record.child_expression_ids.end());
+  }
+  for (const auto& [expression_id, ignored] :
+       prepared->values_by_expression) {
+    (void)ignored;
+    if (!reachable.contains(expression_id)) {
+      prepared->values_by_expression.clear();
+      *refusal_detail =
+          "materialized row slot is outside the predicate graph";
+      return false;
+    }
+  }
+  return true;
 }
 
 bool CanonicalRelationalExpressionRuntime::BindDescriptorType(
@@ -202,6 +390,16 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
     *canonical_type_name = std::move(type_name);
     return leave(true);
   };
+
+  if (active_row_binding_ != nullptr) {
+    const auto materialized =
+        active_row_binding_->values_by_expression.find(expression_id);
+    if (materialized !=
+        active_row_binding_->values_by_expression.end()) {
+      return finish_type(
+          materialized->second->descriptor.canonical_type_name);
+    }
+  }
 
   switch (expression.expression_kind) {
     case api::RelationalExpressionKind::kLiteral: {
@@ -512,6 +710,30 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
   return TruthFromValue(value, truth, refusal_detail);
 }
 
+bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
+    const std::uint32_t expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<api::EngineTypedValue>& row_values,
+    api::EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
+  if (truth == nullptr || refusal_detail == nullptr) return false;
+  if (active_row_binding_ != nullptr) {
+    *refusal_detail = "nested materialized row evaluation is not admitted";
+    return false;
+  }
+  ActiveRowBinding prepared;
+  refusal_detail->clear();
+  if (!PrepareRowBinding(expression_id, row_binding, row_values, &prepared,
+                         refusal_detail)) {
+    return false;
+  }
+  active_row_binding_ = &prepared;
+  const bool evaluated = EvaluatePredicate(expression_id, truth,
+                                           refusal_detail);
+  active_row_binding_ = nullptr;
+  return evaluated;
+}
+
 bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     const std::uint32_t expression_id,
     const std::string_view expected_type,
@@ -533,6 +755,15 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     return FinishValue(expression.result_descriptor_id, std::move(computed),
                        value, refusal_detail);
   };
+
+  if (active_row_binding_ != nullptr) {
+    const auto materialized =
+        active_row_binding_->values_by_expression.find(expression_id);
+    if (materialized !=
+        active_row_binding_->values_by_expression.end()) {
+      return finish(*materialized->second);
+    }
+  }
 
   if (expression.expression_kind == api::RelationalExpressionKind::kLiteral) {
     api::EngineTypedValue literal;

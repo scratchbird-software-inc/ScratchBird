@@ -642,6 +642,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-017;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-017-HAVING-ROW-BINDING-V1
+  add_executable(qow_qry_017_having_row_binding_test_v1
+    qow_qry_017_having_row_binding.cpp)
+  target_compile_features(qow_qry_017_having_row_binding_test_v1 PRIVATE
+    cxx_std_20)
+  target_link_libraries(qow_qry_017_having_row_binding_test_v1 PRIVATE
+    sb_qow_sblr_query_route_contract)
+  add_test(NAME qow_qry_017_having_row_binding_v1
+    COMMAND qow_qry_017_having_row_binding_test_v1)
+  set_tests_properties(qow_qry_017_having_row_binding_v1 PROPERTIES
+    LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-017;development_candidate"
+  )
+
   # QOW-CMAKE-IAS-014-V1
   add_executable(qow_ias_014_test_v1 qow_ias_014.cpp)
   target_compile_features(qow_ias_014_test_v1 PRIVATE cxx_std_20)

@@ -182,15 +182,9 @@ struct PreparedGroupedCountSumRoot {
 
 struct PreparedGroupedHavingRoot {
   bool ok{false};
-  bool not_sum{false};
-  bool not_count_sum_and{false};
-  bool count_sum_and{false};
-  bool count_sum_or{false};
-  std::size_t count_column{0};
-  std::size_t sum_column{0};
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding row_binding;
   std::size_t output_column_count{0};
-  api::EngineTypedValue count_threshold;
-  api::EngineTypedValue sum_threshold;
   std::string detail;
 };
 
@@ -2478,8 +2472,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
 
   const auto prepare_threshold =
       [&](const api::RelationalExpressionRecord* threshold,
-          api::EngineTypedValue* value, const std::string_view label) {
-        if (threshold == nullptr || value == nullptr) return false;
+          const std::string_view label) {
+        if (threshold == nullptr) return false;
         const auto* descriptor =
             descriptor_by_id(threshold->result_descriptor_id);
         if (threshold->expression_kind !=
@@ -2506,10 +2500,11 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           return false;
         }
         CanonicalRelationalExpressionRuntime expression_runtime(dag);
+        api::EngineTypedValue value;
         if (!expression_runtime.Evaluate(threshold->expression_id, "int64",
-                                         value, &result.detail) ||
-            value->state != api::EngineValueState::value || value->is_null ||
-            value->descriptor.canonical_type_name != "int64") {
+                                         &value, &result.detail) ||
+            value.state != api::EngineValueState::value || value.is_null ||
+            value.descriptor.canonical_type_name != "int64") {
           if (result.detail.empty()) {
             result.detail = std::string("HAVING ") + std::string(label) +
                             " threshold is outside canonical int64";
@@ -2518,22 +2513,23 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
         }
         std::int64_t exact = 0;
         const auto [end, error] = std::from_chars(
-            value->encoded_value.data(),
-            value->encoded_value.data() + value->encoded_value.size(), exact);
+            value.encoded_value.data(),
+            value.encoded_value.data() + value.encoded_value.size(), exact);
         if (error != std::errc{} ||
-            end != value->encoded_value.data() + value->encoded_value.size()) {
+            end != value.encoded_value.data() + value.encoded_value.size()) {
           result.detail = std::string("HAVING ") + std::string(label) +
                           " threshold is outside exact int64 admission";
           return false;
         }
         return true;
       };
-  if (!prepare_threshold(sum_threshold, &result.sum_threshold, "SUM")) {
+  if (!prepare_threshold(sum_threshold, "SUM")) {
     return result;
   }
 
+  const api::RelationalExpressionRecord* having_count = nullptr;
   if (count_sum_boolean_profile) {
-    const auto* having_count =
+    having_count =
         expression_by_id(count_comparison->child_expression_ids[0]);
     const auto* count_threshold =
         expression_by_id(count_comparison->child_expression_ids[1]);
@@ -2561,17 +2557,21 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           "HAVING COUNT identity does not match the projected aggregate state";
       return result;
     }
-    if (!prepare_threshold(count_threshold, &result.count_threshold,
-                           "COUNT")) {
+    if (!prepare_threshold(count_threshold, "COUNT")) {
       return result;
     }
   }
-  result.not_sum = not_sum_profile;
-  result.not_count_sum_and = not_count_sum_and_profile;
-  result.count_sum_and = count_sum_and_profile;
-  result.count_sum_or = count_sum_or_profile;
-  result.count_column = key_count;
-  result.sum_column = key_count + 1;
+  result.predicate_expression_id = predicate->expression_id;
+  result.row_binding.row_descriptor_ids =
+      filter_root.output_descriptor_ids;
+  result.row_binding.slots.push_back(
+      {having_sum->expression_id, having_sum->result_descriptor_id,
+       key_count + 1});
+  if (having_count != nullptr) {
+    result.row_binding.slots.push_back(
+        {having_count->expression_id, having_count->result_descriptor_id,
+         key_count});
+  }
   result.output_column_count = expected_output_count;
   result.ok = true;
   return result;
@@ -5110,7 +5110,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
     having_registration.engine_owned = true;
     having_registration.accepts_optimizer_publication_v2 = true;
     having_registration.execute =
-        [prepared_having, maximum_output_rows](
+        [prepared_having, maximum_output_rows,
+         relational_dag = request.relational_dag](
             const exec::TypedPhysicalNodeDag& dag,
             const exec::PhysicalNodeRecord& node,
             const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -5130,17 +5131,13 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
           const auto& input_batch = *inputs.front().materialized_output_batch;
-          const auto count_column = prepared_having.count_column;
-          const auto sum_column = prepared_having.sum_column;
           if (input_batch.rows.size() > maximum_output_rows ||
               input_batch.columns.size() !=
                   prepared_having.output_column_count ||
               node.output_descriptor_ids.size() !=
                   prepared_having.output_column_count ||
-              input_batch.columns[count_column]
-                      .descriptor.canonical_type_name != "int64" ||
-              input_batch.columns[sum_column].descriptor.canonical_type_name !=
-                  "int64") {
+              node.output_descriptor_ids !=
+                  prepared_having.row_binding.row_descriptor_ids) {
             step.diagnostic.ok = false;
             step.diagnostic.diagnostic_code =
                 "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
@@ -5149,75 +5146,35 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             return step;
           }
 
-          const auto evaluate_greater_than =
-              [](const api::EngineTypedValue& left,
-                 const api::EngineTypedValue& right,
-                 api::EngineSqlTruthValue* truth, std::string* detail) {
-                if (truth == nullptr || detail == nullptr) return false;
-                int comparison = 0;
-                if (!left.isSqlNull() && !right.isSqlNull() &&
-                    !api::QowCompareCanonicalNonCollatedScalarsV1(
-                        left, right, &comparison, detail)) {
-                  return false;
-                }
-                return api::QowEvaluateCanonicalComparisonTruthV1(
-                    left, right, comparison,
-                    api::EngineComparisonPredicateOperator::greater_than,
-                    truth, detail);
-              };
+          const auto input_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  input_batch,
+                  prepared_having.row_binding.row_descriptor_ids);
+          if (!input_validation.ok) {
+            step.diagnostic = input_validation;
+            return step;
+          }
+
+          CanonicalRelationalExpressionRuntime expression_runtime(
+              relational_dag);
           std::vector<api::EngineSqlTruthValue> row_truth_values;
           row_truth_values.reserve(input_batch.rows.size());
           for (const auto& row : input_batch.rows) {
-            if (row.values.size() != input_batch.columns.size()) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-              step.diagnostic.detail =
-                  "HAVING grouped row width is not descriptor exact";
-              return step;
-            }
-            const auto& count = row.values[count_column];
-            const auto& sum = row.values[sum_column];
-            api::EngineSqlTruthValue sum_truth =
+            api::EngineSqlTruthValue predicate_truth =
                 api::EngineSqlTruthValue::unknown;
             std::string predicate_detail;
-            if (!evaluate_greater_than(sum, prepared_having.sum_threshold,
-                                       &sum_truth, &predicate_detail)) {
+            if (!expression_runtime.EvaluatePredicate(
+                    prepared_having.predicate_expression_id,
+                    prepared_having.row_binding, row.values,
+                    &predicate_truth, &predicate_detail)) {
               step.diagnostic.ok = false;
               step.diagnostic.diagnostic_code =
                   "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
               step.diagnostic.detail =
-                  "HAVING SUM comparison refused: " + predicate_detail;
+                  "HAVING canonical predicate refused: " + predicate_detail;
               return step;
             }
-            if (!prepared_having.not_count_sum_and &&
-                !prepared_having.count_sum_and &&
-                !prepared_having.count_sum_or) {
-              row_truth_values.push_back(
-                  prepared_having.not_sum ? api::QowSqlNotV1(sum_truth)
-                                          : sum_truth);
-              continue;
-            }
-            api::EngineSqlTruthValue count_truth =
-                api::EngineSqlTruthValue::unknown;
-            if (!evaluate_greater_than(count,
-                                       prepared_having.count_threshold,
-                                       &count_truth, &predicate_detail)) {
-              step.diagnostic.ok = false;
-              step.diagnostic.diagnostic_code =
-                  "QOW-DIAG-RELATIONAL-LIVE-GROUPED-HAVING-INPUT-V1";
-              step.diagnostic.detail =
-                  "HAVING COUNT comparison refused: " + predicate_detail;
-              return step;
-            }
-            const auto boolean_truth =
-                prepared_having.count_sum_or
-                    ? api::QowSqlOrV1(count_truth, sum_truth)
-                    : api::QowSqlAndV1(count_truth, sum_truth);
-            row_truth_values.push_back(
-                prepared_having.not_count_sum_and
-                    ? api::QowSqlNotV1(boolean_truth)
-                    : boolean_truth);
+            row_truth_values.push_back(predicate_truth);
           }
 
           exec::CanonicalDescriptorFilterRequest filter_request;
