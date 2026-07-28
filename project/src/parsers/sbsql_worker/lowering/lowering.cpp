@@ -35493,6 +35493,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateGroupingForm::kCube &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeysCountSum;
+    // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-SUM-GT-V1
+    const bool admitted_cube_metadata_sum_having =
+        !count_sum_and_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kCube &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSumGrouping;
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-GROUPING-METADATA-HAVING-V1
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-V1
@@ -35521,6 +35528,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_rollup_sum_having &&
          !admitted_rollup_metadata_sum_having &&
          !admitted_cube_sum_having &&
+         !admitted_cube_metadata_sum_having &&
          !admitted_multi_key_boolean_having) ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
