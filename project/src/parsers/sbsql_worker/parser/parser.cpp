@@ -826,6 +826,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-SUM-GT-V1
       // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-CUBE-HAVING-SUM-GT-V1
+      // QOW-SOURCE-QRY-001-CUBE-HAVING-NOT-SUM-GT-V1
       // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-V1
       // QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-SUM-GT-V1
       const bool ordinary_count_sum_profile =
@@ -989,6 +990,13 @@ class NativeRelationalParser final {
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           key_a.has_value() && key_b.has_value() &&
           document_.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-CUBE-HAVING-NOT-SUM-GT-V1
+      const bool cube_not_sum_profile =
+          !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kCube &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          key_a.has_value() && key_b.has_value() &&
+          document_.grouping_sets.empty();
       if (one_key_grouping_profile && not_sum_profile) {
         Refuse("having_profile_not_admitted",
                "native NOT SUM HAVING requires an exact admitted two-key grouping profile");
@@ -1093,6 +1101,7 @@ class NativeRelationalParser final {
           !ordinary_two_key_not_sum_profile &&
           !grouping_sets_not_sum_profile &&
           !rollup_not_sum_profile &&
+          !cube_not_sum_profile &&
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
           !grouping_sets_metadata_or_profile &&
           !rollup_or_profile && !rollup_metadata_or_profile &&

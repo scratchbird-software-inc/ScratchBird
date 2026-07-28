@@ -1098,6 +1098,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kKeysCountSum &&
           aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
           ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-CUBE-HAVING-NOT-SUM-GT-V1
+      const bool admitted_cube_not_sum_having =
+          not_sum_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kCube &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-SUM-GT-V1
       const bool admitted_simple_having =
           (simple_sum_profile ||
@@ -1187,6 +1196,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_two_key_not_sum_having &&
            !admitted_grouping_sets_not_sum_having &&
            !admitted_rollup_not_sum_having &&
+           !admitted_cube_not_sum_having &&
            !admitted_simple_having &&
            !admitted_grouping_sets_sum_having &&
            !admitted_grouping_sets_metadata_sum_having &&
@@ -1195,6 +1205,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_cube_sum_having &&
            !admitted_cube_metadata_sum_having &&
            !admitted_multi_key_boolean_having) ||
+          (admitted_cube_not_sum_having &&
+           std::ranges::any_of(context.outputs,
+                               [](const auto& output) {
+                                 return !output.visible;
+                               })) ||
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{aggregate_relation_ast->relation_id} ||

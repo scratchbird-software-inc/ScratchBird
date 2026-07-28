@@ -35659,6 +35659,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateProjectionForm::kKeysCountSum &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-CUBE-HAVING-NOT-SUM-GT-V1
+    const bool admitted_cube_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kCube &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
         simple_sum_profile &&
@@ -35734,6 +35743,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_two_key_not_sum_having &&
          !admitted_grouping_sets_not_sum_having &&
          !admitted_rollup_not_sum_having &&
+         !admitted_cube_not_sum_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&
@@ -35742,6 +35752,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_sum_having &&
          !admitted_cube_metadata_sum_having &&
          !admitted_multi_key_boolean_having) ||
+        (admitted_cube_not_sum_having &&
+         std::ranges::any_of(native.outputs,
+                             [](const auto& output) {
+                               return !output.visible;
+                             })) ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=
