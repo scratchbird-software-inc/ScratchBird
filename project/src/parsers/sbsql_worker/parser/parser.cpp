@@ -811,6 +811,7 @@ class NativeRelationalParser final {
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-COUNT-SUM-AND-GT-V1
       // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-V1
+      // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-V1
       const bool ordinary_count_sum_profile =
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           (projection_form == NativeAggregateProjectionForm::kKeyCountSum ||
@@ -821,10 +822,14 @@ class NativeRelationalParser final {
       const bool rollup_count_sum_profile =
           grouping_form == NativeAggregateGroupingForm::kRollup &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum;
+      const bool cube_count_sum_profile =
+          grouping_form == NativeAggregateGroupingForm::kCube &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum;
       if (!ordinary_count_sum_profile &&
-          !grouping_sets_count_sum_profile && !rollup_count_sum_profile) {
+          !grouping_sets_count_sum_profile && !rollup_count_sum_profile &&
+          !cube_count_sum_profile) {
         Refuse("having_profile_not_admitted",
-               "native HAVING profile requires admitted ordinary, GROUPING SETS, or ROLLUP grouping");
+               "native HAVING profile requires an admitted grouping form");
         return FinishRefusal();
       }
       Consume();

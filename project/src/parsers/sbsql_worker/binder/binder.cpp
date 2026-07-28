@@ -879,7 +879,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            aggregate_relation_ast->aggregate_grouping_form ==
                NativeAggregateGroupingForm::kGroupingSets ||
            aggregate_relation_ast->aggregate_grouping_form ==
-               NativeAggregateGroupingForm::kRollup) &&
+               NativeAggregateGroupingForm::kRollup ||
+           aggregate_relation_ast->aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kCube) &&
           aggregate_relation_ast->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSum;
       if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
