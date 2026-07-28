@@ -35690,6 +35690,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateProjectionForm::kKeysCountSum &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
+    const bool admitted_rollup_metadata_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kRollup &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-CUBE-HAVING-NOT-SUM-GT-V1
     const bool admitted_cube_not_sum_having =
         not_sum_profile &&
@@ -35764,8 +35773,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeAggregateGroupingForm::kCube) &&
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
-    const auto grouping_sets_metadata_not_sum_outputs_are_exact = [&] {
-      if (!admitted_grouping_sets_metadata_not_sum_having) return true;
+    const auto metadata_not_sum_outputs_are_exact = [&] {
+      if (!admitted_grouping_sets_metadata_not_sum_having &&
+          !admitted_rollup_metadata_not_sum_having) {
+        return true;
+      }
       constexpr std::array<std::string_view, 7> kOutputNames = {
           "key_a",      "key_b",     "row_count", "total_amount",
           "grouping_a", "grouping_b", "grouping_id"};
@@ -35799,6 +35811,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_grouping_sets_not_sum_having &&
          !admitted_grouping_sets_metadata_not_sum_having &&
          !admitted_rollup_not_sum_having &&
+         !admitted_rollup_metadata_not_sum_having &&
          !admitted_cube_not_sum_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
@@ -35809,12 +35822,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_cube_metadata_sum_having &&
          !admitted_multi_key_boolean_having) ||
         ((admitted_grouping_sets_metadata_not_sum_having ||
+          admitted_rollup_metadata_not_sum_having ||
           admitted_cube_not_sum_having) &&
          std::ranges::any_of(native.outputs,
                              [](const auto& output) {
                                return !output.visible;
                              })) ||
-        !grouping_sets_metadata_not_sum_outputs_are_exact() ||
+        !metadata_not_sum_outputs_are_exact() ||
         predicate == expressions_by_id.end() || having_sum == nullptr ||
         sum_comparison == nullptr || sum_threshold == nullptr ||
         sum_comparison->expression_kind !=
