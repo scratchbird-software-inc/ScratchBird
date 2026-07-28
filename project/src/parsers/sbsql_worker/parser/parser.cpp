@@ -1013,6 +1013,13 @@ class NativeRelationalParser final {
           document_.grouping_sets[3].ordinal == 3 &&
           document_.grouping_sets[3].expression_ids ==
               document_.grouping_sets[0].expression_ids;
+      // QOW-SOURCE-QRY-001-ROLLUP-HAVING-NOT-COUNT-SUM-AND-GT-V1
+      const bool rollup_not_count_sum_and_profile =
+          !one_key_grouping_profile && not_count_sum_and_profile &&
+          grouping_form == NativeAggregateGroupingForm::kRollup &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          key_a.has_value() && key_b.has_value() &&
+          document_.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
       // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
       const bool grouping_sets_not_sum_profile =
@@ -1185,6 +1192,7 @@ class NativeRelationalParser final {
           !ordinary_two_key_not_sum_profile &&
           !ordinary_two_key_not_count_sum_and_profile &&
           !grouping_sets_not_count_sum_and_profile &&
+          !rollup_not_count_sum_and_profile &&
           !grouping_sets_not_sum_profile &&
           !grouping_sets_metadata_not_sum_profile &&
           !rollup_not_sum_profile &&
