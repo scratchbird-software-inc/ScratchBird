@@ -1197,6 +1197,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kKeysCountSum &&
           aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
           ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-CUBE-GROUPING-METADATA-HAVING-NOT-COUNT-SUM-AND-GT-V1
+      const bool admitted_cube_metadata_not_count_sum_and_having =
+          not_count_sum_and_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kCube &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-HAVING-NOT-SUM-GT-V1
       // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
       const bool admitted_grouping_sets_not_sum_having =
@@ -1376,6 +1385,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto metadata_not_sum_outputs_are_exact = [&] {
         if (!admitted_grouping_sets_metadata_not_count_sum_and_having &&
             !admitted_rollup_metadata_not_count_sum_and_having &&
+            !admitted_cube_metadata_not_count_sum_and_having &&
             !admitted_grouping_sets_metadata_not_sum_having &&
             !admitted_rollup_metadata_not_sum_having &&
             !admitted_cube_metadata_not_sum_having) {
@@ -1447,6 +1457,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_rollup_not_count_sum_and_having &&
            !admitted_rollup_metadata_not_count_sum_and_having &&
            !admitted_cube_not_count_sum_and_having &&
+           !admitted_cube_metadata_not_count_sum_and_having &&
            !admitted_grouping_sets_not_sum_having &&
            !admitted_grouping_sets_metadata_not_sum_having &&
            !admitted_rollup_not_sum_having &&
@@ -1463,6 +1474,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_multi_key_boolean_having) ||
           ((admitted_grouping_sets_metadata_not_count_sum_and_having ||
             admitted_rollup_metadata_not_count_sum_and_having ||
+            admitted_cube_metadata_not_count_sum_and_having ||
             admitted_grouping_sets_metadata_not_sum_having ||
             admitted_rollup_metadata_not_sum_having ||
             admitted_cube_not_sum_having ||
