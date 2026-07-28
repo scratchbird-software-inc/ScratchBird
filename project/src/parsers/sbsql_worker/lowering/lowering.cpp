@@ -35708,6 +35708,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             NativeAggregateProjectionForm::kKeysCountSum &&
         aggregate_relation->grouping_key_expression_ids.size() == 2 &&
         native.grouping_sets.empty();
+    // QOW-SOURCE-QRY-001-LOWERING-CUBE-GROUPING-METADATA-HAVING-NOT-SUM-GT-V1
+    const bool admitted_cube_metadata_not_sum_having =
+        not_sum_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kCube &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
         simple_sum_profile &&
@@ -35775,7 +35784,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
     const auto metadata_not_sum_outputs_are_exact = [&] {
       if (!admitted_grouping_sets_metadata_not_sum_having &&
-          !admitted_rollup_metadata_not_sum_having) {
+          !admitted_rollup_metadata_not_sum_having &&
+          !admitted_cube_metadata_not_sum_having) {
         return true;
       }
       constexpr std::array<std::string_view, 7> kOutputNames = {
@@ -35813,6 +35823,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_rollup_not_sum_having &&
          !admitted_rollup_metadata_not_sum_having &&
          !admitted_cube_not_sum_having &&
+         !admitted_cube_metadata_not_sum_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&
@@ -35823,7 +35834,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          !admitted_multi_key_boolean_having) ||
         ((admitted_grouping_sets_metadata_not_sum_having ||
           admitted_rollup_metadata_not_sum_having ||
-          admitted_cube_not_sum_having) &&
+          admitted_cube_not_sum_having ||
+          admitted_cube_metadata_not_sum_having) &&
          std::ranges::any_of(native.outputs,
                              [](const auto& output) {
                                return !output.visible;
