@@ -1866,6 +1866,7 @@ PreparedGroupedCountSumRoot PrepareGroupedCountSumRoot(
 // QOW-SOURCE-QRY-001-ROLLUP-HAVING-COUNT-SUM-AND-GT-LIVE-V1
 // QOW-SOURCE-QRY-001-ROLLUP-GROUPING-METADATA-HAVING-LIVE-V1
 // QOW-SOURCE-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-LIVE-V1
+// QOW-SOURCE-QRY-001-CUBE-GROUPING-METADATA-HAVING-LIVE-V1
 PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& filter_root,
@@ -1904,6 +1905,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   } else if (aggregate_root.semantic_variant_id ==
              "aggregate.cube-int64-keys-count-sum.v1") {
     key_count = 2;
+  } else if (aggregate_root.semantic_variant_id ==
+             "aggregate.cube-int64-keys-count-sum-grouping.v1") {
+    key_count = 2;
+    grouping_projection_count = key_count + 1;
   } else {
     result.detail =
         "HAVING aggregate is not an admitted grouped COUNT/SUM profile";

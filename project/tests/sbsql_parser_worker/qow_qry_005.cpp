@@ -2809,14 +2809,6 @@ bool ValidateCubeBooleanHavingParserBindingLoweringAndDispatch() {
       "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
       "GROUP BY CUBE(key_a,key_b) HAVING SUM(amount) > 4;");
   const auto sum_only_ast = sbsql::BuildAst(sum_only_cst);
-  const auto metadata_cst = sbsql::BuildCst(
-      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
-      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
-      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
-      "GROUP BY CUBE(key_a,key_b) "
-      "HAVING COUNT(*) > 1 AND SUM(amount) > 4;");
-  const auto metadata_ast = sbsql::BuildAst(metadata_cst);
-
   auto filter_semantic_drift_context = context;
   filter_semantic_drift_context.relations.back().semantic_variant_id =
       "filter.having-sum-gt-int64-literal.v1";
@@ -2841,10 +2833,6 @@ bool ValidateCubeBooleanHavingParserBindingLoweringAndDispatch() {
           !sum_only_ast.native_relational.accepted() &&
           HasParserDiagnostic(sum_only_ast.messages,
                               "QOW-DIAG-QRY-001-AST-MALFORMED") &&
-          metadata_ast.native_relational.recognized() &&
-          !metadata_ast.native_relational.accepted() &&
-          HasParserDiagnostic(metadata_ast.messages,
-                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
           !filter_semantic_drift.bound &&
           filter_semantic_drift.messages.has_errors() &&
           !aggregate_semantic_drift.bound &&
@@ -2852,7 +2840,307 @@ bool ValidateCubeBooleanHavingParserBindingLoweringAndDispatch() {
           refused_lowering.payload.empty() &&
           HasParserDiagnostic(refused_lowering.messages,
                               "SBLR.PLAN_TREE.INVALID_HANDLE"),
-      "CUBE HAVING syntax, metadata, semantic, or lowering drift did not fail closed");
+      "CUBE HAVING syntax, semantic, or lowering drift did not fail closed");
+  return passed;
+}
+
+bool ValidateCubeGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kPreHavingSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL), (3,30,NULL), (3,30,NULL), "
+      "(NULL,10,1)) AS input(key_a,key_b,amount) "
+      "GROUP BY CUBE(key_a,key_b);";
+  constexpr std::string_view kSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL), (3,30,NULL), (3,30,NULL), "
+      "(NULL,10,1)) AS input(key_a,key_b,amount) "
+      "GROUP BY CUBE(key_a,key_b) "
+      "HAVING COUNT(*) > 1 AND SUM(amount) > 6;";
+  constexpr std::string_view kAggregateSemantic =
+      "aggregate.cube-int64-keys-count-sum-grouping.v1";
+
+  const auto pre_cst = sbsql::BuildCst(std::string(kPreHavingSql));
+  const auto pre_ast = sbsql::BuildAst(pre_cst);
+  const auto pre_context = GroupedAggregateBindingContext(
+      pre_ast.native_relational, kAggregateSemantic);
+  const auto pre_bound = sbsql::BindAst(
+      pre_ast, pre_cst, ParserConfigForTest(), SessionForTest(), {},
+      &pre_context);
+  const auto pre_lowered =
+      sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
+  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
+      pre_lowered.payload, GroupingSetsEngineContext());
+
+  using ExpectedRow =
+      std::array<std::optional<std::string_view>, 7>;
+  const auto count_rows = [](const auto& rows, const ExpectedRow& expected) {
+    return std::ranges::count_if(rows, [&](const auto& row) {
+      if (row.fields.size() != expected.size()) return false;
+      for (std::size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+        const auto& value = row.fields[ordinal].second;
+        if (expected[ordinal].has_value()) {
+          if (value.is_null || value.encoded_value != *expected[ordinal]) {
+            return false;
+          }
+        } else if (!value.is_null) {
+          return false;
+        }
+      }
+      return true;
+    });
+  };
+
+  bool passed = true;
+  const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
+  passed &= Require(
+      pre_dispatched.envelope_validated && pre_dispatched.accepted &&
+          pre_dispatched.dispatched_to_api &&
+          pre_dispatched.physical_dag_executed &&
+          pre_dispatched.canonical_result_published &&
+          pre_dispatched.api_result.ok &&
+          pre_dispatched.logical_node_count == 2 &&
+          pre_dispatched.physical_node_count == 2 &&
+          pre_dispatched.canonical_result_column_count == 7 &&
+          pre_dispatched.canonical_result_row_count == 15 &&
+          pre_rows.size() == 15 &&
+          count_rows(pre_rows, {"1", "10", "2", "5", "0", "0", "0"}) ==
+              1 &&
+          count_rows(pre_rows, {"1", "20", "1", "7", "0", "0", "0"}) ==
+              1 &&
+          count_rows(pre_rows,
+                     {"1", std::nullopt, "1", "3", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows, {"2", "10", "1", "4", "0", "0", "0"}) ==
+              1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "10", "2", "9", "0", "0", "0"}) ==
+              1 &&
+          count_rows(pre_rows,
+                     {"3", "30", "2", std::nullopt, "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows,
+                     {"1", std::nullopt, "4", "15", "0", "1", "1"}) == 1 &&
+          count_rows(pre_rows,
+                     {"2", std::nullopt, "1", "4", "0", "1", "1"}) == 1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, std::nullopt, "2", "9", "0", "1",
+                      "1"}) == 1 &&
+          count_rows(pre_rows,
+                     {"3", std::nullopt, "2", std::nullopt, "0", "1",
+                      "1"}) == 1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "10", "5", "18", "1", "0", "2"}) ==
+              1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "20", "1", "7", "1", "0", "2"}) ==
+              1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, std::nullopt, "1", "3", "1", "0",
+                      "2"}) == 1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "30", "2", std::nullopt, "1", "0",
+                      "2"}) == 1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, std::nullopt, "9", "28", "1", "1",
+                      "3"}) == 1,
+      "pre-HAVING CUBE metadata rows did not retain all 15 exact group identities");
+
+  const auto cst = sbsql::BuildCst(std::string(kSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational, kAggregateSemantic);
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  const auto* aggregate_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[1]
+          : nullptr;
+  const auto* filter_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[2]
+          : nullptr;
+  passed &= Require(
+      ast.native_relational.accepted() &&
+          ast.native_relational.root_relation_id == 3 &&
+          aggregate_relation != nullptr && filter_relation != nullptr &&
+          aggregate_relation->aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kCube &&
+          aggregate_relation->aggregate_projection_form ==
+              sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          aggregate_relation->output_expression_ids.size() == 7 &&
+          filter_relation->output_expression_ids ==
+              aggregate_relation->output_expression_ids &&
+          ast.native_relational.grouping_sets.empty(),
+      "native parser did not preserve fixed CUBE metadata through HAVING");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.relations.size() == 3 &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              kAggregateSemantic &&
+          bound.native_relational.relations[2].semantic_variant_id ==
+              "filter.having-count-sum-and-gt-int64-literals.v1" &&
+          bound.native_relational.relations[2].output_expression_ids.size() ==
+              7 &&
+          bound.native_relational.relations[2].output_expression_ids ==
+              bound.native_relational.relations[1].output_expression_ids &&
+          bound.native_relational.grouping_sets.empty(),
+      "native binder did not preserve all seven CUBE HAVING outputs");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 3) {
+    return false;
+  }
+
+  const auto predicate_id =
+      bound.native_relational.relations[2].bound_expression_ids.front();
+  const auto has_operand_type = [&](const std::string_view type) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type;
+    });
+  };
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("uint32", "relational_root_node_id", "3") &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2,3|1,2,3,4,5,6,7,8,9") &&
+          has_operand("relational_node_v1", "2",
+                      "5|0|1|1,2,4,5,6,7,8|-") &&
+          has_operand("relational_node_v1", "3",
+                      "2|0|2|1,2,4,5,6,7,8|-") &&
+          has_operand("relational_node_binding_v1", "2",
+                      EncodeHex(kAggregateSemantic) +
+                          "|1,2,3,5,6,7,8|-|-|-") &&
+          has_operand(
+              "relational_node_binding_v1", "3",
+              EncodeHex(
+                  "filter.having-count-sum-and-gt-int64-literals.v1") +
+                  "|" + std::to_string(predicate_id) + "|-|-|-") &&
+          !has_operand_type("relational_grouping_set_v1") &&
+          lowered.payload.find("HAVING COUNT") == std::string::npos,
+      "CUBE metadata HAVING did not lower to the exact fixed seven-column DAG");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  const auto& rows = dispatched.api_result.result_shape.rows;
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 3 &&
+          dispatched.physical_node_count == 3 &&
+          dispatched.canonical_result_column_count == 7 &&
+          dispatched.canonical_result_row_count == 5 && rows.size() == 5 &&
+          count_rows(rows,
+                     {std::nullopt, "10", "2", "9", "0", "0", "0"}) ==
+              1 &&
+          count_rows(rows,
+                     {"1", std::nullopt, "4", "15", "0", "1", "1"}) == 1 &&
+          count_rows(rows,
+                     {std::nullopt, std::nullopt, "2", "9", "0", "1",
+                      "1"}) == 1 &&
+          count_rows(rows,
+                     {std::nullopt, "10", "5", "18", "1", "0", "2"}) ==
+              1 &&
+          count_rows(rows,
+                     {std::nullopt, std::nullopt, "9", "28", "1", "1",
+                      "3"}) == 1 &&
+          count_rows(rows, {"1", "10", "2", "5", "0", "0", "0"}) ==
+              0 &&
+          count_rows(rows,
+                     {"3", "30", "2", std::nullopt, "0", "0", "0"}) == 0,
+      "CUBE metadata HAVING did not preserve exact detail, both subtotal axes, grand-total, FALSE, and UNKNOWN identities");
+
+  const auto sum_only_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY CUBE(key_a,key_b) HAVING SUM(amount) > 4;");
+  const auto sum_only_ast = sbsql::BuildAst(sum_only_cst);
+  const auto order_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_b,key_a) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY CUBE(key_a,key_b) "
+      "HAVING COUNT(*) > 1 AND SUM(amount) > 4;");
+  const auto order_ast = sbsql::BuildAst(order_cst);
+
+  auto aggregate_semantic_drift_context = context;
+  aggregate_semantic_drift_context.relations.front().semantic_variant_id =
+      "aggregate.cube-int64-keys-count-sum.v1";
+  const auto aggregate_semantic_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &aggregate_semantic_drift_context);
+  auto filter_semantic_drift_context = context;
+  filter_semantic_drift_context.relations.back().semantic_variant_id =
+      "filter.having-sum-gt-int64-literal.v1";
+  const auto filter_semantic_drift = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &filter_semantic_drift_context);
+
+  auto key_drift_ast = ast;
+  const auto& drift_aggregate = key_drift_ast.native_relational.relations[1];
+  const auto grouping_a_id = drift_aggregate.output_expression_ids[4];
+  const auto grouping_a = std::ranges::find_if(
+      key_drift_ast.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == grouping_a_id;
+      });
+  grouping_a->child_expression_ids = {
+      drift_aggregate.grouping_key_expression_ids[1]};
+  const auto key_drift_bound = sbsql::BindAst(
+      key_drift_ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &context);
+
+  auto order_drift_bound = bound;
+  const auto grouping_id_id =
+      order_drift_bound.native_relational.relations[1]
+          .output_expression_ids[6];
+  const auto grouping_id = std::ranges::find_if(
+      order_drift_bound.native_relational.expressions,
+      [&](const auto& expression) {
+        return expression.expression_id == grouping_id_id;
+      });
+  std::ranges::reverse(grouping_id->child_expression_ids);
+  const auto refused_lowering = sbsql::LowerToSblr(
+      order_drift_bound, cst, SessionForTest());
+
+  passed &= Require(
+      sum_only_ast.native_relational.recognized() &&
+          !sum_only_ast.native_relational.accepted() &&
+          HasParserDiagnostic(sum_only_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          order_ast.native_relational.recognized() &&
+          !order_ast.native_relational.accepted() &&
+          HasParserDiagnostic(order_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED") &&
+          !aggregate_semantic_drift.bound &&
+          aggregate_semantic_drift.messages.has_errors() &&
+          !filter_semantic_drift.bound &&
+          filter_semantic_drift.messages.has_errors() &&
+          !key_drift_bound.bound && key_drift_bound.messages.has_errors() &&
+          refused_lowering.payload.empty() &&
+          HasParserDiagnostic(refused_lowering.messages,
+                              "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "CUBE metadata HAVING parser, semantic, key/order, lineage, or lowering drift did not fail closed");
   return passed;
 }
 
@@ -3154,6 +3442,8 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-001-BINDING-CUBE-V1
 // QOW-TEST-QRY-001-CUBE-HAVING-COUNT-SUM-AND-GT-V1
 // QOW-TEST-QRY-001-BINDING-CUBE-HAVING-COUNT-SUM-AND-GT-V1
+// QOW-TEST-QRY-001-CUBE-GROUPING-METADATA-HAVING-V1
+// QOW-TEST-QRY-001-BINDING-CUBE-GROUPING-METADATA-HAVING-V1
 // QOW-TEST-QRY-001-GROUPING-METADATA-V1
 // QOW-TEST-QRY-001-BINDING-GROUPING-METADATA-V1
 // QOW-TEST-QRY-005-V1
@@ -3176,6 +3466,8 @@ int main() {
       ValidateRollupGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch();
   passed &= ValidateCubeParserBindingLoweringAndDispatch();
   passed &= ValidateCubeBooleanHavingParserBindingLoweringAndDispatch();
+  passed &=
+      ValidateCubeGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch();
   passed &= ValidateGroupingMetadataParserBindingLoweringAndDispatch();
   passed &= ValidateFailClosedLowering();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
