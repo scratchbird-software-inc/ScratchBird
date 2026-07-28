@@ -1432,6 +1432,17 @@ std::string StatementFamilyName(StatementFamily family) {
 std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
   switch (kind) {
     case NativeRelationAstKind::kValues: return "values";
+    case NativeRelationAstKind::kAggregate: return "aggregate";
+  }
+  return "unknown";
+}
+
+std::string NativeAggregateGroupingFormName(
+    NativeAggregateGroupingForm form) {
+  switch (form) {
+    case NativeAggregateGroupingForm::kNone: return "none";
+    case NativeAggregateGroupingForm::kGroupingSets: return "grouping_sets";
+    case NativeAggregateGroupingForm::kRollup: return "rollup";
   }
   return "unknown";
 }

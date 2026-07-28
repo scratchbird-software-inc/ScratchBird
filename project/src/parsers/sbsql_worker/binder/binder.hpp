@@ -118,6 +118,8 @@ struct BoundGroupingSetAstRecord {
 struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
+  NativeAggregateGroupingForm aggregate_grouping_form{
+      NativeAggregateGroupingForm::kNone};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> output_expression_ids;

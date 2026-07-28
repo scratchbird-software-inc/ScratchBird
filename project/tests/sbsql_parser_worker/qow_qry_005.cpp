@@ -102,8 +102,9 @@ sbsql::BoundStatement BoundValues(const sbsql::CstDocument& cst) {
                         {}, &context);
 }
 
-sbsql::NativeRelationalBindingContext GroupingSetsBindingContext(
-    const sbsql::NativeRelationalAstDocument& ast) {
+sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
+    const sbsql::NativeRelationalAstDocument& ast,
+    const std::string_view semantic_variant_id) {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-0000000005a1";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-0000000005a2";
@@ -185,8 +186,7 @@ sbsql::NativeRelationalBindingContext GroupingSetsBindingContext(
     }
   }
   context.relations.push_back(
-      {ast.root_relation_id,
-       "aggregate.grouping-sets-int64-keys-count-sum.v1"});
+      {ast.root_relation_id, std::string(semantic_variant_id)});
   return context;
 }
 
@@ -365,7 +365,9 @@ bool ValidateGroupingSetsParserBindingLoweringAndDispatch() {
       "GROUP BY GROUPING SETS ((key_b), (), (key_b,key_a), (key_b));";
   const auto cst = sbsql::BuildCst(std::string(kSql));
   const auto ast = sbsql::BuildAst(cst);
-  const auto context = GroupingSetsBindingContext(ast.native_relational);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational,
+      "aggregate.grouping-sets-int64-keys-count-sum.v1");
   const auto bound = sbsql::BindAst(
       ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
   const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
@@ -500,6 +502,140 @@ bool ValidateGroupingSetsParserBindingLoweringAndDispatch() {
   return passed;
 }
 
+bool ValidateRollupParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL)) AS input(key_a,key_b,amount) "
+      "GROUP BY ROLLUP(key_a,key_b);";
+  const auto cst = sbsql::BuildCst(std::string(kSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational,
+      "aggregate.rollup-int64-keys-count-sum.v1");
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  bool passed = true;
+  passed &= Require(
+      ast.native_relational.accepted() &&
+          ast.family == sbsql::StatementFamily::kQuery &&
+          ast.native_relational.relations.size() == 2 &&
+          ast.native_relational.relations[1].aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kRollup &&
+          ast.native_relational.grouping_sets.empty(),
+      "native parser did not retain the exact two-key ROLLUP form");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.relations.size() == 2 &&
+          bound.native_relational.relations[1].aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kRollup &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              "aggregate.rollup-int64-keys-count-sum.v1" &&
+          bound.native_relational.grouping_sets.empty(),
+      "native binder did not preserve ROLLUP with its authoritative semantic binding");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 2) {
+    return false;
+  }
+  const auto has_operand_type = [&](const std::string_view type) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type;
+    });
+  };
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2,3|1,2,3,4,5,6") &&
+          has_operand("relational_node_v1", "2", "5|0|1|1,2,4,5|-") &&
+          has_operand(
+              "relational_node_binding_v1", "2",
+              "6167677265676174652e726f6c6c75702d696e7436342d6b6579732d"
+              "636f756e742d73756d2e7631|1,2,3,5|-|-|-") &&
+          !has_operand_type("relational_grouping_set_v1") &&
+          lowered.payload.find("SELECT key_a") == std::string::npos &&
+          lowered.payload.find("query.plan_operation") == std::string::npos,
+      "typed ROLLUP lowering did not emit the fixed-profile canonical wire-v2 DAG");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 2 &&
+          dispatched.physical_node_count == 2 &&
+          dispatched.canonical_result_column_count == 4 &&
+          dispatched.canonical_result_row_count == 9 &&
+          dispatched.api_result.result_shape.rows.size() == 9,
+      "parser-produced ROLLUP DAG did not complete the live engine spine");
+
+  const auto malformed_cst = sbsql::BuildCst(
+      "SELECT key_a, key_b, COUNT(*), SUM(amount) "
+      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
+      "GROUP BY ROLLUP(key_a,);" );
+  const auto malformed_ast = sbsql::BuildAst(malformed_cst);
+  passed &= Require(
+      malformed_ast.native_relational.recognized() &&
+          !malformed_ast.native_relational.accepted() &&
+          malformed_ast.native_relational.root_relation_id == 0 &&
+          malformed_ast.native_relational.relations.empty() &&
+          malformed_ast.native_relational.grouping_sets.empty() &&
+          HasParserDiagnostic(malformed_ast.messages,
+                              "QOW-DIAG-QRY-001-AST-MALFORMED"),
+      "malformed ROLLUP syntax retained a partial native AST");
+
+  auto contradictory_ast = ast;
+  contradictory_ast.native_relational.grouping_sets.push_back(
+      {2, 0,
+       contradictory_ast.native_relational.relations[1]
+           .grouping_key_expression_ids,
+       {}});
+  const auto contradictory_bound = sbsql::BindAst(
+      contradictory_ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &context);
+  auto mismatched_semantic_context = context;
+  mismatched_semantic_context.relations[0].semantic_variant_id =
+      "aggregate.cube-int64-keys-count-sum.v1";
+  const auto mismatched_semantic = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {},
+      &mismatched_semantic_context);
+  auto contradictory_lowering = bound;
+  contradictory_lowering.native_relational.grouping_sets.push_back(
+      {2, 0,
+       contradictory_lowering.native_relational.relations[1]
+           .grouping_key_expression_ids});
+  const auto refused_lowering = sbsql::LowerToSblr(
+      contradictory_lowering, cst, SessionForTest());
+  passed &= Require(
+      !contradictory_bound.bound &&
+          contradictory_bound.messages.has_errors() &&
+          !mismatched_semantic.bound &&
+          mismatched_semantic.messages.has_errors() &&
+          refused_lowering.payload.empty() &&
+          HasParserDiagnostic(refused_lowering.messages,
+                              "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "fixed ROLLUP accepted a contradictory semantic or grouping-set payload");
+  return passed;
+}
+
 bool ValidateFailClosedLowering() {
   const auto cst = sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');");
 
@@ -544,11 +680,14 @@ bool ValidateFailClosedLowering() {
 // QOW-ROUTE-STAGE-QRY-005-V1
 // QOW-TEST-QRY-001-GROUPING-SETS-V1
 // QOW-TEST-QRY-001-BINDING-GROUPING-SETS-V1
+// QOW-TEST-QRY-001-ROLLUP-V1
+// QOW-TEST-QRY-001-BINDING-ROLLUP-V1
 // QOW-TEST-QRY-005-V1
 int main() {
   bool passed = true;
   passed &= ValidateCanonicalLoweringAndDispatch();
   passed &= ValidateGroupingSetsParserBindingLoweringAndDispatch();
+  passed &= ValidateRollupParserBindingLoweringAndDispatch();
   passed &= ValidateFailClosedLowering();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -273,6 +273,19 @@ bool LooksLikeUuidV7(const std::string_view value) {
   return LooksLikeCanonicalUuid(value) && value[14] == '7';
 }
 
+std::string_view ExpectedAggregateSemanticVariant(
+    const NativeAggregateGroupingForm form) {
+  switch (form) {
+    case NativeAggregateGroupingForm::kGroupingSets:
+      return "aggregate.grouping-sets-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kRollup:
+      return "aggregate.rollup-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kNone:
+      return {};
+  }
+  return {};
+}
+
 BoundNativeRelationalDocument RefusedBoundAst(
     BoundNativeRelationalDocument document) {
   document.bound = false;
@@ -567,6 +580,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     BoundRelationAstRecord record;
     record.relation_id = relation.relation_id;
     record.relation_kind = relation.relation_kind;
+    record.aggregate_grouping_form = relation.aggregate_grouping_form;
     record.input_relation_ids = relation.input_relation_ids;
     record.values_row_ids = relation.values_row_ids;
     record.output_expression_ids = relation.output_expression_ids;
@@ -579,6 +593,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (values_relation_ast != nullptr || !relation.input_relation_ids.empty() ||
           relation.values_row_ids.size() != bound.values_rows.size() ||
           relation.output_expression_ids != first_row.expression_ids ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -607,6 +623,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation.grouping_key_expression_ids.size() != 2 ||
           relation.aggregate_expression_ids.size() != 2 ||
           relation.output_expression_ids.size() != 4 ||
+          (relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kGroupingSets &&
+           relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kRollup) ||
           relation.output_expression_ids[0] !=
               relation.grouping_key_expression_ids[0] ||
           relation.output_expression_ids[1] !=
@@ -624,6 +644,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (semantic_binding == relation_binding_by_id.end()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                               "typed aggregate requires an authoritative semantic binding");
+        return RefusedBoundAst(std::move(bound));
+      }
+      const auto expected_semantic =
+          ExpectedAggregateSemanticVariant(relation.aggregate_grouping_form);
+      if (expected_semantic.empty() ||
+          semantic_binding->second->semantic_variant_id != expected_semantic) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "aggregate semantic binding contradicts the parsed grouping form");
         return RefusedBoundAst(std::move(bound));
       }
       aggregate_relation_ast = &relation;
@@ -704,7 +733,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                             "VALUES leaf cannot own grouping sets");
       return RefusedBoundAst(std::move(bound));
     }
-  } else {
+  } else if (aggregate_relation_ast->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kGroupingSets) {
     // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-V1
     if (ast.grouping_sets.empty()) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -748,6 +778,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       bound.grouping_sets.push_back(std::move(record));
     }
+  } else if (aggregate_relation_ast->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kRollup) {
+    // QOW-SOURCE-QRY-001-BINDING-ROLLUP-V1
+    if (!ast.grouping_sets.empty()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "fixed ROLLUP aggregate cannot own arbitrary grouping-set records");
+      return RefusedBoundAst(std::move(bound));
+    }
+  } else {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                          "typed aggregate grouping form is not supported");
+    return RefusedBoundAst(std::move(bound));
   }
 
   if (used_descriptor_ids.size() != descriptor_by_id.size()) {

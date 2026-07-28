@@ -56,6 +56,12 @@ enum class NativeRelationAstKind {
   kAggregate,
 };
 
+enum class NativeAggregateGroupingForm {
+  kNone,
+  kGroupingSets,
+  kRollup,
+};
+
 enum class NativeExpressionAstKind {
   kLiteral,
   kParameter,
@@ -126,6 +132,8 @@ struct NativeGroupingSetAstNode {
 struct NativeRelationAstNode {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
+  NativeAggregateGroupingForm aggregate_grouping_form{
+      NativeAggregateGroupingForm::kNone};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> output_expression_ids;
@@ -194,6 +202,7 @@ NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst);
 AstDocument BuildAst(const CstDocument& cst);
 std::string StatementFamilyName(StatementFamily family);
 std::string NativeRelationAstKindName(NativeRelationAstKind kind);
+std::string NativeAggregateGroupingFormName(NativeAggregateGroupingForm form);
 std::string NativeExpressionAstKindName(NativeExpressionAstKind kind);
 std::string NativeLiteralAstKindName(NativeLiteralAstKind kind);
 

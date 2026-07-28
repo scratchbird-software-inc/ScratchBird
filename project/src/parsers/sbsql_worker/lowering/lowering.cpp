@@ -34910,6 +34910,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       if (values_relation != nullptr || !relation.input_relation_ids.empty() ||
           relation.values_row_ids.empty() ||
           relation.semantic_variant_id != "values.literal-table.v1" ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty()) {
         AddNativeRelationalLoweringError(
@@ -34926,6 +34928,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.grouping_key_expression_ids.size() != 2 ||
           relation.aggregate_expression_ids.size() != 2 ||
           relation.output_expression_ids.size() != 4 ||
+          (relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kGroupingSets &&
+           relation.aggregate_grouping_form !=
+               NativeAggregateGroupingForm::kRollup) ||
           relation.bound_expression_ids != relation.output_expression_ids) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
@@ -34943,7 +34949,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       (aggregate_relation != nullptr &&
        (native.relations.size() != 2 ||
         aggregate_relation->input_relation_ids.front() !=
-            values_relation->relation_id || native.grouping_sets.empty()))) {
+            values_relation->relation_id ||
+        (aggregate_relation->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kGroupingSets &&
+         native.grouping_sets.empty()) ||
+        (aggregate_relation->aggregate_grouping_form ==
+             NativeAggregateGroupingForm::kRollup &&
+         !native.grouping_sets.empty())))) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         "typed native relation graph is not the accepted VALUES or aggregate shape");
