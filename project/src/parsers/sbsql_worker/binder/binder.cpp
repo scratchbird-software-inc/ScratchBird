@@ -726,6 +726,26 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ast_expression_by_id.find(relation.output_expression_ids[5]);
         const auto grouping_id =
             ast_expression_by_id.find(relation.output_expression_ids[6]);
+        const auto metadata_descriptor_is_exact =
+            [&](const auto expression) {
+              if (expression == ast_expression_by_id.end()) return false;
+              const auto binding =
+                  expression_binding_by_id.find(expression->first);
+              if (binding == expression_binding_by_id.end()) return false;
+              const auto descriptor =
+                  descriptor_by_id.find(binding->second->descriptor_id);
+              return descriptor != descriptor_by_id.end() &&
+                     descriptor->second->nullability ==
+                         BoundNullability::kNonNull &&
+                     !descriptor->second->collation_uuid.has_value() &&
+                     !descriptor->second->timezone_profile_id.has_value() &&
+                     !descriptor->second->width_precision_scale.width
+                          .has_value() &&
+                     !descriptor->second->width_precision_scale.precision
+                          .has_value() &&
+                     !descriptor->second->width_precision_scale.scale
+                          .has_value();
+            };
         if (grouping_a == ast_expression_by_id.end() ||
             grouping_b == ast_expression_by_id.end() ||
             grouping_id == ast_expression_by_id.end() ||
@@ -745,10 +765,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 NativeExpressionAstKind::kBinary ||
             grouping_id->second->operator_name != "grouping_id" ||
             grouping_id->second->child_expression_ids !=
-                relation.grouping_key_expression_ids) {
+                relation.grouping_key_expression_ids ||
+            !metadata_descriptor_is_exact(grouping_a) ||
+            !metadata_descriptor_is_exact(grouping_b) ||
+            !metadata_descriptor_is_exact(grouping_id)) {
           AddBoundAstDiagnostic(
               &bound, "QOW-DIAG-BOUNDAST-RELATION",
-              "grouping metadata projections must bind the two ordered keys exactly");
+              "grouping metadata projections must bind the two ordered keys and non-null descriptors exactly");
           return RefusedBoundAst(std::move(bound));
         }
       }
@@ -921,6 +944,37 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           ast.grouping_sets[3].ordinal == 3 &&
           ast.grouping_sets[3].expression_ids ==
               ast.grouping_sets[0].expression_ids;
+      // QOW-SOURCE-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+      const bool admitted_grouping_sets_metadata_or_having =
+          count_sum_or_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kGroupingSets &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.size() == 4 &&
+          ast.grouping_sets[0].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[0].ordinal == 0 &&
+          ast.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1]} &&
+          ast.grouping_sets[1].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[1].ordinal == 1 &&
+          ast.grouping_sets[1].expression_ids.empty() &&
+          ast.grouping_sets[2].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[2].ordinal == 2 &&
+          ast.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation_ast->grouping_key_expression_ids[1],
+                  aggregate_relation_ast->grouping_key_expression_ids[0]} &&
+          ast.grouping_sets[3].relation_id ==
+              aggregate_relation_ast->relation_id &&
+          ast.grouping_sets[3].ordinal == 3 &&
+          ast.grouping_sets[3].expression_ids ==
+              ast.grouping_sets[0].expression_ids;
       // QOW-SOURCE-QRY-001-BINDING-ROLLUP-HAVING-COUNT-SUM-OR-GT-V1
       const bool admitted_rollup_or_having =
           count_sum_or_profile && aggregate_relation_ast != nullptr &&
@@ -1016,6 +1070,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (filter_relation_ast != nullptr || aggregate_relation_ast == nullptr ||
           (!admitted_one_key_or_having && !admitted_two_key_or_having &&
            !admitted_grouping_sets_or_having &&
+           !admitted_grouping_sets_metadata_or_having &&
            !admitted_rollup_or_having &&
            !admitted_cube_or_having &&
            !admitted_simple_having &&

@@ -691,6 +691,7 @@ bool ValidateHavingParserBindingLoweringAndDispatch() {
   passed &= Require(
       !lowered.messages.has_errors() && verified.admitted &&
           !verified.messages.has_errors() &&
+          has_operand("uint16", "relational_wire_version", "2") &&
           has_operand("uint32", "relational_root_node_id", "3") &&
           has_operand("relational_node_v1", "1",
                       "13|0|-|1,2|1,2,3,4,5,6") &&
@@ -3510,12 +3511,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
                      {"4", "40", "1", std::nullopt}) == 0,
       "GROUPING SETS OR lost exact 11-row SQL three-valued survivor multiplicity");
 
-  constexpr std::string_view kGroupingSetsMetadataAndSql =
-      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
-      "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
-      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
-      "GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) "
-      "HAVING COUNT(*)>1 AND SUM(amount)>6;";
   constexpr std::string_view kRollupMetadataAndSql =
       "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
       "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
@@ -3537,8 +3532,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
     const auto source_cst = sbsql::BuildCst(std::move(sql));
     return sbsql::BuildAst(source_cst);
   };
-  const auto grouping_sets_metadata_or_ast =
-      as_or_ast(kGroupingSetsMetadataAndSql);
   const auto rollup_metadata_or_ast = as_or_ast(kRollupMetadataAndSql);
   const auto cube_metadata_or_ast = as_or_ast(kCubeMetadataAndSql);
   const auto reversed_cst = sbsql::BuildCst(
@@ -3590,8 +3583,7 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
                                "QOW-DIAG-QRY-001-AST-MALFORMED");
   };
   passed &= Require(
-      parser_refused(grouping_sets_metadata_or_ast) &&
-          parser_refused(rollup_metadata_or_ast) &&
+      parser_refused(rollup_metadata_or_ast) &&
           parser_refused(cube_metadata_or_ast) &&
           parser_refused(reversed_ast) && parser_refused(not_ast) &&
           parser_refused(arbitrary_ast) &&
@@ -3634,9 +3626,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
         &source_context);
     return std::pair{source_accepted, std::move(result)};
   };
-  const auto grouping_sets_metadata_forged_or = forged_or_binding(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_forged_or = forged_or_binding(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -3815,8 +3804,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
           binder_failed(grouping_member_order_drift) &&
           binder_failed(grouping_ordinal_drift) &&
           binder_failed(grouping_repetition_drift) &&
-          grouping_sets_metadata_forged_or.first &&
-          binder_failed(grouping_sets_metadata_forged_or.second) &&
           rollup_metadata_forged_or.first &&
           binder_failed(rollup_metadata_forged_or.second) &&
           cube_metadata_forged_or.first &&
@@ -3852,9 +3839,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
     return std::pair{source_bound_valid, std::move(result)};
   };
-  const auto grouping_sets_metadata_or_lowering = forged_or_lowering(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_or_lowering = forged_or_lowering(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -4074,8 +4058,6 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
           lowering_failed(grouping_member_order_lowering) &&
           lowering_failed(grouping_ordinal_lowering) &&
           lowering_failed(grouping_repetition_lowering) &&
-          grouping_sets_metadata_or_lowering.first &&
-          lowering_failed(grouping_sets_metadata_or_lowering.second) &&
           rollup_metadata_or_lowering.first &&
           lowering_failed(rollup_metadata_or_lowering.second) &&
           cube_metadata_or_lowering.first &&
@@ -4530,6 +4512,971 @@ bool ValidateGroupingSetsSumHavingParserBindingLoweringAndDispatch() {
       "GROUPING SETS SUM-only HAVING form, semantic, member, ordinal, descriptor, or lowering drift did not fail closed");
   return passed;
 }
+
+bool ValidateGroupingSetsGroupingMetadataOrHavingParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kPreHavingSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL), (3,30,NULL), (3,30,NULL), "
+      "(4,40,NULL)) AS input(key_a,key_b,amount) "
+      "GROUP BY GROUPING SETS ((key_b), (), (key_b,key_a), (key_b));";
+  constexpr std::string_view kSql =
+      "SELECT key_a, key_b, COUNT(*), SUM(amount), GROUPING(key_a), "
+      "GROUPING(key_b), GROUPING_ID(key_a,key_b) "
+      "FROM (VALUES (1,10,5), (1,20,7), (1,NULL,3), (2,10,4), "
+      "(NULL,10,8), (1,10,NULL), (3,30,NULL), (3,30,NULL), "
+      "(4,40,NULL)) AS input(key_a,key_b,amount) "
+      "GROUP BY GROUPING SETS ((key_b), (), (key_b,key_a), (key_b)) "
+      "HAVING COUNT(*) > 1 OR SUM(amount) > 6;";
+  constexpr std::string_view kAggregateSemantic =
+      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1";
+  constexpr std::string_view kFilterSemantic =
+      "filter.having-count-sum-or-gt-int64-literals.v1";
+
+  const auto pre_cst = sbsql::BuildCst(std::string(kPreHavingSql));
+  const auto pre_ast = sbsql::BuildAst(pre_cst);
+  const auto pre_context = GroupedAggregateBindingContext(
+      pre_ast.native_relational, kAggregateSemantic);
+  const auto pre_bound = sbsql::BindAst(
+      pre_ast, pre_cst, ParserConfigForTest(), SessionForTest(), {},
+      &pre_context);
+  const auto pre_lowered =
+      sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
+  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
+      pre_lowered.payload, GroupingSetsEngineContext());
+
+  using ExpectedRow =
+      std::array<std::optional<std::string_view>, 7>;
+  const auto count_rows = [](const auto& rows, const ExpectedRow& expected) {
+    return std::ranges::count_if(rows, [&](const auto& row) {
+      if (row.fields.size() != expected.size()) return false;
+      for (std::size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+        const auto& value = row.fields[ordinal].second;
+        if (expected[ordinal].has_value()) {
+          if (value.is_null ||
+              value.encoded_value != *expected[ordinal]) {
+            return false;
+          }
+        } else if (!value.is_null) {
+          return false;
+        }
+      }
+      return true;
+    });
+  };
+
+  bool passed = true;
+  const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
+  passed &= Require(
+      pre_dispatched.envelope_validated && pre_dispatched.accepted &&
+          pre_dispatched.dispatched_to_api &&
+          pre_dispatched.physical_dag_executed &&
+          pre_dispatched.canonical_result_published &&
+          pre_dispatched.api_result.ok &&
+          pre_dispatched.logical_node_count == 2 &&
+          pre_dispatched.physical_node_count == 2 &&
+          pre_dispatched.canonical_result_column_count == 7 &&
+          pre_dispatched.canonical_result_row_count == 18 &&
+          pre_rows.size() == 18 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "10", "4", "17", "1", "0", "2"}) == 2 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "20", "1", "7", "1", "0", "2"}) == 2 &&
+          count_rows(pre_rows,
+                     {std::nullopt, std::nullopt, "1", "3", "1", "0", "2"}) == 2 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "30", "2", std::nullopt, "1", "0", "2"}) == 2 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "40", "1", std::nullopt, "1", "0", "2"}) == 2 &&
+          count_rows(pre_rows,
+                     {std::nullopt, std::nullopt, "9", "27", "1", "1", "3"}) == 1 &&
+          count_rows(pre_rows, {"1", "10", "2", "5", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows, {"1", "20", "1", "7", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows,
+                     {"1", std::nullopt, "1", "3", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows, {"2", "10", "1", "4", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows,
+                     {std::nullopt, "10", "1", "8", "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows,
+                     {"3", "30", "2", std::nullopt, "0", "0", "0"}) == 1 &&
+          count_rows(pre_rows,
+                     {"4", "40", "1", std::nullopt, "0", "0", "0"}) == 1,
+      "pre-HAVING GROUPING SETS metadata OR candidate lost exact 18-row identity");
+
+  const auto cst = sbsql::BuildCst(std::string(kSql));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational, kAggregateSemantic);
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  const auto* aggregate_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[1]
+          : nullptr;
+  const auto* filter_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[2]
+          : nullptr;
+  passed &= Require(
+      ast.native_relational.accepted() &&
+          ast.native_relational.root_relation_id == 3 &&
+          aggregate_relation != nullptr && filter_relation != nullptr &&
+          aggregate_relation->aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kGroupingSets &&
+          aggregate_relation->aggregate_projection_form ==
+              sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          aggregate_relation->output_expression_ids.size() == 7 &&
+          filter_relation->output_expression_ids ==
+              aggregate_relation->output_expression_ids &&
+          ast.native_relational.grouping_sets.size() == 4 &&
+          ast.native_relational.grouping_sets[0].relation_id == 2 &&
+          ast.native_relational.grouping_sets[0].ordinal == 0 &&
+          ast.native_relational.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[1]} &&
+          ast.native_relational.grouping_sets[1].relation_id == 2 &&
+          ast.native_relational.grouping_sets[1].ordinal == 1 &&
+          ast.native_relational.grouping_sets[1].expression_ids.empty() &&
+          ast.native_relational.grouping_sets[2].relation_id == 2 &&
+          ast.native_relational.grouping_sets[2].ordinal == 2 &&
+          ast.native_relational.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[1],
+                  aggregate_relation->grouping_key_expression_ids[0]} &&
+          ast.native_relational.grouping_sets[3].relation_id == 2 &&
+          ast.native_relational.grouping_sets[3].ordinal == 3 &&
+          ast.native_relational.grouping_sets[3].expression_ids ==
+              ast.native_relational.grouping_sets[0].expression_ids,
+      "native parser did not retain exact metadata and ordered/repeated-set identity through OR HAVING");
+  if (aggregate_relation == nullptr || filter_relation == nullptr ||
+      aggregate_relation->output_expression_ids.size() != 7 ||
+      filter_relation->predicate_expression_ids.size() != 1) {
+    return false;
+  }
+  const auto ast_predicate_id =
+      filter_relation->predicate_expression_ids.front();
+  const auto& ast_predicate =
+      ast.native_relational.expressions[ast_predicate_id - 1];
+  const auto ast_count_comparison_id =
+      ast_predicate.child_expression_ids.size() == 2
+          ? ast_predicate.child_expression_ids[0]
+          : 0;
+  const auto ast_sum_comparison_id =
+      ast_predicate.child_expression_ids.size() == 2
+          ? ast_predicate.child_expression_ids[1]
+          : 0;
+  const auto& ast_count_comparison =
+      ast.native_relational.expressions[ast_count_comparison_id - 1];
+  const auto& ast_sum_comparison =
+      ast.native_relational.expressions[ast_sum_comparison_id - 1];
+  const auto grouping_a_id = aggregate_relation->output_expression_ids[4];
+  const auto grouping_b_id = aggregate_relation->output_expression_ids[5];
+  const auto grouping_id_id = aggregate_relation->output_expression_ids[6];
+  const auto& ast_grouping_a =
+      ast.native_relational.expressions[grouping_a_id - 1];
+  const auto& ast_grouping_b =
+      ast.native_relational.expressions[grouping_b_id - 1];
+  const auto& ast_grouping_id =
+      ast.native_relational.expressions[grouping_id_id - 1];
+  passed &= Require(
+      ast_predicate.expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          ast_predicate.operator_name == "OR" &&
+          ast_predicate.child_expression_ids ==
+              std::vector<std::uint32_t>{ast_count_comparison_id,
+                                         ast_sum_comparison_id} &&
+          ast_count_comparison.operator_name == ">" &&
+          ast_sum_comparison.operator_name == ">" &&
+          ast_grouping_a.expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          ast_grouping_a.operator_name == "grouping" &&
+          ast_grouping_a.child_expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[0]} &&
+          ast_grouping_b.expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          ast_grouping_b.operator_name == "grouping" &&
+          ast_grouping_b.child_expression_ids ==
+              std::vector<std::uint32_t>{
+                  aggregate_relation->grouping_key_expression_ids[1]} &&
+          ast_grouping_id.expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          ast_grouping_id.operator_name == "grouping_id" &&
+          ast_grouping_id.child_expression_ids ==
+              aggregate_relation->grouping_key_expression_ids,
+      "native parser lost ordered OR or GROUPING/GROUPING_ID projection identity");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.relations.size() == 3 &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              kAggregateSemantic &&
+          bound.native_relational.relations[2].semantic_variant_id ==
+              kFilterSemantic &&
+          bound.native_relational.relations[2].output_expression_ids.size() ==
+              7 &&
+          bound.native_relational.relations[2].output_expression_ids ==
+              bound.native_relational.relations[1].output_expression_ids &&
+          bound.native_relational.grouping_sets.size() == 4 &&
+          bound.native_relational.grouping_sets[0].ordinal == 0 &&
+          bound.native_relational.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{
+                  bound.native_relational.relations[1]
+                      .grouping_key_expression_ids[1]} &&
+          bound.native_relational.grouping_sets[1].ordinal == 1 &&
+          bound.native_relational.grouping_sets[1].expression_ids.empty() &&
+          bound.native_relational.grouping_sets[2].ordinal == 2 &&
+          bound.native_relational.grouping_sets[2].expression_ids ==
+              bound.native_relational.relations[1]
+                  .grouping_key_expression_ids &&
+          bound.native_relational.grouping_sets[3].ordinal == 3 &&
+          bound.native_relational.grouping_sets[3].expression_ids ==
+              bound.native_relational.grouping_sets[0].expression_ids,
+      "native binder did not preserve all seven metadata OR outputs and four canonical sets");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 3) {
+    return false;
+  }
+
+  const auto& aggregate = bound.native_relational.relations[1];
+  const auto& filter = bound.native_relational.relations[2];
+  const auto key_a = aggregate.grouping_key_expression_ids[0];
+  const auto key_b = aggregate.grouping_key_expression_ids[1];
+  const auto predicate_id =
+      filter.bound_expression_ids.front();
+  const auto count_comparison_id = ast_count_comparison_id;
+  const auto sum_comparison_id = ast_sum_comparison_id;
+  const auto having_count_id =
+      ast_count_comparison.child_expression_ids[0];
+  const auto count_threshold_id =
+      ast_count_comparison.child_expression_ids[1];
+  const auto having_sum_id = ast_sum_comparison.child_expression_ids[0];
+  const auto sum_threshold_id = ast_sum_comparison.child_expression_ids[1];
+  const auto having_argument_id =
+      ast.native_relational.expressions[having_sum_id - 1]
+          .child_expression_ids.front();
+  const auto projected_count_id = aggregate.aggregate_expression_ids[0];
+  const auto projected_sum_id = aggregate.aggregate_expression_ids[1];
+  const auto projected_argument_id =
+      ast.native_relational.expressions[projected_sum_id - 1]
+          .child_expression_ids.front();
+  const auto expression_by_id = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(
+        bound.native_relational.expressions, [&](const auto& expression) {
+          return expression.expression_id == expression_id;
+        });
+  };
+  const auto descriptor_by_id = [&](const std::uint32_t descriptor_id) {
+    return std::ranges::find_if(
+        bound.native_relational.descriptors, [&](const auto& descriptor) {
+          return descriptor.descriptor_id == descriptor_id;
+        });
+  };
+  const auto bound_predicate = expression_by_id(predicate_id);
+  const auto bound_count_comparison = expression_by_id(count_comparison_id);
+  const auto bound_sum_comparison = expression_by_id(sum_comparison_id);
+  const auto bound_having_count = expression_by_id(having_count_id);
+  const auto bound_projected_count = expression_by_id(projected_count_id);
+  const auto bound_having_sum = expression_by_id(having_sum_id);
+  const auto bound_projected_sum = expression_by_id(projected_sum_id);
+  const auto bound_having_argument = expression_by_id(having_argument_id);
+  const auto bound_projected_argument = expression_by_id(projected_argument_id);
+  const auto bound_count_threshold = expression_by_id(count_threshold_id);
+  const auto bound_sum_threshold = expression_by_id(sum_threshold_id);
+  const auto bound_grouping_a = expression_by_id(grouping_a_id);
+  const auto bound_grouping_b = expression_by_id(grouping_b_id);
+  const auto bound_grouping_id = expression_by_id(grouping_id_id);
+  passed &= Require(
+      bound_predicate != bound.native_relational.expressions.end() &&
+          bound_count_comparison != bound.native_relational.expressions.end() &&
+          bound_sum_comparison != bound.native_relational.expressions.end() &&
+          bound_having_count != bound.native_relational.expressions.end() &&
+          bound_projected_count != bound.native_relational.expressions.end() &&
+          bound_having_sum != bound.native_relational.expressions.end() &&
+          bound_projected_sum != bound.native_relational.expressions.end() &&
+          bound_having_argument != bound.native_relational.expressions.end() &&
+          bound_projected_argument !=
+              bound.native_relational.expressions.end() &&
+          bound_count_threshold != bound.native_relational.expressions.end() &&
+          bound_sum_threshold != bound.native_relational.expressions.end() &&
+          bound_grouping_a != bound.native_relational.expressions.end() &&
+          bound_grouping_b != bound.native_relational.expressions.end() &&
+          bound_grouping_id != bound.native_relational.expressions.end() &&
+          bound_predicate->canonical_operator_name == "OR" &&
+          bound_predicate->child_expression_ids ==
+              std::vector<std::uint32_t>{count_comparison_id,
+                                         sum_comparison_id} &&
+          bound_count_comparison->canonical_operator_name == ">" &&
+          bound_sum_comparison->canonical_operator_name == ">" &&
+          bound_having_count->bound_function_uuid ==
+              "019de5fc-2400-784a-9aec-371f8b95b7ea" &&
+          bound_projected_count->bound_function_uuid ==
+              bound_having_count->bound_function_uuid &&
+          bound_having_count->child_expression_ids.empty() &&
+          bound_having_sum->bound_function_uuid ==
+              "019de5fc-2400-72e4-8549-82b2eef5a777" &&
+          bound_projected_sum->bound_function_uuid ==
+              bound_having_sum->bound_function_uuid &&
+          bound_having_argument->bound_name_uuid ==
+              bound_projected_argument->bound_name_uuid &&
+          bound_having_argument->result_descriptor_id ==
+              bound_projected_argument->result_descriptor_id &&
+          bound_count_threshold->literal_or_parameter_ref == "1" &&
+          bound_sum_threshold->literal_or_parameter_ref == "6" &&
+          bound_grouping_a->canonical_operator_name == "grouping" &&
+          bound_grouping_a->child_expression_ids ==
+              std::vector<std::uint32_t>{key_a} &&
+          bound_grouping_b->canonical_operator_name == "grouping" &&
+          bound_grouping_b->child_expression_ids ==
+              std::vector<std::uint32_t>{key_b} &&
+          bound_grouping_id->canonical_operator_name == "grouping_id" &&
+          bound_grouping_id->child_expression_ids ==
+              std::vector<std::uint32_t>{key_a, key_b} &&
+          descriptor_by_id(bound_predicate->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNullable &&
+          descriptor_by_id(bound_count_threshold->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNonNull &&
+          descriptor_by_id(bound_sum_threshold->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNonNull &&
+          descriptor_by_id(bound_grouping_a->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNonNull &&
+          descriptor_by_id(bound_grouping_b->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNonNull &&
+          descriptor_by_id(bound_grouping_id->result_descriptor_id)
+                  ->nullability == sbsql::BoundNullability::kNonNull,
+      "metadata OR binding lost function UUID, input, order, literal, operator, or descriptor authority");
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("uint32", "relational_root_node_id", "3") &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2,3|1,2,3,4,5,6,7,8,9") &&
+          has_operand("relational_node_v1", "2",
+                      "5|0|1|1,2,4,5,6,7,8|-") &&
+          has_operand("relational_node_v1", "3",
+                      "2|0|2|1,2,4,5,6,7,8|-") &&
+          has_operand("relational_grouping_set_v1", "0",
+                      "2|" + std::to_string(key_b)) &&
+          has_operand("relational_grouping_set_v1", "1", "2|-") &&
+          has_operand("relational_grouping_set_v1", "2",
+                      "2|" + std::to_string(key_a) + "," +
+                          std::to_string(key_b)) &&
+          has_operand("relational_grouping_set_v1", "3",
+                      "2|" + std::to_string(key_b)) &&
+          has_operand("relational_node_binding_v1", "2",
+                      EncodeHex(kAggregateSemantic) +
+                          "|1,2,3,5,6,7,8|-|-|-") &&
+          has_operand(
+              "relational_node_binding_v1", "3",
+              EncodeHex(kFilterSemantic) +
+                  "|" + std::to_string(predicate_id) + "|-|-|-") &&
+          lowered.payload.find("contains_sql_text=false") !=
+              std::string::npos &&
+          lowered.payload.find("parser_resolved_names_to_uuids=true") !=
+              std::string::npos &&
+          lowered.payload.find("HAVING COUNT") == std::string::npos &&
+          lowered.payload.find("SELECT key_a") == std::string::npos &&
+          lowered.payload.find("query.plan_operation") == std::string::npos &&
+          lowered.payload.find("SBLR_QUERY_PLAN_OPERATION") ==
+              std::string::npos,
+      "GROUPING SETS metadata OR did not lower the exact seven-column canonical DAG");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  const auto& rows = dispatched.api_result.result_shape.rows;
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 3 &&
+          dispatched.physical_node_count == 3 &&
+          dispatched.canonical_result_column_count == 7 &&
+          dispatched.canonical_result_row_count == 11 && rows.size() == 11 &&
+          count_rows(rows,
+                     {std::nullopt, "10", "4", "17", "1", "0", "2"}) == 2 &&
+          count_rows(rows,
+                     {std::nullopt, "20", "1", "7", "1", "0", "2"}) == 2 &&
+          count_rows(rows,
+                     {std::nullopt, "30", "2", std::nullopt, "1", "0", "2"}) == 2 &&
+          count_rows(rows,
+                     {std::nullopt, std::nullopt, "9", "27", "1", "1", "3"}) == 1 &&
+          count_rows(rows, {"1", "10", "2", "5", "0", "0", "0"}) == 1 &&
+          count_rows(rows, {"1", "20", "1", "7", "0", "0", "0"}) == 1 &&
+          count_rows(rows,
+                     {std::nullopt, "10", "1", "8", "0", "0", "0"}) == 1 &&
+          count_rows(rows,
+                     {"3", "30", "2", std::nullopt, "0", "0", "0"}) == 1 &&
+          count_rows(rows,
+                     {std::nullopt, std::nullopt, "1", "3", "1", "0", "2"}) == 0 &&
+          count_rows(rows,
+                     {std::nullopt, "40", "1", std::nullopt, "1", "0", "2"}) == 0 &&
+          count_rows(rows,
+                     {"1", std::nullopt, "1", "3", "0", "0", "0"}) == 0 &&
+          count_rows(rows, {"2", "10", "1", "4", "0", "0", "0"}) == 0 &&
+          count_rows(rows,
+                     {"4", "40", "1", std::nullopt, "0", "0", "0"}) == 0,
+      "GROUPING SETS metadata OR lost exact 11-row SQL three-valued survivor multiplicity");
+
+  const auto parser_refused = [](const std::string_view sql) {
+    const auto document = sbsql::BuildAst(sbsql::BuildCst(std::string(sql)));
+    return document.native_relational.recognized() &&
+           !document.native_relational.accepted() &&
+           HasParserDiagnostic(document.messages,
+                               "QOW-DIAG-QRY-001-AST-MALFORMED");
+  };
+  passed &= Require(
+      parser_refused(
+          "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+          "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+          "AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) "
+          "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_b)) "
+              "HAVING SUM(amount)>6 OR COUNT(*)>1;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_b)) HAVING NOT COUNT(*)>1;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6 OR COUNT(*)>2;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((amount),(),(key_b,key_a),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((),(key_b),(key_b,key_a),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_a,key_b),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_a)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+              "GROUPING(key_b),GROUPING_ID(key_b,key_a) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;") &&
+          parser_refused(
+              "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_b),"
+              "GROUPING(key_a),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+              "AS input(key_a,key_b,amount) GROUP BY GROUPING SETS "
+              "((key_b),(),(key_b,key_a),(key_b)) "
+              "HAVING COUNT(*)>1 OR SUM(amount)>6;"),
+      "GROUPING SETS metadata OR parser admitted advanced, Boolean, projection, member, order, or repetition drift");
+
+  const auto binder_failed = [](const auto& result) {
+    return !result.bound && result.messages.has_errors();
+  };
+  const auto binder_rejects_context = [&](auto mutate) {
+    auto drift = context;
+    mutate(drift);
+    return binder_failed(sbsql::BindAst(
+        ast, cst, ParserConfigForTest(), SessionForTest(), {}, &drift));
+  };
+  const auto binder_rejects_ast = [&](auto mutate) {
+    auto drift = ast;
+    mutate(drift);
+    return binder_failed(sbsql::BindAst(
+        drift, cst, ParserConfigForTest(), SessionForTest(), {}, &context));
+  };
+  const auto forged_metadata_or_binding_fails =
+      [&](const std::string_view sql, const std::string_view semantic) {
+        const auto source_cst = sbsql::BuildCst(std::string(sql));
+        auto source_ast = sbsql::BuildAst(source_cst);
+        if (!source_ast.native_relational.accepted()) return false;
+        auto source_context = GroupedAggregateBindingContext(
+            source_ast.native_relational, semantic);
+        const auto root_id = source_ast.native_relational.relations.back()
+                                 .predicate_expression_ids.front();
+        source_ast.native_relational.expressions[root_id - 1].operator_name =
+            "OR";
+        source_context.relations.back().semantic_variant_id =
+            std::string(kFilterSemantic);
+        return binder_failed(sbsql::BindAst(
+            source_ast, source_cst, ParserConfigForTest(), SessionForTest(),
+            {}, &source_context));
+      };
+  constexpr std::string_view kRollupMetadataAndSql =
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+      "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+      "AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) "
+      "HAVING COUNT(*)>1 AND SUM(amount)>6;";
+  constexpr std::string_view kCubeMetadataAndSql =
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
+      "GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) "
+      "AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) "
+      "HAVING COUNT(*)>1 AND SUM(amount)>6;";
+  passed &= Require(
+      binder_rejects_context([](auto& drift) {
+        drift.relations.front().semantic_variant_id =
+            "aggregate.grouping-sets-int64-keys-count-sum.v1";
+      }) &&
+          binder_rejects_context([](auto& drift) {
+            drift.relations.back().semantic_variant_id =
+                "filter.having-count-sum-and-gt-int64-literals.v1";
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[predicate_id - 1]
+                .operator_name = "AND";
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.expressions[predicate_id - 1]
+                    .child_expression_ids);
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            auto& root =
+                drift.native_relational.expressions[predicate_id - 1];
+            root.expression_kind = sbsql::NativeExpressionAstKind::kUnary;
+            root.operator_name = "NOT";
+            root.child_expression_ids = {count_comparison_id};
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[predicate_id - 1]
+                .child_expression_ids.push_back(count_comparison_id);
+          }) &&
+          binder_rejects_context([&](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.expressions, [&](const auto& expression) {
+                  return expression.expression_id == having_count_id;
+                });
+            item->function_uuid =
+                "019de5fc-2400-72e4-8549-82b2eef5a777";
+          }) &&
+          binder_rejects_context([&](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.expressions, [&](const auto& expression) {
+                  return expression.expression_id == having_sum_id;
+                });
+            item->function_uuid =
+                "019de5fc-2400-784a-9aec-371f8b95b7ea";
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[having_count_id - 1]
+                .child_expression_ids = {having_argument_id};
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[having_sum_id - 1]
+                .child_expression_ids = {key_a};
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[count_comparison_id - 1]
+                .operator_name = ">=";
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[sum_comparison_id - 1]
+                .operator_name = ">=";
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.expressions[count_comparison_id - 1]
+                    .child_expression_ids);
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.expressions[sum_comparison_id - 1]
+                    .child_expression_ids);
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[count_threshold_id - 1]
+                .literal_kind = sbsql::NativeLiteralAstKind::kString;
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[sum_threshold_id - 1]
+                .literal_kind = sbsql::NativeLiteralAstKind::kString;
+          }) &&
+          binder_rejects_context([&](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.expressions, [&](const auto& expression) {
+                  return expression.expression_id == predicate_id;
+                });
+            item->descriptor_id = 9;
+          }) &&
+          binder_rejects_context([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.descriptors, [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 10;
+                });
+            item->nullability = sbsql::BoundNullability::kNonNull;
+          }) &&
+          binder_rejects_context([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.descriptors, [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 9;
+                });
+            item->nullability = sbsql::BoundNullability::kNullable;
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[grouping_a_id - 1]
+                .child_expression_ids = {key_b};
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[grouping_b_id - 1]
+                .child_expression_ids = {key_a};
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.expressions[grouping_id_id - 1]
+                    .child_expression_ids);
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.expressions[grouping_a_id - 1]
+                .operator_name = "grouping_bad";
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            std::swap(
+                drift.native_relational.relations[1].output_expression_ids[4],
+                drift.native_relational.relations[1].output_expression_ids[5]);
+          }) &&
+          binder_rejects_context([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.descriptors, [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->nullability = sbsql::BoundNullability::kNullable;
+          }) &&
+          binder_rejects_context([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.descriptors, [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->collation_uuid =
+                "019f0000-0000-7200-8000-0000000005bf";
+          }) &&
+          binder_rejects_context([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.descriptors, [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->width_precision_scale.width = 32;
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            drift.native_relational.grouping_sets[0].relation_id = 99;
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            drift.native_relational.grouping_sets[0]
+                .expression_ids.push_back(
+                    drift.native_relational.grouping_sets[0]
+                        .expression_ids.front());
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            std::swap(drift.native_relational.grouping_sets[0].expression_ids,
+                      drift.native_relational.grouping_sets[1].expression_ids);
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.grouping_sets[2].expression_ids);
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            drift.native_relational.grouping_sets[1].ordinal = 0;
+          }) &&
+          binder_rejects_ast([](auto& drift) {
+            drift.native_relational.grouping_sets[3].expression_ids =
+                drift.native_relational.grouping_sets[2].expression_ids;
+          }) &&
+          binder_rejects_ast([&](auto& drift) {
+            drift.native_relational.relations[1].output_expression_ids[0] =
+                projected_count_id;
+          }) &&
+          binder_rejects_context([&](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.outputs, [&](const auto& output) {
+                  return output.relation_id == filter.relation_id &&
+                         output.ordinal == 4;
+                });
+            item->expression_id = grouping_b_id;
+          }) &&
+          forged_metadata_or_binding_fails(
+              kRollupMetadataAndSql,
+              "aggregate.rollup-int64-keys-count-sum-grouping.v1") &&
+          forged_metadata_or_binding_fails(
+              kCubeMetadataAndSql,
+              "aggregate.cube-int64-keys-count-sum-grouping.v1"),
+      "GROUPING SETS metadata OR binder admitted semantic, Boolean, UUID, input, operator, literal, descriptor, metadata, lineage, set, ROLLUP, or CUBE drift");
+
+  const auto lowering_failed = [](const auto& envelope) {
+    return envelope.payload.empty() &&
+           HasParserDiagnostic(envelope.messages,
+                               "SBLR.PLAN_TREE.INVALID_HANDLE");
+  };
+  const auto lowering_rejects = [&](auto mutate) {
+    auto drift = bound;
+    mutate(drift);
+    return lowering_failed(
+        sbsql::LowerToSblr(drift, cst, SessionForTest()));
+  };
+  const auto forged_metadata_or_lowering_fails =
+      [&](const std::string_view sql, const std::string_view semantic) {
+        const auto source_cst = sbsql::BuildCst(std::string(sql));
+        const auto source_ast = sbsql::BuildAst(source_cst);
+        const auto source_context = GroupedAggregateBindingContext(
+            source_ast.native_relational, semantic);
+        auto source_bound = sbsql::BindAst(
+            source_ast, source_cst, ParserConfigForTest(), SessionForTest(),
+            {}, &source_context);
+        if (!source_bound.bound) return false;
+        const auto root_id = source_bound.native_relational.relations.back()
+                                 .bound_expression_ids.front();
+        const auto root = std::ranges::find_if(
+            source_bound.native_relational.expressions,
+            [&](const auto& expression) {
+              return expression.expression_id == root_id;
+            });
+        root->canonical_operator_name = "OR";
+        source_bound.native_relational.relations.back().semantic_variant_id =
+            std::string(kFilterSemantic);
+        return lowering_failed(
+            sbsql::LowerToSblr(source_bound, source_cst, SessionForTest()));
+      };
+  const auto mutate_bound_expression =
+      [](auto& drift, const std::uint32_t expression_id, auto mutate) {
+        const auto item = std::ranges::find_if(
+            drift.native_relational.expressions,
+            [&](const auto& expression) {
+              return expression.expression_id == expression_id;
+            });
+        mutate(*item);
+      };
+  passed &= Require(
+      lowering_rejects([](auto& drift) {
+        drift.native_relational.relations[1].semantic_variant_id =
+            "aggregate.grouping-sets-int64-keys-count-sum.v1";
+      }) &&
+          lowering_rejects([](auto& drift) {
+            drift.native_relational.relations[2].semantic_variant_id =
+                "filter.having-count-sum-and-gt-int64-literals.v1";
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(
+                drift, predicate_id,
+                [](auto& item) { item.canonical_operator_name = "AND"; });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, predicate_id, [](auto& item) {
+              std::ranges::reverse(item.child_expression_ids);
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, predicate_id, [&](auto& item) {
+              item.expression_kind =
+                  sbsql::NativeExpressionAstKind::kUnary;
+              item.canonical_operator_name = "NOT";
+              item.child_expression_ids = {count_comparison_id};
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, having_count_id, [](auto& item) {
+              item.bound_function_uuid =
+                  "019de5fc-2400-72e4-8549-82b2eef5a777";
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, having_sum_id, [](auto& item) {
+              item.bound_function_uuid =
+                  "019de5fc-2400-784a-9aec-371f8b95b7ea";
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, having_count_id, [&](auto& item) {
+              item.child_expression_ids = {having_argument_id};
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, having_sum_id, [&](auto& item) {
+              item.child_expression_ids = {key_a};
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(
+                drift, count_comparison_id,
+                [](auto& item) { item.canonical_operator_name = ">="; });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(
+                drift, sum_comparison_id,
+                [](auto& item) { item.canonical_operator_name = ">="; });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, count_comparison_id, [](auto& item) {
+              std::ranges::reverse(item.child_expression_ids);
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, sum_comparison_id, [](auto& item) {
+              std::ranges::reverse(item.child_expression_ids);
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, count_threshold_id, [](auto& item) {
+              item.literal_kind = sbsql::NativeLiteralAstKind::kString;
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, sum_threshold_id, [](auto& item) {
+              item.literal_kind = sbsql::NativeLiteralAstKind::kString;
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, predicate_id, [](auto& item) {
+              item.result_descriptor_id = 9;
+            });
+          }) &&
+          lowering_rejects([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.descriptors,
+                [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 10;
+                });
+            item->nullability = sbsql::BoundNullability::kNonNull;
+          }) &&
+          lowering_rejects([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.descriptors,
+                [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 9;
+                });
+            item->nullability = sbsql::BoundNullability::kNullable;
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, grouping_a_id, [&](auto& item) {
+              item.child_expression_ids = {key_b};
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, grouping_b_id, [&](auto& item) {
+              item.child_expression_ids = {key_a};
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, grouping_id_id, [](auto& item) {
+              std::ranges::reverse(item.child_expression_ids);
+            });
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            mutate_bound_expression(drift, grouping_a_id, [](auto& item) {
+              item.canonical_operator_name = "grouping_bad";
+            });
+          }) &&
+          lowering_rejects([](auto& drift) {
+            std::swap(
+                drift.native_relational.relations[1].output_expression_ids[4],
+                drift.native_relational.relations[1].output_expression_ids[5]);
+          }) &&
+          lowering_rejects([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.descriptors,
+                [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->nullability = sbsql::BoundNullability::kNullable;
+          }) &&
+          lowering_rejects([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.descriptors,
+                [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->collation_uuid =
+                "019f0000-0000-7200-8000-0000000005bf";
+          }) &&
+          lowering_rejects([](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.descriptors,
+                [](const auto& descriptor) {
+                  return descriptor.descriptor_id == 6;
+                });
+            item->width_precision_scale.width = 32;
+          }) &&
+          lowering_rejects([](auto& drift) {
+            drift.native_relational.grouping_sets[0].relation_id = 99;
+          }) &&
+          lowering_rejects([](auto& drift) {
+            drift.native_relational.grouping_sets[0]
+                .expression_ids.push_back(
+                    drift.native_relational.grouping_sets[0]
+                        .expression_ids.front());
+          }) &&
+          lowering_rejects([](auto& drift) {
+            std::swap(drift.native_relational.grouping_sets[0].expression_ids,
+                      drift.native_relational.grouping_sets[1].expression_ids);
+          }) &&
+          lowering_rejects([](auto& drift) {
+            std::ranges::reverse(
+                drift.native_relational.grouping_sets[2].expression_ids);
+          }) &&
+          lowering_rejects([](auto& drift) {
+            drift.native_relational.grouping_sets[1].ordinal = 0;
+          }) &&
+          lowering_rejects([](auto& drift) {
+            drift.native_relational.grouping_sets[3].expression_ids =
+                drift.native_relational.grouping_sets[2].expression_ids;
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            drift.native_relational.relations[1].output_expression_ids[0] =
+                projected_count_id;
+          }) &&
+          lowering_rejects([&](auto& drift) {
+            const auto item = std::ranges::find_if(
+                drift.native_relational.outputs, [&](const auto& output) {
+                  return output.relation_id == filter.relation_id &&
+                         output.ordinal == 4;
+                });
+            item->expression_id = grouping_b_id;
+          }) &&
+          forged_metadata_or_lowering_fails(
+              kRollupMetadataAndSql,
+              "aggregate.rollup-int64-keys-count-sum-grouping.v1") &&
+          forged_metadata_or_lowering_fails(
+              kCubeMetadataAndSql,
+              "aggregate.cube-int64-keys-count-sum-grouping.v1"),
+      "GROUPING SETS metadata OR lowering admitted semantic, Boolean, UUID, input, operator, literal, descriptor, metadata, lineage, set, ROLLUP, or CUBE drift");
+  return passed;
+}
+
+
 
 bool ValidateGroupingSetsGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch() {
   constexpr std::string_view kPreHavingSql =
@@ -5950,12 +6897,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
                      {"4", std::nullopt, "1", std::nullopt}) == 0,
       "ROLLUP OR lost exact eight SQL three-valued survivors");
 
-  constexpr std::string_view kGroupingSetsMetadataAndSql =
-      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
-      "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
-      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
-      "GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) "
-      "HAVING COUNT(*)>1 AND SUM(amount)>6;";
   constexpr std::string_view kRollupMetadataAndSql =
       "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
       "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
@@ -5977,8 +6918,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
     const auto source_cst = sbsql::BuildCst(std::move(sql));
     return sbsql::BuildAst(source_cst);
   };
-  const auto grouping_sets_metadata_or_ast =
-      as_or_ast(kGroupingSetsMetadataAndSql);
   const auto rollup_metadata_or_ast = as_or_ast(kRollupMetadataAndSql);
   const auto cube_metadata_or_ast = as_or_ast(kCubeMetadataAndSql);
   const auto grouping_sets_cst = sbsql::BuildCst(
@@ -6035,7 +6974,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
   };
   passed &= Require(
       parser_refused(grouping_sets_ast) &&
-          parser_refused(grouping_sets_metadata_or_ast) &&
           parser_refused(rollup_metadata_or_ast) &&
           parser_refused(cube_metadata_or_ast) &&
           parser_refused(reversed_ast) && parser_refused(not_ast) &&
@@ -6077,9 +7015,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
         &source_context);
     return std::pair{source_accepted, std::move(result)};
   };
-  const auto grouping_sets_metadata_forged_or = forged_or_binding(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_forged_or = forged_or_binding(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -6254,8 +7189,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
           binder_failed(aggregate_lineage_drift) &&
           binder_failed(output_lineage_drift) &&
           binder_failed(contradictory_grouping_sets_drift) &&
-          grouping_sets_metadata_forged_or.first &&
-          binder_failed(grouping_sets_metadata_forged_or.second) &&
           rollup_metadata_forged_or.first &&
           binder_failed(rollup_metadata_forged_or.second) &&
           cube_metadata_forged_or.first &&
@@ -6291,9 +7224,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
     return std::pair{source_bound_valid, std::move(result)};
   };
-  const auto grouping_sets_metadata_or_lowering = forged_or_lowering(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_or_lowering = forged_or_lowering(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -6508,8 +7438,6 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
           lowering_failed(aggregate_lineage_lowering) &&
           lowering_failed(output_lineage_lowering) &&
           lowering_failed(contradictory_grouping_sets_lowering) &&
-          grouping_sets_metadata_or_lowering.first &&
-          lowering_failed(grouping_sets_metadata_or_lowering.second) &&
           rollup_metadata_or_lowering.first &&
           lowering_failed(rollup_metadata_or_lowering.second) &&
           cube_metadata_or_lowering.first &&
@@ -8606,12 +9534,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
                      {std::nullopt, "40", "1", std::nullopt}) == 0,
       "CUBE OR lost exact eleven SQL three-valued survivors");
 
-  constexpr std::string_view kGroupingSetsMetadataAndSql =
-      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
-      "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
-      "FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) "
-      "GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) "
-      "HAVING COUNT(*)>1 AND SUM(amount)>6;";
   constexpr std::string_view kRollupMetadataAndSql =
       "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),"
       "GROUPING(key_b),GROUPING_ID(key_a,key_b) "
@@ -8633,8 +9555,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
     const auto source_cst = sbsql::BuildCst(std::move(sql));
     return sbsql::BuildAst(source_cst);
   };
-  const auto grouping_sets_metadata_or_ast =
-      as_or_ast(kGroupingSetsMetadataAndSql);
   const auto rollup_metadata_or_ast = as_or_ast(kRollupMetadataAndSql);
   const auto cube_metadata_or_ast = as_or_ast(kCubeMetadataAndSql);
   const auto grouping_sets_cst = sbsql::BuildCst(
@@ -8691,7 +9611,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
   };
   passed &= Require(
       parser_refused(grouping_sets_ast) &&
-          parser_refused(grouping_sets_metadata_or_ast) &&
           parser_refused(rollup_metadata_or_ast) &&
           parser_refused(cube_metadata_or_ast) &&
           parser_refused(reversed_ast) && parser_refused(not_ast) &&
@@ -8733,9 +9652,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
         &source_context);
     return std::pair{source_accepted, std::move(result)};
   };
-  const auto grouping_sets_metadata_forged_or = forged_or_binding(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_forged_or = forged_or_binding(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -8910,8 +9826,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
           binder_failed(aggregate_lineage_drift) &&
           binder_failed(output_lineage_drift) &&
           binder_failed(contradictory_grouping_sets_drift) &&
-          grouping_sets_metadata_forged_or.first &&
-          binder_failed(grouping_sets_metadata_forged_or.second) &&
           rollup_metadata_forged_or.first &&
           binder_failed(rollup_metadata_forged_or.second) &&
           cube_metadata_forged_or.first &&
@@ -8947,9 +9861,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
     return std::pair{source_bound_valid, std::move(result)};
   };
-  const auto grouping_sets_metadata_or_lowering = forged_or_lowering(
-      kGroupingSetsMetadataAndSql,
-      "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1");
   const auto rollup_metadata_or_lowering = forged_or_lowering(
       kRollupMetadataAndSql,
       "aggregate.rollup-int64-keys-count-sum-grouping.v1");
@@ -9164,8 +10075,6 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
           lowering_failed(aggregate_lineage_lowering) &&
           lowering_failed(output_lineage_lowering) &&
           lowering_failed(contradictory_grouping_sets_lowering) &&
-          grouping_sets_metadata_or_lowering.first &&
-          lowering_failed(grouping_sets_metadata_or_lowering.second) &&
           rollup_metadata_or_lowering.first &&
           lowering_failed(rollup_metadata_or_lowering.second) &&
           cube_metadata_or_lowering.first &&
@@ -11072,6 +11981,8 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-001-BINDING-GROUPING-SETS-HAVING-SUM-GT-V1
 // QOW-TEST-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
 // QOW-TEST-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-V1
+// QOW-TEST-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+// QOW-TEST-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
 // QOW-TEST-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
 // QOW-TEST-QRY-001-BINDING-GROUPING-SETS-GROUPING-METADATA-HAVING-SUM-GT-V1
 // QOW-TEST-QRY-001-ROLLUP-V1
@@ -11119,6 +12030,8 @@ int main() {
   passed &= ValidateGroupingSetsSumHavingParserBindingLoweringAndDispatch();
   passed &=
       ValidateGroupingSetsGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch();
+  passed &=
+      ValidateGroupingSetsGroupingMetadataOrHavingParserBindingLoweringAndDispatch();
   passed &=
       ValidateGroupingSetsGroupingMetadataSumHavingParserBindingLoweringAndDispatch();
   passed &= ValidateRollupParserBindingLoweringAndDispatch();

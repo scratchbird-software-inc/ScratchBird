@@ -974,6 +974,25 @@ class NativeRelationalParser final {
           document_.grouping_sets[3].ordinal == 3 &&
           document_.grouping_sets[3].expression_ids ==
               document_.grouping_sets[0].expression_ids;
+      // QOW-SOURCE-QRY-001-GROUPING-SETS-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+      const bool grouping_sets_metadata_or_profile =
+          !one_key_grouping_profile && count_sum_or_profile &&
+          grouping_form == NativeAggregateGroupingForm::kGroupingSets &&
+          projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+          key_a.has_value() && key_b.has_value() &&
+          document_.grouping_sets.size() == 4 &&
+          document_.grouping_sets[0].ordinal == 0 &&
+          document_.grouping_sets[0].expression_ids ==
+              std::vector<std::uint32_t>{*key_b} &&
+          document_.grouping_sets[1].ordinal == 1 &&
+          document_.grouping_sets[1].expression_ids.empty() &&
+          document_.grouping_sets[2].ordinal == 2 &&
+          document_.grouping_sets[2].expression_ids ==
+              std::vector<std::uint32_t>{*key_b, *key_a} &&
+          document_.grouping_sets[3].ordinal == 3 &&
+          document_.grouping_sets[3].expression_ids ==
+              document_.grouping_sets[0].expression_ids;
       const bool rollup_or_profile =
           !one_key_grouping_profile && count_sum_or_profile &&
           grouping_form == NativeAggregateGroupingForm::kRollup &&
@@ -1013,6 +1032,7 @@ class NativeRelationalParser final {
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
           !ordinary_two_key_or_profile && !grouping_sets_or_profile &&
+          !grouping_sets_metadata_or_profile &&
           !rollup_or_profile &&
           !cube_or_profile &&
           !ordinary_two_key_sum_profile &&

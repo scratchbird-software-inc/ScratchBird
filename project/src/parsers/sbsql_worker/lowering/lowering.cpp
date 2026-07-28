@@ -35287,6 +35287,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           expressions_by_id.find(aggregate_relation->output_expression_ids[5]);
       const auto grouping_id =
           expressions_by_id.find(aggregate_relation->output_expression_ids[6]);
+      const auto metadata_descriptor_is_exact =
+          [&](const auto expression) {
+            if (expression == expressions_by_id.end()) return false;
+            const auto descriptor = std::ranges::find_if(
+                native.descriptors, [&](const auto& item) {
+                  return item.descriptor_id ==
+                         expression->second->result_descriptor_id;
+                });
+            return descriptor != native.descriptors.end() &&
+                   descriptor->nullability == BoundNullability::kNonNull &&
+                   !descriptor->collation_uuid.has_value() &&
+                   !descriptor->timezone_profile_id.has_value() &&
+                   !descriptor->width_precision_scale.width.has_value() &&
+                   !descriptor->width_precision_scale.precision.has_value() &&
+                   !descriptor->width_precision_scale.scale.has_value();
+          };
       if (grouping_a == expressions_by_id.end() ||
           grouping_b == expressions_by_id.end() ||
           grouping_id == expressions_by_id.end() ||
@@ -35306,10 +35322,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeExpressionAstKind::kBinary ||
           grouping_id->second->canonical_operator_name != "grouping_id" ||
           grouping_id->second->child_expression_ids !=
-              aggregate_relation->grouping_key_expression_ids) {
+              aggregate_relation->grouping_key_expression_ids ||
+          !metadata_descriptor_is_exact(grouping_a) ||
+          !metadata_descriptor_is_exact(grouping_b) ||
+          !metadata_descriptor_is_exact(grouping_id)) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed grouping metadata projections do not match the ordered keys");
+            "typed grouping metadata projections do not match the ordered keys and non-null descriptors");
         return envelope;
       }
     }
@@ -35506,6 +35525,31 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         native.grouping_sets[3].ordinal == 3 &&
         native.grouping_sets[3].expression_ids ==
             native.grouping_sets[0].expression_ids;
+    // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-GROUPING-METADATA-HAVING-COUNT-SUM-OR-GT-V1
+    const bool admitted_grouping_sets_metadata_or_having =
+        count_sum_or_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kGroupingSets &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSumGrouping &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.size() == 4 &&
+        native.grouping_sets[0].relation_id == aggregate_relation->relation_id &&
+        native.grouping_sets[0].ordinal == 0 &&
+        native.grouping_sets[0].expression_ids ==
+            std::vector<std::uint32_t>{
+                aggregate_relation->grouping_key_expression_ids[1]} &&
+        native.grouping_sets[1].relation_id == aggregate_relation->relation_id &&
+        native.grouping_sets[1].ordinal == 1 &&
+        native.grouping_sets[1].expression_ids.empty() &&
+        native.grouping_sets[2].relation_id == aggregate_relation->relation_id &&
+        native.grouping_sets[2].ordinal == 2 &&
+        native.grouping_sets[2].expression_ids ==
+            aggregate_relation->grouping_key_expression_ids &&
+        native.grouping_sets[3].relation_id == aggregate_relation->relation_id &&
+        native.grouping_sets[3].ordinal == 3 &&
+        native.grouping_sets[3].expression_ids ==
+            native.grouping_sets[0].expression_ids;
     // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-HAVING-COUNT-SUM-OR-GT-V1
     const bool admitted_rollup_or_having =
         count_sum_or_profile &&
@@ -35591,6 +35635,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
     if ((!admitted_one_key_or_having && !admitted_two_key_or_having &&
          !admitted_grouping_sets_or_having &&
+         !admitted_grouping_sets_metadata_or_having &&
          !admitted_rollup_or_having &&
          !admitted_cube_or_having &&
          !admitted_simple_having &&
