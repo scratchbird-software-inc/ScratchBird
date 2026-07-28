@@ -35506,6 +35506,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         native.grouping_sets[3].ordinal == 3 &&
         native.grouping_sets[3].expression_ids ==
             native.grouping_sets[0].expression_ids;
+    // QOW-SOURCE-QRY-001-LOWERING-ROLLUP-HAVING-COUNT-SUM-OR-GT-V1
+    const bool admitted_rollup_or_having =
+        count_sum_or_profile &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kRollup &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeysCountSum &&
+        aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+        native.grouping_sets.empty();
     // QOW-SOURCE-QRY-001-LOWERING-GROUPING-SETS-HAVING-SUM-GT-V1
     const bool admitted_grouping_sets_sum_having =
         !count_sum_boolean_profile &&
@@ -35573,6 +35582,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kKeysCountSumGrouping));
     if ((!admitted_one_key_or_having && !admitted_two_key_or_having &&
          !admitted_grouping_sets_or_having &&
+         !admitted_rollup_or_having &&
          !admitted_simple_having &&
          !admitted_grouping_sets_sum_having &&
          !admitted_grouping_sets_metadata_sum_having &&
