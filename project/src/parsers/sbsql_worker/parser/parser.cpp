@@ -807,6 +807,7 @@ class NativeRelationalParser final {
     std::optional<std::uint32_t> having_predicate;
     if (!AtEnd() && IsWord(Current(), "HAVING")) {
       // QOW-SOURCE-QRY-001-HAVING-SUM-GT-V1
+      // QOW-SOURCE-QRY-001-HAVING-COUNT-SUM-AND-GT-V1
       if (!one_key_grouping_profile ||
           grouping_form != NativeAggregateGroupingForm::kSimple ||
           projection_form != NativeAggregateProjectionForm::kKeyCountSum) {
@@ -815,33 +816,91 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       Consume();
+      allow_count_star_expression_ = true;
       having_predicate = ParseExpression(0, 0);
+      allow_count_star_expression_ = false;
       if (!having_predicate.has_value()) return FinishRefusal();
       const auto& predicate = document_.expressions[*having_predicate - 1];
-      if (predicate.expression_kind != NativeExpressionAstKind::kBinary ||
-          predicate.operator_name != ">" ||
-          predicate.child_expression_ids.size() != 2) {
+      const auto expression_by_id = [&](const std::uint32_t expression_id)
+          -> const NativeExpressionAstNode* {
+        if (expression_id == 0 ||
+            expression_id > document_.expressions.size()) {
+          return nullptr;
+        }
+        return &document_.expressions[expression_id - 1];
+      };
+      const auto match_numeric_threshold =
+          [&](const std::uint32_t expression_id) {
+            const auto* threshold = expression_by_id(expression_id);
+            return threshold != nullptr &&
+                   threshold->expression_kind ==
+                       NativeExpressionAstKind::kLiteral &&
+                   threshold->literal_kind == NativeLiteralAstKind::kNumeric;
+          };
+      const auto match_sum_comparison =
+          [&](const NativeExpressionAstNode& comparison) {
+            if (comparison.expression_kind !=
+                    NativeExpressionAstKind::kBinary ||
+                comparison.operator_name != ">" ||
+                comparison.child_expression_ids.size() != 2 ||
+                !match_numeric_threshold(
+                    comparison.child_expression_ids[1])) {
+              return false;
+            }
+            const auto* having_sum =
+                expression_by_id(comparison.child_expression_ids[0]);
+            if (having_sum == nullptr ||
+                having_sum->expression_kind !=
+                    NativeExpressionAstKind::kFunctionCall ||
+                ToUpperAscii(having_sum->operator_name) != "SUM" ||
+                having_sum->child_expression_ids.size() != 1) {
+              return false;
+            }
+            const auto* argument =
+                expression_by_id(having_sum->child_expression_ids[0]);
+            return argument != nullptr &&
+                   argument->expression_kind ==
+                       NativeExpressionAstKind::kIdentifier &&
+                   ToUpperAscii(argument->spelling) == column_names.back();
+          };
+      const auto match_count_comparison =
+          [&](const NativeExpressionAstNode& comparison) {
+            if (comparison.expression_kind !=
+                    NativeExpressionAstKind::kBinary ||
+                comparison.operator_name != ">" ||
+                comparison.child_expression_ids.size() != 2 ||
+                !match_numeric_threshold(
+                    comparison.child_expression_ids[1])) {
+              return false;
+            }
+            const auto* having_count =
+                expression_by_id(comparison.child_expression_ids[0]);
+            return having_count != nullptr &&
+                   having_count->expression_kind ==
+                       NativeExpressionAstKind::kFunctionCall &&
+                   ToUpperAscii(having_count->operator_name) == "COUNT" &&
+                   having_count->child_expression_ids.empty();
+      };
+      const bool simple_sum_profile = match_sum_comparison(predicate);
+      const auto* count_conjunct =
+          predicate.child_expression_ids.size() == 2
+              ? expression_by_id(predicate.child_expression_ids[0])
+              : nullptr;
+      const auto* sum_conjunct =
+          predicate.child_expression_ids.size() == 2
+              ? expression_by_id(predicate.child_expression_ids[1])
+              : nullptr;
+      const bool count_sum_and_profile =
+          predicate.expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate.operator_name == "AND" &&
+          predicate.child_expression_ids.size() == 2 &&
+          count_conjunct != nullptr && sum_conjunct != nullptr &&
+          match_count_comparison(*count_conjunct) &&
+          match_sum_comparison(*sum_conjunct);
+      if (!simple_sum_profile && !count_sum_and_profile) {
         Refuse("having_predicate_shape_invalid",
-               "native HAVING profile requires SUM(value) > numeric literal");
-        return FinishRefusal();
-      }
-      const auto& having_sum = document_.expressions[
-          predicate.child_expression_ids[0] - 1];
-      const auto& threshold = document_.expressions[
-          predicate.child_expression_ids[1] - 1];
-      if (having_sum.expression_kind !=
-              NativeExpressionAstKind::kFunctionCall ||
-          ToUpperAscii(having_sum.operator_name) != "SUM" ||
-          having_sum.child_expression_ids.size() != 1 ||
-          document_.expressions[having_sum.child_expression_ids[0] - 1]
-                  .expression_kind != NativeExpressionAstKind::kIdentifier ||
-          ToUpperAscii(
-              document_.expressions[having_sum.child_expression_ids[0] - 1]
-                  .spelling) != column_names.back() ||
-          threshold.expression_kind != NativeExpressionAstKind::kLiteral ||
-          threshold.literal_kind != NativeLiteralAstKind::kNumeric) {
-        Refuse("having_predicate_shape_invalid",
-               "native HAVING profile requires SUM(value) > numeric literal");
+               "native HAVING profile requires SUM(value) > numeric literal "
+               "or COUNT(*) > numeric literal AND SUM(value) > numeric literal");
         return FinishRefusal();
       }
     }
@@ -1120,6 +1179,25 @@ class NativeRelationalParser final {
     }
 
     Consume();
+    if (allow_count_star_expression_ &&
+        ToUpperAscii(SourceSpelling(first, *last_name_token)) == "COUNT" &&
+        AtSymbol("*")) {
+      Consume();
+      if (!AtSymbol(")")) {
+        Refuse("count_star_close_required",
+               "COUNT(*) requires a closing parenthesis");
+        return std::nullopt;
+      }
+      const Token& close = Consume();
+      NativeExpressionAstNode function_call;
+      function_call.expression_id = NextExpressionId();
+      function_call.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      function_call.operator_name = SourceSpelling(first, *last_name_token);
+      function_call.range = Span(first, close);
+      function_call.spelling = SourceSpelling(first, close);
+      document_.expressions.push_back(std::move(function_call));
+      return document_.expressions.back().expression_id;
+    }
     std::vector<std::uint32_t> argument_ids;
     if (!AtSymbol(")")) {
       while (!AtEnd()) {
@@ -1199,6 +1277,7 @@ class NativeRelationalParser final {
   const CstDocument& cst_;
   std::vector<const Token*> tokens_;
   std::size_t cursor_{0};
+  bool allow_count_star_expression_{false};
   NativeRelationalAstDocument document_;
 };
 
