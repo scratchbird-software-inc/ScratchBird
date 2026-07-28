@@ -276,9 +276,14 @@ bool LooksLikeUuidV7(const std::string_view value) {
 std::string_view ExpectedAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
-  if (grouping_form == NativeAggregateGroupingForm::kSimple &&
-      projection_form == NativeAggregateProjectionForm::kKeyCountSum) {
-    return "aggregate.grouped-int64-key-count-sum.v1";
+  if (grouping_form == NativeAggregateGroupingForm::kSimple) {
+    if (projection_form == NativeAggregateProjectionForm::kKeyCountSum) {
+      return "aggregate.grouped-int64-key-count-sum.v1";
+    }
+    if (projection_form == NativeAggregateProjectionForm::kKeysCountSum) {
+      return "aggregate.grouped-int64-keys-count-sum.v1";
+    }
+    return {};
   }
   const bool projects_grouping_metadata =
       projection_form ==
@@ -649,22 +654,26 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool projects_grouping_metadata =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeysCountSumGrouping;
-      const bool simple_profile =
+      const bool one_key_profile =
           relation.aggregate_grouping_form ==
               NativeAggregateGroupingForm::kSimple &&
           projects_key_count_sum;
       const bool two_key_profile =
           (relation.aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kSimple &&
+           projects_keys_count_sum) ||
+          ((relation.aggregate_grouping_form ==
                NativeAggregateGroupingForm::kGroupingSets ||
            relation.aggregate_grouping_form ==
                NativeAggregateGroupingForm::kRollup ||
            relation.aggregate_grouping_form ==
                NativeAggregateGroupingForm::kCube) &&
-          (projects_keys_count_sum || projects_grouping_metadata);
+           (projects_keys_count_sum || projects_grouping_metadata));
       const std::size_t expected_output_count =
-          simple_profile ? 3 : (projects_grouping_metadata ? 7 : 4);
+          one_key_profile ? 3 : (projects_grouping_metadata ? 7 : 4);
       bool output_shape_matches = false;
-      if (simple_profile && relation.grouping_key_expression_ids.size() == 1 &&
+      if (one_key_profile &&
+          relation.grouping_key_expression_ids.size() == 1 &&
           relation.aggregate_expression_ids.size() == 2 &&
           relation.output_expression_ids.size() == 3) {
         output_shape_matches =
@@ -693,7 +702,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation.relation_id != ast.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
-          (!simple_profile && !two_key_profile) ||
+          (!one_key_profile && !two_key_profile) ||
           relation.output_expression_ids.size() != expected_output_count ||
           !output_shape_matches) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",

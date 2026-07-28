@@ -200,6 +200,14 @@ LiveGroupedCountSumProfile MatchLiveGroupedCountSumProfile(
     result.transformation_id =
         "canonical.aggregate.grouped-int64-key-count-sum.v1";
   } else if (semantic_variant_id ==
+             "aggregate.grouped-int64-keys-count-sum.v1") {
+    // QOW-SOURCE-QRY-005-LIVE-TWO-KEY-GROUP-BY-V1
+    result.matched = true;
+    result.key_count = 2;
+    result.grouping_sets = {{{0, 1}}};
+    result.transformation_id =
+        "canonical.aggregate.grouped-int64-keys-count-sum.v1";
+  } else if (semantic_variant_id ==
              "aggregate.rollup-int64-keys-count-sum.v1") {
     result.matched = true;
     result.key_count = 2;

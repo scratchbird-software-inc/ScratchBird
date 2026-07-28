@@ -450,10 +450,10 @@ class NativeRelationalParser final {
                        "native grouped aggregate projection requires aggregate expressions")) {
       return FinishRefusal();
     }
-    const bool simple_grouping =
+    const bool one_key_grouping_profile =
         !AtEnd() && IsWord(Current(), "COUNT");
     std::optional<std::uint32_t> key_b;
-    if (!simple_grouping) {
+    if (!one_key_grouping_profile) {
       key_b = ParseExpression(0, 0);
       if (!key_b.has_value() ||
           !RequireSymbol(",", "select_separator_required",
@@ -477,7 +477,7 @@ class NativeRelationalParser final {
         key_b.has_value() ? &document_.expressions[*key_b - 1] : nullptr;
     const auto& sum_expression = document_.expressions[*sum - 1];
     if (key_a_expression.expression_kind != NativeExpressionAstKind::kIdentifier ||
-        (!simple_grouping &&
+        (!one_key_grouping_profile &&
          (key_b_expression == nullptr ||
           key_b_expression->expression_kind !=
               NativeExpressionAstKind::kIdentifier)) ||
@@ -494,10 +494,11 @@ class NativeRelationalParser final {
     const auto sum_child = sum_expression.child_expression_ids.front();
 
     NativeAggregateProjectionForm projection_form =
-        simple_grouping ? NativeAggregateProjectionForm::kKeyCountSum
-                        : NativeAggregateProjectionForm::kKeysCountSum;
+        one_key_grouping_profile
+            ? NativeAggregateProjectionForm::kKeyCountSum
+            : NativeAggregateProjectionForm::kKeysCountSum;
     std::vector<std::uint32_t> grouping_projection_ids;
-    if (!simple_grouping && AtSymbol(",")) {
+    if (!one_key_grouping_profile && AtSymbol(",")) {
       // QOW-SOURCE-QRY-001-GROUPING-METADATA-V1
       projection_form =
           NativeAggregateProjectionForm::kKeysCountSumGrouping;
@@ -557,7 +558,8 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
-    const std::size_t expected_source_arity = simple_grouping ? 2 : 3;
+    const std::size_t expected_source_arity =
+        one_key_grouping_profile ? 2 : 3;
     if (document_.values_rows.empty() ||
         row_arity != expected_source_arity) {
       Refuse("inline_values_arity_invalid",
@@ -611,7 +613,7 @@ class NativeRelationalParser final {
     }
     const auto& sum_argument = document_.expressions[sum_child - 1];
     if (ToUpperAscii(key_a_spelling) != column_names[0] ||
-        (!simple_grouping &&
+        (!one_key_grouping_profile &&
          ToUpperAscii(key_b_spelling) != column_names[1]) ||
         sum_argument.expression_kind != NativeExpressionAstKind::kIdentifier ||
         ToUpperAscii(sum_argument.spelling) !=
@@ -631,13 +633,36 @@ class NativeRelationalParser final {
     NativeAggregateGroupingForm grouping_form =
         NativeAggregateGroupingForm::kNone;
     const Token* query_end = nullptr;
-    if (simple_grouping) {
+    if (one_key_grouping_profile) {
       // QOW-SOURCE-QRY-001-SIMPLE-GROUP-BY-V1
       grouping_form = NativeAggregateGroupingForm::kSimple;
       if (AtEnd() || !IsNameToken(Current()) ||
           CanonicalTokenText(Current()) != column_names[0]) {
         Refuse("simple_grouping_key_invalid",
                "ordinary GROUP BY must name the projected grouping key exactly");
+        return FinishRefusal();
+      }
+      query_end = &Consume();
+    } else if (!AtEnd() && IsNameToken(Current()) &&
+               CanonicalTokenText(Current()) == column_names[0]) {
+      // QOW-SOURCE-QRY-001-SIMPLE-TWO-KEY-GROUP-BY-V1
+      if (projection_form != NativeAggregateProjectionForm::kKeysCountSum) {
+        Refuse("simple_grouping_projection_invalid",
+               "ordinary two-key GROUP BY does not admit grouping metadata "
+               "projections");
+        return FinishRefusal();
+      }
+      grouping_form = NativeAggregateGroupingForm::kSimple;
+      Consume();
+      if (!RequireSymbol(",", "simple_grouping_key_separator_required",
+                         "ordinary two-key GROUP BY requires both projected keys") ||
+          AtEnd() || !IsNameToken(Current()) ||
+          CanonicalTokenText(Current()) != column_names[1]) {
+        if (!document_.messages.has_errors()) {
+          Refuse("simple_grouping_second_key_invalid",
+                 "ordinary two-key GROUP BY must name the second projected key "
+                 "exactly");
+        }
         return FinishRefusal();
       }
       query_end = &Consume();
@@ -774,7 +799,8 @@ class NativeRelationalParser final {
       query_end = &Consume();
     } else {
       Refuse("grouping_form_required",
-             "native aggregate profile requires GROUPING SETS, ROLLUP, or CUBE");
+             "native aggregate profile requires ordinary GROUP BY, GROUPING "
+             "SETS, ROLLUP, or CUBE");
       return FinishRefusal();
     }
 
