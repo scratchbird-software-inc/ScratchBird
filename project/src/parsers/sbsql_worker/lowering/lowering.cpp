@@ -34767,6 +34767,10 @@ std::string EncodeOptionalCanonicalU32(
 std::string_view ExpectedNativeAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
+  if (grouping_form == NativeAggregateGroupingForm::kSimple &&
+      projection_form == NativeAggregateProjectionForm::kKeyCountSum) {
+    return "aggregate.grouped-int64-key-count-sum.v1";
+  }
   const bool projects_grouping_metadata =
       projection_form ==
       NativeAggregateProjectionForm::kKeysCountSumGrouping;
@@ -34787,6 +34791,7 @@ std::string_view ExpectedNativeAggregateSemanticVariant(
       return projects_grouping_metadata
                  ? "aggregate.cube-int64-keys-count-sum-grouping.v1"
                  : "aggregate.cube-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kSimple:
     case NativeAggregateGroupingForm::kNone:
       return {};
   }
@@ -34952,28 +34957,38 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
       values_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      const bool projects_key_count_sum =
+          relation.aggregate_projection_form ==
+          NativeAggregateProjectionForm::kKeyCountSum;
       const bool projects_keys_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeysCountSum;
       const bool projects_grouping_metadata =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      const bool simple_profile =
+          relation.aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          projects_key_count_sum;
+      const bool two_key_profile =
+          (relation.aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kGroupingSets ||
+           relation.aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kRollup ||
+           relation.aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kCube) &&
+          (projects_keys_count_sum || projects_grouping_metadata);
       const std::size_t expected_output_count =
-          projects_grouping_metadata ? 7 : 4;
+          simple_profile ? 3 : (projects_grouping_metadata ? 7 : 4);
       if (aggregate_relation != nullptr ||
           relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
-          relation.grouping_key_expression_ids.size() != 2 ||
+          relation.grouping_key_expression_ids.size() !=
+              (simple_profile ? 1 : 2) ||
           relation.aggregate_expression_ids.size() != 2 ||
-          (!projects_keys_count_sum && !projects_grouping_metadata) ||
+          (!simple_profile && !two_key_profile) ||
           relation.output_expression_ids.size() != expected_output_count ||
-          (relation.aggregate_grouping_form !=
-               NativeAggregateGroupingForm::kGroupingSets &&
-           relation.aggregate_grouping_form !=
-               NativeAggregateGroupingForm::kRollup &&
-           relation.aggregate_grouping_form !=
-               NativeAggregateGroupingForm::kCube) ||
           relation.bound_expression_ids != relation.output_expression_ids ||
           relation.semantic_variant_id !=
               ExpectedNativeAggregateSemanticVariant(
@@ -35000,6 +35015,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              NativeAggregateGroupingForm::kGroupingSets &&
          native.grouping_sets.empty()) ||
         ((aggregate_relation->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple ||
+          aggregate_relation->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kRollup ||
           aggregate_relation->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kCube) &&
@@ -35181,14 +35198,34 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   if (aggregate_relation != nullptr) {
-    if (aggregate_relation->output_expression_ids[0] !=
-            aggregate_relation->grouping_key_expression_ids[0] ||
-        aggregate_relation->output_expression_ids[1] !=
-            aggregate_relation->grouping_key_expression_ids[1] ||
-        aggregate_relation->output_expression_ids[2] !=
-            aggregate_relation->aggregate_expression_ids[0] ||
-        aggregate_relation->output_expression_ids[3] !=
-            aggregate_relation->aggregate_expression_ids[1]) {
+    const bool simple_profile =
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kSimple &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kKeyCountSum;
+    const bool output_shape_matches =
+        simple_profile
+            ? aggregate_relation->output_expression_ids.size() == 3 &&
+                  aggregate_relation->grouping_key_expression_ids.size() == 1 &&
+                  aggregate_relation->aggregate_expression_ids.size() == 2 &&
+                  aggregate_relation->output_expression_ids[0] ==
+                      aggregate_relation->grouping_key_expression_ids[0] &&
+                  aggregate_relation->output_expression_ids[1] ==
+                      aggregate_relation->aggregate_expression_ids[0] &&
+                  aggregate_relation->output_expression_ids[2] ==
+                      aggregate_relation->aggregate_expression_ids[1]
+            : aggregate_relation->output_expression_ids.size() >= 4 &&
+                  aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+                  aggregate_relation->aggregate_expression_ids.size() == 2 &&
+                  aggregate_relation->output_expression_ids[0] ==
+                      aggregate_relation->grouping_key_expression_ids[0] &&
+                  aggregate_relation->output_expression_ids[1] ==
+                      aggregate_relation->grouping_key_expression_ids[1] &&
+                  aggregate_relation->output_expression_ids[2] ==
+                      aggregate_relation->aggregate_expression_ids[0] &&
+                  aggregate_relation->output_expression_ids[3] ==
+                      aggregate_relation->aggregate_expression_ids[1];
+    if (!output_shape_matches) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "typed aggregate output expressions do not match its keys and states");

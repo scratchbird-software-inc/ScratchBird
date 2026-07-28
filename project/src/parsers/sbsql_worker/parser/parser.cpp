@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -296,15 +297,33 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeSupportedGroupingQuery() const {
+    bool has_count = false;
+    bool has_sum = false;
+    bool has_inline_values_source = false;
+    for (std::size_t index = 0; index < tokens_.size(); ++index) {
+      has_count = has_count || IsWord(*tokens_[index], "COUNT");
+      has_sum = has_sum || IsWord(*tokens_[index], "SUM");
+      if (index + 2 < tokens_.size() &&
+          IsWord(*tokens_[index], "FROM") &&
+          tokens_[index + 1]->text == "(" &&
+          IsWord(*tokens_[index + 2], "VALUES")) {
+        has_inline_values_source = true;
+      }
+    }
     for (std::size_t index = 0; index + 2 < tokens_.size(); ++index) {
       if (IsWord(*tokens_[index], "GROUP") &&
-          IsWord(*tokens_[index + 1], "BY") &&
-          (IsWord(*tokens_[index + 2], "ROLLUP") ||
-           IsWord(*tokens_[index + 2], "CUBE") ||
-           (index + 3 < tokens_.size() &&
-            IsWord(*tokens_[index + 2], "GROUPING") &&
-            IsWord(*tokens_[index + 3], "SETS")))) {
-        return true;
+          IsWord(*tokens_[index + 1], "BY")) {
+        const bool fixed_two_key_form =
+            IsWord(*tokens_[index + 2], "ROLLUP") ||
+            IsWord(*tokens_[index + 2], "CUBE") ||
+            (index + 3 < tokens_.size() &&
+             IsWord(*tokens_[index + 2], "GROUPING") &&
+             IsWord(*tokens_[index + 3], "SETS"));
+        if (fixed_two_key_form ||
+            (has_count && has_sum && has_inline_values_source &&
+             IsNameToken(*tokens_[index + 2]))) {
+          return true;
+        }
       }
     }
     return false;
@@ -428,14 +447,19 @@ class NativeRelationalParser final {
     const auto key_a = ParseExpression(0, 0);
     if (!key_a.has_value() ||
         !RequireSymbol(",", "select_separator_required",
-                       "native grouped aggregate projection requires four expressions")) {
+                       "native grouped aggregate projection requires aggregate expressions")) {
       return FinishRefusal();
     }
-    const auto key_b = ParseExpression(0, 0);
-    if (!key_b.has_value() ||
-        !RequireSymbol(",", "select_separator_required",
-                       "native grouped aggregate projection requires four expressions")) {
-      return FinishRefusal();
+    const bool simple_grouping =
+        !AtEnd() && IsWord(Current(), "COUNT");
+    std::optional<std::uint32_t> key_b;
+    if (!simple_grouping) {
+      key_b = ParseExpression(0, 0);
+      if (!key_b.has_value() ||
+          !RequireSymbol(",", "select_separator_required",
+                         "two-key grouped aggregate projection requires COUNT(*)")) {
+        return FinishRefusal();
+      }
     }
     const auto count = ParseCountStar();
     if (!count.has_value() ||
@@ -449,25 +473,31 @@ class NativeRelationalParser final {
     }
 
     const auto& key_a_expression = document_.expressions[*key_a - 1];
-    const auto& key_b_expression = document_.expressions[*key_b - 1];
+    const NativeExpressionAstNode* key_b_expression =
+        key_b.has_value() ? &document_.expressions[*key_b - 1] : nullptr;
     const auto& sum_expression = document_.expressions[*sum - 1];
     if (key_a_expression.expression_kind != NativeExpressionAstKind::kIdentifier ||
-        key_b_expression.expression_kind != NativeExpressionAstKind::kIdentifier ||
+        (!simple_grouping &&
+         (key_b_expression == nullptr ||
+          key_b_expression->expression_kind !=
+              NativeExpressionAstKind::kIdentifier)) ||
         sum_expression.expression_kind != NativeExpressionAstKind::kFunctionCall ||
         ToUpperAscii(sum_expression.operator_name) != "SUM" ||
         sum_expression.child_expression_ids.size() != 1) {
       Refuse("grouping_projection_shape_invalid",
-             "native grouped aggregate profile requires key_a, key_b, COUNT(*), SUM(value)");
+             "native grouped aggregate profile requires one or two keys, COUNT(*), and SUM(value)");
       return FinishRefusal();
     }
     const auto key_a_spelling = key_a_expression.spelling;
-    const auto key_b_spelling = key_b_expression.spelling;
+    const auto key_b_spelling =
+        key_b_expression == nullptr ? std::string{} : key_b_expression->spelling;
     const auto sum_child = sum_expression.child_expression_ids.front();
 
     NativeAggregateProjectionForm projection_form =
-        NativeAggregateProjectionForm::kKeysCountSum;
+        simple_grouping ? NativeAggregateProjectionForm::kKeyCountSum
+                        : NativeAggregateProjectionForm::kKeysCountSum;
     std::vector<std::uint32_t> grouping_projection_ids;
-    if (AtSymbol(",")) {
+    if (!simple_grouping && AtSymbol(",")) {
       // QOW-SOURCE-QRY-001-GROUPING-METADATA-V1
       projection_form =
           NativeAggregateProjectionForm::kKeysCountSumGrouping;
@@ -527,9 +557,11 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
-    if (document_.values_rows.empty() || row_arity != 3) {
+    const std::size_t expected_source_arity = simple_grouping ? 2 : 3;
+    if (document_.values_rows.empty() ||
+        row_arity != expected_source_arity) {
       Refuse("inline_values_arity_invalid",
-             "native grouped aggregate profile requires three VALUES columns");
+             "native grouped aggregate source arity does not match its grouping profile");
       return FinishRefusal();
     }
     const Token& values_end = Previous();
@@ -563,21 +595,27 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
     }
+    const bool duplicate_column_name =
+        std::unordered_set<std::string>(column_names.begin(),
+                                        column_names.end()).size() !=
+        column_names.size();
     if (!RequireSymbol(")", "inline_values_columns_not_closed",
                        "inline VALUES column alias list is not closed") ||
-        column_names.size() != 3 || column_names[0] == column_names[1] ||
-        column_names[0] == column_names[2] || column_names[1] == column_names[2]) {
+        column_names.size() != expected_source_arity ||
+        duplicate_column_name) {
       if (!document_.messages.has_errors()) {
         Refuse("inline_values_columns_invalid",
-               "inline VALUES source requires three unique column aliases");
+               "inline VALUES source requires the exact unique column aliases for its grouping profile");
       }
       return FinishRefusal();
     }
     const auto& sum_argument = document_.expressions[sum_child - 1];
     if (ToUpperAscii(key_a_spelling) != column_names[0] ||
-        ToUpperAscii(key_b_spelling) != column_names[1] ||
+        (!simple_grouping &&
+         ToUpperAscii(key_b_spelling) != column_names[1]) ||
         sum_argument.expression_kind != NativeExpressionAstKind::kIdentifier ||
-        ToUpperAscii(sum_argument.spelling) != column_names[2]) {
+        ToUpperAscii(sum_argument.spelling) !=
+            column_names[expected_source_arity - 1]) {
       Refuse("inline_values_projection_mismatch",
              "grouped aggregate projection must bind the declared inline VALUES columns");
       return FinishRefusal();
@@ -593,7 +631,17 @@ class NativeRelationalParser final {
     NativeAggregateGroupingForm grouping_form =
         NativeAggregateGroupingForm::kNone;
     const Token* query_end = nullptr;
-    if (!AtEnd() && IsWord(Current(), "GROUPING")) {
+    if (simple_grouping) {
+      // QOW-SOURCE-QRY-001-SIMPLE-GROUP-BY-V1
+      grouping_form = NativeAggregateGroupingForm::kSimple;
+      if (AtEnd() || !IsNameToken(Current()) ||
+          CanonicalTokenText(Current()) != column_names[0]) {
+        Refuse("simple_grouping_key_invalid",
+               "ordinary GROUP BY must name the projected grouping key exactly");
+        return FinishRefusal();
+      }
+      query_end = &Consume();
+    } else if (!AtEnd() && IsWord(Current(), "GROUPING")) {
       grouping_form = NativeAggregateGroupingForm::kGroupingSets;
       Consume();
       if (!RequireWord("SETS", "grouping_sets_required",
@@ -753,11 +801,19 @@ class NativeRelationalParser final {
     aggregate_relation.aggregate_grouping_form = grouping_form;
     aggregate_relation.aggregate_projection_form = projection_form;
     aggregate_relation.input_relation_ids = {1};
-    aggregate_relation.output_expression_ids = {*key_a, *key_b, *count, *sum};
+    aggregate_relation.output_expression_ids = {*key_a};
+    if (key_b.has_value()) {
+      aggregate_relation.output_expression_ids.push_back(*key_b);
+    }
+    aggregate_relation.output_expression_ids.push_back(*count);
+    aggregate_relation.output_expression_ids.push_back(*sum);
     aggregate_relation.output_expression_ids.insert(
         aggregate_relation.output_expression_ids.end(),
         grouping_projection_ids.begin(), grouping_projection_ids.end());
-    aggregate_relation.grouping_key_expression_ids = {*key_a, *key_b};
+    aggregate_relation.grouping_key_expression_ids = {*key_a};
+    if (key_b.has_value()) {
+      aggregate_relation.grouping_key_expression_ids.push_back(*key_b);
+    }
     aggregate_relation.aggregate_expression_ids = {*count, *sum};
     aggregate_relation.range = Span(select_token, *query_end);
     document_.relations.push_back(std::move(values_relation));

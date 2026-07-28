@@ -58,6 +58,7 @@ enum class NativeRelationAstKind {
 
 enum class NativeAggregateGroupingForm {
   kNone,
+  kSimple,
   kGroupingSets,
   kRollup,
   kCube,
@@ -65,6 +66,7 @@ enum class NativeAggregateGroupingForm {
 
 enum class NativeAggregateProjectionForm {
   kNone,
+  kKeyCountSum,
   kKeysCountSum,
   kKeysCountSumGrouping,
 };

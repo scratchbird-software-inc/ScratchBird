@@ -1441,6 +1441,7 @@ std::string NativeAggregateGroupingFormName(
     NativeAggregateGroupingForm form) {
   switch (form) {
     case NativeAggregateGroupingForm::kNone: return "none";
+    case NativeAggregateGroupingForm::kSimple: return "simple";
     case NativeAggregateGroupingForm::kGroupingSets: return "grouping_sets";
     case NativeAggregateGroupingForm::kRollup: return "rollup";
     case NativeAggregateGroupingForm::kCube: return "cube";
@@ -1452,6 +1453,8 @@ std::string NativeAggregateProjectionFormName(
     NativeAggregateProjectionForm form) {
   switch (form) {
     case NativeAggregateProjectionForm::kNone: return "none";
+    case NativeAggregateProjectionForm::kKeyCountSum:
+      return "key_count_sum";
     case NativeAggregateProjectionForm::kKeysCountSum:
       return "keys_count_sum";
     case NativeAggregateProjectionForm::kKeysCountSumGrouping:
