@@ -46,12 +46,44 @@ concept HasCallerExecutorRegistry = requires(T value) {
   value.available_executors;
 };
 
+template <typename T>
+concept HasCallerPhysicalBatch = requires(T value) {
+  value.physical_output_batch;
+};
+
+template <typename T>
+concept HasCallerColumnBindings = requires(T value) {
+  value.column_bindings;
+};
+
+template <typename T>
+concept HasCallerRelationPointer = requires(T value) {
+  value.relation_uuid;
+};
+
+template <typename T>
+concept HasCallerColumnUuid = requires(T value) {
+  value.column_uuid;
+};
+
 static_assert(!HasCallerCandidates<exec::CanonicalHeapRelationAcquisitionRequest>);
 static_assert(!HasCallerRelationUuid<exec::CanonicalHeapRelationAcquisitionRequest>);
 static_assert(!HasCallerCandidates<exec::CanonicalHeapPhysicalDagDispatchRequest>);
 static_assert(!HasCallerRelationUuid<exec::CanonicalHeapPhysicalDagDispatchRequest>);
 static_assert(
     !HasCallerExecutorRegistry<exec::CanonicalHeapPhysicalDagDispatchRequest>);
+static_assert(!HasCallerExecutorRegistry<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerPhysicalBatch<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerColumnBindings<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerCandidates<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerRelationPointer<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerColumnUuid<
+              api::CanonicalHeapOptimizerSelectedExecutionRequest>);
 
 [[noreturn]] void Fail(std::string_view detail) {
   std::cerr << "QOW-TEST-QRY-004-HEAP-MGA-V1: " << detail << '\n';
@@ -542,6 +574,25 @@ exec::CanonicalHeapPhysicalDagDispatchRequest DispatchRequestFor(
   return request;
 }
 
+api::CanonicalHeapOptimizerSelectedExecutionRequest SelectedRequestFor(
+    const exec::CanonicalHeapRelationAcquisitionRequest& acquisition,
+    const platform::u64 salt) {
+  api::CanonicalHeapOptimizerSelectedExecutionRequest request;
+  request.context = *acquisition.context;
+  request.relational_dag = *acquisition.relational_dag;
+  request.selected_physical_dag = acquisition.physical_dag;
+  request.maximum_scanned_row_versions =
+      acquisition.maximum_scanned_row_versions;
+  request.maximum_decoded_bytes = acquisition.maximum_decoded_bytes;
+  request.maximum_output_rows = acquisition.maximum_output_rows;
+  request.cancellation_requested = acquisition.cancellation_requested;
+  request.execution_attempt_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 1);
+  request.transaction_effect_evidence_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 2);
+  return request;
+}
+
 void RequireAtomicFailure(
     const exec::CanonicalHeapRelationAcquisitionResult& result,
     std::string_view detail) {
@@ -561,6 +612,19 @@ void RequireAtomicDispatchFailure(
               result.selected_plan_uuid.empty() &&
               result.executed_root_physical_node_id == 0 &&
               result.root_causal_counter_id == 0,
+          detail);
+}
+
+void RequireAtomicSelectedFailure(
+    const api::CanonicalOptimizerSelectedExecutionResult& result,
+    std::string_view detail) {
+  Require(!result.accepted && !result.canonical_result_published &&
+              !result.result_publication.published &&
+              result.result_publication.envelope.column_descriptors.empty() &&
+              result.result_publication.row_stream.columns.empty() &&
+              result.result_publication.row_stream.rows.empty() &&
+              result.result_publication.delivery_records.empty() &&
+              result.result_publication.canonical_envelope_bytes.empty(),
           detail);
 }
 
@@ -783,6 +847,8 @@ void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
   Require(step.execution_ordinal == 1 && step.execution_started &&
               step.execution_finished &&
               step.counters_captured_after_finish &&
+              step.data_access_observation_known &&
+              step.data_access_observed &&
               step.input_row_count == 0 && step.output_row_count == 3 &&
               step.rows_examined >= step.output_row_count &&
               step.selected_plan_uuid == first.selected_plan_uuid &&
@@ -868,6 +934,8 @@ void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
   Require(empty.diagnostic.ok && empty.execution_started &&
               !empty.data_access_observed &&
               empty.executed_steps.size() == 1 &&
+              empty.executed_steps.front().data_access_observation_known &&
+              !empty.executed_steps.front().data_access_observed &&
               empty.executed_steps.front().materialized_output_batch.has_value() &&
               empty.executed_steps.front()
                   .materialized_output_batch->columns.size() == 1 &&
@@ -1042,6 +1110,419 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
 
   ReleaseRequest(&acquisition);
   Rollback(reader);
+}
+
+exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
+    const std::string& encoded_descriptor,
+    const bool physical_nullable,
+    const exec::CanonicalResultNullability published_nullability,
+    const platform::u64 salt) {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 1);
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = encoded_descriptor;
+  exec::CanonicalResultPublicationRequest request;
+  request.statement_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 2);
+  request.execution_attempt_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 3);
+  request.transaction_effect_evidence_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 4);
+  request.physical_output_batch.columns.push_back(
+      {"value", descriptor, physical_nullable, 1});
+  exec::CanonicalResultColumnDescriptor published;
+  published.ordinal = 0;
+  published.name_utf8 = "value";
+  published.descriptor_uuid = descriptor.descriptor_uuid.canonical;
+  published.type_uuid = std::string(kTypeUuid);
+  published.nullability = published_nullability;
+  request.column_bindings.push_back({0, true, published});
+  return exec::PublishCanonicalResultEnvelope(request);
+}
+
+void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
+  const std::string prefix =
+      "canonical=int64;type_uuid=" + std::string(kTypeUuid) + ";";
+  auto result = PublishDescriptorCarrier(
+      prefix + "nullable=true", true,
+      exec::CanonicalResultNullability::kNullable, fixture.salt + 400);
+  Require(result.diagnostic.ok && result.published,
+          "persisted nullable=true carrier was refused");
+  result = PublishDescriptorCarrier(
+      prefix + "nullable=false", false,
+      exec::CanonicalResultNullability::kNonNull, fixture.salt + 410);
+  Require(result.diagnostic.ok && result.published,
+          "persisted nullable=false carrier was refused");
+  result = PublishDescriptorCarrier(
+      prefix + "nullability=nullable", true,
+      exec::CanonicalResultNullability::kNullable, fixture.salt + 420);
+  Require(result.diagnostic.ok && result.published,
+          "canonical nullability carrier regressed");
+  result = PublishDescriptorCarrier(
+      prefix + "nullability=nullable;nullable=true", true,
+      exec::CanonicalResultNullability::kNullable, fixture.salt + 430);
+  Require(result.diagnostic.ok && result.published,
+          "agreeing nullability carriers were refused");
+  result = PublishDescriptorCarrier(
+      prefix + "nullability=unknown", true,
+      exec::CanonicalResultNullability::kUnknown, fixture.salt + 435);
+  Require(result.diagnostic.ok && result.published,
+          "canonical unknown nullability spelling regressed");
+
+  const std::vector<std::string> refused{
+      "canonical=int64;type_uuid=" + std::string(kTypeUuid),
+      prefix + "nullable=True",
+      prefix + "nullable=true;nullable=true",
+      prefix + "nullability=nullable;nullable=false",
+      prefix + "nullability=indeterminate"};
+  for (std::size_t index = 0; index < refused.size(); ++index) {
+    result = PublishDescriptorCarrier(
+        refused[index], true, exec::CanonicalResultNullability::kNullable,
+        fixture.salt + 440 + index * 10);
+    Require(!result.diagnostic.ok && !result.published &&
+                result.canonical_envelope_bytes.empty() &&
+                result.delivery_records.empty(),
+            "missing, malformed, duplicate, contradictory, or unknown "
+            "nullability carrier was accepted");
+  }
+}
+
+// QOW-TEST-QRY-004-HEAP-RESULT-V1
+void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-result-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 500);
+  auto acquisition = RequestFor(reader, fixture.main_table_uuid,
+                                fixture.salt + 510);
+  const auto persisted =
+      api::LoadMgaRelationStorageDescriptor(reader, fixture.main_table_uuid);
+  Require(persisted.ok && persisted.descriptor.columns.size() == 1,
+          "result fixture descriptor load failed");
+  auto request = SelectedRequestFor(acquisition, fixture.salt + 520);
+  const auto first = api::ExecuteCanonicalHeapOptimizerSelectedDag(request);
+  Require(first.accepted && first.exact_selected_nodes_executed &&
+              first.causal_counters_attached &&
+              first.canonical_result_published &&
+              first.data_access_observed && !first.replan_required &&
+              first.issues.empty() && first.dispatch.diagnostic.ok &&
+              first.dispatch.executed_steps.size() == 1 &&
+              first.dispatch.data_access_observed &&
+              first.dispatch.executed_steps.front()
+                  .data_access_observation_known &&
+              first.dispatch.executed_steps.front().data_access_observed &&
+              first.runtime_actuals.accepted &&
+              first.runtime_actuals.post_execution_actuals &&
+              first.runtime_actuals.data_access_observed &&
+              first.runtime_actuals.node_actuals.size() == 1,
+          "actual database heap scan did not close the selected execution spine");
+  const auto& publication = first.result_publication;
+  Require(publication.diagnostic.ok && publication.published &&
+              publication.envelope.statement_uuid ==
+                  reader.statement_uuid.canonical &&
+              publication.envelope.execution_attempt_uuid ==
+                  request.execution_attempt_uuid &&
+              publication.envelope.column_descriptors.size() == 1 &&
+              publication.envelope.column_descriptors.front().ordinal == 0 &&
+              publication.envelope.column_descriptors.front().name_utf8 ==
+                  "value" &&
+              publication.envelope.column_descriptors.front()
+                      .descriptor_uuid ==
+                  persisted.descriptor.columns.front()
+                      .value_descriptor.descriptor_uuid.canonical &&
+              publication.envelope.column_descriptors.front().type_uuid ==
+                  kTypeUuid &&
+              publication.envelope.column_descriptors.front().nullability ==
+                  exec::CanonicalResultNullability::kNullable &&
+              publication.envelope.row_count == 3 &&
+              publication.row_stream.columns.size() == 1 &&
+              publication.row_stream.rows.size() == 3 &&
+              publication.delivery_records.size() == 4 &&
+              publication.delivery_records.front().kind ==
+                  exec::CanonicalResultDeliveryKind::kMetadata &&
+              !publication.canonical_envelope_bytes.empty(),
+          "selected heap result lost derived metadata, rows, or delivery order");
+  for (std::size_t index = 1; index < publication.delivery_records.size();
+       ++index) {
+    Require(publication.delivery_records[index].kind ==
+                exec::CanonicalResultDeliveryKind::kRow &&
+                publication.delivery_records[index].row_ordinal == index - 1,
+            "selected result did not deliver metadata before ordered rows");
+  }
+  Require(PreservesPersistedDescriptorFields(
+              publication.row_stream.columns.front().descriptor,
+              persisted.descriptor.columns.front().value_descriptor) &&
+              publication.row_stream.columns.front().descriptor
+                      .encoded_descriptor.find("nullable=true") !=
+                  std::string::npos &&
+              publication.row_stream.columns.front().descriptor
+                      .encoded_descriptor.find("nullability=") ==
+                  std::string::npos,
+          "selected result rewrote the persisted boolean nullability carrier");
+  std::size_t null_count = 0;
+  for (const auto& row : publication.row_stream.rows) {
+    if (row.values.front().state == api::EngineValueState::sql_null) {
+      ++null_count;
+    }
+  }
+  Require(null_count == 1, "selected result lost the persisted SQL NULL");
+
+  const auto repeated =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(request);
+  Require(repeated.accepted &&
+              repeated.result_publication.canonical_envelope_bytes ==
+                  publication.canonical_envelope_bytes &&
+              repeated.result_publication.row_stream.rows.size() == 3,
+          "same-snapshot selected result bytes were unstable");
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+
+  auto empty_reader = QueryContext(Begin(fixture, "qow-heap-result-empty"),
+                                   fixture.empty_table_uuid,
+                                   fixture.salt + 540);
+  auto empty_acquisition = RequestFor(empty_reader, fixture.empty_table_uuid,
+                                      fixture.salt + 550);
+  const auto empty = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+      SelectedRequestFor(empty_acquisition, fixture.salt + 560));
+  Require(empty.accepted && empty.canonical_result_published &&
+              !empty.data_access_observed &&
+              !empty.dispatch.data_access_observed &&
+              empty.dispatch.executed_steps.size() == 1 &&
+              empty.dispatch.executed_steps.front()
+                  .data_access_observation_known &&
+              !empty.dispatch.executed_steps.front().data_access_observed &&
+              empty.runtime_actuals.accepted &&
+              !empty.runtime_actuals.data_access_observed &&
+              empty.result_publication.envelope.column_descriptors.size() == 1 &&
+              empty.result_publication.envelope.row_count == 0 &&
+              empty.result_publication.row_stream.columns.size() == 1 &&
+              empty.result_publication.row_stream.rows.empty() &&
+              empty.result_publication.delivery_records.size() == 1 &&
+              empty.result_publication.delivery_records.front().kind ==
+                  exec::CanonicalResultDeliveryKind::kMetadata,
+          "typed empty heap result did not retain completed zero-read truth");
+  ReleaseRequest(&empty_acquisition);
+  Rollback(empty_reader);
+}
+
+void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-result-refusals"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 600);
+  auto acquisition = RequestFor(reader, fixture.main_table_uuid,
+                                fixture.salt + 610);
+  const auto baseline = SelectedRequestFor(acquisition, fixture.salt + 620);
+
+  const auto require_preflight_refusal = [&](const auto& request,
+                                              std::string_view detail) {
+    const auto refused =
+        api::ExecuteCanonicalHeapOptimizerSelectedDag(request);
+    RequireAtomicSelectedFailure(refused, detail);
+    Require(!refused.data_access_observed,
+            "selected preflight refusal reported heap data");
+  };
+
+  auto mutated = baseline;
+  mutated.context.statement_uuid.canonical.clear();
+  require_preflight_refusal(mutated,
+                            "missing context statement UUID was accepted");
+
+  mutated = baseline;
+  mutated.execution_attempt_uuid.clear();
+  auto result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "missing execution attempt UUID was accepted");
+  Require(!result.data_access_observed,
+          "missing execution attempt UUID reached heap data");
+
+  mutated = baseline;
+  mutated.transaction_effect_evidence_uuid = "NOT-A-UUID";
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(
+      result, "malformed transaction-effect evidence UUID was accepted");
+  Require(!result.data_access_observed,
+          "malformed transaction-effect UUID reached heap data");
+
+  mutated = baseline;
+  mutated.execution_attempt_uuid = mutated.context.statement_uuid.canonical;
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "equal statement/execution UUIDs were accepted");
+  Require(!result.data_access_observed,
+          "equal statement/execution UUIDs reached heap data");
+
+  mutated = baseline;
+  mutated.transaction_effect_evidence_uuid = mutated.execution_attempt_uuid;
+  require_preflight_refusal(mutated,
+                            "equal execution/effect UUIDs were accepted");
+
+  mutated = baseline;
+  mutated.maximum_scanned_row_versions = 0;
+  require_preflight_refusal(mutated,
+                            "zero selected scanned-row bound was accepted");
+  mutated = baseline;
+  mutated.maximum_decoded_bytes = 0;
+  require_preflight_refusal(mutated,
+                            "zero selected decoded-byte bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_rows = 0;
+  require_preflight_refusal(mutated,
+                            "zero selected output-row bound was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().visible = false;
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "hidden sole result binding was accepted");
+  Require(!result.data_access_observed,
+          "hidden result binding reached heap data");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().ordinal = 1;
+  require_preflight_refusal(mutated,
+                            "nonzero sole result ordinal was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().descriptor_id = 2;
+  require_preflight_refusal(mutated,
+                            "result descriptor identity drift was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().expression_id = 2;
+  require_preflight_refusal(mutated,
+                            "result expression identity drift was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.front().bound_name_uuid = "bad-uuid";
+  require_preflight_refusal(mutated,
+                            "bound column UUID drift was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().descriptor_uuid = "bad-uuid";
+  require_preflight_refusal(mutated,
+                            "result descriptor UUID drift was accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.front().child_expression_ids = {1};
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "non-leaf identifier result was accepted");
+  Require(!result.data_access_observed,
+          "non-leaf identifier result reached heap data");
+
+  mutated = baseline;
+  auto extra_output = mutated.relational_dag.outputs.front();
+  extra_output.output_id = 2;
+  extra_output.ordinal = 1;
+  mutated.relational_dag.outputs.push_back(extra_output);
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "multiple result bindings entered heap execution");
+  Require(!result.data_access_observed,
+          "multiple result bindings reached heap data");
+
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().implementation_id =
+      "scan.index.v1";
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "non-heap implementation entered result route");
+  Require(!result.data_access_observed,
+          "non-heap implementation reached heap data");
+
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().executor_capability_uuid.clear();
+  require_preflight_refusal(mutated,
+                            "missing selected capability UUID was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front()
+      .executor_capability_abi_version = 2;
+  require_preflight_refusal(mutated,
+                            "wrong selected capability ABI was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().node_kind =
+      exec::PhysicalNodeKind::kFilter;
+  require_preflight_refusal(mutated,
+                            "wrong selected physical kind was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.root_physical_node_id = 999;
+  require_preflight_refusal(mutated,
+                            "wrong selected physical root was accepted");
+  mutated = baseline;
+  ++mutated.selected_physical_dag.local_transaction_id;
+  require_preflight_refusal(mutated,
+                            "selected transaction drift was accepted");
+  mutated = baseline;
+  ++mutated.selected_physical_dag.statement_snapshot_id;
+  require_preflight_refusal(mutated,
+                            "selected statement snapshot drift was accepted");
+
+  mutated = baseline;
+  mutated.cancellation_requested = [] { return true; };
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "pre-registration cancellation was ignored");
+  Require(!result.data_access_observed,
+          "pre-registration cancellation reported heap data");
+
+  mutated = baseline;
+  mutated.context.authorization_context.grants.front().deny = true;
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(result,
+                               "denied selected heap scan published a result");
+  Require(!result.data_access_observed && !result.issues.empty(),
+          "pre-read selected refusal retained callback-started read truth");
+
+  mutated = baseline;
+  api::EngineMaterializedAuthorizationPolicy policy;
+  policy.policy_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 630);
+  policy.subject_uuid = mutated.context.principal_uuid;
+  policy.subject_kind = "principal";
+  policy.target_uuid.canonical = fixture.main_table_uuid;
+  policy.right = "SELECT";
+  policy.requires_runtime_recheck = true;
+  policy.policy_epoch = mutated.context.authorization_context.policy_epoch;
+  mutated.context.authorization_context.policies.push_back(std::move(policy));
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(
+      result, "indeterminate selected authorization published a result");
+  Require(!result.data_access_observed,
+          "indeterminate selected authorization reported heap data");
+
+  mutated = baseline;
+  mutated.maximum_output_rows = 1;
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(
+      result, "post-read output-bound refusal published a partial result");
+  Require(result.data_access_observed && !result.issues.empty() &&
+              result.dispatch.executed_steps.empty(),
+          "selected refusal did not preserve top-level known read truth "
+          "while withholding partial dispatch details");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().output_name_utf8 = "wrong_name";
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(
+      result, "result name disagreement published an envelope");
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+
+  auto malformed_context = QueryContext(
+      Begin(fixture, "qow-heap-result-malformed"),
+      fixture.malformed_table_uuid, fixture.salt + 640);
+  auto malformed_acquisition = RequestFor(
+      malformed_context, fixture.malformed_table_uuid, fixture.salt + 650);
+  result = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+      SelectedRequestFor(malformed_acquisition, fixture.salt + 660));
+  RequireAtomicSelectedFailure(
+      result, "malformed stored row published a selected result");
+  Require(result.data_access_observed && !result.issues.empty(),
+          "post-read malformed-row refusal lost known read truth");
+  ReleaseRequest(&malformed_acquisition);
+  Rollback(malformed_context);
 }
 
 void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
@@ -1365,6 +1846,9 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
 int main() {
   auto fixture = MakeFixture();
+  ValidateOptimizerSelectedHeapResultMatrix(fixture);
+  ValidateOptimizerSelectedHeapResultRefusals(fixture);
+  ValidateStorageNullabilityCarrierMatrix(fixture);
   ValidatePhysicalHeapDispatchMatrix(fixture);
   ValidatePhysicalHeapDispatchRefusals(fixture);
   ValidatePositiveAndVisibilityMatrix(fixture);

@@ -1063,6 +1063,13 @@ struct CanonicalPhysicalDispatchStepResult {
   std::optional<CanonicalHeapRelationAcquisitionCounters> heap_read_counters;
   std::optional<CanonicalHeapRelationAcquisitionAuthorityEvidence>
       heap_read_authority;
+  // QOW-SOURCE-QRY-004-DATA-ACCESS-OBSERVATION-V1
+  // Executors that can distinguish an empty completed read from a callback
+  // that may have touched data publish that truth explicitly. Legacy
+  // executors leave the observation unknown and the dispatcher falls back to
+  // conservative callback-started semantics.
+  bool data_access_observation_known = false;
+  bool data_access_observed = false;
   std::string current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation = 0;
   // Only an engine executor may attach a materialized typed batch. The

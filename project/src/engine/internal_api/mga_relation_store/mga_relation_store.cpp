@@ -11090,6 +11090,12 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
           const std::vector<CanonicalPhysicalDispatchInput>& inputs) {
         CanonicalPhysicalDispatchStepResult step;
         observation->callback_invoked = true;
+        // QOW-SOURCE-QRY-004-DATA-ACCESS-OBSERVATION-V1
+        // This engine-owned callback always knows whether the bounded heap
+        // acquisition crossed its physical-read boundary, including refusal
+        // returns.
+        step.data_access_observation_known = true;
+        step.data_access_observed = false;
         if (!inputs.empty()) {
           step.diagnostic = HeapAcquisitionRefusal(
               "QOW-DIAG-QRY-004-HEAP-DISPATCH-INPUT-V1",
@@ -11131,6 +11137,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
             ExecuteCanonicalHeapRelationAcquisition(acquisition_request);
         observation->data_access_observed = acquisition.data_access_observed;
         observation->cancellation_observed = acquisition.cancellation_observed;
+        step.data_access_observed = acquisition.data_access_observed;
         if (!acquisition.diagnostic.ok) {
           step.diagnostic = std::move(acquisition.diagnostic);
           return step;
@@ -11247,3 +11254,173 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
 }
 
 }  // namespace scratchbird::engine::executor
+
+namespace scratchbird::engine::internal_api {
+
+// QOW-SOURCE-QRY-004-HEAP-RESULT-V1
+// Closes the one-leaf heap profile by deriving all executor and publication
+// bindings from admitted engine-owned authority and then entering the single
+// canonical optimizer-selected execution spine.
+CanonicalOptimizerSelectedExecutionResult
+ExecuteCanonicalHeapOptimizerSelectedDag(
+    const CanonicalHeapOptimizerSelectedExecutionRequest& request) {
+  namespace exec = scratchbird::engine::executor;
+  const auto refuse = [](std::string diagnostic_id,
+                         std::uint64_t physical_node_id,
+                         std::string field_id) {
+    CanonicalOptimizerSelectedExecutionResult result;
+    result.issues.push_back({std::move(diagnostic_id), physical_node_id,
+                             std::move(field_id)});
+    return result;
+  };
+
+  const auto& context = request.context;
+  const auto& relational = request.relational_dag;
+  const auto& physical = request.selected_physical_dag;
+  if (!exec::IsCanonicalHeapBindingUuid(context.statement_uuid.canonical) ||
+      !exec::IsCanonicalHeapBindingUuid(request.execution_attempt_uuid) ||
+      !exec::IsCanonicalHeapBindingUuid(
+          request.transaction_effect_evidence_uuid) ||
+      context.statement_uuid.canonical == request.execution_attempt_uuid ||
+      context.statement_uuid.canonical ==
+          request.transaction_effect_evidence_uuid ||
+      request.execution_attempt_uuid ==
+          request.transaction_effect_evidence_uuid) {
+    return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-IDENTITY-V1", 0,
+                  "statement_execution_effect_uuid");
+  }
+  if (!request.cancellation_requested ||
+      request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.maximum_output_rows == 0) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0,
+                  "heap_result_resource_bounds");
+  }
+
+  const auto relational_validation = ValidateTypedRelationalDag(relational);
+  if (!relational_validation.accepted) {
+    const auto& issue = relational_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.node_id, issue.field_id);
+  }
+  const auto physical_validation = exec::ValidateTypedPhysicalNodeDag(physical);
+  if (!physical_validation.accepted) {
+    const auto& issue = physical_validation.issues.front();
+    return refuse(issue.diagnostic_id, issue.physical_node_id, issue.field_id);
+  }
+  if (relational.wire_version != 2 || relational.nodes.size() != 1 ||
+      relational.root_node_id != relational.nodes.front().node_id ||
+      relational.nodes.front().node_kind != RelationalDagNodeKind::kScan ||
+      relational.nodes.front().semantic_variant_id != "relation.source.v1" ||
+      !relational.nodes.front().input_node_ids.empty() ||
+      relational.nodes.front().required_object_uuids.size() != 1 ||
+      relational.nodes.front().bound_expression_ids.size() != 1 ||
+      relational.nodes.front().output_descriptor_ids.size() != 1 ||
+      relational.expressions.size() != 1 || relational.descriptors.size() != 1 ||
+      relational.outputs.size() != 1 || !relational.outputs.front().visible ||
+      relational.outputs.front().ordinal != 0) {
+    return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-PROFILE-V1", 0,
+                  "relation.source.v1_one_leaf_output");
+  }
+  if (physical.abi_version != 2 || physical.nodes.size() != 1 ||
+      physical.root_physical_node_id != physical.nodes.front().physical_node_id ||
+      physical.nodes.front().node_kind != exec::PhysicalNodeKind::kScan ||
+      physical.nodes.front().implementation_id != "scan.heap.v1" ||
+      !physical.nodes.front().input_physical_node_ids.empty() ||
+      physical.nodes.front().relational_node_id != relational.root_node_id ||
+      physical.nodes.front().output_descriptor_ids.size() != 1) {
+    return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-PROFILE-V1", 0,
+                  "scan.heap.v1_one_leaf_root");
+  }
+
+  const auto& relational_node = relational.nodes.front();
+  const auto& expression = relational.expressions.front();
+  const auto& descriptor = relational.descriptors.front();
+  const auto& output = relational.outputs.front();
+  const auto& physical_node = physical.nodes.front();
+  if (output.relation_node_id != relational_node.node_id ||
+      output.expression_id != expression.expression_id ||
+      output.descriptor_id != descriptor.descriptor_id ||
+      relational_node.bound_expression_ids.front() != expression.expression_id ||
+      relational_node.output_descriptor_ids.front() != descriptor.descriptor_id ||
+      expression.expression_kind != RelationalExpressionKind::kIdentifier ||
+      !expression.child_expression_ids.empty() ||
+      expression.result_descriptor_id != descriptor.descriptor_id ||
+      !expression.bound_name_uuid.has_value() ||
+      !exec::IsCanonicalHeapBindingUuid(*expression.bound_name_uuid) ||
+      !exec::IsCanonicalHeapBindingUuid(
+          relational_node.required_object_uuids.front()) ||
+      !exec::IsCanonicalHeapBindingUuid(descriptor.descriptor_uuid) ||
+      !exec::IsCanonicalHeapBindingUuid(descriptor.type_uuid) ||
+      descriptor.nullability == RelationalNullability::kUnknown ||
+      output.output_name_utf8.empty() ||
+      physical_node.output_descriptor_ids.front() != descriptor.descriptor_id ||
+      (descriptor.collation_uuid.has_value() &&
+       !exec::IsCanonicalHeapBindingUuid(*descriptor.collation_uuid)) ||
+      (descriptor.timezone_profile_id.has_value() &&
+       descriptor.timezone_profile_id->empty())) {
+    return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-BINDING-V1",
+                  physical_node.physical_node_id,
+                  "relational_expression_descriptor_physical_agreement");
+  }
+
+  exec::CanonicalHeapPhysicalDagDispatchRequest registration_request;
+  registration_request.context = &request.context;
+  registration_request.relational_dag = &request.relational_dag;
+  registration_request.physical_dag = request.selected_physical_dag;
+  registration_request.maximum_scanned_row_versions =
+      request.maximum_scanned_row_versions;
+  registration_request.maximum_decoded_bytes = request.maximum_decoded_bytes;
+  registration_request.maximum_output_rows = request.maximum_output_rows;
+  registration_request.cancellation_requested = request.cancellation_requested;
+  auto built = exec::BuildHeapPhysicalRegistration(registration_request);
+  if (!built.diagnostic.ok || !built.registration.has_value() ||
+      built.observation == nullptr) {
+    if (built.diagnostic.ok) {
+      built.diagnostic = exec::HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-IMPLEMENTATION-UNAVAILABLE-V1",
+          "engine heap executor registration is unavailable");
+    }
+    return refuse(std::move(built.diagnostic.diagnostic_code),
+                  physical_node.physical_node_id,
+                  std::move(built.diagnostic.detail));
+  }
+
+  exec::CanonicalResultColumnDescriptor published;
+  published.ordinal = 0;
+  published.name_utf8 = output.output_name_utf8;
+  published.descriptor_uuid = descriptor.descriptor_uuid;
+  published.type_uuid = descriptor.type_uuid;
+  published.nullability =
+      descriptor.nullability == RelationalNullability::kNullable
+          ? exec::CanonicalResultNullability::kNullable
+          : exec::CanonicalResultNullability::kNonNull;
+  published.collation_uuid = descriptor.collation_uuid;
+  published.timezone_profile_id = descriptor.timezone_profile_id;
+
+  CanonicalOptimizerSelectedExecutionRequest selected;
+  selected.selected_physical_dag = request.selected_physical_dag;
+  selected.pre_access_statistics_snapshot_uuid =
+      request.selected_physical_dag.statistics_snapshot_uuid;
+  selected.inventory_local_transaction_id = context.local_transaction_id;
+  selected.inventory_statement_snapshot_id =
+      context.snapshot_visible_through_local_transaction_id;
+  selected.available_executors.push_back(std::move(*built.registration));
+  selected.engine_execution_authorized = true;
+  selected.result_publication_request.statement_uuid =
+      context.statement_uuid.canonical;
+  selected.result_publication_request.execution_attempt_uuid =
+      request.execution_attempt_uuid;
+  selected.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  selected.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  selected.result_publication_request.column_bindings.push_back(
+      {0, true, std::move(published)});
+  selected.result_publication_request.transaction_effect_evidence_uuid =
+      request.transaction_effect_evidence_uuid;
+  selected.result_publication_request.maximum_row_count =
+      request.maximum_output_rows;
+  return ExecuteCanonicalOptimizerSelectedDag(selected);
+}
+
+}  // namespace scratchbird::engine::internal_api

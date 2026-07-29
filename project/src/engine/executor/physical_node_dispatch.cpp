@@ -49,13 +49,14 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const CanonicalPhysicalDagDispatchRequest& request) {
   CanonicalPhysicalDagDispatchResult result;
   bool execution_started = false;
+  bool data_access_observed = false;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic,
                           const bool replan = false) {
     result = {};
     result.diagnostic = std::move(diagnostic);
     result.replan_required = replan;
     result.execution_started = execution_started;
-    result.data_access_observed = execution_started;
+    result.data_access_observed = data_access_observed;
     return result;
   };
 
@@ -158,14 +159,25 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
       step = executors_by_implementation.at(node.implementation_id)
                  ->execute(request.physical_dag, node, inputs);
     } catch (const std::exception& exception) {
+      data_access_observed = true;
       return refuse(Refusal(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTOR-FAILURE-V1",
           std::string("physical executor threw: ") + exception.what()));
     } catch (...) {
+      data_access_observed = true;
       return refuse(Refusal(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTOR-FAILURE-V1",
           "physical executor threw a non-standard exception"));
     }
+
+    // QOW-SOURCE-QRY-004-DATA-ACCESS-OBSERVATION-V1
+    // Preserve an executor's explicit observation even when its diagnostic
+    // refuses the step. Unknown legacy callbacks retain the conservative
+    // callback-started fallback.
+    data_access_observed =
+        data_access_observed ||
+        (step.data_access_observation_known ? step.data_access_observed
+                                            : execution_started);
 
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));
@@ -201,7 +213,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   result.root_output_descriptor_ids = root.output_descriptor_ids;
   result.authority.engine_mga_snapshot_bound = true;
   result.execution_started = true;
-  result.data_access_observed = true;
+  result.data_access_observed = data_access_observed;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_root_physical_node_id = root.executed_physical_node_id;
   result.root_causal_counter_id = root.causal_counter_id;

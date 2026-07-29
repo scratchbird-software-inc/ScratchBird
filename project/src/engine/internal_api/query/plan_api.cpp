@@ -880,7 +880,7 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-SCOPE-V1", 0,
                   "plan_estimate_mga_scope");
   }
-  if (!request.data_access_observed || !request.all_executed_nodes_finished ||
+  if (!request.all_executed_nodes_finished ||
       !request.estimates_frozen_before_access ||
       !request.engine_execution_evidence) {
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-PHASE-V1", 0,
@@ -951,7 +951,7 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
   result.post_execution_actuals = true;
   result.planning_estimates_immutable = true;
   result.feedback_authorized = false;
-  result.data_access_observed = true;
+  result.data_access_observed = request.data_access_observed;
   result.selected_plan_uuid = request.selected_physical_dag.selected_plan_uuid;
   result.pre_access_statistics_snapshot_uuid =
       request.pre_access_statistics_snapshot_uuid;
@@ -1035,7 +1035,8 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
           request.selected_physical_dag.root_physical_node_id ||
       !dispatch.authority.engine_mga_snapshot_bound) {
     return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-EVIDENCE-V1", 0,
-                  "complete_dispatch_identity");
+                  "complete_dispatch_identity", false,
+                  dispatch.data_access_observed);
   }
 
   // QOW-SOURCE-INTEGRATION-306-211-V1
@@ -1056,7 +1057,8 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
       !request.result_publication_request.physical_output_batch.rows.empty()) {
     return refuse("QOW-DIAG-OPTIMIZER-SELECTED-RESULT-PAYLOAD-V1",
                   request.selected_physical_dag.root_physical_node_id,
-                  "root_materialized_output_batch", false, true);
+                  "root_materialized_output_batch", false,
+                  dispatch.data_access_observed);
   }
   auto publication_request = request.result_publication_request;
   publication_request.physical_output_batch =
@@ -1070,7 +1072,7 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
       request.inventory_local_transaction_id;
   actuals_request.inventory_statement_snapshot_id =
       request.inventory_statement_snapshot_id;
-  actuals_request.data_access_observed = true;
+  actuals_request.data_access_observed = dispatch.data_access_observed;
   actuals_request.all_executed_nodes_finished = true;
   actuals_request.estimates_frozen_before_access = true;
   actuals_request.engine_execution_evidence = true;
@@ -1085,7 +1087,8 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
     if (node == request.selected_physical_dag.nodes.end()) {
       return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-EVIDENCE-V1",
                     step.executed_physical_node_id,
-                    "executed_physical_node_id");
+                    "executed_physical_node_id", false,
+                    dispatch.data_access_observed);
     }
     actual.logical_node_id = node->relational_node_id;
     actual.causal_counter_id = step.causal_counter_id;
@@ -1105,21 +1108,22 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   if (!actuals.accepted) {
     const auto& issue = actuals.issues.front();
     return refuse(issue.diagnostic_id, issue.physical_node_id,
-                  issue.field_id);
+                  issue.field_id, false, dispatch.data_access_observed);
   }
   auto result_publication =
       executor::PublishCanonicalResultEnvelope(publication_request);
   if (!result_publication.diagnostic.ok || !result_publication.published) {
     return refuse(result_publication.diagnostic.diagnostic_code,
                   request.selected_physical_dag.root_physical_node_id,
-                  result_publication.diagnostic.detail, false, true);
+                  result_publication.diagnostic.detail, false,
+                  dispatch.data_access_observed);
   }
 
   result.accepted = true;
   result.exact_selected_nodes_executed = true;
   result.causal_counters_attached = true;
   result.canonical_result_published = true;
-  result.data_access_observed = true;
+  result.data_access_observed = dispatch.data_access_observed;
   result.dispatch = std::move(dispatch);
   result.result_publication = std::move(result_publication);
   result.runtime_actuals = std::move(actuals);

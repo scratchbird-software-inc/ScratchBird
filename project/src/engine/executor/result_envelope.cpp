@@ -273,10 +273,45 @@ DescriptorRuntimeDiagnostic ValidatePublishedDescriptor(
                    expected_ordinal);
   }
   const auto type = fields->find("type_uuid");
-  const auto nullability = fields->find("nullability");
+  const auto canonical_nullability = fields->find("nullability");
+  const auto storage_nullable = fields->find("nullable");
+  std::optional<CanonicalResultNullability> admitted_nullability;
+  if (canonical_nullability != fields->end()) {
+    if (canonical_nullability->second == "non_null") {
+      admitted_nullability = CanonicalResultNullability::kNonNull;
+    } else if (canonical_nullability->second == "nullable") {
+      admitted_nullability = CanonicalResultNullability::kNullable;
+    } else if (canonical_nullability->second == "unknown") {
+      admitted_nullability = CanonicalResultNullability::kUnknown;
+    } else {
+      return Refusal("physical descriptor nullability is malformed", 0,
+                     expected_ordinal);
+    }
+  }
+  // QOW-SOURCE-QRY-021-STORAGE-NULLABILITY-CARRIER-V1
+  // Persisted MGA descriptors use an exact boolean carrier. It is admitted
+  // without rewriting the descriptor; when both carriers exist they must
+  // express the same nullability.
+  if (storage_nullable != fields->end()) {
+    std::optional<CanonicalResultNullability> storage_nullability;
+    if (storage_nullable->second == "true") {
+      storage_nullability = CanonicalResultNullability::kNullable;
+    } else if (storage_nullable->second == "false") {
+      storage_nullability = CanonicalResultNullability::kNonNull;
+    } else {
+      return Refusal("physical descriptor nullable carrier is malformed", 0,
+                     expected_ordinal);
+    }
+    if (admitted_nullability.has_value() &&
+        *admitted_nullability != *storage_nullability) {
+      return Refusal("physical descriptor nullability carriers contradict", 0,
+                     expected_ordinal);
+    }
+    admitted_nullability = storage_nullability;
+  }
   if (type == fields->end() || type->second != published.type_uuid ||
-      nullability == fields->end() ||
-      nullability->second != NullabilityName(published.nullability) ||
+      !admitted_nullability.has_value() ||
+      *admitted_nullability != published.nullability ||
       !OptionalFieldMatches(*fields, "collation_uuid",
                             published.collation_uuid) ||
       !OptionalFieldMatches(*fields, "timezone_profile_id",
