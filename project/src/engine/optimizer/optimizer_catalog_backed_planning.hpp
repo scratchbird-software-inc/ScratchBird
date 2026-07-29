@@ -175,6 +175,14 @@ struct CanonicalNativeObjectFreeAdmissionContext {
   bool authorization_context_engine_owned{false};
 };
 
+struct CanonicalNativeObjectAdmissionContext
+    : CanonicalNativeObjectFreeAdmissionContext {
+  std::vector<std::string> catalog_object_uuids;
+  std::vector<std::string> authorized_object_uuids;
+  bool catalog_object_evidence_engine_owned{false};
+  bool authorization_object_evidence_engine_owned{false};
+};
+
 struct CanonicalNativeAdmissionBuildResult {
   bool built{false};
   CanonicalOptimizerAdmissionRequest request;
@@ -198,6 +206,13 @@ BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
     const planner::CanonicalLogicalRelationalGraph& graph,
     const planner::CanonicalLogicalPropertyCatalog& properties,
     const CanonicalNativeObjectFreeAdmissionContext& context);
+
+// QOW-SOURCE-OPT-006-HEAP-OBJECT-ADMISSION-V1
+CanonicalNativeAdmissionBuildResult
+BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+    const planner::CanonicalLogicalRelationalGraph& graph,
+    const planner::CanonicalLogicalPropertyCatalog& properties,
+    const CanonicalNativeObjectAdmissionContext& context);
 
 #ifndef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
 // SEARCH_KEY: PCR061_CATALOG_BACKED_PRODUCTION_PLANNING

@@ -271,6 +271,7 @@ add_library(sb_engine_internal_api
   observability/repair_history_api.cpp
   observability/show_api.cpp
   procedural/procedural_api.cpp
+  query/canonical_heap_optimizer_admission.cpp
   query/expression_api.cpp
   query/optimizer_plan_lifecycle.cpp
   query/plan_api.cpp

@@ -11,16 +11,23 @@
 #include "dml/insert_api.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "query/canonical_heap_optimizer_admission.hpp"
 #include "query/plan_api.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <optional>
+#include <ranges>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -31,6 +38,7 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace exec = scratchbird::engine::executor;
+namespace opt = scratchbird::engine::optimizer;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
@@ -68,6 +76,40 @@ concept HasCallerColumnUuid = requires(T value) {
   value.column_uuid;
 };
 
+template <typename T>
+concept HasCallerCatalogObjects = requires(T value) {
+  value.catalog_object_uuids;
+};
+
+template <typename T>
+concept HasCallerAuthorizationObjects = requires(T value) {
+  value.authorized_object_uuids;
+};
+
+template <typename T>
+concept HasCallerStatistics = requires(T value) { value.statistics; };
+
+template <typename T>
+concept HasCallerPhysicalDag = requires(T value) { value.physical_dag; };
+
+template <typename T>
+concept HasCallerSql = requires(T value) { value.sql; };
+
+template <typename T>
+concept HasCallerTransactionFinality = requires(T value) {
+  value.transaction_finality_claimed;
+};
+
+template <typename T>
+concept HasCallerRecoveryAuthority = requires(T value) {
+  value.recovery_authority_claimed;
+};
+
+template <typename T>
+concept HasCallerWalAuthority = requires(T value) {
+  value.wal_is_transaction_or_recovery_authority;
+};
+
 static_assert(!HasCallerCandidates<exec::CanonicalHeapRelationAcquisitionRequest>);
 static_assert(!HasCallerRelationUuid<exec::CanonicalHeapRelationAcquisitionRequest>);
 static_assert(!HasCallerCandidates<exec::CanonicalHeapPhysicalDagDispatchRequest>);
@@ -86,6 +128,25 @@ static_assert(!HasCallerRelationPointer<
               api::CanonicalHeapOptimizerSelectedExecutionRequest>);
 static_assert(!HasCallerColumnUuid<
               api::CanonicalHeapOptimizerSelectedExecutionRequest>);
+static_assert(!HasCallerCatalogObjects<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerAuthorizationObjects<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerStatistics<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerPhysicalDag<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerExecutorRegistry<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerPhysicalBatch<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerSql<api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerTransactionFinality<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerRecoveryAuthority<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
+static_assert(!HasCallerWalAuthority<
+              api::CanonicalHeapOptimizerAdmissionRequest>);
 
 [[noreturn]] void Fail(std::string_view detail) {
   std::cerr << "QOW-TEST-QRY-004-HEAP-MGA-V1: " << detail << '\n';
@@ -94,6 +155,241 @@ static_assert(!HasCallerColumnUuid<
 
 void Require(const bool condition, std::string_view detail) {
   if (!condition) { Fail(detail); }
+}
+
+struct FixtureFileImage {
+  std::string path;
+  std::string bytes;
+
+  bool operator==(const FixtureFileImage&) const = default;
+};
+
+std::vector<FixtureFileImage> CaptureFixtureFiles(
+    const std::filesystem::path& directory) {
+  std::vector<FixtureFileImage> images;
+  for (const auto& entry :
+       std::filesystem::recursive_directory_iterator(directory)) {
+    if (!entry.is_regular_file()) continue;
+    std::ifstream input(entry.path(), std::ios::binary);
+    Require(input.good(), "fixture file snapshot open failed");
+    images.push_back(
+        {std::filesystem::relative(entry.path(), directory).generic_string(),
+         std::string(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>())});
+  }
+  std::ranges::sort(images, {}, &FixtureFileImage::path);
+  return images;
+}
+
+void AppendCompleteRelationDescriptorRecord(
+    const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& descriptor) {
+  std::ofstream output(context.database_path + ".sb.mga_relation_descriptors",
+                       std::ios::binary | std::ios::app);
+  Require(output.good(), "relation descriptor fixture append open failed");
+  output << "SBMGADESC1\tRELATION\t" << descriptor.relation_uuid.canonical
+         << '\t'
+         << api::EncodeCrudPairs(
+                api::SerializeMgaRelationStorageDescriptor(descriptor))
+         << '\n';
+  output.flush();
+  Require(output.good(), "complete relation descriptor fixture append failed");
+}
+
+std::string NativeAdmissionFingerprint(
+    const opt::CanonicalNativeAdmissionBuildResult& built) {
+  std::ostringstream output;
+  const auto number = [&](const auto value) { output << value << ';'; };
+  const auto flag = [&](const bool value) { output << (value ? "1;" : "0;"); };
+  const auto text = [&](const std::string_view value) {
+    output << value.size() << ':' << value << ';';
+  };
+  const auto numbers = [&](const auto& values) {
+    number(values.size());
+    for (const auto value : values) number(value);
+  };
+  const auto texts = [&](const auto& values) {
+    number(values.size());
+    for (const auto& value : values) text(value);
+  };
+  const auto graph = [&](const auto& value) {
+    number(value.abi_version);
+    text(value.bound_sblr_tree_uuid);
+    text(value.catalog_epoch_uuid);
+    text(value.security_context_uuid);
+    number(value.local_transaction_id);
+    number(value.statement_snapshot_id);
+    number(value.root_logical_node_id);
+    numbers(value.result_descriptor_ids);
+    number(value.nodes.size());
+    for (const auto& node : value.nodes) {
+      number(node.logical_node_id);
+      number(static_cast<std::uint32_t>(node.node_kind));
+      numbers(node.input_logical_node_ids);
+      numbers(node.output_descriptor_ids);
+      numbers(node.bound_expression_ids);
+      numbers(node.origin_relational_node_ids);
+      texts(node.required_object_uuids);
+      text(node.semantic_variant_id);
+      flag(node.shareable);
+      texts(node.required_property_uuids);
+      texts(node.delivered_property_uuids);
+    }
+    flag(value.raw_sql_text_present);
+    flag(value.parser_execution_authority_claimed);
+    flag(value.transaction_finality_authority_claimed);
+  };
+  const auto properties = [&](const auto& value) {
+    number(value.abi_version);
+    text(value.bound_sblr_tree_uuid);
+    text(value.catalog_epoch_uuid);
+    text(value.security_context_uuid);
+    number(value.local_transaction_id);
+    number(value.statement_snapshot_id);
+    number(value.properties.size());
+    for (const auto& property : value.properties) {
+      text(property.property_uuid);
+      number(static_cast<std::uint32_t>(property.property_kind));
+      number(property.origin_logical_node_id);
+      numbers(property.expression_ids);
+      number(property.ordering_terms.size());
+      for (const auto& term : property.ordering_terms) {
+        number(term.expression_id);
+        number(static_cast<std::uint32_t>(term.direction));
+        number(static_cast<std::uint32_t>(term.null_placement));
+        text(term.collation_uuid);
+      }
+      texts(property.dependency_property_uuids);
+      text(property.window_frame_descriptor_uuid);
+      flag(property.populated_from_bound_sblr);
+    }
+    flag(value.raw_sql_text_present);
+    flag(value.parser_execution_authority_claimed);
+    flag(value.transaction_finality_authority_claimed);
+  };
+  const auto request = [&](const auto& value) {
+    number(value.abi_version);
+    graph(value.logical_graph);
+    properties(value.logical_properties);
+    text(value.catalog.snapshot_uuid);
+    text(value.catalog.catalog_epoch_uuid);
+    number(value.catalog.catalog_generation);
+    texts(value.catalog.object_uuids);
+    numbers(value.catalog.descriptor_ids);
+    flag(value.catalog.engine_owned);
+    text(value.security.security_context_uuid);
+    number(value.security.security_epoch);
+    number(value.security.policy_epoch);
+    number(value.security.catalog_generation);
+    texts(value.security.authorized_object_uuids);
+    flag(value.security.engine_owned);
+    number(value.mga.local_transaction_id);
+    number(value.mga.statement_snapshot_id);
+    text(value.mga.metadata_snapshot_uuid);
+    flag(value.mga.transaction_active);
+    flag(value.mga.statement_snapshot_fixed);
+    flag(value.mga.engine_owned);
+    flag(value.mga.finality_authority_claimed);
+    text(value.policy_capability.policy_snapshot_uuid);
+    number(value.policy_capability.policy_epoch);
+    text(value.policy_capability.capability_snapshot_uuid);
+    number(value.policy_capability.capability_abi_version);
+    number(value.policy_capability.supported_node_kinds.size());
+    for (const auto kind : value.policy_capability.supported_node_kinds) {
+      number(static_cast<std::uint32_t>(kind));
+    }
+    flag(value.policy_capability.engine_owned);
+    flag(value.policy_capability.cluster_capability_claimed);
+    text(value.resource.resource_snapshot_uuid);
+    number(value.resource.resource_epoch);
+    number(value.resource.memory_budget_bytes);
+    number(value.resource.maximum_candidate_count);
+    number(value.resource.maximum_memo_groups);
+    number(value.resource.maximum_search_steps);
+    number(value.resource.maximum_planning_time_ns);
+    flag(value.resource.spill_allowed);
+    flag(value.resource.engine_owned);
+    number(value.statistics.abi_version);
+    text(value.statistics.statistics_snapshot_uuid);
+    text(value.statistics.catalog_epoch_uuid);
+    number(value.statistics.statistics_generation);
+    number(value.statistics.admitted_at_monotonic_ns);
+    number(value.statistics.node_estimates.size());
+    for (const auto& estimate : value.statistics.node_estimates) {
+      number(estimate.logical_node_id);
+      text(estimate.object_uuid);
+      number(static_cast<std::uint32_t>(estimate.state));
+      number(static_cast<std::uint32_t>(estimate.source));
+      text(estimate.catalog_epoch_uuid);
+      text(estimate.statistics_snapshot_uuid);
+      number(estimate.statistics_generation);
+      number(estimate.collected_at_monotonic_ns);
+      number(estimate.admitted_at_monotonic_ns);
+      number(estimate.maximum_age_ns);
+      number(static_cast<std::uint32_t>(estimate.confidence));
+      flag(estimate.row_count_present);
+      number(estimate.row_count);
+      flag(estimate.page_count_present);
+      number(estimate.page_count);
+      flag(estimate.derived_from_runtime_actuals);
+      flag(estimate.benchmark_clean_authority_claimed);
+    }
+    flag(value.statistics.captured_before_data_access);
+    flag(value.statistics.data_access_observed);
+    flag(value.statistics.runtime_actuals_present);
+    flag(value.statistics.parser_statistics_authority_claimed);
+    text(value.route.route_snapshot_uuid);
+    number(value.route.route_epoch);
+    number(value.route.route_generation);
+    text(value.route.operation_id);
+    text(value.route.route_id);
+    flag(value.route.native_local_route);
+    flag(value.route.engine_owned);
+    flag(value.route.cluster_route_claimed);
+    flag(value.populated_from_admitted_typed_sblr);
+    flag(value.data_access_observed);
+    flag(value.parser_planning_authority_claimed);
+  };
+  const auto admission = [&](const auto& value) {
+    flag(value.admitted);
+    flag(value.planning_allowed);
+    flag(value.degraded_for_unknown_statistics);
+    flag(value.benchmark_clean_ready);
+    flag(value.data_access_allowed);
+    text(value.bound_sblr_tree_uuid);
+    text(value.catalog_epoch_uuid);
+    text(value.security_context_uuid);
+    text(value.capability_snapshot_uuid);
+    text(value.resource_snapshot_uuid);
+    text(value.statistics_snapshot_uuid);
+    text(value.route_snapshot_uuid);
+    number(value.local_transaction_id);
+    number(value.statement_snapshot_id);
+    number(value.catalog_generation);
+    number(value.security_epoch);
+    number(value.policy_epoch);
+    number(value.resource_epoch);
+    number(value.statistics_generation);
+    number(value.route_epoch);
+    number(value.route_generation);
+    number(value.evidence.size());
+    for (const auto& evidence : value.evidence) {
+      number(static_cast<std::uint32_t>(evidence.stage));
+      text(evidence.evidence_id);
+    }
+    number(value.issues.size());
+    for (const auto& issue : value.issues) {
+      number(static_cast<std::uint32_t>(issue.stage));
+      text(issue.diagnostic_id);
+      text(issue.field_id);
+    }
+  };
+  flag(built.built);
+  request(built.request);
+  admission(built.admission);
+  text(built.diagnostic_id);
+  text(built.field_id);
+  return output.str();
 }
 
 template <typename TResult>
@@ -658,6 +954,14 @@ void ReleaseRequest(exec::CanonicalHeapRelationAcquisitionRequest* request) {
   request->relational_dag = nullptr;
 }
 
+api::CanonicalHeapOptimizerAdmissionRequest AdmissionRequestFor(
+    const exec::CanonicalHeapRelationAcquisitionRequest& acquisition) {
+  api::CanonicalHeapOptimizerAdmissionRequest request;
+  request.context = *acquisition.context;
+  request.relational_dag = *acquisition.relational_dag;
+  return request;
+}
+
 exec::CanonicalHeapRelationAcquisitionRequest RequestFor(
     const api::EngineRequestContext& context,
     const std::string& relation_uuid,
@@ -741,6 +1045,43 @@ void RequireAtomicSelectedFailure(
               result.result_publication.row_stream.rows.empty() &&
               result.result_publication.delivery_records.empty() &&
               result.result_publication.canonical_envelope_bytes.empty(),
+          detail);
+}
+
+void RequireAtomicAdmissionFailure(
+    const api::CanonicalHeapOptimizerAdmissionResult& result,
+    std::string_view detail) {
+  Require(!result.built && !result.issue.diagnostic_id.empty() &&
+              result.request.logical_graph.nodes.empty() &&
+              result.request.logical_properties.properties.empty() &&
+              result.request.catalog.object_uuids.empty() &&
+              result.request.catalog.descriptor_ids.empty() &&
+              result.request.security.authorized_object_uuids.empty() &&
+              result.request.statistics.node_estimates.empty() &&
+              !result.admission.admitted &&
+              result.admission.evidence.empty() &&
+              result.admission.issues.empty() &&
+              result.current_relation_descriptor_uuid.empty() &&
+              result.current_relation_descriptor_generation == 0,
+          detail);
+}
+
+void RequireAtomicObjectAdmissionBuildFailure(
+    const opt::CanonicalNativeAdmissionBuildResult& result,
+    const std::string_view diagnostic_id,
+    const std::string_view field_id,
+    const std::string_view detail) {
+  Require(!result.built && result.diagnostic_id == diagnostic_id &&
+              result.field_id == field_id &&
+              result.request.logical_graph.nodes.empty() &&
+              result.request.logical_properties.properties.empty() &&
+              result.request.catalog.object_uuids.empty() &&
+              result.request.catalog.descriptor_ids.empty() &&
+              result.request.security.authorized_object_uuids.empty() &&
+              result.request.statistics.node_estimates.empty() &&
+              !result.admission.admitted &&
+              result.admission.evidence.empty() &&
+              result.admission.issues.empty(),
           detail);
 }
 
@@ -2303,10 +2644,731 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   Rollback(reader);
 }
 
+// QOW-TEST-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1
+void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-admission-reader"),
+                             fixture.full_width_table_uuid,
+                             fixture.salt + 3300);
+  auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
+                                fixture.salt + 3320);
+  const auto request = AdmissionRequestFor(acquisition);
+  const auto before = CaptureFixtureFiles(fixture.directory);
+  const auto result =
+      api::BuildCanonicalCurrentHeapOptimizerAdmission(request);
+  const auto after = CaptureFixtureFiles(fixture.directory);
+  const auto persisted = api::LoadMgaRelationStorageDescriptor(
+      reader, fixture.full_width_table_uuid);
+  Require(persisted.ok && persisted.descriptor.columns.size() == 2,
+          "admission fixture descriptor was unavailable");
+  if (!result.built) {
+    std::cerr << result.issue.diagnostic_id << ':' << result.issue.field_id
+              << '\n';
+  }
+  Require(result.built && result.issue.diagnostic_id.empty() &&
+              result.admission.admitted &&
+              result.admission.planning_allowed &&
+              result.admission.degraded_for_unknown_statistics &&
+              !result.admission.benchmark_clean_ready &&
+              !result.admission.data_access_allowed &&
+              result.admission.issues.empty(),
+          "current heap object was not admitted as explicit unknown statistics");
+  Require(before == after,
+          "successful heap optimizer admission mutated database files");
+  Require(result.current_relation_descriptor_uuid ==
+                  persisted.descriptor.descriptor_uuid.canonical &&
+              result.current_relation_descriptor_generation ==
+                  persisted.descriptor.descriptor_generation,
+          "admission lost the exact current descriptor identity");
+  Require(result.request.logical_graph.nodes.size() == 1 &&
+              result.request.logical_graph.nodes.front().required_object_uuids ==
+                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+              result.request.logical_properties.properties.empty() &&
+              result.request.catalog.object_uuids ==
+                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+              result.request.security.authorized_object_uuids ==
+                  std::vector<std::string>{fixture.full_width_table_uuid} &&
+              result.request.catalog.descriptor_ids ==
+                  std::vector<std::uint32_t>({1, 2}),
+          "admission did not preserve exact object/descriptor coverage");
+  Require(result.request.catalog.snapshot_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              result.request.catalog.catalog_epoch_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              result.request.catalog.catalog_generation ==
+                  reader.catalog_generation_id &&
+              result.request.catalog.engine_owned &&
+              result.request.security.security_context_uuid ==
+                  reader.authorization_context.authority_uuid.canonical &&
+              result.request.security.security_epoch == reader.security_epoch &&
+              result.request.security.policy_epoch ==
+                  reader.authorization_context.policy_epoch &&
+              result.request.security.catalog_generation ==
+                  reader.authorization_context.catalog_generation_id &&
+              result.request.security.engine_owned &&
+              result.request.mga.local_transaction_id ==
+                  reader.local_transaction_id &&
+              result.request.mga.statement_snapshot_id ==
+                  reader.snapshot_visible_through_local_transaction_id &&
+              result.request.mga.metadata_snapshot_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              result.request.mga.transaction_active &&
+              result.request.mga.statement_snapshot_fixed &&
+              result.request.mga.engine_owned &&
+              !result.request.mga.finality_authority_claimed &&
+              result.request.policy_capability.policy_snapshot_uuid ==
+                  reader.authorization_context.authority_uuid.canonical &&
+              result.request.policy_capability.policy_epoch ==
+                  reader.authorization_context.policy_epoch &&
+              result.request.policy_capability.capability_snapshot_uuid ==
+                  reader.optimizer_capability_snapshot_uuid.canonical &&
+              result.request.policy_capability.capability_abi_version == 1 &&
+              !result.request.policy_capability.supported_node_kinds.empty() &&
+              result.request.policy_capability.engine_owned &&
+              !result.request.policy_capability.cluster_capability_claimed &&
+              result.request.resource.resource_snapshot_uuid ==
+                  reader.optimizer_resource_snapshot_uuid.canonical &&
+              result.request.resource.resource_epoch == reader.resource_epoch &&
+              result.request.resource.memory_budget_bytes ==
+                  reader.optimizer_memory_budget_bytes &&
+              result.request.resource.maximum_candidate_count ==
+                  reader.optimizer_maximum_candidate_count &&
+              result.request.resource.maximum_memo_groups ==
+                  reader.optimizer_maximum_memo_groups &&
+              result.request.resource.maximum_search_steps ==
+                  reader.optimizer_maximum_search_steps &&
+              result.request.resource.maximum_planning_time_ns ==
+                  reader.optimizer_maximum_planning_time_ns &&
+              result.request.resource.spill_allowed ==
+                  reader.optimizer_spill_allowed &&
+              result.request.resource.engine_owned &&
+              result.request.statistics.statistics_snapshot_uuid ==
+                  reader.statement_uuid.canonical &&
+              result.request.statistics.catalog_epoch_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              result.request.statistics.statistics_generation ==
+                  reader.catalog_generation_id &&
+              result.request.statistics.admitted_at_monotonic_ns == 1 &&
+              result.request.route.route_snapshot_uuid ==
+                  reader.optimizer_route_snapshot_uuid.canonical &&
+              result.request.route.route_epoch ==
+                  reader.optimizer_route_epoch &&
+              result.request.route.route_generation ==
+                  reader.optimizer_route_generation &&
+              result.request.route.operation_id == "query.execute" &&
+              result.request.route.route_id ==
+                  "native.sblr.query.execute.v2" &&
+              result.request.route.native_local_route &&
+              result.request.route.engine_owned &&
+              !result.request.route.cluster_route_claimed &&
+              result.request.populated_from_admitted_typed_sblr &&
+              !result.request.data_access_observed &&
+              !result.request.parser_planning_authority_claimed &&
+              result.admission.bound_sblr_tree_uuid ==
+                  request.relational_dag.bound_sblr_tree_uuid &&
+              result.admission.catalog_epoch_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              result.admission.security_context_uuid ==
+                  reader.authorization_context.authority_uuid.canonical &&
+              result.admission.capability_snapshot_uuid ==
+                  reader.optimizer_capability_snapshot_uuid.canonical &&
+              result.admission.resource_snapshot_uuid ==
+                  reader.optimizer_resource_snapshot_uuid.canonical &&
+              result.admission.statistics_snapshot_uuid ==
+                  reader.statement_uuid.canonical &&
+              result.admission.route_snapshot_uuid ==
+                  reader.optimizer_route_snapshot_uuid.canonical &&
+              result.admission.local_transaction_id ==
+                  reader.local_transaction_id &&
+              result.admission.statement_snapshot_id ==
+                  reader.snapshot_visible_through_local_transaction_id &&
+              result.admission.catalog_generation ==
+                  reader.catalog_generation_id &&
+              result.admission.security_epoch == reader.security_epoch &&
+              result.admission.policy_epoch ==
+                  reader.authorization_context.policy_epoch &&
+              result.admission.resource_epoch == reader.resource_epoch &&
+              result.admission.statistics_generation ==
+                  reader.catalog_generation_id &&
+              result.admission.route_epoch == reader.optimizer_route_epoch &&
+              result.admission.route_generation ==
+                  reader.optimizer_route_generation,
+          "admission scope identities drifted from engine context");
+  Require(result.admission.evidence.size() == 8,
+          "admission did not retain all eight ordered stages");
+  for (std::size_t index = 0; index < result.admission.evidence.size();
+       ++index) {
+    Require(result.admission.evidence[index].stage ==
+                static_cast<scratchbird::engine::optimizer::
+                                CanonicalOptimizerAdmissionStage>(index + 1),
+            "optimizer admission stages are out of order");
+  }
+  Require(result.request.statistics.node_estimates.size() == 1,
+          "heap admission did not produce exactly one source estimate");
+  const auto& estimate = result.request.statistics.node_estimates.front();
+  Require(estimate.logical_node_id == 1 &&
+              estimate.object_uuid == fixture.full_width_table_uuid &&
+              estimate.state == scratchbird::engine::optimizer::
+                                    CanonicalOptimizerStatisticState::kUnknown &&
+              estimate.source == scratchbird::engine::optimizer::
+                                     CanonicalOptimizerStatisticSource::
+                                         kUnavailable &&
+              estimate.confidence ==
+                  scratchbird::engine::optimizer::CostConfidence::kUnknown &&
+              !estimate.row_count_present && !estimate.page_count_present &&
+              estimate.row_count == 0 && estimate.page_count == 0 &&
+              estimate.collected_at_monotonic_ns == 0 &&
+              estimate.maximum_age_ns == 0 &&
+              !estimate.derived_from_runtime_actuals &&
+              !estimate.benchmark_clean_authority_claimed &&
+              estimate.catalog_epoch_uuid ==
+                  reader.statement_metadata_snapshot_uuid.canonical &&
+              estimate.statistics_snapshot_uuid ==
+                  reader.statement_uuid.canonical &&
+              estimate.statistics_generation == reader.catalog_generation_id &&
+              estimate.admitted_at_monotonic_ns == 1 &&
+              result.request.statistics.captured_before_data_access &&
+              !result.request.statistics.data_access_observed &&
+              !result.request.statistics.runtime_actuals_present &&
+              !result.request.statistics.parser_statistics_authority_claimed,
+          "heap admission synthesized row/page statistics or later authority");
+
+  auto object_free_graph = result.request.logical_graph;
+  for (auto& logical_node : object_free_graph.nodes) {
+    logical_node.required_object_uuids.clear();
+  }
+  opt::CanonicalNativeObjectFreeAdmissionContext object_free_context;
+  object_free_context.statement_uuid = reader.statement_uuid.canonical;
+  object_free_context.catalog_snapshot_uuid =
+      reader.statement_metadata_snapshot_uuid.canonical;
+  object_free_context.security_context_uuid =
+      reader.authorization_context.authority_uuid.canonical;
+  object_free_context.catalog_generation = reader.catalog_generation_id;
+  object_free_context.authorization_catalog_generation =
+      reader.authorization_context.catalog_generation_id;
+  object_free_context.security_epoch = reader.authorization_context.security_epoch;
+  object_free_context.policy_epoch = reader.authorization_context.policy_epoch;
+  object_free_context.resource_epoch = reader.resource_epoch;
+  object_free_context.capability_snapshot_uuid =
+      reader.optimizer_capability_snapshot_uuid.canonical;
+  object_free_context.resource_snapshot_uuid =
+      reader.optimizer_resource_snapshot_uuid.canonical;
+  object_free_context.route_snapshot_uuid =
+      reader.optimizer_route_snapshot_uuid.canonical;
+  object_free_context.route_epoch = reader.optimizer_route_epoch;
+  object_free_context.route_generation = reader.optimizer_route_generation;
+  object_free_context.memory_budget_bytes =
+      reader.optimizer_memory_budget_bytes;
+  object_free_context.maximum_candidate_count =
+      reader.optimizer_maximum_candidate_count;
+  object_free_context.maximum_memo_groups =
+      reader.optimizer_maximum_memo_groups;
+  object_free_context.maximum_search_steps =
+      reader.optimizer_maximum_search_steps;
+  object_free_context.maximum_planning_time_ns =
+      reader.optimizer_maximum_planning_time_ns;
+  object_free_context.spill_allowed = reader.optimizer_spill_allowed;
+  object_free_context.local_transaction_id = reader.local_transaction_id;
+  object_free_context.statement_snapshot_id =
+      reader.snapshot_visible_through_local_transaction_id;
+  object_free_context.admitted_at_monotonic_ns = 1;
+  object_free_context.metadata_snapshot_engine_owned = true;
+  object_free_context.authorization_context_engine_owned = true;
+  const auto legacy_object_free =
+      opt::BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
+          object_free_graph, result.request.logical_properties,
+          object_free_context);
+  opt::CanonicalNativeObjectAdmissionContext empty_object_context;
+  static_cast<opt::CanonicalNativeObjectFreeAdmissionContext&>(
+      empty_object_context) = object_free_context;
+  const auto object_aware_empty =
+      opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+          object_free_graph, result.request.logical_properties,
+          empty_object_context);
+  Require(legacy_object_free.built && object_aware_empty.built &&
+              legacy_object_free.admission.admitted &&
+              object_aware_empty.admission.admitted &&
+              NativeAdmissionFingerprint(legacy_object_free) ==
+                  NativeAdmissionFingerprint(object_aware_empty),
+          "legacy object-free admission diverged field-for-field from the "
+          "empty object-aware profile");
+
+  constexpr std::string_view kCatalogObjectDiagnostic =
+      "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-OBJECT-EVIDENCE-V1";
+  constexpr std::string_view kCatalogObjectField =
+      "required_object_snapshot";
+  constexpr std::string_view kSecurityObjectDiagnostic =
+      "QOW-DIAG-OPTIMIZER-ADMISSION-SECURITY-OBJECT-EVIDENCE-V1";
+  constexpr std::string_view kSecurityObjectField =
+      "authorized_object_snapshot";
+  const auto require_object_refusal =
+      [&](const auto& graph,
+          const opt::CanonicalNativeObjectAdmissionContext& context,
+          const std::string_view diagnostic_id,
+          const std::string_view field_id,
+          const std::string_view detail) {
+        RequireAtomicObjectAdmissionBuildFailure(
+            opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+                graph, result.request.logical_properties, context),
+            diagnostic_id, field_id, detail);
+      };
+
+  const auto alternate_object_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3350);
+  opt::CanonicalNativeObjectAdmissionContext object_context;
+  object_context.catalog_object_uuids = {fixture.full_width_table_uuid};
+  object_context.authorized_object_uuids = {fixture.full_width_table_uuid};
+  object_context.catalog_object_evidence_engine_owned = true;
+  object_context.authorization_object_evidence_engine_owned = true;
+
+  auto object_mutation = object_context;
+  object_mutation.catalog_object_uuids.clear();
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kCatalogObjectDiagnostic, kCatalogObjectField,
+                         "missing catalog object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.catalog_object_uuids.push_back(
+      fixture.full_width_table_uuid);
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kCatalogObjectDiagnostic, kCatalogObjectField,
+                         "duplicate catalog object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.catalog_object_uuids = {alternate_object_uuid};
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kCatalogObjectDiagnostic, kCatalogObjectField,
+                         "mismatched catalog object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.catalog_object_evidence_engine_owned = false;
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kCatalogObjectDiagnostic, kCatalogObjectField,
+                         "caller-owned catalog object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.authorized_object_uuids.clear();
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kSecurityObjectDiagnostic, kSecurityObjectField,
+                         "missing authorization object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.authorized_object_uuids.push_back(
+      fixture.full_width_table_uuid);
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kSecurityObjectDiagnostic, kSecurityObjectField,
+                         "duplicate authorization object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.authorized_object_uuids = {alternate_object_uuid};
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kSecurityObjectDiagnostic, kSecurityObjectField,
+                         "mismatched authorization object evidence was accepted");
+
+  object_mutation = object_context;
+  object_mutation.authorization_object_evidence_engine_owned = false;
+  require_object_refusal(result.request.logical_graph, object_mutation,
+                         kSecurityObjectDiagnostic, kSecurityObjectField,
+                         "caller-owned authorization object evidence was accepted");
+
+  auto two_object_graph = result.request.logical_graph;
+  two_object_graph.nodes.front().required_object_uuids = {
+      fixture.full_width_table_uuid, alternate_object_uuid};
+  std::vector<std::string> canonical_two_objects{
+      fixture.full_width_table_uuid, alternate_object_uuid};
+  std::ranges::sort(canonical_two_objects);
+  object_context.catalog_object_uuids = canonical_two_objects;
+  object_context.authorized_object_uuids = canonical_two_objects;
+
+  object_mutation = object_context;
+  std::ranges::reverse(object_mutation.catalog_object_uuids);
+  require_object_refusal(two_object_graph, object_mutation,
+                         kCatalogObjectDiagnostic, kCatalogObjectField,
+                         "reordered catalog object evidence was accepted");
+
+  object_mutation = object_context;
+  std::ranges::reverse(object_mutation.authorized_object_uuids);
+  require_object_refusal(
+      two_object_graph, object_mutation, kSecurityObjectDiagnostic,
+      kSecurityObjectField,
+      "reordered authorization object evidence was accepted");
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+}
+
+void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-admission-refusals"),
+                             fixture.full_width_table_uuid,
+                             fixture.salt + 3400);
+  auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
+                                fixture.salt + 3420);
+  const auto baseline = AdmissionRequestFor(acquisition);
+  const auto expect_refusal = [&](const auto& candidate,
+                                  const std::string_view detail) {
+    const auto unchanged = CaptureFixtureFiles(fixture.directory);
+    RequireAtomicAdmissionFailure(
+        api::BuildCanonicalCurrentHeapOptimizerAdmission(candidate), detail);
+    Require(CaptureFixtureFiles(fixture.directory) == unchanged,
+            "heap optimizer admission refusal mutated database files");
+  };
+
+  auto mutated = baseline;
+  mutated.relational_dag.nodes.push_back(mutated.relational_dag.nodes.front());
+  mutated.relational_dag.nodes.back().node_id = 2;
+  expect_refusal(mutated, "multi-node relation admission was not atomic");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().node_kind =
+      api::RelationalDagNodeKind::kProject;
+  expect_refusal(mutated, "non-scan relation admission was not atomic");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().required_object_uuids.push_back(
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3440));
+  expect_refusal(mutated, "multiple relation objects were admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.pop_back();
+  mutated.relational_dag.expressions.pop_back();
+  mutated.relational_dag.outputs.pop_back();
+  mutated.relational_dag.nodes.front().output_descriptor_ids.pop_back();
+  mutated.relational_dag.nodes.front().bound_expression_ids.pop_back();
+  expect_refusal(mutated, "partial persisted width was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.root_node_id = 999;
+  expect_refusal(mutated, "nonexistent relation root was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().input_node_ids = {999};
+  expect_refusal(mutated, "relation source input edge was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().semantic_variant_id =
+      "relation.source.stale.v1";
+  expect_refusal(mutated, "wrong relation source semantic variant was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().shareable = true;
+  expect_refusal(mutated, "shareable relation source was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().visible = false;
+  expect_refusal(mutated, "invisible relation output was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().ordinal = 9;
+  expect_refusal(mutated, "noncontiguous relation output was admitted");
+
+  mutated = baseline;
+  api::RelationalValuesRowRecord values_row;
+  values_row.row_id = 1;
+  values_row.expression_ids = {1, 2};
+  mutated.relational_dag.values_rows.push_back(std::move(values_row));
+  mutated.relational_dag.nodes.front().values_row_ids = {1};
+  expect_refusal(mutated, "relation source values carrier was admitted");
+
+  mutated = baseline;
+  api::RelationalGroupingSetRecord grouping_set;
+  grouping_set.relation_node_id = 1;
+  grouping_set.ordinal = 0;
+  grouping_set.expression_ids = {1};
+  mutated.relational_dag.grouping_sets.push_back(std::move(grouping_set));
+  expect_refusal(mutated, "relation source grouping carrier was admitted");
+
+  mutated = baseline;
+  api::RelationalPropertyRecord property;
+  property.property_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3447);
+  property.property_kind = api::RelationalPropertyKind::kOrdering;
+  property.origin_node_id = 1;
+  property.expression_ids = {1};
+  mutated.relational_dag.properties.push_back(property);
+  mutated.relational_dag.nodes.front().required_property_uuids = {
+      property.property_uuid};
+  expect_refusal(mutated, "relation source logical property was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.front().result_descriptor_id = 2;
+  expect_refusal(mutated, "expression/result descriptor mismatch was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().expression_id = 2;
+  expect_refusal(mutated, "output/expression linkage mismatch was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.front().function_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3448);
+  expect_refusal(mutated, "identifier expression function carrier was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().required_object_uuids = {"not-a-uuid"};
+  expect_refusal(mutated, "noncanonical relation identity was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.nodes.front().required_object_uuids = {
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3441)};
+  expect_refusal(mutated, "missing relation identity was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.front().bound_name_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3442);
+  expect_refusal(mutated, "stale column UUID binding was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.front().output_name_utf8 = "stale_name";
+  expect_refusal(mutated, "stale column name binding was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().descriptor_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3443);
+  expect_refusal(mutated, "stale descriptor UUID was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().type_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3444);
+  expect_refusal(mutated, "stale type UUID was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().nullability =
+      api::RelationalNullability::kNullable;
+  expect_refusal(mutated, "stale nullability was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().collation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3445);
+  expect_refusal(mutated, "stale collation was admitted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.front().timezone_profile_id = "UTC";
+  expect_refusal(mutated, "stale timezone profile was admitted");
+
+  mutated = baseline;
+  std::swap(mutated.relational_dag.outputs[0],
+            mutated.relational_dag.outputs[1]);
+  expect_refusal(mutated, "stale persisted output order was admitted");
+
+  mutated = baseline;
+  mutated.context.authorization_context.grants.clear();
+  expect_refusal(mutated, "missing SELECT grant was admitted");
+
+  mutated = baseline;
+  mutated.context.authorization_context.grants.front().deny = true;
+  expect_refusal(mutated, "denied SELECT grant was admitted");
+
+  mutated = baseline;
+  api::EngineMaterializedAuthorizationPolicy policy;
+  policy.policy_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3446);
+  policy.subject_uuid = mutated.context.principal_uuid;
+  policy.subject_kind = "principal";
+  policy.target_uuid.canonical = fixture.full_width_table_uuid;
+  policy.right = "SELECT";
+  policy.policy_kind = "heap_admission_runtime_recheck";
+  policy.requires_runtime_recheck = true;
+  policy.policy_epoch = mutated.context.authorization_context.policy_epoch;
+  mutated.context.authorization_context.policies.push_back(std::move(policy));
+  expect_refusal(mutated, "runtime-recheck SELECT policy was admitted");
+
+  struct AdmissionMutation {
+    std::string_view detail;
+    std::function<void(api::CanonicalHeapOptimizerAdmissionRequest&)> apply;
+  };
+  const std::vector<AdmissionMutation> missing_context_refusals{
+      {"missing database path was admitted", [](auto& candidate) {
+         candidate.context.database_path.clear();
+       }},
+      {"missing database UUID was admitted", [](auto& candidate) {
+         candidate.context.database_uuid.canonical.clear();
+       }},
+      {"missing statement UUID was admitted", [](auto& candidate) {
+         candidate.context.statement_uuid.canonical.clear();
+       }},
+      {"stale transaction UUID was admitted", [&](auto& candidate) {
+         candidate.context.transaction_uuid.canonical =
+             NewUuidText(platform::UuidKind::transaction,
+                         fixture.salt + 3500);
+       }},
+      {"stale local transaction ID was admitted", [](auto& candidate) {
+         ++candidate.context.local_transaction_id;
+       }},
+      {"caller-owned metadata snapshot was admitted", [](auto& candidate) {
+         candidate.context.statement_metadata_snapshot_engine_owned = false;
+       }},
+      {"stale metadata snapshot UUID was admitted", [&](auto& candidate) {
+         candidate.context.statement_metadata_snapshot_uuid.canonical =
+             NewUuidText(platform::UuidKind::object, fixture.salt + 3501);
+       }},
+      {"missing security context was admitted", [](auto& candidate) {
+         candidate.context.security_context_present = false;
+       }},
+      {"missing materialized authorization context was admitted",
+       [](auto& candidate) {
+         candidate.context.authorization_context.present = false;
+       }},
+      {"stale authorization authority was admitted", [&](auto& candidate) {
+         candidate.context.authorization_context.authority_uuid.canonical =
+             NewUuidText(platform::UuidKind::object, fixture.salt + 3502);
+       }},
+      {"authorization principal mismatch was admitted", [&](auto& candidate) {
+         candidate.context.authorization_context.principal_uuid.canonical =
+             NewUuidText(platform::UuidKind::principal,
+                         fixture.salt + 3503);
+       }},
+      {"stale authorization catalog generation was admitted",
+       [](auto& candidate) {
+         ++candidate.context.authorization_context.catalog_generation_id;
+       }},
+      {"stale authorization security epoch was admitted", [](auto& candidate) {
+         ++candidate.context.authorization_context.security_epoch;
+       }},
+      {"missing authorization policy epoch was admitted", [](auto& candidate) {
+         candidate.context.authorization_context.policy_epoch = 0;
+       }},
+      {"missing resource epoch was admitted", [](auto& candidate) {
+         candidate.context.resource_epoch = 0;
+       }},
+      {"missing resource snapshot was admitted", [](auto& candidate) {
+         candidate.context.optimizer_resource_snapshot_uuid.canonical.clear();
+       }},
+      {"missing route snapshot was admitted", [](auto& candidate) {
+         candidate.context.optimizer_route_snapshot_uuid.canonical.clear();
+       }},
+      {"missing route generation was admitted", [](auto& candidate) {
+         candidate.context.optimizer_route_generation = 0;
+       }},
+      {"missing optimizer candidate bound was admitted", [](auto& candidate) {
+         candidate.context.optimizer_maximum_candidate_count = 0;
+       }},
+      {"missing optimizer memo bound was admitted", [](auto& candidate) {
+         candidate.context.optimizer_maximum_memo_groups = 0;
+       }},
+      {"missing optimizer search bound was admitted", [](auto& candidate) {
+         candidate.context.optimizer_maximum_search_steps = 0;
+       }},
+      {"missing optimizer time bound was admitted", [](auto& candidate) {
+         candidate.context.optimizer_maximum_planning_time_ns = 0;
+       }},
+      {"indeterminate authorization subject context was admitted",
+       [](auto& candidate) {
+         candidate.context.authorization_context.effective_subjects.clear();
+       }},
+  };
+  for (const auto& context_refusal : missing_context_refusals) {
+    mutated = baseline;
+    context_refusal.apply(mutated);
+    expect_refusal(mutated, context_refusal.detail);
+  }
+
+  mutated = baseline;
+  ++mutated.context.catalog_generation_id;
+  expect_refusal(mutated, "stale catalog generation was admitted");
+
+  mutated = baseline;
+  ++mutated.context.security_epoch;
+  expect_refusal(mutated, "stale security epoch was admitted");
+
+  mutated = baseline;
+  mutated.context.snapshot_visible_through_local_transaction_id = 0;
+  expect_refusal(mutated, "missing MGA snapshot was admitted");
+
+  mutated = baseline;
+  mutated.context.optimizer_memory_budget_bytes = 0;
+  expect_refusal(mutated, "missing optimizer memory bound was admitted");
+
+  mutated = baseline;
+  mutated.context.optimizer_capability_snapshot_uuid.canonical.clear();
+  expect_refusal(mutated, "missing capability snapshot was admitted");
+
+  mutated = baseline;
+  mutated.context.optimizer_route_epoch = 0;
+  expect_refusal(mutated, "stale optimizer route was admitted");
+
+  mutated = baseline;
+  mutated.context.current_monotonic_ns = "0";
+  expect_refusal(mutated, "missing monotonic admission time was admitted");
+
+  mutated = baseline;
+  mutated.context.prepared_metadata_required_object_uuid.canonical =
+      fixture.full_width_table_uuid;
+  expect_refusal(mutated, "prepared metadata object state was admitted");
+
+  mutated = baseline;
+  mutated.context.prepared_metadata_required_executable_generation = 1;
+  expect_refusal(mutated,
+                 "prepared metadata executable generation was admitted");
+
+  mutated = baseline;
+  mutated.context.prepared_metadata_required_metadata_epoch = 1;
+  expect_refusal(mutated, "prepared metadata epoch was admitted");
+
+  auto temporary_context = QueryContext(
+      reader, fixture.temporary_table_uuid, fixture.salt + 3460);
+  auto temporary_acquisition = RequestFor(
+      temporary_context, fixture.temporary_table_uuid, fixture.salt + 3480);
+  expect_refusal(AdmissionRequestFor(temporary_acquisition),
+                 "temporary relation was admitted as a local heap source");
+  ReleaseRequest(&temporary_acquisition);
+
+  const auto current_descriptor = api::LoadMgaRelationStorageDescriptor(
+      reader, fixture.full_width_table_uuid);
+  Require(current_descriptor.ok,
+          "current descriptor was unavailable for stale-record refusals");
+  auto unsupported_status = current_descriptor.descriptor;
+  unsupported_status.descriptor_status = "stale_descriptor";
+  AppendCompleteRelationDescriptorRecord(reader, unsupported_status);
+  expect_refusal(baseline,
+                 "unsupported persisted relation descriptor status was admitted");
+  AppendCompleteRelationDescriptorRecord(reader, current_descriptor.descriptor);
+  auto restored_descriptor = api::LoadMgaRelationStorageDescriptor(
+      reader, fixture.full_width_table_uuid);
+  Require(restored_descriptor.ok &&
+              restored_descriptor.descriptor.descriptor_status ==
+                  current_descriptor.descriptor.descriptor_status,
+          "persisted descriptor status fixture was not restored");
+
+  auto zero_generation = current_descriptor.descriptor;
+  zero_generation.descriptor_generation = 0;
+  AppendCompleteRelationDescriptorRecord(reader, zero_generation);
+  expect_refusal(baseline,
+                 "zero/stale persisted relation descriptor generation was admitted");
+  AppendCompleteRelationDescriptorRecord(reader, current_descriptor.descriptor);
+  restored_descriptor = api::LoadMgaRelationStorageDescriptor(
+      reader, fixture.full_width_table_uuid);
+  Require(restored_descriptor.ok &&
+              restored_descriptor.descriptor.descriptor_generation ==
+                  current_descriptor.descriptor.descriptor_generation,
+          "persisted descriptor generation fixture was not restored");
+
+  auto invisible_writer = Begin(fixture, "qow-heap-admission-invisible-writer");
+  const auto invisible_relation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 3520);
+  PersistTable(fixture, invisible_writer, invisible_relation_uuid, false, true);
+  const auto writer_descriptor = api::LoadMgaRelationStorageDescriptor(
+      invisible_writer, invisible_relation_uuid);
+  Require(writer_descriptor.ok && writer_descriptor.descriptor.columns.size() == 2,
+          "writer could not load its uncommitted relation descriptor");
+  auto invisible_reader = QueryContext(
+      Begin(fixture, "qow-heap-admission-invisible-reader"),
+      invisible_relation_uuid, fixture.salt + 3530);
+  auto invisible_acquisition = BoundRequest(
+      invisible_reader, writer_descriptor.descriptor, fixture.salt + 3540);
+  expect_refusal(AdmissionRequestFor(invisible_acquisition),
+                 "separately authorized reader admitted an uncommitted relation");
+  ReleaseRequest(&invisible_acquisition);
+  Rollback(invisible_reader);
+  Rollback(invisible_writer);
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+}
+
 }  // namespace
 
 int main() {
   auto fixture = MakeFixture();
+  ValidateHeapOptimizerAdmissionMatrix(fixture);
+  ValidateHeapOptimizerAdmissionRefusals(fixture);
   ValidateFullWidthHeapMatrix(fixture);
   ValidateFullWidthHeapRefusals(fixture);
   ValidateOptimizerSelectedHeapResultMatrix(fixture);

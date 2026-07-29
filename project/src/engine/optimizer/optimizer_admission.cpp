@@ -301,16 +301,34 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
 }
 
 CanonicalNativeAdmissionBuildResult
-BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
+BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
     const planner::CanonicalLogicalRelationalGraph& graph,
     const planner::CanonicalLogicalPropertyCatalog& properties,
-    const CanonicalNativeObjectFreeAdmissionContext& context) {
+    const CanonicalNativeObjectAdmissionContext& context) {
   CanonicalNativeAdmissionBuildResult result;
   const auto required_objects = RequiredObjects(graph);
-  if (!required_objects.empty()) {
+  const bool valid_catalog_objects = std::ranges::all_of(
+      context.catalog_object_uuids, IsCanonicalUuid);
+  const bool valid_authorized_objects = std::ranges::all_of(
+      context.authorized_object_uuids, IsCanonicalUuid);
+  if (!valid_catalog_objects ||
+      !IsUnique(context.catalog_object_uuids) ||
+      context.catalog_object_uuids != required_objects ||
+      (!required_objects.empty() &&
+       !context.catalog_object_evidence_engine_owned)) {
     result.diagnostic_id =
         "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-OBJECT-EVIDENCE-V1";
     result.field_id = "required_object_snapshot";
+    return result;
+  }
+  if (!valid_authorized_objects ||
+      !IsUnique(context.authorized_object_uuids) ||
+      context.authorized_object_uuids != required_objects ||
+      (!required_objects.empty() &&
+       !context.authorization_object_evidence_engine_owned)) {
+    result.diagnostic_id =
+        "QOW-DIAG-OPTIMIZER-ADMISSION-SECURITY-OBJECT-EVIDENCE-V1";
+    result.field_id = "authorized_object_snapshot";
     return result;
   }
 
@@ -322,6 +340,7 @@ BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
   request.catalog.snapshot_uuid = context.catalog_snapshot_uuid;
   request.catalog.catalog_epoch_uuid = graph.catalog_epoch_uuid;
   request.catalog.catalog_generation = context.catalog_generation;
+  request.catalog.object_uuids = context.catalog_object_uuids;
   request.catalog.descriptor_ids = RequiredDescriptors(graph);
   request.catalog.engine_owned = context.metadata_snapshot_engine_owned;
 
@@ -330,6 +349,8 @@ BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
   request.security.policy_epoch = context.policy_epoch;
   request.security.catalog_generation =
       context.authorization_catalog_generation;
+  request.security.authorized_object_uuids =
+      context.authorized_object_uuids;
   request.security.engine_owned = context.authorization_context_engine_owned;
 
   request.mga.local_transaction_id = context.local_transaction_id;
@@ -369,6 +390,9 @@ BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
   for (const auto& node : graph.nodes) {
     CanonicalOptimizerNodeEstimate estimate;
     estimate.logical_node_id = node.logical_node_id;
+    if (node.required_object_uuids.size() == 1) {
+      estimate.object_uuid = node.required_object_uuids.front();
+    }
     estimate.state =
         node.node_kind == planner::CanonicalLogicalRelationalNodeKind::kValues
             ? CanonicalOptimizerStatisticState::kNotApplicable
@@ -398,6 +422,18 @@ BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
   }
   result.built = true;
   return result;
+}
+
+CanonicalNativeAdmissionBuildResult
+BuildCanonicalObjectFreeNativeOptimizerAdmissionRequest(
+    const planner::CanonicalLogicalRelationalGraph& graph,
+    const planner::CanonicalLogicalPropertyCatalog& properties,
+    const CanonicalNativeObjectFreeAdmissionContext& context) {
+  CanonicalNativeObjectAdmissionContext object_context;
+  static_cast<CanonicalNativeObjectFreeAdmissionContext&>(object_context) =
+      context;
+  return BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+      graph, properties, object_context);
 }
 
 }  // namespace scratchbird::engine::optimizer
