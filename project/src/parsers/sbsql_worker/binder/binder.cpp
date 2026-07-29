@@ -836,7 +836,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 operand->child_expression_ids.front());
             if (inner_operand->expression_kind ==
                     NativeExpressionAstKind::kBinary &&
-                inner_operand->operator_name == "AND" &&
+                (inner_operand->operator_name == "AND" ||
+                 inner_operand->operator_name == "OR") &&
                 inner_operand->child_expression_ids.size() == 2) {
               boolean_root = inner_operand;
               count_comparison = ast_expression_by_id.at(
@@ -989,6 +990,22 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           inner_not->child_expression_ids ==
               std::vector<std::uint32_t>{boolean_root->expression_id} &&
           boolean_root->operator_name == "AND";
+      // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-NOT-COUNT-SUM-OR-GT-V1
+      const bool not_not_count_sum_or_profile =
+          count_comparison != nullptr && sum_comparison != nullptr &&
+          predicate != nullptr && inner_not != nullptr &&
+          boolean_root != nullptr &&
+          predicate->expression_kind == NativeExpressionAstKind::kUnary &&
+          predicate->operator_name == "NOT" &&
+          predicate->child_expression_ids ==
+              std::vector<std::uint32_t>{inner_not->expression_id} &&
+          inner_not->expression_kind == NativeExpressionAstKind::kUnary &&
+          inner_not->operator_name == "NOT" &&
+          inner_not->child_expression_ids ==
+              std::vector<std::uint32_t>{boolean_root->expression_id} &&
+          boolean_root->operator_name == "OR";
+      const bool not_not_count_sum_boolean_profile =
+          not_not_count_sum_and_profile || not_not_count_sum_or_profile;
       const bool not_not_sum_profile =
           predicate != nullptr && inner_not != nullptr &&
           sum_comparison != nullptr &&
@@ -1037,7 +1054,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           not_count_sum_and_profile || not_count_sum_or_profile;
       const bool count_sum_boolean_profile =
           count_sum_and_profile || count_sum_or_profile ||
-          not_count_sum_boolean_profile || not_not_count_sum_and_profile;
+          not_count_sum_boolean_profile ||
+          not_not_count_sum_boolean_profile;
       const bool not_sum_profile =
           predicate != nullptr && sum_comparison != nullptr &&
           predicate->expression_kind == NativeExpressionAstKind::kUnary &&
@@ -1089,10 +1107,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                       BoundNullability::kNonNull));
       const bool not_count_sum_boolean_descriptors_are_exact =
           (!not_count_sum_boolean_profile &&
-           !not_not_count_sum_and_profile) ||
+           !not_not_count_sum_boolean_profile) ||
           (descriptor_is_unqualified(predicate,
                                       BoundNullability::kNullable) &&
-           (!not_not_count_sum_and_profile ||
+           (!not_not_count_sum_boolean_profile ||
             descriptor_is_unqualified(inner_not,
                                       BoundNullability::kNullable)) &&
            descriptor_is_unqualified(boolean_root,
@@ -1118,7 +1136,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            descriptor_is_unqualified(projected_count,
                                      BoundNullability::kNonNull));
       const std::string_view expected_filter_semantic =
-          not_not_count_sum_and_profile
+          not_not_count_sum_or_profile
+              ? "filter.having-not-not-count-sum-or-gt-int64-literals.v1"
+          : not_not_count_sum_and_profile
               ? "filter.having-not-not-count-sum-and-gt-int64-literals.v1"
           : not_not_count_profile
               ? "filter.having-not-not-count-gt-int64-literal.v1"
@@ -1279,6 +1299,16 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-NOT-COUNT-SUM-AND-GT-ADMISSION-V1
       const bool admitted_two_key_not_not_count_sum_and_having =
           not_not_count_sum_and_profile &&
+          aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-NOT-COUNT-SUM-OR-GT-ADMISSION-V1
+      const bool admitted_two_key_not_not_count_sum_or_having =
+          not_not_count_sum_or_profile &&
           aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kSimple &&
@@ -1622,6 +1652,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         if (!admitted_two_key_not_not_sum_having &&
             !admitted_two_key_not_not_count_having &&
             !admitted_two_key_not_not_count_sum_and_having &&
+            !admitted_two_key_not_not_count_sum_or_having &&
             !admitted_two_key_not_count_having &&
             !admitted_two_key_not_count_sum_and_having &&
             !admitted_two_key_not_count_sum_or_having &&
@@ -1663,6 +1694,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_two_key_not_not_sum_having &&
            !admitted_two_key_not_not_count_having &&
            !admitted_two_key_not_not_count_sum_and_having &&
+           !admitted_two_key_not_not_count_sum_or_having &&
            !admitted_two_key_not_sum_having &&
            !admitted_two_key_not_count_having &&
            !admitted_two_key_not_count_sum_and_having &&
@@ -1821,7 +1853,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 inner_not_binding->second->descriptor_id ||
             inner_not_binding->second->descriptor_id !=
                 count_comparison_binding->second->descriptor_id)) ||
-          (not_not_count_sum_and_profile &&
+          (not_not_count_sum_boolean_profile &&
            (inner_not_binding == expression_binding_by_id.end() ||
             boolean_root_binding == expression_binding_by_id.end() ||
             predicate->child_expression_ids !=
@@ -1872,7 +1904,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             boolean_root->expression_kind !=
                 NativeExpressionAstKind::kBinary ||
             boolean_root->operator_name !=
-                ((count_sum_or_profile || not_count_sum_or_profile)
+                ((count_sum_or_profile || not_count_sum_or_profile ||
+                  not_not_count_sum_or_profile)
                      ? "OR"
                      : "AND") ||
             boolean_root->child_expression_ids !=
@@ -1913,7 +1946,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             boolean_root_binding->second->descriptor_id !=
                 sum_comparison_binding->second->descriptor_id ||
             (!not_count_sum_boolean_profile &&
-             !not_not_count_sum_and_profile && boolean_root != predicate) ||
+             !not_not_count_sum_boolean_profile && boolean_root != predicate) ||
             (not_count_sum_boolean_profile &&
              (predicate->expression_kind !=
                   NativeExpressionAstKind::kUnary ||
@@ -1922,7 +1955,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                   std::vector<std::uint32_t>{boolean_root->expression_id} ||
               predicate_binding->second->descriptor_id !=
                   boolean_root_binding->second->descriptor_id)) ||
-            (not_not_count_sum_and_profile &&
+            (not_not_count_sum_boolean_profile &&
              inner_not_binding->second->descriptor_id !=
                  boolean_root_binding->second->descriptor_id))) ||
           semantic_binding == relation_binding_by_id.end() ||
