@@ -836,7 +836,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             sum_comparison = ast_expression_by_id.at(
                 operand->child_expression_ids[1]);
           } else {
-            sum_comparison = operand;
+            const auto* function =
+                operand->expression_kind == NativeExpressionAstKind::kBinary &&
+                        operand->operator_name == ">" &&
+                        operand->child_expression_ids.size() == 2
+                    ? ast_expression_by_id.at(
+                          operand->child_expression_ids.front())
+                    : nullptr;
+            if (function != nullptr &&
+                function->expression_kind ==
+                    NativeExpressionAstKind::kFunctionCall &&
+                ToUpperAscii(function->operator_name) == "COUNT") {
+              count_comparison = operand;
+            } else {
+              sum_comparison = operand;
+            }
           }
         } else if (predicate->expression_kind ==
                        NativeExpressionAstKind::kBinary &&
@@ -946,6 +960,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           predicate->operator_name == "NOT" &&
           predicate->child_expression_ids ==
               std::vector<std::uint32_t>{sum_comparison->expression_id};
+      const bool not_count_profile =
+          predicate != nullptr && count_comparison != nullptr &&
+          boolean_root == nullptr &&
+          predicate->expression_kind == NativeExpressionAstKind::kUnary &&
+          predicate->operator_name == "NOT" &&
+          predicate->child_expression_ids ==
+              std::vector<std::uint32_t>{count_comparison->expression_id};
       const bool not_sum_descriptors_are_exact =
           !not_sum_profile ||
           (descriptor_is_unqualified(predicate,
@@ -968,9 +989,23 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                       BoundNullability::kNonNull) &&
            descriptor_is_unqualified(sum_threshold,
                                       BoundNullability::kNonNull));
+      const bool not_count_descriptors_are_exact =
+          !not_count_profile ||
+          (descriptor_is_unqualified(predicate,
+                                     BoundNullability::kNullable) &&
+           descriptor_is_unqualified(count_comparison,
+                                     BoundNullability::kNullable) &&
+           descriptor_is_unqualified(count_threshold,
+                                     BoundNullability::kNonNull) &&
+           descriptor_is_unqualified(having_count,
+                                     BoundNullability::kNonNull) &&
+           descriptor_is_unqualified(projected_count,
+                                     BoundNullability::kNonNull));
       const std::string_view expected_filter_semantic =
           not_count_sum_and_profile
               ? "filter.having-not-count-sum-and-gt-int64-literals.v1"
+              : not_count_profile
+              ? "filter.having-not-count-gt-int64-literal.v1"
               : not_sum_profile
               ? "filter.having-not-sum-gt-int64-literal.v1"
               : count_sum_or_profile
@@ -1093,6 +1128,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-SUM-GT-V1
       const bool admitted_two_key_not_sum_having =
           not_sum_profile && aggregate_relation_ast != nullptr &&
+          aggregate_relation_ast->aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kSimple &&
+          aggregate_relation_ast->aggregate_projection_form ==
+              NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation_ast->grouping_key_expression_ids.size() == 2 &&
+          ast.grouping_sets.empty();
+      // QOW-SOURCE-QRY-001-BINDING-TWO-KEY-HAVING-NOT-COUNT-GT-V1
+      const bool admitted_two_key_not_count_having =
+          not_count_profile && aggregate_relation_ast != nullptr &&
           aggregate_relation_ast->aggregate_grouping_form ==
               NativeAggregateGroupingForm::kSimple &&
           aggregate_relation_ast->aggregate_projection_form ==
@@ -1414,7 +1458,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return true;
       };
       const auto not_count_sum_and_outputs_are_exact = [&] {
-        if (!admitted_two_key_not_count_sum_and_having &&
+        if (!admitted_two_key_not_count_having &&
+            !admitted_two_key_not_count_sum_and_having &&
             !admitted_grouping_sets_not_count_sum_and_having &&
             !admitted_rollup_not_count_sum_and_having &&
             !admitted_cube_not_count_sum_and_having) {
@@ -1451,6 +1496,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
            !admitted_cube_or_having &&
            !admitted_cube_metadata_or_having &&
            !admitted_two_key_not_sum_having &&
+           !admitted_two_key_not_count_having &&
            !admitted_two_key_not_count_sum_and_having &&
            !admitted_grouping_sets_not_count_sum_and_having &&
            !admitted_grouping_sets_metadata_not_count_sum_and_having &&
@@ -1497,45 +1543,47 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() || predicate == nullptr ||
-          sum_comparison == nullptr || having_sum == nullptr ||
-          sum_threshold == nullptr ||
-          sum_comparison->expression_kind !=
-              NativeExpressionAstKind::kBinary ||
-          sum_comparison->operator_name != ">" ||
-          sum_comparison->child_expression_ids.size() != 2 ||
-          having_sum->expression_kind !=
-              NativeExpressionAstKind::kFunctionCall ||
-          ToUpperAscii(having_sum->operator_name) != "SUM" ||
-          having_sum->child_expression_ids.size() != 1 ||
-          having_argument == nullptr || projected_sum == nullptr ||
-          projected_argument == nullptr ||
-          having_argument->expression_kind !=
-              NativeExpressionAstKind::kIdentifier ||
-          projected_argument->expression_kind !=
-              NativeExpressionAstKind::kIdentifier ||
-          sum_threshold->expression_kind !=
-              NativeExpressionAstKind::kLiteral ||
-          sum_threshold->literal_kind != NativeLiteralAstKind::kNumeric ||
-          !sum_threshold->child_expression_ids.empty() ||
-          having_sum_binding == expression_binding_by_id.end() ||
-          projected_sum_binding == expression_binding_by_id.end() ||
-          having_argument_binding == expression_binding_by_id.end() ||
-          projected_argument_binding == expression_binding_by_id.end() ||
           predicate_binding == expression_binding_by_id.end() ||
-          having_sum_binding->second->function_uuid !=
-              "019de5fc-2400-72e4-8549-82b2eef5a777" ||
-          projected_sum_binding->second->function_uuid !=
-              having_sum_binding->second->function_uuid ||
-          having_sum_binding->second->descriptor_id !=
-              projected_sum_binding->second->descriptor_id ||
-          having_argument_binding->second->bound_name_uuid !=
-              projected_argument_binding->second->bound_name_uuid ||
-          having_argument_binding->second->descriptor_id !=
-              projected_argument_binding->second->descriptor_id ||
+          (!not_count_profile &&
+           (sum_comparison == nullptr || having_sum == nullptr ||
+            sum_threshold == nullptr ||
+            sum_comparison->expression_kind !=
+                NativeExpressionAstKind::kBinary ||
+            sum_comparison->operator_name != ">" ||
+            sum_comparison->child_expression_ids.size() != 2 ||
+            having_sum->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            ToUpperAscii(having_sum->operator_name) != "SUM" ||
+            having_sum->child_expression_ids.size() != 1 ||
+            having_argument == nullptr || projected_sum == nullptr ||
+            projected_argument == nullptr ||
+            having_argument->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            projected_argument->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            sum_threshold->expression_kind !=
+                NativeExpressionAstKind::kLiteral ||
+            sum_threshold->literal_kind != NativeLiteralAstKind::kNumeric ||
+            !sum_threshold->child_expression_ids.empty() ||
+            having_sum_binding == expression_binding_by_id.end() ||
+            projected_sum_binding == expression_binding_by_id.end() ||
+            having_argument_binding == expression_binding_by_id.end() ||
+            projected_argument_binding == expression_binding_by_id.end() ||
+            having_sum_binding->second->function_uuid !=
+                "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+            projected_sum_binding->second->function_uuid !=
+                having_sum_binding->second->function_uuid ||
+            having_sum_binding->second->descriptor_id !=
+                projected_sum_binding->second->descriptor_id ||
+            having_argument_binding->second->bound_name_uuid !=
+                projected_argument_binding->second->bound_name_uuid ||
+            having_argument_binding->second->descriptor_id !=
+                projected_argument_binding->second->descriptor_id ||
+            !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
+            !descriptor_is(sum_threshold, BoundNullability::kNonNull))) ||
           !descriptor_is(predicate, BoundNullability::kNullable) ||
-          !descriptor_is(sum_comparison, BoundNullability::kNullable) ||
-          !descriptor_is(sum_threshold, BoundNullability::kNonNull) ||
           !not_sum_descriptors_are_exact ||
+          !not_count_descriptors_are_exact ||
           !not_count_sum_and_descriptors_are_exact ||
           (not_sum_profile &&
            (predicate->expression_kind != NativeExpressionAstKind::kUnary ||
@@ -1544,6 +1592,40 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                 std::vector<std::uint32_t>{sum_comparison->expression_id} ||
             predicate_binding->second->descriptor_id !=
                 sum_comparison_binding->second->descriptor_id)) ||
+          (not_count_profile &&
+           (count_comparison == nullptr || having_count == nullptr ||
+            count_threshold == nullptr || projected_count == nullptr ||
+            count_comparison->expression_kind !=
+                NativeExpressionAstKind::kBinary ||
+            count_comparison->operator_name != ">" ||
+            count_comparison->child_expression_ids !=
+                std::vector<std::uint32_t>{having_count->expression_id,
+                                           count_threshold->expression_id} ||
+            having_count->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            ToUpperAscii(having_count->operator_name) != "COUNT" ||
+            !having_count->child_expression_ids.empty() ||
+            projected_count->expression_kind !=
+                NativeExpressionAstKind::kFunctionCall ||
+            ToUpperAscii(projected_count->operator_name) != "COUNT" ||
+            !projected_count->child_expression_ids.empty() ||
+            count_threshold->expression_kind !=
+                NativeExpressionAstKind::kLiteral ||
+            count_threshold->literal_kind != NativeLiteralAstKind::kNumeric ||
+            !count_threshold->child_expression_ids.empty() ||
+            count_comparison_binding == expression_binding_by_id.end() ||
+            having_count_binding == expression_binding_by_id.end() ||
+            projected_count_binding == expression_binding_by_id.end() ||
+            having_count_binding->second->function_uuid !=
+                "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+            projected_count_binding->second->function_uuid !=
+                having_count_binding->second->function_uuid ||
+            having_count_binding->second->descriptor_id !=
+                projected_count_binding->second->descriptor_id ||
+            predicate->child_expression_ids !=
+                std::vector<std::uint32_t>{count_comparison->expression_id} ||
+            predicate_binding->second->descriptor_id !=
+                count_comparison_binding->second->descriptor_id)) ||
           (count_sum_boolean_profile &&
            (boolean_root == nullptr ||
             boolean_root_binding == expression_binding_by_id.end() ||
