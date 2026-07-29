@@ -41,8 +41,17 @@ concept HasCallerCandidates = requires(T value) { value.candidates; };
 template <typename T>
 concept HasCallerRelationUuid = requires(T value) { value.relation_uuid; };
 
+template <typename T>
+concept HasCallerExecutorRegistry = requires(T value) {
+  value.available_executors;
+};
+
 static_assert(!HasCallerCandidates<exec::CanonicalHeapRelationAcquisitionRequest>);
 static_assert(!HasCallerRelationUuid<exec::CanonicalHeapRelationAcquisitionRequest>);
+static_assert(!HasCallerCandidates<exec::CanonicalHeapPhysicalDagDispatchRequest>);
+static_assert(!HasCallerRelationUuid<exec::CanonicalHeapPhysicalDagDispatchRequest>);
+static_assert(
+    !HasCallerExecutorRegistry<exec::CanonicalHeapPhysicalDagDispatchRequest>);
 
 [[noreturn]] void Fail(std::string_view detail) {
   std::cerr << "QOW-TEST-QRY-004-HEAP-MGA-V1: " << detail << '\n';
@@ -519,6 +528,20 @@ exec::CanonicalHeapRelationAcquisitionRequest RequestFor(
   return BoundRequest(context, descriptor.descriptor, salt);
 }
 
+exec::CanonicalHeapPhysicalDagDispatchRequest DispatchRequestFor(
+    const exec::CanonicalHeapRelationAcquisitionRequest& acquisition) {
+  exec::CanonicalHeapPhysicalDagDispatchRequest request;
+  request.context = acquisition.context;
+  request.relational_dag = acquisition.relational_dag;
+  request.physical_dag = acquisition.physical_dag;
+  request.maximum_scanned_row_versions =
+      acquisition.maximum_scanned_row_versions;
+  request.maximum_decoded_bytes = acquisition.maximum_decoded_bytes;
+  request.maximum_output_rows = acquisition.maximum_output_rows;
+  request.cancellation_requested = acquisition.cancellation_requested;
+  return request;
+}
+
 void RequireAtomicFailure(
     const exec::CanonicalHeapRelationAcquisitionResult& result,
     std::string_view detail) {
@@ -526,6 +549,18 @@ void RequireAtomicFailure(
               result.output_batch.rows.empty() &&
               result.emitted_record_uuids.empty() &&
               result.emitted_row_version_uuids.empty(),
+          detail);
+}
+
+void RequireAtomicDispatchFailure(
+    const exec::CanonicalPhysicalDagDispatchResult& result,
+    std::string_view detail) {
+  Require(!result.diagnostic.ok && result.executed_steps.empty() &&
+              result.root_result_handle_id == 0 &&
+              result.root_output_descriptor_ids.empty() &&
+              result.selected_plan_uuid.empty() &&
+              result.executed_root_physical_node_id == 0 &&
+              result.root_causal_counter_id == 0,
           detail);
 }
 
@@ -707,6 +742,306 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
           "empty relation did not produce a typed empty batch");
   ReleaseRequest(&empty);
   Rollback(empty_reader);
+}
+
+// QOW-TEST-QRY-004-HEAP-DISPATCH-V1
+void ValidatePhysicalHeapDispatchMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-dispatch-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 281);
+  auto acquisition = RequestFor(reader,
+                                fixture.main_table_uuid,
+                                fixture.salt + 282);
+  const auto request = DispatchRequestFor(acquisition);
+  const auto persisted =
+      api::LoadMgaRelationStorageDescriptor(reader, fixture.main_table_uuid);
+  Require(persisted.ok && persisted.descriptor.columns.size() == 1,
+          "dispatch fixture descriptor load failed");
+
+  const auto first = exec::ExecuteCanonicalHeapPhysicalDagDispatch(request);
+  Require(first.diagnostic.ok && first.execution_started &&
+              first.data_access_observed &&
+              first.executed_steps.size() == 1 &&
+              first.root_result_handle_id != 0 &&
+              first.root_output_descriptor_ids ==
+                  acquisition.physical_dag.nodes.front()
+                      .output_descriptor_ids &&
+              first.selected_plan_uuid ==
+                  acquisition.physical_dag.selected_plan_uuid &&
+              first.executed_root_physical_node_id ==
+                  acquisition.physical_dag.nodes.front().physical_node_id &&
+              first.root_causal_counter_id ==
+                  acquisition.physical_dag.nodes.front().causal_counter_id &&
+              first.authority.engine_mga_snapshot_bound &&
+              !first.authority.owns_transaction_finality &&
+              !first.authority.owns_recovery &&
+              !first.authority.owns_parser_execution &&
+              !first.authority.owns_visibility_outside_engine_mga &&
+              !first.authority.wal_is_transaction_or_recovery_authority,
+          "actual heap scan did not pass through canonical physical dispatch");
+  const auto& step = first.executed_steps.front();
+  Require(step.execution_ordinal == 1 && step.execution_started &&
+              step.execution_finished &&
+              step.counters_captured_after_finish &&
+              step.input_row_count == 0 && step.output_row_count == 3 &&
+              step.rows_examined >= step.output_row_count &&
+              step.selected_plan_uuid == first.selected_plan_uuid &&
+              step.executed_physical_node_id ==
+                  first.executed_root_physical_node_id &&
+              step.causal_counter_id == first.root_causal_counter_id &&
+              step.result_handle_id == first.root_result_handle_id &&
+              step.output_descriptor_ids ==
+                  first.root_output_descriptor_ids &&
+              step.authority.engine_mga_snapshot_bound &&
+              step.heap_read_counters.has_value() &&
+              step.heap_read_authority.has_value() &&
+              step.heap_read_counters->emitted_row_count == 3 &&
+              step.heap_read_counters->scanned_row_version_count ==
+                  step.rows_examined &&
+              step.heap_read_authority->engine_catalog_descriptor_loaded &&
+              step.heap_read_authority->engine_mga_snapshot_bound &&
+              step.heap_read_authority->engine_authorization_rechecked &&
+              step.heap_read_authority->bounded_physical_read &&
+              !step.heap_read_authority->caller_candidates_consumed &&
+              !step.heap_read_authority->owns_transaction_finality &&
+              !step.heap_read_authority->owns_recovery &&
+              !step.heap_read_authority->owns_parser_execution &&
+              !step.heap_read_authority
+                   ->wal_is_visibility_or_recovery_authority &&
+              step.current_relation_descriptor_uuid ==
+                  persisted.descriptor.descriptor_uuid.canonical &&
+              step.current_relation_descriptor_generation ==
+                  persisted.descriptor.descriptor_generation &&
+              step.materialized_output_batch.has_value() &&
+              step.materialized_output_batch->columns.size() == 1 &&
+              step.materialized_output_batch->rows.size() == 3,
+          "heap dispatch step lost counter, authority, or causal evidence");
+  const auto& batch = *step.materialized_output_batch;
+  Require(PreservesPersistedDescriptorFields(
+              batch.columns.front().descriptor,
+              persisted.descriptor.columns.front().value_descriptor) &&
+              batch.columns.front().nullable ==
+                  persisted.descriptor.columns.front().nullable,
+          "dispatch root rewrote the persisted descriptor identity");
+  std::size_t null_count = 0;
+  for (const auto& row : batch.rows) {
+    Require(row.values.size() == 1 &&
+                SameDescriptor(row.values.front().descriptor,
+                               batch.columns.front().descriptor),
+            "dispatch row lost its canonical descriptor");
+    if (row.values.front().state == api::EngineValueState::sql_null) {
+      ++null_count;
+    }
+  }
+  Require(null_count == 1, "typed SQL NULL did not reach dispatch root");
+
+  const auto repeated =
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(request);
+  Require(repeated.diagnostic.ok && repeated.executed_steps.size() == 1 &&
+              repeated.root_result_handle_id == first.root_result_handle_id &&
+              repeated.root_output_descriptor_ids ==
+                  first.root_output_descriptor_ids &&
+              repeated.selected_plan_uuid == first.selected_plan_uuid &&
+              repeated.executed_root_physical_node_id ==
+                  first.executed_root_physical_node_id &&
+              repeated.root_causal_counter_id ==
+                  first.root_causal_counter_id &&
+              repeated.executed_steps.front()
+                      .current_relation_descriptor_uuid ==
+                  step.current_relation_descriptor_uuid &&
+              repeated.executed_steps.front()
+                      .current_relation_descriptor_generation ==
+                  step.current_relation_descriptor_generation,
+          "repeated heap dispatch did not preserve deterministic identities");
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+
+  auto empty_reader = QueryContext(Begin(fixture,
+                                         "qow-heap-dispatch-empty-reader"),
+                                   fixture.empty_table_uuid,
+                                   fixture.salt + 283);
+  auto empty_acquisition = RequestFor(empty_reader,
+                                      fixture.empty_table_uuid,
+                                      fixture.salt + 284);
+  const auto empty = exec::ExecuteCanonicalHeapPhysicalDagDispatch(
+      DispatchRequestFor(empty_acquisition));
+  Require(empty.diagnostic.ok && empty.execution_started &&
+              !empty.data_access_observed &&
+              empty.executed_steps.size() == 1 &&
+              empty.executed_steps.front().materialized_output_batch.has_value() &&
+              empty.executed_steps.front()
+                  .materialized_output_batch->columns.size() == 1 &&
+              empty.executed_steps.front()
+                  .materialized_output_batch->rows.empty() &&
+              empty.executed_steps.front().output_row_count == 0,
+          "empty heap relation did not dispatch a typed empty root batch");
+  ReleaseRequest(&empty_acquisition);
+  Rollback(empty_reader);
+}
+
+void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-dispatch-refusals"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 285);
+  auto acquisition = RequestFor(reader,
+                                fixture.main_table_uuid,
+                                fixture.salt + 286);
+  const auto baseline = DispatchRequestFor(acquisition);
+
+  auto mutated = baseline;
+  mutated.context = nullptr;
+  auto result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result, "missing dispatch context was accepted");
+  Require(!result.execution_started && !result.data_access_observed,
+          "missing context reported physical execution or read");
+
+  mutated = baseline;
+  mutated.cancellation_requested = {};
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result,
+                               "missing cancellation probe was accepted");
+  Require(!result.execution_started && !result.data_access_observed,
+          "missing probe reached physical execution");
+
+  mutated = baseline;
+  mutated.maximum_scanned_row_versions = 0;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "zero scanned-version dispatch bound was accepted");
+  mutated = baseline;
+  mutated.maximum_decoded_bytes = 0;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "zero decoded-byte dispatch bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_rows = 0;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "zero output-row dispatch bound was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().input_physical_node_ids = {11};
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result,
+                               "input edge entered leaf heap dispatch");
+  Require(!result.execution_started && !result.data_access_observed,
+          "input-edge refusal occurred after physical read");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().executor_capability_uuid.clear();
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "missing heap capability UUID was accepted");
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().executor_capability_abi_version = 2;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "wrong heap capability ABI was accepted");
+
+  mutated = baseline;
+  auto second_heap = mutated.physical_dag.nodes.front();
+  second_heap.physical_node_id = 12;
+  second_heap.causal_counter_id = 102;
+  second_heap.selected_alternative_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 288);
+  second_heap.executor_capability_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 289);
+  second_heap.cost_vector_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 290);
+  auto project = mutated.physical_dag.nodes.front();
+  project.physical_node_id = 13;
+  project.node_kind = exec::PhysicalNodeKind::kProject;
+  project.implementation_id = "project.typed.v1";
+  project.input_physical_node_ids = {11, 12};
+  project.causal_counter_id = 103;
+  project.selected_alternative_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 291);
+  project.executor_capability_uuid =
+      reader.optimizer_capability_snapshot_uuid.canonical;
+  project.cost_vector_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 292);
+  mutated.physical_dag.nodes.push_back(std::move(second_heap));
+  mutated.physical_dag.nodes.push_back(std::move(project));
+  mutated.physical_dag.root_physical_node_id = 13;
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(
+      result, "inconsistent duplicate heap capabilities were accepted");
+  Require(!result.execution_started && !result.data_access_observed,
+          "inconsistent heap capability reached physical execution");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().node_kind =
+      exec::PhysicalNodeKind::kFilter;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "wrong heap physical kind was accepted");
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().implementation_id = "scan.index.v1";
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "unavailable heap registration was accepted");
+  mutated = baseline;
+  mutated.physical_dag.root_physical_node_id = 999;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "wrong heap physical root was accepted");
+
+  mutated = baseline;
+  ++mutated.physical_dag.local_transaction_id;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "mismatched heap dispatch transaction was accepted");
+  mutated = baseline;
+  ++mutated.physical_dag.statement_snapshot_id;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "mismatched heap dispatch snapshot was accepted");
+
+  mutated = baseline;
+  mutated.cancellation_requested = [] { return true; };
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result,
+                               "pre-dispatch cancellation was ignored");
+  Require(!result.execution_started && !result.data_access_observed,
+          "pre-dispatch cancellation reported a physical read");
+
+  auto denied_context = reader;
+  denied_context.authorization_context.grants.front().deny = true;
+  mutated = baseline;
+  mutated.context = &denied_context;
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result,
+                               "denied heap dispatch published a result");
+  Require(result.execution_started && !result.data_access_observed,
+          "pre-read callback refusal retained generic read truth");
+
+  std::size_t cancellation_probes = 0;
+  mutated = baseline;
+  mutated.cancellation_requested = [&] {
+    return ++cancellation_probes >= 6;
+  };
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated);
+  RequireAtomicDispatchFailure(result,
+                               "mid-dispatch cancellation published a root");
+  Require(result.execution_started,
+          "mid-dispatch cancellation did not enter the engine callback");
+
+  auto malformed_context = reader;
+  malformed_context.authorization_context.grants.front()
+      .target_uuid.canonical = fixture.malformed_table_uuid;
+  auto malformed_acquisition = RequestFor(malformed_context,
+                                          fixture.malformed_table_uuid,
+                                          fixture.salt + 287);
+  result = exec::ExecuteCanonicalHeapPhysicalDagDispatch(
+      DispatchRequestFor(malformed_acquisition));
+  RequireAtomicDispatchFailure(
+      result, "malformed later heap row published a partial dispatch root");
+  Require(result.execution_started && result.data_access_observed,
+          "post-read heap refusal lost actual data-access truth");
+  ReleaseRequest(&malformed_acquisition);
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
 }
 
 void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
@@ -1030,6 +1365,8 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
 int main() {
   auto fixture = MakeFixture();
+  ValidatePhysicalHeapDispatchMatrix(fixture);
+  ValidatePhysicalHeapDispatchRefusals(fixture);
   ValidatePositiveAndVisibilityMatrix(fixture);
   ValidateBindingSecurityAndResourceRefusals(fixture);
   return EXIT_SUCCESS;

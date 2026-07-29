@@ -34,6 +34,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -10826,6 +10827,423 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   result.executed_physical_node_id = physical->physical_node_id;
   result.causal_counter_id = physical->causal_counter_id;
   return result;
+}
+
+namespace {
+
+struct HeapPhysicalDispatchObservation {
+  bool callback_invoked = false;
+  bool data_access_observed = false;
+  bool cancellation_observed = false;
+};
+
+struct HeapPhysicalExecutorState {
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  scratchbird::engine::internal_api::TypedRelationalDag relational_dag;
+  TypedPhysicalNodeDag physical_dag;
+  std::size_t maximum_scanned_row_versions = 0;
+  std::size_t maximum_decoded_bytes = 0;
+  std::size_t maximum_output_rows = 0;
+  std::function<bool()> cancellation_requested;
+};
+
+struct HeapPhysicalRegistrationBuildResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::optional<CanonicalPhysicalExecutorRegistration> registration;
+  std::shared_ptr<HeapPhysicalDispatchObservation> observation;
+};
+
+bool SameHeapPhysicalNodeIdentity(const PhysicalNodeRecord& left,
+                                  const PhysicalNodeRecord& right) {
+  return left.physical_node_id == right.physical_node_id &&
+         left.relational_node_id == right.relational_node_id &&
+         left.node_kind == right.node_kind &&
+         left.implementation_id == right.implementation_id &&
+         left.input_physical_node_ids == right.input_physical_node_ids &&
+         left.output_descriptor_ids == right.output_descriptor_ids &&
+         left.causal_counter_id == right.causal_counter_id &&
+         left.selected_alternative_uuid == right.selected_alternative_uuid &&
+         left.executor_capability_uuid == right.executor_capability_uuid &&
+         left.executor_capability_abi_version ==
+             right.executor_capability_abi_version &&
+         left.engine_capability_validated ==
+             right.engine_capability_validated;
+}
+
+bool SameHeapPhysicalDagAuthority(const TypedPhysicalNodeDag& left,
+                                  const TypedPhysicalNodeDag& right) {
+  return left.abi_version == right.abi_version &&
+         left.selected_plan_uuid == right.selected_plan_uuid &&
+         left.root_physical_node_id == right.root_physical_node_id &&
+         left.local_transaction_id == right.local_transaction_id &&
+         left.statement_snapshot_id == right.statement_snapshot_id &&
+         left.bound_sblr_tree_uuid == right.bound_sblr_tree_uuid &&
+         left.catalog_epoch_uuid == right.catalog_epoch_uuid &&
+         left.security_context_uuid == right.security_context_uuid &&
+         left.capability_snapshot_uuid == right.capability_snapshot_uuid &&
+         left.resource_snapshot_uuid == right.resource_snapshot_uuid &&
+         left.statistics_snapshot_uuid == right.statistics_snapshot_uuid &&
+         left.route_snapshot_uuid == right.route_snapshot_uuid &&
+         left.catalog_generation == right.catalog_generation &&
+         left.security_epoch == right.security_epoch &&
+         left.policy_epoch == right.policy_epoch &&
+         left.resource_epoch == right.resource_epoch &&
+         left.statistics_generation == right.statistics_generation &&
+         left.route_epoch == right.route_epoch &&
+         left.route_generation == right.route_generation &&
+         left.memory_budget_bytes == right.memory_budget_bytes &&
+         left.optimizer_published == right.optimizer_published &&
+         left.immutable_node_identity_validated ==
+             right.immutable_node_identity_validated &&
+         left.capability_validated_before_access ==
+             right.capability_validated_before_access &&
+         left.data_access_observed == right.data_access_observed &&
+         left.nodes.size() == right.nodes.size();
+}
+
+std::uint64_t HeapPhysicalResultHandle(const TypedPhysicalNodeDag& dag,
+                                       const PhysicalNodeRecord& node) {
+  std::uint64_t value = 1469598103934665603ULL;
+  const auto mix_byte = [&](const std::uint8_t byte) {
+    value ^= byte;
+    value *= 1099511628211ULL;
+  };
+  for (const unsigned char ch : dag.selected_plan_uuid) { mix_byte(ch); }
+  for (const unsigned char ch : node.executor_capability_uuid) { mix_byte(ch); }
+  for (std::size_t offset = 0; offset < sizeof(node.physical_node_id);
+       ++offset) {
+    mix_byte(static_cast<std::uint8_t>(
+        node.physical_node_id >> (offset * 8u)));
+  }
+  return value == 0 ? 1 : value;
+}
+
+DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
+    const CanonicalHeapPhysicalDagDispatchRequest& request,
+    std::vector<const PhysicalNodeRecord*>* heap_nodes) {
+  namespace api = scratchbird::engine::internal_api;
+  if (heap_nodes == nullptr || request.context == nullptr ||
+      request.relational_dag == nullptr) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-BINDING-V1",
+        "engine context and typed relational DAG are required");
+  }
+  const auto& context = *request.context;
+  const auto& relational = *request.relational_dag;
+  const auto relational_validation = api::ValidateTypedRelationalDag(relational);
+  if (!relational_validation.accepted) {
+    const auto& issue = relational_validation.issues.front();
+    return HeapAcquisitionRefusal(issue.diagnostic_id, issue.field_id);
+  }
+  const auto physical_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!physical_validation.accepted) {
+    const auto& issue = physical_validation.issues.front();
+    return HeapAcquisitionRefusal(issue.diagnostic_id, issue.field_id);
+  }
+  if (relational.wire_version != 2 ||
+      request.physical_dag.abi_version != 2 ||
+      !request.physical_dag.optimizer_published ||
+      !request.physical_dag.immutable_node_identity_validated ||
+      !request.physical_dag.capability_validated_before_access ||
+      request.physical_dag.data_access_observed) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-SCOPE-V1",
+        "wire-v2 optimizer-published physical authority is required");
+  }
+  if (!request.cancellation_requested ||
+      request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.maximum_output_rows == 0) {
+    return HeapAcquisitionRefusal(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "nonzero heap dispatch bounds and cancellation probe are required");
+  }
+  if (request.cancellation_requested()) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
+        "heap physical dispatch cancelled before registration");
+  }
+  const auto& authorization = context.authorization_context;
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.snapshot_visible_through_local_transaction_id == 0 ||
+      request.physical_dag.local_transaction_id !=
+          context.local_transaction_id ||
+      request.physical_dag.statement_snapshot_id !=
+          context.snapshot_visible_through_local_transaction_id ||
+      !context.statement_metadata_snapshot_engine_owned ||
+      !context.security_context_present || !authorization.present ||
+      relational.bound_sblr_tree_uuid !=
+          request.physical_dag.bound_sblr_tree_uuid ||
+      relational.bound_catalog_epoch_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      request.physical_dag.catalog_epoch_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      relational.bound_security_context_uuid !=
+          authorization.authority_uuid.canonical ||
+      request.physical_dag.security_context_uuid !=
+          authorization.authority_uuid.canonical ||
+      request.physical_dag.catalog_generation !=
+          context.catalog_generation_id ||
+      context.catalog_generation_id !=
+          authorization.catalog_generation_id ||
+      request.physical_dag.security_epoch != context.security_epoch ||
+      context.security_epoch != authorization.security_epoch ||
+      request.physical_dag.policy_epoch != authorization.policy_epoch ||
+      request.physical_dag.resource_epoch != context.resource_epoch ||
+      request.physical_dag.capability_snapshot_uuid !=
+          context.optimizer_capability_snapshot_uuid.canonical ||
+      request.physical_dag.resource_snapshot_uuid !=
+          context.optimizer_resource_snapshot_uuid.canonical ||
+      request.physical_dag.route_snapshot_uuid !=
+          context.optimizer_route_snapshot_uuid.canonical ||
+      request.physical_dag.route_epoch != context.optimizer_route_epoch ||
+      request.physical_dag.route_generation !=
+          context.optimizer_route_generation ||
+      request.physical_dag.memory_budget_bytes !=
+          context.optimizer_memory_budget_bytes ||
+      context.optimizer_memory_budget_bytes == 0 ||
+      context.optimizer_maximum_candidate_count == 0 ||
+      request.maximum_decoded_bytes > context.optimizer_memory_budget_bytes ||
+      request.maximum_scanned_row_versions >
+          context.optimizer_maximum_candidate_count ||
+      request.maximum_output_rows >
+          context.optimizer_maximum_candidate_count) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-AUTHORITY-V1",
+        "heap registration authority is stale, missing, or over budget");
+  }
+  if (!context.prepared_metadata_required_object_uuid.canonical.empty() ||
+      context.prepared_metadata_required_executable_generation != 0 ||
+      context.prepared_metadata_required_metadata_epoch != 0) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-SCOPE-V1",
+        "prepared or cached descriptor dispatch is outside this profile");
+  }
+
+  heap_nodes->clear();
+  std::string capability_uuid;
+  std::uint32_t capability_abi = 0;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.implementation_id != "scan.heap.v1") { continue; }
+    if (node.node_kind != PhysicalNodeKind::kScan ||
+        !node.input_physical_node_ids.empty() ||
+        node.executor_capability_uuid.empty() ||
+        node.executor_capability_abi_version == 0 ||
+        !node.engine_capability_validated) {
+      return HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-REGISTRATION-V1",
+          "heap executor capability is incomplete");
+    }
+    if (heap_nodes->empty()) {
+      capability_uuid = node.executor_capability_uuid;
+      capability_abi = node.executor_capability_abi_version;
+    } else if (node.executor_capability_uuid != capability_uuid ||
+               node.executor_capability_abi_version != capability_abi) {
+      return HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-HEAP-REGISTRATION-V1",
+          "heap executor capability identity is inconsistent");
+    }
+    heap_nodes->push_back(&node);
+  }
+  if (heap_nodes->empty()) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-PHYSICAL-IMPLEMENTATION-UNAVAILABLE-V1",
+        "scan.heap.v1 is not present in the selected physical DAG");
+  }
+  return {};
+}
+
+HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
+    const CanonicalHeapPhysicalDagDispatchRequest& request) {
+  HeapPhysicalRegistrationBuildResult result;
+  std::vector<const PhysicalNodeRecord*> heap_nodes;
+  result.diagnostic =
+      ValidateHeapPhysicalRegistrationRequest(request, &heap_nodes);
+  if (!result.diagnostic.ok) { return result; }
+
+  auto state = std::make_shared<HeapPhysicalExecutorState>();
+  state->context = *request.context;
+  state->relational_dag = *request.relational_dag;
+  state->physical_dag = request.physical_dag;
+  state->maximum_scanned_row_versions =
+      request.maximum_scanned_row_versions;
+  state->maximum_decoded_bytes = request.maximum_decoded_bytes;
+  state->maximum_output_rows = request.maximum_output_rows;
+  state->cancellation_requested = request.cancellation_requested;
+  result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
+
+  CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = heap_nodes.front()->node_kind;
+  registration.implementation_id = heap_nodes.front()->implementation_id;
+  registration.executor_capability_uuid =
+      heap_nodes.front()->executor_capability_uuid;
+  registration.executor_capability_abi_version =
+      heap_nodes.front()->executor_capability_abi_version;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [state, observation = result.observation](
+          const TypedPhysicalNodeDag& dispatched_dag,
+          const PhysicalNodeRecord& dispatched_node,
+          const std::vector<CanonicalPhysicalDispatchInput>& inputs) {
+        CanonicalPhysicalDispatchStepResult step;
+        observation->callback_invoked = true;
+        if (!inputs.empty()) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-QRY-004-HEAP-DISPATCH-INPUT-V1",
+              "leaf heap executor does not accept input batches");
+          return step;
+        }
+        const auto expected_node = std::ranges::find_if(
+            state->physical_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id ==
+                     dispatched_node.physical_node_id;
+            });
+        if (!SameHeapPhysicalDagAuthority(dispatched_dag,
+                                          state->physical_dag) ||
+            expected_node == state->physical_dag.nodes.end() ||
+            !SameHeapPhysicalNodeIdentity(dispatched_node, *expected_node) ||
+            dispatched_node.node_kind != PhysicalNodeKind::kScan ||
+            dispatched_node.implementation_id != "scan.heap.v1" ||
+            !dispatched_node.input_physical_node_ids.empty()) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
+              "dispatched heap node differs from captured optimizer authority");
+          return step;
+        }
+
+        CanonicalHeapRelationAcquisitionRequest acquisition_request;
+        acquisition_request.context = &state->context;
+        acquisition_request.relational_dag = &state->relational_dag;
+        acquisition_request.physical_dag = state->physical_dag;
+        acquisition_request.selected_physical_node_id =
+            dispatched_node.physical_node_id;
+        acquisition_request.maximum_scanned_row_versions =
+            state->maximum_scanned_row_versions;
+        acquisition_request.maximum_decoded_bytes =
+            state->maximum_decoded_bytes;
+        acquisition_request.maximum_output_rows = state->maximum_output_rows;
+        acquisition_request.cancellation_requested =
+            state->cancellation_requested;
+        auto acquisition =
+            ExecuteCanonicalHeapRelationAcquisition(acquisition_request);
+        observation->data_access_observed = acquisition.data_access_observed;
+        observation->cancellation_observed = acquisition.cancellation_observed;
+        if (!acquisition.diagnostic.ok) {
+          step.diagnostic = std::move(acquisition.diagnostic);
+          return step;
+        }
+
+        step.diagnostic = {};
+        step.selected_plan_uuid = acquisition.selected_plan_uuid;
+        step.executed_physical_node_id =
+            acquisition.executed_physical_node_id;
+        step.causal_counter_id = acquisition.causal_counter_id;
+        step.result_handle_id =
+            HeapPhysicalResultHandle(dispatched_dag, dispatched_node);
+        step.output_descriptor_ids = dispatched_node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound =
+            acquisition.authority.engine_mga_snapshot_bound;
+        step.output_row_count = acquisition.counters.emitted_row_count;
+        step.rows_examined = acquisition.counters.scanned_row_version_count;
+        step.heap_read_counters = acquisition.counters;
+        step.heap_read_authority = acquisition.authority;
+        step.current_relation_descriptor_uuid =
+            acquisition.current_relation_descriptor_uuid;
+        step.current_relation_descriptor_generation =
+            acquisition.current_relation_descriptor_generation;
+        step.materialized_output_batch = std::move(acquisition.output_batch);
+        return step;
+      };
+  result.registration = std::move(registration);
+  return result;
+}
+
+CanonicalPhysicalDagDispatchResult HeapPhysicalDispatchRefusal(
+    DescriptorRuntimeDiagnostic diagnostic,
+    const bool execution_started = false,
+    const bool data_access_observed = false) {
+  CanonicalPhysicalDagDispatchResult result;
+  result.diagnostic = std::move(diagnostic);
+  result.execution_started = execution_started;
+  result.data_access_observed = data_access_observed;
+  return result;
+}
+
+}  // namespace
+
+// QOW-SOURCE-QRY-004-HEAP-DISPATCH-V1
+CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
+    const CanonicalHeapPhysicalDagDispatchRequest& request) {
+  auto built = BuildHeapPhysicalRegistration(request);
+  if (!built.diagnostic.ok || !built.registration.has_value() ||
+      built.observation == nullptr) {
+    if (built.diagnostic.ok) {
+      built.diagnostic = HeapAcquisitionRefusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-IMPLEMENTATION-UNAVAILABLE-V1",
+          "engine heap executor registration is unavailable");
+    }
+    return HeapPhysicalDispatchRefusal(std::move(built.diagnostic));
+  }
+  const auto& physical = request.physical_dag;
+  if (physical.nodes.size() != 1 ||
+      physical.root_physical_node_id !=
+          physical.nodes.front().physical_node_id ||
+      physical.nodes.front().node_kind != PhysicalNodeKind::kScan ||
+      physical.nodes.front().implementation_id != "scan.heap.v1" ||
+      !physical.nodes.front().input_physical_node_ids.empty()) {
+    return HeapPhysicalDispatchRefusal(HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-ROOT-V1",
+        "exactly one input-free scan.heap.v1 root is required"));
+  }
+
+  CanonicalPhysicalDagDispatchRequest dispatch_request;
+  dispatch_request.physical_dag = physical;
+  dispatch_request.inventory_local_transaction_id =
+      request.context->local_transaction_id;
+  dispatch_request.inventory_statement_snapshot_id =
+      request.context->snapshot_visible_through_local_transaction_id;
+  dispatch_request.available_executors.push_back(
+      std::move(*built.registration));
+  auto dispatched = ExecuteCanonicalPhysicalDag(dispatch_request);
+  dispatched.execution_started = built.observation->callback_invoked;
+  dispatched.data_access_observed =
+      built.observation->data_access_observed;
+  if (!dispatched.diagnostic.ok) {
+    if (!dispatched.executed_steps.empty() ||
+        dispatched.root_result_handle_id != 0 ||
+        !dispatched.root_output_descriptor_ids.empty()) {
+      return HeapPhysicalDispatchRefusal(
+          HeapAcquisitionRefusal(
+              "QOW-DIAG-QRY-004-HEAP-DISPATCH-ATOMICITY-V1",
+              "failed heap dispatch exposed a partial result"),
+          built.observation->callback_invoked,
+          built.observation->data_access_observed);
+    }
+    return dispatched;
+  }
+  if (!built.observation->callback_invoked ||
+      dispatched.executed_steps.size() != 1 ||
+      dispatched.root_result_handle_id == 0 ||
+      dispatched.root_output_descriptor_ids !=
+          physical.nodes.front().output_descriptor_ids ||
+      dispatched.executed_root_physical_node_id !=
+          physical.nodes.front().physical_node_id ||
+      dispatched.root_causal_counter_id !=
+          physical.nodes.front().causal_counter_id ||
+      !dispatched.executed_steps.front().materialized_output_batch.has_value() ||
+      !dispatched.executed_steps.front().heap_read_counters.has_value() ||
+      !dispatched.executed_steps.front().heap_read_authority.has_value()) {
+    return HeapPhysicalDispatchRefusal(
+        HeapAcquisitionRefusal(
+            "QOW-DIAG-QRY-004-HEAP-DISPATCH-EVIDENCE-V1",
+            "heap dispatch lost materialized or causal evidence"),
+        built.observation->callback_invoked,
+        built.observation->data_access_observed);
+  }
+  return dispatched;
 }
 
 }  // namespace scratchbird::engine::executor

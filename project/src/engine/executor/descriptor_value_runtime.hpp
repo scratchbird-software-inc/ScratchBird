@@ -1013,6 +1013,18 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::uint64_t causal_counter_id = 0;
 };
 
+struct CanonicalHeapPhysicalDagDispatchRequest {
+  const scratchbird::engine::internal_api::EngineRequestContext* context =
+      nullptr;
+  const scratchbird::engine::internal_api::TypedRelationalDag*
+      relational_dag = nullptr;
+  TypedPhysicalNodeDag physical_dag;
+  std::size_t maximum_scanned_row_versions = 0;
+  std::size_t maximum_decoded_bytes = 0;
+  std::size_t maximum_output_rows = 0;
+  std::function<bool()> cancellation_requested;
+};
+
 struct CanonicalPhysicalDispatchInput {
   std::uint64_t physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -1048,6 +1060,11 @@ struct CanonicalPhysicalDispatchStepResult {
   std::uint64_t rows_examined = 0;
   std::uint64_t pages_read = 0;
   std::uint64_t spill_bytes = 0;
+  std::optional<CanonicalHeapRelationAcquisitionCounters> heap_read_counters;
+  std::optional<CanonicalHeapRelationAcquisitionAuthorityEvidence>
+      heap_read_authority;
+  std::string current_relation_descriptor_uuid;
+  std::uint64_t current_relation_descriptor_generation = 0;
   // Only an engine executor may attach a materialized typed batch. The
   // canonical selected-DAG route consumes the root batch at the shared result
   // ABI boundary; the dispatcher never reconstructs it from an opaque handle.
@@ -2017,6 +2034,8 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
 CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     const CanonicalHeapRelationAcquisitionRequest& request);
+CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
+    const CanonicalHeapPhysicalDagDispatchRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const CanonicalPhysicalDagDispatchRequest& request);
 CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
