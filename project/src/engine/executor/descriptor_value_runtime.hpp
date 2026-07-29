@@ -21,6 +21,10 @@
 #include <string>
 #include <vector>
 
+namespace scratchbird::engine::internal_api {
+struct TypedRelationalDag;
+}
+
 namespace scratchbird::engine::executor {
 
 // SEARCH_KEY: SB_EXEC_DESCRIPTOR_VALUE_RUNTIME_AUTHORITY
@@ -952,6 +956,58 @@ struct CanonicalScanAccessResult {
   CanonicalScanAccessCounters counters;
   CanonicalScanAccessAuthorityEvidence authority;
   bool replan_required = false;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+};
+
+struct CanonicalHeapRelationAcquisitionRequest {
+  const scratchbird::engine::internal_api::EngineRequestContext* context =
+      nullptr;
+  const scratchbird::engine::internal_api::TypedRelationalDag*
+      relational_dag = nullptr;
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  std::size_t maximum_scanned_row_versions = 0;
+  std::size_t maximum_decoded_bytes = 0;
+  std::size_t maximum_output_rows = 0;
+  std::function<bool()> cancellation_requested;
+};
+
+struct CanonicalHeapRelationAcquisitionCounters {
+  std::size_t scanned_row_version_count = 0;
+  std::size_t decoded_byte_count = 0;
+  std::size_t visibility_recheck_count = 0;
+  std::size_t invisible_row_version_count = 0;
+  std::size_t tombstone_row_count = 0;
+  std::size_t emitted_row_count = 0;
+};
+
+struct CanonicalHeapRelationAcquisitionAuthorityEvidence {
+  bool engine_catalog_descriptor_loaded = false;
+  bool engine_mga_snapshot_bound = false;
+  bool engine_authorization_rechecked = false;
+  bool bounded_physical_read = false;
+  bool owns_transaction_finality = false;
+  bool owns_recovery = false;
+  bool owns_parser_execution = false;
+  bool caller_candidates_consumed = false;
+  bool wal_is_visibility_or_recovery_authority = false;
+};
+
+struct CanonicalHeapRelationAcquisitionResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::vector<std::string> emitted_record_uuids;
+  std::vector<std::string> emitted_row_version_uuids;
+  CanonicalHeapRelationAcquisitionCounters counters;
+  CanonicalHeapRelationAcquisitionAuthorityEvidence authority;
+  bool data_access_observed = false;
+  bool cancellation_observed = false;
+  std::string relation_uuid;
+  std::string column_uuid;
+  std::string current_relation_descriptor_uuid;
+  std::uint64_t current_relation_descriptor_generation = 0;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
@@ -1959,6 +2015,8 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
     const CanonicalGroupedAggregateSetStateSpillRequest& request);
 CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     const CanonicalScanAccessRequest& request);
+CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
+    const CanonicalHeapRelationAcquisitionRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const CanonicalPhysicalDagDispatchRequest& request);
 CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(

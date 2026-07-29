@@ -737,6 +737,27 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "dpc_query_crud_relation_materialization_gate;DPC-065;DPC_QUERY_CRUD_RELATION_MATERIALIZATION;database_lifecycle_optimizer;mga_transaction_regression"
   )
 
+  add_executable(qow_qry_004_heap_scan_mga_gate
+    qow_qry_004_heap_scan_mga_gate.cpp
+  )
+  target_compile_features(qow_qry_004_heap_scan_mga_gate PRIVATE cxx_std_23)
+  target_link_libraries(qow_qry_004_heap_scan_mga_gate
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_executor
+      sb_engine_internal_api
+      sb_storage_database
+  )
+
+  add_test(
+    NAME qow_qry_004_heap_scan_mga_v1
+    COMMAND qow_qry_004_heap_scan_mga_gate
+  )
+  set_tests_properties(qow_qry_004_heap_scan_mga_v1 PROPERTIES
+    LABELS "qow_qry_004_heap_scan_mga_v1;QOW-TEST-QRY-004-HEAP-MGA-V1;QOW-203;database_lifecycle_optimizer;mga_transaction_regression"
+  )
+
   add_executable(database_lifecycle_sblr_compact_insert_scalar_conformance
     sblr_compact_insert_scalar_conformance.cpp
   )

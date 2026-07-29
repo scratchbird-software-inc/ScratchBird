@@ -1,0 +1,1036 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "database_lifecycle.hpp"
+#include "dml/delete_api.hpp"
+#include "dml/insert_api.hpp"
+#include "descriptor_value_runtime.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+#include "query/plan_api.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
+
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <iostream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
+namespace exec = scratchbird::engine::executor;
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
+
+constexpr std::string_view kTypeUuid =
+    "019f0000-0000-7300-8000-000000420001";
+
+template <typename T>
+concept HasCallerCandidates = requires(T value) { value.candidates; };
+
+template <typename T>
+concept HasCallerRelationUuid = requires(T value) { value.relation_uuid; };
+
+static_assert(!HasCallerCandidates<exec::CanonicalHeapRelationAcquisitionRequest>);
+static_assert(!HasCallerRelationUuid<exec::CanonicalHeapRelationAcquisitionRequest>);
+
+[[noreturn]] void Fail(std::string_view detail) {
+  std::cerr << "QOW-TEST-QRY-004-HEAP-MGA-V1: " << detail << '\n';
+  std::exit(EXIT_FAILURE);
+}
+
+void Require(const bool condition, std::string_view detail) {
+  if (!condition) { Fail(detail); }
+}
+
+template <typename TResult>
+void RequireOk(const TResult& result, std::string_view detail) {
+  if (!result.ok) {
+    if (!result.diagnostics.empty()) {
+      std::cerr << result.diagnostics.front().code << ':'
+                << result.diagnostics.front().detail << '\n';
+    }
+    Fail(detail);
+  }
+}
+
+platform::u64 NowMillis() {
+  return static_cast<platform::u64>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+}
+
+platform::TypedUuid NewUuid(const platform::UuidKind kind,
+                            const platform::u64 salt) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, NowMillis() + salt);
+  Require(generated.ok(), "UUID generation failed");
+  return generated.value;
+}
+
+std::string NewUuidText(const platform::UuidKind kind,
+                        const platform::u64 salt) {
+  return uuid::UuidToString(NewUuid(kind, salt).value);
+}
+
+struct Fixture {
+  std::filesystem::path directory;
+  std::filesystem::path database_path;
+  std::string database_uuid;
+  std::string filespace_uuid;
+  std::string schema_uuid;
+  std::string principal_uuid;
+  std::string session_uuid;
+  std::string main_table_uuid;
+  std::string empty_table_uuid;
+  std::string malformed_table_uuid;
+  std::string temporary_table_uuid;
+  platform::u64 salt = 0;
+
+  ~Fixture() {
+    std::error_code ignored;
+    if (!directory.empty()) {
+      std::filesystem::remove_all(directory, ignored);
+    }
+  }
+};
+
+api::EngineRequestContext BaseContext(const Fixture& fixture,
+                                      std::string request_id) {
+  api::EngineRequestContext context;
+  context.trust_mode = api::EngineTrustMode::server_isolated;
+  context.request_id = std::move(request_id);
+  context.database_path = fixture.database_path.string();
+  context.database_uuid.canonical = fixture.database_uuid;
+  context.default_root_uuid.canonical = fixture.filespace_uuid;
+  context.current_schema_uuid.canonical = fixture.schema_uuid;
+  context.principal_uuid.canonical = fixture.principal_uuid;
+  context.session_uuid.canonical = fixture.session_uuid;
+  context.security_context_present = true;
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
+  context.identifier_profile_uuid = "sbsql_v3";
+  context.language_context.language_tag = "en";
+  context.language_context.default_language_tag = "en";
+  return context;
+}
+
+api::EngineRequestContext Begin(const Fixture& fixture,
+                                std::string request_id) {
+  api::EngineBeginTransactionRequest request;
+  request.context = BaseContext(fixture, std::move(request_id));
+  request.isolation_level = "repeatable_read";
+  const auto begun = api::EngineBeginTransaction(request);
+  RequireOk(begun, "begin transaction failed");
+  auto context = request.context;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  return context;
+}
+
+void Commit(const api::EngineRequestContext& context) {
+  api::EngineCommitTransactionRequest request;
+  request.context = context;
+  RequireOk(api::EngineCommitTransaction(request), "commit failed");
+}
+
+void Rollback(const api::EngineRequestContext& context) {
+  api::EngineRollbackTransactionRequest request;
+  request.context = context;
+  RequireOk(api::EngineRollbackTransaction(request), "rollback failed");
+}
+
+api::EngineRequestContext QueryContext(api::EngineRequestContext context,
+                                       const std::string& table_uuid,
+                                       const platform::u64 salt) {
+  context.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 1);
+  context.statement_metadata_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 2);
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 3);
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = 1;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  api::EngineAuthorizationSubject subject;
+  subject.subject_uuid = context.principal_uuid;
+  subject.subject_kind = "principal";
+  context.authorization_context.effective_subjects.push_back(subject);
+  api::EngineMaterializedAuthorizationGrant grant;
+  grant.grant_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 4);
+  grant.subject_uuid = context.principal_uuid;
+  grant.subject_kind = "principal";
+  grant.target_uuid.canonical = table_uuid;
+  grant.right = "SELECT";
+  grant.security_epoch = context.security_epoch;
+  context.authorization_context.grants.push_back(std::move(grant));
+  context.optimizer_capability_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 5);
+  context.optimizer_resource_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 6);
+  context.optimizer_route_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 7);
+  context.optimizer_route_epoch = 1;
+  context.optimizer_route_generation = 1;
+  context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 1024;
+  context.optimizer_maximum_memo_groups = 32;
+  context.optimizer_maximum_search_steps = 128;
+  context.optimizer_maximum_planning_time_ns = 1'000'000;
+  context.current_monotonic_ns = "1";
+  return context;
+}
+
+std::string EncodedInt64Descriptor() {
+  return "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
+         ";nullable=true";
+}
+
+api::EngineDescriptor InputDescriptor() {
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = EncodedInt64Descriptor();
+  return descriptor;
+}
+
+api::EngineRowValue Int64Row(const std::int64_t value) {
+  api::EngineTypedValue typed;
+  typed.descriptor = InputDescriptor();
+  typed.encoded_value = std::to_string(value);
+  api::EngineRowValue row;
+  row.fields.push_back({"value", std::move(typed)});
+  return row;
+}
+
+api::EngineRowValue NullRow() {
+  api::EngineTypedValue typed;
+  typed.descriptor = InputDescriptor();
+  typed.is_null = true;
+  typed.state = api::EngineValueState::sql_null;
+  api::EngineRowValue row;
+  row.fields.push_back({"value", std::move(typed)});
+  return row;
+}
+
+api::CrudTableRecord Table(const Fixture& fixture,
+                           const api::EngineRequestContext& context,
+                           const std::string& table_uuid,
+                           const bool temporary = false) {
+  api::CrudTableRecord table;
+  table.creator_tx = context.local_transaction_id;
+  table.table_uuid = table_uuid;
+  table.default_name = "qow_heap_" + table_uuid.substr(table_uuid.size() - 6);
+  table.columns.push_back({"value", EncodedInt64Descriptor()});
+  table.temporary = temporary;
+  if (temporary) {
+    table.temporary_scope = "session";
+    table.temporary_session_uuid = fixture.session_uuid;
+    table.on_commit_action = "preserve_rows";
+  }
+  return table;
+}
+
+void PersistTable(const Fixture& fixture,
+                  const api::EngineRequestContext& context,
+                  const std::string& table_uuid,
+                  const bool temporary = false) {
+  const auto table = Table(fixture, context, table_uuid, temporary);
+  const auto appended = api::AppendMgaTableMetadata(context, table);
+  Require(!appended.error, "table metadata append failed");
+  api::MgaRelationStorageDescriptor descriptor;
+  const auto ensured =
+      api::EnsureMgaRelationStorageDescriptor(context, table, {}, &descriptor);
+  Require(!ensured.error, "persisted relation descriptor creation failed");
+}
+
+void InsertRows(const Fixture& fixture,
+                const api::EngineRequestContext& context,
+                const std::string& table_uuid,
+                std::vector<api::EngineRowValue> rows) {
+  api::EngineInsertRowsRequest request;
+  request.context = context;
+  request.target_schema.uuid.canonical = fixture.schema_uuid;
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.target_object = request.target_table;
+  request.bound_object_identity.object_uuid = request.target_table.uuid;
+  request.bound_object_identity.catalog_generation_id =
+      context.catalog_generation_id;
+  request.bound_object_identity.security_epoch = context.security_epoch;
+  request.bound_object_identity.resource_epoch = context.resource_epoch;
+  request.estimated_row_count = rows.size();
+  request.input_rows = std::move(rows);
+  RequireOk(api::EngineInsertRows(request), "fixture row insert failed");
+}
+
+void DeleteRow(const api::EngineRequestContext& context,
+               const std::string& table_uuid,
+               const std::string& row_uuid) {
+  api::EngineDeleteRowsRequest request;
+  request.context = context;
+  request.target_table.uuid.canonical = table_uuid;
+  request.target_table.object_kind = "table";
+  request.delete_predicate.predicate_kind = "row_uuid_match";
+  request.delete_predicate.canonical_predicate_envelope = row_uuid;
+  request.tombstone_only = true;
+  const auto deleted = api::EngineDeleteRows(request);
+  RequireOk(deleted, "fixture row deletion failed");
+  Require(deleted.deleted_count == 1, "fixture deletion did not tombstone one row");
+}
+
+Fixture MakeFixture() {
+  Fixture fixture;
+  fixture.salt = NowMillis() % 1'000'000;
+  fixture.directory = std::filesystem::temp_directory_path() /
+                      ("scratchbird_qow_heap_mga_" +
+                       std::to_string(fixture.salt));
+  std::filesystem::create_directories(fixture.directory);
+  fixture.database_path = fixture.directory / "qow_heap_mga.sbdb";
+
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid =
+      NewUuid(platform::UuidKind::database, fixture.salt + 10);
+  create.filespace_uuid =
+      NewUuid(platform::UuidKind::filespace, fixture.salt + 11);
+  create.creation_unix_epoch_millis = NowMillis();
+  create.require_resource_seed_pack = false;
+  create.allow_minimal_resource_bootstrap = true;
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  Require(created.ok(), "database creation failed");
+
+  fixture.database_uuid = uuid::UuidToString(create.database_uuid.value);
+  fixture.filespace_uuid = uuid::UuidToString(create.filespace_uuid.value);
+  fixture.schema_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 20);
+  fixture.principal_uuid =
+      NewUuidText(platform::UuidKind::principal, fixture.salt + 21);
+  fixture.session_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 22);
+  fixture.main_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 23);
+  fixture.empty_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 24);
+  fixture.malformed_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 25);
+  fixture.temporary_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 26);
+
+  auto metadata = Begin(fixture, "qow-heap-metadata");
+  PersistTable(fixture, metadata, fixture.main_table_uuid);
+  PersistTable(fixture, metadata, fixture.empty_table_uuid);
+  PersistTable(fixture, metadata, fixture.malformed_table_uuid);
+  PersistTable(fixture, metadata, fixture.temporary_table_uuid, true);
+  Commit(metadata);
+
+  auto writer = Begin(fixture, "qow-heap-main-writer");
+  InsertRows(fixture,
+             writer,
+             fixture.main_table_uuid,
+             {Int64Row(10), Int64Row(20), NullRow()});
+  Commit(writer);
+
+  auto malformed_writer = Begin(fixture, "qow-heap-malformed-writer");
+  api::CrudRowVersionRecord valid;
+  valid.creator_tx = malformed_writer.local_transaction_id;
+  valid.table_uuid = fixture.malformed_table_uuid;
+  valid.row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture.salt + 30);
+  valid.version_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 31);
+  valid.values = {{"value", "7"}};
+  std::uint64_t ignored_sequence = 0;
+  auto append =
+      api::AppendMgaRowVersion(malformed_writer, valid, &ignored_sequence);
+  Require(!append.error, "valid malformed-fixture row append failed");
+  api::CrudRowVersionRecord malformed = valid;
+  malformed.row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture.salt + 32);
+  malformed.version_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 33);
+  malformed.values = {{"value", "not-an-int64"}};
+  append = api::AppendMgaRowVersion(
+      malformed_writer, malformed, &ignored_sequence);
+  Require(!append.error, "malformed fixture row append failed");
+  Commit(malformed_writer);
+  return fixture;
+}
+
+exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
+    const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& descriptor,
+    const platform::u64 salt) {
+  Require(descriptor.columns.size() == 1,
+          "fixture descriptor does not have one column");
+  auto* relational = new api::TypedRelationalDag();
+  relational->wire_version = 2;
+  relational->bound_sblr_tree_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 1);
+  relational->bound_catalog_epoch_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  relational->bound_security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  relational->root_node_id = 1;
+  api::RelationalTypeDescriptor type;
+  type.descriptor_id = 1;
+  type.descriptor_uuid =
+      descriptor.columns.front().value_descriptor.descriptor_uuid.canonical;
+  type.type_uuid = std::string(kTypeUuid);
+  type.nullability = api::RelationalNullability::kNullable;
+  relational->descriptors.push_back(type);
+  api::RelationalExpressionRecord expression;
+  expression.expression_id = 1;
+  expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
+  expression.result_descriptor_id = 1;
+  expression.bound_name_uuid =
+      descriptor.columns.front().column_uuid.canonical;
+  relational->expressions.push_back(expression);
+  api::RelationalOutputRecord output;
+  output.output_id = 1;
+  output.relation_node_id = 1;
+  output.expression_id = 1;
+  output.output_name_utf8 = "value";
+  output.descriptor_id = 1;
+  output.visible = true;
+  output.ordinal = 0;
+  relational->outputs.push_back(output);
+  api::RelationalDagNode node;
+  node.node_id = 1;
+  node.node_kind = api::RelationalDagNodeKind::kScan;
+  node.output_descriptor_ids = {1};
+  node.bound_expression_ids = {1};
+  node.required_object_uuids = {descriptor.relation_uuid.canonical};
+  node.semantic_variant_id = "relation.source.v1";
+  relational->nodes.push_back(node);
+
+  exec::CanonicalHeapRelationAcquisitionRequest request;
+  request.context = &context;
+  request.relational_dag = relational;
+  request.physical_dag.abi_version = 2;
+  request.physical_dag.selected_plan_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 2);
+  request.physical_dag.root_physical_node_id = 11;
+  request.physical_dag.local_transaction_id = context.local_transaction_id;
+  request.physical_dag.statement_snapshot_id =
+      context.snapshot_visible_through_local_transaction_id;
+  request.physical_dag.bound_sblr_tree_uuid =
+      relational->bound_sblr_tree_uuid;
+  request.physical_dag.catalog_epoch_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  request.physical_dag.security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  request.physical_dag.capability_snapshot_uuid =
+      context.optimizer_capability_snapshot_uuid.canonical;
+  request.physical_dag.resource_snapshot_uuid =
+      context.optimizer_resource_snapshot_uuid.canonical;
+  request.physical_dag.statistics_snapshot_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 3);
+  request.physical_dag.route_snapshot_uuid =
+      context.optimizer_route_snapshot_uuid.canonical;
+  request.physical_dag.catalog_generation = context.catalog_generation_id;
+  request.physical_dag.security_epoch = context.security_epoch;
+  request.physical_dag.policy_epoch =
+      context.authorization_context.policy_epoch;
+  request.physical_dag.resource_epoch = context.resource_epoch;
+  request.physical_dag.statistics_generation = 1;
+  request.physical_dag.route_epoch = context.optimizer_route_epoch;
+  request.physical_dag.route_generation = context.optimizer_route_generation;
+  request.physical_dag.memory_budget_bytes =
+      context.optimizer_memory_budget_bytes;
+  request.physical_dag.optimizer_published = true;
+  request.physical_dag.immutable_node_identity_validated = true;
+  request.physical_dag.capability_validated_before_access = true;
+  const std::string capability =
+      context.optimizer_capability_snapshot_uuid.canonical;
+  const std::vector<std::string> evidence{
+      relational->bound_sblr_tree_uuid,
+      context.statement_metadata_snapshot_uuid.canonical,
+      context.authorization_context.authority_uuid.canonical,
+      context.statement_metadata_snapshot_uuid.canonical,
+      capability,
+      context.optimizer_resource_snapshot_uuid.canonical,
+      request.physical_dag.statistics_snapshot_uuid,
+      context.optimizer_route_snapshot_uuid.canonical};
+  for (std::size_t index = 0; index < evidence.size(); ++index) {
+    request.physical_dag.admission_evidence.push_back(
+        {static_cast<exec::PhysicalAdmissionStage>(index + 1),
+         evidence[index]});
+  }
+  exec::PhysicalNodeRecord physical;
+  physical.physical_node_id = 11;
+  physical.relational_node_id = 1;
+  physical.node_kind = exec::PhysicalNodeKind::kScan;
+  physical.implementation_id = "scan.heap.v1";
+  physical.output_descriptor_ids = {1};
+  physical.causal_counter_id = 101;
+  physical.selected_alternative_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 4);
+  physical.executor_capability_uuid = capability;
+  physical.executor_capability_abi_version = 1;
+  physical.cost_vector_uuid =
+      NewUuidText(platform::UuidKind::object, salt + 5);
+  physical.memory_bytes_required = 1024;
+  physical.engine_capability_validated = true;
+  request.physical_dag.nodes.push_back(physical);
+  request.selected_physical_node_id = 11;
+  request.maximum_scanned_row_versions = 1024;
+  request.maximum_decoded_bytes = 4 * 1024 * 1024;
+  request.maximum_output_rows = 1024;
+  request.cancellation_requested = [] { return false; };
+  return request;
+}
+
+void ReleaseRequest(exec::CanonicalHeapRelationAcquisitionRequest* request) {
+  if (request == nullptr) { return; }
+  delete request->relational_dag;
+  request->relational_dag = nullptr;
+}
+
+exec::CanonicalHeapRelationAcquisitionRequest RequestFor(
+    const api::EngineRequestContext& context,
+    const std::string& relation_uuid,
+    const platform::u64 salt) {
+  const auto descriptor =
+      api::LoadMgaRelationStorageDescriptor(context, relation_uuid);
+  Require(descriptor.ok, "fixture descriptor load failed");
+  return BoundRequest(context, descriptor.descriptor, salt);
+}
+
+void RequireAtomicFailure(
+    const exec::CanonicalHeapRelationAcquisitionResult& result,
+    std::string_view detail) {
+  Require(!result.diagnostic.ok && result.output_batch.columns.empty() &&
+              result.output_batch.rows.empty() &&
+              result.emitted_record_uuids.empty() &&
+              result.emitted_row_version_uuids.empty(),
+          detail);
+}
+
+bool SameDescriptor(const api::EngineDescriptor& left,
+                    const api::EngineDescriptor& right) {
+  return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
+         left.descriptor_kind == right.descriptor_kind &&
+         left.canonical_type_name == right.canonical_type_name &&
+         left.encoded_descriptor == right.encoded_descriptor;
+}
+
+bool PreservesPersistedDescriptorFields(
+    const api::EngineDescriptor& runtime,
+    const api::EngineDescriptor& persisted) {
+  return runtime.descriptor_kind == "scalar" &&
+         runtime.descriptor_uuid.canonical ==
+             persisted.descriptor_uuid.canonical &&
+         runtime.canonical_type_name == persisted.canonical_type_name &&
+         runtime.encoded_descriptor == persisted.encoded_descriptor;
+}
+
+void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 100);
+  auto request = RequestFor(reader, fixture.main_table_uuid,
+                            fixture.salt + 120);
+  const auto persisted =
+      api::LoadMgaRelationStorageDescriptor(reader, fixture.main_table_uuid);
+  Require(persisted.ok && persisted.descriptor.columns.size() == 1,
+          "current persisted descriptor was not available to the gate");
+  const auto& persisted_value_descriptor =
+      persisted.descriptor.columns.front().value_descriptor;
+  const auto first = exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(first.diagnostic.ok && first.output_batch.columns.size() == 1 &&
+              first.output_batch.rows.size() == 3 &&
+              first.counters.emitted_row_count == 3 &&
+              first.authority.engine_catalog_descriptor_loaded &&
+              first.authority.engine_mga_snapshot_bound &&
+              first.authority.engine_authorization_rechecked &&
+              first.authority.bounded_physical_read &&
+              !first.authority.caller_candidates_consumed &&
+              !first.authority.owns_transaction_finality &&
+              !first.authority.owns_recovery &&
+              !first.authority.owns_parser_execution &&
+              !first.authority.wal_is_visibility_or_recovery_authority &&
+              PreservesPersistedDescriptorFields(
+                  first.output_batch.columns.front().descriptor,
+                  persisted_value_descriptor) &&
+              first.output_batch.columns.front().nullable ==
+                  persisted.descriptor.columns.front().nullable &&
+              first.output_batch.columns.front().stable_name ==
+                  persisted.descriptor.columns.front().canonical_name_key &&
+              first.column_uuid ==
+                  persisted.descriptor.columns.front().column_uuid.canonical &&
+              persisted.descriptor.columns.front().ordinal == 0 &&
+              request.relational_dag->outputs.front().ordinal == 0 &&
+              persisted_value_descriptor.encoded_descriptor.find(
+                  "type_uuid=" + std::string(kTypeUuid)) !=
+                  std::string::npos,
+          "committed heap rows were not acquired under bounded MGA authority");
+  std::size_t null_count = 0;
+  for (const auto& row : first.output_batch.rows) {
+    Require(SameDescriptor(row.values.front().descriptor,
+                           first.output_batch.columns.front().descriptor) &&
+                PreservesPersistedDescriptorFields(
+                    row.values.front().descriptor,
+                    persisted_value_descriptor),
+            "runtime carrier rewrote a persisted descriptor field");
+    if (row.values.front().state == api::EngineValueState::sql_null) {
+      ++null_count;
+    }
+  }
+  Require(null_count == 1, "typed SQL NULL was not preserved");
+  const auto repeated = exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(repeated.diagnostic.ok &&
+              repeated.emitted_record_uuids == first.emitted_record_uuids &&
+              repeated.emitted_row_version_uuids ==
+                  first.emitted_row_version_uuids,
+          "same-snapshot heap acquisition was unstable");
+
+  auto uncommitted_writer = Begin(fixture, "qow-heap-uncommitted-writer");
+  InsertRows(fixture,
+             uncommitted_writer,
+             fixture.main_table_uuid,
+             {Int64Row(30)});
+  const auto while_uncommitted =
+      exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(while_uncommitted.diagnostic.ok &&
+              while_uncommitted.output_batch.rows.size() == 3,
+          "other transaction's uncommitted row became visible");
+  Commit(uncommitted_writer);
+  const auto after_snapshot_commit =
+      exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(after_snapshot_commit.diagnostic.ok &&
+              after_snapshot_commit.output_batch.rows.size() == 3,
+          "post-snapshot commit became visible in repeatable-read snapshot");
+  ReleaseRequest(&request);
+  Rollback(reader);
+
+  auto current_reader = QueryContext(Begin(fixture, "qow-heap-current-reader"),
+                                     fixture.main_table_uuid,
+                                     fixture.salt + 140);
+  auto current = RequestFor(current_reader,
+                            fixture.main_table_uuid,
+                            fixture.salt + 160);
+  const auto current_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(current);
+  Require(current_result.diagnostic.ok &&
+              current_result.output_batch.rows.size() == 4,
+          "new snapshot did not observe committed row");
+  const std::string row_to_delete = current_result.emitted_record_uuids.front();
+  ReleaseRequest(&current);
+  Rollback(current_reader);
+
+  auto delete_writer = Begin(fixture, "qow-heap-delete-writer");
+  DeleteRow(delete_writer, fixture.main_table_uuid, row_to_delete);
+  Commit(delete_writer);
+  auto delete_reader = QueryContext(Begin(fixture, "qow-heap-delete-reader"),
+                                    fixture.main_table_uuid,
+                                    fixture.salt + 170);
+  auto after_delete = RequestFor(delete_reader,
+                                 fixture.main_table_uuid,
+                                 fixture.salt + 171);
+  const auto after_delete_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(after_delete);
+  Require(after_delete_result.diagnostic.ok &&
+              after_delete_result.output_batch.rows.size() == 3 &&
+              after_delete_result.counters.tombstone_row_count >= 1,
+          "committed tombstone did not suppress the prior row version");
+  ReleaseRequest(&after_delete);
+  Rollback(delete_reader);
+
+  auto rollback_writer = Begin(fixture, "qow-heap-rollback-writer");
+  InsertRows(fixture,
+             rollback_writer,
+             fixture.main_table_uuid,
+             {Int64Row(40)});
+  Rollback(rollback_writer);
+  auto rollback_reader = QueryContext(Begin(fixture, "qow-heap-rollback-reader"),
+                                      fixture.main_table_uuid,
+                                      fixture.salt + 180);
+  auto rolled_back = RequestFor(rollback_reader,
+                                fixture.main_table_uuid,
+                                fixture.salt + 200);
+  const auto rolled_back_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(rolled_back);
+  Require(rolled_back_result.diagnostic.ok &&
+              rolled_back_result.output_batch.rows.size() == 3 &&
+              rolled_back_result.counters.invisible_row_version_count >= 1,
+          "rolled-back row was visible or not visibility-rechecked");
+  ReleaseRequest(&rolled_back);
+  Rollback(rollback_reader);
+
+  auto own_writer = QueryContext(Begin(fixture, "qow-heap-own-writer"),
+                                 fixture.main_table_uuid,
+                                 fixture.salt + 220);
+  InsertRows(fixture, own_writer, fixture.main_table_uuid, {Int64Row(50)});
+  auto own = RequestFor(own_writer,
+                        fixture.main_table_uuid,
+                        fixture.salt + 240);
+  const auto own_result = exec::ExecuteCanonicalHeapRelationAcquisition(own);
+  Require(own_result.diagnostic.ok && own_result.output_batch.rows.size() == 4,
+          "reader's own active MGA write was not visible");
+  ReleaseRequest(&own);
+  Rollback(own_writer);
+
+  auto empty_reader = QueryContext(Begin(fixture, "qow-heap-empty-reader"),
+                                   fixture.empty_table_uuid,
+                                   fixture.salt + 260);
+  auto empty = RequestFor(empty_reader,
+                          fixture.empty_table_uuid,
+                          fixture.salt + 280);
+  const auto empty_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(empty);
+  Require(empty_result.diagnostic.ok &&
+              empty_result.output_batch.columns.size() == 1 &&
+              empty_result.output_batch.rows.empty(),
+          "empty relation did not produce a typed empty batch");
+  ReleaseRequest(&empty);
+  Rollback(empty_reader);
+}
+
+void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-refusal-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 300);
+  auto baseline = RequestFor(reader,
+                             fixture.main_table_uuid,
+                             fixture.salt + 320);
+  const api::TypedRelationalDag original_relational = *baseline.relational_dag;
+
+  auto mutated = baseline;
+  mutated.physical_dag.catalog_generation = 2;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "catalog generation mismatch was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.abi_version = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "non-v2 physical DAG was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.optimizer_published = false;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "non-published optimizer DAG was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().node_kind =
+      exec::PhysicalNodeKind::kFilter;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "non-scan physical node was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().input_physical_node_ids = {11};
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "physical input edge entered the leaf scan profile");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front().implementation_id = "scan.index.v1";
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "wrong scan implementation was accepted");
+
+  mutated = baseline;
+  mutated.selected_physical_node_id = 999;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "nonexistent selected physical node was accepted");
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)->wire_version = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "non-v2 relational DAG was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->expressions.front()
+      .bound_name_uuid.reset();
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "identifier without bound column UUID was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->nodes.front()
+      .node_kind = api::RelationalDagNodeKind::kFilter;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "non-scan relational source was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->nodes.front()
+      .input_node_ids = {1};
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "relational input edge entered the leaf scan profile");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->nodes.front()
+      .required_object_uuids.clear();
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "missing relation UUID was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->nodes.front()
+      .required_object_uuids.push_back(
+          NewUuidText(platform::UuidKind::object, fixture.salt + 339));
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "multiple relation UUIDs were accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->outputs.front()
+      .ordinal = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "nonzero relation output ordinal was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->outputs.front()
+      .output_name_utf8 = "not_value";
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "wrong persisted output name was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->expressions.front()
+      .bound_name_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 340);
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "wrong bound column UUID was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->descriptors.front()
+      .type_uuid = NewUuidText(platform::UuidKind::object,
+                              fixture.salt + 341);
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "wrong bound type UUID was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->descriptors.front()
+      .descriptor_uuid = NewUuidText(platform::UuidKind::object,
+                                    fixture.salt + 342);
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "wrong bound descriptor UUID was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  auto missing_transaction_context = reader;
+  missing_transaction_context.local_transaction_id = 0;
+  missing_transaction_context.transaction_uuid.canonical.clear();
+  mutated = baseline;
+  mutated.context = &missing_transaction_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "missing context transaction was accepted");
+
+  mutated = baseline;
+  ++mutated.physical_dag.local_transaction_id;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "mismatched physical transaction was accepted");
+
+  mutated = baseline;
+  ++mutated.physical_dag.statement_snapshot_id;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "mismatched physical statement snapshot was accepted");
+
+  auto wrong_snapshot_context = reader;
+  wrong_snapshot_context.snapshot_visible_through_local_transaction_id += 1;
+  mutated = baseline;
+  mutated.context = &wrong_snapshot_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "mismatched statement snapshot was accepted");
+
+  auto prepared_context = reader;
+  prepared_context.prepared_metadata_required_object_uuid.canonical =
+      fixture.main_table_uuid;
+  prepared_context.prepared_metadata_required_executable_generation = 1;
+  prepared_context.prepared_metadata_required_metadata_epoch = 1;
+  mutated = baseline;
+  mutated.context = &prepared_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "prepared descriptor marker was accepted");
+
+  auto missing_authorization = reader;
+  missing_authorization.authorization_context.present = false;
+  mutated = baseline;
+  mutated.context = &missing_authorization;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "missing authorization context was accepted");
+
+  auto missing_grant = reader;
+  missing_grant.authorization_context.grants.clear();
+  mutated = baseline;
+  mutated.context = &missing_grant;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "missing SELECT authorization was accepted");
+
+  auto stale_authorization = reader;
+  ++stale_authorization.authorization_context.security_epoch;
+  mutated = baseline;
+  mutated.context = &stale_authorization;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "stale authorization snapshot was accepted");
+
+  auto denied_context = reader;
+  denied_context.authorization_context.grants.front().deny = true;
+  mutated = baseline;
+  mutated.context = &denied_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "explicit SELECT denial was accepted");
+
+  auto wrong_principal = reader;
+  wrong_principal.principal_uuid.canonical =
+      NewUuidText(platform::UuidKind::principal, fixture.salt + 343);
+  mutated = baseline;
+  mutated.context = &wrong_principal;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "authorization principal mismatch was accepted");
+
+  auto policy_context = reader;
+  api::EngineMaterializedAuthorizationPolicy policy;
+  policy.policy_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 344);
+  policy.subject_uuid = policy_context.principal_uuid;
+  policy.subject_kind = "principal";
+  policy.target_uuid.canonical = fixture.main_table_uuid;
+  policy.right = "SELECT";
+  policy.requires_runtime_recheck = true;
+  policy.policy_epoch = policy_context.authorization_context.policy_epoch;
+  policy_context.authorization_context.policies.push_back(policy);
+  mutated = baseline;
+  mutated.context = &policy_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "indeterminate runtime policy recheck was accepted");
+
+  const std::string invisible_relation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 345);
+  auto invisible_context = reader;
+  invisible_context.authorization_context.grants.front()
+      .target_uuid.canonical = invisible_relation_uuid;
+  mutated = baseline;
+  mutated.context = &invisible_context;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->nodes.front()
+      .required_object_uuids = {invisible_relation_uuid};
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "nonexistent authorized relation was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
+  mutated = baseline;
+  mutated.maximum_scanned_row_versions = 0;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "zero row-version bound was accepted");
+  mutated = baseline;
+  mutated.maximum_decoded_bytes = 0;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "zero decoded-byte bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_rows = 0;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "zero output-row bound was accepted");
+
+  mutated = baseline;
+  mutated.maximum_scanned_row_versions = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "row-version bound was not enforced atomically");
+  mutated = baseline;
+  mutated.maximum_decoded_bytes = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "decoded-byte bound was not enforced before read");
+  mutated = baseline;
+  mutated.maximum_output_rows = 1;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "output-row bound was not enforced atomically");
+
+  std::size_t cancellation_probes = 0;
+  mutated = baseline;
+  mutated.cancellation_requested = [&] {
+    return ++cancellation_probes >= 5;
+  };
+  const auto cancelled =
+      exec::ExecuteCanonicalHeapRelationAcquisition(mutated);
+  RequireAtomicFailure(cancelled, "mid-read cancellation published rows");
+  Require(cancelled.cancellation_observed,
+          "mid-read cancellation did not return cancellation evidence");
+
+  auto temporary_context = reader;
+  temporary_context.authorization_context.grants.front()
+      .target_uuid.canonical = fixture.temporary_table_uuid;
+  auto temporary = RequestFor(temporary_context,
+                              fixture.temporary_table_uuid,
+                              fixture.salt + 360);
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(temporary),
+                       "temporary relation entered ordinary heap profile");
+  auto other_session_context = temporary_context;
+  other_session_context.session_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 361);
+  temporary.context = &other_session_context;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(temporary),
+                       "other session acquired the temporary relation");
+  ReleaseRequest(&temporary);
+
+  auto malformed_context = reader;
+  malformed_context.authorization_context.grants.front()
+      .target_uuid.canonical = fixture.malformed_table_uuid;
+  auto malformed = RequestFor(malformed_context,
+                              fixture.malformed_table_uuid,
+                              fixture.salt + 380);
+  const auto malformed_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(malformed);
+  RequireAtomicFailure(malformed_result,
+                       "malformed later stored row produced a partial batch");
+  ReleaseRequest(&malformed);
+
+  ReleaseRequest(&baseline);
+  Rollback(reader);
+}
+
+}  // namespace
+
+int main() {
+  auto fixture = MakeFixture();
+  ValidatePositiveAndVisibilityMatrix(fixture);
+  ValidateBindingSecurityAndResourceRefusals(fixture);
+  return EXIT_SUCCESS;
+}

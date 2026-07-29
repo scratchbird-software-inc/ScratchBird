@@ -10,9 +10,12 @@
 
 #include "api_diagnostics.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
+#include "query/plan_api.hpp"
 #include "secondary_index_delta_merge.hpp"
+#include "security/security_model.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
@@ -20,6 +23,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -32,6 +36,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <sstream>
@@ -1093,18 +1098,168 @@ bool AppendScopedRowIdentityNativePacketBatch(
   return true;
 }
 
+struct BoundedScopedRowReadControl {
+  std::uint64_t maximum_row_versions = 0;
+  std::uint64_t maximum_bytes = 0;
+  std::function<bool()> cancellation_requested;
+  std::uint64_t decoded_row_versions = 0;
+  std::uint64_t decoded_bytes = 0;
+  bool cancellation_observed = false;
+  std::string refusal_detail;
+};
+
+bool BoundedScopedReadCancelled(BoundedScopedRowReadControl* control) {
+  if (control == nullptr || !control->cancellation_requested) { return false; }
+  if (!control->cancellation_requested()) { return false; }
+  control->cancellation_observed = true;
+  control->refusal_detail = "heap_read_cancelled";
+  return true;
+}
+
+bool AccountBoundedScopedBytes(BoundedScopedRowReadControl* control,
+                               const std::uint64_t bytes) {
+  if (control == nullptr) { return true; }
+  if (control->decoded_bytes > control->maximum_bytes ||
+      bytes > control->maximum_bytes - control->decoded_bytes) {
+    control->refusal_detail = "heap_read_maximum_decoded_bytes_exceeded";
+    return false;
+  }
+  control->decoded_bytes += bytes;
+  return true;
+}
+
+bool ReadBinaryFileBounded(const std::string& path,
+                           const std::uint64_t authorized_file_bytes,
+                           BoundedScopedRowReadControl* control,
+                           std::vector<idx::byte>* bytes) {
+  if (control == nullptr || bytes == nullptr ||
+      authorized_file_bytes >
+          static_cast<std::uint64_t>(
+              std::numeric_limits<std::size_t>::max())) {
+    if (control != nullptr) {
+      control->refusal_detail = "heap_read_scoped_binary_size_overflow";
+    }
+    return false;
+  }
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    control->refusal_detail = "heap_read_scoped_binary_open_failed";
+    return false;
+  }
+  bytes->clear();
+  bytes->reserve(static_cast<std::size_t>(authorized_file_bytes));
+  constexpr std::size_t kReadChunkBytes = 64 * 1024;
+  char chunk[kReadChunkBytes];
+  std::uint64_t actual_file_bytes = 0;
+  while (true) {
+    if (BoundedScopedReadCancelled(control)) { return false; }
+    const std::uint64_t remaining =
+        authorized_file_bytes - actual_file_bytes;
+    const std::size_t requested = remaining == 0
+                                      ? 1
+                                      : static_cast<std::size_t>(std::min<
+                                            std::uint64_t>(remaining,
+                                                           kReadChunkBytes));
+    input.read(chunk, static_cast<std::streamsize>(requested));
+    const std::streamsize read_count = input.gcount();
+    if (read_count < 0 ||
+        static_cast<std::uint64_t>(read_count) > remaining) {
+      control->refusal_detail = "heap_read_scoped_binary_grew_during_read";
+      return false;
+    }
+    if (read_count > 0) {
+      const std::size_t old_size = bytes->size();
+      const std::size_t appended = static_cast<std::size_t>(read_count);
+      if (appended > std::numeric_limits<std::size_t>::max() - old_size) {
+        control->refusal_detail = "heap_read_scoped_binary_size_overflow";
+        return false;
+      }
+      bytes->resize(old_size + appended);
+      std::memcpy(bytes->data() + old_size, chunk, appended);
+      actual_file_bytes += static_cast<std::uint64_t>(read_count);
+    }
+    if (input.bad()) {
+      control->refusal_detail = "heap_read_scoped_binary_read_failed";
+      return false;
+    }
+    if (read_count < static_cast<std::streamsize>(requested)) {
+      if (input.eof()) {
+        if (actual_file_bytes != authorized_file_bytes) {
+          control->refusal_detail =
+              "heap_read_scoped_binary_changed_during_read";
+          return false;
+        }
+        return true;
+      }
+      control->refusal_detail = "heap_read_scoped_binary_read_failed";
+      return false;
+    }
+  }
+}
+
+bool AdmitBoundedScopedRow(BoundedScopedRowReadControl* control,
+                           const CrudRowVersionRecord& row) {
+  if (control == nullptr) { return true; }
+  if (BoundedScopedReadCancelled(control)) { return false; }
+  if (control->decoded_row_versions >= control->maximum_row_versions) {
+    control->refusal_detail = "heap_read_maximum_row_versions_exceeded";
+    return false;
+  }
+  std::uint64_t decoded_bytes = 0;
+  const auto add_decoded_size = [&](const std::size_t bytes) {
+    if (bytes > std::numeric_limits<std::uint64_t>::max() - decoded_bytes) {
+      control->refusal_detail = "heap_read_decoded_byte_count_overflow";
+      return false;
+    }
+    decoded_bytes += static_cast<std::uint64_t>(bytes);
+    return true;
+  };
+  if (!add_decoded_size(row.table_uuid.size()) ||
+      !add_decoded_size(row.row_uuid.size()) ||
+      !add_decoded_size(row.version_uuid.size()) ||
+      !add_decoded_size(row.temporary_session_uuid.size()) ||
+      !add_decoded_size(row.previous_version_uuid.size())) {
+    return false;
+  }
+  for (const auto& [key, value] : row.values) {
+    if (!add_decoded_size(key.size()) || !add_decoded_size(value.size())) {
+      return false;
+    }
+  }
+  if (!AccountBoundedScopedBytes(control, decoded_bytes)) { return false; }
+  ++control->decoded_row_versions;
+  return true;
+}
+
 bool DecodeScopedRowBinaryStore(
     const std::string& path,
     std::vector<CrudRowVersionRecord>* rows,
-    ScopedRelationSummary* summary) {
+    ScopedRelationSummary* summary,
+    BoundedScopedRowReadControl* control = nullptr,
+    const std::uint64_t authorized_file_bytes = 0) {
   if (rows == nullptr || summary == nullptr) { return false; }
+  if (BoundedScopedReadCancelled(control)) { return false; }
   if (!FileExistsAndNotEmpty(path)) {
+    if (control != nullptr && authorized_file_bytes != 0) {
+      control->refusal_detail =
+          "heap_read_scoped_binary_changed_during_read";
+      return false;
+    }
     summary->trusted = true;
     return true;
   }
-  const std::vector<idx::byte> bytes = ReadBinaryFile(path);
+  std::vector<idx::byte> bytes;
+  if (control == nullptr) {
+    bytes = ReadBinaryFile(path);
+  } else if (!ReadBinaryFileBounded(path,
+                                    authorized_file_bytes,
+                                    control,
+                                    &bytes)) {
+    return false;
+  }
   std::size_t offset = 0;
   while (offset < bytes.size()) {
+    if (BoundedScopedReadCancelled(control)) { return false; }
     if (offset + kScopedRowBinaryBatchMagic.size() > bytes.size() ||
         std::string_view(reinterpret_cast<const char*>(bytes.data() + offset),
                          kScopedRowBinaryBatchMagic.size()) !=
@@ -1197,10 +1352,53 @@ bool DecodeScopedRowBinaryStore(
         return false;
       }
     }
+    if (control != nullptr &&
+        (control->decoded_row_versions > control->maximum_row_versions ||
+         row_count > control->maximum_row_versions -
+                         control->decoded_row_versions)) {
+      control->refusal_detail = "heap_read_maximum_row_versions_exceeded";
+      return false;
+    }
+    if (row_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max()) ||
+        static_cast<std::size_t>(row_count) >
+            std::numeric_limits<std::size_t>::max() - rows->size()) {
+      summary->malformed = true;
+      summary->trusted = false;
+      if (control != nullptr) {
+        control->refusal_detail = "heap_read_row_reserve_overflow";
+      }
+      return false;
+    }
+    if (compact_batch && row_count != 0 &&
+        row_count - 1 >
+            std::numeric_limits<std::uint64_t>::max() -
+                compact_first_event_sequence) {
+      summary->malformed = true;
+      summary->trusted = false;
+      if (control != nullptr) {
+        control->refusal_detail = "heap_read_event_sequence_overflow";
+      }
+      return false;
+    }
     const std::size_t null_bitmap_bytes =
         (static_cast<std::size_t>(column_count) + 7u) / 8u;
+    const std::size_t minimum_row_bytes =
+        (compact_batch ? 32u : 45u) + null_bitmap_bytes;
+    if (row_count >
+        static_cast<std::uint64_t>((bytes.size() - offset) /
+                                   minimum_row_bytes)) {
+      summary->malformed = true;
+      summary->trusted = false;
+      if (control != nullptr) {
+        control->refusal_detail = "heap_read_row_count_exceeds_segment";
+      }
+      return false;
+    }
     rows->reserve(rows->size() + static_cast<std::size_t>(row_count));
     for (std::uint64_t row_index = 0; row_index < row_count; ++row_index) {
+      if (BoundedScopedReadCancelled(control)) { return false; }
       CrudRowVersionRecord row;
       std::uint8_t deleted = 0;
       if (compact_batch) {
@@ -1324,6 +1522,7 @@ bool DecodeScopedRowBinaryStore(
       ++summary->row_version_count;
       if (row.deleted) { ++summary->tombstone_count; }
       if (!row.previous_version_uuid.empty()) { ++summary->update_count; }
+      if (!AdmitBoundedScopedRow(control, row)) { return false; }
       rows->push_back(std::move(row));
     }
   }
@@ -3743,6 +3942,151 @@ bool LoadDecodedScopedRowsForTable(
   return true;
 }
 
+bool LoadDecodedScopedRowsForTableBounded(
+    const EngineRequestContext& context,
+    const std::string& table_uuid,
+    BoundedScopedRowReadControl* control,
+    std::vector<CrudRowVersionRecord>* rows,
+    bool* used_segment) {
+  if (control == nullptr || rows == nullptr ||
+      control->maximum_row_versions == 0 || control->maximum_bytes == 0 ||
+      !control->cancellation_requested) {
+    return false;
+  }
+  rows->clear();
+  if (used_segment != nullptr) { *used_segment = false; }
+  if (BoundedScopedReadCancelled(control)) { return false; }
+
+  const std::string text_path = ScopedRowStorePath(context, table_uuid);
+  const std::string binary_path =
+      ScopedRowBinaryStorePath(context, table_uuid);
+  const bool text_exists = FileExistsAndNotEmpty(text_path);
+  const bool binary_exists = FileExistsAndNotEmpty(binary_path);
+  if (!text_exists && !binary_exists) { return true; }
+  if (used_segment != nullptr) { *used_segment = true; }
+
+  const auto authorize_file = [&](const std::string& path,
+                                  std::uint64_t* authorized_file_bytes) {
+    if (authorized_file_bytes == nullptr) { return false; }
+    std::error_code ignored;
+    const auto size = std::filesystem::file_size(path, ignored);
+    if (ignored || size == static_cast<std::uintmax_t>(-1) ||
+        size > std::numeric_limits<std::uint64_t>::max()) {
+      control->refusal_detail = "heap_read_scoped_segment_size_unavailable";
+      return false;
+    }
+    *authorized_file_bytes = static_cast<std::uint64_t>(size);
+    return AccountBoundedScopedBytes(control, *authorized_file_bytes);
+  };
+  std::uint64_t authorized_text_bytes = 0;
+  std::uint64_t authorized_binary_bytes = 0;
+  if ((text_exists &&
+       !authorize_file(text_path, &authorized_text_bytes)) ||
+      (binary_exists &&
+       !authorize_file(binary_path, &authorized_binary_bytes))) {
+    return false;
+  }
+
+  std::vector<CrudRowVersionRecord> decoded_rows;
+  std::unordered_map<std::string, std::string> row_value_key_cache;
+  row_value_key_cache.reserve(64);
+  if (text_exists) {
+    std::ifstream input(text_path, std::ios::binary);
+    if (!input) {
+      control->refusal_detail = "heap_read_scoped_text_open_failed";
+      return false;
+    }
+    const auto consume_line = [&](const std::string& line) {
+      const auto fields = SplitTabs(line);
+      if (fields.size() < 11 || fields[0] != kRowStoreMagic ||
+          fields[1] != "ROW_VERSION") {
+        return true;
+      }
+      CrudRowVersionRecord row;
+      row.creator_tx = ParseU64(fields[2]);
+      row.event_sequence = ParseU64(fields[3]);
+      row.sequence = row.event_sequence;
+      row.table_uuid = fields[4];
+      row.row_uuid = fields[5];
+      row.version_uuid = fields[6];
+      row.deleted = fields[7] == "1";
+      row.previous_version_uuid = fields[8];
+      row.previous_sequence = ParseU64(fields[9]);
+      row.values =
+          DecodeCrudPairsWithKeyCache(fields[10], &row_value_key_cache);
+      if (fields.size() >= 12) { row.temporary_session_uuid = fields[11]; }
+      if (!AdmitBoundedScopedRow(control, row)) { return false; }
+      decoded_rows.push_back(std::move(row));
+      return true;
+    };
+    constexpr std::size_t kReadChunkBytes = 64 * 1024;
+    char chunk[kReadChunkBytes];
+    std::string line;
+    std::uint64_t actual_text_bytes = 0;
+    bool reached_eof = false;
+    while (!reached_eof) {
+      if (BoundedScopedReadCancelled(control)) { return false; }
+      const std::uint64_t remaining =
+          authorized_text_bytes - actual_text_bytes;
+      const std::size_t requested = remaining == 0
+                                        ? 1
+                                        : static_cast<std::size_t>(std::min<
+                                              std::uint64_t>(remaining,
+                                                             kReadChunkBytes));
+      input.read(chunk, static_cast<std::streamsize>(requested));
+      const std::streamsize read_count = input.gcount();
+      if (read_count < 0 ||
+          static_cast<std::uint64_t>(read_count) > remaining) {
+        control->refusal_detail = "heap_read_scoped_text_grew_during_read";
+        return false;
+      }
+      actual_text_bytes += static_cast<std::uint64_t>(read_count);
+      std::size_t begin = 0;
+      const std::size_t count = static_cast<std::size_t>(read_count);
+      for (std::size_t index = 0; index < count; ++index) {
+        if (chunk[index] != '\n') { continue; }
+        line.append(chunk + begin, index - begin);
+        if (!consume_line(line)) { return false; }
+        line.clear();
+        begin = index + 1;
+      }
+      if (begin < count) { line.append(chunk + begin, count - begin); }
+      if (input.bad()) {
+        control->refusal_detail = "heap_read_scoped_text_read_failed";
+        return false;
+      }
+      if (read_count < static_cast<std::streamsize>(requested)) {
+        if (!input.eof()) {
+          control->refusal_detail = "heap_read_scoped_text_read_failed";
+          return false;
+        }
+        reached_eof = true;
+      }
+    }
+    if (actual_text_bytes != authorized_text_bytes) {
+      control->refusal_detail = "heap_read_scoped_text_changed_during_read";
+      return false;
+    }
+    if (!line.empty() && !consume_line(line)) { return false; }
+  }
+  if (binary_exists) {
+    ScopedRelationSummary binary_summary;
+    if (!DecodeScopedRowBinaryStore(binary_path,
+                                    &decoded_rows,
+                                    &binary_summary,
+                                    control,
+                                    authorized_binary_bytes) ||
+        binary_summary.malformed) {
+      if (control->refusal_detail.empty()) {
+        control->refusal_detail = "heap_read_scoped_binary_decode_failed";
+      }
+      return false;
+    }
+  }
+  *rows = std::move(decoded_rows);
+  return true;
+}
+
 std::string MakeMgaLargeValueLocator(const std::string& overflow_uuid,
                                      const std::string& content_hash,
                                      std::uint64_t total_bytes) {
@@ -6073,6 +6417,192 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
   }
   result.ok = true;
   result.diagnostic = OkDiagnostic();
+  return result;
+}
+
+// QOW-SOURCE-QRY-004-HEAP-MGA-V1
+MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationReadRequest& request) {
+  MgaVisibleHeapRelationReadResult result;
+  const auto refuse = [&](EngineApiDiagnostic diagnostic,
+                          const BoundedScopedRowReadControl* control = nullptr) {
+    result.ok = false;
+    result.diagnostic = std::move(diagnostic);
+    result.descriptor = {};
+    result.visible_rows.clear();
+    if (control != nullptr) {
+      result.scanned_row_version_count = control->decoded_row_versions;
+      result.decoded_byte_count = control->decoded_bytes;
+      result.cancellation_observed = control->cancellation_observed;
+    }
+    return result;
+  };
+  const auto invalid = [&](std::string detail,
+                           const BoundedScopedRowReadControl* control = nullptr) {
+    return refuse(MakeInvalidRequestDiagnostic("mga.heap_relation_read",
+                                               std::move(detail)),
+                  control);
+  };
+
+  if (request.relation_uuid.empty()) {
+    return invalid("relation_uuid_required");
+  }
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.snapshot_visible_through_local_transaction_id == 0) {
+    return invalid("exact_active_transaction_and_snapshot_required");
+  }
+  if (request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.maximum_output_rows == 0) {
+    return invalid("nonzero_heap_read_resource_bounds_required");
+  }
+  if (!request.cancellation_requested) {
+    return invalid("engine_cancellation_probe_required");
+  }
+  if (request.cancellation_requested()) {
+    result.cancellation_observed = true;
+    return invalid("heap_read_cancelled_before_descriptor_load");
+  }
+
+  const auto loaded_descriptor =
+      LoadMgaRelationStorageDescriptor(context, request.relation_uuid);
+  if (!loaded_descriptor.ok) { return refuse(loaded_descriptor.diagnostic); }
+  const auto& descriptor = loaded_descriptor.descriptor;
+  if (descriptor.relation_uuid.canonical != request.relation_uuid ||
+      descriptor.database_uuid.canonical != context.database_uuid.canonical ||
+      descriptor.relation_kind != "table" ||
+      descriptor.storage_profile != "local_mga_rowstore_v1" ||
+      descriptor.descriptor_uuid.canonical.empty() ||
+      descriptor.descriptor_generation == 0 ||
+      descriptor.descriptor_status.empty()) {
+    return invalid("current_persisted_local_heap_descriptor_required");
+  }
+
+  CrudState metadata;
+  const auto metadata_loaded = LoadMgaMetadata(&metadata, context);
+  if (metadata_loaded.error) { return refuse(metadata_loaded); }
+  const auto authority = OverlayMgaTransactionAuthority(context, &metadata);
+  if (authority.error) { return refuse(authority); }
+  FilterVisibleRetiredTemporaryMetadata(context, &metadata);
+  FilterMgaTemporaryObjectsForSession(context, &metadata);
+  const auto table = FindVisibleCrudTable(
+      metadata, request.relation_uuid, context.local_transaction_id);
+  if (!table) { return invalid("heap_relation_not_visible"); }
+  if (table->temporary) {
+    return invalid("temporary_relation_outside_local_heap_profile");
+  }
+
+  BoundedScopedRowReadControl control;
+  control.maximum_row_versions = request.maximum_scanned_row_versions;
+  control.maximum_bytes = request.maximum_decoded_bytes;
+  control.cancellation_requested = request.cancellation_requested;
+  std::vector<CrudRowVersionRecord> row_versions;
+  bool used_segment = false;
+  if (!LoadDecodedScopedRowsForTableBounded(context,
+                                            request.relation_uuid,
+                                            &control,
+                                            &row_versions,
+                                            &used_segment)) {
+    return invalid(control.refusal_detail.empty()
+                       ? "bounded_scoped_heap_read_failed"
+                       : control.refusal_detail,
+                   &control);
+  }
+  result.scanned_row_version_count = control.decoded_row_versions;
+  result.decoded_byte_count = control.decoded_bytes;
+  result.scoped_physical_segment_used = used_segment;
+
+  const auto savepoints = ParseSavepoints(context);
+  std::vector<CrudRowVersionRecord> admitted_versions;
+  admitted_versions.reserve(row_versions.size());
+  for (auto& row : row_versions) {
+    if (request.cancellation_requested()) {
+      control.cancellation_observed = true;
+      control.refusal_detail = "heap_read_cancelled_during_visibility";
+      return invalid(control.refusal_detail, &control);
+    }
+    if (row.table_uuid != request.relation_uuid) {
+      return invalid("scoped_heap_row_relation_identity_mismatch", &control);
+    }
+    if (RowEventRolledBackBySavepoint(savepoints,
+                                      row.creator_tx,
+                                      row.event_sequence)) {
+      ++result.invisible_row_version_count;
+      continue;
+    }
+    admitted_versions.push_back(std::move(row));
+  }
+  const auto chain_status =
+      ValidateMgaRowVersionRecordChains(admitted_versions);
+  if (chain_status.error) { return refuse(chain_status, &control); }
+  if (RowsContainLargeValueLocators(admitted_versions)) {
+    return invalid("large_value_outside_bounded_inline_heap_profile",
+                   &control);
+  }
+
+  std::unordered_map<std::string, std::size_t> newest_visible_by_row;
+  newest_visible_by_row.reserve(admitted_versions.size());
+  for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
+    if (request.cancellation_requested()) {
+      control.cancellation_observed = true;
+      control.refusal_detail = "heap_read_cancelled_during_visibility";
+      return invalid(control.refusal_detail, &control);
+    }
+    const auto& row = admitted_versions[index];
+    ++result.visibility_recheck_count;
+    if (!CrudRowVersionVisibleToContext(metadata, row, context)) {
+      ++result.invisible_row_version_count;
+      continue;
+    }
+    const auto found = newest_visible_by_row.find(row.row_uuid);
+    if (found == newest_visible_by_row.end() ||
+        admitted_versions[found->second].sequence < row.sequence) {
+      newest_visible_by_row[row.row_uuid] = index;
+    }
+  }
+
+  std::vector<CrudRowVersionRecord> visible_rows;
+  visible_rows.reserve(newest_visible_by_row.size());
+  for (std::size_t index = 0; index < admitted_versions.size(); ++index) {
+    if (request.cancellation_requested()) {
+      control.cancellation_observed = true;
+      control.refusal_detail = "heap_read_cancelled_during_publication";
+      return invalid(control.refusal_detail, &control);
+    }
+    const auto& row = admitted_versions[index];
+    const auto newest = newest_visible_by_row.find(row.row_uuid);
+    if (newest == newest_visible_by_row.end() || newest->second != index) {
+      continue;
+    }
+    if (row.deleted) {
+      ++result.tombstone_row_count;
+      continue;
+    }
+    if (visible_rows.size() >= request.maximum_output_rows) {
+      return invalid("heap_read_maximum_output_rows_exceeded", &control);
+    }
+    visible_rows.push_back(row);
+  }
+
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  result.descriptor = descriptor;
+  result.visible_rows = std::move(visible_rows);
+  result.evidence.push_back(
+      {"mga_heap_read_relation_descriptor_uuid",
+       descriptor.descriptor_uuid.canonical});
+  result.evidence.push_back(
+      {"mga_heap_read_relation_descriptor_generation",
+       std::to_string(descriptor.descriptor_generation)});
+  result.evidence.push_back(
+      {"mga_heap_read_storage_route", "bounded_scoped_physical_segment"});
+  result.evidence.push_back(
+      {"mga_heap_read_visibility_authority",
+       "durable_transaction_inventory_statement_snapshot"});
+  result.evidence.push_back(
+      {"mga_heap_read_parser_or_candidate_authority", "false"});
   return result;
 }
 
@@ -9869,3 +10399,433 @@ MgaEventSequenceRangeReservation ReserveMgaRowEventSequenceRangeForTesting(
 }
 
 }  // namespace scratchbird::engine::internal_api
+
+namespace scratchbird::engine::executor {
+namespace {
+
+DescriptorRuntimeDiagnostic HeapAcquisitionRefusal(std::string code,
+                                                   std::string detail = {}) {
+  DescriptorRuntimeDiagnostic diagnostic;
+  diagnostic.ok = false;
+  diagnostic.diagnostic_code = std::move(code);
+  diagnostic.detail = std::move(detail);
+  return diagnostic;
+}
+
+bool IsCanonicalHeapBindingUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) { continue; }
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) { return false; }
+  }
+  return true;
+}
+
+std::optional<std::string> ExactHeapDescriptorField(
+    const std::string_view descriptor,
+    const std::string_view field_name) {
+  const std::string prefix = std::string(field_name) + "=";
+  std::optional<std::string> value;
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto next = descriptor.find(';', offset);
+    const auto end = next == std::string_view::npos ? descriptor.size() : next;
+    const auto field = descriptor.substr(offset, end - offset);
+    if (field.rfind(prefix, 0) == 0) {
+      if (value.has_value() || field.size() == prefix.size()) {
+        return std::nullopt;
+      }
+      value = std::string(field.substr(prefix.size()));
+    }
+    if (next == std::string_view::npos) { break; }
+    offset = next + 1;
+  }
+  return value;
+}
+
+bool CheckedHeapBoundToU64(const std::size_t value, std::uint64_t* output) {
+  if (output == nullptr ||
+      value > static_cast<std::size_t>(
+                  std::numeric_limits<std::uint64_t>::max())) {
+    return false;
+  }
+  *output = static_cast<std::uint64_t>(value);
+  return true;
+}
+
+}  // namespace
+
+// QOW-SOURCE-QRY-004-HEAP-MGA-V1
+CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
+    const CanonicalHeapRelationAcquisitionRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+
+  CanonicalHeapRelationAcquisitionResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic,
+                          const bool data_access_observed = false,
+                          const bool cancellation_observed = false) {
+    result = {};
+    result.diagnostic = std::move(diagnostic);
+    result.data_access_observed = data_access_observed;
+    result.cancellation_observed = cancellation_observed;
+    return result;
+  };
+  const auto invalid = [&](std::string code,
+                           std::string detail,
+                           const bool data_access_observed = false,
+                           const bool cancellation_observed = false) {
+    return refuse(HeapAcquisitionRefusal(std::move(code), std::move(detail)),
+                  data_access_observed,
+                  cancellation_observed);
+  };
+
+  if (request.context == nullptr || request.relational_dag == nullptr) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                   "engine context and typed relational DAG are required");
+  }
+  const auto& context = *request.context;
+  const auto& relational = *request.relational_dag;
+  const auto relational_validation = api::ValidateTypedRelationalDag(relational);
+  if (!relational_validation.accepted) {
+    const auto& issue = relational_validation.issues.front();
+    return invalid(issue.diagnostic_id,
+                   issue.field_id + ":node_id=" +
+                       std::to_string(issue.node_id));
+  }
+  const auto physical_validation =
+      ValidateTypedPhysicalNodeDag(request.physical_dag);
+  if (!physical_validation.accepted) {
+    const auto& issue = physical_validation.issues.front();
+    return invalid(issue.diagnostic_id, issue.field_id);
+  }
+  if (relational.wire_version != 2 ||
+      request.physical_dag.abi_version != 2 ||
+      !request.physical_dag.optimizer_published ||
+      !request.physical_dag.immutable_node_identity_validated ||
+      !request.physical_dag.capability_validated_before_access ||
+      request.physical_dag.data_access_observed) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
+                   "wire-v2 direct optimizer publication is required");
+  }
+  if (!context.prepared_metadata_required_object_uuid.canonical.empty() ||
+      context.prepared_metadata_required_executable_generation != 0 ||
+      context.prepared_metadata_required_metadata_epoch != 0) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-DIRECT-SCOPE-V1",
+                   "prepared or cached descriptor execution is outside this profile");
+  }
+  if (!request.cancellation_requested ||
+      request.maximum_scanned_row_versions == 0 ||
+      request.maximum_decoded_bytes == 0 ||
+      request.maximum_output_rows == 0) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "nonzero heap scan bounds and cancellation probe are required");
+  }
+  if (request.cancellation_requested()) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
+                   "heap relation acquisition cancelled before admission",
+                   false,
+                   true);
+  }
+  if (context.local_transaction_id == 0 ||
+      context.transaction_uuid.canonical.empty() ||
+      context.snapshot_visible_through_local_transaction_id == 0 ||
+      request.physical_dag.local_transaction_id !=
+          context.local_transaction_id ||
+      request.physical_dag.statement_snapshot_id !=
+          context.snapshot_visible_through_local_transaction_id) {
+    return invalid("SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
+                   "physical scan does not match the active MGA transaction snapshot");
+  }
+  const auto& authorization = context.authorization_context;
+  if (!context.statement_metadata_snapshot_engine_owned ||
+      !context.security_context_present || !authorization.present ||
+      relational.bound_sblr_tree_uuid !=
+          request.physical_dag.bound_sblr_tree_uuid ||
+      relational.bound_catalog_epoch_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      request.physical_dag.catalog_epoch_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      relational.bound_security_context_uuid !=
+          authorization.authority_uuid.canonical ||
+      request.physical_dag.security_context_uuid !=
+          authorization.authority_uuid.canonical ||
+      request.physical_dag.catalog_generation !=
+          context.catalog_generation_id ||
+      context.catalog_generation_id !=
+          authorization.catalog_generation_id ||
+      request.physical_dag.security_epoch != context.security_epoch ||
+      context.security_epoch != authorization.security_epoch ||
+      request.physical_dag.policy_epoch != authorization.policy_epoch ||
+      request.physical_dag.resource_epoch != context.resource_epoch ||
+      request.physical_dag.capability_snapshot_uuid !=
+          context.optimizer_capability_snapshot_uuid.canonical ||
+      request.physical_dag.resource_snapshot_uuid !=
+          context.optimizer_resource_snapshot_uuid.canonical ||
+      request.physical_dag.route_snapshot_uuid !=
+          context.optimizer_route_snapshot_uuid.canonical ||
+      request.physical_dag.route_epoch != context.optimizer_route_epoch ||
+      request.physical_dag.route_generation !=
+          context.optimizer_route_generation ||
+      request.physical_dag.memory_budget_bytes !=
+          context.optimizer_memory_budget_bytes) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-AUTHORITY-SCOPE-V1",
+                   "catalog, security, resource, or MGA scope is stale or mismatched");
+  }
+  if (context.optimizer_memory_budget_bytes == 0 ||
+      context.optimizer_maximum_candidate_count == 0 ||
+      request.maximum_decoded_bytes > context.optimizer_memory_budget_bytes ||
+      request.maximum_scanned_row_versions >
+          context.optimizer_maximum_candidate_count ||
+      request.maximum_output_rows >
+          context.optimizer_maximum_candidate_count) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap scan bounds exceed the admitted optimizer resources");
+  }
+
+  const auto physical = std::ranges::find_if(
+      request.physical_dag.nodes, [&](const auto& node) {
+        return node.physical_node_id == request.selected_physical_node_id;
+      });
+  if (request.selected_physical_node_id == 0 ||
+      physical == request.physical_dag.nodes.end() ||
+      physical->node_kind != PhysicalNodeKind::kScan ||
+      physical->implementation_id != "scan.heap.v1" ||
+      !physical->input_physical_node_ids.empty() ||
+      !physical->engine_capability_validated) {
+    return invalid("QOW-DIAG-QRY-004-SCAN-IMPLEMENTATION-UNAVAILABLE-V1",
+                   "selected physical node is not an admitted leaf heap scan");
+  }
+  const auto relation_node = std::ranges::find_if(
+      relational.nodes, [&](const auto& node) {
+        return node.node_id == physical->relational_node_id;
+      });
+  if (relation_node == relational.nodes.end() ||
+      relation_node->node_kind != api::RelationalDagNodeKind::kScan ||
+      !relation_node->input_node_ids.empty() ||
+      relation_node->semantic_variant_id != "relation.source.v1" ||
+      relation_node->required_object_uuids.size() != 1 ||
+      relation_node->output_descriptor_ids.size() != 1 ||
+      relation_node->bound_expression_ids.size() != 1 ||
+      physical->output_descriptor_ids != relation_node->output_descriptor_ids) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                   "selected relation source binding is not exact");
+  }
+  const std::string& relation_uuid =
+      relation_node->required_object_uuids.front();
+  if (!IsCanonicalHeapBindingUuid(relation_uuid)) {
+    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                   "bound relation UUID is not canonical");
+  }
+
+  std::vector<const api::RelationalOutputRecord*> outputs;
+  for (const auto& output : relational.outputs) {
+    if (output.relation_node_id == relation_node->node_id) {
+      outputs.push_back(&output);
+    }
+  }
+  if (outputs.size() != 1 || !outputs.front()->visible ||
+      outputs.front()->ordinal != 0 ||
+      outputs.front()->descriptor_id !=
+          relation_node->output_descriptor_ids.front()) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                   "one visible ordinal-zero relation output is required");
+  }
+  const auto expression = std::ranges::find_if(
+      relational.expressions, [&](const auto& candidate) {
+        return candidate.expression_id == outputs.front()->expression_id;
+      });
+  if (expression == relational.expressions.end() ||
+      expression->expression_kind != api::RelationalExpressionKind::kIdentifier ||
+      !expression->child_expression_ids.empty() ||
+      !expression->bound_name_uuid.has_value() ||
+      !IsCanonicalHeapBindingUuid(*expression->bound_name_uuid) ||
+      expression->result_descriptor_id != outputs.front()->descriptor_id ||
+      relation_node->bound_expression_ids.front() !=
+          expression->expression_id) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                   "relation output is not one UUID-bound identifier");
+  }
+  const auto relational_descriptor = std::ranges::find_if(
+      relational.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id == outputs.front()->descriptor_id;
+      });
+  if (relational_descriptor == relational.descriptors.end() ||
+      !IsCanonicalHeapBindingUuid(relational_descriptor->descriptor_uuid) ||
+      !IsCanonicalHeapBindingUuid(relational_descriptor->type_uuid) ||
+      relational_descriptor->nullability ==
+          api::RelationalNullability::kUnknown) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                   "bound relational descriptor is incomplete");
+  }
+
+  const auto authorization_decision = api::EvaluateMaterializedAuthorization(
+      context, authorization, "SELECT", relation_uuid);
+  if (!authorization_decision.authorized || authorization_decision.denied ||
+      authorization_decision.policy_recheck_required ||
+      !authorization_decision.diagnostics.empty()) {
+    const std::string detail = authorization_decision.diagnostics.empty()
+                                   ? "SELECT authorization is indeterminate"
+                                   : authorization_decision.diagnostics.front().detail;
+    return invalid("QOW-DIAG-QRY-004-SCAN-SECURITY-DECISION-V1", detail);
+  }
+
+  std::uint64_t maximum_scanned = 0;
+  std::uint64_t maximum_bytes = 0;
+  std::uint64_t maximum_output = 0;
+  if (!CheckedHeapBoundToU64(request.maximum_scanned_row_versions,
+                             &maximum_scanned) ||
+      !CheckedHeapBoundToU64(request.maximum_decoded_bytes, &maximum_bytes) ||
+      !CheckedHeapBoundToU64(request.maximum_output_rows, &maximum_output)) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap scan bound conversion overflowed");
+  }
+  api::MgaVisibleHeapRelationReadRequest read_request;
+  read_request.relation_uuid = relation_uuid;
+  read_request.maximum_scanned_row_versions = maximum_scanned;
+  read_request.maximum_decoded_bytes = maximum_bytes;
+  read_request.maximum_output_rows = maximum_output;
+  read_request.cancellation_requested = request.cancellation_requested;
+  const auto read = api::ReadVisibleMgaHeapRelation(context, read_request);
+  if (!read.ok) {
+    return invalid(read.diagnostic.code.empty()
+                       ? "QOW-DIAG-QRY-004-HEAP-READ-V1"
+                       : read.diagnostic.code,
+                   read.diagnostic.detail,
+                   read.scanned_row_version_count != 0 ||
+                       read.decoded_byte_count != 0,
+                   read.cancellation_observed);
+  }
+
+  const auto column = std::ranges::find_if(
+      read.descriptor.columns, [&](const auto& candidate) {
+        return candidate.column_uuid.canonical == *expression->bound_name_uuid;
+      });
+  if (column == read.descriptor.columns.end() ||
+      column->ordinal >= read.descriptor.columns.size() ||
+      &read.descriptor.columns[column->ordinal] != &*column ||
+      column->canonical_name_key.empty() ||
+      outputs.front()->output_name_utf8 != column->canonical_name_key ||
+      column->value_descriptor.descriptor_uuid.canonical !=
+          relational_descriptor->descriptor_uuid ||
+      column->value_descriptor.encoded_descriptor.empty() ||
+      column->value_descriptor.canonical_type_name.empty()) {
+    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                   "persisted column identity, ordinal, or descriptor differs",
+                   true);
+  }
+  const auto persisted_type_uuid = ExactHeapDescriptorField(
+      column->value_descriptor.encoded_descriptor, "type_uuid");
+  if (!persisted_type_uuid.has_value() ||
+      !IsCanonicalHeapBindingUuid(*persisted_type_uuid) ||
+      *persisted_type_uuid != relational_descriptor->type_uuid) {
+    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                   "persisted column type_uuid differs from bound descriptor",
+                   true);
+  }
+  const bool nullable = relational_descriptor->nullability ==
+                        api::RelationalNullability::kNullable;
+  if (nullable != column->nullable) {
+    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                   "persisted column nullability differs from bound descriptor",
+                   true);
+  }
+
+  api::EngineDescriptor output_descriptor = column->value_descriptor;
+  output_descriptor.descriptor_kind = "scalar";
+  DescriptorBatch batch;
+  batch.columns.push_back({column->canonical_name_key,
+                           output_descriptor,
+                           column->nullable,
+                           outputs.front()->descriptor_id});
+  batch.rows.reserve(read.visible_rows.size());
+  std::vector<std::string> record_uuids;
+  std::vector<std::string> version_uuids;
+  record_uuids.reserve(read.visible_rows.size());
+  version_uuids.reserve(read.visible_rows.size());
+  for (std::size_t row_index = 0; row_index < read.visible_rows.size();
+       ++row_index) {
+    if (request.cancellation_requested()) {
+      return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
+                     "heap relation acquisition cancelled during materialization",
+                     true,
+                     true);
+    }
+    const auto& stored_row = read.visible_rows[row_index];
+    const std::string* encoded_value = nullptr;
+    for (const auto& [name, value] : stored_row.values) {
+      if (name != column->canonical_name_key) { continue; }
+      if (encoded_value != nullptr) {
+        return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                       "stored row contains a duplicate selected column",
+                       true);
+      }
+      encoded_value = &value;
+    }
+    if (encoded_value == nullptr) {
+      return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                     "stored row omits the selected column",
+                     true);
+    }
+    DescriptorTuple tuple;
+    api::EngineTypedValue value;
+    value.descriptor = output_descriptor;
+    if (*encoded_value == "<NULL>") {
+      value.is_null = true;
+      value.state = api::EngineValueState::sql_null;
+    } else {
+      value.encoded_value = *encoded_value;
+      value.state = api::EngineValueState::value;
+    }
+    tuple.values.push_back(std::move(value));
+    batch.rows.push_back(std::move(tuple));
+    record_uuids.push_back(stored_row.row_uuid);
+    version_uuids.push_back(stored_row.version_uuid);
+  }
+  const auto batch_validation =
+      ValidateCanonicalDescriptorBatch(batch, physical->output_descriptor_ids);
+  if (!batch_validation.ok) {
+    return invalid(batch_validation.diagnostic_code,
+                   batch_validation.detail,
+                   true);
+  }
+  const auto value_validation = ValidateDescriptorBatch(batch);
+  if (!value_validation.ok) {
+    return invalid(value_validation.diagnostic_code,
+                   value_validation.detail,
+                   true);
+  }
+
+  result.diagnostic = {};
+  result.output_batch = std::move(batch);
+  result.emitted_record_uuids = std::move(record_uuids);
+  result.emitted_row_version_uuids = std::move(version_uuids);
+  result.counters.scanned_row_version_count =
+      read.scanned_row_version_count;
+  result.counters.decoded_byte_count = read.decoded_byte_count;
+  result.counters.visibility_recheck_count = read.visibility_recheck_count;
+  result.counters.invisible_row_version_count =
+      read.invisible_row_version_count;
+  result.counters.tombstone_row_count = read.tombstone_row_count;
+  result.counters.emitted_row_count = result.output_batch.rows.size();
+  result.authority.engine_catalog_descriptor_loaded = true;
+  result.authority.engine_mga_snapshot_bound = true;
+  result.authority.engine_authorization_rechecked = true;
+  result.authority.bounded_physical_read = true;
+  result.data_access_observed = read.scoped_physical_segment_used;
+  result.relation_uuid = relation_uuid;
+  result.column_uuid = *expression->bound_name_uuid;
+  result.current_relation_descriptor_uuid =
+      read.descriptor.descriptor_uuid.canonical;
+  result.current_relation_descriptor_generation =
+      read.descriptor.descriptor_generation;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = physical->physical_node_id;
+  result.causal_counter_id = physical->causal_counter_id;
+  return result;
+}
+
+}  // namespace scratchbird::engine::executor

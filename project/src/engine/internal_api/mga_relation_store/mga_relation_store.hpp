@@ -15,6 +15,7 @@
 #include "transaction_cleanup.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -100,6 +101,29 @@ struct MgaRelationStorageDescriptorLoadResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   MgaRelationStorageDescriptor descriptor;
+};
+
+struct MgaVisibleHeapRelationReadRequest {
+  std::string relation_uuid;
+  std::uint64_t maximum_scanned_row_versions = 0;
+  std::uint64_t maximum_decoded_bytes = 0;
+  std::uint64_t maximum_output_rows = 0;
+  std::function<bool()> cancellation_requested;
+};
+
+struct MgaVisibleHeapRelationReadResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  MgaRelationStorageDescriptor descriptor;
+  std::vector<CrudRowVersionRecord> visible_rows;
+  std::uint64_t scanned_row_version_count = 0;
+  std::uint64_t decoded_byte_count = 0;
+  std::uint64_t visibility_recheck_count = 0;
+  std::uint64_t invisible_row_version_count = 0;
+  std::uint64_t tombstone_row_count = 0;
+  bool scoped_physical_segment_used = false;
+  bool cancellation_observed = false;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 struct MgaRelationIndexOnlyProofEligibilityResult {
@@ -526,6 +550,15 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
 MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     const EngineRequestContext& context,
     const std::string& relation_uuid);
+
+// QOW-SOURCE-QRY-004-HEAP-MGA-V1
+// Reads one current persisted local heap descriptor and its visible row
+// versions under the exact active MGA transaction/snapshot.  The facade is
+// bounded before and during physical segment decoding and has no SQL, parser,
+// candidate, transaction-finality, recovery, or WAL authority.
+MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
+    const EngineRequestContext& context,
+    const MgaVisibleHeapRelationReadRequest& request);
 
 EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContext& context,
                                                        const CrudTableRecord& table,

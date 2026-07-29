@@ -240,4 +240,9 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
   return result;
 }
 
+// QOW-SOURCE-QRY-004-HEAP-MGA-V1 lives with the bounded MGA relation facade.
+// Keeping that adapter in the internal-API translation unit preserves this
+// executor's contract-only link profile while the production path remains a
+// typed executor entrypoint declared by descriptor_value_runtime.hpp.
+
 }  // namespace scratchbird::engine::executor
