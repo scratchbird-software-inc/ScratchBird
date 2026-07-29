@@ -1037,6 +1037,16 @@ class NativeRelationalParser final {
           not_not_sum_conjunct != nullptr &&
           match_count_comparison(*not_not_count_conjunct) &&
           match_sum_comparison(*not_not_sum_conjunct);
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-NOT-SUM-COUNT-OR-GT-V1
+      const bool not_not_sum_count_or_profile =
+          double_not_operand != nullptr &&
+          double_not_operand->operator_name == "OR" &&
+          has_parenthesized_not_operand(&predicate) &&
+          has_parenthesized_not_operand(not_operand) &&
+          not_not_count_conjunct != nullptr &&
+          not_not_sum_conjunct != nullptr &&
+          match_sum_comparison(*not_not_count_conjunct) &&
+          match_count_comparison(*not_not_sum_conjunct);
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-V1
       const bool not_sum_profile =
           not_operand != nullptr && match_sum_comparison(*not_operand);
@@ -1077,7 +1087,7 @@ class NativeRelationalParser final {
       if (!simple_sum_profile && !count_sum_and_profile &&
           !count_sum_or_profile && !not_not_sum_profile &&
           !not_not_count_profile && !not_not_count_sum_and_profile &&
-          !not_not_count_sum_or_profile &&
+          !not_not_count_sum_or_profile && !not_not_sum_count_or_profile &&
           !not_sum_profile && !not_count_profile &&
           !not_count_sum_and_profile && !not_count_sum_or_profile) {
         Refuse("having_predicate_shape_invalid",
@@ -1107,6 +1117,11 @@ class NativeRelationalParser final {
           document_.grouping_sets.empty();
       const bool ordinary_two_key_not_not_count_sum_or_profile =
           !one_key_grouping_profile && not_not_count_sum_or_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          document_.grouping_sets.empty();
+      const bool ordinary_two_key_not_not_sum_count_or_profile =
+          !one_key_grouping_profile && not_not_sum_count_or_profile &&
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           document_.grouping_sets.empty();
@@ -1262,6 +1277,7 @@ class NativeRelationalParser final {
       if (one_key_grouping_profile &&
           (not_not_sum_profile || not_not_count_profile ||
            not_not_count_sum_and_profile || not_not_count_sum_or_profile ||
+           not_not_sum_count_or_profile ||
            not_sum_profile ||
            not_count_profile || not_count_sum_and_profile ||
            not_count_sum_or_profile)) {
@@ -1370,6 +1386,7 @@ class NativeRelationalParser final {
           !ordinary_two_key_not_not_count_profile &&
           !ordinary_two_key_not_not_count_sum_and_profile &&
           !ordinary_two_key_not_not_count_sum_or_profile &&
+          !ordinary_two_key_not_not_sum_count_or_profile &&
           !ordinary_two_key_not_sum_profile &&
           !ordinary_two_key_not_count_profile &&
           !ordinary_two_key_not_count_sum_and_profile &&

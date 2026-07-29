@@ -1913,8 +1913,13 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   const bool not_not_count_sum_or_profile =
       filter_root.semantic_variant_id ==
       "filter.having-not-not-count-sum-or-gt-int64-literals.v1";
+  // QOW-SOURCE-QRY-001-ENGINE-TWO-KEY-HAVING-NOT-NOT-SUM-COUNT-OR-GT-LIVE-V1
+  const bool not_not_sum_count_or_profile =
+      filter_root.semantic_variant_id ==
+      "filter.having-not-not-sum-count-or-gt-int64-literals.v1";
   const bool not_not_count_sum_boolean_profile =
-      not_not_count_sum_and_profile || not_not_count_sum_or_profile;
+      not_not_count_sum_and_profile || not_not_count_sum_or_profile ||
+      not_not_sum_count_or_profile;
   const bool not_sum_profile =
       filter_root.semantic_variant_id ==
       "filter.having-not-sum-gt-int64-literal.v1";
@@ -2020,6 +2025,13 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
           std::vector<std::size_t>{0, 1};
   const bool exact_ordinary_two_key_not_not_count_sum_or_profile =
       not_not_count_sum_or_profile &&
+      aggregate_root.semantic_variant_id ==
+          "aggregate.grouped-int64-keys-count-sum.v1" &&
+      prepared_aggregate.grouping_sets.size() == 1 &&
+      prepared_aggregate.grouping_sets.front().key_term_ordinals ==
+          std::vector<std::size_t>{0, 1};
+  const bool exact_ordinary_two_key_not_not_sum_count_or_profile =
+      not_not_sum_count_or_profile &&
       aggregate_root.semantic_variant_id ==
           "aggregate.grouped-int64-keys-count-sum.v1" &&
       prepared_aggregate.grouping_sets.size() == 1 &&
@@ -2275,6 +2287,8 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        !exact_ordinary_two_key_not_not_count_sum_and_profile) ||
       (not_not_count_sum_or_profile &&
        !exact_ordinary_two_key_not_not_count_sum_or_profile) ||
+      (not_not_sum_count_or_profile &&
+       !exact_ordinary_two_key_not_not_sum_count_or_profile) ||
       (not_count_profile && !exact_ordinary_two_key_not_count_profile) ||
       (not_count_sum_and_profile && !admitted_not_count_sum_and_profile) ||
       (not_count_sum_or_profile &&
@@ -2304,6 +2318,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        !exact_ordinary_two_key_not_not_count_profile &&
        !exact_ordinary_two_key_not_not_count_sum_and_profile &&
        !exact_ordinary_two_key_not_not_count_sum_or_profile &&
+       !exact_ordinary_two_key_not_not_sum_count_or_profile &&
        !admitted_not_count_sum_and_profile &&
        !exact_ordinary_two_key_not_count_sum_or_profile &&
        !admitted_or_profile &&
@@ -2333,6 +2348,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
       exact_ordinary_two_key_not_not_count_profile ||
       exact_ordinary_two_key_not_not_count_sum_and_profile ||
       exact_ordinary_two_key_not_not_count_sum_or_profile ||
+      exact_ordinary_two_key_not_not_sum_count_or_profile ||
       exact_ordinary_two_key_not_count_profile ||
       exact_ordinary_two_key_not_count_sum_or_profile) {
     std::unordered_map<std::uint32_t,
@@ -2493,6 +2509,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
        exact_ordinary_two_key_not_not_count_profile ||
        exact_ordinary_two_key_not_not_count_sum_and_profile ||
        exact_ordinary_two_key_not_not_count_sum_or_profile ||
+       exact_ordinary_two_key_not_not_sum_count_or_profile ||
        admitted_not_count_sum_and_profile ||
        exact_ordinary_two_key_not_count_profile ||
        exact_ordinary_two_key_not_count_sum_or_profile) &&
@@ -2553,11 +2570,21 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
             expression_by_id(inner_not->child_expression_ids.front());
         if (exact_binary_operator(
                 boolean_root,
-                not_not_count_sum_or_profile ? "OR" : "AND")) {
-          count_comparison =
-              expression_by_id(boolean_root->child_expression_ids[0]);
-          sum_comparison =
-              expression_by_id(boolean_root->child_expression_ids[1]);
+                (not_not_count_sum_or_profile ||
+                 not_not_sum_count_or_profile)
+                    ? "OR"
+                    : "AND")) {
+          if (not_not_sum_count_or_profile) {
+            sum_comparison =
+                expression_by_id(boolean_root->child_expression_ids[0]);
+            count_comparison =
+                expression_by_id(boolean_root->child_expression_ids[1]);
+          } else {
+            count_comparison =
+                expression_by_id(boolean_root->child_expression_ids[0]);
+            sum_comparison =
+                expression_by_id(boolean_root->child_expression_ids[1]);
+          }
         }
       } else if (not_not_count_profile) {
         count_comparison =
@@ -4881,6 +4908,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
        root->semantic_variant_id ==
            "filter.having-not-not-count-sum-or-gt-int64-literals.v1" ||
        root->semantic_variant_id ==
+           "filter.having-not-not-sum-count-or-gt-int64-literals.v1" ||
+       root->semantic_variant_id ==
            "filter.having-not-sum-gt-int64-literal.v1" ||
        root->semantic_variant_id ==
            "filter.having-not-count-gt-int64-literal.v1" ||
@@ -5069,6 +5098,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
          plan::CanonicalLogicalRelationalNodeKind::kFilter,
          exec::PhysicalNodeKind::kFilter,
          root->semantic_variant_id ==
+                 "filter.having-not-not-sum-count-or-gt-int64-literals.v1"
+             ? "canonical.filter.having-not-not-sum-count-or-gt-int64-literals.v1"
+             : root->semantic_variant_id ==
                  "filter.having-not-not-count-sum-or-gt-int64-literals.v1"
              ? "canonical.filter.having-not-not-count-sum-or-gt-int64-literals.v1"
              : root->semantic_variant_id ==
