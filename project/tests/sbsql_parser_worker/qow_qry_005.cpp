@@ -193,6 +193,46 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
            function->operator_name == "SUM" &&
            function->child_expression_ids.size() == 1;
   }();
+  const bool has_not_not_count_having = [&]() {
+    if (!has_not_sum_having) return false;
+    const auto& outer_not =
+        ast.expressions[filter_relation->predicate_expression_ids.front() - 1];
+    if (outer_not.child_expression_ids.size() != 1) return false;
+    const auto inner_not = std::ranges::find_if(
+        ast.expressions, [&](const auto& expression) {
+          return expression.expression_id ==
+                 outer_not.child_expression_ids.front();
+        });
+    if (inner_not == ast.expressions.end() ||
+        inner_not->expression_kind !=
+            sbsql::NativeExpressionAstKind::kUnary ||
+        inner_not->operator_name != "NOT" ||
+        inner_not->child_expression_ids.size() != 1) {
+      return false;
+    }
+    const auto comparison = std::ranges::find_if(
+        ast.expressions, [&](const auto& expression) {
+          return expression.expression_id ==
+                 inner_not->child_expression_ids.front();
+        });
+    if (comparison == ast.expressions.end() ||
+        comparison->expression_kind !=
+            sbsql::NativeExpressionAstKind::kBinary ||
+        comparison->operator_name != ">" ||
+        comparison->child_expression_ids.size() != 2) {
+      return false;
+    }
+    const auto function = std::ranges::find_if(
+        ast.expressions, [&](const auto& expression) {
+          return expression.expression_id ==
+                 comparison->child_expression_ids.front();
+        });
+    return function != ast.expressions.end() &&
+           function->expression_kind ==
+               sbsql::NativeExpressionAstKind::kFunctionCall &&
+           function->operator_name == "COUNT" &&
+           function->child_expression_ids.empty();
+  }();
   const bool has_not_count_sum_and_having =
       has_not_sum_having &&
       ast.expressions[filter_relation->predicate_expression_ids.front() - 1]
@@ -415,7 +455,9 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
   if (has_having_filter) {
     context.relations.push_back(
         {filter_relation->relation_id,
-         has_not_not_sum_having
+         has_not_not_count_having
+             ? "filter.having-not-not-count-gt-int64-literal.v1"
+         : has_not_not_sum_having
              ? "filter.having-not-not-sum-gt-int64-literal.v1"
          : has_not_count_sum_and_having
              ? "filter.having-not-count-sum-and-gt-int64-literals.v1"
@@ -980,7 +1022,7 @@ bool ValidateTwoKeyNotNotSumHavingParserBindingLoweringAndDispatch() {
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (NOT (SUM(amount)>6));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (NOT (SUM(amount)>6));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (NOT (SUM(amount)>6));",
-      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (NOT (COUNT(*)>1)));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 AND SUM(amount)>6));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 OR SUM(amount)>6));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (NOT (SUM(amount)>6)));",
@@ -5615,7 +5657,7 @@ bool ValidateTwoKeyNotCountHavingParserBindingLoweringAndDispatch() {
       "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (COUNT(*)>1);",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_b,key_a HAVING NOT (COUNT(*)>1);",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING COUNT(*)>1;",
-      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (NOT (COUNT(*)>1)));",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (SUM(amount)>6 OR COUNT(*)>1);",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (SUM(amount)>6 AND COUNT(*)>1);",
       "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT ((COUNT(*)>1) AND COUNT(*)>0);",
@@ -6563,6 +6605,1599 @@ bool ValidateTwoKeyNotCountHavingParserBindingLoweringAndDispatch() {
       "NOT-COUNT engine admitted node, semantic/tree pairing, COUNT/slot, literal, descriptor, output, grouping-set, or unreachable-expression wire drift");
   return passed;
 }
+
+// QOW-TEST-QRY-001-TWO-KEY-HAVING-NOT-NOT-COUNT-GT-LIVE-V1
+bool ValidateTwoKeyNotNotCountHavingParserBindingLoweringAndDispatch() {
+  constexpr std::string_view kRows =
+      "(1,10,5),(1,20,7),(1,NULL,3),(2,10,4),(NULL,10,8),"
+      "(1,10,NULL),(3,30,NULL),(3,30,NULL),(NULL,10,1)";
+  constexpr std::string_view kAggregateSemantic =
+      "aggregate.grouped-int64-keys-count-sum.v1";
+  constexpr std::string_view kFilterSemantic =
+      "filter.having-not-not-count-gt-int64-literal.v1";
+  const auto sql_for = [&](const std::string_view threshold) {
+    return "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES " +
+           std::string(kRows) +
+           ") AS input(key_a,key_b,amount) GROUP BY key_a,key_b "
+           "HAVING NOT (NOT (COUNT(*) > " +
+           std::string(threshold) + "));";
+  };
+
+  using ExpectedRow = std::array<std::optional<std::string_view>, 4>;
+  const auto count_rows = [](const auto& rows, const ExpectedRow& expected) {
+    return std::ranges::count_if(rows, [&](const auto& row) {
+      if (row.fields.size() != expected.size()) return false;
+      for (std::size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+        const auto& value = row.fields[ordinal].second;
+        if (expected[ordinal].has_value()) {
+          if (value.is_null || value.encoded_value != *expected[ordinal]) {
+            return false;
+          }
+        } else if (!value.is_null) {
+          return false;
+        }
+      }
+      return true;
+    });
+  };
+
+  const auto cst = sbsql::BuildCst(sql_for("1"));
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = GroupedAggregateBindingContext(
+      ast.native_relational, kAggregateSemantic);
+  const auto bound = sbsql::BindAst(
+      ast, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+
+  bool passed = true;
+  const auto ast_expression = [&](const std::uint32_t id)
+      -> const sbsql::NativeExpressionAstNode* {
+    if (id == 0 || id > ast.native_relational.expressions.size()) {
+      return nullptr;
+    }
+    return &ast.native_relational.expressions[id - 1];
+  };
+  const auto* aggregate_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[1]
+          : nullptr;
+  const auto* filter_relation =
+      ast.native_relational.relations.size() == 3
+          ? &ast.native_relational.relations[2]
+          : nullptr;
+  const auto* outer_not =
+      filter_relation != nullptr &&
+              filter_relation->predicate_expression_ids.size() == 1
+          ? ast_expression(filter_relation->predicate_expression_ids.front())
+          : nullptr;
+  const auto* inner_not =
+      outer_not != nullptr && outer_not->child_expression_ids.size() == 1
+          ? ast_expression(outer_not->child_expression_ids.front())
+          : nullptr;
+  const auto* count_comparison =
+      inner_not != nullptr && inner_not->child_expression_ids.size() == 1
+          ? ast_expression(inner_not->child_expression_ids.front())
+          : nullptr;
+  const auto* having_count =
+      count_comparison != nullptr &&
+              count_comparison->child_expression_ids.size() == 2
+          ? ast_expression(count_comparison->child_expression_ids[0])
+          : nullptr;
+  const auto* count_threshold =
+      count_comparison != nullptr &&
+              count_comparison->child_expression_ids.size() == 2
+          ? ast_expression(count_comparison->child_expression_ids[1])
+          : nullptr;
+  passed &= Require(
+      ast.native_relational.accepted() &&
+          ast.native_relational.root_relation_id == 3 &&
+          aggregate_relation != nullptr && filter_relation != nullptr &&
+          outer_not != nullptr && inner_not != nullptr &&
+          count_comparison != nullptr &&
+          having_count != nullptr && count_threshold != nullptr &&
+          aggregate_relation->aggregate_grouping_form ==
+              sbsql::NativeAggregateGroupingForm::kSimple &&
+          aggregate_relation->aggregate_projection_form ==
+              sbsql::NativeAggregateProjectionForm::kKeysCountSum &&
+          aggregate_relation->grouping_key_expression_ids.size() == 2 &&
+          aggregate_relation->aggregate_expression_ids.size() == 2 &&
+          aggregate_relation->output_expression_ids.size() == 4 &&
+          filter_relation->input_relation_ids ==
+              std::vector<std::uint32_t>{aggregate_relation->relation_id} &&
+          filter_relation->output_expression_ids ==
+              aggregate_relation->output_expression_ids &&
+          ast.native_relational.grouping_sets.empty() &&
+          outer_not->expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          outer_not->operator_name == "NOT" &&
+          outer_not->child_expression_ids ==
+              std::vector<std::uint32_t>{inner_not->expression_id} &&
+          inner_not->expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          inner_not->operator_name == "NOT" &&
+          inner_not->child_expression_ids ==
+              std::vector<std::uint32_t>{count_comparison->expression_id} &&
+          count_comparison->expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          count_comparison->operator_name == ">" &&
+          count_comparison->child_expression_ids ==
+              std::vector<std::uint32_t>{having_count->expression_id,
+                                         count_threshold->expression_id} &&
+          having_count->expression_kind ==
+              sbsql::NativeExpressionAstKind::kFunctionCall &&
+          having_count->operator_name == "COUNT" &&
+          having_count->child_expression_ids.empty() &&
+          count_threshold->expression_kind ==
+              sbsql::NativeExpressionAstKind::kLiteral &&
+          count_threshold->literal_kind ==
+              sbsql::NativeLiteralAstKind::kNumeric &&
+          count_threshold->spelling == "1",
+      "parser did not preserve exact ordinary two-key double-NOT/COUNT/literal AST");
+  passed &= Require(
+      bound.bound && bound.native_relational.bound &&
+          bound.native_relational.relations.size() == 3 &&
+          bound.native_relational.relations[1].semantic_variant_id ==
+              kAggregateSemantic &&
+          bound.native_relational.relations[2].semantic_variant_id ==
+              kFilterSemantic &&
+          bound.native_relational.relations[2].bound_expression_ids ==
+              bound.native_relational.relations[2].predicate_expression_ids &&
+          bound.native_relational.relations[2].output_expression_ids ==
+              bound.native_relational.relations[1].output_expression_ids,
+      "binder did not retain bounded double-NOT COUNT aggregate/filter identities");
+  if (!bound.native_relational.bound ||
+      bound.native_relational.relations.size() != 3 ||
+      aggregate_relation == nullptr || filter_relation == nullptr ||
+      outer_not == nullptr || inner_not == nullptr ||
+      count_comparison == nullptr ||
+      having_count == nullptr || count_threshold == nullptr) {
+    return false;
+  }
+
+  const auto& aggregate = bound.native_relational.relations[1];
+  const auto& filter = bound.native_relational.relations[2];
+  const auto outer_not_id = outer_not->expression_id;
+  const auto inner_not_id = inner_not->expression_id;
+  const auto comparison_id = count_comparison->expression_id;
+  const auto having_count_id = having_count->expression_id;
+  const auto threshold_id = count_threshold->expression_id;
+  const auto projected_count_id = aggregate.aggregate_expression_ids[0];
+  const auto projected_sum_id = aggregate.aggregate_expression_ids[1];
+  const auto expression_by_id = [&](const std::uint32_t id) {
+    return std::ranges::find_if(
+        bound.native_relational.expressions,
+        [&](const auto& expression) { return expression.expression_id == id; });
+  };
+  const auto descriptor_by_id = [&](const std::uint32_t id) {
+    return std::ranges::find_if(
+        bound.native_relational.descriptors,
+        [&](const auto& descriptor) { return descriptor.descriptor_id == id; });
+  };
+  const auto descriptor_exact = [&](const auto expression,
+                                    const sbsql::BoundNullability nullability) {
+    if (expression == bound.native_relational.expressions.end()) return false;
+    const auto descriptor = descriptor_by_id(expression->result_descriptor_id);
+    return descriptor != bound.native_relational.descriptors.end() &&
+           descriptor->nullability == nullability &&
+           !descriptor->collation_uuid.has_value() &&
+           !descriptor->timezone_profile_id.has_value() &&
+           !descriptor->width_precision_scale.width.has_value() &&
+           !descriptor->width_precision_scale.precision.has_value() &&
+           !descriptor->width_precision_scale.scale.has_value();
+  };
+  const auto exact_output = [&](const std::uint32_t relation_id,
+                                const std::uint32_t output_id,
+                                const std::uint32_t ordinal,
+                                const std::string_view name) {
+    const auto& expression_ids =
+        relation_id == aggregate.relation_id
+            ? aggregate.output_expression_ids
+            : filter.output_expression_ids;
+    if (ordinal >= expression_ids.size()) return false;
+    const auto expression = expression_by_id(expression_ids[ordinal]);
+    if (expression == bound.native_relational.expressions.end()) return false;
+    return std::ranges::count_if(
+               bound.native_relational.outputs, [&](const auto& output) {
+                 return output.relation_id == relation_id &&
+                        output.output_id == output_id &&
+                        output.expression_id == expression_ids[ordinal] &&
+                        output.descriptor_id ==
+                            expression->result_descriptor_id &&
+                        output.ordinal == ordinal &&
+                        output.output_name_utf8 == name && output.visible;
+               }) == 1;
+  };
+  const auto bound_outer_not = expression_by_id(outer_not_id);
+  const auto bound_inner_not = expression_by_id(inner_not_id);
+  const auto bound_comparison = expression_by_id(comparison_id);
+  const auto bound_having_count = expression_by_id(having_count_id);
+  const auto bound_threshold = expression_by_id(threshold_id);
+  const auto bound_projected_count = expression_by_id(projected_count_id);
+  const auto bound_projected_sum = expression_by_id(projected_sum_id);
+  passed &= Require(
+      bound_outer_not != bound.native_relational.expressions.end() &&
+          bound_inner_not != bound.native_relational.expressions.end() &&
+          bound_comparison != bound.native_relational.expressions.end() &&
+          bound_having_count != bound.native_relational.expressions.end() &&
+          bound_threshold != bound.native_relational.expressions.end() &&
+          bound_projected_count !=
+              bound.native_relational.expressions.end() &&
+          bound_projected_sum != bound.native_relational.expressions.end() &&
+          bound_outer_not->expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          bound_outer_not->canonical_operator_name == "NOT" &&
+          bound_outer_not->child_expression_ids ==
+              std::vector<std::uint32_t>{inner_not_id} &&
+          bound_inner_not->expression_kind ==
+              sbsql::NativeExpressionAstKind::kUnary &&
+          bound_inner_not->canonical_operator_name == "NOT" &&
+          bound_inner_not->child_expression_ids ==
+              std::vector<std::uint32_t>{comparison_id} &&
+          bound_comparison->expression_kind ==
+              sbsql::NativeExpressionAstKind::kBinary &&
+          bound_comparison->canonical_operator_name == ">" &&
+          bound_comparison->child_expression_ids ==
+              std::vector<std::uint32_t>{having_count_id, threshold_id} &&
+          bound_having_count->expression_kind ==
+              sbsql::NativeExpressionAstKind::kFunctionCall &&
+          bound_having_count->bound_function_uuid ==
+              "019de5fc-2400-784a-9aec-371f8b95b7ea" &&
+          bound_having_count->child_expression_ids.empty() &&
+          bound_projected_count->bound_function_uuid ==
+              bound_having_count->bound_function_uuid &&
+          bound_projected_count->child_expression_ids.empty() &&
+          bound_projected_count->result_descriptor_id ==
+              bound_having_count->result_descriptor_id &&
+          bound_threshold->expression_kind ==
+              sbsql::NativeExpressionAstKind::kLiteral &&
+          bound_threshold->literal_kind ==
+              sbsql::NativeLiteralAstKind::kNumeric &&
+          bound_threshold->literal_or_parameter_ref == "1" &&
+          bound_outer_not->result_descriptor_id ==
+              bound_inner_not->result_descriptor_id &&
+          bound_inner_not->result_descriptor_id ==
+              bound_comparison->result_descriptor_id &&
+          descriptor_exact(bound_outer_not,
+                           sbsql::BoundNullability::kNullable) &&
+          descriptor_exact(bound_inner_not,
+                           sbsql::BoundNullability::kNullable) &&
+          descriptor_exact(bound_comparison,
+                           sbsql::BoundNullability::kNullable) &&
+          descriptor_exact(bound_threshold,
+                           sbsql::BoundNullability::kNonNull) &&
+          descriptor_exact(bound_having_count,
+                           sbsql::BoundNullability::kNonNull) &&
+          descriptor_exact(bound_projected_count,
+                           sbsql::BoundNullability::kNonNull) &&
+          exact_output(aggregate.relation_id, 4, 0, "key_a") &&
+          exact_output(aggregate.relation_id, 5, 1, "key_b") &&
+          exact_output(aggregate.relation_id, 6, 2, "row_count") &&
+          exact_output(aggregate.relation_id, 7, 3, "total_amount") &&
+          exact_output(filter.relation_id, 8, 0, "key_a") &&
+          exact_output(filter.relation_id, 9, 1, "key_b") &&
+          exact_output(filter.relation_id, 10, 2, "row_count") &&
+          exact_output(filter.relation_id, 11, 3, "total_amount"),
+      "double-NOT COUNT binding lost tree, COUNT-star UUID, descriptor, literal, or output identity");
+
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+  const auto has_operand_type = [&](const std::string_view type) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type;
+    });
+  };
+  passed &= Require(
+      !lowered.messages.has_errors() && verified.admitted &&
+          !verified.messages.has_errors() &&
+          has_operand("uint16", "relational_wire_version", "2") &&
+          has_operand("uint32", "relational_root_node_id", "3") &&
+          has_operand("relational_node_v1", "1",
+                      "13|0|-|1,2,3|1,2,3,4,5,6,7,8,9") &&
+          has_operand("relational_node_v1", "2", "5|0|1|1,2,4,5|-") &&
+          has_operand("relational_node_v1", "3", "2|0|2|1,2,4,5|-") &&
+          has_operand("relational_node_binding_v1", "2",
+                      EncodeHex(kAggregateSemantic) + "|1,2,3,5|-|-|-") &&
+          has_operand("relational_node_binding_v1", "3",
+                      EncodeHex(kFilterSemantic) + "|" +
+                          std::to_string(outer_not_id) + "|-|-|-") &&
+          has_operand("relational_expression_v1",
+                      std::to_string(outer_not_id),
+                      "5|" + std::to_string(inner_not_id) +
+                          "|10|-|-|-|4e4f54|-") &&
+          has_operand("relational_expression_v1",
+                      std::to_string(inner_not_id),
+                      "5|" + std::to_string(comparison_id) +
+                          "|10|-|-|-|4e4f54|-") &&
+          has_operand("relational_expression_v1",
+                      std::to_string(comparison_id),
+                      "6|" + std::to_string(having_count_id) + "," +
+                          std::to_string(threshold_id) +
+                          "|10|-|-|-|3e|-") &&
+          !has_operand_type("relational_grouping_set_v1") &&
+          lowered.payload.find("contains_sql_text=false") !=
+              std::string::npos &&
+          lowered.payload.find("parser_resolved_names_to_uuids=true") !=
+              std::string::npos &&
+          lowered.payload.find("SELECT key_a") == std::string::npos &&
+          lowered.payload.find("HAVING NOT") == std::string::npos &&
+          lowered.payload.find("query.plan_operation") == std::string::npos &&
+          lowered.payload.find("SBLR_QUERY_PLAN_OPERATION") ==
+              std::string::npos,
+      "double-NOT COUNT did not lower to exact canonical wire-v2 VALUES/AGGREGATE/FILTER");
+
+  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
+      lowered.payload, GroupingSetsEngineContext());
+  const auto& rows = dispatched.api_result.result_shape.rows;
+  passed &= Require(
+      dispatched.envelope_validated && dispatched.accepted &&
+          dispatched.dispatched_to_api &&
+          dispatched.logical_graph_populated &&
+          dispatched.logical_properties_populated &&
+          dispatched.optimizer_admitted && dispatched.optimizer_selected &&
+          dispatched.physical_dag_published &&
+          dispatched.physical_dag_executed &&
+          dispatched.runtime_actuals_attached &&
+          dispatched.canonical_result_published && dispatched.api_result.ok &&
+          dispatched.logical_node_count == 3 &&
+          dispatched.physical_node_count == 3 &&
+          dispatched.canonical_result_column_count == 4 &&
+          dispatched.canonical_result_row_count == 3 && rows.size() == 3 &&
+          count_rows(rows, {"1", "10", "2", "5"}) == 1 &&
+          count_rows(rows, {std::nullopt, "10", "2", "9"}) == 1 &&
+          count_rows(rows, {"3", "30", "2", std::nullopt}) == 1 &&
+          count_rows(rows, {"1", "20", "1", "7"}) == 0 &&
+          count_rows(rows, {"1", std::nullopt, "1", "3"}) == 0 &&
+          count_rows(rows, {"2", "10", "1", "4"}) == 0,
+      "double-NOT COUNT threshold 1 did not publish the exact three COUNT=2 groups");
+
+  const auto execute_threshold = [&](const std::string_view threshold) {
+    const auto source_cst = sbsql::BuildCst(sql_for(threshold));
+    const auto source_ast = sbsql::BuildAst(source_cst);
+    const auto source_context = GroupedAggregateBindingContext(
+        source_ast.native_relational, kAggregateSemantic);
+    const auto source_bound = sbsql::BindAst(
+        source_ast, source_cst, ParserConfigForTest(), SessionForTest(), {},
+        &source_context);
+    const auto source_lowered =
+        sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
+    return sblr::DecodeAndDispatchSblrOperation(
+        source_lowered.payload, GroupingSetsEngineContext());
+  };
+  const auto threshold_zero = execute_threshold("0");
+  const auto threshold_two = execute_threshold("2");
+  const auto& threshold_zero_rows =
+      threshold_zero.api_result.result_shape.rows;
+  const auto& threshold_two_rows =
+      threshold_two.api_result.result_shape.rows;
+  passed &= Require(
+      threshold_zero.accepted && threshold_zero.api_result.ok &&
+          threshold_zero.canonical_result_published &&
+          threshold_zero.canonical_result_row_count == 6 &&
+          threshold_zero_rows.size() == 6 &&
+          count_rows(threshold_zero_rows,
+                     {"3", "30", "2", std::nullopt}) == 1 &&
+          threshold_two.accepted && threshold_two.api_result.ok &&
+          threshold_two.canonical_result_published &&
+          threshold_two.canonical_result_row_count == 0 &&
+          threshold_two_rows.empty(),
+      "double-NOT COUNT thresholds 0/2 were hardcoded, lost the strict boundary, or depended on projected SUM");
+
+  constexpr std::array<std::string_view, 27> kParserRefusals = {{
+      "SELECT key,COUNT(*),SUM(amount) FROM (VALUES (1,5)) AS input(key,amount) GROUP BY key HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_b,key_a HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_a,key_b),()) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_a,key_b),()) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 AND SUM(amount)>6));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 OR SUM(amount)>6));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (NOT (COUNT(*)>1)));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT NOT (COUNT(*)>1);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT COUNT(*)>1);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>=1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)<1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (1<COUNT(*)));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(amount)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>'1'));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>NULL));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>?));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>9223372036854775808));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1.5));",
+      "SELECT key_a AS alias_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 OR COUNT(*)>0));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1 AND COUNT(*)>0));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (AVG(amount)>1));",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT ((NOT (COUNT(*)>1)) OR SUM(amount)>6);",
+  }};
+  const auto parser_refused = [](const std::string_view sql) {
+    const auto document = sbsql::BuildAst(sbsql::BuildCst(std::string(sql)));
+    return document.native_relational.recognized() &&
+           !document.native_relational.accepted() &&
+           HasParserDiagnostic(document.messages,
+                               "QOW-DIAG-QRY-001-AST-MALFORMED");
+  };
+  passed &= Require(
+      std::ranges::all_of(kParserRefusals, parser_refused),
+      "double-NOT COUNT parser admitted grouping, tree, operator, operand, literal, COUNT-input, or alias drift");
+
+  constexpr std::string_view kSourceScanRefusal =
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM input GROUP BY key_a,key_b HAVING NOT (NOT (COUNT(*)>1));";
+  const auto source_scan_document =
+      sbsql::BuildAst(sbsql::BuildCst(std::string(kSourceScanRefusal)));
+  passed &= Require(
+      !source_scan_document.native_relational.recognized() &&
+          !source_scan_document.native_relational.accepted(),
+      "double-NOT COUNT source scan entered the bounded native parser route");
+
+  constexpr std::array<std::string_view, 20> kProtectedRoutes = {{
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING SUM(amount)>6;",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING COUNT(*)>1 AND SUM(amount)>6;",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING COUNT(*)>1 OR SUM(amount)>6;",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY GROUPING SETS ((key_b),(),(key_b,key_a),(key_b)) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY ROLLUP(key_a,key_b) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount),GROUPING(key_a),GROUPING(key_b),GROUPING_ID(key_a,key_b) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY CUBE(key_a,key_b) HAVING NOT (COUNT(*)>1 AND SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (COUNT(*)>1);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (COUNT(*)>1 OR SUM(amount)>6);",
+      "SELECT key_a,key_b,COUNT(*),SUM(amount) FROM (VALUES (1,10,5)) AS input(key_a,key_b,amount) GROUP BY key_a,key_b HAVING NOT (NOT (SUM(amount)>6));",
+  }};
+  passed &= Require(
+      std::ranges::all_of(kProtectedRoutes, [](const auto sql) {
+        return sbsql::BuildAst(sbsql::BuildCst(std::string(sql)))
+            .native_relational.accepted();
+      }),
+      "double-NOT COUNT admission disturbed the established twenty-route HAVING closure");
+
+  const auto overflow = execute_threshold("9223372036854775808");
+  passed &= Require(
+      !overflow.accepted || !overflow.api_result.ok ||
+          !overflow.canonical_result_published,
+      "double-NOT COUNT admitted an out-of-range int64 threshold");
+
+  const auto bind_ast_rejects = [&](const auto mutate) {
+    auto drift = ast;
+    mutate(drift);
+    const auto result = sbsql::BindAst(
+        drift, cst, ParserConfigForTest(), SessionForTest(), {}, &context);
+    return !result.bound && result.messages.has_errors();
+  };
+  const auto bind_context_rejects = [&](const auto mutate) {
+    auto drift = context;
+    mutate(drift);
+    const auto result = sbsql::BindAst(
+        ast, cst, ParserConfigForTest(), SessionForTest(), {}, &drift);
+    return !result.bound && result.messages.has_errors();
+  };
+  const auto context_expression = [](auto& drift, const std::uint32_t id) {
+    return std::ranges::find_if(
+        drift.expressions,
+        [&](const auto& expression) { return expression.expression_id == id; });
+  };
+  const auto context_descriptor = [](auto& drift, const std::uint32_t id) {
+    return std::ranges::find_if(
+        drift.descriptors,
+        [&](const auto& descriptor) { return descriptor.descriptor_id == id; });
+  };
+  const auto predicate_descriptor_id =
+      bound_outer_not->result_descriptor_id;
+  const auto literal_descriptor_id = bound_threshold->result_descriptor_id;
+  const auto count_descriptor_id = bound_having_count->result_descriptor_id;
+  const auto binder_matrix_passed =
+      bind_context_rejects([](auto& drift) {
+        drift.relations.back().semantic_variant_id =
+            "filter.having-not-sum-gt-int64-literal.v1";
+      }) &&
+      bind_context_rejects([](auto& drift) {
+        drift.relations.front().semantic_variant_id =
+            "aggregate.grouping-sets-int64-keys-count-sum.v1";
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1]
+            .expression_kind = sbsql::NativeExpressionAstKind::kBinary;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1].operator_name =
+            "AND";
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1]
+            .child_expression_ids.clear();
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1]
+            .child_expression_ids.push_back(inner_not_id);
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1]
+            .child_expression_ids = {comparison_id};
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[outer_not_id - 1]
+            .child_expression_ids = {999999};
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[inner_not_id - 1]
+            .expression_kind = sbsql::NativeExpressionAstKind::kBinary;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[inner_not_id - 1].operator_name =
+            "OR";
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[inner_not_id - 1]
+            .child_expression_ids.clear();
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[inner_not_id - 1]
+            .child_expression_ids.push_back(comparison_id);
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[inner_not_id - 1]
+            .child_expression_ids = {threshold_id};
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[comparison_id - 1]
+            .expression_kind = sbsql::NativeExpressionAstKind::kUnary;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[comparison_id - 1].operator_name =
+            ">=";
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        std::ranges::reverse(
+            drift.native_relational.expressions[comparison_id - 1]
+                .child_expression_ids);
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[comparison_id - 1]
+            .child_expression_ids.pop_back();
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[comparison_id - 1]
+            .child_expression_ids[0] = 999999;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[having_count_id - 1]
+            .expression_kind = sbsql::NativeExpressionAstKind::kIdentifier;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[having_count_id - 1]
+            .operator_name = "SUM";
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[having_count_id - 1]
+            .child_expression_ids = {
+            aggregate_relation->grouping_key_expression_ids.front()};
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[threshold_id - 1].literal_kind =
+            sbsql::NativeLiteralAstKind::kString;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[threshold_id - 1]
+            .expression_kind = sbsql::NativeExpressionAstKind::kParameter;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.expressions[threshold_id - 1]
+            .child_expression_ids = {having_count_id};
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, having_count_id)->function_uuid =
+            "019de5fc-2400-72e4-8549-82b2eef5a777";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, projected_count_id)->function_uuid =
+            "019de5fc-2400-72e4-8549-82b2eef5a777";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, outer_not_id)->descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, inner_not_id)->descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, comparison_id)->descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, threshold_id)->descriptor_id =
+            predicate_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, having_count_id)->descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_expression(drift, projected_count_id)->descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNonNull;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNullable;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNullable;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-000000000343";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)
+            ->timezone_profile_id = "UTC";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.precision = 1;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-000000000348";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)
+            ->timezone_profile_id = "UTC";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.precision = 19;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-000000000349";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)->timezone_profile_id =
+            "UTC";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.precision = 19;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        context_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        drift.native_relational.root_relation_id = 2;
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        drift.native_relational.relations[2].relation_kind =
+            sbsql::NativeRelationAstKind::kAggregate;
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        drift.native_relational.relations[2].input_relation_ids = {1};
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        drift.native_relational.relations[1].aggregate_grouping_form =
+            sbsql::NativeAggregateGroupingForm::kRollup;
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        drift.native_relational.relations[1].aggregate_projection_form =
+            sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        std::ranges::reverse(
+            drift.native_relational.relations[1]
+                .grouping_key_expression_ids);
+      }) &&
+      bind_ast_rejects([](auto& drift) {
+        std::ranges::reverse(
+            drift.native_relational.relations[1].aggregate_expression_ids);
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.relations[2].output_expression_ids[0] =
+            projected_count_id;
+      }) &&
+      bind_ast_rejects([&](auto& drift) {
+        drift.native_relational.grouping_sets.push_back(
+            {aggregate.relation_id, 0,
+             aggregate.grouping_key_expression_ids, {}});
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 0;
+            });
+        output->output_id = 80;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 1;
+            });
+        output->output_name_utf8 = "wrong";
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 2;
+            });
+        output->visible = false;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->expression_id = projected_count_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->descriptor_id = literal_descriptor_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->ordinal = 2;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->relation_id = aggregate.relation_id;
+      }) &&
+      bind_context_rejects([&](auto& drift) {
+        const auto expression = context_expression(drift, inner_not_id);
+        drift.expressions.erase(expression);
+      });
+  passed &= Require(
+      binder_matrix_passed,
+      "double-NOT COUNT binder admitted semantic, tree, COUNT, descriptor, relation, grouping, output, or dangling-graph drift");
+
+  const auto lower_rejects = [&](const auto mutate) {
+    auto drift = bound;
+    mutate(drift);
+    const auto result = sbsql::LowerToSblr(drift, cst, SessionForTest());
+    return result.payload.empty() &&
+           HasParserDiagnostic(result.messages,
+                               "SBLR.PLAN_TREE.INVALID_HANDLE");
+  };
+  const auto lower_expression = [](auto& drift, const std::uint32_t id) {
+    return std::ranges::find_if(
+        drift.native_relational.expressions,
+        [&](const auto& expression) { return expression.expression_id == id; });
+  };
+  const auto lower_descriptor = [](auto& drift, const std::uint32_t id) {
+    return std::ranges::find_if(
+        drift.native_relational.descriptors,
+        [&](const auto& descriptor) { return descriptor.descriptor_id == id; });
+  };
+  const auto lowering_matrix_passed =
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations.back().semantic_variant_id =
+            "filter.having-not-sum-gt-int64-literal.v1";
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations[1].semantic_variant_id =
+            "aggregate.grouping-sets-int64-keys-count-sum.v1";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->expression_kind =
+            sbsql::NativeExpressionAstKind::kBinary;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->canonical_operator_name =
+            "AND";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->child_expression_ids.clear();
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)
+            ->child_expression_ids.push_back(inner_not_id);
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->child_expression_ids = {
+            comparison_id};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->child_expression_ids = {
+            999999};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)->expression_kind =
+            sbsql::NativeExpressionAstKind::kBinary;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)->canonical_operator_name = "OR";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)->child_expression_ids.clear();
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)
+            ->child_expression_ids.push_back(comparison_id);
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)->child_expression_ids = {
+            threshold_id};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, comparison_id)->expression_kind =
+            sbsql::NativeExpressionAstKind::kUnary;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, comparison_id)->canonical_operator_name =
+            ">=";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        std::ranges::reverse(
+            lower_expression(drift, comparison_id)->child_expression_ids);
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, comparison_id)
+            ->child_expression_ids.pop_back();
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, comparison_id)->child_expression_ids[0] =
+            999999;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, having_count_id)->expression_kind =
+            sbsql::NativeExpressionAstKind::kIdentifier;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, having_count_id)->bound_function_uuid =
+            "019de5fc-2400-72e4-8549-82b2eef5a777";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, having_count_id)->child_expression_ids = {
+            aggregate.grouping_key_expression_ids.front()};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, threshold_id)->literal_kind =
+            sbsql::NativeLiteralAstKind::kString;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, threshold_id)->child_expression_ids = {
+            having_count_id};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, outer_not_id)->result_descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, inner_not_id)->result_descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, comparison_id)->result_descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, threshold_id)->result_descriptor_id =
+            predicate_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, having_count_id)->result_descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, projected_count_id)->result_descriptor_id =
+            literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, projected_count_id)->bound_function_uuid =
+            "019de5fc-2400-72e4-8549-82b2eef5a777";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_expression(drift, projected_count_id)->child_expression_ids = {
+            projected_sum_id};
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNonNull;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNullable;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)->nullability =
+            sbsql::BoundNullability::kNullable;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-000000000346";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)
+            ->timezone_profile_id = "UTC";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.precision = 1;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, predicate_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-00000000034a";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)
+            ->timezone_profile_id = "UTC";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.precision = 19;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, literal_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)->collation_uuid =
+            "019f0000-0000-7200-8000-00000000034b";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)->timezone_profile_id =
+            "UTC";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.width = 1;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.precision = 19;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        lower_descriptor(drift, count_descriptor_id)
+            ->width_precision_scale.scale = 0;
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.root_relation_id = 2;
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations[2].relation_kind =
+            sbsql::NativeRelationAstKind::kAggregate;
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations[2].input_relation_ids = {1};
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations[1].aggregate_grouping_form =
+            sbsql::NativeAggregateGroupingForm::kRollup;
+      }) &&
+      lower_rejects([](auto& drift) {
+        drift.native_relational.relations[1].aggregate_projection_form =
+            sbsql::NativeAggregateProjectionForm::kKeysCountSumGrouping;
+      }) &&
+      lower_rejects([](auto& drift) {
+        std::ranges::reverse(
+            drift.native_relational.relations[1]
+                .grouping_key_expression_ids);
+      }) &&
+      lower_rejects([](auto& drift) {
+        std::ranges::reverse(
+            drift.native_relational.relations[1].aggregate_expression_ids);
+      }) &&
+      lower_rejects([&](auto& drift) {
+        drift.native_relational.relations[2].output_expression_ids[0] =
+            projected_count_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 0;
+            });
+        output->output_id = 80;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 1;
+            });
+        output->output_name_utf8 = "wrong";
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 2;
+            });
+        output->visible = false;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->expression_id = projected_count_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->descriptor_id = literal_descriptor_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->ordinal = 2;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto output = std::ranges::find_if(
+            drift.native_relational.outputs, [&](const auto& item) {
+              return item.relation_id == filter.relation_id &&
+                     item.ordinal == 3;
+            });
+        output->relation_id = aggregate.relation_id;
+      }) &&
+      lower_rejects([&](auto& drift) {
+        drift.native_relational.grouping_sets.push_back(
+            {aggregate.relation_id, 0,
+             aggregate.grouping_key_expression_ids});
+      }) &&
+      lower_rejects([&](auto& drift) {
+        const auto expression = lower_expression(drift, inner_not_id);
+        drift.native_relational.expressions.erase(expression);
+      });
+  passed &= Require(
+      lowering_matrix_passed,
+      "double-NOT COUNT lowering admitted semantic, tree, COUNT, descriptor, relation, grouping, output, or dangling-graph drift");
+
+  const auto operand_value = [&](const std::string_view type,
+                                 const std::string_view name) {
+    const auto operand = std::ranges::find_if(
+        lowered.operands, [&](const auto& item) {
+          return item.type == type && item.name == name;
+        });
+    return operand == lowered.operands.end() ? std::string{} : operand->value;
+  };
+  const auto replaced = [](std::string value, const std::string_view from,
+                           const std::string_view to) {
+    const auto offset = value.find(from);
+    if (offset == std::string::npos) return std::string{};
+    value.replace(offset, from.size(), to);
+    return value;
+  };
+  const auto engine_rejects = [&](const std::string_view type,
+                                  const std::string_view name,
+                                  const std::string& replacement,
+                                  const std::string_view replacement_name =
+                                      std::string_view{}) {
+    const auto original = operand_value(type, name);
+    if (original.empty() || replacement.empty() ||
+        (original == replacement && replacement_name.empty())) {
+      return false;
+    }
+    auto payload = lowered.payload;
+    const auto original_line = "operand=" + std::string(type) + "\t" +
+                               std::string(name) + "\t" + original;
+    const auto next_name = replacement_name.empty() ? name : replacement_name;
+    const auto replacement_line = "operand=" + std::string(type) + "\t" +
+                                  std::string(next_name) + "\t" + replacement;
+    const auto offset = payload.find(original_line);
+    if (offset == std::string::npos) return false;
+    payload.replace(offset, original_line.size(), replacement_line);
+    const auto result = sblr::DecodeAndDispatchSblrOperation(
+        payload, GroupingSetsEngineContext());
+    return !result.accepted || !result.api_result.ok ||
+           !result.canonical_result_published;
+  };
+  const auto engine_rejects_insert = [&](const std::string& inserted_line) {
+    auto payload = lowered.payload;
+    const auto binding_line =
+        "operand=relational_node_binding_v1\t2\t" +
+        operand_value("relational_node_binding_v1", "2");
+    const auto offset = payload.find(binding_line);
+    if (offset == std::string::npos) return false;
+    const auto end = payload.find('\n', offset);
+    if (end == std::string::npos) return false;
+    payload.insert(end + 1, inserted_line);
+    const auto result = sblr::DecodeAndDispatchSblrOperation(
+        payload, GroupingSetsEngineContext());
+    return !result.accepted || !result.api_result.ok ||
+           !result.canonical_result_published;
+  };
+  const auto predicate_operand = operand_value(
+      "relational_expression_v1", std::to_string(outer_not_id));
+  const auto inner_operand = operand_value(
+      "relational_expression_v1", std::to_string(inner_not_id));
+  const auto comparison_operand = operand_value(
+      "relational_expression_v1", std::to_string(comparison_id));
+  const auto count_operand = operand_value(
+      "relational_expression_v1", std::to_string(having_count_id));
+  const auto aggregate_count_output_operand =
+      operand_value("relational_output_v1", "6");
+  const auto filter_count_output_operand =
+      operand_value("relational_output_v1", "10");
+  const auto projected_count_operand = operand_value(
+      "relational_expression_v1", std::to_string(projected_count_id));
+  const auto literal_operand = operand_value(
+      "relational_expression_v1", std::to_string(threshold_id));
+  const auto predicate_descriptor_operand = operand_value(
+      "relational_descriptor_v1", std::to_string(predicate_descriptor_id));
+  const auto literal_descriptor_operand = operand_value(
+      "relational_descriptor_v1", std::to_string(literal_descriptor_id));
+  const auto count_descriptor_operand = operand_value(
+      "relational_descriptor_v1", std::to_string(count_descriptor_id));
+  const auto aggregate_output_operand =
+      operand_value("relational_output_v1", "4");
+  const auto filter_output_operand =
+      operand_value("relational_output_v1", "8");
+  const auto engine_matrix_passed =
+      engine_rejects("uint32", "relational_root_node_id", "2") &&
+      engine_rejects(
+          "relational_node_v1", "1",
+          replaced(operand_value("relational_node_v1", "1"),
+                   "13|0|-|", "5|0|-|")) &&
+      engine_rejects(
+          "relational_node_v1", "2",
+          replaced(operand_value("relational_node_v1", "2"),
+                   "5|0|1|", "5|0|3|")) &&
+      engine_rejects(
+          "relational_node_v1", "2",
+          replaced(operand_value("relational_node_v1", "2"),
+                   "|1,2,4,5|", "|2,1,4,5|")) &&
+      engine_rejects(
+          "relational_node_v1", "2",
+          replaced(operand_value("relational_node_v1", "2"),
+                   "|1,2,4,5|", "|1,2,5,4|")) &&
+      engine_rejects(
+          "relational_node_v1", "2",
+          replaced(operand_value("relational_node_v1", "2"),
+                   "|1,2,4,5|", "|1,2,4|")) &&
+      engine_rejects(
+          "relational_node_v1", "3",
+          replaced(operand_value("relational_node_v1", "3"),
+                   "2|0|2|", "2|0|1|")) &&
+      engine_rejects(
+          "relational_node_v1", "3",
+          replaced(operand_value("relational_node_v1", "3"),
+                   "|1,2,4,5|", "|2,1,4,5|")) &&
+      engine_rejects(
+          "relational_node_v1", "3",
+          replaced(operand_value("relational_node_v1", "3"),
+                   "|1,2,4,5|", "|1,2,5,4|")) &&
+      engine_rejects(
+          "relational_node_v1", "3",
+          replaced(operand_value("relational_node_v1", "3"),
+                   "|1,2,4,5|", "|1,2,4|")) &&
+      engine_rejects(
+          "relational_node_binding_v1", "2",
+          replaced(operand_value("relational_node_binding_v1", "2"),
+                   EncodeHex(kAggregateSemantic),
+                   EncodeHex(
+                       "aggregate.grouping-sets-int64-keys-count-sum.v1"))) &&
+      engine_rejects(
+          "relational_node_binding_v1", "2",
+          replaced(operand_value("relational_node_binding_v1", "2"),
+                   "|1,2,3,5|", "|2,1,3,5|")) &&
+      engine_rejects(
+          "relational_node_binding_v1", "2",
+          replaced(operand_value("relational_node_binding_v1", "2"),
+                   "|1,2,3,5|", "|1,2,5,3|")) &&
+      engine_rejects(
+          "relational_node_binding_v1", "3",
+          replaced(operand_value("relational_node_binding_v1", "3"),
+                   EncodeHex(kFilterSemantic),
+                   EncodeHex(
+                       "filter.having-not-sum-gt-int64-literal.v1"))) &&
+      engine_rejects(
+          "relational_node_binding_v1", "3",
+          replaced(operand_value("relational_node_binding_v1", "3"),
+                   "|" + std::to_string(outer_not_id) + "|",
+                   "|" + std::to_string(inner_not_id) + "|")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(outer_not_id),
+                     replaced(predicate_operand, "5|", "6|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(outer_not_id),
+          replaced(predicate_operand,
+                   "5|" + std::to_string(inner_not_id) + "|",
+                   "5|" + std::to_string(comparison_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(outer_not_id),
+          replaced(predicate_operand,
+                   "5|" + std::to_string(inner_not_id) + "|",
+                   "5|" + std::to_string(inner_not_id) + "," +
+                       std::to_string(inner_not_id) + "|")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(outer_not_id),
+                     replaced(predicate_operand, "|4e4f54|-",
+                              "|414e44|-")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(outer_not_id),
+                     replaced(predicate_operand,
+                              "|" + std::to_string(predicate_descriptor_id) +
+                                  "|-|-|-",
+                              "|" + std::to_string(literal_descriptor_id) +
+                                  "|-|-|-")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(inner_not_id),
+                     replaced(inner_operand, "5|", "6|")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(inner_not_id),
+                     replaced(inner_operand, "|4e4f54|-", "|4f52|-")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(inner_not_id),
+          replaced(inner_operand,
+                   "5|" + std::to_string(comparison_id) + "|",
+                   "5|" + std::to_string(threshold_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(inner_not_id),
+          replaced(inner_operand,
+                   "5|" + std::to_string(comparison_id) + "|",
+                   "5|" + std::to_string(comparison_id) + "," +
+                       std::to_string(comparison_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(inner_not_id),
+          replaced(inner_operand,
+                   "|" + std::to_string(predicate_descriptor_id) + "|-|-|-",
+                   "|" + std::to_string(literal_descriptor_id) +
+                       "|-|-|-")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(comparison_id),
+                     replaced(comparison_operand, "6|", "5|")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(comparison_id),
+                     replaced(comparison_operand, "|3e|-", "|3e3d|-")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(comparison_id),
+          replaced(comparison_operand,
+                   "6|" + std::to_string(having_count_id) + "," +
+                       std::to_string(threshold_id) + "|",
+                   "6|" + std::to_string(threshold_id) + "," +
+                       std::to_string(having_count_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(comparison_id),
+          replaced(comparison_operand,
+                   "6|" + std::to_string(having_count_id) + "," +
+                       std::to_string(threshold_id) + "|",
+                   "6|" + std::to_string(having_count_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(comparison_id),
+          replaced(comparison_operand,
+                   "6|" + std::to_string(having_count_id) + ",",
+                   "6|" + std::to_string(projected_sum_id) + ",")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(comparison_id),
+          replaced(comparison_operand,
+                   "|" + std::to_string(predicate_descriptor_id) + "|-|-|-",
+                   "|" + std::to_string(literal_descriptor_id) +
+                       "|-|-|-")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(having_count_id),
+          replaced(count_operand,
+                   "019de5fc-2400-784a-9aec-371f8b95b7ea",
+                   "019de5fc-2400-72e4-8549-82b2eef5a777")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(having_count_id),
+                     replaced(count_operand, "4|", "3|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(having_count_id),
+          replaced(count_operand,
+                   "4|-|" + std::to_string(count_descriptor_id) + "|",
+                   "4|" +
+                       std::to_string(
+                           aggregate.grouping_key_expression_ids.front()) +
+                       "|" + std::to_string(count_descriptor_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(having_count_id),
+          replaced(count_operand,
+                   "4|-|" + std::to_string(count_descriptor_id) + "|",
+                   "4|-|" + std::to_string(literal_descriptor_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(projected_count_id),
+          replaced(projected_count_operand,
+                   "019de5fc-2400-784a-9aec-371f8b95b7ea",
+                   "019de5fc-2400-72e4-8549-82b2eef5a777")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(projected_count_id),
+          replaced(projected_count_operand,
+                   "4|-|" + std::to_string(count_descriptor_id) + "|",
+                   "4|" + std::to_string(projected_sum_id) + "|" +
+                       std::to_string(count_descriptor_id) + "|")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(projected_count_id),
+          replaced(projected_count_operand,
+                   "4|-|" + std::to_string(count_descriptor_id) + "|",
+                   "4|-|" + std::to_string(literal_descriptor_id) + "|")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(threshold_id),
+                     replaced(literal_operand, "|1|-|31", "|2|-|31")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(threshold_id),
+                     replaced(literal_operand, "|1|-|31", "|1|-|4e554c4c")) &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(threshold_id),
+          replaced(literal_operand,
+                   "1|-|" + std::to_string(literal_descriptor_id) + "|",
+                   "1|" + std::to_string(having_count_id) + "|" +
+                       std::to_string(literal_descriptor_id) + "|")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|1|-|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|2|-|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|2|-|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|019f0000-0000-7200-8000-000000000347|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|555443|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|1|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|-|19|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1", std::to_string(count_descriptor_id),
+          replaced(count_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|-|-|0")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|2|019f0000-0000-7200-8000-00000000034c|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|2|-|555443|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|2|-|-|1|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|2|-|-|-|1|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(predicate_descriptor_id),
+          replaced(predicate_descriptor_operand, "|2|-|-|-|-|-",
+                   "|2|-|-|-|-|0")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|019f0000-0000-7200-8000-00000000034d|-|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|555443|-|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|1|-|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|-|19|-")) &&
+      engine_rejects(
+          "relational_descriptor_v1",
+          std::to_string(literal_descriptor_id),
+          replaced(literal_descriptor_operand, "|1|-|-|-|-|-",
+                   "|1|-|-|-|-|0")) &&
+      engine_rejects("relational_output_v1", "4",
+                     aggregate_output_operand, "40") &&
+      engine_rejects("relational_output_v1", "4",
+                     replaced(aggregate_output_operand, "2|", "3|")) &&
+      engine_rejects(
+          "relational_output_v1", "4",
+          replaced(aggregate_output_operand,
+                   "2|" + std::to_string(
+                              aggregate.grouping_key_expression_ids.front()) +
+                       "|1|1|0|6b65795f61",
+                   "2|" + std::to_string(projected_count_id) +
+                       "|1|1|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "4",
+                     replaced(aggregate_output_operand,
+                              "|1|1|0|6b65795f61",
+                              "|2|1|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "4",
+                     replaced(aggregate_output_operand,
+                              "|1|0|6b65795f61",
+                              "|0|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "4",
+                     replaced(aggregate_output_operand,
+                              "|1|0|6b65795f61",
+                              "|1|1|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "4",
+                     replaced(aggregate_output_operand,
+                              "|0|6b65795f61", "|0|77726f6e67")) &&
+      engine_rejects("relational_output_v1", "6",
+                     aggregate_count_output_operand, "60") &&
+      engine_rejects("relational_output_v1", "6",
+                     replaced(aggregate_count_output_operand, "2|", "3|")) &&
+      engine_rejects(
+          "relational_output_v1", "6",
+          replaced(aggregate_count_output_operand,
+                   "2|" + std::to_string(projected_count_id) + "|" +
+                       std::to_string(count_descriptor_id) + "|1|2|",
+                   "2|" + std::to_string(projected_sum_id) + "|" +
+                       std::to_string(count_descriptor_id) + "|1|2|")) &&
+      engine_rejects(
+          "relational_output_v1", "6",
+          replaced(aggregate_count_output_operand,
+                   "|" + std::to_string(count_descriptor_id) + "|1|2|",
+                   "|" + std::to_string(literal_descriptor_id) + "|1|2|")) &&
+      engine_rejects("relational_output_v1", "6",
+                     replaced(aggregate_count_output_operand, "|1|2|",
+                              "|0|2|")) &&
+      engine_rejects("relational_output_v1", "6",
+                     replaced(aggregate_count_output_operand, "|1|2|",
+                              "|1|3|")) &&
+      engine_rejects("relational_output_v1", "6",
+                     replaced(aggregate_count_output_operand,
+                              "|2|726f775f636f756e74",
+                              "|2|77726f6e67")) &&
+      engine_rejects("relational_output_v1", "8",
+                     filter_output_operand, "80") &&
+      engine_rejects("relational_output_v1", "8",
+                     replaced(filter_output_operand, "3|", "2|")) &&
+      engine_rejects(
+          "relational_output_v1", "8",
+          replaced(filter_output_operand,
+                   "3|" + std::to_string(
+                              aggregate.grouping_key_expression_ids.front()) +
+                       "|1|1|0|6b65795f61",
+                   "3|" + std::to_string(projected_count_id) +
+                       "|1|1|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "8",
+                     replaced(filter_output_operand,
+                              "|1|1|0|6b65795f61",
+                              "|2|1|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "8",
+                     replaced(filter_output_operand,
+                              "|1|0|6b65795f61",
+                              "|0|0|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "8",
+                     replaced(filter_output_operand,
+                              "|1|0|6b65795f61",
+                              "|1|1|6b65795f61")) &&
+      engine_rejects("relational_output_v1", "8",
+                     replaced(filter_output_operand,
+                              "|0|6b65795f61", "|0|77726f6e67")) &&
+      engine_rejects("relational_output_v1", "10",
+                     filter_count_output_operand, "100") &&
+      engine_rejects("relational_output_v1", "10",
+                     replaced(filter_count_output_operand, "3|", "2|")) &&
+      engine_rejects(
+          "relational_output_v1", "10",
+          replaced(filter_count_output_operand,
+                   "3|" + std::to_string(projected_count_id) + "|" +
+                       std::to_string(count_descriptor_id) + "|1|2|",
+                   "3|" + std::to_string(projected_sum_id) + "|" +
+                       std::to_string(count_descriptor_id) + "|1|2|")) &&
+      engine_rejects(
+          "relational_output_v1", "10",
+          replaced(filter_count_output_operand,
+                   "|" + std::to_string(count_descriptor_id) + "|1|2|",
+                   "|" + std::to_string(literal_descriptor_id) + "|1|2|")) &&
+      engine_rejects("relational_output_v1", "10",
+                     replaced(filter_count_output_operand, "|1|2|",
+                              "|0|2|")) &&
+      engine_rejects("relational_output_v1", "10",
+                     replaced(filter_count_output_operand, "|1|2|",
+                              "|1|3|")) &&
+      engine_rejects("relational_output_v1", "10",
+                     replaced(filter_count_output_operand,
+                              "|2|726f775f636f756e74",
+                              "|2|77726f6e67")) &&
+      engine_rejects("relational_expression_v1",
+                     std::to_string(inner_not_id), inner_operand,
+                     std::to_string(outer_not_id)) &&
+      engine_rejects("relational_descriptor_v1",
+                     std::to_string(predicate_descriptor_id),
+                     predicate_descriptor_operand,
+                     std::to_string(literal_descriptor_id)) &&
+      engine_rejects_insert(
+          "operand=relational_grouping_set_v1\t0\t2|1,2\n") &&
+      engine_rejects_insert(
+          "operand=relational_expression_v1\t999999\t1|-|9|-|-|1|-|30\n") &&
+      engine_rejects(
+          "relational_expression_v1", std::to_string(inner_not_id),
+          replaced(inner_operand,
+                   "5|" + std::to_string(comparison_id) + "|",
+                   "5|999999|"));
+  passed &= Require(
+      engine_matrix_passed,
+      "double-NOT COUNT engine admitted node, semantic/tree pairing, COUNT/slot, literal, descriptor, output, grouping-set, duplicate, dangling, unowned, or unreachable wire drift");
+  return passed;
+}
+
 
 bool ValidateTwoKeyNotCountSumAndHavingParserBindingLoweringAndDispatch() {
   constexpr std::string_view kPreHavingSql =
@@ -43922,6 +45557,8 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-001-BINDING-TWO-KEY-HAVING-NOT-SUM-GT-V1
 // QOW-TEST-QRY-001-TWO-KEY-HAVING-NOT-NOT-SUM-GT-V1
 // QOW-TEST-QRY-001-BINDING-TWO-KEY-HAVING-NOT-NOT-SUM-GT-V1
+// QOW-TEST-QRY-001-TWO-KEY-HAVING-NOT-NOT-COUNT-GT-V1
+// QOW-TEST-QRY-001-BINDING-TWO-KEY-HAVING-NOT-NOT-COUNT-GT-V1
 // QOW-TEST-QRY-001-TWO-KEY-HAVING-NOT-COUNT-GT-V1
 // QOW-TEST-QRY-001-BINDING-TWO-KEY-HAVING-NOT-COUNT-GT-V1
 // QOW-TEST-QRY-001-TWO-KEY-HAVING-NOT-COUNT-SUM-AND-GT-V1
@@ -44009,6 +45646,8 @@ int main() {
   passed &= ValidateTwoKeySumHavingParserBindingLoweringAndDispatch();
   passed &= ValidateTwoKeyNotSumHavingParserBindingLoweringAndDispatch();
   passed &= ValidateTwoKeyNotNotSumHavingParserBindingLoweringAndDispatch();
+  passed &=
+      ValidateTwoKeyNotNotCountHavingParserBindingLoweringAndDispatch();
   passed &= ValidateTwoKeyNotCountHavingParserBindingLoweringAndDispatch();
   passed &=
       ValidateTwoKeyNotCountSumAndHavingParserBindingLoweringAndDispatch();
