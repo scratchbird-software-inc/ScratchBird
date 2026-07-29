@@ -880,7 +880,12 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-SCOPE-V1", 0,
                   "plan_estimate_mga_scope");
   }
-  if (!request.all_executed_nodes_finished ||
+  // QOW-SOURCE-OPT-015-ZERO-ACCESS-EVIDENCE-V1
+  // Completed execution supplies exactly one physical-access outcome: observed
+  // access or engine-established completion without access.
+  if (request.data_access_observed ==
+          request.engine_zero_data_access_completion_evidence ||
+      !request.all_executed_nodes_finished ||
       !request.estimates_frozen_before_access ||
       !request.engine_execution_evidence) {
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-PHASE-V1", 0,
@@ -1073,6 +1078,8 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   actuals_request.inventory_statement_snapshot_id =
       request.inventory_statement_snapshot_id;
   actuals_request.data_access_observed = dispatch.data_access_observed;
+  actuals_request.engine_zero_data_access_completion_evidence =
+      !dispatch.data_access_observed;
   actuals_request.all_executed_nodes_finished = true;
   actuals_request.estimates_frozen_before_access = true;
   actuals_request.engine_execution_evidence = true;

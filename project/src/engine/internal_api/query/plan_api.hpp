@@ -239,6 +239,7 @@ struct CanonicalRuntimeOptimizerStatisticsRequest {
   std::uint64_t inventory_statement_snapshot_id{0};
   std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
   bool data_access_observed{false};
+  bool engine_zero_data_access_completion_evidence{false};
   bool all_executed_nodes_finished{false};
   bool estimates_frozen_before_access{false};
   bool engine_execution_evidence{false};
@@ -325,6 +326,8 @@ struct CanonicalHeapOptimizerSelectedExecutionRequest {
   std::size_t maximum_scanned_row_versions{0};
   std::size_t maximum_decoded_bytes{0};
   std::size_t maximum_output_rows{0};
+  std::size_t maximum_output_columns{0};
+  std::size_t maximum_output_cells{0};
   std::function<bool()> cancellation_requested;
   std::string execution_attempt_uuid;
   std::string transaction_effect_evidence_uuid;

@@ -971,6 +971,11 @@ struct CanonicalHeapRelationAcquisitionRequest {
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
+  // QOW-SOURCE-QRY-004-HEAP-SHAPE-BOUNDS-V1
+  // Schema width and row-by-width materialization are independently bounded;
+  // neither is inferred from the persisted catalog ceiling or the row limit.
+  std::size_t maximum_output_columns = 0;
+  std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
 };
 
@@ -981,6 +986,8 @@ struct CanonicalHeapRelationAcquisitionCounters {
   std::size_t invisible_row_version_count = 0;
   std::size_t tombstone_row_count = 0;
   std::size_t emitted_row_count = 0;
+  std::size_t output_column_count = 0;
+  std::size_t materialized_cell_count = 0;
 };
 
 struct CanonicalHeapRelationAcquisitionAuthorityEvidence {
@@ -1005,7 +1012,7 @@ struct CanonicalHeapRelationAcquisitionResult {
   bool data_access_observed = false;
   bool cancellation_observed = false;
   std::string relation_uuid;
-  std::string column_uuid;
+  std::vector<std::string> column_uuids;
   std::string current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation = 0;
   std::string selected_plan_uuid;
@@ -1022,6 +1029,8 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
+  std::size_t maximum_output_columns = 0;
+  std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
 };
 

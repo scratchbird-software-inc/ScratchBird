@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -135,6 +137,11 @@ struct Fixture {
   std::string session_uuid;
   std::string main_table_uuid;
   std::string empty_table_uuid;
+  std::string full_width_table_uuid;
+  std::string empty_full_width_table_uuid;
+  std::string missing_later_column_table_uuid;
+  std::string duplicate_later_column_table_uuid;
+  std::string malformed_later_column_table_uuid;
   std::string malformed_table_uuid;
   std::string temporary_table_uuid;
   platform::u64 salt = 0;
@@ -275,15 +282,46 @@ api::EngineRowValue NullRow() {
   return row;
 }
 
+api::EngineRowValue FullWidthRow(const std::int64_t first,
+                                 const std::optional<std::int64_t> second) {
+  api::EngineTypedValue first_value;
+  first_value.descriptor = InputDescriptor();
+  first_value.descriptor.encoded_descriptor =
+      "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
+      ";nullable=false";
+  first_value.encoded_value = std::to_string(first);
+  api::EngineTypedValue second_value;
+  second_value.descriptor = InputDescriptor();
+  if (second.has_value()) {
+    second_value.encoded_value = std::to_string(*second);
+  } else {
+    second_value.is_null = true;
+    second_value.state = api::EngineValueState::sql_null;
+  }
+  api::EngineRowValue row;
+  row.fields.push_back({"required_value", std::move(first_value)});
+  row.fields.push_back({"nullable_value", std::move(second_value)});
+  return row;
+}
+
 api::CrudTableRecord Table(const Fixture& fixture,
                            const api::EngineRequestContext& context,
                            const std::string& table_uuid,
-                           const bool temporary = false) {
+                           const bool temporary = false,
+                           const bool full_width = false) {
   api::CrudTableRecord table;
   table.creator_tx = context.local_transaction_id;
   table.table_uuid = table_uuid;
   table.default_name = "qow_heap_" + table_uuid.substr(table_uuid.size() - 6);
-  table.columns.push_back({"value", EncodedInt64Descriptor()});
+  if (full_width) {
+    table.columns.push_back(
+        {"required_value",
+         "canonical=int64;type_uuid=" + std::string(kTypeUuid) +
+             ";nullable=false"});
+    table.columns.push_back({"nullable_value", EncodedInt64Descriptor()});
+  } else {
+    table.columns.push_back({"value", EncodedInt64Descriptor()});
+  }
   table.temporary = temporary;
   if (temporary) {
     table.temporary_scope = "session";
@@ -296,8 +334,9 @@ api::CrudTableRecord Table(const Fixture& fixture,
 void PersistTable(const Fixture& fixture,
                   const api::EngineRequestContext& context,
                   const std::string& table_uuid,
-                  const bool temporary = false) {
-  const auto table = Table(fixture, context, table_uuid, temporary);
+                  const bool temporary = false,
+                  const bool full_width = false) {
+  const auto table = Table(fixture, context, table_uuid, temporary, full_width);
   const auto appended = api::AppendMgaTableMetadata(context, table);
   Require(!appended.error, "table metadata append failed");
   api::MgaRelationStorageDescriptor descriptor;
@@ -375,6 +414,16 @@ Fixture MakeFixture() {
       NewUuidText(platform::UuidKind::object, fixture.salt + 23);
   fixture.empty_table_uuid =
       NewUuidText(platform::UuidKind::object, fixture.salt + 24);
+  fixture.full_width_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 27);
+  fixture.empty_full_width_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 28);
+  fixture.missing_later_column_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 34);
+  fixture.duplicate_later_column_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 35);
+  fixture.malformed_later_column_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 36);
   fixture.malformed_table_uuid =
       NewUuidText(platform::UuidKind::object, fixture.salt + 25);
   fixture.temporary_table_uuid =
@@ -383,6 +432,15 @@ Fixture MakeFixture() {
   auto metadata = Begin(fixture, "qow-heap-metadata");
   PersistTable(fixture, metadata, fixture.main_table_uuid);
   PersistTable(fixture, metadata, fixture.empty_table_uuid);
+  PersistTable(fixture, metadata, fixture.full_width_table_uuid, false, true);
+  PersistTable(fixture, metadata, fixture.empty_full_width_table_uuid, false,
+               true);
+  PersistTable(fixture, metadata, fixture.missing_later_column_table_uuid,
+               false, true);
+  PersistTable(fixture, metadata, fixture.duplicate_later_column_table_uuid,
+               false, true);
+  PersistTable(fixture, metadata, fixture.malformed_later_column_table_uuid,
+               false, true);
   PersistTable(fixture, metadata, fixture.malformed_table_uuid);
   PersistTable(fixture, metadata, fixture.temporary_table_uuid, true);
   Commit(metadata);
@@ -393,6 +451,47 @@ Fixture MakeFixture() {
              fixture.main_table_uuid,
              {Int64Row(10), Int64Row(20), NullRow()});
   Commit(writer);
+
+  auto full_width_writer = Begin(fixture, "qow-heap-full-width-writer");
+  InsertRows(fixture,
+             full_width_writer,
+             fixture.full_width_table_uuid,
+             {FullWidthRow(1, std::nullopt), FullWidthRow(2, 22)});
+  Commit(full_width_writer);
+
+  auto malformed_width_writer = Begin(
+      fixture, "qow-heap-malformed-full-width-writer");
+  const auto append_full_width_row = [&](const std::string& table_uuid,
+                                         const platform::u64 row_salt,
+                                         auto values) {
+    api::CrudRowVersionRecord row;
+    row.creator_tx = malformed_width_writer.local_transaction_id;
+    row.table_uuid = table_uuid;
+    row.row_uuid = NewUuidText(platform::UuidKind::row, row_salt);
+    row.version_uuid =
+        NewUuidText(platform::UuidKind::object, row_salt + 1);
+    row.values = std::move(values);
+    std::uint64_t ignored_sequence = 0;
+    const auto appended = api::AppendMgaRowVersion(
+        malformed_width_writer, row, &ignored_sequence);
+    Require(!appended.error, "malformed full-width row append failed");
+  };
+  append_full_width_row(fixture.missing_later_column_table_uuid,
+                        fixture.salt + 37,
+                        std::vector<std::pair<std::string, std::string>>{
+                            {"required_value", "1"}});
+  append_full_width_row(fixture.duplicate_later_column_table_uuid,
+                        fixture.salt + 39,
+                        std::vector<std::pair<std::string, std::string>>{
+                            {"required_value", "1"},
+                            {"nullable_value", "2"},
+                            {"nullable_value", "3"}});
+  append_full_width_row(fixture.malformed_later_column_table_uuid,
+                        fixture.salt + 41,
+                        std::vector<std::pair<std::string, std::string>>{
+                            {"required_value", "1"},
+                            {"nullable_value", "not-an-int64"}});
+  Commit(malformed_width_writer);
 
   auto malformed_writer = Begin(fixture, "qow-heap-malformed-writer");
   api::CrudRowVersionRecord valid;
@@ -424,8 +523,8 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
     const api::EngineRequestContext& context,
     const api::MgaRelationStorageDescriptor& descriptor,
     const platform::u64 salt) {
-  Require(descriptor.columns.size() == 1,
-          "fixture descriptor does not have one column");
+  Require(!descriptor.columns.empty(),
+          "fixture descriptor does not have persisted columns");
   auto* relational = new api::TypedRelationalDag();
   relational->wire_version = 2;
   relational->bound_sblr_tree_uuid =
@@ -435,34 +534,41 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   relational->bound_security_context_uuid =
       context.authorization_context.authority_uuid.canonical;
   relational->root_node_id = 1;
-  api::RelationalTypeDescriptor type;
-  type.descriptor_id = 1;
-  type.descriptor_uuid =
-      descriptor.columns.front().value_descriptor.descriptor_uuid.canonical;
-  type.type_uuid = std::string(kTypeUuid);
-  type.nullability = api::RelationalNullability::kNullable;
-  relational->descriptors.push_back(type);
-  api::RelationalExpressionRecord expression;
-  expression.expression_id = 1;
-  expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
-  expression.result_descriptor_id = 1;
-  expression.bound_name_uuid =
-      descriptor.columns.front().column_uuid.canonical;
-  relational->expressions.push_back(expression);
-  api::RelationalOutputRecord output;
-  output.output_id = 1;
-  output.relation_node_id = 1;
-  output.expression_id = 1;
-  output.output_name_utf8 = "value";
-  output.descriptor_id = 1;
-  output.visible = true;
-  output.ordinal = 0;
-  relational->outputs.push_back(output);
   api::RelationalDagNode node;
   node.node_id = 1;
   node.node_kind = api::RelationalDagNodeKind::kScan;
-  node.output_descriptor_ids = {1};
-  node.bound_expression_ids = {1};
+  for (std::size_t ordinal = 0; ordinal < descriptor.columns.size();
+       ++ordinal) {
+    const auto id = static_cast<std::uint32_t>(ordinal + 1);
+    const auto& column = descriptor.columns[ordinal];
+    Require(column.ordinal == ordinal,
+            "fixture descriptor columns are not in persisted ordinal order");
+    api::RelationalTypeDescriptor type;
+    type.descriptor_id = id;
+    type.descriptor_uuid = column.value_descriptor.descriptor_uuid.canonical;
+    type.type_uuid = std::string(kTypeUuid);
+    type.nullability = column.nullable
+                           ? api::RelationalNullability::kNullable
+                           : api::RelationalNullability::kNonNull;
+    relational->descriptors.push_back(std::move(type));
+    api::RelationalExpressionRecord expression;
+    expression.expression_id = id;
+    expression.expression_kind = api::RelationalExpressionKind::kIdentifier;
+    expression.result_descriptor_id = id;
+    expression.bound_name_uuid = column.column_uuid.canonical;
+    relational->expressions.push_back(std::move(expression));
+    api::RelationalOutputRecord output;
+    output.output_id = id;
+    output.relation_node_id = 1;
+    output.expression_id = id;
+    output.output_name_utf8 = column.canonical_name_key;
+    output.descriptor_id = id;
+    output.visible = true;
+    output.ordinal = ordinal;
+    relational->outputs.push_back(std::move(output));
+    node.output_descriptor_ids.push_back(id);
+    node.bound_expression_ids.push_back(id);
+  }
   node.required_object_uuids = {descriptor.relation_uuid.canonical};
   node.semantic_variant_id = "relation.source.v1";
   relational->nodes.push_back(node);
@@ -525,7 +631,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   physical.relational_node_id = 1;
   physical.node_kind = exec::PhysicalNodeKind::kScan;
   physical.implementation_id = "scan.heap.v1";
-  physical.output_descriptor_ids = {1};
+  physical.output_descriptor_ids = node.output_descriptor_ids;
   physical.causal_counter_id = 101;
   physical.selected_alternative_uuid =
       NewUuidText(platform::UuidKind::object, salt + 4);
@@ -540,6 +646,8 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   request.maximum_scanned_row_versions = 1024;
   request.maximum_decoded_bytes = 4 * 1024 * 1024;
   request.maximum_output_rows = 1024;
+  request.maximum_output_columns = descriptor.columns.size();
+  request.maximum_output_cells = 1024 * descriptor.columns.size();
   request.cancellation_requested = [] { return false; };
   return request;
 }
@@ -570,6 +678,8 @@ exec::CanonicalHeapPhysicalDagDispatchRequest DispatchRequestFor(
       acquisition.maximum_scanned_row_versions;
   request.maximum_decoded_bytes = acquisition.maximum_decoded_bytes;
   request.maximum_output_rows = acquisition.maximum_output_rows;
+  request.maximum_output_columns = acquisition.maximum_output_columns;
+  request.maximum_output_cells = acquisition.maximum_output_cells;
   request.cancellation_requested = acquisition.cancellation_requested;
   return request;
 }
@@ -585,6 +695,8 @@ api::CanonicalHeapOptimizerSelectedExecutionRequest SelectedRequestFor(
       acquisition.maximum_scanned_row_versions;
   request.maximum_decoded_bytes = acquisition.maximum_decoded_bytes;
   request.maximum_output_rows = acquisition.maximum_output_rows;
+  request.maximum_output_columns = acquisition.maximum_output_columns;
+  request.maximum_output_cells = acquisition.maximum_output_cells;
   request.cancellation_requested = acquisition.cancellation_requested;
   request.execution_attempt_uuid =
       NewUuidText(platform::UuidKind::object, salt + 1);
@@ -599,7 +711,11 @@ void RequireAtomicFailure(
   Require(!result.diagnostic.ok && result.output_batch.columns.empty() &&
               result.output_batch.rows.empty() &&
               result.emitted_record_uuids.empty() &&
-              result.emitted_row_version_uuids.empty(),
+              result.emitted_row_version_uuids.empty() &&
+              result.column_uuids.empty() &&
+              result.counters.emitted_row_count == 0 &&
+              result.counters.output_column_count == 0 &&
+              result.counters.materialized_cell_count == 0,
           detail);
 }
 
@@ -678,8 +794,10 @@ void ValidatePositiveAndVisibilityMatrix(Fixture& fixture) {
                   persisted.descriptor.columns.front().nullable &&
               first.output_batch.columns.front().stable_name ==
                   persisted.descriptor.columns.front().canonical_name_key &&
-              first.column_uuid ==
-                  persisted.descriptor.columns.front().column_uuid.canonical &&
+              first.column_uuids == std::vector<std::string>{
+                  persisted.descriptor.columns.front().column_uuid.canonical} &&
+              first.counters.output_column_count == 1 &&
+              first.counters.materialized_cell_count == 3 &&
               persisted.descriptor.columns.front().ordinal == 0 &&
               request.relational_dag->outputs.front().ordinal == 0 &&
               persisted_value_descriptor.encoded_descriptor.find(
@@ -986,6 +1104,16 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
   RequireAtomicDispatchFailure(
       exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
       "zero output-row dispatch bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_columns = 0;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "zero output-column dispatch bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_cells = 0;
+  RequireAtomicDispatchFailure(
+      exec::ExecuteCanonicalHeapPhysicalDagDispatch(mutated),
+      "zero output-cell dispatch bound was accepted");
 
   mutated = baseline;
   mutated.physical_dag.nodes.front().input_physical_node_ids = {11};
@@ -1304,6 +1432,331 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
           "typed empty heap result did not retain completed zero-read truth");
   ReleaseRequest(&empty_acquisition);
   Rollback(empty_reader);
+}
+
+// QOW-TEST-QRY-004-HEAP-FULL-WIDTH-V1
+void ValidateFullWidthHeapMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-full-width-reader"),
+                             fixture.full_width_table_uuid,
+                             fixture.salt + 700);
+  auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
+                                fixture.salt + 710);
+  const auto persisted = api::LoadMgaRelationStorageDescriptor(
+      reader, fixture.full_width_table_uuid);
+  Require(persisted.ok && persisted.descriptor.columns.size() == 2 &&
+              !persisted.descriptor.columns[0].nullable &&
+              persisted.descriptor.columns[1].nullable,
+          "mixed-nullability full-width descriptor was not persisted");
+
+  const auto acquired =
+      exec::ExecuteCanonicalHeapRelationAcquisition(acquisition);
+  Require(acquired.diagnostic.ok && acquired.data_access_observed &&
+              acquired.output_batch.columns.size() == 2 &&
+              acquired.output_batch.rows.size() == 2 &&
+              acquired.counters.emitted_row_count == 2 &&
+              acquired.counters.output_column_count == 2 &&
+              acquired.counters.materialized_cell_count == 4 &&
+              acquired.column_uuids ==
+                  std::vector<std::string>{
+                      persisted.descriptor.columns[0].column_uuid.canonical,
+                      persisted.descriptor.columns[1].column_uuid.canonical},
+          "full-width acquisition lost exact shape or counter evidence");
+  for (std::size_t ordinal = 0; ordinal < 2; ++ordinal) {
+    Require(acquired.output_batch.columns[ordinal].stable_name ==
+                persisted.descriptor.columns[ordinal].canonical_name_key &&
+                acquired.output_batch.columns[ordinal].descriptor_id ==
+                    ordinal + 1 &&
+                PreservesPersistedDescriptorFields(
+                    acquired.output_batch.columns[ordinal].descriptor,
+                    persisted.descriptor.columns[ordinal].value_descriptor),
+            "full-width acquisition changed ordered persisted metadata");
+  }
+  Require(!acquired.output_batch.rows[0].values[0].isSqlNull() &&
+              acquired.output_batch.rows[0].values[1].isSqlNull() &&
+              !acquired.output_batch.rows[1].values[0].isSqlNull() &&
+              !acquired.output_batch.rows[1].values[1].isSqlNull(),
+          "typed NULL outside ordinal zero was not preserved");
+
+  const auto dispatched = exec::ExecuteCanonicalHeapPhysicalDagDispatch(
+      DispatchRequestFor(acquisition));
+  Require(dispatched.diagnostic.ok && dispatched.execution_started &&
+              dispatched.data_access_observed &&
+              dispatched.executed_steps.size() == 1 &&
+              dispatched.root_output_descriptor_ids ==
+                  std::vector<std::uint32_t>{1, 2} &&
+              dispatched.executed_steps.front().heap_read_counters.has_value() &&
+              dispatched.executed_steps.front()
+                      .heap_read_counters->output_column_count == 2 &&
+              dispatched.executed_steps.front()
+                      .heap_read_counters->materialized_cell_count == 4 &&
+              dispatched.executed_steps.front()
+                  .materialized_output_batch.has_value() &&
+              dispatched.executed_steps.front()
+                      .materialized_output_batch->columns.size() == 2,
+          "full-width dispatch lost shape, batch, or counter evidence");
+
+  const auto selected_request =
+      SelectedRequestFor(acquisition, fixture.salt + 720);
+  const auto selected =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(selected_request);
+  Require(selected.accepted && selected.canonical_result_published &&
+              selected.data_access_observed && selected.issues.empty() &&
+              selected.result_publication.envelope.column_descriptors.size() ==
+                  2 &&
+              selected.result_publication.envelope.row_count == 2 &&
+              selected.result_publication.row_stream.columns.size() == 2 &&
+              selected.result_publication.row_stream.rows.size() == 2 &&
+              selected.result_publication.delivery_records.size() == 3 &&
+              selected.result_publication.delivery_records.front().kind ==
+                  exec::CanonicalResultDeliveryKind::kMetadata &&
+              selected.result_publication.delivery_records[1].kind ==
+                  exec::CanonicalResultDeliveryKind::kRow &&
+              selected.result_publication.delivery_records[2].kind ==
+                  exec::CanonicalResultDeliveryKind::kRow,
+          "full-width selected route lost metadata-first publication");
+  for (std::size_t ordinal = 0; ordinal < 2; ++ordinal) {
+    const auto& metadata =
+        selected.result_publication.envelope.column_descriptors[ordinal];
+    Require(metadata.ordinal == ordinal &&
+                metadata.name_utf8 ==
+                    persisted.descriptor.columns[ordinal].canonical_name_key &&
+                metadata.descriptor_uuid == persisted.descriptor.columns[ordinal]
+                                                .value_descriptor
+                                                .descriptor_uuid.canonical &&
+                metadata.type_uuid == kTypeUuid,
+            "selected full-width metadata is not in persisted ordinal order");
+  }
+  const auto repeated =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(selected_request);
+  Require(repeated.accepted &&
+              repeated.result_publication.canonical_envelope_bytes ==
+                  selected.result_publication.canonical_envelope_bytes &&
+              repeated.dispatch.root_output_descriptor_ids ==
+                  selected.dispatch.root_output_descriptor_ids,
+          "full-width result identity or envelope bytes were unstable");
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+
+  auto empty_reader = QueryContext(
+      Begin(fixture, "qow-heap-empty-full-width-reader"),
+      fixture.empty_full_width_table_uuid, fixture.salt + 730);
+  auto empty_acquisition = RequestFor(empty_reader,
+                                      fixture.empty_full_width_table_uuid,
+                                      fixture.salt + 740);
+  const auto empty = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+      SelectedRequestFor(empty_acquisition, fixture.salt + 750));
+  Require(empty.accepted && empty.canonical_result_published &&
+              !empty.data_access_observed &&
+              empty.result_publication.envelope.column_descriptors.size() == 2 &&
+              empty.result_publication.envelope.row_count == 0 &&
+              empty.result_publication.row_stream.columns.size() == 2 &&
+              empty.result_publication.row_stream.rows.empty() &&
+              empty.result_publication.delivery_records.size() == 1 &&
+              empty.dispatch.executed_steps.front()
+                      .heap_read_counters->output_column_count == 2 &&
+              empty.dispatch.executed_steps.front()
+                      .heap_read_counters->materialized_cell_count == 0,
+          "empty full-width relation did not publish typed metadata only");
+  ReleaseRequest(&empty_acquisition);
+  Rollback(empty_reader);
+}
+
+void ValidateFullWidthHeapRefusals(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-full-width-refusals"),
+                             fixture.full_width_table_uuid,
+                             fixture.salt + 760);
+  auto acquisition = RequestFor(reader, fixture.full_width_table_uuid,
+                                fixture.salt + 770);
+  const auto baseline = SelectedRequestFor(acquisition, fixture.salt + 780);
+  const auto require_pre_read_refusal = [&](const auto& candidate,
+                                             std::string_view detail) {
+    const auto refused =
+        api::ExecuteCanonicalHeapOptimizerSelectedDag(candidate);
+    RequireAtomicSelectedFailure(refused, detail);
+    Require(!refused.data_access_observed,
+            "full-width pre-read refusal reported data access");
+  };
+  const auto require_post_read_refusal = [&](const auto& candidate,
+                                              std::string_view detail) {
+    const auto refused =
+        api::ExecuteCanonicalHeapOptimizerSelectedDag(candidate);
+    RequireAtomicSelectedFailure(refused, detail);
+    Require(refused.data_access_observed && !refused.issues.empty() &&
+                refused.dispatch.executed_steps.empty(),
+            "full-width post-read refusal lost atomic read evidence");
+  };
+
+  auto mutated = baseline;
+  mutated.maximum_output_columns = 0;
+  require_pre_read_refusal(mutated, "zero column bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_columns = 1;
+  require_pre_read_refusal(mutated, "too-small column bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_columns = 4097;
+  require_pre_read_refusal(mutated, "above-ceiling column bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_cells = 0;
+  require_pre_read_refusal(mutated, "zero cell bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_cells = 3;
+  const auto exhausted_cells =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(mutated);
+  RequireAtomicSelectedFailure(exhausted_cells,
+                               "too-small cell bound was accepted");
+  Require(exhausted_cells.data_access_observed &&
+              !exhausted_cells.issues.empty() &&
+              exhausted_cells.issues.front().diagnostic_id ==
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+              exhausted_cells.issues.front().field_id ==
+                  "heap materialized cell bound would be exceeded" &&
+              exhausted_cells.dispatch.executed_steps.empty(),
+          "cell exhaustion used the wrong post-read atomic refusal path");
+
+  mutated = baseline;
+  mutated.relational_dag.outputs.push_back(mutated.relational_dag.outputs[1]);
+  mutated.relational_dag.outputs.back().output_id = 3;
+  mutated.relational_dag.outputs.back().ordinal = 2;
+  require_pre_read_refusal(mutated, "extra output ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.outputs.pop_back();
+  require_pre_read_refusal(mutated, "missing output ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.outputs[1].output_id = 1;
+  require_pre_read_refusal(mutated, "duplicate output ID was accepted");
+  mutated = baseline;
+  std::swap(mutated.relational_dag.outputs[0],
+            mutated.relational_dag.outputs[1]);
+  require_pre_read_refusal(mutated, "reordered output IDs were accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.expressions.push_back(
+      mutated.relational_dag.expressions[1]);
+  mutated.relational_dag.expressions.back().expression_id = 3;
+  require_pre_read_refusal(mutated, "extra expression ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.expressions.pop_back();
+  require_pre_read_refusal(mutated, "missing expression ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.expressions[1].expression_id = 1;
+  require_pre_read_refusal(mutated, "duplicate expression ID was accepted");
+  mutated = baseline;
+  std::swap(mutated.relational_dag.expressions[0],
+            mutated.relational_dag.expressions[1]);
+  require_pre_read_refusal(mutated, "reordered expression IDs were accepted");
+
+  mutated = baseline;
+  mutated.relational_dag.descriptors.push_back(
+      mutated.relational_dag.descriptors[1]);
+  mutated.relational_dag.descriptors.back().descriptor_id = 3;
+  require_pre_read_refusal(mutated, "extra descriptor ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors.pop_back();
+  require_pre_read_refusal(mutated, "missing descriptor ID was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].descriptor_id = 1;
+  require_pre_read_refusal(mutated, "duplicate descriptor ID was accepted");
+  mutated = baseline;
+  std::swap(mutated.relational_dag.descriptors[0],
+            mutated.relational_dag.descriptors[1]);
+  require_pre_read_refusal(mutated, "reordered descriptor IDs were accepted");
+
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().output_descriptor_ids.push_back(3);
+  require_pre_read_refusal(mutated, "extra physical output ID was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().output_descriptor_ids.pop_back();
+  require_pre_read_refusal(mutated, "missing physical output ID was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().output_descriptor_ids = {1, 1};
+  require_pre_read_refusal(mutated,
+                           "duplicate physical output ID was accepted");
+  mutated = baseline;
+  mutated.selected_physical_dag.nodes.front().output_descriptor_ids = {2, 1};
+  require_pre_read_refusal(mutated,
+                           "reordered physical output IDs were accepted");
+
+  mutated = baseline;
+  std::swap(mutated.relational_dag.expressions[0].bound_name_uuid,
+            mutated.relational_dag.expressions[1].bound_name_uuid);
+  require_post_read_refusal(mutated, "swapped bound column UUIDs were accepted");
+  mutated = baseline;
+  std::swap(mutated.relational_dag.outputs[0].output_name_utf8,
+            mutated.relational_dag.outputs[1].output_name_utf8);
+  std::swap(mutated.relational_dag.expressions[0].bound_name_uuid,
+            mutated.relational_dag.expressions[1].bound_name_uuid);
+  std::swap(mutated.relational_dag.descriptors[0].descriptor_uuid,
+            mutated.relational_dag.descriptors[1].descriptor_uuid);
+  std::swap(mutated.relational_dag.descriptors[0].nullability,
+            mutated.relational_dag.descriptors[1].nullability);
+  require_post_read_refusal(mutated,
+                            "persisted ordinal binding drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.outputs[1].output_name_utf8 = "drifted_name";
+  require_post_read_refusal(mutated, "persisted name drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].descriptor_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 789);
+  require_post_read_refusal(mutated,
+                            "persisted value-descriptor UUID drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].type_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 790);
+  require_post_read_refusal(mutated, "persisted type drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].nullability =
+      api::RelationalNullability::kNonNull;
+  require_post_read_refusal(mutated,
+                            "persisted nullability drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].collation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 791);
+  require_post_read_refusal(mutated, "persisted collation drift was accepted");
+  mutated = baseline;
+  mutated.relational_dag.descriptors[1].timezone_profile_id = "UTC";
+  require_post_read_refusal(mutated, "persisted timezone drift was accepted");
+
+  auto overflow_context = reader;
+  overflow_context.optimizer_maximum_candidate_count =
+      std::numeric_limits<std::size_t>::max();
+  auto overflow = acquisition;
+  overflow.context = &overflow_context;
+  overflow.maximum_output_rows = std::numeric_limits<std::size_t>::max();
+  const auto overflow_result =
+      exec::ExecuteCanonicalHeapRelationAcquisition(overflow);
+  RequireAtomicFailure(overflow_result,
+                       "checked row-by-width overflow was accepted");
+  Require(!overflow_result.data_access_observed &&
+              overflow_result.diagnostic.diagnostic_code ==
+                  "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+              overflow_result.diagnostic.detail ==
+                  "admitted heap row-by-width shape overflows size_t",
+          "checked row-by-width overflow used the wrong refusal path");
+
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
+
+  const std::vector<std::pair<std::string, std::string>> malformed_relations{
+      {fixture.missing_later_column_table_uuid, "missing"},
+      {fixture.duplicate_later_column_table_uuid, "duplicate"},
+      {fixture.malformed_later_column_table_uuid, "malformed"}};
+  for (std::size_t index = 0; index < malformed_relations.size(); ++index) {
+    const auto& [relation_uuid, category] = malformed_relations[index];
+    auto malformed_context = QueryContext(
+        Begin(fixture, "qow-heap-full-width-" + category), relation_uuid,
+        fixture.salt + 800 + index * 20);
+    auto malformed_acquisition = RequestFor(
+        malformed_context, relation_uuid, fixture.salt + 810 + index * 20);
+    const auto refused = api::ExecuteCanonicalHeapOptimizerSelectedDag(
+        SelectedRequestFor(malformed_acquisition,
+                           fixture.salt + 820 + index * 20));
+    RequireAtomicSelectedFailure(
+        refused, "malformed later-column value published a partial result");
+    Require(refused.data_access_observed && !refused.issues.empty(),
+            "later-column refusal lost known physical read evidence");
+    ReleaseRequest(&malformed_acquisition);
+    Rollback(malformed_context);
+  }
 }
 
 void ValidateOptimizerSelectedHeapResultRefusals(Fixture& fixture) {
@@ -1785,6 +2238,14 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   mutated.maximum_output_rows = 0;
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "zero output-row bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_columns = 0;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "zero output-column bound was accepted");
+  mutated = baseline;
+  mutated.maximum_output_cells = 0;
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "zero output-cell bound was accepted");
 
   mutated = baseline;
   mutated.maximum_scanned_row_versions = 1;
@@ -1846,6 +2307,8 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
 
 int main() {
   auto fixture = MakeFixture();
+  ValidateFullWidthHeapMatrix(fixture);
+  ValidateFullWidthHeapRefusals(fixture);
   ValidateOptimizerSelectedHeapResultMatrix(fixture);
   ValidateOptimizerSelectedHeapResultRefusals(fixture);
   ValidateStorageNullabilityCarrierMatrix(fixture);

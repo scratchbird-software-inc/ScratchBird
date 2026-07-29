@@ -46,6 +46,7 @@
 #include <system_error>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -10458,6 +10459,86 @@ bool CheckedHeapBoundToU64(const std::size_t value, std::uint64_t* output) {
   return true;
 }
 
+constexpr std::size_t kMaximumHeapOutputColumns = 4096;
+
+bool CheckedHeapCellCount(const std::size_t row_count,
+                          const std::size_t column_count,
+                          std::size_t* output) {
+  if (output == nullptr ||
+      (column_count != 0 &&
+       row_count > std::numeric_limits<std::size_t>::max() / column_count)) {
+    return false;
+  }
+  *output = row_count * column_count;
+  return true;
+}
+
+bool ExactOptionalHeapDescriptorFieldMatches(
+    const std::string_view descriptor,
+    const std::string_view field_name,
+    const std::optional<std::string>& expected) {
+  const std::string prefix = std::string(field_name) + "=";
+  std::size_t matches = 0;
+  std::string_view actual;
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto next = descriptor.find(';', offset);
+    const auto end = next == std::string_view::npos ? descriptor.size() : next;
+    const auto field = descriptor.substr(offset, end - offset);
+    if (field.rfind(prefix, 0) == 0) {
+      ++matches;
+      actual = field.substr(prefix.size());
+    }
+    if (next == std::string_view::npos) { break; }
+    offset = next + 1;
+  }
+  if (!expected.has_value()) { return matches == 0; }
+  return matches == 1 && !actual.empty() && actual == *expected;
+}
+
+bool ExactHeapNullabilityCarrierMatches(const std::string_view descriptor,
+                                        const bool expected_nullable) {
+  std::optional<bool> admitted;
+  std::size_t canonical_count = 0;
+  std::size_t storage_count = 0;
+  std::size_t offset = 0;
+  while (offset <= descriptor.size()) {
+    const auto next = descriptor.find(';', offset);
+    const auto end = next == std::string_view::npos ? descriptor.size() : next;
+    const auto field = descriptor.substr(offset, end - offset);
+    std::optional<bool> current;
+    if (field.rfind("nullability=", 0) == 0) {
+      ++canonical_count;
+      const auto value = field.substr(std::string_view("nullability=").size());
+      if (value == "nullable") {
+        current = true;
+      } else if (value == "non_null") {
+        current = false;
+      } else {
+        return false;
+      }
+    } else if (field.rfind("nullable=", 0) == 0) {
+      ++storage_count;
+      const auto value = field.substr(std::string_view("nullable=").size());
+      if (value == "true") {
+        current = true;
+      } else if (value == "false") {
+        current = false;
+      } else {
+        return false;
+      }
+    }
+    if (current.has_value()) {
+      if (admitted.has_value() && *admitted != *current) { return false; }
+      admitted = current;
+    }
+    if (next == std::string_view::npos) { break; }
+    offset = next + 1;
+  }
+  return canonical_count <= 1 && storage_count <= 1 &&
+         admitted.has_value() && *admitted == expected_nullable;
+}
+
 }  // namespace
 
 // QOW-SOURCE-QRY-004-HEAP-MGA-V1
@@ -10521,9 +10602,13 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   if (!request.cancellation_requested ||
       request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
-      request.maximum_output_rows == 0) {
+      request.maximum_output_rows == 0 ||
+      request.maximum_output_columns == 0 ||
+      request.maximum_output_cells == 0 ||
+      request.maximum_output_columns > kMaximumHeapOutputColumns) {
     return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                   "nonzero heap scan bounds and cancellation probe are required");
+                   "valid nonzero heap row, column, cell, byte, scan, and "
+                   "cancellation bounds are required");
   }
   if (request.cancellation_requested()) {
     return invalid("QOW-DIAG-QRY-004-HEAP-CANCELLED-V1",
@@ -10609,8 +10694,13 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       !relation_node->input_node_ids.empty() ||
       relation_node->semantic_variant_id != "relation.source.v1" ||
       relation_node->required_object_uuids.size() != 1 ||
-      relation_node->output_descriptor_ids.size() != 1 ||
-      relation_node->bound_expression_ids.size() != 1 ||
+      relation_node->output_descriptor_ids.empty() ||
+      relation_node->output_descriptor_ids.size() !=
+          relation_node->bound_expression_ids.size() ||
+      relation_node->output_descriptor_ids.size() >
+          request.maximum_output_columns ||
+      relation_node->output_descriptor_ids.size() >
+          kMaximumHeapOutputColumns ||
       physical->output_descriptor_ids != relation_node->output_descriptor_ids) {
     return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
                    "selected relation source binding is not exact");
@@ -10628,39 +10718,67 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       outputs.push_back(&output);
     }
   }
-  if (outputs.size() != 1 || !outputs.front()->visible ||
-      outputs.front()->ordinal != 0 ||
-      outputs.front()->descriptor_id !=
-          relation_node->output_descriptor_ids.front()) {
+  const auto output_width = relation_node->output_descriptor_ids.size();
+  if (outputs.size() != output_width ||
+      relational.outputs.size() != output_width ||
+      relational.expressions.size() != output_width ||
+      relational.descriptors.size() != output_width) {
     return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
-                   "one visible ordinal-zero relation output is required");
+                   "relation source must cover its complete visible width");
   }
-  const auto expression = std::ranges::find_if(
-      relational.expressions, [&](const auto& candidate) {
-        return candidate.expression_id == outputs.front()->expression_id;
-      });
-  if (expression == relational.expressions.end() ||
-      expression->expression_kind != api::RelationalExpressionKind::kIdentifier ||
-      !expression->child_expression_ids.empty() ||
-      !expression->bound_name_uuid.has_value() ||
-      !IsCanonicalHeapBindingUuid(*expression->bound_name_uuid) ||
-      expression->result_descriptor_id != outputs.front()->descriptor_id ||
-      relation_node->bound_expression_ids.front() !=
-          expression->expression_id) {
-    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
-                   "relation output is not one UUID-bound identifier");
+  std::size_t admitted_shape_cells = 0;
+  if (!CheckedHeapCellCount(request.maximum_output_rows, output_width,
+                            &admitted_shape_cells)) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "admitted heap row-by-width shape overflows size_t");
   }
-  const auto relational_descriptor = std::ranges::find_if(
-      relational.descriptors, [&](const auto& descriptor) {
-        return descriptor.descriptor_id == outputs.front()->descriptor_id;
-      });
-  if (relational_descriptor == relational.descriptors.end() ||
-      !IsCanonicalHeapBindingUuid(relational_descriptor->descriptor_uuid) ||
-      !IsCanonicalHeapBindingUuid(relational_descriptor->type_uuid) ||
-      relational_descriptor->nullability ==
-          api::RelationalNullability::kUnknown) {
-    return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
-                   "bound relational descriptor is incomplete");
+
+  // QOW-SOURCE-QRY-004-HEAP-FULL-WIDTH-V1
+  // The leaf scan accepts one complete, ordinal-preserving bijection from the
+  // optimizer relation outputs through identifier bindings and descriptors.
+  // Projection, reorder, aliases, hidden outputs, and subsets remain outside
+  // this deliberately bounded profile.
+  std::vector<const api::RelationalExpressionRecord*> expressions;
+  std::vector<const api::RelationalTypeDescriptor*> relational_descriptors;
+  expressions.reserve(output_width);
+  relational_descriptors.reserve(output_width);
+  std::unordered_set<std::uint32_t> output_ids;
+  std::unordered_set<std::uint32_t> expression_ids;
+  std::unordered_set<std::uint32_t> descriptor_ids;
+  std::unordered_set<std::string> bound_column_uuids;
+  for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
+    const auto& output = *outputs[ordinal];
+    const auto expression = relational.expressions.begin() + ordinal;
+    const auto descriptor = relational.descriptors.begin() + ordinal;
+    if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
+        !output_ids.insert(output.output_id).second ||
+        output.output_name_utf8.empty() ||
+        output.descriptor_id != relation_node->output_descriptor_ids[ordinal] ||
+        expression->expression_id != output.expression_id ||
+        !expression_ids.insert(expression->expression_id).second ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        !expression->child_expression_ids.empty() ||
+        !expression->bound_name_uuid.has_value() ||
+        !IsCanonicalHeapBindingUuid(*expression->bound_name_uuid) ||
+        !bound_column_uuids.insert(*expression->bound_name_uuid).second ||
+        expression->result_descriptor_id != output.descriptor_id ||
+        relation_node->bound_expression_ids[ordinal] !=
+            expression->expression_id ||
+        descriptor->descriptor_id != output.descriptor_id ||
+        !descriptor_ids.insert(descriptor->descriptor_id).second ||
+        !IsCanonicalHeapBindingUuid(descriptor->descriptor_uuid) ||
+        !IsCanonicalHeapBindingUuid(descriptor->type_uuid) ||
+        descriptor->nullability == api::RelationalNullability::kUnknown ||
+        (descriptor->collation_uuid.has_value() &&
+         !IsCanonicalHeapBindingUuid(*descriptor->collation_uuid)) ||
+        (descriptor->timezone_profile_id.has_value() &&
+         descriptor->timezone_profile_id->empty())) {
+      return invalid("QOW-DIAG-QRY-004-HEAP-BINDING-V1",
+                     "relation output binding is incomplete or not bijective");
+    }
+    expressions.push_back(&*expression);
+    relational_descriptors.push_back(&*descriptor);
   }
 
   const auto authorization_decision = api::EvaluateMaterializedAuthorization(
@@ -10701,47 +10819,80 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    read.cancellation_observed);
   }
 
-  const auto column = std::ranges::find_if(
-      read.descriptor.columns, [&](const auto& candidate) {
-        return candidate.column_uuid.canonical == *expression->bound_name_uuid;
-      });
-  if (column == read.descriptor.columns.end() ||
-      column->ordinal >= read.descriptor.columns.size() ||
-      &read.descriptor.columns[column->ordinal] != &*column ||
-      column->canonical_name_key.empty() ||
-      outputs.front()->output_name_utf8 != column->canonical_name_key ||
-      column->value_descriptor.descriptor_uuid.canonical !=
-          relational_descriptor->descriptor_uuid ||
-      column->value_descriptor.encoded_descriptor.empty() ||
-      column->value_descriptor.canonical_type_name.empty()) {
+  if (read.descriptor.columns.empty() ||
+      read.descriptor.columns.size() != output_width ||
+      read.descriptor.columns.size() > kMaximumHeapOutputColumns) {
     return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
-                   "persisted column identity, ordinal, or descriptor differs",
+                   "persisted relation width differs from the complete binding",
                    true);
   }
-  const auto persisted_type_uuid = ExactHeapDescriptorField(
-      column->value_descriptor.encoded_descriptor, "type_uuid");
-  if (!persisted_type_uuid.has_value() ||
-      !IsCanonicalHeapBindingUuid(*persisted_type_uuid) ||
-      *persisted_type_uuid != relational_descriptor->type_uuid) {
-    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
-                   "persisted column type_uuid differs from bound descriptor",
-                   true);
-  }
-  const bool nullable = relational_descriptor->nullability ==
-                        api::RelationalNullability::kNullable;
-  if (nullable != column->nullable) {
-    return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
-                   "persisted column nullability differs from bound descriptor",
+  std::size_t materialized_cell_count = 0;
+  if (!CheckedHeapCellCount(read.visible_rows.size(), output_width,
+                            &materialized_cell_count) ||
+      materialized_cell_count > request.maximum_output_cells) {
+    return invalid("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "heap materialized cell bound would be exceeded",
                    true);
   }
 
-  api::EngineDescriptor output_descriptor = column->value_descriptor;
-  output_descriptor.descriptor_kind = "scalar";
   DescriptorBatch batch;
-  batch.columns.push_back({column->canonical_name_key,
-                           output_descriptor,
-                           column->nullable,
-                           outputs.front()->descriptor_id});
+  std::vector<api::EngineDescriptor> output_descriptors;
+  std::vector<std::string> column_uuids;
+  std::unordered_set<std::string> persisted_column_uuids;
+  std::unordered_set<std::string> persisted_column_names;
+  output_descriptors.reserve(output_width);
+  column_uuids.reserve(output_width);
+  batch.columns.reserve(output_width);
+  for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
+    const auto& column = read.descriptor.columns[ordinal];
+    const auto& output = *outputs[ordinal];
+    const auto& expression = *expressions[ordinal];
+    const auto& relational_descriptor = *relational_descriptors[ordinal];
+    const auto persisted_type_uuid = ExactHeapDescriptorField(
+        column.value_descriptor.encoded_descriptor, "type_uuid");
+    const bool nullable = relational_descriptor.nullability ==
+                          api::RelationalNullability::kNullable;
+    if (column.ordinal != ordinal ||
+        !IsCanonicalHeapBindingUuid(column.column_uuid.canonical) ||
+        !persisted_column_uuids.insert(column.column_uuid.canonical).second ||
+        column.column_uuid.canonical != *expression.bound_name_uuid ||
+        column.canonical_name_key.empty() ||
+        !persisted_column_names.insert(column.canonical_name_key).second ||
+        output.output_name_utf8 != column.canonical_name_key ||
+        column.value_descriptor.descriptor_uuid.canonical !=
+            relational_descriptor.descriptor_uuid ||
+        column.value_descriptor.encoded_descriptor.empty() ||
+        column.value_descriptor.canonical_type_name.empty() ||
+        !persisted_type_uuid.has_value() ||
+        !IsCanonicalHeapBindingUuid(*persisted_type_uuid) ||
+        *persisted_type_uuid != relational_descriptor.type_uuid ||
+        nullable != column.nullable ||
+        !ExactHeapNullabilityCarrierMatches(
+            column.value_descriptor.encoded_descriptor, nullable) ||
+        (relational_descriptor.collation_uuid.has_value()
+             ? column.collation_uuid !=
+                   *relational_descriptor.collation_uuid
+             : !column.collation_uuid.empty()) ||
+        !ExactOptionalHeapDescriptorFieldMatches(
+            column.value_descriptor.encoded_descriptor,
+            "collation_uuid", relational_descriptor.collation_uuid) ||
+        !ExactOptionalHeapDescriptorFieldMatches(
+            column.value_descriptor.encoded_descriptor,
+            "timezone_profile_id",
+            relational_descriptor.timezone_profile_id)) {
+      return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                     "persisted ordinal column descriptor differs from binding",
+                     true);
+    }
+    auto output_descriptor = column.value_descriptor;
+    output_descriptor.descriptor_kind = "scalar";
+    batch.columns.push_back({column.canonical_name_key,
+                             output_descriptor,
+                             column.nullable,
+                             output.descriptor_id});
+    output_descriptors.push_back(std::move(output_descriptor));
+    column_uuids.push_back(column.column_uuid.canonical);
+  }
   batch.rows.reserve(read.visible_rows.size());
   std::vector<std::string> record_uuids;
   std::vector<std::string> version_uuids;
@@ -10756,32 +10907,41 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                      true);
     }
     const auto& stored_row = read.visible_rows[row_index];
-    const std::string* encoded_value = nullptr;
-    for (const auto& [name, value] : stored_row.values) {
-      if (name != column->canonical_name_key) { continue; }
-      if (encoded_value != nullptr) {
-        return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
-                       "stored row contains a duplicate selected column",
-                       true);
-      }
-      encoded_value = &value;
-    }
-    if (encoded_value == nullptr) {
+    if (stored_row.values.size() != output_width) {
       return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
-                     "stored row omits the selected column",
+                     "stored row width differs from persisted descriptor width",
                      true);
     }
     DescriptorTuple tuple;
-    api::EngineTypedValue value;
-    value.descriptor = output_descriptor;
-    if (*encoded_value == "<NULL>") {
-      value.is_null = true;
-      value.state = api::EngineValueState::sql_null;
-    } else {
-      value.encoded_value = *encoded_value;
-      value.state = api::EngineValueState::value;
+    tuple.values.reserve(output_width);
+    for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
+      const auto& column = read.descriptor.columns[ordinal];
+      const std::string* encoded_value = nullptr;
+      for (const auto& [name, value] : stored_row.values) {
+        if (name != column.canonical_name_key) { continue; }
+        if (encoded_value != nullptr) {
+          return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                         "stored row contains a duplicate persisted column",
+                         true);
+        }
+        encoded_value = &value;
+      }
+      if (encoded_value == nullptr) {
+        return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
+                       "stored row omits a persisted column",
+                       true);
+      }
+      api::EngineTypedValue value;
+      value.descriptor = output_descriptors[ordinal];
+      if (*encoded_value == "<NULL>") {
+        value.is_null = true;
+        value.state = api::EngineValueState::sql_null;
+      } else {
+        value.encoded_value = *encoded_value;
+        value.state = api::EngineValueState::value;
+      }
+      tuple.values.push_back(std::move(value));
     }
-    tuple.values.push_back(std::move(value));
     batch.rows.push_back(std::move(tuple));
     record_uuids.push_back(stored_row.row_uuid);
     version_uuids.push_back(stored_row.version_uuid);
@@ -10812,13 +10972,15 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       read.invisible_row_version_count;
   result.counters.tombstone_row_count = read.tombstone_row_count;
   result.counters.emitted_row_count = result.output_batch.rows.size();
+  result.counters.output_column_count = output_width;
+  result.counters.materialized_cell_count = materialized_cell_count;
   result.authority.engine_catalog_descriptor_loaded = true;
   result.authority.engine_mga_snapshot_bound = true;
   result.authority.engine_authorization_rechecked = true;
   result.authority.bounded_physical_read = true;
   result.data_access_observed = read.scoped_physical_segment_used;
   result.relation_uuid = relation_uuid;
-  result.column_uuid = *expression->bound_name_uuid;
+  result.column_uuids = std::move(column_uuids);
   result.current_relation_descriptor_uuid =
       read.descriptor.descriptor_uuid.canonical;
   result.current_relation_descriptor_generation =
@@ -10844,6 +11006,8 @@ struct HeapPhysicalExecutorState {
   std::size_t maximum_scanned_row_versions = 0;
   std::size_t maximum_decoded_bytes = 0;
   std::size_t maximum_output_rows = 0;
+  std::size_t maximum_output_columns = 0;
+  std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
 };
 
@@ -10954,10 +11118,14 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   if (!request.cancellation_requested ||
       request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
-      request.maximum_output_rows == 0) {
+      request.maximum_output_rows == 0 ||
+      request.maximum_output_columns == 0 ||
+      request.maximum_output_cells == 0 ||
+      request.maximum_output_columns > kMaximumHeapOutputColumns) {
     return HeapAcquisitionRefusal(
         "SBLR.PLAN_TREE.RESOURCE_LIMIT",
-        "nonzero heap dispatch bounds and cancellation probe are required");
+        "valid nonzero heap dispatch shape bounds and cancellation probe are "
+        "required");
   }
   if (request.cancellation_requested()) {
     return HeapAcquisitionRefusal(
@@ -11029,6 +11197,9 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
     if (node.implementation_id != "scan.heap.v1") { continue; }
     if (node.node_kind != PhysicalNodeKind::kScan ||
         !node.input_physical_node_ids.empty() ||
+        node.output_descriptor_ids.empty() ||
+        node.output_descriptor_ids.size() > request.maximum_output_columns ||
+        node.output_descriptor_ids.size() > kMaximumHeapOutputColumns ||
         node.executor_capability_uuid.empty() ||
         node.executor_capability_abi_version == 0 ||
         !node.engine_capability_validated) {
@@ -11071,6 +11242,8 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
       request.maximum_scanned_row_versions;
   state->maximum_decoded_bytes = request.maximum_decoded_bytes;
   state->maximum_output_rows = request.maximum_output_rows;
+  state->maximum_output_columns = request.maximum_output_columns;
+  state->maximum_output_cells = request.maximum_output_cells;
   state->cancellation_requested = request.cancellation_requested;
   result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
 
@@ -11131,6 +11304,9 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         acquisition_request.maximum_decoded_bytes =
             state->maximum_decoded_bytes;
         acquisition_request.maximum_output_rows = state->maximum_output_rows;
+        acquisition_request.maximum_output_columns =
+            state->maximum_output_columns;
+        acquisition_request.maximum_output_cells = state->maximum_output_cells;
         acquisition_request.cancellation_requested =
             state->cancellation_requested;
         auto acquisition =
@@ -11292,7 +11468,10 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   if (!request.cancellation_requested ||
       request.maximum_scanned_row_versions == 0 ||
       request.maximum_decoded_bytes == 0 ||
-      request.maximum_output_rows == 0) {
+      request.maximum_output_rows == 0 ||
+      request.maximum_output_columns == 0 ||
+      request.maximum_output_cells == 0 ||
+      request.maximum_output_columns > exec::kMaximumHeapOutputColumns) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0,
                   "heap_result_resource_bounds");
   }
@@ -11313,13 +11492,17 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       relational.nodes.front().semantic_variant_id != "relation.source.v1" ||
       !relational.nodes.front().input_node_ids.empty() ||
       relational.nodes.front().required_object_uuids.size() != 1 ||
-      relational.nodes.front().bound_expression_ids.size() != 1 ||
-      relational.nodes.front().output_descriptor_ids.size() != 1 ||
-      relational.expressions.size() != 1 || relational.descriptors.size() != 1 ||
-      relational.outputs.size() != 1 || !relational.outputs.front().visible ||
-      relational.outputs.front().ordinal != 0) {
+      relational.nodes.front().bound_expression_ids.empty() ||
+      relational.nodes.front().bound_expression_ids.size() !=
+          relational.nodes.front().output_descriptor_ids.size() ||
+      relational.nodes.front().output_descriptor_ids.size() !=
+          relational.expressions.size() ||
+      relational.expressions.size() != relational.descriptors.size() ||
+      relational.descriptors.size() != relational.outputs.size() ||
+      relational.outputs.size() > request.maximum_output_columns ||
+      relational.outputs.size() > exec::kMaximumHeapOutputColumns) {
     return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-PROFILE-V1", 0,
-                  "relation.source.v1_one_leaf_output");
+                  "relation.source.v1_one_leaf_complete_width");
   }
   if (physical.abi_version != 2 || physical.nodes.size() != 1 ||
       physical.root_physical_node_id != physical.nodes.front().physical_node_id ||
@@ -11327,40 +11510,71 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       physical.nodes.front().implementation_id != "scan.heap.v1" ||
       !physical.nodes.front().input_physical_node_ids.empty() ||
       physical.nodes.front().relational_node_id != relational.root_node_id ||
-      physical.nodes.front().output_descriptor_ids.size() != 1) {
+      physical.nodes.front().output_descriptor_ids !=
+          relational.nodes.front().output_descriptor_ids) {
     return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-PROFILE-V1", 0,
                   "scan.heap.v1_one_leaf_root");
   }
 
   const auto& relational_node = relational.nodes.front();
-  const auto& expression = relational.expressions.front();
-  const auto& descriptor = relational.descriptors.front();
-  const auto& output = relational.outputs.front();
   const auto& physical_node = physical.nodes.front();
-  if (output.relation_node_id != relational_node.node_id ||
-      output.expression_id != expression.expression_id ||
-      output.descriptor_id != descriptor.descriptor_id ||
-      relational_node.bound_expression_ids.front() != expression.expression_id ||
-      relational_node.output_descriptor_ids.front() != descriptor.descriptor_id ||
-      expression.expression_kind != RelationalExpressionKind::kIdentifier ||
-      !expression.child_expression_ids.empty() ||
-      expression.result_descriptor_id != descriptor.descriptor_id ||
-      !expression.bound_name_uuid.has_value() ||
-      !exec::IsCanonicalHeapBindingUuid(*expression.bound_name_uuid) ||
-      !exec::IsCanonicalHeapBindingUuid(
-          relational_node.required_object_uuids.front()) ||
-      !exec::IsCanonicalHeapBindingUuid(descriptor.descriptor_uuid) ||
-      !exec::IsCanonicalHeapBindingUuid(descriptor.type_uuid) ||
-      descriptor.nullability == RelationalNullability::kUnknown ||
-      output.output_name_utf8.empty() ||
-      physical_node.output_descriptor_ids.front() != descriptor.descriptor_id ||
-      (descriptor.collation_uuid.has_value() &&
-       !exec::IsCanonicalHeapBindingUuid(*descriptor.collation_uuid)) ||
-      (descriptor.timezone_profile_id.has_value() &&
-       descriptor.timezone_profile_id->empty())) {
+  if (!exec::IsCanonicalHeapBindingUuid(
+          relational_node.required_object_uuids.front())) {
     return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-BINDING-V1",
                   physical_node.physical_node_id,
-                  "relational_expression_descriptor_physical_agreement");
+                  "relation_uuid");
+  }
+
+  std::vector<const RelationalOutputRecord*> ordered_outputs;
+  ordered_outputs.reserve(relational.outputs.size());
+  for (const auto& output : relational.outputs) {
+    if (output.relation_node_id == relational_node.node_id) {
+      ordered_outputs.push_back(&output);
+    }
+  }
+  if (ordered_outputs.size() != relational.outputs.size()) {
+    return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-BINDING-V1",
+                  physical_node.physical_node_id,
+                  "relation_output_coverage");
+  }
+  std::vector<const RelationalTypeDescriptor*> ordered_descriptors;
+  ordered_descriptors.reserve(ordered_outputs.size());
+  std::unordered_set<std::uint32_t> output_ids;
+  std::unordered_set<std::uint32_t> expression_ids;
+  std::unordered_set<std::uint32_t> descriptor_ids;
+  std::unordered_set<std::string> bound_column_uuids;
+  for (std::size_t ordinal = 0; ordinal < ordered_outputs.size(); ++ordinal) {
+    const auto& output = *ordered_outputs[ordinal];
+    const auto expression = relational.expressions.begin() + ordinal;
+    const auto descriptor = relational.descriptors.begin() + ordinal;
+    if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
+        !output_ids.insert(output.output_id).second ||
+        output.output_name_utf8.empty() ||
+        output.descriptor_id != relational_node.output_descriptor_ids[ordinal] ||
+        expression->expression_id != output.expression_id ||
+        !expression_ids.insert(expression->expression_id).second ||
+        relational_node.bound_expression_ids[ordinal] !=
+            expression->expression_id ||
+        expression->expression_kind != RelationalExpressionKind::kIdentifier ||
+        !expression->child_expression_ids.empty() ||
+        expression->result_descriptor_id != output.descriptor_id ||
+        !expression->bound_name_uuid.has_value() ||
+        !exec::IsCanonicalHeapBindingUuid(*expression->bound_name_uuid) ||
+        !bound_column_uuids.insert(*expression->bound_name_uuid).second ||
+        descriptor->descriptor_id != output.descriptor_id ||
+        !descriptor_ids.insert(descriptor->descriptor_id).second ||
+        !exec::IsCanonicalHeapBindingUuid(descriptor->descriptor_uuid) ||
+        !exec::IsCanonicalHeapBindingUuid(descriptor->type_uuid) ||
+        descriptor->nullability == RelationalNullability::kUnknown ||
+        (descriptor->collation_uuid.has_value() &&
+         !exec::IsCanonicalHeapBindingUuid(*descriptor->collation_uuid)) ||
+        (descriptor->timezone_profile_id.has_value() &&
+         descriptor->timezone_profile_id->empty())) {
+      return refuse("QOW-DIAG-QRY-004-HEAP-RESULT-BINDING-V1",
+                    physical_node.physical_node_id,
+                    "relational_expression_descriptor_physical_agreement");
+    }
+    ordered_descriptors.push_back(&*descriptor);
   }
 
   exec::CanonicalHeapPhysicalDagDispatchRequest registration_request;
@@ -11371,6 +11585,8 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       request.maximum_scanned_row_versions;
   registration_request.maximum_decoded_bytes = request.maximum_decoded_bytes;
   registration_request.maximum_output_rows = request.maximum_output_rows;
+  registration_request.maximum_output_columns = request.maximum_output_columns;
+  registration_request.maximum_output_cells = request.maximum_output_cells;
   registration_request.cancellation_requested = request.cancellation_requested;
   auto built = exec::BuildHeapPhysicalRegistration(registration_request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||
@@ -11384,18 +11600,6 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
                   physical_node.physical_node_id,
                   std::move(built.diagnostic.detail));
   }
-
-  exec::CanonicalResultColumnDescriptor published;
-  published.ordinal = 0;
-  published.name_utf8 = output.output_name_utf8;
-  published.descriptor_uuid = descriptor.descriptor_uuid;
-  published.type_uuid = descriptor.type_uuid;
-  published.nullability =
-      descriptor.nullability == RelationalNullability::kNullable
-          ? exec::CanonicalResultNullability::kNullable
-          : exec::CanonicalResultNullability::kNonNull;
-  published.collation_uuid = descriptor.collation_uuid;
-  published.timezone_profile_id = descriptor.timezone_profile_id;
 
   CanonicalOptimizerSelectedExecutionRequest selected;
   selected.selected_physical_dag = request.selected_physical_dag;
@@ -11414,8 +11618,25 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       exec::CanonicalResultKind::kRows;
   selected.result_publication_request.invocation_mode =
       exec::CanonicalResultInvocationMode::kDirect;
-  selected.result_publication_request.column_bindings.push_back(
-      {0, true, std::move(published)});
+  selected.result_publication_request.column_bindings.reserve(
+      ordered_outputs.size());
+  for (std::size_t ordinal = 0; ordinal < ordered_outputs.size(); ++ordinal) {
+    const auto& output = *ordered_outputs[ordinal];
+    const auto& descriptor = *ordered_descriptors[ordinal];
+    exec::CanonicalResultColumnDescriptor published;
+    published.ordinal = ordinal;
+    published.name_utf8 = output.output_name_utf8;
+    published.descriptor_uuid = descriptor.descriptor_uuid;
+    published.type_uuid = descriptor.type_uuid;
+    published.nullability =
+        descriptor.nullability == RelationalNullability::kNullable
+            ? exec::CanonicalResultNullability::kNullable
+            : exec::CanonicalResultNullability::kNonNull;
+    published.collation_uuid = descriptor.collation_uuid;
+    published.timezone_profile_id = descriptor.timezone_profile_id;
+    selected.result_publication_request.column_bindings.push_back(
+        {ordinal, true, std::move(published)});
+  }
   selected.result_publication_request.transaction_effect_evidence_uuid =
       request.transaction_effect_evidence_uuid;
   selected.result_publication_request.maximum_row_count =
