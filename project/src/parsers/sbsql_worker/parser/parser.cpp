@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 
+#include <charconv>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -874,10 +875,20 @@ class NativeRelationalParser final {
       const auto match_numeric_threshold =
           [&](const std::uint32_t expression_id) {
             const auto* threshold = expression_by_id(expression_id);
-            return threshold != nullptr &&
-                   threshold->expression_kind ==
-                       NativeExpressionAstKind::kLiteral &&
-                   threshold->literal_kind == NativeLiteralAstKind::kNumeric;
+            if (threshold == nullptr ||
+                threshold->expression_kind !=
+                    NativeExpressionAstKind::kLiteral ||
+                threshold->literal_kind != NativeLiteralAstKind::kNumeric) {
+              return false;
+            }
+            std::int64_t value = 0;
+            const auto [end, error] = std::from_chars(
+                threshold->spelling.data(),
+                threshold->spelling.data() + threshold->spelling.size(),
+                value);
+            return error == std::errc{} &&
+                   end == threshold->spelling.data() +
+                              threshold->spelling.size();
           };
       const auto match_sum_comparison =
           [&](const NativeExpressionAstNode& comparison) {
@@ -952,6 +963,36 @@ class NativeRelationalParser final {
                   predicate.child_expression_ids.size() == 1
               ? expression_by_id(predicate.child_expression_ids.front())
               : nullptr;
+      const auto* double_not_operand =
+          not_operand != nullptr &&
+                  not_operand->expression_kind ==
+                      NativeExpressionAstKind::kUnary &&
+                  not_operand->operator_name == "NOT" &&
+                  not_operand->child_expression_ids.size() == 1
+              ? expression_by_id(not_operand->child_expression_ids.front())
+              : nullptr;
+      const auto has_parenthesized_not_operand =
+          [](const NativeExpressionAstNode* expression) {
+            if (expression == nullptr || expression->spelling.size() < 4) {
+              return false;
+            }
+            std::size_t offset = 3;
+            while (offset < expression->spelling.size() &&
+                   (expression->spelling[offset] == ' ' ||
+                    expression->spelling[offset] == '\t' ||
+                    expression->spelling[offset] == '\r' ||
+                    expression->spelling[offset] == '\n')) {
+              ++offset;
+            }
+            return offset < expression->spelling.size() &&
+                   expression->spelling[offset] == '(';
+          };
+      // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-NOT-SUM-GT-V1
+      const bool not_not_sum_profile =
+          double_not_operand != nullptr &&
+          has_parenthesized_not_operand(&predicate) &&
+          has_parenthesized_not_operand(not_operand) &&
+          match_sum_comparison(*double_not_operand);
       // QOW-SOURCE-QRY-001-TWO-KEY-HAVING-NOT-SUM-GT-V1
       const bool not_sum_profile =
           not_operand != nullptr && match_sum_comparison(*not_operand);
@@ -990,7 +1031,7 @@ class NativeRelationalParser final {
           match_count_comparison(*not_count_conjunct) &&
           match_sum_comparison(*not_sum_conjunct);
       if (!simple_sum_profile && !count_sum_and_profile &&
-          !count_sum_or_profile && !not_sum_profile &&
+          !count_sum_or_profile && !not_not_sum_profile && !not_sum_profile &&
           !not_count_profile && !not_count_sum_and_profile &&
           !not_count_sum_or_profile) {
         Refuse("having_predicate_shape_invalid",
@@ -1000,6 +1041,11 @@ class NativeRelationalParser final {
       }
       const bool ordinary_two_key_not_sum_profile =
           !one_key_grouping_profile && not_sum_profile &&
+          grouping_form == NativeAggregateGroupingForm::kSimple &&
+          projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
+          document_.grouping_sets.empty();
+      const bool ordinary_two_key_not_not_sum_profile =
+          !one_key_grouping_profile && not_not_sum_profile &&
           grouping_form == NativeAggregateGroupingForm::kSimple &&
           projection_form == NativeAggregateProjectionForm::kKeysCountSum &&
           document_.grouping_sets.empty();
@@ -1153,7 +1199,7 @@ class NativeRelationalParser final {
           key_a.has_value() && key_b.has_value() &&
           document_.grouping_sets.empty();
       if (one_key_grouping_profile &&
-          (not_sum_profile || not_count_profile ||
+          (not_not_sum_profile || not_sum_profile || not_count_profile ||
            not_count_sum_and_profile || not_count_sum_or_profile)) {
         Refuse("having_profile_not_admitted",
                "native NOT aggregate HAVING requires an exact admitted "
@@ -1256,6 +1302,7 @@ class NativeRelationalParser final {
           projection_form ==
               NativeAggregateProjectionForm::kKeysCountSumGrouping;
       if (!one_key_grouping_profile && !count_sum_and_profile &&
+          !ordinary_two_key_not_not_sum_profile &&
           !ordinary_two_key_not_sum_profile &&
           !ordinary_two_key_not_count_profile &&
           !ordinary_two_key_not_count_sum_and_profile &&
