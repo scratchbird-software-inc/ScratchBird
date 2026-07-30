@@ -14,10 +14,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -38142,6 +38144,1410 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   return envelope;
 }
 
+namespace {
+
+// QOW-SOURCE-QRY-002-PARSER-VERIFIER-V1
+// QOW-SOURCE-QRY-027-PARSER-GRAPH-LIMIT-V1
+constexpr std::size_t kMaximumRelationalNodeCount = 131072;
+constexpr std::size_t kMaximumRelationalDepth = 256;
+constexpr std::size_t kMaximumRelationalFanout = 1024;
+constexpr std::size_t kMaximumRelationalRecordCount = 524288;
+constexpr std::size_t kMaximumRelationalReferenceCount = 1048576;
+constexpr std::size_t kMaximumRelationalOperandBytes = 65536;
+constexpr std::size_t kMaximumRelationalEnvelopeBytes = 16 * 1024 * 1024;
+
+struct ParsedRelationalDescriptor {
+  std::uint32_t id{0};
+  std::string descriptor_uuid;
+  std::string type_uuid;
+  std::uint8_t nullability{0};
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+  std::optional<std::uint32_t> width;
+  std::optional<std::uint32_t> precision;
+  std::optional<std::uint32_t> scale;
+};
+
+struct ParsedRelationalExpression {
+  std::uint32_t id{0};
+  std::uint8_t kind{0};
+  std::vector<std::uint32_t> child_ids;
+  std::uint32_t descriptor_id{0};
+  std::optional<std::string> function_uuid;
+  std::optional<std::string> bound_name_uuid;
+  std::optional<std::uint8_t> literal_kind;
+  std::optional<std::string> operator_name;
+  std::optional<std::string> literal_or_parameter_ref;
+};
+
+struct ParsedRelationalOutput {
+  std::uint32_t id{0};
+  std::uint32_t node_id{0};
+  std::uint32_t expression_id{0};
+  std::uint32_t descriptor_id{0};
+  bool visible{false};
+  std::uint32_t ordinal{0};
+  std::string name_utf8;
+};
+
+struct ParsedRelationalValuesRow {
+  std::uint32_t id{0};
+  std::vector<std::uint32_t> expression_ids;
+};
+
+struct ParsedRelationalGroupingSet {
+  std::uint32_t node_id{0};
+  std::uint32_t ordinal{0};
+  std::vector<std::uint32_t> expression_ids;
+};
+
+struct ParsedRelationalOrderingTerm {
+  std::uint32_t expression_id{0};
+  std::uint8_t direction{0};
+  std::uint8_t null_placement{0};
+  std::optional<std::string> collation_uuid;
+};
+
+struct ParsedRelationalProperty {
+  std::string uuid;
+  std::uint8_t kind{0};
+  std::uint32_t origin_node_id{0};
+  std::vector<std::uint32_t> expression_ids;
+  std::vector<ParsedRelationalOrderingTerm> ordering_terms;
+  std::vector<std::string> dependency_uuids;
+  std::optional<std::string> window_frame_descriptor_uuid;
+};
+
+struct ParsedRelationalNode {
+  std::uint32_t id{0};
+  std::uint8_t kind{0};
+  bool shareable{false};
+  std::vector<std::uint32_t> input_ids;
+  std::vector<std::uint32_t> output_descriptor_ids;
+  std::vector<std::uint32_t> values_row_ids;
+  bool binding_present{false};
+  std::string semantic_variant_id;
+  std::vector<std::uint32_t> bound_expression_ids;
+  std::vector<std::string> required_object_uuids;
+  std::vector<std::string> required_property_uuids;
+  std::vector<std::string> delivered_property_uuids;
+};
+
+struct ParsedRelationalGraph {
+  std::uint16_t wire_version{0};
+  std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::uint32_t root_node_id{0};
+  std::vector<ParsedRelationalDescriptor> descriptors;
+  std::vector<ParsedRelationalExpression> expressions;
+  std::vector<ParsedRelationalOutput> outputs;
+  std::vector<ParsedRelationalValuesRow> values_rows;
+  std::vector<ParsedRelationalGroupingSet> grouping_sets;
+  std::vector<ParsedRelationalProperty> properties;
+  std::vector<ParsedRelationalNode> nodes;
+};
+
+struct RelationalGraphVerification {
+  bool accepted{false};
+  std::string diagnostic_id;
+  std::string detail;
+  std::string field_id;
+  std::uint32_t node_id{0};
+  std::size_t node_count{0};
+  std::size_t expression_count{0};
+  std::size_t record_count{0};
+  std::size_t maximum_node_depth{0};
+  std::size_t maximum_expression_depth{0};
+};
+
+RelationalGraphVerification RefuseRelationalGraph(
+    std::string diagnostic_id,
+    std::string detail,
+    std::string field_id,
+    const std::uint32_t node_id = 0) {
+  RelationalGraphVerification result;
+  result.diagnostic_id = std::move(diagnostic_id);
+  result.detail = std::move(detail);
+  result.field_id = std::move(field_id);
+  result.node_id = node_id;
+  return result;
+}
+
+bool ParseCanonicalRelationalUnsigned(const std::string_view encoded,
+                                      const std::uint64_t maximum,
+                                      std::uint64_t* value) {
+  if (value == nullptr || encoded.empty() ||
+      (encoded.size() > 1 && encoded.front() == '0')) {
+    return false;
+  }
+  std::uint64_t parsed = 0;
+  for (const char ch : encoded) {
+    if (ch < '0' || ch > '9') return false;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (parsed > (maximum - digit) / 10) return false;
+    parsed = parsed * 10 + digit;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool IsCanonicalRelationalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+template <std::size_t FieldCount>
+bool SplitCanonicalRelationalFields(
+    const std::string_view encoded,
+    std::array<std::string_view, FieldCount>* fields) {
+  if (fields == nullptr || encoded.empty()) return false;
+  std::size_t start = 0;
+  for (std::size_t index = 0; index < FieldCount; ++index) {
+    const auto separator = encoded.find('|', start);
+    if (index + 1 == FieldCount) {
+      if (separator != std::string_view::npos) return false;
+      (*fields)[index] = encoded.substr(start);
+      return true;
+    }
+    if (separator == std::string_view::npos) return false;
+    (*fields)[index] = encoded.substr(start, separator - start);
+    start = separator + 1;
+  }
+  return false;
+}
+
+bool DecodeCanonicalRelationalHex(const std::string_view encoded,
+                                  std::string* value) {
+  if (value == nullptr || encoded.size() % 2 != 0) return false;
+  value->clear();
+  value->reserve(encoded.size() / 2);
+  const auto nibble = [](const char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return 10 + ch - 'a';
+    return -1;
+  };
+  for (std::size_t index = 0; index < encoded.size(); index += 2) {
+    const int high = nibble(encoded[index]);
+    const int low = nibble(encoded[index + 1]);
+    if (high < 0 || low < 0) return false;
+    value->push_back(static_cast<char>((high << 4) | low));
+  }
+  return true;
+}
+
+bool DecodeOptionalCanonicalRelationalHex(
+    const std::string_view encoded,
+    std::optional<std::string>* value) {
+  if (value == nullptr) return false;
+  if (encoded == "-") {
+    value->reset();
+    return true;
+  }
+  std::string decoded;
+  if (!DecodeCanonicalRelationalHex(encoded, &decoded)) return false;
+  *value = std::move(decoded);
+  return true;
+}
+
+bool ParseOptionalCanonicalRelationalU32(
+    const std::string_view encoded,
+    std::optional<std::uint32_t>* value) {
+  if (value == nullptr) return false;
+  if (encoded == "-") {
+    value->reset();
+    return true;
+  }
+  std::uint64_t parsed = 0;
+  if (!ParseCanonicalRelationalUnsigned(
+          encoded, std::numeric_limits<std::uint32_t>::max(), &parsed)) {
+    return false;
+  }
+  *value = static_cast<std::uint32_t>(parsed);
+  return true;
+}
+
+bool ParseCanonicalRelationalHandleList(
+    const std::string_view encoded,
+    std::vector<std::uint32_t>* handles) {
+  if (handles == nullptr || encoded.empty()) return false;
+  handles->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start, separator == std::string_view::npos ? encoded.size() - start
+                                                    : separator - start);
+    std::uint64_t parsed = 0;
+    if (!ParseCanonicalRelationalUnsigned(
+            token, std::numeric_limits<std::uint32_t>::max(), &parsed) ||
+        parsed == 0) {
+      return false;
+    }
+    handles->push_back(static_cast<std::uint32_t>(parsed));
+    if (handles->size() > kMaximumRelationalReferenceCount) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
+bool ParseCanonicalRelationalStringList(
+    const std::string_view encoded,
+    std::vector<std::string>* values) {
+  if (values == nullptr || encoded.empty()) return false;
+  values->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start, separator == std::string_view::npos ? encoded.size() - start
+                                                    : separator - start);
+    if (token.empty()) return false;
+    values->emplace_back(token);
+    if (values->size() > kMaximumRelationalReferenceCount) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
+bool ParseCanonicalRelationalOrderingTerms(
+    const std::string_view encoded,
+    std::vector<ParsedRelationalOrderingTerm>* terms) {
+  if (terms == nullptr || encoded.empty()) return false;
+  terms->clear();
+  if (encoded == "-") return true;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto separator = encoded.find(',', start);
+    const auto token = encoded.substr(
+        start, separator == std::string_view::npos ? encoded.size() - start
+                                                    : separator - start);
+    std::array<std::string_view, 4> fields{};
+    std::size_t field_start = 0;
+    bool valid = true;
+    for (std::size_t index = 0; index < fields.size(); ++index) {
+      const auto field_separator = token.find(':', field_start);
+      if (index + 1 == fields.size()) {
+        if (field_separator != std::string_view::npos) valid = false;
+        fields[index] = token.substr(field_start);
+      } else if (field_separator == std::string_view::npos) {
+        valid = false;
+      } else {
+        fields[index] =
+            token.substr(field_start, field_separator - field_start);
+        field_start = field_separator + 1;
+      }
+      if (!valid) break;
+    }
+    std::uint64_t expression_id = 0;
+    std::uint64_t direction = 0;
+    std::uint64_t null_placement = 0;
+    if (!valid ||
+        !ParseCanonicalRelationalUnsigned(
+            fields[0], std::numeric_limits<std::uint32_t>::max(),
+            &expression_id) ||
+        expression_id == 0 ||
+        !ParseCanonicalRelationalUnsigned(
+            fields[1], std::numeric_limits<std::uint8_t>::max(), &direction) ||
+        !ParseCanonicalRelationalUnsigned(
+            fields[2], std::numeric_limits<std::uint8_t>::max(),
+            &null_placement)) {
+      return false;
+    }
+    ParsedRelationalOrderingTerm term;
+    term.expression_id = static_cast<std::uint32_t>(expression_id);
+    term.direction = static_cast<std::uint8_t>(direction);
+    term.null_placement = static_cast<std::uint8_t>(null_placement);
+    if (fields[3] != "-") term.collation_uuid = std::string(fields[3]);
+    terms->push_back(std::move(term));
+    if (terms->size() > kMaximumRelationalReferenceCount) return false;
+    if (separator == std::string_view::npos) break;
+    start = separator + 1;
+  }
+  return true;
+}
+
+bool AddRelationalCount(const std::size_t addend,
+                        const std::size_t maximum,
+                        std::size_t* total) {
+  if (total == nullptr || addend > maximum - *total) return false;
+  *total += addend;
+  return true;
+}
+
+RelationalGraphVerification DecodeCanonicalRelationalGraph(
+    const SblrEnvelope& envelope,
+    ParsedRelationalGraph* graph) {
+  if (graph == nullptr) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph destination is absent",
+                                 "graph_destination");
+  }
+  bool wire_version_present = false;
+  bool tree_uuid_present = false;
+  bool catalog_uuid_present = false;
+  bool security_uuid_present = false;
+  bool root_present = false;
+  std::size_t record_count = 0;
+  std::size_t encoded_bytes = 0;
+
+  for (const auto& operand : envelope.operands) {
+    if (operand.type.size() > kMaximumRelationalOperandBytes ||
+        operand.name.size() > kMaximumRelationalOperandBytes ||
+        operand.value.size() > kMaximumRelationalOperandBytes ||
+        !AddRelationalCount(operand.type.size(),
+                            kMaximumRelationalEnvelopeBytes, &encoded_bytes) ||
+        !AddRelationalCount(operand.name.size(),
+                            kMaximumRelationalEnvelopeBytes, &encoded_bytes) ||
+        !AddRelationalCount(operand.value.size(),
+                            kMaximumRelationalEnvelopeBytes, &encoded_bytes)) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                   "relational operand byte limit exceeded",
+                                   "operand_bytes");
+    }
+    if (operand.type == "uint16" &&
+        operand.name == "relational_wire_version") {
+      std::uint64_t parsed = 0;
+      if (wire_version_present ||
+          !ParseCanonicalRelationalUnsigned(
+              operand.value, std::numeric_limits<std::uint16_t>::max(),
+              &parsed)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_VERSION",
+                                     "relational wire version is malformed or duplicated",
+                                     "wire_version");
+      }
+      graph->wire_version = static_cast<std::uint16_t>(parsed);
+      wire_version_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      if (tree_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "bound SBLR tree identity is malformed or duplicated",
+            "bound_sblr_tree_uuid");
+      }
+      graph->bound_sblr_tree_uuid = operand.value;
+      tree_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_catalog_epoch_uuid") {
+      if (catalog_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "catalog epoch identity is malformed or duplicated",
+            "catalog_epoch_uuid");
+      }
+      graph->catalog_epoch_uuid = operand.value;
+      catalog_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_security_context_uuid") {
+      if (security_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "security context identity is malformed or duplicated",
+            "security_context_uuid");
+      }
+      graph->security_context_uuid = operand.value;
+      security_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uint32" &&
+        operand.name == "relational_root_node_id") {
+      std::uint64_t parsed = 0;
+      if (root_present ||
+          !ParseCanonicalRelationalUnsigned(
+              operand.value, std::numeric_limits<std::uint32_t>::max(),
+              &parsed) ||
+          parsed == 0) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational root handle is malformed or duplicated",
+                                     "root_node_id");
+      }
+      graph->root_node_id = static_cast<std::uint32_t>(parsed);
+      root_present = true;
+      continue;
+    }
+    if (operand.type == "relational_descriptor_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t id = 0;
+      std::uint64_t nullability = 0;
+      std::array<std::string_view, 8> fields{};
+      ParsedRelationalDescriptor descriptor;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[2], std::numeric_limits<std::uint8_t>::max(),
+              &nullability) ||
+          !DecodeOptionalCanonicalRelationalHex(
+              fields[4], &descriptor.timezone_profile_id) ||
+          !ParseOptionalCanonicalRelationalU32(fields[5], &descriptor.width) ||
+          !ParseOptionalCanonicalRelationalU32(fields[6],
+                                               &descriptor.precision) ||
+          !ParseOptionalCanonicalRelationalU32(fields[7], &descriptor.scale)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational descriptor record is malformed",
+                                     "descriptor_record");
+      }
+      descriptor.id = static_cast<std::uint32_t>(id);
+      descriptor.descriptor_uuid = fields[0];
+      descriptor.type_uuid = fields[1];
+      descriptor.nullability = static_cast<std::uint8_t>(nullability);
+      if (fields[3] != "-") descriptor.collation_uuid = std::string(fields[3]);
+      graph->descriptors.push_back(std::move(descriptor));
+      continue;
+    }
+    if (operand.type == "relational_expression_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t id = 0;
+      std::uint64_t kind = 0;
+      std::uint64_t descriptor_id = 0;
+      std::array<std::string_view, 8> fields{};
+      ParsedRelationalExpression expression;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(), &kind) ||
+          !ParseCanonicalRelationalHandleList(fields[1],
+                                              &expression.child_ids) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          descriptor_id == 0 ||
+          !DecodeOptionalCanonicalRelationalHex(fields[6],
+                                                &expression.operator_name) ||
+          !DecodeOptionalCanonicalRelationalHex(
+              fields[7], &expression.literal_or_parameter_ref)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational expression record is malformed",
+                                     "expression_record");
+      }
+      if (expression.child_ids.size() > kMaximumRelationalFanout) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational expression fanout limit exceeded",
+                                     "expression_fanout");
+      }
+      expression.id = static_cast<std::uint32_t>(id);
+      expression.kind = static_cast<std::uint8_t>(kind);
+      expression.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      if (fields[3] != "-") expression.function_uuid = std::string(fields[3]);
+      if (fields[4] != "-") expression.bound_name_uuid = std::string(fields[4]);
+      if (fields[5] != "-") {
+        std::uint64_t literal_kind = 0;
+        if (!ParseCanonicalRelationalUnsigned(
+                fields[5], std::numeric_limits<std::uint8_t>::max(),
+                &literal_kind)) {
+          return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                       "relational literal kind is malformed",
+                                       "expression_typed_fields");
+        }
+        expression.literal_kind = static_cast<std::uint8_t>(literal_kind);
+      }
+      graph->expressions.push_back(std::move(expression));
+      continue;
+    }
+    if (operand.type == "relational_output_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t id = 0;
+      std::uint64_t node_id = 0;
+      std::uint64_t expression_id = 0;
+      std::uint64_t descriptor_id = 0;
+      std::uint64_t ordinal = 0;
+      std::array<std::string_view, 6> fields{};
+      ParsedRelationalOutput output;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(), &node_id) ||
+          node_id == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          expression_id == 0 ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          descriptor_id == 0 || (fields[3] != "0" && fields[3] != "1") ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[4], std::numeric_limits<std::uint32_t>::max(), &ordinal) ||
+          !DecodeCanonicalRelationalHex(fields[5], &output.name_utf8)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational output record is malformed",
+                                     "output_record");
+      }
+      output.id = static_cast<std::uint32_t>(id);
+      output.node_id = static_cast<std::uint32_t>(node_id);
+      output.expression_id = static_cast<std::uint32_t>(expression_id);
+      output.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
+      output.visible = fields[3] == "1";
+      output.ordinal = static_cast<std::uint32_t>(ordinal);
+      graph->outputs.push_back(std::move(output));
+      continue;
+    }
+    if (operand.type == "relational_values_row_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t id = 0;
+      ParsedRelationalValuesRow row;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !ParseCanonicalRelationalHandleList(
+                         operand.value, &row.expression_ids) ||
+          row.expression_ids.empty()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational VALUES row is malformed",
+                                     "values_row_record");
+      }
+      row.id = static_cast<std::uint32_t>(id);
+      graph->values_rows.push_back(std::move(row));
+      continue;
+    }
+    if (operand.type == "relational_grouping_set_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t ordinal = 0;
+      std::uint64_t node_id = 0;
+      std::array<std::string_view, 2> fields{};
+      ParsedRelationalGroupingSet grouping_set;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &ordinal) ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(), &node_id) ||
+          node_id == 0 || !ParseCanonicalRelationalHandleList(
+                              fields[1], &grouping_set.expression_ids)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational grouping-set record is malformed",
+                                     "grouping_set_record");
+      }
+      grouping_set.ordinal = static_cast<std::uint32_t>(ordinal);
+      grouping_set.node_id = static_cast<std::uint32_t>(node_id);
+      graph->grouping_sets.push_back(std::move(grouping_set));
+      continue;
+    }
+    if (operand.type == "relational_property_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::uint64_t kind = 0;
+      std::uint64_t origin_node_id = 0;
+      std::array<std::string_view, 6> fields{};
+      ParsedRelationalProperty property;
+      if (!IsCanonicalRelationalUuid(operand.name) ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(), &kind) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &origin_node_id) ||
+          origin_node_id == 0 ||
+          !ParseCanonicalRelationalHandleList(fields[2],
+                                              &property.expression_ids) ||
+          !ParseCanonicalRelationalOrderingTerms(fields[3],
+                                                 &property.ordering_terms) ||
+          !ParseCanonicalRelationalStringList(fields[4],
+                                              &property.dependency_uuids)) {
+        return RefuseRelationalGraph("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+                                     "relational property record is malformed",
+                                     "property_record");
+      }
+      property.uuid = operand.name;
+      property.kind = static_cast<std::uint8_t>(kind);
+      property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
+      if (fields[5] != "-") {
+        property.window_frame_descriptor_uuid = std::string(fields[5]);
+      }
+      graph->properties.push_back(std::move(property));
+      continue;
+    }
+    if (operand.type == "relational_node_v1") {
+      if (graph->nodes.size() >= kMaximumRelationalNodeCount) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational node limit exceeded",
+                                     "node_count");
+      }
+      std::uint64_t id = 0;
+      std::uint64_t kind = 0;
+      std::array<std::string_view, 5> fields{};
+      ParsedRelationalNode node;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint8_t>::max(), &kind) ||
+          (fields[1] != "0" && fields[1] != "1") ||
+          !ParseCanonicalRelationalHandleList(fields[2], &node.input_ids) ||
+          !ParseCanonicalRelationalHandleList(
+              fields[3], &node.output_descriptor_ids) ||
+          !ParseCanonicalRelationalHandleList(fields[4],
+                                              &node.values_row_ids)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node record is malformed",
+                                     "node_record");
+      }
+      if (node.input_ids.size() > kMaximumRelationalFanout) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational node fanout limit exceeded",
+                                     "node_fanout");
+      }
+      node.id = static_cast<std::uint32_t>(id);
+      node.kind = static_cast<std::uint8_t>(kind);
+      node.shareable = fields[1] == "1";
+      graph->nodes.push_back(std::move(node));
+      continue;
+    }
+    if (operand.type == "relational_node_binding_v1") {
+      std::uint64_t node_id = 0;
+      std::array<std::string_view, 5> fields{};
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          node_id == 0 ||
+          !SplitCanonicalRelationalFields(operand.value, &fields)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node binding is malformed",
+                                     "node_binding_record");
+      }
+      const auto node = std::ranges::find_if(
+          graph->nodes, [&](const auto& candidate) {
+            return candidate.id == node_id;
+          });
+      if (node == graph->nodes.end() || node->binding_present ||
+          !DecodeCanonicalRelationalHex(fields[0],
+                                        &node->semantic_variant_id) ||
+          node->semantic_variant_id.empty() ||
+          !ParseCanonicalRelationalHandleList(fields[1],
+                                              &node->bound_expression_ids) ||
+          !ParseCanonicalRelationalStringList(fields[2],
+                                              &node->required_object_uuids) ||
+          !ParseCanonicalRelationalStringList(
+              fields[3], &node->required_property_uuids) ||
+          !ParseCanonicalRelationalStringList(
+              fields[4], &node->delivered_property_uuids)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node binding is invalid or out of order",
+                                     "node_binding_record",
+                                     static_cast<std::uint32_t>(node_id));
+      }
+      node->binding_present = true;
+      continue;
+    }
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "query.execute contains an unknown operand",
+                                 "unknown_operand");
+  }
+
+  if (!wire_version_present || graph->wire_version != 2) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_VERSION",
+                                 "query.execute requires relational wire version 2",
+                                 "wire_version");
+  }
+  if (!tree_uuid_present || !catalog_uuid_present || !security_uuid_present) {
+    return RefuseRelationalGraph("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+                                 "wire version 2 requires complete UUID planning scope",
+                                 "typed_planning_scope");
+  }
+  if (!root_present) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "query.execute requires a relational root handle",
+                                 "root_node_id");
+  }
+  if (graph->nodes.empty()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                 "query.execute requires a nonempty bounded graph",
+                                 "node_count");
+  }
+  if (graph->descriptors.empty() || graph->expressions.empty() ||
+      graph->outputs.empty()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "query.execute requires typed descriptors expressions and outputs",
+                                 "typed_record_coverage");
+  }
+  RelationalGraphVerification result;
+  result.accepted = true;
+  result.record_count = record_count;
+  return result;
+}
+
+RelationalGraphVerification ValidateCanonicalRelationalGraph(
+    const ParsedRelationalGraph& graph,
+    RelationalGraphVerification result) {
+  std::unordered_map<std::uint32_t, const ParsedRelationalDescriptor*>
+      descriptors;
+  std::unordered_set<std::string> descriptor_uuids;
+  for (const auto& descriptor : graph.descriptors) {
+    if (!IsCanonicalRelationalUuid(descriptor.descriptor_uuid) ||
+        !IsCanonicalRelationalUuid(descriptor.type_uuid) ||
+        descriptor.nullability < 1 || descriptor.nullability > 3 ||
+        (descriptor.collation_uuid.has_value() &&
+         !IsCanonicalRelationalUuid(*descriptor.collation_uuid)) ||
+        (descriptor.timezone_profile_id.has_value() &&
+         descriptor.timezone_profile_id->empty()) ||
+        (descriptor.scale.has_value() &&
+         (!descriptor.precision.has_value() ||
+          *descriptor.scale > *descriptor.precision)) ||
+        !descriptors.emplace(descriptor.id, &descriptor).second ||
+        !descriptor_uuids.insert(descriptor.descriptor_uuid).second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational descriptor identity or type is invalid",
+                                   "descriptor_record");
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const ParsedRelationalExpression*>
+      expressions;
+  for (const auto& expression : graph.expressions) {
+    if (expression.kind < 1 || expression.kind > 7 ||
+        !descriptors.contains(expression.descriptor_id) ||
+        !expressions.emplace(expression.id, &expression).second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational expression identity or descriptor is invalid",
+                                   "expression_record");
+    }
+    const bool literal = expression.kind == 1;
+    const bool parameter = expression.kind == 2;
+    const bool identifier = expression.kind == 3;
+    const bool function_call = expression.kind == 4;
+    const bool unary = expression.kind == 5;
+    const bool binary = expression.kind == 6;
+    const bool parenthesized = expression.kind == 7;
+    if (literal != expression.literal_kind.has_value() ||
+        (expression.literal_kind.has_value() &&
+         (*expression.literal_kind < 1 || *expression.literal_kind > 12)) ||
+        function_call != expression.function_uuid.has_value() ||
+        (expression.function_uuid.has_value() &&
+         !IsCanonicalRelationalUuid(*expression.function_uuid)) ||
+        identifier != expression.bound_name_uuid.has_value() ||
+        (expression.bound_name_uuid.has_value() &&
+         !IsCanonicalRelationalUuid(*expression.bound_name_uuid)) ||
+        (unary || binary) != expression.operator_name.has_value() ||
+        (expression.operator_name.has_value() &&
+         expression.operator_name->empty()) ||
+        (literal || parameter) !=
+            expression.literal_or_parameter_ref.has_value() ||
+        (expression.literal_or_parameter_ref.has_value() &&
+         expression.literal_or_parameter_ref->empty()) ||
+        ((literal || parameter || identifier) &&
+         !expression.child_ids.empty()) ||
+        (unary && expression.child_ids.size() != 1) ||
+        (binary && expression.child_ids.size() != 2) ||
+        (parenthesized && expression.child_ids.size() != 1)) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational expression typed fields or arity are invalid",
+                                   "expression_typed_fields");
+    }
+  }
+  for (const auto& expression : graph.expressions) {
+    for (const auto child_id : expression.child_ids) {
+      if (!expressions.contains(child_id)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational expression contains a dangling child",
+                                     "expression_child_ids");
+      }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const ParsedRelationalValuesRow*> rows;
+  for (const auto& row : graph.values_rows) {
+    if (!rows.emplace(row.id, &row).second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational VALUES row identity is duplicated",
+                                   "values_row_record");
+    }
+    for (const auto expression_id : row.expression_ids) {
+      if (!expressions.contains(expression_id)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational VALUES row contains a dangling expression",
+                                     "values_row_expression_ids");
+      }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const ParsedRelationalOutput*> outputs;
+  for (const auto& output : graph.outputs) {
+    const auto expression = expressions.find(output.expression_id);
+    if (expression == expressions.end() ||
+        !descriptors.contains(output.descriptor_id) ||
+        expression->second->descriptor_id != output.descriptor_id ||
+        !outputs.emplace(output.id, &output).second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational output binding is invalid",
+                                   "output_record", output.node_id);
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const ParsedRelationalNode*> nodes;
+  for (const auto& node : graph.nodes) {
+    if (node.kind < 1 || node.kind > 17 || !node.binding_present ||
+        node.semantic_variant_id.empty() ||
+        !nodes.emplace(node.id, &node).second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational node identity kind or binding is invalid",
+                                   "node_id_or_kind", node.id);
+    }
+    std::unordered_set<std::uint32_t> input_node_ids;
+    for (const auto input_id : node.input_ids) {
+      if (!input_node_ids.insert(input_id).second) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node input handle is duplicated",
+                                     "input_node_ids", node.id);
+      }
+    }
+    std::unordered_set<std::uint32_t> output_descriptor_ids;
+    for (const auto descriptor_id : node.output_descriptor_ids) {
+      if (!descriptors.contains(descriptor_id) ||
+          !output_descriptor_ids.insert(descriptor_id).second) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node output descriptor is invalid",
+                                     "output_descriptor_ids", node.id);
+      }
+    }
+    std::unordered_set<std::uint32_t> bound_expression_ids;
+    for (const auto expression_id : node.bound_expression_ids) {
+      if (!expressions.contains(expression_id) ||
+          !bound_expression_ids.insert(expression_id).second) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node expression binding is invalid",
+                                     "bound_expression_ids", node.id);
+      }
+    }
+    std::unordered_set<std::string> required_objects;
+    for (const auto& uuid : node.required_object_uuids) {
+      if (!IsCanonicalRelationalUuid(uuid) ||
+          !required_objects.insert(uuid).second) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node object binding is invalid",
+                                     "required_object_uuids", node.id);
+      }
+    }
+    std::unordered_set<std::string> property_references;
+    for (const auto& uuid : node.required_property_uuids) {
+      if (!IsCanonicalRelationalUuid(uuid) ||
+          !property_references.insert("r:" + uuid).second) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+            "required relational property reference is invalid",
+            "required_property_uuids", node.id);
+      }
+    }
+    for (const auto& uuid : node.delivered_property_uuids) {
+      if (!IsCanonicalRelationalUuid(uuid) ||
+          !property_references.insert("d:" + uuid).second) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+            "delivered relational property reference is invalid",
+            "delivered_property_uuids", node.id);
+      }
+    }
+  }
+  for (const auto& output : graph.outputs) {
+    if (!nodes.contains(output.node_id)) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational output owner is dangling",
+                                   "output_record", output.node_id);
+    }
+  }
+  if (!nodes.contains(graph.root_node_id)) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational root handle is dangling",
+                                 "root_node_id", graph.root_node_id);
+  }
+
+  std::size_t reference_count = 0;
+  for (const auto& node : graph.nodes) {
+    if (!AddRelationalCount(node.bound_expression_ids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(node.required_object_uuids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(node.required_property_uuids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(node.delivered_property_uuids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count)) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                   "relational reference limit exceeded",
+                                   "reference_count", node.id);
+    }
+  }
+
+  std::unordered_map<std::uint32_t, std::set<std::uint32_t>>
+      grouping_ordinals;
+  for (const auto& grouping_set : graph.grouping_sets) {
+    const auto node = nodes.find(grouping_set.node_id);
+    if (!AddRelationalCount(grouping_set.expression_ids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        node == nodes.end() || node->second->kind != 5 ||
+        !grouping_ordinals[grouping_set.node_id]
+             .insert(grouping_set.ordinal)
+             .second) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational grouping-set owner or ordinal is invalid",
+                                   "grouping_set_record", grouping_set.node_id);
+    }
+    std::unordered_set<std::uint32_t> members;
+    std::optional<std::size_t> previous_ordinal;
+    for (const auto expression_id : grouping_set.expression_ids) {
+      const auto bound = std::ranges::find(node->second->bound_expression_ids,
+                                           expression_id);
+      if (!expressions.contains(expression_id) ||
+          !members.insert(expression_id).second ||
+          bound == node->second->bound_expression_ids.end()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational grouping-set expression is invalid",
+                                     "grouping_set_expression_ids",
+                                     grouping_set.node_id);
+      }
+      const auto ordinal = static_cast<std::size_t>(std::distance(
+          node->second->bound_expression_ids.begin(), bound));
+      if (previous_ordinal.has_value() && ordinal <= *previous_ordinal) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational grouping-set expression order is invalid",
+                                     "grouping_set_expression_order",
+                                     grouping_set.node_id);
+      }
+      previous_ordinal = ordinal;
+    }
+  }
+  for (const auto& [node_id, ordinals] : grouping_ordinals) {
+    std::uint32_t expected = 0;
+    for (const auto ordinal : ordinals) {
+      if (ordinal != expected++) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational grouping-set ordinals are not dense",
+                                     "grouping_set_ordinals", node_id);
+      }
+    }
+  }
+
+  std::unordered_set<std::uint32_t> assigned_rows;
+  std::unordered_set<std::uint32_t> referenced_descriptors;
+  for (const auto& expression : graph.expressions) {
+    referenced_descriptors.insert(expression.descriptor_id);
+  }
+  for (const auto& node : graph.nodes) {
+    std::vector<const ParsedRelationalOutput*> node_outputs;
+    for (const auto& output : graph.outputs) {
+      if (output.node_id == node.id) node_outputs.push_back(&output);
+    }
+    std::ranges::sort(node_outputs, [](const auto* left, const auto* right) {
+      return left->ordinal < right->ordinal;
+    });
+    if (node_outputs.size() != node.output_descriptor_ids.size()) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "relational output records do not cover node descriptors",
+                                   "output_record_count", node.id);
+    }
+    for (std::size_t ordinal = 0; ordinal < node_outputs.size(); ++ordinal) {
+      if (node_outputs[ordinal]->ordinal != ordinal ||
+          node_outputs[ordinal]->descriptor_id !=
+              node.output_descriptor_ids[ordinal]) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational output ordinals are not canonical",
+                                     "output_record_ordinal", node.id);
+      }
+      referenced_descriptors.insert(node.output_descriptor_ids[ordinal]);
+    }
+    if (node.kind != 13) {
+      if (!node.values_row_ids.empty()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "non-VALUES node owns literal rows",
+                                     "values_row_ids", node.id);
+      }
+      continue;
+    }
+    if (!node.input_ids.empty() || node.values_row_ids.empty() ||
+        node.output_descriptor_ids.empty() || node_outputs.empty()) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "VALUES node lacks its exact literal-table descriptor",
+                                   "literal_table_descriptor", node.id);
+    }
+    for (const auto row_id : node.values_row_ids) {
+      const auto row = rows.find(row_id);
+      if (row == rows.end() || !assigned_rows.insert(row_id).second ||
+          row->second->expression_ids.size() !=
+              node.output_descriptor_ids.size()) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "VALUES row membership or arity is invalid",
+                                     "values_row_ids", node.id);
+      }
+      for (std::size_t ordinal = 0;
+           ordinal < row->second->expression_ids.size(); ++ordinal) {
+        if (expressions.at(row->second->expression_ids[ordinal])
+                ->descriptor_id != node.output_descriptor_ids[ordinal]) {
+          return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                       "VALUES row descriptor is invalid",
+                                       "values_row_descriptor_ids", node.id);
+        }
+      }
+    }
+    const auto* first_row = rows.at(node.values_row_ids.front());
+    for (std::size_t ordinal = 0; ordinal < node_outputs.size(); ++ordinal) {
+      if (node_outputs[ordinal]->expression_id !=
+          first_row->expression_ids[ordinal]) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "VALUES output does not bind the first row",
+                                     "output_expression_ids", node.id);
+      }
+    }
+  }
+  if (assigned_rows.size() != graph.values_rows.size()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph contains an orphan VALUES row",
+                                 "orphan_values_row");
+  }
+  if (nodes.at(graph.root_node_id)->output_descriptor_ids.empty()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational result root has no typed output",
+                                 "root_output_descriptors",
+                                 graph.root_node_id);
+  }
+  if (referenced_descriptors.size() != graph.descriptors.size()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph contains an orphan descriptor",
+                                 "orphan_descriptor");
+  }
+
+  std::unordered_map<std::string, const ParsedRelationalProperty*> properties;
+  for (const auto& property : graph.properties) {
+    if (!AddRelationalCount(property.expression_ids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(property.ordering_terms.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(property.dependency_uuids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count)) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                   "relational property reference limit exceeded",
+                                   "reference_count", property.origin_node_id);
+    }
+    if (property.kind < 1 || property.kind > 5 ||
+        !nodes.contains(property.origin_node_id) ||
+        !properties.emplace(property.uuid, &property).second) {
+      return RefuseRelationalGraph(
+          "QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1",
+          "relational property identity is invalid", "property_record",
+          property.origin_node_id);
+    }
+    std::unordered_set<std::uint32_t> property_expressions;
+    for (const auto expression_id : property.expression_ids) {
+      if (!expressions.contains(expression_id) ||
+          !property_expressions.insert(expression_id).second) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-EXPRESSION-V1",
+            "relational property expression is invalid", "expression_ids",
+            property.origin_node_id);
+      }
+    }
+    for (const auto& term : property.ordering_terms) {
+      if (!expressions.contains(term.expression_id) ||
+          !property_expressions.insert(term.expression_id).second ||
+          term.direction < 1 || term.direction > 2 ||
+          term.null_placement < 1 || term.null_placement > 2 ||
+          (term.collation_uuid.has_value() &&
+           !IsCanonicalRelationalUuid(*term.collation_uuid))) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-ORDERING-V1",
+            "relational property ordering term is invalid", "ordering_terms",
+            property.origin_node_id);
+      }
+    }
+    std::unordered_set<std::string> dependencies;
+    for (const auto& dependency : property.dependency_uuids) {
+      if (!IsCanonicalRelationalUuid(dependency) ||
+          !dependencies.insert(dependency).second ||
+          dependency == property.uuid) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+            "relational property dependency is invalid",
+            "dependency_property_uuids", property.origin_node_id);
+      }
+    }
+    if (property.window_frame_descriptor_uuid.has_value() &&
+        !IsCanonicalRelationalUuid(*property.window_frame_descriptor_uuid)) {
+      return RefuseRelationalGraph(
+          "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
+          "relational window-frame descriptor is invalid",
+          "window_frame_descriptor_uuid", property.origin_node_id);
+    }
+  }
+  for (const auto& property : graph.properties) {
+    for (const auto& dependency : property.dependency_uuids) {
+      if (!properties.contains(dependency)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-DEPENDENCY-V1",
+            "relational property dependency is dangling",
+            "unknown_property_dependency", property.origin_node_id);
+      }
+    }
+  }
+  for (const auto& node : graph.nodes) {
+    for (const auto& property : node.required_property_uuids) {
+      if (!properties.contains(property)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+            "required relational property is dangling",
+            "required_property_uuids", node.id);
+      }
+    }
+    for (const auto& property : node.delivered_property_uuids) {
+      if (!properties.contains(property)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
+            "delivered relational property is dangling",
+            "delivered_property_uuids", node.id);
+      }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, std::size_t> incoming_edges;
+  for (const auto& node : graph.nodes) {
+    for (const auto input_id : node.input_ids) {
+      if (!nodes.contains(input_id)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "relational node contains a dangling edge",
+                                     "input_node_ids", node.id);
+      }
+      ++incoming_edges[input_id];
+    }
+  }
+  for (const auto& [node_id, count] : incoming_edges) {
+    if (count > 1 && !nodes.at(node_id)->shareable) {
+      return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                   "shared relational node is not declared shareable",
+                                   "shareable", node_id);
+    }
+  }
+
+  std::unordered_set<std::uint32_t> reachable_nodes;
+  std::vector<std::uint32_t> node_worklist{graph.root_node_id};
+  while (!node_worklist.empty()) {
+    const auto node_id = node_worklist.back();
+    node_worklist.pop_back();
+    if (!reachable_nodes.insert(node_id).second) continue;
+    const auto& input_ids = nodes.at(node_id)->input_ids;
+    node_worklist.insert(node_worklist.end(), input_ids.begin(),
+                         input_ids.end());
+  }
+  if (reachable_nodes.size() != graph.nodes.size()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph contains an orphan node",
+                                 "orphan_node");
+  }
+
+  std::unordered_map<std::uint32_t, std::size_t> node_indegree;
+  std::unordered_map<std::uint32_t, std::size_t> node_longest_depth;
+  for (const auto node_id : reachable_nodes) node_indegree.emplace(node_id, 0);
+  for (const auto node_id : reachable_nodes) {
+    for (const auto input_id : nodes.at(node_id)->input_ids) {
+      ++node_indegree[input_id];
+    }
+  }
+  node_worklist.clear();
+  node_worklist.reserve(reachable_nodes.size());
+  for (const auto& node : graph.nodes) {
+    if (reachable_nodes.contains(node.id) && node_indegree[node.id] == 0) {
+      node_worklist.push_back(node.id);
+      node_longest_depth[node.id] = 1;
+    }
+  }
+  std::size_t processed_node_count = 0;
+  std::uint32_t over_depth_node = 0;
+  for (std::size_t index = 0; index < node_worklist.size(); ++index) {
+    const auto node_id = node_worklist[index];
+    ++processed_node_count;
+    const auto depth = node_longest_depth.at(node_id);
+    result.maximum_node_depth = std::max(result.maximum_node_depth, depth);
+    if (depth > kMaximumRelationalDepth && over_depth_node == 0) {
+      over_depth_node = node_id;
+    }
+    for (const auto input_id : nodes.at(node_id)->input_ids) {
+      auto& input_depth = node_longest_depth[input_id];
+      input_depth = std::max(input_depth, depth + 1);
+      if (--node_indegree[input_id] == 0) node_worklist.push_back(input_id);
+    }
+  }
+  if (processed_node_count != reachable_nodes.size()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph contains a cycle",
+                                 "cycle");
+  }
+  if (over_depth_node != 0) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                 "relational graph depth limit exceeded",
+                                 "maximum_depth", over_depth_node);
+  }
+
+  std::unordered_set<std::uint32_t> expression_roots;
+  for (const auto& node : graph.nodes) {
+    expression_roots.insert(node.bound_expression_ids.begin(),
+                            node.bound_expression_ids.end());
+  }
+  for (const auto& output : graph.outputs) {
+    expression_roots.insert(output.expression_id);
+  }
+  for (const auto& row : graph.values_rows) {
+    expression_roots.insert(row.expression_ids.begin(), row.expression_ids.end());
+  }
+  for (const auto& grouping_set : graph.grouping_sets) {
+    expression_roots.insert(grouping_set.expression_ids.begin(),
+                            grouping_set.expression_ids.end());
+  }
+  for (const auto& property : graph.properties) {
+    expression_roots.insert(property.expression_ids.begin(),
+                            property.expression_ids.end());
+    for (const auto& term : property.ordering_terms) {
+      expression_roots.insert(term.expression_id);
+    }
+  }
+  std::unordered_set<std::uint32_t> reachable_expressions;
+  std::vector<std::uint32_t> expression_worklist;
+  expression_worklist.reserve(graph.expressions.size());
+  for (const auto expression_id : expression_roots) {
+    expression_worklist.push_back(expression_id);
+  }
+  while (!expression_worklist.empty()) {
+    const auto expression_id = expression_worklist.back();
+    expression_worklist.pop_back();
+    if (!reachable_expressions.insert(expression_id).second) continue;
+    const auto& child_ids = expressions.at(expression_id)->child_ids;
+    expression_worklist.insert(expression_worklist.end(), child_ids.begin(),
+                               child_ids.end());
+  }
+  if (reachable_expressions.size() != graph.expressions.size()) {
+    return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                 "relational graph contains an orphan expression",
+                                 "orphan_expression");
+  }
+
+  std::unordered_map<std::uint32_t, std::size_t> expression_indegree;
+  std::unordered_map<std::uint32_t, std::size_t> expression_longest_depth;
+  for (const auto expression_id : reachable_expressions) {
+    expression_indegree.emplace(expression_id, 0);
+  }
+  for (const auto expression_id : reachable_expressions) {
+    for (const auto child_id : expressions.at(expression_id)->child_ids) {
+      ++expression_indegree[child_id];
+    }
+  }
+  expression_worklist.clear();
+  for (const auto& expression : graph.expressions) {
+    if (reachable_expressions.contains(expression.id) &&
+        expression_indegree[expression.id] == 0) {
+      expression_worklist.push_back(expression.id);
+      expression_longest_depth[expression.id] = 1;
+    }
+  }
+  std::size_t processed_expression_count = 0;
+  std::uint32_t over_depth_expression = 0;
+  for (std::size_t index = 0; index < expression_worklist.size(); ++index) {
+    const auto expression_id = expression_worklist[index];
+    ++processed_expression_count;
+    const auto depth = expression_longest_depth.at(expression_id);
+    result.maximum_expression_depth =
+        std::max(result.maximum_expression_depth, depth);
+    if (depth > kMaximumRelationalDepth && over_depth_expression == 0) {
+      over_depth_expression = expression_id;
+    }
+    for (const auto child_id : expressions.at(expression_id)->child_ids) {
+      auto& child_depth = expression_longest_depth[child_id];
+      child_depth = std::max(child_depth, depth + 1);
+      if (--expression_indegree[child_id] == 0) {
+        expression_worklist.push_back(child_id);
+      }
+    }
+  }
+  if (processed_expression_count != reachable_expressions.size()) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.INVALID_HANDLE",
+        "relational expression graph contains a cycle", "expression_cycle");
+  }
+  if (over_depth_expression != 0) {
+    return RefuseRelationalGraph(
+        "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+        "relational expression graph depth limit exceeded",
+        "expression_maximum_depth", over_depth_expression);
+  }
+
+  result.accepted = true;
+  result.node_count = graph.nodes.size();
+  result.expression_count = graph.expressions.size();
+  return result;
+}
+
+RelationalGraphVerification VerifyCanonicalRelationalGraph(
+    const SblrEnvelope& envelope) {
+  if (envelope.sblr_opcode != "SBLR_QUERY_EXECUTE" ||
+      envelope.operation_family != "sblr.query.relational.v3" ||
+      envelope.sblr_operation_key != "sblr.query.relational.v3" ||
+      envelope.engine_api_operation_id != "query.execute" ||
+      envelope.result_shape_key != "query_execute_result") {
+    return RefuseRelationalGraph(
+        "QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL",
+        "native relational query metadata does not select SBLR_QUERY_EXECUTE",
+        "package_root");
+  }
+  ParsedRelationalGraph graph;
+  auto decoded = DecodeCanonicalRelationalGraph(envelope, &graph);
+  if (!decoded.accepted) return decoded;
+  return ValidateCanonicalRelationalGraph(graph, std::move(decoded));
+}
+
+}  // namespace
+
 SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   SblrVerifierResult result;
   if (envelope.messages.has_errors()) {
@@ -38208,103 +39614,18 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                      "SBLR envelope authority evidence is missing");
   }
   if (envelope.operation_id == "query.execute") {
-    bool wire_version_present = false;
-    bool root_node_present = false;
-    bool bound_sblr_tree_present = false;
-    bool catalog_epoch_uuid_present = false;
-    bool security_context_uuid_present = false;
-    std::size_t relational_node_count = 0;
-    std::size_t relational_node_binding_count = 0;
-    std::size_t relational_descriptor_count = 0;
-    std::size_t relational_expression_count = 0;
-    std::size_t relational_output_count = 0;
-    std::size_t relational_values_row_count = 0;
-    bool canonical_operands = true;
-    for (const auto& operand : envelope.operands) {
-      if (operand.type == "uint16" &&
-          operand.name == "relational_wire_version" &&
-          operand.value == "2" && !wire_version_present) {
-        wire_version_present = true;
-      } else if (operand.type == "uuid" &&
-                 operand.name == "relational_bound_sblr_tree_uuid" &&
-                 !operand.value.empty() && !bound_sblr_tree_present) {
-        bound_sblr_tree_present = true;
-      } else if (operand.type == "uuid" &&
-                 operand.name == "relational_catalog_epoch_uuid" &&
-                 !operand.value.empty() && !catalog_epoch_uuid_present) {
-        catalog_epoch_uuid_present = true;
-      } else if (operand.type == "uuid" &&
-                 operand.name == "relational_security_context_uuid" &&
-                 !operand.value.empty() && !security_context_uuid_present) {
-        security_context_uuid_present = true;
-      } else if (operand.type == "uint32" &&
-                 operand.name == "relational_root_node_id" &&
-                 !operand.value.empty() && operand.value != "0" &&
-                 !root_node_present) {
-        root_node_present = true;
-      } else if (operand.type == "relational_node_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_node_count;
-      } else if (operand.type == "relational_node_binding_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_node_binding_count;
-      } else if (operand.type == "relational_descriptor_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_descriptor_count;
-      } else if (operand.type == "relational_expression_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_expression_count;
-      } else if (operand.type == "relational_output_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_output_count;
-      } else if (operand.type == "relational_values_row_v1" &&
-                 !operand.name.empty() && operand.name != "0" &&
-                 !operand.value.empty()) {
-        ++relational_values_row_count;
-      } else if (operand.type == "relational_grouping_set_v1" &&
-                 !operand.name.empty() && !operand.value.empty()) {
-        // Grouping-set ordinals begin at zero and are fully revalidated by
-        // canonical relational admission.
-      } else if (operand.type == "relational_property_v1" &&
-                 !operand.name.empty() && !operand.value.empty()) {
-        // Property records are optional for a property-free relational tree.
-      } else {
-        canonical_operands = false;
-      }
-    }
-    if (envelope.sblr_opcode != "SBLR_QUERY_EXECUTE" ||
-        envelope.operation_family != "sblr.query.relational.v3" ||
-        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
-        envelope.engine_api_operation_id != "query.execute" ||
-        envelope.result_shape_key != "query_execute_result" ||
-        !wire_version_present || !root_node_present ||
-        !bound_sblr_tree_present || !catalog_epoch_uuid_present ||
-        !security_context_uuid_present ||
-        relational_node_count == 0 || relational_descriptor_count == 0 ||
-        relational_node_binding_count != relational_node_count ||
-        relational_expression_count == 0 || relational_output_count == 0 ||
-        relational_values_row_count == 0 || !canonical_operands ||
-        envelope.payload.find("operation_id=query.execute\n") ==
-            std::string::npos ||
-        envelope.payload.find("opcode=SBLR_QUERY_EXECUTE\n") ==
-            std::string::npos ||
-        envelope.payload.find("result_shape=query_execute_result\n") ==
-            std::string::npos ||
-        envelope.payload.find("requires_transaction_context=true\n") ==
-            std::string::npos ||
-        envelope.payload.find("contains_sql_text=false\n") ==
-            std::string::npos ||
-        envelope.payload.find("query.plan_operation") != std::string::npos ||
-        envelope.payload.find("SBLR_QUERY_PLAN_OPERATION") !=
-            std::string::npos) {
-      AddVerifierError(
-          &result.messages, "QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL",
-          "native relational queries must use the canonical typed query.execute root");
+    const auto graph = VerifyCanonicalRelationalGraph(envelope);
+    if (!graph.accepted) {
+      AddVerifierError(&result.messages, graph.diagnostic_id, graph.detail,
+                       {{"field_id", graph.field_id},
+                        {"node_id", std::to_string(graph.node_id)}});
+    } else {
+      result.validated_relational_node_count = graph.node_count;
+      result.validated_relational_expression_count = graph.expression_count;
+      result.validated_relational_record_count = graph.record_count;
+      result.maximum_observed_relational_depth = graph.maximum_node_depth;
+      result.maximum_observed_expression_depth =
+          graph.maximum_expression_depth;
     }
     if (!HasValue(envelope.required_rights, "right.read") ||
         !HasValue(envelope.required_authority_steps,

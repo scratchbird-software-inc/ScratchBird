@@ -60,6 +60,11 @@ struct SblrEnvelope {
 
 struct SblrVerifierResult {
   bool admitted{false};
+  std::size_t validated_relational_node_count{0};
+  std::size_t validated_relational_expression_count{0};
+  std::size_t validated_relational_record_count{0};
+  std::size_t maximum_observed_relational_depth{0};
+  std::size_t maximum_observed_expression_depth{0};
   MessageVectorSet messages;
 };
 

@@ -40,6 +40,7 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   # QOW-CMAKE-WIN-015-MULTIPLE-V1
   # QOW-CMAKE-WIN-015-QUALIFY-V1
   # QOW-CMAKE-WIN-015-COMPOSITION-V1
+  # QOW-CMAKE-SBLR-VERIFIER-V1
   lowering/lowering.cpp
   rendering/rendering.cpp
 )
