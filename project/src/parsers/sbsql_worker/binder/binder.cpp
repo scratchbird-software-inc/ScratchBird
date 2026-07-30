@@ -273,6 +273,17 @@ bool LooksLikeUuidV7(const std::string_view value) {
   return LooksLikeCanonicalUuid(value) && value[14] == '7';
 }
 
+bool IsNonNullCanonicalUuid(const std::string_view value) {
+  return LooksLikeCanonicalUuid(value) &&
+         value != "00000000-0000-0000-0000-000000000000";
+}
+
+bool IsCatalogRelationObjectType(const std::string_view value) {
+  return value == "relation" || value == "table" || value == "view" ||
+         value == "materialized_view" || value == "external_table" ||
+         value == "foreign_table";
+}
+
 std::string_view ExpectedAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
     const NativeAggregateProjectionForm projection_form) {
@@ -325,6 +336,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.grouping_sets.clear();
   document.outputs.clear();
   document.relations.clear();
+  document.catalog_relation_sources.clear();
   document.scopes.clear();
   return document;
 }
@@ -385,6 +397,170 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   if (descriptor_by_id.empty()) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
                           "typed relational binding requires descriptor handles");
+    return RefusedBoundAst(std::move(bound));
+  }
+
+  const bool has_catalog_relation_ast = std::ranges::any_of(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
+      });
+  if (has_catalog_relation_ast || !ast.catalog_relation_sources.empty()) {
+    if (!has_catalog_relation_ast || ast.relations.size() != 1 ||
+        ast.catalog_relation_sources.size() != 1 ||
+        ast.root_relation_id == 0 || !ast.values_rows.empty() ||
+        !ast.grouping_sets.empty() || ast.expressions.size() != 1 ||
+        !context.expressions.empty() || !context.outputs.empty() ||
+        !context.relations.empty() || context.catalog_relations.size() != 1) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-RELATION",
+          "catalog relation binding requires one source and no projection expansion");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    const auto& relation = ast.relations.front();
+    const auto& source = ast.catalog_relation_sources.front();
+    const auto& wildcard = ast.expressions.front();
+    if (relation.relation_id != ast.root_relation_id ||
+        relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        !relation.input_relation_ids.empty() ||
+        relation.relation_source_ids !=
+            std::vector<std::uint32_t>{source.source_id} ||
+        !relation.values_row_ids.empty() ||
+        relation.output_expression_ids !=
+            std::vector<std::uint32_t>{wildcard.expression_id} ||
+        relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
+        relation.aggregate_projection_form !=
+            NativeAggregateProjectionForm::kNone ||
+        !relation.grouping_key_expression_ids.empty() ||
+        !relation.aggregate_expression_ids.empty() ||
+        !relation.predicate_expression_ids.empty() || source.source_id == 0 ||
+        source.source_kind != NativeRelationSourceAstKind::kCatalogRelation ||
+        source.qualified_name.empty() ||
+        std::ranges::any_of(source.qualified_name, [](const auto& component) {
+          return component.spelling.empty();
+        }) ||
+        (source.alias.has_value() && source.alias->spelling.empty()) ||
+        (!source.alias.has_value() && source.alias_is_explicit) ||
+        wildcard.expression_id == 0 ||
+        wildcard.expression_kind != NativeExpressionAstKind::kWildcard ||
+        wildcard.literal_kind.has_value() ||
+        !wildcard.child_expression_ids.empty() || wildcard.spelling != "*" ||
+        !wildcard.operator_name.empty()) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "catalog relation AST is outside the bounded source profile");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    const auto& relation_binding = context.catalog_relations.front();
+    if (relation_binding.source_id != source.source_id ||
+        relation_binding.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
+        !IsCatalogRelationObjectType(relation_binding.resolved_object_type) ||
+        !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+        (relation_binding.parent_object_uuid.has_value() &&
+         !IsNonNullCanonicalUuid(*relation_binding.parent_object_uuid)) ||
+        relation_binding.catalog_generation_id == 0 ||
+        relation_binding.security_epoch == 0 ||
+        relation_binding.resource_epoch == 0 ||
+        relation_binding.columns.empty()) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-RELATION",
+          "catalog relation requires caller-supplied bound UUID and epoch evidence");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::uint32_t> used_descriptor_ids;
+    BoundCatalogRelationSourceAstRecord bound_source;
+    bound_source.source_id = source.source_id;
+    bound_source.source_kind = source.source_kind;
+    bound_source.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    bound_source.qualified_name = source.qualified_name;
+    bound_source.alias = source.alias;
+    bound_source.alias_is_explicit = source.alias_is_explicit;
+    bound_source.qualified_name_range = source.qualified_name_range;
+    bound_source.range = source.range;
+    bound_source.object_uuid = relation_binding.object_uuid;
+    bound_source.resolved_object_type = relation_binding.resolved_object_type;
+    bound_source.resolved_schema_uuid = relation_binding.resolved_schema_uuid;
+    bound_source.parent_object_uuid = relation_binding.parent_object_uuid;
+    bound_source.catalog_generation_id =
+        relation_binding.catalog_generation_id;
+    bound_source.security_epoch = relation_binding.security_epoch;
+    bound_source.resource_epoch = relation_binding.resource_epoch;
+    bound_source.columns.reserve(relation_binding.columns.size());
+    for (std::size_t ordinal = 0; ordinal < relation_binding.columns.size();
+         ++ordinal) {
+      const auto& column = relation_binding.columns[ordinal];
+      const auto descriptor = descriptor_by_id.find(column.descriptor_id);
+      if (column.ordinal != ordinal ||
+          !IsNonNullCanonicalUuid(column.column_uuid) ||
+          !column_uuids.insert(column.column_uuid).second ||
+          descriptor == descriptor_by_id.end() ||
+          descriptor->second->nullability == BoundNullability::kUnknown ||
+          (descriptor->second->timezone_profile_id.has_value() &&
+           descriptor->second->timezone_profile_id->empty())) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+            "catalog columns require ordered UUID and complete descriptor evidence");
+        return RefusedBoundAst(std::move(bound));
+      }
+      used_descriptor_ids.insert(column.descriptor_id);
+      bound_source.columns.push_back(
+          {column.ordinal, column.column_uuid, column.descriptor_id});
+    }
+    if (used_descriptor_ids.size() != descriptor_by_id.size()) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+          "catalog relation binding contains an unused descriptor handle");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    BoundRelationAstRecord bound_relation;
+    bound_relation.relation_id = relation.relation_id;
+    bound_relation.relation_kind = relation.relation_kind;
+    bound_relation.semantic_variant_id = "catalog.relation-source.v1";
+    bound_relation.bound_object_uuid = relation_binding.object_uuid;
+    bound.relations.push_back(std::move(bound_relation));
+    bound.catalog_relation_sources.push_back(std::move(bound_source));
+
+    bound.descriptors.reserve(context.descriptors.size());
+    for (const auto& descriptor : context.descriptors) {
+      BoundDescriptorAstRecord record;
+      record.descriptor_id = descriptor.descriptor_id;
+      record.descriptor_uuid = descriptor.descriptor_uuid;
+      record.type_uuid = descriptor.type_uuid;
+      record.nullability = descriptor.nullability;
+      record.collation_uuid = descriptor.collation_uuid;
+      record.timezone_profile_id = descriptor.timezone_profile_id;
+      record.width_precision_scale = descriptor.width_precision_scale;
+      bound.descriptors.push_back(std::move(record));
+    }
+    std::ranges::sort(bound.descriptors,
+                      [](const auto& left, const auto& right) {
+                        return left.descriptor_id < right.descriptor_id;
+                      });
+
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.parent_scope_id = std::nullopt;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
+  if (!context.catalog_relations.empty()) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-RELATION",
+        "catalog relation evidence cannot bind a source-free relation graph");
     return RefusedBoundAst(std::move(bound));
   }
 
@@ -2279,6 +2455,11 @@ BoundStatement BindAst(const AstDocument& ast,
     bound.descriptor_refs.clear();
     for (const auto& descriptor : bound.native_relational.descriptors) {
       bound.descriptor_refs.push_back(descriptor.descriptor_uuid);
+    }
+    bound.resolved_object_uuids.clear();
+    for (const auto& source :
+         bound.native_relational.catalog_relation_sources) {
+      bound.resolved_object_uuids.push_back(source.object_uuid);
     }
     bound.bound = bound.native_relational.bound;
     return bound;

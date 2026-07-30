@@ -24,6 +24,11 @@ enum class BoundNullability {
   kUnknown,
 };
 
+enum class NativeCatalogRelationResolutionState : std::uint8_t {
+  kUnresolved = 0,
+  kBound = 1,
+};
+
 struct BoundWidthPrecisionScale {
   std::optional<std::uint32_t> width;
   std::optional<std::uint32_t> precision;
@@ -62,6 +67,26 @@ struct NativeRelationBindingInput {
   std::string semantic_variant_id;
 };
 
+struct NativeCatalogColumnBindingInput {
+  std::uint32_t ordinal{0};
+  std::string column_uuid;
+  std::uint32_t descriptor_id{0};
+};
+
+struct NativeCatalogRelationBindingInput {
+  std::uint32_t source_id{0};
+  NativeCatalogRelationResolutionState resolution_state{
+      NativeCatalogRelationResolutionState::kUnresolved};
+  std::string object_uuid;
+  std::string resolved_object_type;
+  std::string resolved_schema_uuid;
+  std::optional<std::string> parent_object_uuid;
+  std::uint64_t catalog_generation_id{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::vector<NativeCatalogColumnBindingInput> columns;
+};
+
 struct NativeRelationalBindingContext {
   std::string bound_ast_uuid;
   std::string catalog_epoch_uuid;
@@ -70,6 +95,7 @@ struct NativeRelationalBindingContext {
   std::vector<NativeExpressionBindingInput> expressions;
   std::vector<NativeOutputBindingInput> outputs;
   std::vector<NativeRelationBindingInput> relations;
+  std::vector<NativeCatalogRelationBindingInput> catalog_relations;
 };
 
 struct BoundDescriptorAstRecord {
@@ -142,6 +168,33 @@ struct BoundScopeAstRecord {
   std::string catalog_epoch_uuid;
 };
 
+struct BoundCatalogColumnAstRecord {
+  std::uint32_t ordinal{0};
+  std::string column_uuid;
+  std::uint32_t descriptor_id{0};
+};
+
+struct BoundCatalogRelationSourceAstRecord {
+  std::uint32_t source_id{0};
+  NativeRelationSourceAstKind source_kind{
+      NativeRelationSourceAstKind::kCatalogRelation};
+  NativeCatalogRelationResolutionState resolution_state{
+      NativeCatalogRelationResolutionState::kUnresolved};
+  std::vector<NativeIdentifierAstNode> qualified_name;
+  std::optional<NativeIdentifierAstNode> alias;
+  bool alias_is_explicit{false};
+  SourceRange qualified_name_range;
+  SourceRange range;
+  std::string object_uuid;
+  std::string resolved_object_type;
+  std::string resolved_schema_uuid;
+  std::optional<std::string> parent_object_uuid;
+  std::uint64_t catalog_generation_id{0};
+  std::uint64_t security_epoch{0};
+  std::uint64_t resource_epoch{0};
+  std::vector<BoundCatalogColumnAstRecord> columns;
+};
+
 struct BoundNativeRelationalDocument {
   bool bound{false};
   std::string bound_ast_uuid;
@@ -154,6 +207,7 @@ struct BoundNativeRelationalDocument {
   std::vector<BoundGroupingSetAstRecord> grouping_sets;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
+  std::vector<BoundCatalogRelationSourceAstRecord> catalog_relation_sources;
   std::vector<BoundScopeAstRecord> scopes;
   MessageVectorSet messages;
 };
