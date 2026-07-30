@@ -10,6 +10,7 @@
 
 #include "sblr_engine_envelope.hpp"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -71,6 +72,7 @@ enum class SblrOpcodeSecurityClass {
 };
 
 struct SblrOpcodeEntry {
+  std::uint16_t code = 0;
   std::string operation_id;
   std::string opcode;
   std::string family;
@@ -95,6 +97,10 @@ struct SblrOpcodeValidationResult {
 const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry();
 const SblrOpcodeEntry* LookupSblrOperation(std::string_view operation_id);
 const SblrOpcodeEntry* LookupSblrOpcode(std::string_view opcode);
+const SblrOpcodeEntry* LookupSblrOpcodeCode(std::uint16_t code);
+SblrOpcodeValidationResult ValidateSblrOpcodeIdentity(std::uint16_t code,
+                                                      std::string_view operation_id,
+                                                      std::string_view opcode);
 SblrOpcodeValidationResult ValidateSblrOpcodeForEnvelope(const SblrOperationEnvelope& envelope);
 std::string ToString(SblrOpcodeCategory category);
 std::string ToString(SblrOpcodeSupport support);

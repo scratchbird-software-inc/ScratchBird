@@ -1351,6 +1351,24 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                const PreparedMetadataBindingSnapshot*
                                                    prepared_metadata,
                                                sb_engine_result_t* out_result) {
+  // SEARCH_KEY: SB_ENGINE_PUBLIC_ABI_ADMITTED_SBLR_ONLY
+  // This ABI revision carries one byte pointer and therefore cannot carry the
+  // canonical outer SBLR container, the separate 28-field SBEE record, and an
+  // immutable server admission token. Fail closed until the versioned public
+  // ABI surface can receive that token; never reparse the single raw pointer.
+  (void)session;
+  (void)context;
+  (void)envelope;
+  (void)params;
+  (void)prepared_metadata;
+  return fail_result(
+      SB_ENGINE_STATUS_UNSUPPORTED,
+      out_result,
+      4032,
+      "SBLR.ENVELOPE.FIELD_MISSING",
+      "sblr.envelope.field_missing",
+      "immutable_server_admission_token_required");
+#if 0
   const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
   const std::string_view encoded(data, envelope.canonical_bytes.size());
   auto phase_last = EngineAbiSteadyClock::now();
@@ -1564,6 +1582,7 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                            phase_micros);
   *out_result = result;
   return SB_ENGINE_STATUS_OK;
+#endif
 }
 
 std::string behavior_payload() {
@@ -1996,6 +2015,14 @@ sb_engine_status_t CreatePreparedMetadataBinding(
                         sizeof(sb_engine_sblr_dispatch_params_v1_t),
                         out_result);
   if (status != SB_ENGINE_STATUS_OK) return status;
+  return fail_result(
+      SB_ENGINE_STATUS_UNSUPPORTED,
+      out_result,
+      4032,
+      "SBLR.ENVELOPE.FIELD_MISSING",
+      "sblr.envelope.field_missing",
+      "prepared binding requires an immutable server admission token");
+#if 0
   if (!nonzero_uuid(prepare_context->effective_user_uuid) ||
       !nonzero_uuid(prepare_context->session_uuid) ||
       prepare_context->rights_set_ref == 0) {
@@ -2295,6 +2322,7 @@ sb_engine_status_t CreatePreparedMetadataBinding(
     *out_result = result;
   }
   return SB_ENGINE_STATUS_OK;
+#endif
 }
 
 sb_engine_status_t ReleasePreparedMetadataBinding(
@@ -2363,6 +2391,14 @@ sb_engine_status_t DispatchWithPreparedMetadataBinding(
                         sizeof(sb_engine_sblr_dispatch_params_v1_t),
                         out_result);
   if (status != SB_ENGINE_STATUS_OK) { return status; }
+  return fail_result(
+      SB_ENGINE_STATUS_UNSUPPORTED,
+      out_result,
+      4032,
+      "SBLR.ENVELOPE.FIELD_MISSING",
+      "sblr.envelope.field_missing",
+      "prepared dispatch requires an immutable server admission token");
+#if 0
   if (params->reserved0 != 0 || params->reserved1 != 0) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
                        out_result,
@@ -2463,6 +2499,7 @@ sb_engine_status_t DispatchWithPreparedMetadataBinding(
       *params,
       &prepared_metadata,
       out_result);
+#endif
 }
 
 }  // namespace scratchbird::server_engine_bridge
@@ -2505,6 +2542,15 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
                        "ENGINE.ABI.RESERVED_FIELD_INVALID",
                        "engine.abi.reserved_field_invalid",
                        "sblr_dispatch_params.reserved0_or_reserved1");
+  }
+  if (params->envelope_size_bytes != 0) {
+    return fail_result(
+        SB_ENGINE_STATUS_UNSUPPORTED,
+        out_result,
+        4032,
+        "SBLR.ENVELOPE.FIELD_MISSING",
+        "sblr.envelope.field_missing",
+        "public ABI revision requires an immutable server admission token");
   }
   if (!nonzero_uuid(context->effective_user_uuid) || !nonzero_uuid(context->session_uuid)) {
     return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 2001, "SECURITY.IDENTITY.MISSING",

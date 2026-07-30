@@ -63,6 +63,25 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
       "${CMAKE_CURRENT_BINARY_DIR}/qow_engine_sblr"
     )
   endif()
+  if(NOT TARGET sb_qow_sblr_admission_contract)
+    add_subdirectory(
+      "${PROJECT_SOURCE_DIR}/src/server"
+      "${CMAKE_CURRENT_BINARY_DIR}/qow_server"
+    )
+  endif()
+
+  # QOW-CMAKE-SBLR-CODEC-V1
+  add_executable(qow_sblr_codec_test_v1 qow_sblr_codec.cpp)
+  target_compile_features(qow_sblr_codec_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_sblr_codec_test_v1 PRIVATE
+    sb_qow_sblr_query_route_contract
+    sb_qow_sblr_admission_contract
+  )
+  add_test(NAME qow_sblr_codec_v1 COMMAND qow_sblr_codec_test_v1)
+  set_tests_properties(qow_sblr_codec_v1 PROPERTIES
+    LABELS "qow_closure;QOW-103;QOW-CT-003;QOW-LEAF-QRY-003;development_candidate"
+  )
+
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_executable(qow_qry_003_test_v1 qow_qry_003.cpp)
   target_compile_features(qow_qry_003_test_v1 PRIVATE cxx_std_20)

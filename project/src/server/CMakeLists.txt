@@ -6,6 +6,33 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  if(NOT TARGET sb_qow_sblr_query_route_contract)
+    add_subdirectory(
+      ${CMAKE_CURRENT_SOURCE_DIR}/../engine/sblr
+      ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_sblr
+    )
+  endif()
+  # QOW-CMAKE-SBLR-CANONICAL-ADMISSION-V1
+  add_library(sb_qow_sblr_admission_contract STATIC
+    sblr_admission.cpp
+  )
+  target_compile_features(sb_qow_sblr_admission_contract PUBLIC cxx_std_20)
+  target_include_directories(sb_qow_sblr_admission_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../engine/sblr
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/hash
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/src
+  )
+  target_link_libraries(sb_qow_sblr_admission_contract PUBLIC
+    sb_qow_sblr_query_route_contract
+    sb_core_hash
+  )
+  set(SB_QOW_SBLR_ADMISSION_TESTS_ENROLLED TRUE PARENT_SCOPE)
+  return()
+endif()
+
 if(NOT TARGET sbl_manager_protocol)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../manager/protocol ${CMAKE_CURRENT_BINARY_DIR}/manager_protocol)
 endif()

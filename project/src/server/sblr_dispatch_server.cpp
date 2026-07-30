@@ -2595,18 +2595,12 @@ bool LooksLikeBinarySblrEnvelope(std::string_view encoded) {
 }
 
 std::string DecodedBinaryOperationEnvelopeText(std::string_view encoded) {
-  if (!LooksLikeBinarySblrEnvelope(encoded)) { return {}; }
-  const auto decoded = scratchbird::engine::DecodeSblrEnvelopeBytes(
-      reinterpret_cast<const std::uint8_t*>(encoded.data()),
-      static_cast<std::uint64_t>(encoded.size()));
-  if (decoded.status != scratchbird::engine::SblrCodecStatus::ok ||
-      decoded.envelope.payload_kind != scratchbird::engine::SblrPayloadKind::operation_envelope ||
-      decoded.envelope.canonical_bytes.empty()) {
-    return {};
-  }
-  const auto* data =
-      reinterpret_cast<const char*>(decoded.envelope.canonical_bytes.data());
-  return std::string(data, decoded.envelope.canonical_bytes.size());
+  // SEARCH_KEY: SB_SERVER_SBLR_RETIRED_RAW_REPARSE_REFUSAL
+  // Dispatch receives only ServerSblrAdmissionTokenData. A single raw byte
+  // string cannot carry both the canonical container and SBEE context and is
+  // never decoded or reparsed here.
+  (void)encoded;
+  return {};
 }
 
 std::optional<std::string> TextLineValue(std::string_view encoded, std::string_view key) {
@@ -8536,6 +8530,14 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
         admission.diagnostics.empty() ? "sblr_admission_rejected"
                                       : admission.diagnostics.front().code);
   }
+  if (!admission.admission_token) {
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "SBLR.ENVELOPE.FIELD_MISSING",
+                   "Prepare requires an immutable canonical SBLR admission token.",
+                   "immutable_admission_token_required");
+  }
   UpdateServerRequestLifecycleOperation(registry,
                                         request_record.request_uuid,
                                         admission.operation_id);
@@ -9086,6 +9088,22 @@ SessionOperationResult HandleExecuteSblrImpl(
                      "prepared_statement_shape_mismatch");
     }
   }
+  // SEARCH_KEY: SB_SERVER_SBLR_IMMUTABLE_ADMISSION_TOKEN_DISPATCH
+  // Prepared-admission reuse and every old single-string route are refused:
+  // downstream execution may consume only the typed, immutable token created
+  // after outer-container, SBEE, SBOP, registry, identity, and MGA binding.
+  if (!admission.admission_token) {
+    CompleteServerRequestLifecycle(registry,
+                                   request_record.request_uuid,
+                                   ServerRequestLifecycleState::kFailed,
+                                   "immutable_admission_token_required");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                   response_schema,
+                   decoded->session_uuid,
+                   "SBLR.ENVELOPE.FIELD_MISSING",
+                   "Execution requires an immutable canonical SBLR admission token.",
+                   "immutable_admission_token_required");
+  }
   const bool transaction_control =
       admission.operation_id == "transaction.begin" ||
       admission.operation_id == "transaction.commit" ||
@@ -9446,6 +9464,14 @@ SessionOperationResult HandleExecuteSblrImpl(
           decoded->session_uuid,
           inner_admission.diagnostics,
           "prepared_inner_sblr_rejected");
+    }
+    if (!inner_admission.admission_token) {
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "SBLR.ENVELOPE.FIELD_MISSING",
+                     "Prepared inner SBLR requires an immutable admission token.",
+                     "immutable_admission_token_required");
     }
     prepared.operation_family = inner_admission.operation_family;
     prepared.operation_id = inner_admission.operation_id;
