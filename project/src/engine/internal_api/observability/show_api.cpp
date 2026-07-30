@@ -25,7 +25,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <limits>
 #include <map>
 #include <set>
 #include <string_view>
@@ -91,60 +90,6 @@ std::string UpperAscii(std::string value) {
     c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
   }
   return value;
-}
-
-bool ParseUnsignedU64(std::string_view value, std::uint64_t* out) {
-  if (out == nullptr || value.empty()) return false;
-  std::uint64_t parsed = 0;
-  for (const char ch : value) {
-    if (!std::isdigit(static_cast<unsigned char>(ch))) return false;
-    const auto digit = static_cast<std::uint64_t>(ch - '0');
-    if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10u) {
-      return false;
-    }
-    parsed = parsed * 10u + digit;
-  }
-  *out = parsed;
-  return true;
-}
-
-bool EvaluateCountComparison(std::uint64_t actual,
-                             std::string compare_op,
-                             std::uint64_t expected,
-                             bool* result) {
-  if (result == nullptr) return false;
-  compare_op = LowerAscii(std::move(compare_op));
-  if (compare_op == ">" || compare_op == "gt") {
-    *result = actual > expected;
-  } else if (compare_op == ">=" || compare_op == "gte" || compare_op == "ge") {
-    *result = actual >= expected;
-  } else if (compare_op == "<" || compare_op == "lt") {
-    *result = actual < expected;
-  } else if (compare_op == "<=" || compare_op == "lte" || compare_op == "le") {
-    *result = actual <= expected;
-  } else if (compare_op == "=" || compare_op == "==" || compare_op == "eq") {
-    *result = actual == expected;
-  } else if (compare_op == "!=" || compare_op == "<>" || compare_op == "ne" ||
-             compare_op == "neq") {
-    *result = actual != expected;
-  } else {
-    return false;
-  }
-  return true;
-}
-
-bool ParseBoolText(std::string value, bool* out) {
-  if (out == nullptr) return false;
-  value = LowerAscii(std::move(value));
-  if (value == "true" || value == "1") {
-    *out = true;
-    return true;
-  }
-  if (value == "false" || value == "0") {
-    *out = false;
-    return true;
-  }
-  return false;
 }
 
 std::string BoolText(bool value) { return value ? "true" : "false"; }
@@ -1039,6 +984,24 @@ void AddSecurityPrincipalNavigatorObjects(
 }
 
 EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCatalogRequest& request) {
+  const std::string requested_result_shape =
+      OptionValue(request, "result_projection:");
+  const std::string requested_aggregate =
+      OptionValue(request, "aggregate_function:");
+  const bool ordinary_count_requested =
+      requested_result_shape == "count" &&
+      (requested_aggregate.empty() ||
+       requested_aggregate == "sb.aggregate.count");
+  if ((!requested_result_shape.empty() && !ordinary_count_requested) ||
+      (!requested_aggregate.empty() && !ordinary_count_requested)) {
+    return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
+        request.context,
+        "observability.show_catalog",
+        MakeEngineApiDiagnostic("SBSQL.CATALOG.RETIRED_RESULT_SHAPE",
+                                "observability.show_catalog.result_shape",
+                                "catalog result-shape control fields are not supported",
+                                true));
+  }
   auto result = MakeApiBehaviorSuccess<EngineShowCatalogResult>(
       request.context,
       "observability.show_catalog");
@@ -1471,71 +1434,9 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
 	                                                         request.ipar_metric_counters,
 	                                                         request.ipar_telemetry_controls,
 	                                                         request.ipar_slow_path_reasons);
-  const std::string result_projection = OptionValue(request, "result_projection:");
-  const std::string aggregate_function = OptionValue(request, "aggregate_function:");
-  if (result_projection == "count_assertion" ||
-      aggregate_function == "sb.aggregate.count") {
-    const std::string actual_column_name =
-        OptionValue(request, "actual_column_name:").empty()
-            ? "actual_count"
-            : OptionValue(request, "actual_column_name:");
-    const std::string expected_column_name =
-        OptionValue(request, "expected_column_name:").empty()
-            ? "expected_count"
-            : OptionValue(request, "expected_column_name:");
-    const std::string expected_value =
-        OptionValue(request, "expected_count:").empty()
-            ? OptionValue(request, "expected_value:")
-            : OptionValue(request, "expected_count:");
-    std::vector<std::pair<std::string, std::string>> fields;
-    const std::string assertion_id = OptionValue(request, "assertion_id:");
-    if (!assertion_id.empty()) {
-      fields.push_back({"assertion_id", assertion_id});
-    }
-    const std::string compare_op = OptionValue(request, "count_compare_op:");
-    if (!compare_op.empty()) {
-      std::uint64_t compare_value = 0;
-      if (!ParseUnsignedU64(OptionValue(request, "count_compare_value:"), &compare_value)) {
-        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
-            request.context,
-            "observability.show_catalog",
-            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_COMPARE_VALUE",
-                                    "observability.show_catalog.count_assertion",
-                                    "count_compare_value must be a non-negative integer",
-                                    true));
-      }
-      bool actual_bool = false;
-      if (!EvaluateCountComparison(static_cast<std::uint64_t>(filtered_rows.size()),
-                                   compare_op,
-                                   compare_value,
-                                   &actual_bool)) {
-        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
-            request.context,
-            "observability.show_catalog",
-            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_COMPARE_OPERATOR",
-                                    "observability.show_catalog.count_assertion",
-                                    "count_compare_op is not supported",
-                                    true));
-      }
-      bool expected_bool = false;
-      if (!ParseBoolText(expected_value, &expected_bool)) {
-        return MakeApiBehaviorDiagnostic<EngineShowCatalogResult>(
-            request.context,
-            "observability.show_catalog",
-            MakeEngineApiDiagnostic("SBSQL.CATALOG_COUNT_ASSERTION.INVALID_EXPECTED_BOOL",
-                                    "observability.show_catalog.count_assertion",
-                                    "expected_value must be a boolean when count_compare_op is present",
-                                    true));
-      }
-      fields.emplace_back(actual_column_name, BoolText(actual_bool));
-      fields.emplace_back(expected_column_name, BoolText(expected_bool));
-    } else {
-      fields.emplace_back(actual_column_name, std::to_string(filtered_rows.size()));
-      if (!expected_value.empty()) {
-        fields.emplace_back(expected_column_name, expected_value);
-      }
-    }
-    AddApiBehaviorRow(&result, std::move(fields));
+  if (ordinary_count_requested) {
+    AddApiBehaviorRow(
+        &result, {{"count", std::to_string(filtered_rows.size())}});
   } else {
     for (const auto& row : filtered_rows) {
       AddApiBehaviorRow(&result, row.fields);

@@ -171,78 +171,6 @@ EngineResultShape CountProjectionResultShape(
   return shape;
 }
 
-EngineResultShape CountAssertionResultShape(const EngineSelectRowsRequest& request,
-                                            std::uint64_t actual_count,
-                                            std::string* error_detail) {
-  const std::string assertion_id = OptionValue(request, "assertion_id:");
-  std::string actual_column = OptionValue(request, "actual_column_name:");
-  if (actual_column.empty()) { actual_column = "actual_count"; }
-  std::string expected_column = OptionValue(request, "expected_column_name:");
-  if (expected_column.empty()) { expected_column = "expected_count"; }
-
-  std::int64_t expected_count = 0;
-  if (!TryParseI64Value(OptionValue(request, "expected_count:"), &expected_count)) {
-    if (error_detail != nullptr) { *error_detail = "dml_select_count_assertion_expected_count_invalid"; }
-    return {};
-  }
-  if (actual_count > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
-    if (error_detail != nullptr) { *error_detail = "dml_select_count_assertion_actual_count_overflow"; }
-    return {};
-  }
-
-  EngineResultShape shape;
-  shape.result_kind = "query_rowset";
-  shape.columns.push_back(TextDescriptor());
-  shape.columns.push_back(Int64Descriptor());
-  shape.columns.push_back(Int64Descriptor());
-  EngineRowValue out;
-  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
-  out.fields.push_back({actual_column, Int64Value(static_cast<std::int64_t>(actual_count))});
-  out.fields.push_back({expected_column, Int64Value(expected_count)});
-  shape.rows.push_back(std::move(out));
-  return shape;
-}
-
-EngineResultShape FieldAssertionResultShape(const EngineSelectRowsRequest& request,
-                                            const std::vector<CrudRowVersionRecord>& rows,
-                                            std::string* error_detail) {
-  const std::string assertion_id = OptionValue(request, "assertion_id:");
-  const std::string actual_source_column = OptionValue(request, "actual_source_column:");
-  if (actual_source_column.empty()) {
-    if (error_detail != nullptr) { *error_detail = "dml_select_field_assertion_source_column_required"; }
-    return {};
-  }
-  std::string actual_column = OptionValue(request, "actual_column_name:");
-  if (actual_column.empty()) { actual_column = "actual_value"; }
-  std::string expected_column = OptionValue(request, "expected_column_name:");
-  if (expected_column.empty()) { expected_column = "expected_value"; }
-  const std::string expected_value = OptionValue(request, "expected_value:");
-
-  std::string actual_value;
-  if (!rows.empty()) {
-    if (actual_source_column.rfind("case_is_null:", 0) == 0) {
-      const std::string source_column = actual_source_column.substr(
-          std::string("case_is_null:").size());
-      actual_value =
-          CrudFieldValue(rows.front().values, source_column) == "<NULL>" ? "1" : "0";
-    } else {
-      actual_value = CrudFieldValue(rows.front().values, actual_source_column);
-    }
-  }
-
-  EngineResultShape shape;
-  shape.result_kind = "query_rowset";
-  shape.columns.push_back(TextDescriptor());
-  shape.columns.push_back(TextDescriptor());
-  shape.columns.push_back(TextDescriptor());
-  EngineRowValue out;
-  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
-  out.fields.push_back({actual_column, TextValue(actual_value)});
-  out.fields.push_back({expected_column, TextValue(expected_value)});
-  shape.rows.push_back(std::move(out));
-  return shape;
-}
-
 std::string PayloadFieldValue(const std::string& payload, const std::string& prefix) {
   std::size_t offset = 0;
   while (offset <= payload.size()) {
@@ -452,47 +380,6 @@ std::vector<CrudRowVersionRecord> MaterializeSelectableProcedureRows(
   }
   if (error_detail != nullptr) *error_detail = "selectable_procedure_descriptor_unsupported";
   return {};
-}
-
-EngineResultShape AggregateAssertionResultShape(const EngineSelectRowsRequest& request,
-                                                const std::vector<CrudRowVersionRecord>& rows,
-                                                std::string* error_detail) {
-  const std::string assertion_id = OptionValue(request, "assertion_id:");
-  const std::string aggregate_function = OptionValue(request, "aggregate_function:");
-  const std::string aggregate_source_column = OptionValue(request, "aggregate_source_column:");
-  if (aggregate_function != "sb.aggregate.sum" || aggregate_source_column.empty()) {
-    if (error_detail != nullptr) *error_detail = "dml_select_aggregate_assertion_invalid";
-    return {};
-  }
-  std::string actual_column = OptionValue(request, "actual_column_name:");
-  if (actual_column.empty()) actual_column = "actual_sum";
-  std::string expected_column = OptionValue(request, "expected_column_name:");
-  if (expected_column.empty()) expected_column = "expected_sum";
-  std::int64_t sum = 0;
-  for (const auto& row : rows) {
-    std::int64_t value = 0;
-    if (!TryParseI64Value(CrudFieldValue(row.values, aggregate_source_column), &value)) {
-      if (error_detail != nullptr) *error_detail = "dml_select_aggregate_value_invalid";
-      return {};
-    }
-    sum += value;
-  }
-  std::int64_t expected = 0;
-  if (!TryParseI64Value(OptionValue(request, "expected_value:"), &expected)) {
-    if (error_detail != nullptr) *error_detail = "dml_select_aggregate_expected_invalid";
-    return {};
-  }
-  EngineResultShape shape;
-  shape.result_kind = "query_rowset";
-  shape.columns.push_back(TextDescriptor());
-  shape.columns.push_back(Int64Descriptor());
-  shape.columns.push_back(Int64Descriptor());
-  EngineRowValue out;
-  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
-  out.fields.push_back({actual_column, Int64Value(sum)});
-  out.fields.push_back({expected_column, Int64Value(expected)});
-  shape.rows.push_back(std::move(out));
-  return shape;
 }
 
 std::string OrderingColumn(const EngineOrderingEnvelope& ordering) {
@@ -783,6 +670,15 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (request.context.local_transaction_id == 0) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "local_transaction_id_required"));
   }
+  const std::string requested_result_shape = OptionValue(request, "result_projection:");
+  if (!requested_result_shape.empty() && requested_result_shape != "count") {
+    return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+        request.context,
+        "dml.select_rows",
+        MakeInvalidRequestDiagnostic(
+            "dml.select_rows",
+            "retired_result_shape_not_supported"));
+  }
   if (IsEngineRelationProjectionViewSelectRequest(request)) {
     EngineSelectRowsRequest expanded;
     EngineRelationProjectionViewDescriptor view;
@@ -1002,33 +898,6 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
       }
       result.visible_count = 1;
       result.evidence.push_back({"dml_result_projection", "count"});
-    } else if (result_projection == "count_assertion") {
-      result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
-      if (!error_detail.empty()) {
-        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-            request.context,
-            "dml.select_rows",
-            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-      }
-      result.evidence.push_back({"dml_result_projection", "count_assertion"});
-    } else if (result_projection == "aggregate_assertion") {
-      result.result_shape = AggregateAssertionResultShape(request, rows, &error_detail);
-      if (!error_detail.empty()) {
-        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-            request.context,
-            "dml.select_rows",
-            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-      }
-      result.evidence.push_back({"dml_result_projection", "aggregate_assertion"});
-    } else if (result_projection == "field_assertion") {
-      result.result_shape = FieldAssertionResultShape(request, rows, &error_detail);
-      if (!error_detail.empty()) {
-        return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-            request.context,
-            "dml.select_rows",
-            MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-      }
-      result.evidence.push_back({"dml_result_projection", "field_assertion"});
     } else {
       ApplyProjection(projection, &rows);
       result.result_shape = CrudRowsToResultShape(rows);
@@ -1376,36 +1245,6 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
     }
     result.visible_count = 1;
     result.evidence.push_back({"dml_result_projection", "count"});
-  } else if (result_projection == "count_assertion") {
-    std::string error_detail;
-    result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
-    if (!error_detail.empty()) {
-      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-          request.context,
-          "dml.select_rows",
-          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-    }
-    result.evidence.push_back({"dml_result_projection", "count_assertion"});
-  } else if (result_projection == "field_assertion") {
-    std::string error_detail;
-    result.result_shape = FieldAssertionResultShape(request, rows, &error_detail);
-    if (!error_detail.empty()) {
-      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-          request.context,
-          "dml.select_rows",
-          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-    }
-    result.evidence.push_back({"dml_result_projection", "field_assertion"});
-  } else if (result_projection == "aggregate_assertion") {
-    std::string error_detail;
-    result.result_shape = AggregateAssertionResultShape(request, rows, &error_detail);
-    if (!error_detail.empty()) {
-      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
-          request.context,
-          "dml.select_rows",
-          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
-    }
-    result.evidence.push_back({"dml_result_projection", "aggregate_assertion"});
   } else {
     ApplyProjection(projection, &rows);
     result.result_shape = CrudRowsToResultShape(rows);

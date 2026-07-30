@@ -5260,6 +5260,40 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
           ? encoded
           : std::string_view(decoded_operation_text.data(),
                              decoded_operation_text.size());
+  std::string lowered_inspection_text(inspection_text);
+  std::transform(lowered_inspection_text.begin(), lowered_inspection_text.end(),
+                 lowered_inspection_text.begin(), [](const unsigned char ch) {
+                   return static_cast<char>(std::tolower(ch));
+                 });
+  constexpr std::string_view kRetiredExpectationFields[] = {
+      "assertion_id",
+      "actual_source_column",
+      "actual_column_name",
+      "expected_column_name",
+      "expected_count",
+      "expected_value",
+      "expected_value_is_null",
+      "count_compare_op",
+      "count_compare_value"};
+  for (const auto field : kRetiredExpectationFields) {
+    if (ExistingTextOperandValue(lowered_inspection_text, field).has_value() ||
+        JsonTextField(lowered_inspection_text, field).has_value() ||
+        TextLineValue(lowered_inspection_text, field).has_value()) {
+      return {};
+    }
+  }
+  const std::string requested_result_shape =
+      ExistingTextOperandValue(lowered_inspection_text,
+                               "result_projection").value_or(
+          JsonTextField(lowered_inspection_text, "result_projection").value_or(
+              TextLineValue(lowered_inspection_text,
+                            "result_projection").value_or("")));
+  if (requested_result_shape == "count_assertion" ||
+      requested_result_shape == "field_assertion" ||
+      requested_result_shape == "aggregate_assertion" ||
+      requested_result_shape == "window_assertion") {
+    return {};
+  }
   if (operation_id == "dml.select_rows") {
     virtual_projection = ServerVirtualProjectionForDispatch(encoded, inspection_text);
   }
@@ -5331,13 +5365,6 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kVirtualQueryFields[] = {
         "result_projection",
         "aggregate_function",
-        "assertion_id",
-        "actual_column_name",
-        "expected_column_name",
-        "expected_count",
-        "expected_value",
-        "count_compare_op",
-        "count_compare_value",
         "predicate_kind",
         "predicate_column",
         "predicate_value",
@@ -5375,13 +5402,6 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "catalog_projection",
         "result_projection",
         "aggregate_function",
-        "assertion_id",
-        "actual_column_name",
-        "expected_column_name",
-        "expected_count",
-        "expected_value",
-        "count_compare_op",
-        "count_compare_value",
         "predicate_kind",
         "predicate_column",
         "predicate_value",
@@ -5462,8 +5482,6 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "projection_8", "projection_9", "projection_10", "projection_11",
         "projection_12", "projection_13", "projection_14", "projection_15",
         "aggregate_function", "aggregate_source_column",
-        "assertion_id", "actual_source_column", "actual_column_name",
-        "expected_column_name", "expected_count", "expected_value",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type", "assignment_column", "assignment_value",
         "subquery_projection", "subquery_select_column",
@@ -6952,12 +6970,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "window_filter_present",
         "window_filter_field",
         "window_filter_min",
-        "window_filter_max",
-        "assertion_id",
-        "actual_column_name",
-        "expected_column_name",
-        "expected_value",
-        "expected_value_is_null"};
+        "window_filter_max"};
     for (const auto field : kMaterializedCteFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -7040,12 +7053,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "listagg_truncation_indicator",
         "listagg_with_count",
         "hypothetical_value",
-        "hypothetical_value_type",
-        "assertion_id",
-        "actual_column_name",
-        "expected_column_name",
-        "expected_value",
-        "expected_value_is_null"};
+        "hypothetical_value_type"};
     for (const auto field : kRecursiveCteFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -7132,10 +7140,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "having_threshold",
         "partition_key_field", "order_by",
         "limit", "offset", "order_column", "order",
-        "result_projection", "aggregate_function",
-        "assertion_id", "actual_column_name",
-        "expected_column_name", "expected_count", "expected_value",
-        "count_compare_op", "count_compare_value"};
+        "result_projection", "aggregate_function"};
     for (const auto field : kJoinFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -7164,8 +7169,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "related_object_0_uuid", "related_object_0_kind",
         "set_by_name", "left_project_field", "right_project_field",
         "result_projection", "aggregate_function", "aggregate_value_field",
-        "assertion_id", "actual_column_name", "expected_column_name",
-        "expected_count", "expected_value", "limit", "offset"};
+        "limit", "offset"};
     for (const auto field : kTableSetFields) {
       std::string value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -7318,9 +7322,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind",
         "aggregate_function", "aggregate_value_field",
         "count_all", "count_distinct", "count_distinct_include_null", "limit", "offset",
-        "result_projection", "result_column_name", "assertion_id", "actual_column_name",
-        "expected_column_name", "expected_count", "expected_value",
-        "count_compare_op", "count_compare_value",
+        "result_projection", "result_column_name",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type"};
     for (const auto field : kCountFields) {
@@ -7734,13 +7736,6 @@ void AddCatalogProjectionDispatchOptions(engine_api::EngineApiRequest* request,
   constexpr std::string_view kCatalogProjectionFields[] = {
       "result_projection",
       "aggregate_function",
-      "assertion_id",
-      "actual_column_name",
-      "expected_column_name",
-      "expected_count",
-      "expected_value",
-      "count_compare_op",
-      "count_compare_value",
       "predicate_kind",
       "predicate_column",
       "predicate_value",
@@ -8010,6 +8005,18 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
   const std::string public_abi_envelope =
       PublicAbiEnvelopeForDispatch(session, encoded, operation_id, operation_family);
   mark_phase("public_abi_envelope");
+  if (public_abi_envelope.empty()) {
+    dispatch_result.diagnostic_code =
+        "PARSER_SERVER_IPC.RETIRED_RESULT_SHAPE";
+    dispatch_result.diagnostic_detail =
+        "retired result-expectation fields are not accepted";
+    WriteServerPhaseTrace("SCRATCHBIRD_PUBLIC_ABI_DISPATCH_TRACE_FILE",
+                          "public_abi_dispatch",
+                          operation_id,
+                          encoded.size(),
+                          phase_micros);
+    return dispatch_result;
+  }
 
   std::string ensure_detail;
   auto* cached_context_ptr =

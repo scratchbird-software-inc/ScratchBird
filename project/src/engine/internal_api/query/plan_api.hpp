@@ -392,6 +392,19 @@ CanonicalLegacyWindowRouteDisposition
 RefuseNoncanonicalLegacyWindowRoute(std::string_view operation,
                                     std::string_view result_projection);
 
+struct CanonicalRetiredResultExpectationDisposition {
+  bool applies = false;
+  bool accepted = false;
+  std::string diagnostic_code;
+  std::string detail;
+};
+
+CanonicalRetiredResultExpectationDisposition
+RefuseRetiredResultExpectationRoute(
+    std::string_view operation,
+    std::string_view result_projection,
+    const std::vector<std::string>& option_envelopes);
+
 struct EnginePlanOperationRequest : EngineApiRequest {
   bool execute = false;
   std::string query_operation;

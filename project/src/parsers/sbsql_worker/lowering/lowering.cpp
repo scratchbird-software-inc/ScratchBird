@@ -696,9 +696,6 @@ struct DmlRouteInfo {
   bool conflict_do_update{false};
   bool has_insert_values{false};
   bool has_insert_select_recursive_cte{false};
-  bool count_assertion_projection{false};
-  bool field_assertion_projection{false};
-  bool aggregate_assertion_projection{false};
   bool selectable_procedure_source{false};
   bool insert_column_list_present{false};
   bool insert_values_include_opaque_extension{false};
@@ -759,14 +756,6 @@ struct DmlRouteInfo {
   std::string delete_batch_limit;
   std::string delete_series_name;
   std::vector<std::string> insert_select_projections;
-  std::string assertion_id;
-  std::string actual_column_name;
-  std::string actual_source_column;
-  std::string aggregate_function;
-  std::string aggregate_source_column;
-  std::string expected_column_name;
-  std::string expected_count;
-  std::string expected_value;
   std::vector<RoutineInvocationArgumentInfo> routine_arguments;
   std::vector<std::string> conflict_update_columns;
   std::vector<std::string> keyword_surface_ids;
@@ -1261,16 +1250,9 @@ struct TableJoinInfo {
   std::string join_algorithm{"hash"};
   bool count_projection{false};
   bool count_result_projection{false};
-  std::string assertion_id;
-  std::string actual_column_name{"actual_count"};
-  std::string expected_column_name{"expected_count"};
   std::string aggregate_function{"sb.aggregate.count"};
   bool distinct_count_projection{false};
   std::string distinct_count_field;
-  std::string expected_count;
-  std::string expected_value;
-  std::string count_compare_op;
-  std::string count_compare_value;
   std::string left_object_uuid;
   std::string right_object_uuid;
   std::string catalog_projection_path;
@@ -1297,8 +1279,6 @@ struct TableSetOperationInfo {
   bool active{false};
   bool valid{false};
   bool by_name{false};
-  bool count_projection{false};
-  bool aggregate_projection{false};
   std::string invalid_reason;
   std::string operation;
   std::string left_object_uuid;
@@ -1312,30 +1292,7 @@ struct TableSetOperationInfo {
   std::vector<std::string> relation_filter_fields;
   std::vector<std::string> relation_filter_values;
   std::vector<std::string> relation_filter_value_types;
-  std::string assertion_id;
-  std::string actual_column_name;
-  std::string expected_column_name;
-  std::string expected_count;
-  std::string expected_value;
-  std::string aggregate_function;
-  std::string aggregate_field;
 };
-
-bool ConsumeSelectCountAssertionProjection(const std::vector<const Token*>& tokens,
-                                           std::size_t from_index,
-                                           TableJoinInfo* info);
-
-bool ConsumeSelectFieldAssertionProjection(const std::vector<const Token*>& tokens,
-                                           std::size_t from_index,
-                                           DmlRouteInfo* info);
-
-bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& tokens,
-                                               std::size_t from_index,
-                                               DmlRouteInfo* info);
-
-bool ConsumeSelectJoinCountAssertionProjection(const std::vector<const Token*>& tokens,
-                                               std::size_t from_index,
-                                               TableJoinInfo* info);
 
 struct TableSampleInfo {
   bool active{false};
@@ -1432,16 +1389,8 @@ struct TableCountInfo {
   bool count_all{true};
   bool count_distinct{false};
   bool count_distinct_include_null{false};
-  bool count_assertion_projection{false};
   bool has_where_predicate{false};
   std::string aggregate_field;
-  std::string assertion_id;
-  std::string actual_column_name;
-  std::string expected_column_name;
-  std::string expected_count;
-  std::string expected_value;
-  std::string count_compare_op;
-  std::string count_compare_value;
   std::string result_column_name;
   std::string order_field;
   std::string order_direction;
@@ -1478,12 +1427,7 @@ struct MaterializedCteInfo {
   bool valid{false};
   bool recursive{false};
   bool recursive_counter_step{false};
-  bool aggregate_assertion{false};
   bool count_result_projection{false};
-  bool window_assertion{false};
-  bool window_limit_first{false};
-  bool window_filter_present{false};
-  bool window_default_is_null{false};
   std::string invalid_reason;
   std::string object_uuid;
   std::string cte_name;
@@ -1496,36 +1440,6 @@ struct MaterializedCteInfo {
   std::string recursive_counter_step_value;
   std::string recursive_counter_limit_value;
   std::string recursive_counter_predicate;
-  std::string assertion_id;
-  std::string actual_column_name;
-  std::string expected_column_name;
-  std::string aggregate_function{"sb.aggregate.sum"};
-  std::string aggregate_field;
-  std::string aggregate_pair_field;
-  std::string aggregate_order_field;
-  std::string aggregate_fraction;
-  std::string aggregate_limit;
-  std::string listagg_separator;
-  std::string listagg_overflow_mode;
-  std::string listagg_max_output_bytes;
-  std::string listagg_truncation_indicator;
-  std::string listagg_with_count;
-  std::string hypothetical_value;
-  std::string hypothetical_value_type;
-  std::string window_function;
-  std::string window_value_field;
-  std::string window_order_field;
-  std::string window_n;
-  std::string window_offset;
-  std::string window_default_value;
-  std::string window_default_type;
-  std::string window_filter_field;
-  std::string window_filter_min;
-  std::string window_filter_max;
-  std::string window_lookup_field;
-  std::string window_lookup_value;
-  std::string expected_value;
-  bool expected_value_is_null{false};
 };
 
 struct ScalarSubqueryInfo {
@@ -8436,19 +8350,6 @@ void AnalyzeSelectOrderLimitOffset(const CstDocument& cst,
     }
   }
   if (from_index == tokens.size() || from_index + 1 >= tokens.size()) return;
-  TableJoinInfo count_assertion_projection;
-  if (ConsumeSelectCountAssertionProjection(tokens, from_index, &count_assertion_projection)) {
-    info->count_assertion_projection = true;
-    info->assertion_id = count_assertion_projection.assertion_id;
-    info->actual_column_name = count_assertion_projection.actual_column_name;
-    info->expected_column_name = count_assertion_projection.expected_column_name;
-    info->expected_count = count_assertion_projection.expected_count;
-    info->expected_value = count_assertion_projection.expected_value;
-  } else if (ConsumeSelectAggregateAssertionProjection(tokens, from_index, info)) {
-  } else {
-    ConsumeSelectFieldAssertionProjection(tokens, from_index, info);
-  }
-
   if (tokens.size() > 1 && ToUpperAscii(tokens[1]->text) == "TOP") {
     if (tokens.size() <= 3 || !IsUnsignedIntegerLiteral(*tokens[2])) {
       info->unsupported_query_family = true;
@@ -17765,102 +17666,6 @@ bool ConsumeProjectionAlias(const std::vector<const Token*>& tokens,
   return true;
 }
 
-bool ConsumeSelectCountAssertionProjection(const std::vector<const Token*>& tokens,
-                                           std::size_t from_index,
-                                           TableJoinInfo* info) {
-  if (info == nullptr || from_index == tokens.size() || from_index < 13 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  if (!aggregate_function_id || *aggregate_function_id != "sb.aggregate.count") return false;
-  index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) return false;
-  ++index;
-  if (!TokenTextEquals(tokens, index, "*")) return false;
-  ++index;
-  if (!TokenTextEquals(tokens, index, ")")) return false;
-  ++index;
-
-  std::string count_compare_op;
-  std::string count_compare_value;
-  if (TokenTextEquals(tokens, index, ">") ||
-      TokenTextEquals(tokens, index, ">=") ||
-      TokenTextEquals(tokens, index, "<") ||
-      TokenTextEquals(tokens, index, "<=") ||
-      TokenTextEquals(tokens, index, "=") ||
-      TokenTextEquals(tokens, index, "==") ||
-      TokenTextEquals(tokens, index, "!=") ||
-      TokenTextEquals(tokens, index, "<>")) {
-    count_compare_op = tokens[index]->text;
-    ++index;
-    if (index >= from_index || !IsUnsignedIntegerLiteral(*tokens[index])) return false;
-    count_compare_value = tokens[index]->text;
-    ++index;
-  }
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-  if (index >= from_index) return false;
-  std::string expected_count;
-  std::string expected_value;
-  if (!count_compare_op.empty()) {
-    if (TokenTextEquals(tokens, index, "TRUE") ||
-        TokenTextEquals(tokens, index, "FALSE")) {
-      expected_value = LowerAscii(tokens[index]->text);
-    } else if (IsUnsignedIntegerLiteral(*tokens[index])) {
-      expected_value = tokens[index]->text;
-    } else {
-      return false;
-    }
-  } else {
-    if (!IsUnsignedIntegerLiteral(*tokens[index])) return false;
-    expected_count = tokens[index]->text;
-    expected_value = expected_count;
-  }
-  ++index;
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  info->count_projection = true;
-  info->assertion_id = assertion_id;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->aggregate_function = "sb.aggregate.count";
-  info->expected_count = expected_count;
-  info->expected_value = expected_value;
-  info->count_compare_op = count_compare_op;
-  info->count_compare_value = count_compare_value;
-  return true;
-}
 
 bool ConsumeSelectPlainCountProjection(const std::vector<const Token*>& tokens,
                                        std::size_t from_index,
@@ -17892,616 +17697,11 @@ bool ConsumeSelectPlainCountProjection(const std::vector<const Token*>& tokens,
   return true;
 }
 
-bool ConsumeSelectFieldAssertionProjection(const std::vector<const Token*>& tokens,
-                                           std::size_t from_index,
-                                           DmlRouteInfo* info) {
-  if (info == nullptr || from_index == tokens.size() || from_index < 9 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
 
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
 
-  std::string actual_source_column;
-  if (index < from_index && ToUpperAscii(tokens[index]->text) == "CASE") {
-    ++index;
-    if (!ConsumeTokenText(tokens, &index, "WHEN")) return false;
-    std::string case_column;
-    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &case_column)) return false;
-    if (!ConsumeTokenText(tokens, &index, "IS") ||
-        !ConsumeTokenText(tokens, &index, "NULL") ||
-        !ConsumeTokenText(tokens, &index, "THEN")) {
-      return false;
-    }
-    if (index >= from_index || tokens[index]->text != "1") return false;
-    ++index;
-    if (!ConsumeTokenText(tokens, &index, "ELSE")) return false;
-    if (index >= from_index || tokens[index]->text != "0") return false;
-    ++index;
-    if (!ConsumeTokenText(tokens, &index, "END")) return false;
-    actual_source_column = "case_is_null:" + LowerAscii(case_column);
-  } else {
-    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &actual_source_column)) return false;
-    actual_source_column = LowerAscii(actual_source_column);
-  }
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
 
-  if (index >= from_index ||
-      (tokens[index]->kind != TokenKind::kNumericLiteral &&
-       tokens[index]->kind != TokenKind::kStringLiteral &&
-       !IsUnsignedIntegerLiteral(*tokens[index]))) {
-    return false;
-  }
-  const std::string expected_value = tokens[index]->text;
-  ++index;
 
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
 
-  info->field_assertion_projection = true;
-  info->assertion_id = assertion_id;
-  info->actual_source_column = actual_source_column;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->expected_value = expected_value;
-  return true;
-}
-
-bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& tokens,
-                                               std::size_t from_index,
-                                               DmlRouteInfo* info) {
-  if (info == nullptr || from_index == tokens.size() || from_index < 11 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id =
-      AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  if (!aggregate_function_id || *aggregate_function_id != "sb.aggregate.sum") {
-    return false;
-  }
-  index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) return false;
-  ++index;
-  std::string aggregate_source_column;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &aggregate_source_column)) return false;
-  aggregate_source_column = LowerAscii(aggregate_source_column);
-  if (!TokenTextEquals(tokens, index, ")")) return false;
-  ++index;
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  if (index >= from_index ||
-      (tokens[index]->kind != TokenKind::kNumericLiteral &&
-       !IsUnsignedIntegerLiteral(*tokens[index]))) {
-    return false;
-  }
-  const std::string expected_value = tokens[index]->text;
-  ++index;
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  info->aggregate_assertion_projection = true;
-  info->assertion_id = assertion_id;
-  info->aggregate_function = *aggregate_function_id;
-  info->aggregate_source_column = aggregate_source_column;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->expected_value = expected_value;
-  return true;
-}
-
-bool ConsumeSelectJoinCountAssertionProjection(const std::vector<const Token*>& tokens,
-                                               std::size_t from_index,
-                                               TableJoinInfo* info) {
-  if (ConsumeSelectCountAssertionProjection(tokens, from_index, info)) {
-    return true;
-  }
-  if (info == nullptr || from_index == tokens.size() || from_index < 14 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  if (!aggregate_function_id || *aggregate_function_id != "sb.aggregate.count") return false;
-  index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) return false;
-  ++index;
-  if (!TokenTextEquals(tokens, index, "DISTINCT")) return false;
-  ++index;
-  std::string distinct_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &distinct_field)) return false;
-  if (!TokenTextEquals(tokens, index, ")")) return false;
-  ++index;
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-  if (index >= from_index || !IsUnsignedIntegerLiteral(*tokens[index])) return false;
-  const std::string expected_count = tokens[index]->text;
-  ++index;
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  info->count_projection = true;
-  info->distinct_count_projection = true;
-  info->distinct_count_field = LowerAscii(distinct_field);
-  info->aggregate_field = info->distinct_count_field;
-  info->assertion_id = assertion_id;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->aggregate_function = "sb.aggregate.count";
-  info->expected_count = expected_count;
-  info->expected_value = expected_count;
-  return true;
-}
-
-bool ConsumeSelectFieldCountAssertionProjection(const std::vector<const Token*>& tokens,
-                                                std::size_t from_index,
-                                                TableCountInfo* info) {
-  if (info == nullptr || from_index == tokens.size() || from_index < 10 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  std::string projected_count_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &projected_count_field)) return false;
-  projected_count_field = LowerAscii(projected_count_field);
-  const bool count_field =
-      projected_count_field == "count" ||
-      projected_count_field == "item_count" ||
-      (projected_count_field.size() > std::string_view("_count").size() &&
-       projected_count_field.compare(projected_count_field.size() - std::string_view("_count").size(),
-                                     std::string_view("_count").size(),
-                                     "_count") == 0);
-  if (!count_field) return false;
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-  if (index >= from_index || !IsUnsignedIntegerLiteral(*tokens[index])) return false;
-  const std::string expected_count = tokens[index]->text;
-  ++index;
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  info->count_assertion_projection = true;
-  info->count_all = true;
-  info->count_distinct = false;
-  info->aggregate_field = projected_count_field;
-  info->assertion_id = assertion_id;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->expected_count = expected_count;
-  info->expected_value = expected_count;
-  return true;
-}
-
-bool ConsumeSelectAggregateAssertionProjection(const std::vector<const Token*>& tokens,
-                                               std::size_t from_index,
-                                               TableJoinInfo* info) {
-  if (info == nullptr || from_index == tokens.size() || from_index < 13 ||
-      tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") {
-    return false;
-  }
-  std::size_t index = 1;
-  if (index >= from_index || tokens[index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[index]->text;
-  ++index;
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &assertion_alias) ||
-      assertion_alias != "assertion_id") {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  if (!aggregate_function_id) return false;
-  index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) return false;
-  ++index;
-  std::string projected_aggregate_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &projected_aggregate_field)) return false;
-  if (!TokenTextEquals(tokens, index, ")")) return false;
-  ++index;
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, index, ",")) return false;
-  ++index;
-  if (index >= from_index ||
-      (tokens[index]->kind != TokenKind::kNumericLiteral &&
-       !IsUnsignedIntegerLiteral(*tokens[index]))) {
-    return false;
-  }
-  const std::string expected_value = tokens[index]->text;
-  ++index;
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, &index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  if (index != from_index) return false;
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  info->count_projection = true;
-  info->assertion_id = assertion_id;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->aggregate_function = *aggregate_function_id;
-  info->aggregate_field = LowerAscii(projected_aggregate_field);
-  info->expected_value = expected_value;
-  return true;
-}
-
-bool ConsumeCteAggregateAssertionProjection(const std::vector<const Token*>& tokens,
-                                            std::size_t* index,
-                                            MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr ||
-      *index >= tokens.size() || ToUpperAscii(tokens[*index]->text) != "SELECT") {
-    return false;
-  }
-  ++(*index);
-  if (*index >= tokens.size() || tokens[*index]->kind != TokenKind::kStringLiteral) return false;
-  const std::string assertion_id = tokens[*index]->text;
-  ++(*index);
-
-  std::string assertion_alias;
-  if (!ConsumeProjectionAlias(tokens, index, &assertion_alias) ||
-      (assertion_alias != "assertion_id" && assertion_alias != "fixture_id")) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, *index, ",")) return false;
-  ++(*index);
-
-  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, *index);
-  if (!aggregate_function) return false;
-  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-  const auto ordered_set_function_id =
-      aggregate_function_id ? std::optional<std::string>{}
-                            : OrderedSetHypotheticalFunctionId(aggregate_function->text);
-  if (!aggregate_function_id && !ordered_set_function_id) return false;
-  const std::string resolved_function_id =
-      aggregate_function_id ? *aggregate_function_id : *ordered_set_function_id;
-  *index = aggregate_function->end_index;
-  if (!TokenTextEquals(tokens, *index, "(")) return false;
-  ++(*index);
-
-  std::string aggregate_field;
-  std::string aggregate_pair_field;
-  std::string aggregate_order_field;
-  std::string aggregate_fraction;
-  std::string aggregate_limit;
-  std::string listagg_separator;
-  std::string listagg_overflow_mode;
-  std::string listagg_max_output_bytes;
-  std::string listagg_truncation_indicator;
-  std::string listagg_with_count;
-  std::string hypothetical_value;
-  std::string hypothetical_value_type;
-
-  if (ordered_set_function_id) {
-    ScalarProjectionItem hypothetical;
-    if (!ParseScalarLiteralProjectionItem(tokens, index, &hypothetical) ||
-        hypothetical.is_null) {
-      return false;
-    }
-    hypothetical_value = hypothetical.value;
-    hypothetical_value_type = hypothetical.type_name.empty() ? "real64" : hypothetical.type_name;
-    if (!TokenTextEquals(tokens, *index, ")")) return false;
-    ++(*index);
-    if (!ConsumeTokenText(tokens, index, "WITHIN") ||
-        !ConsumeTokenText(tokens, index, "GROUP") ||
-        !ConsumeTokenText(tokens, index, "(") ||
-        !ConsumeTokenText(tokens, index, "ORDER") ||
-        !ConsumeTokenText(tokens, index, "BY")) {
-      return false;
-    }
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-    aggregate_field = LowerAscii(aggregate_order_field);
-    aggregate_order_field = aggregate_field;
-    if (!ConsumeTokenText(tokens, index, ")")) return false;
-  } else if (IsFractionAggregateFunctionId(resolved_function_id)) {
-    ScalarProjectionItem fraction;
-    if (!ParseScalarLiteralProjectionItem(tokens, index, &fraction) ||
-        fraction.is_null) {
-      return false;
-    }
-    aggregate_fraction = fraction.value;
-    if (!TokenTextEquals(tokens, *index, ")")) return false;
-    ++(*index);
-    if (!ConsumeTokenText(tokens, index, "WITHIN") ||
-        !ConsumeTokenText(tokens, index, "GROUP") ||
-        !ConsumeTokenText(tokens, index, "(") ||
-        !ConsumeTokenText(tokens, index, "ORDER") ||
-        !ConsumeTokenText(tokens, index, "BY")) {
-      return false;
-    }
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-    aggregate_field = LowerAscii(aggregate_order_field);
-    aggregate_order_field = aggregate_field;
-    if (!ConsumeTokenText(tokens, index, ")")) return false;
-  } else if (resolved_function_id == "sb.aggregate.mode") {
-    if (!TokenTextEquals(tokens, *index, ")")) return false;
-    ++(*index);
-    if (!ConsumeTokenText(tokens, index, "WITHIN") ||
-        !ConsumeTokenText(tokens, index, "GROUP") ||
-        !ConsumeTokenText(tokens, index, "(") ||
-        !ConsumeTokenText(tokens, index, "ORDER") ||
-        !ConsumeTokenText(tokens, index, "BY")) {
-      return false;
-    }
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-    aggregate_field = LowerAscii(aggregate_order_field);
-    aggregate_order_field = aggregate_field;
-    if (!ConsumeTokenText(tokens, index, ")")) return false;
-  } else {
-    bool distinct = false;
-    if (TokenTextEquals(tokens, *index, "DISTINCT")) {
-      distinct = true;
-      ++(*index);
-    }
-    if (TokenTextEquals(tokens, *index, "*")) {
-      if (resolved_function_id != "sb.aggregate.count") return false;
-      aggregate_field = "*";
-      ++(*index);
-    } else if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_field)) {
-      return false;
-    }
-    aggregate_field = LowerAscii(aggregate_field);
-    if (distinct) {
-      info->invalid_reason = "cte_values_distinct_aggregate_requires_query_plan_route";
-      return false;
-    }
-    if (IsPairAggregateFunctionId(resolved_function_id) ||
-        IsJsonObjectAggAggregateFunctionId(resolved_function_id)) {
-      if (!TokenTextEquals(tokens, *index, ",")) return false;
-      ++(*index);
-      if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_pair_field)) return false;
-      aggregate_pair_field = LowerAscii(aggregate_pair_field);
-    } else if (IsListAggAggregateFunctionId(resolved_function_id) ||
-               IsStringAggAggregateFunctionId(resolved_function_id)) {
-      if (!TokenTextEquals(tokens, *index, ",")) return false;
-      ++(*index);
-      if (*index >= tokens.size() || tokens[*index]->kind != TokenKind::kStringLiteral) {
-        return false;
-      }
-      listagg_separator = tokens[*index]->text;
-      ++(*index);
-      if (IsStringAggAggregateFunctionId(resolved_function_id)) {
-        if (!ConsumeTokenText(tokens, index, "ORDER") ||
-            !ConsumeTokenText(tokens, index, "BY")) {
-          return false;
-        }
-        if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-        aggregate_order_field = LowerAscii(aggregate_order_field);
-      } else {
-        GroupByAggregateInfo listagg_info;
-        if (!ParseListAggOverflowClause(tokens, index, &listagg_info)) {
-          return false;
-        }
-        listagg_overflow_mode = listagg_info.listagg_overflow_mode;
-        listagg_max_output_bytes = listagg_info.listagg_max_output_bytes;
-        listagg_truncation_indicator = listagg_info.listagg_truncation_indicator;
-        listagg_with_count = listagg_info.listagg_with_count;
-      }
-    } else if (IsTopKAggregateFunctionId(resolved_function_id)) {
-      if (!TokenTextEquals(tokens, *index, ",")) return false;
-      ++(*index);
-      ScalarProjectionItem limit;
-      if (!ParseScalarLiteralProjectionItem(tokens, index, &limit) || limit.is_null) return false;
-      aggregate_limit = limit.value;
-    }
-    if ((IsJsonAggAggregateFunctionId(resolved_function_id) ||
-         IsJsonObjectAggAggregateFunctionId(resolved_function_id) ||
-         IsArrayAggAggregateFunctionId(resolved_function_id)) &&
-        TokenTextEquals(tokens, *index, "ORDER")) {
-      ++(*index);
-      if (!ConsumeTokenText(tokens, index, "BY")) return false;
-      if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-      aggregate_order_field = LowerAscii(aggregate_order_field);
-    }
-    if (!TokenTextEquals(tokens, *index, ")")) return false;
-    ++(*index);
-    if (IsListAggAggregateFunctionId(resolved_function_id)) {
-      if (!ConsumeTokenText(tokens, index, "WITHIN") ||
-          !ConsumeTokenText(tokens, index, "GROUP") ||
-          !ConsumeTokenText(tokens, index, "(") ||
-          !ConsumeTokenText(tokens, index, "ORDER") ||
-          !ConsumeTokenText(tokens, index, "BY")) {
-        return false;
-      }
-      if (!ConsumeTokenQualifiedLeaf(tokens, index, &aggregate_order_field)) return false;
-      aggregate_order_field = LowerAscii(aggregate_order_field);
-      if (!ConsumeTokenText(tokens, index, ")")) return false;
-    }
-  }
-
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, index, &actual_alias) ||
-      actual_alias.rfind("actual_", 0) != 0) {
-    return false;
-  }
-  if (!TokenTextEquals(tokens, *index, ",")) return false;
-  ++(*index);
-
-  std::string expected_value;
-  bool expected_value_is_null = false;
-  if (*index >= tokens.size()) return false;
-  if (tokens[*index]->kind == TokenKind::kNullLiteral ||
-      TokenTextEquals(tokens, *index, "NULL")) {
-    expected_value_is_null = true;
-    ++(*index);
-  } else if (tokens[*index]->kind == TokenKind::kStringLiteral ||
-             tokens[*index]->kind == TokenKind::kNumericLiteral ||
-             IsUnsignedIntegerLiteral(*tokens[*index]) ||
-             TokenTextEquals(tokens, *index, "TRUE") ||
-             TokenTextEquals(tokens, *index, "FALSE")) {
-    expected_value = TokenTextEquals(tokens, *index, "TRUE") ? "true" :
-                     TokenTextEquals(tokens, *index, "FALSE") ? "false" :
-                     tokens[*index]->text;
-    ++(*index);
-  } else {
-    return false;
-  }
-
-  std::string expected_alias;
-  if (!ConsumeProjectionAlias(tokens, index, &expected_alias) ||
-      expected_alias.rfind("expected_", 0) != 0) {
-    return false;
-  }
-  const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-  const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-  if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-
-  if (TokenTextEquals(tokens, *index, ",")) {
-    ++(*index);
-    if (*index >= tokens.size()) return false;
-    if (TokenTextEquals(tokens, *index, "NULL") ||
-        tokens[*index]->kind == TokenKind::kStringLiteral) {
-      ++(*index);
-    } else {
-      return false;
-    }
-    std::string diagnostic_alias;
-    if (!ConsumeProjectionAlias(tokens, index, &diagnostic_alias) ||
-        diagnostic_alias != "expected_diagnostic_code") {
-      return false;
-    }
-  }
-
-  info->aggregate_assertion = true;
-  info->assertion_id = assertion_id;
-  info->actual_column_name = actual_alias;
-  info->expected_column_name = expected_alias;
-  info->aggregate_function = resolved_function_id;
-  info->aggregate_field = LowerAscii(aggregate_field);
-  info->aggregate_pair_field = LowerAscii(aggregate_pair_field);
-  info->aggregate_order_field = LowerAscii(aggregate_order_field);
-  info->aggregate_fraction = aggregate_fraction;
-  info->aggregate_limit = aggregate_limit;
-  info->listagg_separator = listagg_separator;
-  info->listagg_overflow_mode = listagg_overflow_mode;
-  info->listagg_max_output_bytes = listagg_max_output_bytes;
-  info->listagg_truncation_indicator = listagg_truncation_indicator;
-  info->listagg_with_count = listagg_with_count;
-  info->hypothetical_value = hypothetical_value;
-  info->hypothetical_value_type = hypothetical_value_type;
-  info->expected_value = expected_value;
-  info->expected_value_is_null = expected_value_is_null;
-  return true;
-}
 
 bool ConsumeCtePlainCountProjection(const std::vector<const Token*>& tokens,
                                     std::size_t* index,
@@ -18526,8 +17726,6 @@ bool ConsumeCtePlainCountProjection(const std::vector<const Token*>& tokens,
   if (!TokenTextEquals(tokens, cursor, ")")) return false;
   ++cursor;
   info->count_result_projection = true;
-  info->aggregate_function = "sb.aggregate.count";
-  info->aggregate_field = "*";
   *index = cursor;
   return true;
 }
@@ -18579,304 +17777,13 @@ bool ConsumeRecursiveCounterSelectStep(const std::vector<const Token*>& tokens,
   return true;
 }
 
-bool IsSupportedRecursiveCteAggregateAssertion(const std::string& aggregate_function) {
-  return aggregate_function.rfind("sb.aggregate.", 0) == 0 ||
-         IsOrderedSetHypotheticalFunctionId(aggregate_function);
-}
 
-bool ConsumeGeneratedWindowLiteral(const std::vector<const Token*>& tokens,
-                                   std::size_t* index,
-                                   ScalarProjectionItem* item) {
-  return ParseValuesRowItemAt(tokens, index, item);
-}
 
-bool ConsumeGeneratedWindowScalarSubquery(const std::vector<const Token*>& tokens,
-                                          std::size_t* index,
-                                          MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr) return false;
-  if (!ConsumeTokenText(tokens, index, "(") ||
-      !ConsumeTokenText(tokens, index, "SELECT")) {
-    return false;
-  }
-  std::string projected_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &projected_field) ||
-      LowerAscii(projected_field) != "actual_value" ||
-      !ConsumeTokenText(tokens, index, "FROM")) {
-    return false;
-  }
-  std::string source_name;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &source_name) ||
-      ToUpperAscii(source_name) != "WINDOWED") {
-    return false;
-  }
-  if (TokenTextEquals(tokens, *index, "WHERE")) {
-    ++(*index);
-    std::string lookup_field;
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &lookup_field) ||
-        !ConsumeTokenText(tokens, index, "=")) {
-      return false;
-    }
-    ScalarProjectionItem lookup_value;
-    if (!ConsumeGeneratedWindowLiteral(tokens, index, &lookup_value) || lookup_value.is_null) {
-      return false;
-    }
-    info->window_lookup_field = LowerAscii(lookup_field);
-    info->window_lookup_value = lookup_value.value;
-  } else if (TokenTextEquals(tokens, *index, "LIMIT")) {
-    ++(*index);
-    ScalarProjectionItem limit_value;
-    if (!ConsumeGeneratedWindowLiteral(tokens, index, &limit_value) ||
-        limit_value.is_null || limit_value.value != "1") {
-      return false;
-    }
-    info->window_limit_first = true;
-  } else {
-    return false;
-  }
-  return ConsumeTokenText(tokens, index, ")");
-}
 
-bool ConsumeGeneratedWindowFinalSelect(const std::vector<const Token*>& tokens,
-                                       std::size_t* index,
-                                       MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr ||
-      !ConsumeTokenText(tokens, index, "SELECT")) {
-    return false;
-  }
-  if (*index < tokens.size() && tokens[*index]->kind == TokenKind::kStringLiteral) {
-    info->assertion_id = tokens[*index]->text;
-    ++(*index);
-    std::string assertion_alias;
-    if (!ConsumeProjectionAlias(tokens, index, &assertion_alias) ||
-        assertion_alias != "fixture_id" ||
-        !ConsumeTokenText(tokens, index, ",")) {
-      return false;
-    }
-    if (!ConsumeGeneratedWindowScalarSubquery(tokens, index, info)) return false;
-    std::string actual_alias;
-    if (!ConsumeProjectionAlias(tokens, index, &actual_alias) ||
-        actual_alias.rfind("actual_", 0) != 0 ||
-        !ConsumeTokenText(tokens, index, ",")) {
-      return false;
-    }
-    ScalarProjectionItem expected;
-    if (!ConsumeGeneratedWindowLiteral(tokens, index, &expected)) return false;
-    std::string expected_alias;
-    if (!ConsumeProjectionAlias(tokens, index, &expected_alias) ||
-        expected_alias.rfind("expected_", 0) != 0) {
-      return false;
-    }
-    const std::string actual_suffix = actual_alias.substr(std::string("actual_").size());
-    const std::string expected_suffix = expected_alias.substr(std::string("expected_").size());
-    if (actual_suffix.empty() || actual_suffix != expected_suffix) return false;
-    info->actual_column_name = actual_alias;
-    info->expected_column_name = expected_alias;
-    info->expected_value = expected.is_null ? std::string{} : expected.value;
-    info->expected_value_is_null = expected.is_null;
-    if (TokenTextEquals(tokens, *index, ",")) {
-      ++(*index);
-      if (!ConsumeTokenText(tokens, index, "NULL")) return false;
-      std::string diagnostic_alias;
-      if (!ConsumeProjectionAlias(tokens, index, &diagnostic_alias) ||
-          diagnostic_alias != "expected_diagnostic_code") {
-        return false;
-      }
-    }
-    return *index == tokens.size();
-  }
 
-  if (!ConsumeGeneratedWindowScalarSubquery(tokens, index, info)) return false;
-  std::string rejected_alias;
-  if (!ConsumeProjectionAlias(tokens, index, &rejected_alias) ||
-      rejected_alias != "rejected_value") {
-    return false;
-  }
-  return *index == tokens.size();
-}
 
-bool ConsumeGeneratedFrameInputCte(const std::vector<const Token*>& tokens,
-                                   std::size_t* index,
-                                   const std::string& input_name,
-                                   MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr ||
-      !ConsumeTokenText(tokens, index, "FRAME_INPUT") ||
-      !ConsumeTokenText(tokens, index, "AS") ||
-      !ConsumeTokenText(tokens, index, "(") ||
-      !ConsumeTokenText(tokens, index, "SELECT") ||
-      !ConsumeTokenText(tokens, index, "*") ||
-      !ConsumeTokenText(tokens, index, "FROM")) {
-    return false;
-  }
-  std::string source_name;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &source_name) ||
-      ToUpperAscii(source_name) != ToUpperAscii(input_name) ||
-      !ConsumeTokenText(tokens, index, "WHERE")) {
-    return false;
-  }
-  std::string filter_field_min;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &filter_field_min) ||
-      !ConsumeTokenText(tokens, index, ">=")) {
-    return false;
-  }
-  ScalarProjectionItem min_value;
-  if (!ConsumeGeneratedWindowLiteral(tokens, index, &min_value) || min_value.is_null ||
-      !ConsumeTokenText(tokens, index, "AND")) {
-    return false;
-  }
-  std::string filter_field_max;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &filter_field_max) ||
-      LowerAscii(filter_field_min) != LowerAscii(filter_field_max) ||
-      !ConsumeTokenText(tokens, index, "<")) {
-    return false;
-  }
-  ScalarProjectionItem max_value;
-  if (!ConsumeGeneratedWindowLiteral(tokens, index, &max_value) || max_value.is_null ||
-      !ConsumeTokenText(tokens, index, ")")) {
-    return false;
-  }
-  info->window_filter_present = true;
-  info->window_filter_field = LowerAscii(filter_field_min);
-  info->window_filter_min = min_value.value;
-  info->window_filter_max = max_value.value;
-  return true;
-}
 
-bool ConsumeGeneratedWindowFunctionCall(const std::vector<const Token*>& tokens,
-                                        std::size_t* index,
-                                        MaterializedCteInfo* info) {
-  const auto parsed_function = ParseFunctionNameTokenSequence(tokens, *index);
-  if (!parsed_function) return false;
-  const auto window_function = WindowFunctionNameForRoute(parsed_function->text);
-  if (!window_function) return false;
-  info->window_function = *window_function;
-  *index = parsed_function->end_index;
-  if (!ConsumeTokenText(tokens, index, "(")) return false;
 
-  if (info->window_function == "row_number" ||
-      info->window_function == "rank" ||
-      info->window_function == "dense_rank" ||
-      info->window_function == "percent_rank" ||
-      info->window_function == "cume_dist") {
-    if (!ConsumeTokenText(tokens, index, ")")) return false;
-  } else if (info->window_function == "ntile") {
-    ScalarProjectionItem bucket_count;
-    if (!ConsumeGeneratedWindowLiteral(tokens, index, &bucket_count) ||
-        bucket_count.is_null ||
-        !ConsumeTokenText(tokens, index, ")")) {
-      return false;
-    }
-    info->window_n = bucket_count.value;
-  } else if (info->window_function == "nth_value") {
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &info->window_value_field) ||
-        !ConsumeTokenText(tokens, index, ",")) {
-      return false;
-    }
-    ScalarProjectionItem n;
-    if (!ConsumeGeneratedWindowLiteral(tokens, index, &n) || n.is_null ||
-        !ConsumeTokenText(tokens, index, ")")) {
-      return false;
-    }
-    info->window_value_field = LowerAscii(info->window_value_field);
-    info->window_n = n.value;
-  } else {
-    if (!ConsumeTokenQualifiedLeaf(tokens, index, &info->window_value_field)) {
-      return false;
-    }
-    info->window_value_field = LowerAscii(info->window_value_field);
-    if (info->window_function == "lag" || info->window_function == "lead") {
-      if (TokenTextEquals(tokens, *index, ",")) {
-        ++(*index);
-        ScalarProjectionItem offset;
-        if (!ConsumeGeneratedWindowLiteral(tokens, index, &offset) || offset.is_null) {
-          return false;
-        }
-        info->window_offset = offset.value;
-        if (TokenTextEquals(tokens, *index, ",")) {
-          ++(*index);
-          ScalarProjectionItem default_value;
-          if (!ConsumeGeneratedWindowLiteral(tokens, index, &default_value)) return false;
-          info->window_default_value = default_value.value;
-          info->window_default_type = default_value.type_name;
-          info->window_default_is_null = default_value.is_null;
-        }
-      }
-    }
-    if (!ConsumeTokenText(tokens, index, ")")) return false;
-  }
-  return true;
-}
-
-bool ConsumeGeneratedWindowedCte(const std::vector<const Token*>& tokens,
-                                 std::size_t* index,
-                                 const std::string& source_cte_name,
-                                 MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr ||
-      !ConsumeTokenText(tokens, index, "WINDOWED") ||
-      !ConsumeTokenText(tokens, index, "AS") ||
-      !ConsumeTokenText(tokens, index, "(") ||
-      !ConsumeTokenText(tokens, index, "SELECT")) {
-    return false;
-  }
-  std::size_t function_index = *index;
-  std::size_t cursor = *index;
-  std::string passthrough_field;
-  if (ConsumeTokenQualifiedLeaf(tokens, &cursor, &passthrough_field) &&
-      TokenTextEquals(tokens, cursor, ",")) {
-    *index = cursor + 1;
-  } else {
-    *index = function_index;
-  }
-  if (!ConsumeGeneratedWindowFunctionCall(tokens, index, info) ||
-      !ConsumeTokenText(tokens, index, "OVER") ||
-      !ConsumeTokenText(tokens, index, "(") ||
-      !ConsumeTokenText(tokens, index, "ORDER") ||
-      !ConsumeTokenText(tokens, index, "BY") ||
-      !ConsumeTokenQualifiedLeaf(tokens, index, &info->window_order_field)) {
-    return false;
-  }
-  info->window_order_field = LowerAscii(info->window_order_field);
-  while (*index < tokens.size() && !TokenTextEquals(tokens, *index, ")")) {
-    ++(*index);
-  }
-  if (!ConsumeTokenText(tokens, index, ")")) return false;
-  std::string actual_alias;
-  if (!ConsumeProjectionAlias(tokens, index, &actual_alias) ||
-      actual_alias != "actual_value" ||
-      !ConsumeTokenText(tokens, index, "FROM")) {
-    return false;
-  }
-  std::string source_name;
-  if (!ConsumeTokenQualifiedLeaf(tokens, index, &source_name) ||
-      ToUpperAscii(source_name) != ToUpperAscii(source_cte_name) ||
-      !ConsumeTokenText(tokens, index, ")")) {
-    return false;
-  }
-  return true;
-}
-
-bool ConsumeGeneratedWindowCteSequence(const std::vector<const Token*>& tokens,
-                                       std::size_t* index,
-                                       MaterializedCteInfo* info) {
-  if (index == nullptr || info == nullptr || !ConsumeTokenText(tokens, index, ",")) {
-    return false;
-  }
-  std::string window_source = info->cte_name;
-  if (TokenTextEquals(tokens, *index, "FRAME_INPUT")) {
-    if (!ConsumeGeneratedFrameInputCte(tokens, index, info->cte_name, info) ||
-        !ConsumeTokenText(tokens, index, ",")) {
-      return false;
-    }
-    window_source = "FRAME_INPUT";
-  }
-  if (!ConsumeGeneratedWindowedCte(tokens, index, window_source, info) ||
-      !ConsumeGeneratedWindowFinalSelect(tokens, index, info)) {
-    return false;
-  }
-  info->window_assertion = true;
-  if (info->window_n.empty()) info->window_n = "1";
-  if (info->window_offset.empty()) info->window_offset = "1";
-  return true;
-}
 
 void AddJoinLeftFilter(TableJoinInfo* info,
                        std::string kind,
@@ -19101,10 +18008,8 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
   }
   if (from_index == 2 && tokens[1]->text == "*") {
     info.count_projection = false;
-  } else if (!ConsumeSelectPlainCountProjection(tokens, from_index, &info) &&
-             !ConsumeSelectJoinCountAssertionProjection(tokens, from_index, &info) &&
-             !ConsumeSelectAggregateAssertionProjection(tokens, from_index, &info)) {
-    info.invalid_reason = "join_current_route_requires_select_star_or_count_assertion";
+  } else if (!ConsumeSelectPlainCountProjection(tokens, from_index, &info)) {
+    info.invalid_reason = "join_current_route_requires_select_star_or_count";
     return info;
   }
 
@@ -19126,9 +18031,6 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
     if (inner_from_index != tokens.size() && group_index != tokens.size() &&
         (saw_grouping_sets || saw_rollup || saw_cube)) {
       info.operation = saw_cube ? "cube_count" : (saw_rollup ? "rollup_count" : "grouping_sets_count");
-      if (info.count_projection && info.aggregate_function != "sb.aggregate.count") {
-        info.operation = "grouping_sets_grand_total_assertion";
-      }
       std::size_t inner_index = from_index + 3;
       if (!ConsumeTokenQualifiedLeaf(tokens, &inner_index, &info.group_field)) {
         info.invalid_reason = "grouping_route_region_projection_invalid";
@@ -19196,7 +18098,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       }
       info.left_object_uuid = resolved_object_uuids[0];
       info.right_object_uuid = resolved_object_uuids[1];
-      AppendIfMissing(&info.keyword_surface_ids, "SBSQL-GROUPING-SETS-ASSERTION");
+      AppendIfMissing(&info.keyword_surface_ids, "SBSQL-GROUPING-SETS-COUNT");
       info.valid = true;
       return info;
     }
@@ -19322,7 +18224,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       return info;
     }
     if (!info.count_projection) {
-      info.invalid_reason = "lateral_join_current_route_requires_count_assertion_projection";
+      info.invalid_reason = "lateral_join_current_route_requires_count_projection";
       return info;
     }
     if (resolved_object_uuids.size() < 2) {
@@ -19331,7 +18233,6 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
     }
     info.left_object_uuid = resolved_object_uuids[0];
     info.right_object_uuid = resolved_object_uuids[1];
-    AppendIfMissing(&info.keyword_surface_ids, "SBSQL-LATERAL-JOIN-ASSERTION");
     info.valid = true;
     return info;
   }
@@ -19409,7 +18310,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       }
       ++index;
       if (!info.count_projection) {
-        info.invalid_reason = "left_join_current_route_requires_count_assertion_projection";
+        info.invalid_reason = "left_join_filtered_route_requires_count_projection";
         return info;
       }
     }
@@ -19424,7 +18325,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       }
     }
     if (!info.count_projection) {
-      info.invalid_reason = "right_join_current_route_requires_count_assertion_projection";
+      info.invalid_reason = "right_join_current_route_requires_count_projection";
       return info;
     }
   } else if (full_join) {
@@ -19442,12 +18343,12 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       }
     }
     if (!info.count_projection) {
-      info.invalid_reason = "full_join_current_route_requires_count_assertion_projection";
+      info.invalid_reason = "full_join_current_route_requires_count_projection";
       return info;
     }
   } else if (cross_join) {
     if (!info.count_projection) {
-      info.invalid_reason = "cross_join_current_route_requires_count_assertion_projection";
+      info.invalid_reason = "cross_join_current_route_requires_count_projection";
       return info;
     }
   } else if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "WHERE") {
@@ -19540,9 +18441,8 @@ TableJoinInfo AnalyzeExistsCountRoute(const CstDocument& cst,
 
   info.active = true;
   info.operation = "semi_join";
-  if (!ConsumeSelectPlainCountProjection(tokens, outer_from_index, &info) &&
-      !ConsumeSelectCountAssertionProjection(tokens, outer_from_index, &info)) {
-    info.invalid_reason = "exists_current_route_requires_count_assertion_projection";
+  if (!ConsumeSelectPlainCountProjection(tokens, outer_from_index, &info)) {
+    info.invalid_reason = "exists_current_route_requires_count_projection";
     return info;
   }
 
@@ -19634,371 +18534,7 @@ TableJoinInfo AnalyzeExistsCountRoute(const CstDocument& cst,
   return info;
 }
 
-TableJoinInfo AnalyzeJoinGroupAggregateAssertionRoute(
-    const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
-  TableJoinInfo info;
-  const auto tokens = MeaningfulTokenPtrs(cst);
-  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
 
-  std::size_t outer_from_index = tokens.size();
-  for (std::size_t index = 1; index < tokens.size(); ++index) {
-    if (ToUpperAscii(tokens[index]->text) == "FROM") {
-      outer_from_index = index;
-      break;
-    }
-  }
-  if (outer_from_index == tokens.size() || outer_from_index + 2 >= tokens.size() ||
-      tokens[outer_from_index + 1]->text != "(" ||
-      ToUpperAscii(tokens[outer_from_index + 2]->text) != "SELECT") {
-    return info;
-  }
-
-  bool saw_join = false;
-  bool saw_group = false;
-  for (std::size_t index = outer_from_index + 3; index < tokens.size(); ++index) {
-    const auto word = ToUpperAscii(tokens[index]->text);
-    if (word == "JOIN") saw_join = true;
-    if (word == "GROUP") saw_group = true;
-  }
-  if (!saw_join || !saw_group) return info;
-
-  info.active = true;
-  info.operation = "join_group_sum_assertion";
-  if (!ConsumeSelectAggregateAssertionProjection(tokens, outer_from_index, &info)) {
-    info.invalid_reason = "join_group_current_route_requires_sum_assertion_projection";
-    return info;
-  }
-  if (info.aggregate_function != "sb.aggregate.sum") {
-    info.invalid_reason = "join_group_current_route_requires_sum_assertion_projection";
-    return info;
-  }
-
-  std::size_t index = outer_from_index + 3;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.group_field)) {
-    info.invalid_reason = "join_group_key_projection_invalid";
-    return info;
-  }
-  info.group_field = LowerAscii(info.group_field);
-  if (index >= tokens.size() || tokens[index]->text != ",") {
-    info.invalid_reason = "join_group_requires_inner_sum_projection";
-    return info;
-  }
-  ++index;
-
-  const auto inner_aggregate = ParseFunctionNameTokenSequence(tokens, index);
-  if (!inner_aggregate) {
-    info.invalid_reason = "join_group_inner_sum_required";
-    return info;
-  }
-  const auto inner_aggregate_id = AggregateFunctionIdForGroupRoute(inner_aggregate->text);
-  if (!inner_aggregate_id || *inner_aggregate_id != "sb.aggregate.sum") {
-    info.invalid_reason = "join_group_inner_sum_required";
-    return info;
-  }
-  index = inner_aggregate->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) {
-    info.invalid_reason = "join_group_inner_sum_invalid";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.aggregate_field)) {
-    info.invalid_reason = "join_group_inner_sum_field_invalid";
-    return info;
-  }
-  info.aggregate_field = LowerAscii(info.aggregate_field);
-  if (!TokenTextEquals(tokens, index, ")")) {
-    info.invalid_reason = "join_group_inner_sum_invalid";
-    return info;
-  }
-  ++index;
-  std::string ignored_alias;
-  ConsumeProjectionAlias(tokens, &index, &ignored_alias);
-
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
-    info.invalid_reason = "join_group_inner_from_required";
-    return info;
-  }
-  ++index;
-  std::string ignored_table;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table)) {
-    info.invalid_reason = "join_group_left_relation_invalid";
-    return info;
-  }
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "JOIN") {
-    info.invalid_reason = "join_group_inner_join_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table)) {
-    info.invalid_reason = "join_group_right_relation_invalid";
-    return info;
-  }
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "ON") {
-    info.invalid_reason = "join_group_on_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.left_key_field)) {
-    info.invalid_reason = "join_group_left_key_invalid";
-    return info;
-  }
-  if (index >= tokens.size() || tokens[index]->text != "=") {
-    info.invalid_reason = "join_group_on_equality_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.right_key_field)) {
-    info.invalid_reason = "join_group_right_key_invalid";
-    return info;
-  }
-
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "GROUP") {
-    info.invalid_reason = "join_group_group_by_required";
-    return info;
-  }
-  ++index;
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "BY") {
-    info.invalid_reason = "join_group_group_by_required";
-    return info;
-  }
-  ++index;
-  std::string group_by_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &group_by_field) ||
-      LowerAscii(group_by_field) != info.group_field) {
-    info.invalid_reason = "join_group_group_by_key_mismatch";
-    return info;
-  }
-
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "HAVING") {
-    info.invalid_reason = "join_group_having_required";
-    return info;
-  }
-  ++index;
-  const auto having_aggregate = ParseFunctionNameTokenSequence(tokens, index);
-  if (!having_aggregate) {
-    info.invalid_reason = "join_group_having_sum_required";
-    return info;
-  }
-  const auto having_aggregate_id = AggregateFunctionIdForGroupRoute(having_aggregate->text);
-  if (!having_aggregate_id || *having_aggregate_id != "sb.aggregate.sum") {
-    info.invalid_reason = "join_group_having_sum_required";
-    return info;
-  }
-  index = having_aggregate->end_index;
-  if (!TokenTextEquals(tokens, index, "(")) {
-    info.invalid_reason = "join_group_having_sum_invalid";
-    return info;
-  }
-  ++index;
-  std::string having_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &having_field) ||
-      LowerAscii(having_field) != info.aggregate_field) {
-    info.invalid_reason = "join_group_having_field_mismatch";
-    return info;
-  }
-  if (!TokenTextEquals(tokens, index, ")")) {
-    info.invalid_reason = "join_group_having_sum_invalid";
-    return info;
-  }
-  ++index;
-  if (index >= tokens.size() || tokens[index]->text != ">=") {
-    info.invalid_reason = "join_group_having_requires_gte_threshold";
-    return info;
-  }
-  ++index;
-  if (index >= tokens.size() ||
-      (tokens[index]->kind != TokenKind::kNumericLiteral &&
-       !IsUnsignedIntegerLiteral(*tokens[index]))) {
-    info.invalid_reason = "join_group_having_threshold_invalid";
-    return info;
-  }
-  info.having_threshold = tokens[index]->text;
-  ++index;
-  if (index >= tokens.size() || tokens[index]->text != ")") {
-    info.invalid_reason = "join_group_inner_subquery_close_required";
-    return info;
-  }
-  ++index;
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index != tokens.size()) {
-    info.invalid_reason = "join_group_trailing_tokens_require_query_plan_route";
-    return info;
-  }
-  if (resolved_object_uuids.size() < 2) {
-    info.invalid_reason = "join_group_requires_two_uuid_resolved_relations";
-    return info;
-  }
-  info.left_object_uuid = resolved_object_uuids[0];
-  info.right_object_uuid = resolved_object_uuids[1];
-  AppendIfMissing(&info.keyword_surface_ids, "SBSQL-JOIN-GROUP-SUM-ASSERTION");
-  info.valid = true;
-  return info;
-}
-
-TableJoinInfo AnalyzeJoinWindowMaxAssertionRoute(
-    const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
-  TableJoinInfo info;
-  const auto tokens = MeaningfulTokenPtrs(cst);
-  if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
-
-  std::size_t outer_from_index = tokens.size();
-  for (std::size_t index = 1; index < tokens.size(); ++index) {
-    if (ToUpperAscii(tokens[index]->text) == "FROM") {
-      outer_from_index = index;
-      break;
-    }
-  }
-  if (outer_from_index == tokens.size() || outer_from_index + 2 >= tokens.size() ||
-      tokens[outer_from_index + 1]->text != "(" ||
-      ToUpperAscii(tokens[outer_from_index + 2]->text) != "SELECT") {
-    return info;
-  }
-
-  bool saw_row_number = false;
-  bool saw_over = false;
-  bool saw_join = false;
-  for (std::size_t index = outer_from_index + 3; index < tokens.size(); ++index) {
-    const auto word = ToUpperAscii(tokens[index]->text);
-    if (word == "ROW_NUMBER") saw_row_number = true;
-    if (word == "OVER") saw_over = true;
-    if (word == "JOIN") saw_join = true;
-  }
-  if (!saw_row_number || !saw_over || !saw_join) return info;
-
-  info.active = true;
-  info.operation = "join_window_max_assertion";
-  if (!ConsumeSelectAggregateAssertionProjection(tokens, outer_from_index, &info)) {
-    info.invalid_reason = "join_window_current_route_requires_max_assertion_projection";
-    return info;
-  }
-  if (info.aggregate_function != "sb.aggregate.max") {
-    info.invalid_reason = "join_window_current_route_requires_max_assertion_projection";
-    return info;
-  }
-
-  std::size_t index = outer_from_index + 3;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.partition_field)) {
-    info.invalid_reason = "join_window_partition_projection_invalid";
-    return info;
-  }
-  info.partition_field = LowerAscii(info.partition_field);
-  if (index >= tokens.size() || tokens[index]->text != ",") {
-    info.invalid_reason = "join_window_second_projection_required";
-    return info;
-  }
-  ++index;
-  std::string ignored_projection;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_projection)) {
-    info.invalid_reason = "join_window_second_projection_invalid";
-    return info;
-  }
-  if (index >= tokens.size() || tokens[index]->text != ",") {
-    info.invalid_reason = "join_window_row_number_projection_required";
-    return info;
-  }
-  ++index;
-
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "ROW_NUMBER") {
-    info.invalid_reason = "join_window_row_number_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenText(tokens, &index, "(") || !ConsumeTokenText(tokens, &index, ")") ||
-      !ConsumeTokenText(tokens, &index, "OVER") || !ConsumeTokenText(tokens, &index, "(") ||
-      !ConsumeTokenText(tokens, &index, "PARTITION") ||
-      !ConsumeTokenText(tokens, &index, "BY")) {
-    info.invalid_reason = "join_window_row_number_over_invalid";
-    return info;
-  }
-  std::string partition_by_field;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &partition_by_field) ||
-      LowerAscii(partition_by_field) != info.partition_field) {
-    info.invalid_reason = "join_window_partition_field_mismatch";
-    return info;
-  }
-  if (!ConsumeTokenText(tokens, &index, "ORDER") ||
-      !ConsumeTokenText(tokens, &index, "BY")) {
-    info.invalid_reason = "join_window_order_by_required";
-    return info;
-  }
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.order_field)) {
-    info.invalid_reason = "join_window_order_field_invalid";
-    return info;
-  }
-  info.order_field = LowerAscii(info.order_field);
-  if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "DESC") {
-    ++index;
-  }
-  if (!ConsumeTokenText(tokens, &index, ")")) {
-    info.invalid_reason = "join_window_over_close_required";
-    return info;
-  }
-  std::string ignored_alias;
-  ConsumeProjectionAlias(tokens, &index, &ignored_alias);
-
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
-    info.invalid_reason = "join_window_inner_from_required";
-    return info;
-  }
-  ++index;
-  std::string ignored_table;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table)) {
-    info.invalid_reason = "join_window_left_relation_invalid";
-    return info;
-  }
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "JOIN") {
-    info.invalid_reason = "join_window_inner_join_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table)) {
-    info.invalid_reason = "join_window_right_relation_invalid";
-    return info;
-  }
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "ON") {
-    info.invalid_reason = "join_window_on_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.left_key_field)) {
-    info.invalid_reason = "join_window_left_key_invalid";
-    return info;
-  }
-  if (index >= tokens.size() || tokens[index]->text != "=") {
-    info.invalid_reason = "join_window_on_equality_required";
-    return info;
-  }
-  ++index;
-  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.right_key_field)) {
-    info.invalid_reason = "join_window_right_key_invalid";
-    return info;
-  }
-  if (index >= tokens.size() || tokens[index]->text != ")") {
-    info.invalid_reason = "join_window_inner_subquery_close_required";
-    return info;
-  }
-  ++index;
-  ConsumeOptionalTokenAlias(tokens, &index);
-  if (index != tokens.size()) {
-    info.invalid_reason = "join_window_trailing_tokens_require_query_plan_route";
-    return info;
-  }
-  if (resolved_object_uuids.size() < 2) {
-    info.invalid_reason = "join_window_requires_two_uuid_resolved_relations";
-    return info;
-  }
-  info.left_object_uuid = resolved_object_uuids[0];
-  info.right_object_uuid = resolved_object_uuids[1];
-  AppendIfMissing(&info.keyword_surface_ids, "SBSQL-JOIN-WINDOW-MAX-ASSERTION");
-  info.valid = true;
-  return info;
-}
 
 bool ConsumeSelectStarFromRelation(const std::vector<const Token*>& tokens,
                                    std::size_t* index,
@@ -20146,151 +18682,6 @@ TableSetOperationInfo AnalyzeTableSetOperationRoute(
       outer_from_index = candidate;
       break;
     }
-  }
-  if (outer_from_index != tokens.size() && outer_from_index + 1 < tokens.size() &&
-      tokens[outer_from_index + 1]->text == "(") {
-    TableJoinInfo projection;
-    if (ConsumeSelectCountAssertionProjection(tokens, outer_from_index, &projection)) {
-      info.count_projection = true;
-    } else if (ConsumeSelectAggregateAssertionProjection(tokens, outer_from_index, &projection)) {
-      info.aggregate_projection = true;
-    } else {
-      info.invalid_reason = "set_operation_subquery_current_route_requires_count_or_aggregate_assertion";
-      return info;
-    }
-    index = outer_from_index + 2;
-    std::vector<std::string> project_fields;
-    std::vector<std::string> not_null_filter_fields;
-    std::vector<std::string> filter_kinds;
-    std::vector<std::string> filter_fields;
-    std::vector<std::string> filter_values;
-    std::vector<std::string> filter_value_types;
-    std::string first_project_field;
-    std::string first_not_null_filter;
-    std::string first_filter_kind;
-    std::string first_filter_field;
-    std::string first_filter_value;
-    std::string first_filter_value_type;
-    if (!ConsumeSelectSingleFieldFromRelation(tokens, &index, &first_project_field,
-                                              &first_not_null_filter,
-                                              &first_filter_kind,
-                                              &first_filter_field,
-                                              &first_filter_value,
-                                              &first_filter_value_type,
-                                              &info.invalid_reason)) {
-      return info;
-    }
-    project_fields.push_back(std::move(first_project_field));
-    not_null_filter_fields.push_back(std::move(first_not_null_filter));
-    filter_kinds.push_back(std::move(first_filter_kind));
-    filter_fields.push_back(std::move(first_filter_field));
-    filter_values.push_back(std::move(first_filter_value));
-    filter_value_types.push_back(std::move(first_filter_value_type));
-    if (index != operation_index) {
-      info.invalid_reason = "set_operation_left_query_shape_requires_single_field_select";
-      return info;
-    }
-    bool duplicate_preserving = false;
-    bool quantifier_seen = false;
-    bool parsed_first_operator = false;
-    while (index < tokens.size()) {
-      const auto set_word = ToUpperAscii(tokens[index]->text);
-      if (set_word != "UNION" && set_word != "INTERSECT" && set_word != "EXCEPT") break;
-      if (!parsed_first_operator) {
-        operation = set_word;
-        parsed_first_operator = true;
-      } else if (set_word != operation) {
-        info.invalid_reason = "set_operation_mixed_operators_require_query_plan_route";
-        return info;
-      }
-      ++index;
-      bool current_duplicate_preserving = false;
-      bool current_quantifier_seen = false;
-      if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "ALL") {
-        current_duplicate_preserving = true;
-        current_quantifier_seen = true;
-        ++index;
-      }
-      if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "DISTINCT") {
-        if (current_duplicate_preserving) {
-          info.invalid_reason = "set_operation_quantifier_conflict";
-          return info;
-        }
-        current_quantifier_seen = true;
-        ++index;
-      }
-      if (!quantifier_seen) {
-        duplicate_preserving = current_duplicate_preserving;
-        quantifier_seen = current_quantifier_seen;
-      } else if (current_quantifier_seen &&
-                 current_duplicate_preserving != duplicate_preserving) {
-        info.invalid_reason = "set_operation_mixed_quantifiers_require_query_plan_route";
-        return info;
-      }
-      std::string next_project_field;
-      std::string next_not_null_filter;
-      std::string next_filter_kind;
-      std::string next_filter_field;
-      std::string next_filter_value;
-      std::string next_filter_value_type;
-      if (!ConsumeSelectSingleFieldFromRelation(tokens, &index, &next_project_field,
-                                                &next_not_null_filter,
-                                                &next_filter_kind,
-                                                &next_filter_field,
-                                                &next_filter_value,
-                                                &next_filter_value_type,
-                                                &info.invalid_reason)) {
-        return info;
-      }
-      project_fields.push_back(std::move(next_project_field));
-      not_null_filter_fields.push_back(std::move(next_not_null_filter));
-      filter_kinds.push_back(std::move(next_filter_kind));
-      filter_fields.push_back(std::move(next_filter_field));
-      filter_values.push_back(std::move(next_filter_value));
-      filter_value_types.push_back(std::move(next_filter_value_type));
-    }
-    if (project_fields.size() < 2) {
-      info.invalid_reason = "set_operation_requires_two_relations";
-      return info;
-    }
-    if (index >= tokens.size() || tokens[index]->text != ")") {
-      info.invalid_reason = "set_operation_subquery_close_parenthesis_required";
-      return info;
-    }
-    ++index;
-    ConsumeOptionalTokenAlias(tokens, &index);
-    if (index != tokens.size()) {
-      info.invalid_reason = "set_operation_trailing_tokens_require_query_plan_route";
-      return info;
-    }
-    if (resolved_object_uuids.size() < project_fields.size()) {
-      info.invalid_reason = "set_operation_requires_uuid_resolved_relations";
-      return info;
-    }
-    info.operation = LowerAscii(operation) + (duplicate_preserving ? "_all" : "_distinct");
-    info.left_object_uuid = resolved_object_uuids[0];
-    info.right_object_uuid = resolved_object_uuids[1];
-    info.left_project_field = project_fields[0];
-    info.right_project_field = project_fields[1];
-    info.relation_project_fields = std::move(project_fields);
-    info.relation_not_null_filter_fields = std::move(not_null_filter_fields);
-    info.relation_filter_kinds = std::move(filter_kinds);
-    info.relation_filter_fields = std::move(filter_fields);
-    info.relation_filter_values = std::move(filter_values);
-    info.relation_filter_value_types = std::move(filter_value_types);
-    info.relation_object_uuids.assign(resolved_object_uuids.begin(),
-                                      resolved_object_uuids.begin() +
-                                          static_cast<std::ptrdiff_t>(
-                                              info.relation_project_fields.size()));
-    info.assertion_id = projection.assertion_id;
-    info.actual_column_name = projection.actual_column_name;
-    info.expected_column_name = projection.expected_column_name;
-    info.expected_count = projection.expected_count;
-    info.expected_value = projection.expected_value;
-    info.aggregate_function = projection.aggregate_function;
-    info.aggregate_field = projection.aggregate_field;
-    info.valid = true;
-    return info;
   }
 
   {
@@ -22064,70 +20455,52 @@ TableCountInfo AnalyzeTableCountRoute(
   if (from_index == tokens.size()) return info;
 
   std::size_t index = 1;
-  TableJoinInfo count_assertion_projection;
-  if (ConsumeSelectJoinCountAssertionProjection(tokens, from_index, &count_assertion_projection)) {
-    info.count_assertion_projection = true;
-    info.count_distinct = count_assertion_projection.distinct_count_projection;
-    info.count_all = !info.count_distinct && count_assertion_projection.aggregate_field.empty();
-    info.aggregate_field = count_assertion_projection.aggregate_field;
-    info.assertion_id = count_assertion_projection.assertion_id;
-    info.actual_column_name = count_assertion_projection.actual_column_name;
-    info.expected_column_name = count_assertion_projection.expected_column_name;
-    info.expected_count = count_assertion_projection.expected_count;
-    info.expected_value = count_assertion_projection.expected_value;
-    info.count_compare_op = count_assertion_projection.count_compare_op;
-    info.count_compare_value = count_assertion_projection.count_compare_value;
-    index = from_index;
-  } else if (ConsumeSelectFieldCountAssertionProjection(tokens, from_index, &info)) {
-    index = from_index;
+  const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
+  if (!aggregate_function) return info;
+  const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
+  if (!aggregate_function_id || *aggregate_function_id != "sb.aggregate.count") {
+    return info;
+  }
+  index = aggregate_function->end_index;
+  if (!TokenTextEquals(tokens, index, "(")) {
+    info.active = true;
+    info.invalid_reason = "count_call_invalid";
+    return info;
+  }
+  ++index;
+  bool count_distinct = false;
+  if (TokenTextEquals(tokens, index, "DISTINCT")) {
+    count_distinct = true;
+    ++index;
+  }
+  if (TokenTextEquals(tokens, index, "*")) {
+    if (count_distinct) {
+      info.active = true;
+      info.invalid_reason = "count_distinct_star_requires_value_field";
+      return info;
+    }
+    info.count_all = true;
+    ++index;
   } else {
-    const auto aggregate_function = ParseFunctionNameTokenSequence(tokens, index);
-    if (!aggregate_function) return info;
-    const auto aggregate_function_id = AggregateFunctionIdForGroupRoute(aggregate_function->text);
-    if (!aggregate_function_id || *aggregate_function_id != "sb.aggregate.count") {
-      return info;
-    }
-    index = aggregate_function->end_index;
-    if (!TokenTextEquals(tokens, index, "(")) {
+    info.count_all = false;
+    info.count_distinct = count_distinct;
+    if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.aggregate_field)) {
       info.active = true;
-      info.invalid_reason = "count_call_invalid";
+      info.invalid_reason = "count_value_field_invalid";
       return info;
     }
-    ++index;
-    bool count_distinct = false;
-    if (TokenTextEquals(tokens, index, "DISTINCT")) {
-      count_distinct = true;
-      ++index;
-    }
-    if (TokenTextEquals(tokens, index, "*")) {
-      if (count_distinct) {
-        info.active = true;
-        info.invalid_reason = "count_distinct_star_requires_value_field";
-        return info;
-      }
-      info.count_all = true;
-      ++index;
-    } else {
-      info.count_all = false;
-      info.count_distinct = count_distinct;
-      if (!ConsumeTokenQualifiedLeaf(tokens, &index, &info.aggregate_field)) {
-        info.active = true;
-        info.invalid_reason = "count_value_field_invalid";
-        return info;
-      }
-      info.aggregate_field = LowerAscii(info.aggregate_field);
-    }
-    if (!TokenTextEquals(tokens, index, ")")) {
-      info.active = true;
-      info.invalid_reason = "count_call_invalid";
-      return info;
-    }
-    ++index;
-    if (index < from_index) {
-      std::string result_alias;
-      if (ConsumeProjectionAlias(tokens, &index, &result_alias)) {
-        info.result_column_name = std::move(result_alias);
-      }
+    info.aggregate_field = LowerAscii(info.aggregate_field);
+  }
+  if (!TokenTextEquals(tokens, index, ")")) {
+    info.active = true;
+    info.invalid_reason = "count_call_invalid";
+    return info;
+  }
+  ++index;
+  if (index < from_index) {
+    std::string result_alias;
+    if (ConsumeProjectionAlias(tokens, &index, &result_alias)) {
+      info.result_column_name = std::move(result_alias);
     }
   }
   if (!TokenTextEquals(tokens, index, "FROM")) {
@@ -22386,181 +20759,6 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
   MaterializedCteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty()) return info;
-  if (ToUpperAscii(tokens.front()->text) == "SELECT") {
-    std::size_t from_index = tokens.size();
-    for (std::size_t index = 1; index < tokens.size(); ++index) {
-      if (ToUpperAscii(tokens[index]->text) == "FROM") {
-        from_index = index;
-        break;
-      }
-    }
-    if (from_index != tokens.size() && from_index + 3 < tokens.size() &&
-        tokens[from_index + 1]->text == "(" &&
-        ToUpperAscii(tokens[from_index + 2]->text) == "WITH") {
-      info.active = true;
-      std::size_t projection_index = 0;
-      if (!ConsumeCteAggregateAssertionProjection(tokens, &projection_index, &info) ||
-          projection_index != from_index) {
-        info.invalid_reason = "derived_recursive_cte_outer_query_requires_aggregate_assertion";
-        return info;
-      }
-      if (!IsSupportedRecursiveCteAggregateAssertion(info.aggregate_function)) {
-        info.invalid_reason = "derived_recursive_cte_aggregate_current_route_unsupported";
-        return info;
-      }
-      std::size_t index = from_index + 3;
-      if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "RECURSIVE") {
-        info.invalid_reason = "derived_recursive_cte_requires_recursive";
-        return info;
-      }
-      info.recursive = true;
-      ++index;
-      if (index >= tokens.size() || !IsIdentifierLikeToken(*tokens[index])) {
-        info.invalid_reason = "derived_recursive_cte_name_required";
-        return info;
-      }
-      info.cte_name = ToUpperAscii(tokens[index]->text);
-      ++index;
-      if (index < tokens.size() && tokens[index]->text == "(") {
-        ++index;
-        while (index < tokens.size()) {
-          if (!IsIdentifierLikeToken(*tokens[index])) {
-            info.invalid_reason = "derived_recursive_cte_column_alias_required";
-            return info;
-          }
-          info.column_names.push_back(tokens[index]->text);
-          ++index;
-          if (index >= tokens.size()) {
-            info.invalid_reason = "derived_recursive_cte_column_alias_close_required";
-            return info;
-          }
-          if (tokens[index]->text == ",") {
-            ++index;
-            continue;
-          }
-          if (tokens[index]->text == ")") {
-            ++index;
-            break;
-          }
-          info.invalid_reason = "derived_recursive_cte_column_alias_list_invalid";
-          return info;
-        }
-      }
-      if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "AS") {
-        info.invalid_reason = "derived_recursive_cte_as_required";
-        return info;
-      }
-      ++index;
-      if (index >= tokens.size() || tokens[index]->text != "(") {
-        info.invalid_reason = "derived_recursive_cte_body_parentheses_required";
-        return info;
-      }
-      ++index;
-      if (!ParseValuesRowsAt(tokens, &index, &info.anchor_rows, &info.column_count)) {
-        info.invalid_reason = "derived_recursive_cte_anchor_values_required";
-        return info;
-      }
-      if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "UNION") {
-        info.invalid_reason = "derived_recursive_cte_union_required";
-        return info;
-      }
-      ++index;
-      bool duplicate_preserving = false;
-      if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "ALL") {
-        duplicate_preserving = true;
-        ++index;
-      }
-      if (index < tokens.size() && ToUpperAscii(tokens[index]->text) == "DISTINCT") {
-        ++index;
-      }
-      std::size_t recursive_column_count = 0;
-      const std::size_t recursive_step_index = index;
-      if (ParseValuesRowsAt(tokens, &index, &info.recursive_rows, &recursive_column_count)) {
-        if (duplicate_preserving) {
-          info.invalid_reason = "derived_recursive_cte_union_all_values_duplicate_semantics_route";
-          return info;
-        }
-        if (recursive_column_count != info.column_count) {
-          info.invalid_reason = "derived_recursive_cte_column_count_mismatch";
-          return info;
-        }
-      } else {
-        index = recursive_step_index;
-        if (!duplicate_preserving) {
-          info.invalid_reason = "derived_recursive_cte_recursive_values_required";
-          return info;
-        }
-        if (info.column_count != 1 || info.column_names.size() != 1) {
-          info.invalid_reason = "derived_recursive_cte_counter_route_requires_single_column";
-          return info;
-        }
-        if (!ConsumeRecursiveCounterSelectStep(tokens, &index, info, &info)) {
-          info.invalid_reason = "derived_recursive_cte_recursive_counter_step_invalid";
-          return info;
-        }
-      }
-      if (!info.column_names.empty() && info.column_names.size() != info.column_count) {
-        info.invalid_reason = "derived_recursive_cte_column_alias_count_mismatch";
-        return info;
-      }
-      if (index >= tokens.size() || tokens[index]->text != ")") {
-        info.invalid_reason = "derived_recursive_cte_body_close_parenthesis_required";
-        return info;
-      }
-      ++index;
-      if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SELECT") {
-        info.invalid_reason = "derived_recursive_cte_inner_query_requires_select";
-        return info;
-      }
-      ++index;
-      std::string inner_projection;
-      if (!ConsumeTokenQualifiedLeaf(tokens, &index, &inner_projection)) {
-        info.invalid_reason = "derived_recursive_cte_inner_projection_required";
-        return info;
-      }
-      if (!info.column_names.empty() &&
-          LowerAscii(inner_projection) != LowerAscii(info.column_names.front())) {
-        info.invalid_reason = "derived_recursive_cte_inner_projection_must_read_declared_column";
-        return info;
-      }
-      if (!info.column_names.empty() &&
-          info.aggregate_field != "*" &&
-          LowerAscii(info.aggregate_field) != LowerAscii(info.column_names.front())) {
-        info.invalid_reason = "derived_recursive_cte_outer_aggregate_field_must_read_declared_column";
-        return info;
-      }
-      if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
-        info.invalid_reason = "derived_recursive_cte_inner_query_requires_from_cte";
-        return info;
-      }
-      ++index;
-      std::string outer_leaf;
-      if (!ConsumeTokenQualifiedLeaf(tokens, &index, &outer_leaf)) {
-        info.invalid_reason = "derived_recursive_cte_inner_relation_invalid";
-        return info;
-      }
-      if (ToUpperAscii(outer_leaf) != info.cte_name) {
-        info.invalid_reason = "derived_recursive_cte_inner_query_must_read_declared_cte";
-        return info;
-      }
-      ConsumeOptionalTokenAlias(tokens, &index);
-      if (index >= tokens.size() || tokens[index]->text != ")") {
-        info.invalid_reason = "derived_recursive_cte_subquery_close_parenthesis_required";
-        return info;
-      }
-      ++index;
-      ConsumeOptionalTokenAlias(tokens, &index);
-      if (index != tokens.size()) {
-        info.invalid_reason = "derived_recursive_cte_trailing_tokens_require_query_plan_route";
-        return info;
-      }
-      ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
-      ApplyColumnNamesToRows(info.column_names, &info.recursive_rows);
-      info.valid = true;
-      return info;
-    }
-    return info;
-  }
   if (ToUpperAscii(tokens.front()->text) != "WITH") return info;
   info.active = true;
 
@@ -22665,28 +20863,11 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
       info.invalid_reason = "recursive_cte_outer_query_requires_select";
       return info;
     }
-    const std::size_t outer_select_index = index;
     if (index + 1 < tokens.size() && tokens[index + 1]->text == "*") {
       index += 2;
-    } else {
-      if (ConsumeCtePlainCountProjection(tokens, &index, &info)) {
-        // Plain COUNT(*) over the materialized recursive CTE returns a normal rowset.
-      } else if (!ConsumeCteAggregateAssertionProjection(tokens, &index, &info)) {
-        info.invalid_reason = "recursive_cte_outer_query_requires_select_star_or_aggregate_assertion";
-        return info;
-      }
-      if (!info.count_result_projection &&
-          !IsSupportedRecursiveCteAggregateAssertion(info.aggregate_function)) {
-        info.invalid_reason = "recursive_cte_outer_aggregate_current_route_unsupported";
-        return info;
-      }
-      if (!info.count_result_projection &&
-          !info.column_names.empty() &&
-          info.aggregate_field != "*" &&
-          LowerAscii(info.aggregate_field) != LowerAscii(info.column_names.front())) {
-        info.invalid_reason = "recursive_cte_outer_aggregate_field_must_read_declared_column";
-        return info;
-      }
+    } else if (!ConsumeCtePlainCountProjection(tokens, &index, &info)) {
+      info.invalid_reason = "recursive_cte_outer_query_requires_select_star_or_count";
+      return info;
     }
     if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
       info.invalid_reason = "recursive_cte_outer_query_requires_from_cte";
@@ -22709,7 +20890,6 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
     }
     ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
     ApplyColumnNamesToRows(info.column_names, &info.recursive_rows);
-    (void)outer_select_index;
     info.valid = true;
     return info;
   }
@@ -22773,28 +20953,17 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
     }
     ++index;
     if (index < tokens.size() && tokens[index]->text == ",") {
-      std::size_t window_index = index;
-      if (ConsumeGeneratedWindowCteSequence(tokens, &window_index, &info)) {
-        ApplyColumnNamesToRows(info.column_names, &info.anchor_rows);
-        index = window_index;
-        info.valid = true;
-        return info;
-      }
       info.invalid_reason = "cte_multiple_definitions_require_query_plan_route";
       return info;
     }
-    if (index >= tokens.size()) {
-      info.invalid_reason = "cte_values_outer_query_requires_aggregate_assertion";
+    if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SELECT") {
+      info.invalid_reason = "cte_values_outer_query_requires_select";
       return info;
     }
-    if (!ConsumeCteAggregateAssertionProjection(tokens, &index, &info)) {
-      if (info.invalid_reason.empty()) {
-        info.invalid_reason = "cte_values_outer_query_requires_aggregate_assertion";
-      }
-      return info;
-    }
-    if (!IsSupportedRecursiveCteAggregateAssertion(info.aggregate_function)) {
-      info.invalid_reason = "cte_values_outer_aggregate_current_route_unsupported";
+    if (index + 1 < tokens.size() && tokens[index + 1]->text == "*") {
+      index += 2;
+    } else if (!ConsumeCtePlainCountProjection(tokens, &index, &info)) {
+      info.invalid_reason = "cte_values_outer_query_requires_select_star_or_count";
       return info;
     }
     if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
@@ -22835,18 +21004,14 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
       return info;
     }
     ++index;
-    if (index >= tokens.size()) {
-      info.invalid_reason = "cte_empty_select_outer_query_requires_aggregate_assertion";
+    if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "SELECT") {
+      info.invalid_reason = "cte_empty_select_outer_query_requires_select";
       return info;
     }
-    if (!ConsumeCteAggregateAssertionProjection(tokens, &index, &info)) {
-      if (info.invalid_reason.empty()) {
-        info.invalid_reason = "cte_empty_select_outer_query_requires_aggregate_assertion";
-      }
-      return info;
-    }
-    if (!IsSupportedRecursiveCteAggregateAssertion(info.aggregate_function)) {
-      info.invalid_reason = "cte_empty_select_outer_aggregate_current_route_unsupported";
+    if (index + 1 < tokens.size() && tokens[index + 1]->text == "*") {
+      index += 2;
+    } else if (!ConsumeCtePlainCountProjection(tokens, &index, &info)) {
+      info.invalid_reason = "cte_empty_select_outer_query_requires_select_star_or_count";
       return info;
     }
     if (index >= tokens.size() || ToUpperAscii(tokens[index]->text) != "FROM") {
@@ -32738,30 +30903,6 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
     out << "\"predicate_binding_model\":\"engine_row_descriptor_field\","
         << "\"predicate_descriptor_bound\":true,";
   }
-  if (info.count_assertion_projection) {
-    out << "\"result_projection\":\"count_assertion\","
-        << "\"aggregate_function\":\"sb.aggregate.count\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-  } else if (info.field_assertion_projection) {
-    out << "\"result_projection\":\"field_assertion\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_source_column\":\"" << EscapeJson(info.actual_source_column) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-  } else if (info.aggregate_assertion_projection) {
-    out << "\"result_projection\":\"aggregate_assertion\","
-        << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
-        << "\"aggregate_source_column\":\"" << EscapeJson(info.aggregate_source_column) << "\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-  }
   if (info.has_update_assignment) {
     if (!info.assignment_plan.empty()) {
       out << "\"assignment_plan\":\"" << EscapeJson(info.assignment_plan) << "\",";
@@ -33639,12 +31780,7 @@ void AppendTableJoinJson(std::ostream& out, const TableJoinInfo& info) {
       << "\"right_key_column\":\"0\","
       << "\"join_binding_model\":\"engine_row_descriptor_field\","
       << "\"result_projection\":\""
-      << (info.count_result_projection
-              ? "count"
-              : (info.count_projection
-              ? (info.aggregate_function == "sb.aggregate.count" ? "count_assertion"
-                                                                  : "aggregate_assertion")
-              : "rowset"))
+      << (info.count_projection ? "count" : "rowset")
       << "\",";
   if (!info.right_null_filter_field.empty()) {
     out << "\"right_null_filter_field\":\"" << EscapeJson(info.right_null_filter_field) << "\",";
@@ -33700,25 +31836,12 @@ void AppendTableJoinJson(std::ostream& out, const TableJoinInfo& info) {
     out << "\"order_by\":\"" << EscapeJson(info.order_field) << "\",";
   }
   if (info.count_projection) {
-    out << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-    if (!info.count_compare_op.empty()) {
-      out << "\"count_compare_op\":\"" << EscapeJson(info.count_compare_op) << "\","
-          << "\"count_compare_value\":\"" << EscapeJson(info.count_compare_value) << "\",";
-    }
+    out << "\"aggregate_function\":\"sb.aggregate.count\",";
   }
   out << "\"join_result_binding_model\":\""
-      << (info.count_result_projection
+      << (info.count_projection
               ? "engine_row_descriptor_join_count_result"
-              : (info.count_projection
-              ? (info.aggregate_function == "sb.aggregate.count"
-                     ? "engine_row_descriptor_join_count_assertion"
-                     : "engine_row_descriptor_join_aggregate_assertion")
-              : "engine_row_descriptor_join_rowset"))
+              : "engine_row_descriptor_join_rowset")
       << "\","
       << "\"source_relation_required\":true,"
       << "\"row_storage_touched\":true,"
@@ -33751,9 +31874,7 @@ void AppendTableSetOperationJson(std::ostream& out,
   }
   out << "\"relation_count\":\"" << relation_object_uuids.size() << "\","
       << "\"set_by_name\":" << (info.by_name ? "true" : "false") << ','
-      << "\"result_projection\":\""
-      << (info.count_projection ? "count_assertion" : (info.aggregate_projection ? "aggregate_assertion" : "rowset"))
-      << "\",";
+      << "\"result_projection\":\"rowset\",";
   if (!info.left_project_field.empty()) {
     out << "\"left_project_field\":\"" << EscapeJson(info.left_project_field) << "\",";
   }
@@ -33785,20 +31906,6 @@ void AppendTableSetOperationJson(std::ostream& out,
         << EscapeJson(relation < info.relation_filter_value_types.size()
                           ? info.relation_filter_value_types[relation]
                           : std::string{}) << "\",";
-  }
-  if (info.count_projection) {
-    out << "\"aggregate_function\":\"sb.aggregate.count\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\",";
-  } else if (info.aggregate_projection) {
-    out << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
-        << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
   }
   out
       << "\"set_binding_model\":\""
@@ -34085,19 +32192,8 @@ void AppendTableCountJson(std::ostream& out, const TableCountInfo& info) {
         << "\"catalog_read_only\":true,"
         << "\"projection\":\"" << EscapeJson(info.catalog_projection_path) << "\","
         << "\"catalog_projection\":\"" << EscapeJson(info.catalog_projection_path) << "\","
-        << "\"aggregate_function\":\"sb.aggregate.count\",";
-    if (info.count_assertion_projection) {
-      out << "\"result_projection\":\"count_assertion\","
-          << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-          << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-          << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-          << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
-          << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-      if (!info.count_compare_op.empty()) {
-        out << "\"count_compare_op\":\"" << EscapeJson(info.count_compare_op) << "\","
-            << "\"count_compare_value\":\"" << EscapeJson(info.count_compare_value) << "\",";
-      }
-    }
+        << "\"aggregate_function\":\"sb.aggregate.count\","
+        << "\"result_projection\":\"count\",";
     if (info.has_where_predicate) {
       out << "\"predicate_kind\":\"" << EscapeJson(info.predicate_kind) << "\","
           << "\"predicate_column\":\"" << EscapeJson(info.predicate_column) << "\","
@@ -34176,18 +32272,7 @@ void AppendTableCountJson(std::ostream& out, const TableCountInfo& info) {
   if (!info.offset.empty()) {
     out << "\"offset\":\"" << EscapeJson(info.offset) << "\",";
   }
-  if (info.count_assertion_projection) {
-    out << "\"result_projection\":\"count_assertion\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_count\":\"" << EscapeJson(info.expected_count) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-    if (!info.count_compare_op.empty()) {
-      out << "\"count_compare_op\":\"" << EscapeJson(info.count_compare_op) << "\","
-          << "\"count_compare_value\":\"" << EscapeJson(info.count_compare_value) << "\",";
-    }
-  } else if (!info.result_column_name.empty()) {
+  if (!info.result_column_name.empty()) {
     out << "\"result_projection\":\"count\","
         << "\"result_column_name\":\"" << EscapeJson(info.result_column_name) << "\",";
   }
@@ -34247,28 +32332,6 @@ void AppendMaterializedCteJson(std::ostream& out,
       out << "\"result_projection\":\"count\","
           << "\"aggregate_function\":\"sb.aggregate.count\","
           << "\"aggregate_value_field\":\"*\",";
-    } else if (info.aggregate_assertion) {
-      out << "\"result_projection\":\"aggregate_assertion\","
-          << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
-          << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
-          << "\"aggregate_pair_value_field\":\"" << EscapeJson(info.aggregate_pair_field) << "\","
-          << "\"order_by\":\"" << EscapeJson(info.aggregate_order_field) << "\","
-          << "\"aggregate_fraction\":\"" << EscapeJson(info.aggregate_fraction) << "\","
-          << "\"aggregate_limit\":\"" << EscapeJson(info.aggregate_limit) << "\","
-          << "\"listagg_separator\":\"" << EscapeJson(info.listagg_separator) << "\","
-          << "\"listagg_overflow_mode\":\"" << EscapeJson(info.listagg_overflow_mode) << "\","
-          << "\"listagg_max_output_bytes\":\"" << EscapeJson(info.listagg_max_output_bytes) << "\","
-          << "\"listagg_truncation_indicator\":\"" << EscapeJson(info.listagg_truncation_indicator) << "\","
-          << "\"listagg_with_count\":\"" << EscapeJson(info.listagg_with_count) << "\","
-          << "\"hypothetical_value\":\"" << EscapeJson(info.hypothetical_value) << "\","
-          << "\"hypothetical_value_type\":\"" << EscapeJson(info.hypothetical_value_type) << "\","
-          << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-          << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-          << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-          << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-      if (info.expected_value_is_null) {
-        out << "\"expected_value_is_null\":\"true\",";
-      }
     } else {
       out << "\"result_projection\":\"rowset\",";
     }
@@ -34292,13 +32355,13 @@ void AppendMaterializedCteJson(std::ostream& out,
     append_relation(1, info.recursive_rows);
     return;
   }
-  if (info.window_assertion) {
+  if (info.object_uuid.empty()) {
     out << "\"query_envelope_kind\":\"values_materialized_cte\","
         << "\"query_operation\":\"materialized_cte\","
         << "\"query_execute\":\"true\","
         << "\"cte_name_text_included\":false,"
         << "\"cte_strategy\":\"nonrecursive_values_materialized\","
-        << "\"cte_binding_model\":\"values_nonrecursive_window_current_route\","
+        << "\"cte_binding_model\":\"values_nonrecursive_rowset_current_route\","
         << "\"relation_count\":\"1\","
         << "\"relation_0_row_count\":\"" << info.anchor_rows.size() << "\","
         << "\"values_column_count\":\"" << info.column_count << "\","
@@ -34307,84 +32370,8 @@ void AppendMaterializedCteJson(std::ostream& out,
         << "\"mga_transaction_context_required\":true,"
         << "\"object_name_text_included\":false,"
         << "\"sql_text_included\":false,"
-        << "\"result_projection\":\"window_assertion\","
-        << "\"window_function\":\"" << EscapeJson(info.window_function) << "\","
-        << "\"window_value_field\":\"" << EscapeJson(info.window_value_field) << "\","
-        << "\"order_by\":\"" << EscapeJson(info.window_order_field) << "\","
-        << "\"window_n\":\"" << EscapeJson(info.window_n) << "\","
-        << "\"window_offset\":\"" << EscapeJson(info.window_offset) << "\","
-        << "\"window_default_value\":\"" << EscapeJson(info.window_default_value) << "\","
-        << "\"window_default_type\":\"" << EscapeJson(info.window_default_type) << "\","
-        << "\"window_lookup_field\":\"" << EscapeJson(info.window_lookup_field) << "\","
-        << "\"window_lookup_value\":\"" << EscapeJson(info.window_lookup_value) << "\","
-        << "\"window_limit_first\":\"" << (info.window_limit_first ? "true" : "false") << "\","
-        << "\"window_filter_field\":\"" << EscapeJson(info.window_filter_field) << "\","
-        << "\"window_filter_min\":\"" << EscapeJson(info.window_filter_min) << "\","
-        << "\"window_filter_max\":\"" << EscapeJson(info.window_filter_max) << "\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-    if (info.window_filter_present) {
-      out << "\"window_filter_present\":\"true\",";
-    }
-    if (info.window_default_is_null) {
-      out << "\"window_default_is_null\":\"true\",";
-    }
-    if (info.expected_value_is_null) {
-      out << "\"expected_value_is_null\":\"true\",";
-    }
-    for (std::size_t row = 0; row < info.anchor_rows.size(); ++row) {
-      for (std::size_t column = 0; column < info.anchor_rows[row].size(); ++column) {
-        const auto& item = info.anchor_rows[row][column];
-        out << "\"relation_0_" << row << '_' << column
-            << "_name\":\"" << EscapeJson(item.name) << "\","
-            << "\"relation_0_" << row << '_' << column
-            << "_type\":\"" << EscapeJson(item.type_name) << "\","
-            << "\"relation_0_" << row << '_' << column
-            << "_value\":\"" << EscapeJson(item.value) << "\","
-            << "\"relation_0_" << row << '_' << column
-            << "_is_null\":\"" << (item.is_null ? "true" : "false") << "\",";
-      }
-    }
-    return;
-  }
-  if (info.aggregate_assertion) {
-    out << "\"query_envelope_kind\":\"values_materialized_cte\","
-        << "\"query_operation\":\"materialized_cte\","
-        << "\"query_execute\":\"true\","
-        << "\"cte_name_text_included\":false,"
-        << "\"cte_strategy\":\"nonrecursive_values_materialized\","
-        << "\"cte_binding_model\":\"values_nonrecursive_current_route\","
-        << "\"relation_count\":\"1\","
-        << "\"relation_0_row_count\":\"" << info.anchor_rows.size() << "\","
-        << "\"values_column_count\":\"" << info.column_count << "\","
-        << "\"source_relation_required\":false,"
-        << "\"row_storage_touched\":false,"
-        << "\"mga_transaction_context_required\":true,"
-        << "\"object_name_text_included\":false,"
-        << "\"sql_text_included\":false,"
-        << "\"result_projection\":\"aggregate_assertion\","
-        << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
-        << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
-        << "\"aggregate_pair_value_field\":\"" << EscapeJson(info.aggregate_pair_field) << "\","
-        << "\"order_by\":\"" << EscapeJson(info.aggregate_order_field) << "\","
-        << "\"aggregate_fraction\":\"" << EscapeJson(info.aggregate_fraction) << "\","
-        << "\"aggregate_limit\":\"" << EscapeJson(info.aggregate_limit) << "\","
-        << "\"listagg_separator\":\"" << EscapeJson(info.listagg_separator) << "\","
-        << "\"listagg_overflow_mode\":\"" << EscapeJson(info.listagg_overflow_mode) << "\","
-        << "\"listagg_max_output_bytes\":\"" << EscapeJson(info.listagg_max_output_bytes) << "\","
-        << "\"listagg_truncation_indicator\":\"" << EscapeJson(info.listagg_truncation_indicator) << "\","
-        << "\"listagg_with_count\":\"" << EscapeJson(info.listagg_with_count) << "\","
-        << "\"hypothetical_value\":\"" << EscapeJson(info.hypothetical_value) << "\","
-        << "\"hypothetical_value_type\":\"" << EscapeJson(info.hypothetical_value_type) << "\","
-        << "\"assertion_id\":\"" << EscapeJson(info.assertion_id) << "\","
-        << "\"actual_column_name\":\"" << EscapeJson(info.actual_column_name) << "\","
-        << "\"expected_column_name\":\"" << EscapeJson(info.expected_column_name) << "\","
-        << "\"expected_value\":\"" << EscapeJson(info.expected_value) << "\",";
-    if (info.expected_value_is_null) {
-      out << "\"expected_value_is_null\":\"true\",";
-    }
+        << "\"result_projection\":\""
+        << (info.count_result_projection ? "count" : "rowset") << "\",";
     for (std::size_t row = 0; row < info.anchor_rows.size(); ++row) {
       for (std::size_t column = 0; column < info.anchor_rows[row].size(); ++column) {
         const auto& item = info.anchor_rows[row][column];
@@ -36672,8 +34659,6 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
       return prepared_control.operation_id;
     }
   }
-  if (AnalyzeJoinGroupAggregateAssertionRoute(cst, {}).active) return "query.plan_operation";
-  if (AnalyzeJoinWindowMaxAssertionRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeTableJoinRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeExistsCountRoute(cst, {}).active) return "query.plan_operation";
   if (AnalyzeTableSetOperationRoute(cst, {}).active) return "query.plan_operation";
@@ -37357,28 +35342,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto simple_create_index =
       index_template_ddl.active ? SimpleCreateIndexInfo{} :
                                   AnalyzeSimpleCreateIndex(cst, envelope.resolved_object_uuids);
-  const auto join_group_aggregate =
-      AnalyzeJoinGroupAggregateAssertionRoute(cst, envelope.resolved_object_uuids);
-  const auto join_window_max =
-      join_group_aggregate.active
-          ? TableJoinInfo{}
-          : AnalyzeJoinWindowMaxAssertionRoute(cst, envelope.resolved_object_uuids);
   const auto parsed_table_join =
       AnalyzeTableJoinRoute(cst, envelope.resolved_object_uuids);
-  const bool parsed_grouping_join =
-      parsed_table_join.valid &&
-      (parsed_table_join.operation == "grouping_sets_count" ||
-       parsed_table_join.operation == "rollup_count" ||
-       parsed_table_join.operation == "cube_count" ||
-       parsed_table_join.operation == "grouping_sets_grand_total_assertion");
   const auto table_join =
-      parsed_grouping_join ? parsed_table_join
-      : (join_group_aggregate.active && join_group_aggregate.valid) ? join_group_aggregate
-      : (join_window_max.active && join_window_max.valid) ? join_window_max
-      : parsed_table_join.active ? parsed_table_join
-      : join_group_aggregate.active ? join_group_aggregate
-      : join_window_max.active ? join_window_max
-                               : AnalyzeExistsCountRoute(cst, envelope.resolved_object_uuids);
+      parsed_table_join.active
+          ? parsed_table_join
+          : AnalyzeExistsCountRoute(cst, envelope.resolved_object_uuids);
   const auto recursive_cte_insert =
       AnalyzeRecursiveCteInsertRoute(cst, envelope.resolved_object_uuids);
   const auto materialized_cte =
@@ -41706,13 +39675,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       envelope.payload.find("\"query_envelope_kind\":\"table_inner_join\"") != std::string::npos) {
     const bool supported_join_operation =
         envelope.payload.find("\"query_operation\":\"inner_join\"") != std::string::npos ||
-        envelope.payload.find("\"query_operation\":\"join_group_sum_assertion\"") != std::string::npos ||
         envelope.payload.find("\"query_operation\":\"join_group_all_equality\"") != std::string::npos ||
-        envelope.payload.find("\"query_operation\":\"join_window_max_assertion\"") != std::string::npos ||
         envelope.payload.find("\"query_operation\":\"grouping_sets_count\"") != std::string::npos ||
         envelope.payload.find("\"query_operation\":\"rollup_count\"") != std::string::npos ||
-        envelope.payload.find("\"query_operation\":\"cube_count\"") != std::string::npos ||
-        envelope.payload.find("\"query_operation\":\"grouping_sets_grand_total_assertion\"") != std::string::npos;
+        envelope.payload.find("\"query_operation\":\"cube_count\"") != std::string::npos;
     if (envelope.sblr_opcode != "SBLR_QUERY_PLAN_OPERATION" ||
         envelope.operation_family != "sblr.query.relational.v3" ||
         envelope.sblr_operation_key != "sblr.query.relational.v3" ||

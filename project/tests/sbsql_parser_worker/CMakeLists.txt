@@ -82,6 +82,22 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-103;QOW-CT-003;QOW-LEAF-QRY-003;development_candidate"
   )
 
+  # QOW-CMAKE-ASSERTION-ROUTE-REMOVAL-V1
+  add_executable(qow_assertion_route_removal_test_v1
+    qow_assertion_route_removal.cpp)
+  target_compile_features(qow_assertion_route_removal_test_v1 PRIVATE cxx_std_20)
+  target_compile_definitions(qow_assertion_route_removal_test_v1 PRIVATE
+    QOW_CT004_SOURCE_ROOT="${PROJECT_SOURCE_DIR}"
+  )
+  target_link_libraries(qow_assertion_route_removal_test_v1 PRIVATE
+    sb_qow_relational_dag_contract
+  )
+  add_test(NAME qow_assertion_route_removal_v1
+    COMMAND qow_assertion_route_removal_test_v1)
+  set_tests_properties(qow_assertion_route_removal_v1 PROPERTIES
+    LABELS "qow_closure;QOW-103;QOW-CT-004;assertion_route_removal;development_candidate"
+  )
+
   # QOW-ROUTE-STAGE-QRY-003-V1
   add_executable(qow_qry_003_test_v1 qow_qry_003.cpp)
   target_compile_features(qow_qry_003_test_v1 PRIVATE cxx_std_20)
