@@ -1432,8 +1432,18 @@ std::string StatementFamilyName(StatementFamily family) {
 std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
   switch (kind) {
     case NativeRelationAstKind::kValues: return "values";
+    case NativeRelationAstKind::kCatalogSource: return "catalog_source";
     case NativeRelationAstKind::kAggregate: return "aggregate";
     case NativeRelationAstKind::kFilter: return "filter";
+  }
+  return "unknown";
+}
+
+std::string NativeRelationSourceAstKindName(
+    NativeRelationSourceAstKind kind) {
+  switch (kind) {
+    case NativeRelationSourceAstKind::kCatalogRelation:
+      return "catalog_relation";
   }
   return "unknown";
 }
@@ -1466,6 +1476,7 @@ std::string NativeAggregateProjectionFormName(
 
 std::string NativeExpressionAstKindName(NativeExpressionAstKind kind) {
   switch (kind) {
+    case NativeExpressionAstKind::kWildcard: return "wildcard";
     case NativeExpressionAstKind::kLiteral: return "literal";
     case NativeExpressionAstKind::kParameter: return "parameter";
     case NativeExpressionAstKind::kIdentifier: return "identifier";
@@ -1553,7 +1564,14 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.registry_family = aggregate_query ? "sbsql.query.relational.v3"
                                           : "sbsql.query.values.v3";
     ast.operation_family = "sblr.query.relational.v3";
-    ast.produces_sblr = ast.native_relational.accepted();
+    const bool catalog_source_query = std::ranges::any_of(
+        ast.native_relational.relations, [](const auto& relation) {
+          return relation.relation_kind ==
+                 NativeRelationAstKind::kCatalogSource;
+        });
+    ast.requires_name_resolution = catalog_source_query;
+    ast.produces_sblr =
+        ast.native_relational.accepted() && !catalog_source_query;
     ApplyStatementDescriptorMetadata(
         &ast, DescriptorForStatementTokens(cst,
                                             aggregate_query ? "SELECT"

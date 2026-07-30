@@ -115,6 +115,10 @@ class NativeRelationalParser final {
         LooksLikeSupportedGroupingQuery()) {
       return ParseGroupedAggregateSelect();
     }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeBoundedCatalogRelationSelect()) {
+      return ParseCatalogRelationSelect();
+    }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
     }
@@ -295,6 +299,118 @@ class NativeRelationalParser final {
   static bool IsNameToken(const Token& token) {
     return token.kind == TokenKind::kIdentifier ||
            token.kind == TokenKind::kKeyword;
+  }
+
+  bool LooksLikeBoundedCatalogRelationSelect() const {
+    // The candidate owns only this exact prefix. Projection expressions,
+    // aggregate scans, and every other SELECT shape remain available to their
+    // established parser routes.
+    return tokens_.size() >= 3 && tokens_[1]->text == "*" &&
+           IsWord(*tokens_[2], "FROM");
+  }
+
+  NativeRelationalAstDocument ParseCatalogRelationSelect() {
+    // This bounded parser slice records catalog source syntax only. Catalog
+    // lookup, UUID binding, SBLR lowering, planning, and execution remain in
+    // their separately owned stages.
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select_token = Consume();
+    if (!AtSymbol("*")) {
+      Refuse("catalog_select_wildcard_required",
+             "bounded catalog SELECT requires an explicit wildcard projection");
+      return FinishRefusal();
+    }
+    const Token& wildcard_token = Consume();
+    NativeExpressionAstNode wildcard;
+    wildcard.expression_id = NextExpressionId();
+    const auto wildcard_expression_id = wildcard.expression_id;
+    wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+    wildcard.spelling = wildcard_token.text;
+    wildcard.range = TokenSourceRange(wildcard_token);
+    document_.expressions.push_back(std::move(wildcard));
+
+    if (!RequireWord("FROM", "catalog_select_from_required",
+                     "bounded catalog SELECT requires FROM")) {
+      return FinishRefusal();
+    }
+    if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+      Refuse("catalog_relation_name_required",
+             "catalog relation source requires an identifier");
+      return FinishRefusal();
+    }
+
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    source.source_kind = NativeRelationSourceAstKind::kCatalogRelation;
+    const Token& first_name_token = Consume();
+    const Token* last_name_token = &first_name_token;
+    source.qualified_name.push_back(NativeIdentifierAstNode{
+        first_name_token.text, first_name_token.quoted,
+        TokenSourceRange(first_name_token)});
+
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("catalog_relation_name_incomplete",
+               "qualified catalog relation name is incomplete");
+        return FinishRefusal();
+      }
+      last_name_token = &Consume();
+      source.qualified_name.push_back(NativeIdentifierAstNode{
+          last_name_token->text, last_name_token->quoted,
+          TokenSourceRange(*last_name_token)});
+    }
+    source.qualified_name_range = Span(first_name_token, *last_name_token);
+
+    const Token* source_end = last_name_token;
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("catalog_relation_alias_required",
+               "AS must be followed by a catalog relation alias");
+        return FinishRefusal();
+      }
+      const Token& alias_token = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias_token.text, alias_token.quoted, TokenSourceRange(alias_token)};
+      source.alias_is_explicit = true;
+      source_end = &alias_token;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier) {
+      const Token& alias_token = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias_token.text, alias_token.quoted, TokenSourceRange(alias_token)};
+      source.alias_is_explicit = false;
+      source_end = &alias_token;
+    }
+    source.range = Span(first_name_token, *source_end);
+
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("catalog_select_clause_unsupported",
+             "bounded catalog SELECT does not admit additional clauses or sources");
+      return FinishRefusal();
+    }
+
+    NativeRelationAstNode relation;
+    relation.relation_id = 1;
+    relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    relation.relation_source_ids = {source.source_id};
+    relation.output_expression_ids = {wildcard_expression_id};
+    relation.range = Span(select_token, *source_end);
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.relations.push_back(std::move(relation));
+    document_.root_relation_id = 1;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
   }
 
   bool LooksLikeSupportedGroupingQuery() const {
@@ -1504,6 +1620,7 @@ class NativeRelationalParser final {
     document_.status = NativeRelationalParseStatus::kRefused;
     document_.root_relation_id = 0;
     document_.relations.clear();
+    document_.catalog_relation_sources.clear();
     document_.values_rows.clear();
     document_.grouping_sets.clear();
     document_.expressions.clear();

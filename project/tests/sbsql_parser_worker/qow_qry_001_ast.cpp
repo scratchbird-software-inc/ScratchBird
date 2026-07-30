@@ -19,6 +19,22 @@ namespace sbsql = scratchbird::parser::sbsql;
 
 namespace {
 
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kValues) == 0);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kAggregate) == 1);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kFilter) == 2);
+static_assert(
+    static_cast<int>(sbsql::NativeRelationAstKind::kCatalogSource) == 3);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kLiteral) == 0);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kParameter) == 1);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kIdentifier) == 2);
+static_assert(
+    static_cast<int>(sbsql::NativeExpressionAstKind::kFunctionCall) == 3);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kUnary) == 4);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kBinary) == 5);
+static_assert(
+    static_cast<int>(sbsql::NativeExpressionAstKind::kParenthesized) == 6);
+static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kWildcard) == 7);
+
 bool Require(const bool condition, const std::string_view message) {
   if (!condition) std::cerr << message << '\n';
   return condition;
@@ -36,6 +52,15 @@ bool HasDiagnostic(const sbsql::MessageVectorSet& messages,
   return std::ranges::any_of(messages.diagnostics, [diagnostic_id](const auto& diagnostic) {
     return diagnostic.code == diagnostic_id;
   });
+}
+
+std::string_view SourceForRange(const std::string_view source,
+                                const sbsql::SourceRange& range) {
+  if (range.offset > source.size() ||
+      range.length > source.size() - range.offset) {
+    return {};
+  }
+  return source.substr(range.offset, range.length);
 }
 
 bool ValidateTypedValuesFamily() {
@@ -137,12 +162,214 @@ bool ValidateMalformedRefusal() {
   return passed;
 }
 
+bool ValidateCatalogRelationSourceFamily() {
+  constexpr std::string_view sql =
+      "SELECT * FROM tenant.sales.orders AS o;";
+  const auto cst = sbsql::BuildCst(sql);
+  const auto native = sbsql::ParseNativeRelationalAst(cst);
+
+  bool passed = true;
+  passed &= Require(native.recognized(),
+                    "catalog SELECT was not recognized as a native relation");
+  passed &= Require(native.accepted(), "catalog SELECT was refused");
+  passed &= Require(native.root_relation_id == 1,
+                    "catalog SELECT root ID is not one");
+  passed &= Require(native.relations.size() == 1,
+                    "catalog SELECT did not create one relation node");
+  passed &= Require(native.catalog_relation_sources.size() == 1,
+                    "catalog SELECT did not create one source node");
+  passed &= Require(native.expressions.size() == 1,
+                    "catalog SELECT did not retain its wildcard projection");
+  if (native.relations.size() == 1) {
+    const auto& relation = native.relations.front();
+    passed &= Require(relation.relation_kind ==
+                          sbsql::NativeRelationAstKind::kCatalogSource,
+                      "catalog SELECT relation kind differs");
+    passed &= Require(relation.relation_source_ids ==
+                          std::vector<std::uint32_t>({1}),
+                      "catalog SELECT source handle differs");
+    passed &= Require(relation.input_relation_ids.empty(),
+                      "catalog source acquired a relational input");
+    passed &= Require(relation.output_expression_ids ==
+                          std::vector<std::uint32_t>({1}),
+                      "catalog SELECT projection handle differs");
+    passed &= Require(SourceForRange(sql, relation.range) ==
+                          "SELECT * FROM tenant.sales.orders AS o",
+                      "catalog SELECT relation range differs");
+  }
+  if (native.catalog_relation_sources.size() == 1) {
+    const auto& source = native.catalog_relation_sources.front();
+    passed &= Require(source.source_id == 1,
+                      "catalog source ID is not stable and one-based");
+    passed &= Require(source.source_kind ==
+                          sbsql::NativeRelationSourceAstKind::kCatalogRelation,
+                      "catalog source kind differs");
+    passed &= Require(source.qualified_name.size() == 3,
+                      "qualified catalog source part count differs");
+    if (source.qualified_name.size() == 3) {
+      passed &= Require(source.qualified_name[0].spelling == "tenant" &&
+                            !source.qualified_name[0].quoted &&
+                            SourceForRange(sql, source.qualified_name[0].range) ==
+                                "tenant",
+                        "catalog source tenant component differs");
+      passed &= Require(source.qualified_name[1].spelling == "sales" &&
+                            !source.qualified_name[1].quoted &&
+                            SourceForRange(sql, source.qualified_name[1].range) ==
+                                "sales",
+                        "catalog source schema component differs");
+      passed &= Require(source.qualified_name[2].spelling == "orders" &&
+                            !source.qualified_name[2].quoted &&
+                            SourceForRange(sql, source.qualified_name[2].range) ==
+                                "orders",
+                        "catalog source relation component differs");
+    }
+    passed &= Require(SourceForRange(sql, source.qualified_name_range) ==
+                          "tenant.sales.orders",
+                      "qualified catalog source range differs");
+    passed &= Require(source.alias.has_value(),
+                      "explicit catalog alias is missing");
+    if (source.alias.has_value()) {
+      passed &= Require(source.alias->spelling == "o" &&
+                            !source.alias->quoted &&
+                            SourceForRange(sql, source.alias->range) == "o",
+                        "explicit catalog alias differs");
+    }
+    passed &= Require(source.alias_is_explicit,
+                      "AS alias was not recorded as explicit");
+    passed &= Require(SourceForRange(sql, source.range) ==
+                          "tenant.sales.orders AS o",
+                      "catalog source range differs");
+  }
+  if (native.expressions.size() == 1) {
+    const auto& wildcard = native.expressions.front();
+    passed &= Require(wildcard.expression_id == 1 &&
+                          wildcard.expression_kind ==
+                              sbsql::NativeExpressionAstKind::kWildcard &&
+                          wildcard.spelling == "*" &&
+                          SourceForRange(sql, wildcard.range) == "*",
+                      "catalog wildcard projection differs");
+  }
+  passed &= Require(
+      sbsql::NativeRelationAstKindName(
+          sbsql::NativeRelationAstKind::kCatalogSource) == "catalog_source",
+      "catalog relation kind name differs");
+  passed &= Require(
+      sbsql::NativeRelationSourceAstKindName(
+          sbsql::NativeRelationSourceAstKind::kCatalogRelation) ==
+          "catalog_relation",
+      "catalog source kind name differs");
+  passed &= Require(
+      sbsql::NativeExpressionAstKindName(
+          sbsql::NativeExpressionAstKind::kWildcard) == "wildcard",
+      "wildcard expression kind name differs");
+
+  const auto ast = sbsql::BuildAst(cst);
+  passed &= Require(!ast.messages.has_errors(),
+                    "BuildAst refused the catalog relation source");
+  passed &= Require(ast.family == sbsql::StatementFamily::kQuery,
+                    "catalog source did not retain the query family");
+  passed &= Require(ast.requires_name_resolution,
+                    "catalog source did not require later name resolution");
+  passed &= Require(!ast.produces_sblr,
+                    "parser-only catalog source became eligible for SBLR lowering");
+
+  constexpr std::string_view implicit_alias_sql =
+      "SELECT * FROM app.\"Order Ledger\" ledger;";
+  const auto implicit = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst(implicit_alias_sql));
+  passed &= Require(implicit.accepted(),
+                    "quoted catalog source with implicit alias was refused");
+  if (implicit.catalog_relation_sources.size() == 1) {
+    const auto& source = implicit.catalog_relation_sources.front();
+    passed &= Require(source.qualified_name.size() == 2,
+                      "quoted catalog source part count differs");
+    if (source.qualified_name.size() == 2) {
+      passed &= Require(source.qualified_name[1].spelling == "Order Ledger" &&
+                            source.qualified_name[1].quoted &&
+                            SourceForRange(implicit_alias_sql,
+                                           source.qualified_name[1].range) ==
+                                "\"Order Ledger\"",
+                        "quoted catalog source component differs");
+    }
+    passed &= Require(source.alias.has_value() &&
+                          source.alias->spelling == "ledger" &&
+                          !source.alias_is_explicit,
+                      "implicit catalog alias differs");
+  }
+
+  constexpr std::string_view no_alias_sql =
+      "SELECT * FROM only_relation;";
+  const auto no_alias =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(no_alias_sql));
+  passed &= Require(no_alias.accepted(),
+                    "unaliased catalog source was refused");
+  if (no_alias.catalog_relation_sources.size() == 1) {
+    passed &= Require(!no_alias.catalog_relation_sources.front().alias.has_value(),
+                      "unaliased catalog source acquired an alias");
+  }
+  return passed;
+}
+
+bool ValidateCatalogRelationRefusal() {
+  constexpr std::string_view malformed[] = {
+      "SELECT * FROM;",
+      "SELECT * FROM .orders;",
+      "SELECT * FROM app.;",
+      "SELECT * FROM app..orders;",
+      "SELECT * FROM app.orders AS;",
+      "SELECT * FROM app.orders AS WHERE;",
+      "SELECT * FROM app.orders WHERE TRUE;",
+      "SELECT * FROM app.orders, app.customers;",
+      "SELECT * FROM app.orders JOIN app.customers ON TRUE;",
+      "SELECT * FROM app.orders alias trailing;",
+  };
+
+  bool passed = true;
+  for (const auto sql : malformed) {
+    const auto cst = sbsql::BuildCst(sql);
+    const auto native = sbsql::ParseNativeRelationalAst(cst);
+    passed &= Require(native.recognized(),
+                      "malformed catalog SELECT was not recognized");
+    passed &= Require(!native.accepted(),
+                      "malformed catalog SELECT was accepted");
+    passed &= Require(native.messages.has_errors(),
+                      "malformed catalog SELECT did not emit an error");
+    passed &= Require(
+        HasDiagnostic(native.messages, "QOW-DIAG-QRY-001-AST-MALFORMED"),
+        "malformed catalog SELECT did not emit the stable QOW diagnostic");
+    passed &= Require(native.root_relation_id == 0 &&
+                          native.relations.empty() &&
+                          native.catalog_relation_sources.empty() &&
+                          native.values_rows.empty() &&
+                          native.expressions.empty(),
+                      "refused catalog SELECT retained a usable partial AST");
+
+    const auto ast = sbsql::BuildAst(cst);
+    passed &= Require(ast.messages.has_errors(),
+                      "BuildAst did not refuse malformed catalog SELECT");
+    passed &= Require(!ast.produces_sblr,
+                      "malformed catalog SELECT became eligible for lowering");
+  }
+
+  constexpr std::string_view out_of_slice_sql =
+      "SELECT name FROM app.orders;";
+  const auto out_of_slice = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst(out_of_slice_sql));
+  passed &= Require(!out_of_slice.recognized() &&
+                        out_of_slice.root_relation_id == 0 &&
+                        out_of_slice.relations.empty() &&
+                        out_of_slice.catalog_relation_sources.empty() &&
+                        out_of_slice.expressions.empty(),
+                    "non-wildcard catalog projection entered the bounded route");
+  return passed;
+}
+
 bool ValidateFamilyBoundary() {
   const auto cst = sbsql::BuildCst("SELECT 1;");
   const auto native = sbsql::ParseNativeRelationalAst(cst);
   bool passed = true;
   passed &= Require(!native.recognized(),
-                    "the bounded VALUES parser claimed a SELECT family");
+                    "the bounded native parser claimed an object-free SELECT");
   passed &= Require(native.root_relation_id == 0 && native.relations.empty(),
                     "unrecognized syntax produced native relation nodes");
 
@@ -162,6 +389,8 @@ int main() {
   bool passed = true;
   passed &= ValidateTypedValuesFamily();
   passed &= ValidateMalformedRefusal();
+  passed &= ValidateCatalogRelationSourceFamily();
+  passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

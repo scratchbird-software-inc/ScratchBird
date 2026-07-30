@@ -55,6 +55,11 @@ enum class NativeRelationAstKind {
   kValues,
   kAggregate,
   kFilter,
+  kCatalogSource,
+};
+
+enum class NativeRelationSourceAstKind {
+  kCatalogRelation,
 };
 
 enum class NativeAggregateGroupingForm {
@@ -80,6 +85,7 @@ enum class NativeExpressionAstKind {
   kUnary,
   kBinary,
   kParenthesized,
+  kWildcard,
 };
 
 enum class NativeLiteralAstKind {
@@ -116,6 +122,23 @@ struct NativeTemporalTableSourceRefusal {
   SourceRange range;
 };
 
+struct NativeIdentifierAstNode {
+  std::string spelling;
+  bool quoted{false};
+  SourceRange range;
+};
+
+struct NativeCatalogRelationSourceAstNode {
+  std::uint32_t source_id{0};
+  NativeRelationSourceAstKind source_kind{
+      NativeRelationSourceAstKind::kCatalogRelation};
+  std::vector<NativeIdentifierAstNode> qualified_name;
+  std::optional<NativeIdentifierAstNode> alias;
+  bool alias_is_explicit{false};
+  SourceRange qualified_name_range;
+  SourceRange range;
+};
+
 struct NativeExpressionAstNode {
   std::uint32_t expression_id{0};
   NativeExpressionAstKind expression_kind{NativeExpressionAstKind::kLiteral};
@@ -147,6 +170,7 @@ struct NativeRelationAstNode {
   NativeAggregateProjectionForm aggregate_projection_form{
       NativeAggregateProjectionForm::kNone};
   std::vector<std::uint32_t> input_relation_ids;
+  std::vector<std::uint32_t> relation_source_ids;
   std::vector<std::uint32_t> values_row_ids;
   std::vector<std::uint32_t> output_expression_ids;
   std::vector<std::uint32_t> grouping_key_expression_ids;
@@ -159,6 +183,7 @@ struct NativeRelationalAstDocument {
   NativeRelationalParseStatus status{NativeRelationalParseStatus::kNotRecognized};
   std::uint32_t root_relation_id{0};
   std::vector<NativeRelationAstNode> relations;
+  std::vector<NativeCatalogRelationSourceAstNode> catalog_relation_sources;
   std::vector<NativeValuesRowAstNode> values_rows;
   std::vector<NativeGroupingSetAstNode> grouping_sets;
   std::vector<NativeExpressionAstNode> expressions;
@@ -215,6 +240,7 @@ NativeRelationalAstDocument ParseNativeRelationalAst(const CstDocument& cst);
 AstDocument BuildAst(const CstDocument& cst);
 std::string StatementFamilyName(StatementFamily family);
 std::string NativeRelationAstKindName(NativeRelationAstKind kind);
+std::string NativeRelationSourceAstKindName(NativeRelationSourceAstKind kind);
 std::string NativeAggregateGroupingFormName(NativeAggregateGroupingForm form);
 std::string NativeAggregateProjectionFormName(
     NativeAggregateProjectionForm form);
