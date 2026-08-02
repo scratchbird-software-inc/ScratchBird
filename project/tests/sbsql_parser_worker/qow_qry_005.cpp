@@ -57,6 +57,8 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000501";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000502";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000502";
+  context.local_transaction_id = 501;
+  context.statement_snapshot_id = 502;
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000503",
@@ -118,6 +120,8 @@ sbsql::NativeRelationalBindingContext CatalogSourceBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000581";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000582";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000583";
+  context.local_transaction_id = 581;
+  context.statement_snapshot_id = 582;
 
   sbsql::NativeDescriptorBindingInput order_id;
   order_id.descriptor_id = 1;
@@ -199,6 +203,8 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
   context.bound_ast_uuid = "019f0000-0000-7000-8000-0000000005a1";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-0000000005a2";
   context.security_context_uuid = "019f0000-0000-7110-8000-0000000005a2";
+  context.local_transaction_id = 591;
+  context.statement_snapshot_id = 592;
   const auto aggregate_relation = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind ==

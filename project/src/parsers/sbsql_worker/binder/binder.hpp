@@ -92,6 +92,8 @@ struct NativeRelationalBindingContext {
   std::string bound_ast_uuid;
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t statement_snapshot_id{0};
   std::vector<NativeDescriptorBindingInput> descriptors;
   std::vector<NativeExpressionBindingInput> expressions;
   std::vector<NativeOutputBindingInput> outputs;
@@ -201,6 +203,8 @@ struct BoundNativeRelationalDocument {
   bool bound{false};
   std::string bound_ast_uuid;
   std::string security_context_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t statement_snapshot_id{0};
   std::uint32_t root_relation_id{0};
   std::uint32_t root_scope_id{0};
   std::vector<BoundDescriptorAstRecord> descriptors;

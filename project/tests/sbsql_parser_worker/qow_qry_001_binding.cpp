@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -54,6 +55,8 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000101";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000102";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000102";
+  context.local_transaction_id = UINT64_C(0x0102030405060708);
+  context.statement_snapshot_id = UINT64_C(0xfedcba9876543210);
 
   sbsql::NativeDescriptorBindingInput numeric;
   numeric.descriptor_id = 1;
@@ -91,6 +94,9 @@ sbsql::NativeRelationalBindingContext CatalogBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000201";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000202";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000203";
+  context.local_transaction_id =
+      std::numeric_limits<std::uint64_t>::max();
+  context.statement_snapshot_id = UINT64_C(0x8000000100000001);
 
   sbsql::NativeDescriptorBindingInput text;
   text.descriptor_id = 1;
@@ -165,6 +171,10 @@ bool ValidateTypedBinding() {
   passed &= Require(native.security_context_uuid ==
                         context.security_context_uuid,
                     "security context UUID handle differs");
+  passed &= Require(
+      native.local_transaction_id == context.local_transaction_id &&
+          native.statement_snapshot_id == context.statement_snapshot_id,
+      "ordinary binding changed, swapped, defaulted, or narrowed MGA statement identities");
   passed &= Require(native.root_relation_id == 1 && native.root_scope_id == 1,
                     "bound root handles differ");
   passed &= Require(native.relations.size() == 1,
@@ -233,6 +243,10 @@ bool ValidateCatalogRelationBinding() {
   bool passed = true;
   passed &= Require(native.bound && !native.messages.has_errors(),
                     "catalog relation binding was refused");
+  passed &= Require(
+      native.local_transaction_id == context.local_transaction_id &&
+          native.statement_snapshot_id == context.statement_snapshot_id,
+      "catalog binding changed, swapped, defaulted, or narrowed MGA statement identities");
   passed &= Require(native.root_relation_id == 1 && native.root_scope_id == 1,
                     "catalog bound root handles differ");
   passed &= Require(native.relations.size() == 1 &&
@@ -374,7 +388,9 @@ bool RequireAtomicCatalogRefusal(
   const auto bound = sbsql::BindNativeRelationalAst(ast, context);
   const bool atomic =
       !bound.bound && bound.bound_ast_uuid.empty() &&
-      bound.security_context_uuid.empty() && bound.root_relation_id == 0 &&
+      bound.security_context_uuid.empty() &&
+      bound.local_transaction_id == 0 && bound.statement_snapshot_id == 0 &&
+      bound.root_relation_id == 0 &&
       bound.root_scope_id == 0 && bound.descriptors.empty() &&
       bound.expressions.empty() && bound.values_rows.empty() &&
       bound.grouping_sets.empty() && bound.outputs.empty() &&
@@ -680,6 +696,45 @@ bool ValidateScopeRefusal() {
   return passed;
 }
 
+bool ValidateMgaStatementIdentityRefusals() {
+  const auto ast = sbsql::ParseNativeRelationalAst(
+      sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');"));
+  const auto require_atomic_refusal = [&](const auto& context,
+                                          const std::string_view message) {
+    const auto bound = sbsql::BindNativeRelationalAst(ast, context);
+    const bool atomic =
+        !bound.bound && bound.bound_ast_uuid.empty() &&
+        bound.security_context_uuid.empty() &&
+        bound.local_transaction_id == 0 &&
+        bound.statement_snapshot_id == 0 && bound.root_relation_id == 0 &&
+        bound.root_scope_id == 0 && bound.descriptors.empty() &&
+        bound.expressions.empty() && bound.values_rows.empty() &&
+        bound.grouping_sets.empty() && bound.outputs.empty() &&
+        bound.relations.empty() && bound.catalog_relation_sources.empty() &&
+        bound.scopes.empty() &&
+        HasDiagnostic(bound.messages, "QOW-DIAG-BOUNDAST-SCOPE");
+    return Require(atomic, message);
+  };
+
+  bool passed = true;
+  auto context = ValuesBindingContext();
+  context.local_transaction_id = 0;
+  passed &= require_atomic_refusal(
+      context, "zero local transaction identity did not refuse atomically");
+
+  context = ValuesBindingContext();
+  context.statement_snapshot_id = 0;
+  passed &= require_atomic_refusal(
+      context, "zero statement snapshot identity did not refuse atomically");
+
+  context = ValuesBindingContext();
+  context.local_transaction_id = 0;
+  context.statement_snapshot_id = 0;
+  passed &= require_atomic_refusal(
+      context, "zero MGA statement identities did not refuse atomically");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-001-BINDING-V1
@@ -698,5 +753,6 @@ int main() {
   passed &= ValidateIdentifierAuthorityRefusal();
   passed &= ValidateValuesRowRefusal();
   passed &= ValidateScopeRefusal();
+  passed &= ValidateMgaStatementIdentityRefusals();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

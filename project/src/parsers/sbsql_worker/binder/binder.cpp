@@ -328,6 +328,8 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.bound = false;
   document.bound_ast_uuid.clear();
   document.security_context_uuid.clear();
+  document.local_transaction_id = 0;
+  document.statement_snapshot_id = 0;
   document.root_relation_id = 0;
   document.root_scope_id = 0;
   document.descriptors.clear();
@@ -369,6 +371,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "binding requires an engine-supplied security context UUID");
     return RefusedBoundAst(std::move(bound));
   }
+  if (context.local_transaction_id == 0 ||
+      context.statement_snapshot_id == 0) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-SCOPE",
+        "binding requires nonzero engine-supplied MGA statement identities");
+    return RefusedBoundAst(std::move(bound));
+  }
+  bound.local_transaction_id = context.local_transaction_id;
+  bound.statement_snapshot_id = context.statement_snapshot_id;
 
   std::unordered_map<std::uint32_t, const NativeDescriptorBindingInput*>
       descriptor_by_id;
