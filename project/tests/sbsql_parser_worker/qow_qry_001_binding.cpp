@@ -12,9 +12,11 @@
 #include "lowering/lowering.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -55,8 +57,14 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000101";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000102";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000102";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000000110";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000000111";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000000112";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000000113";
   context.local_transaction_id = UINT64_C(0x0102030405060708);
-  context.statement_snapshot_id = UINT64_C(0xfedcba9876543210);
+  context.snapshot_visible_through_local_transaction_id =
+      UINT64_C(0xfedcba9876543210);
 
   sbsql::NativeDescriptorBindingInput numeric;
   numeric.descriptor_id = 1;
@@ -94,9 +102,15 @@ sbsql::NativeRelationalBindingContext CatalogBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000201";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000202";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000203";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000000210";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000000211";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000000212";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000000213";
   context.local_transaction_id =
       std::numeric_limits<std::uint64_t>::max();
-  context.statement_snapshot_id = UINT64_C(0x8000000100000001);
+  context.snapshot_visible_through_local_transaction_id =
+      UINT64_C(0x8000000100000001);
 
   sbsql::NativeDescriptorBindingInput text;
   text.descriptor_id = 1;
@@ -136,6 +150,29 @@ sbsql::NativeRelationalBindingContext CatalogBindingContext() {
   return context;
 }
 
+bool HasExactMgaStatementContext(
+    const sbsql::BoundNativeRelationalDocument& bound,
+    const sbsql::NativeRelationalBindingContext& context) {
+  return bound.statement_uuid == context.statement_uuid &&
+         bound.owning_transaction_uuid == context.owning_transaction_uuid &&
+         bound.statement_snapshot_uuid == context.statement_snapshot_uuid &&
+         bound.statement_metadata_snapshot_uuid ==
+             context.statement_metadata_snapshot_uuid &&
+         bound.local_transaction_id == context.local_transaction_id &&
+         bound.snapshot_visible_through_local_transaction_id ==
+             context.snapshot_visible_through_local_transaction_id;
+}
+
+bool HasScrubbedMgaStatementContext(
+    const sbsql::BoundNativeRelationalDocument& bound) {
+  return bound.statement_uuid.empty() &&
+         bound.owning_transaction_uuid.empty() &&
+         bound.statement_snapshot_uuid.empty() &&
+         bound.statement_metadata_snapshot_uuid.empty() &&
+         bound.local_transaction_id == 0 &&
+         bound.snapshot_visible_through_local_transaction_id == 0;
+}
+
 sbsql::ParserConfig ParserConfigForTest() {
   sbsql::ParserConfig config;
   config.parser_uuid = "019f0000-0000-7500-8000-000000000108";
@@ -171,10 +208,8 @@ bool ValidateTypedBinding() {
   passed &= Require(native.security_context_uuid ==
                         context.security_context_uuid,
                     "security context UUID handle differs");
-  passed &= Require(
-      native.local_transaction_id == context.local_transaction_id &&
-          native.statement_snapshot_id == context.statement_snapshot_id,
-      "ordinary binding changed, swapped, defaulted, or narrowed MGA statement identities");
+  passed &= Require(HasExactMgaStatementContext(native, context),
+                    "ordinary binding changed, swapped, defaulted, or narrowed the engine-supplied MGA statement context");
   passed &= Require(native.root_relation_id == 1 && native.root_scope_id == 1,
                     "bound root handles differ");
   passed &= Require(native.relations.size() == 1,
@@ -243,10 +278,12 @@ bool ValidateCatalogRelationBinding() {
   bool passed = true;
   passed &= Require(native.bound && !native.messages.has_errors(),
                     "catalog relation binding was refused");
+  passed &= Require(HasExactMgaStatementContext(native, context),
+                    "catalog binding changed, swapped, defaulted, or narrowed the engine-supplied MGA statement context");
   passed &= Require(
-      native.local_transaction_id == context.local_transaction_id &&
-          native.statement_snapshot_id == context.statement_snapshot_id,
-      "catalog binding changed, swapped, defaulted, or narrowed MGA statement identities");
+      native.local_transaction_id ==
+          std::numeric_limits<std::uint64_t>::max(),
+      "catalog binding narrowed UINT64_MAX local transaction number");
   passed &= Require(native.root_relation_id == 1 && native.root_scope_id == 1,
                     "catalog bound root handles differ");
   passed &= Require(native.relations.size() == 1 &&
@@ -389,7 +426,7 @@ bool RequireAtomicCatalogRefusal(
   const bool atomic =
       !bound.bound && bound.bound_ast_uuid.empty() &&
       bound.security_context_uuid.empty() &&
-      bound.local_transaction_id == 0 && bound.statement_snapshot_id == 0 &&
+      HasScrubbedMgaStatementContext(bound) &&
       bound.root_relation_id == 0 &&
       bound.root_scope_id == 0 && bound.descriptors.empty() &&
       bound.expressions.empty() && bound.values_rows.empty() &&
@@ -696,7 +733,7 @@ bool ValidateScopeRefusal() {
   return passed;
 }
 
-bool ValidateMgaStatementIdentityRefusals() {
+bool ValidateMgaStatementContext() {
   const auto ast = sbsql::ParseNativeRelationalAst(
       sbsql::BuildCst("VALUES (1, 'a'), (2, 'b');"));
   const auto require_atomic_refusal = [&](const auto& context,
@@ -705,8 +742,7 @@ bool ValidateMgaStatementIdentityRefusals() {
     const bool atomic =
         !bound.bound && bound.bound_ast_uuid.empty() &&
         bound.security_context_uuid.empty() &&
-        bound.local_transaction_id == 0 &&
-        bound.statement_snapshot_id == 0 && bound.root_relation_id == 0 &&
+        HasScrubbedMgaStatementContext(bound) && bound.root_relation_id == 0 &&
         bound.root_scope_id == 0 && bound.descriptors.empty() &&
         bound.expressions.empty() && bound.values_rows.empty() &&
         bound.grouping_sets.empty() && bound.outputs.empty() &&
@@ -720,18 +756,58 @@ bool ValidateMgaStatementIdentityRefusals() {
   auto context = ValuesBindingContext();
   context.local_transaction_id = 0;
   passed &= require_atomic_refusal(
-      context, "zero local transaction identity did not refuse atomically");
+      context, "zero local transaction number did not refuse atomically");
 
-  context = ValuesBindingContext();
-  context.statement_snapshot_id = 0;
-  passed &= require_atomic_refusal(
-      context, "zero statement snapshot identity did not refuse atomically");
+  using UuidMember = std::string sbsql::NativeRelationalBindingContext::*;
+  const std::array<std::pair<UuidMember, std::string_view>, 4> uuid_fields{{
+      {&sbsql::NativeRelationalBindingContext::statement_uuid,
+       "statement_uuid"},
+      {&sbsql::NativeRelationalBindingContext::owning_transaction_uuid,
+       "owning_transaction_uuid"},
+      {&sbsql::NativeRelationalBindingContext::statement_snapshot_uuid,
+       "statement_snapshot_uuid"},
+      {&sbsql::NativeRelationalBindingContext::statement_metadata_snapshot_uuid,
+       "statement_metadata_snapshot_uuid"},
+  }};
+  for (const auto& [member, field_name] : uuid_fields) {
+    context = ValuesBindingContext();
+    context.*member = "not-a-uuid";
+    passed &= require_atomic_refusal(
+        context, std::string(field_name) +
+                     " invalid UUID did not refuse atomically");
+
+    context = ValuesBindingContext();
+    context.*member = "00000000-0000-0000-0000-000000000000";
+    passed &= require_atomic_refusal(
+        context, std::string(field_name) +
+                     " nil UUID did not refuse atomically");
+  }
 
   context = ValuesBindingContext();
   context.local_transaction_id = 0;
-  context.statement_snapshot_id = 0;
+  context.snapshot_visible_through_local_transaction_id = 0;
   passed &= require_atomic_refusal(
-      context, "zero MGA statement identities did not refuse atomically");
+      context, "zero local transaction number with zero visibility boundary did not refuse atomically");
+
+  context = ValuesBindingContext();
+  context.snapshot_visible_through_local_transaction_id = 0;
+  auto bound = sbsql::BindNativeRelationalAst(ast, context);
+  passed &= Require(
+      bound.bound && !bound.messages.has_errors() &&
+          HasExactMgaStatementContext(bound, context) &&
+          bound.snapshot_visible_through_local_transaction_id == 0,
+      "zero subordinate snapshot visibility high-water value was not accepted and preserved");
+
+  context = ValuesBindingContext();
+  context.snapshot_visible_through_local_transaction_id =
+      std::numeric_limits<std::uint64_t>::max();
+  bound = sbsql::BindNativeRelationalAst(ast, context);
+  passed &= Require(
+      bound.bound && !bound.messages.has_errors() &&
+          HasExactMgaStatementContext(bound, context) &&
+          bound.snapshot_visible_through_local_transaction_id ==
+              std::numeric_limits<std::uint64_t>::max(),
+      "UINT64_MAX subordinate snapshot visibility high-water value was narrowed");
   return passed;
 }
 
@@ -753,6 +829,6 @@ int main() {
   passed &= ValidateIdentifierAuthorityRefusal();
   passed &= ValidateValuesRowRefusal();
   passed &= ValidateScopeRefusal();
-  passed &= ValidateMgaStatementIdentityRefusals();
+  passed &= ValidateMgaStatementContext();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

@@ -51,8 +51,13 @@ sbsql::NativeRelationalBindingContext ScalarBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000601";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000602";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000602";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000000610";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000000611";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000000612";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000000613";
   context.local_transaction_id = 601;
-  context.statement_snapshot_id = 602;
+  context.snapshot_visible_through_local_transaction_id = 602;
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000603",

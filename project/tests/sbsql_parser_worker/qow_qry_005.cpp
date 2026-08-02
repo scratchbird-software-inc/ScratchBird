@@ -57,8 +57,13 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000501";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000502";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000502";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000000510";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000000511";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000000512";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000000513";
   context.local_transaction_id = 501;
-  context.statement_snapshot_id = 502;
+  context.snapshot_visible_through_local_transaction_id = 502;
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000503",
@@ -120,8 +125,13 @@ sbsql::NativeRelationalBindingContext CatalogSourceBindingContext() {
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000581";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000582";
   context.security_context_uuid = "019f0000-0000-7110-8000-000000000583";
+  context.statement_uuid = "019f0000-0000-7120-8000-000000000590";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-000000000591";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-000000000592";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000000593";
   context.local_transaction_id = 581;
-  context.statement_snapshot_id = 582;
+  context.snapshot_visible_through_local_transaction_id = 582;
 
   sbsql::NativeDescriptorBindingInput order_id;
   order_id.descriptor_id = 1;
@@ -203,8 +213,13 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
   context.bound_ast_uuid = "019f0000-0000-7000-8000-0000000005a1";
   context.catalog_epoch_uuid = "019f0000-0000-7100-8000-0000000005a2";
   context.security_context_uuid = "019f0000-0000-7110-8000-0000000005a2";
+  context.statement_uuid = "019f0000-0000-7120-8000-0000000005b0";
+  context.owning_transaction_uuid = "019f0000-0000-7130-8000-0000000005b1";
+  context.statement_snapshot_uuid = "019f0000-0000-7140-8000-0000000005b2";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-0000000005b3";
   context.local_transaction_id = 591;
-  context.statement_snapshot_id = 592;
+  context.snapshot_visible_through_local_transaction_id = 592;
   const auto aggregate_relation = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind ==

@@ -328,8 +328,12 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.bound = false;
   document.bound_ast_uuid.clear();
   document.security_context_uuid.clear();
+  document.statement_uuid.clear();
+  document.owning_transaction_uuid.clear();
+  document.statement_snapshot_uuid.clear();
+  document.statement_metadata_snapshot_uuid.clear();
   document.local_transaction_id = 0;
-  document.statement_snapshot_id = 0;
+  document.snapshot_visible_through_local_transaction_id = 0;
   document.root_relation_id = 0;
   document.root_scope_id = 0;
   document.descriptors.clear();
@@ -371,15 +375,29 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         "binding requires an engine-supplied security context UUID");
     return RefusedBoundAst(std::move(bound));
   }
-  if (context.local_transaction_id == 0 ||
-      context.statement_snapshot_id == 0) {
+  if (!IsNonNullCanonicalUuid(context.statement_uuid) ||
+      !IsNonNullCanonicalUuid(context.owning_transaction_uuid) ||
+      !IsNonNullCanonicalUuid(context.statement_snapshot_uuid) ||
+      !IsNonNullCanonicalUuid(context.statement_metadata_snapshot_uuid)) {
     AddBoundAstDiagnostic(
         &bound, "QOW-DIAG-BOUNDAST-SCOPE",
-        "binding requires nonzero engine-supplied MGA statement identities");
+        "binding requires non-null canonical engine-supplied MGA statement UUIDs");
     return RefusedBoundAst(std::move(bound));
   }
+  if (context.local_transaction_id == 0) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-SCOPE",
+        "binding requires a nonzero engine-supplied local transaction number");
+    return RefusedBoundAst(std::move(bound));
+  }
+  bound.statement_uuid = context.statement_uuid;
+  bound.owning_transaction_uuid = context.owning_transaction_uuid;
+  bound.statement_snapshot_uuid = context.statement_snapshot_uuid;
+  bound.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid;
   bound.local_transaction_id = context.local_transaction_id;
-  bound.statement_snapshot_id = context.statement_snapshot_id;
+  bound.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
 
   std::unordered_map<std::uint32_t, const NativeDescriptorBindingInput*>
       descriptor_by_id;
