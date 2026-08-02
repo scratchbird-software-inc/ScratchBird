@@ -313,6 +313,8 @@ struct EngineRequestContext {
   EngineUuid session_uuid;
   EngineUuid transaction_uuid;
   EngineUuid statement_uuid;
+  EngineUuid statement_snapshot_uuid;
+  EngineUuid catalog_epoch_uuid;
   EngineApiU64 local_transaction_id = 0;
   std::string transaction_isolation_level = "read_committed";
   std::string current_sqlstate = "00000";

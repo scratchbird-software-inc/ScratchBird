@@ -54,10 +54,16 @@ api::EngineRequestContext Context() {
   context.security_context_present = true;
   context.statement_uuid.canonical =
       "019f0000-0000-7120-8000-000000003001";
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000003004";
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000003005";
+  context.catalog_epoch_uuid.canonical = kCatalogEpochUuid;
   context.local_transaction_id = 3001;
   context.snapshot_visible_through_local_transaction_id = 2999;
   context.statement_metadata_snapshot_engine_owned = true;
-  context.statement_metadata_snapshot_uuid.canonical = kCatalogEpochUuid;
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7150-8000-000000003006";
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       kSecurityContextUuid;

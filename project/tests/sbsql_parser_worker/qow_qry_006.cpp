@@ -46,6 +46,20 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
       });
 }
 
+void SetEngineStatementAuthority(
+    sbsql::NativeRelationalBindingContext* context) {
+  auto& authority = context->engine_statement_authority;
+  authority.statement_uuid = context->statement_uuid;
+  authority.transaction_uuid = context->owning_transaction_uuid;
+  authority.statement_snapshot_uuid = context->statement_snapshot_uuid;
+  authority.statement_metadata_snapshot_uuid =
+      context->statement_metadata_snapshot_uuid;
+  authority.catalog_epoch_uuid = context->catalog_epoch_uuid;
+  authority.local_transaction_id = context->local_transaction_id;
+  authority.snapshot_visible_through_local_transaction_id =
+      context->snapshot_visible_through_local_transaction_id;
+}
+
 sbsql::NativeRelationalBindingContext ScalarBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000601";
@@ -58,6 +72,7 @@ sbsql::NativeRelationalBindingContext ScalarBindingContext() {
       "019f0000-0000-7150-8000-000000000613";
   context.local_transaction_id = 601;
   context.snapshot_visible_through_local_transaction_id = 602;
+  SetEngineStatementAuthority(&context);
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000603",
@@ -184,11 +199,17 @@ bool ValidateComposableScalarLowering() {
   context.security_context_present = true;
   context.statement_uuid.canonical =
       "019f0000-0000-7120-8000-000000000602";
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000000603";
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000000604";
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000602";
   context.local_transaction_id = 61;
   context.snapshot_visible_through_local_transaction_id = 59;
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000602";
+      "019f0000-0000-7150-8000-000000000605";
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000602";

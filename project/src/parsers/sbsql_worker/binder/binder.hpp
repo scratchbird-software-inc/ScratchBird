@@ -88,6 +88,19 @@ struct NativeCatalogRelationBindingInput {
   std::vector<NativeCatalogColumnBindingInput> columns;
 };
 
+// Exact, read-only statement authority copied from EngineRequestContext at the
+// engine-to-parser boundary.  The binder compares against these values; it
+// never creates, selects, resolves, or repairs MGA authority.
+struct NativeRelationalEngineStatementAuthority {
+  std::string statement_uuid;
+  std::string transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
+};
+
 struct NativeRelationalBindingContext {
   std::string bound_ast_uuid;
   std::string catalog_epoch_uuid;
@@ -98,6 +111,7 @@ struct NativeRelationalBindingContext {
   std::string statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  NativeRelationalEngineStatementAuthority engine_statement_authority;
   std::vector<NativeDescriptorBindingInput> descriptors;
   std::vector<NativeExpressionBindingInput> expressions;
   std::vector<NativeOutputBindingInput> outputs;

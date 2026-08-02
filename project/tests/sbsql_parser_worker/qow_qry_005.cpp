@@ -52,6 +52,20 @@ bool HasParserDiagnostic(const sbsql::MessageVectorSet& messages,
       });
 }
 
+void SetEngineStatementAuthority(
+    sbsql::NativeRelationalBindingContext* context) {
+  auto& authority = context->engine_statement_authority;
+  authority.statement_uuid = context->statement_uuid;
+  authority.transaction_uuid = context->owning_transaction_uuid;
+  authority.statement_snapshot_uuid = context->statement_snapshot_uuid;
+  authority.statement_metadata_snapshot_uuid =
+      context->statement_metadata_snapshot_uuid;
+  authority.catalog_epoch_uuid = context->catalog_epoch_uuid;
+  authority.local_transaction_id = context->local_transaction_id;
+  authority.snapshot_visible_through_local_transaction_id =
+      context->snapshot_visible_through_local_transaction_id;
+}
+
 sbsql::NativeRelationalBindingContext ValuesBindingContext() {
   sbsql::NativeRelationalBindingContext context;
   context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000501";
@@ -64,6 +78,7 @@ sbsql::NativeRelationalBindingContext ValuesBindingContext() {
       "019f0000-0000-7150-8000-000000000513";
   context.local_transaction_id = 501;
   context.snapshot_visible_through_local_transaction_id = 502;
+  SetEngineStatementAuthority(&context);
   context.descriptors = {
       {1,
        "019f0000-0000-7200-8000-000000000503",
@@ -132,6 +147,7 @@ sbsql::NativeRelationalBindingContext CatalogSourceBindingContext() {
       "019f0000-0000-7150-8000-000000000593";
   context.local_transaction_id = 581;
   context.snapshot_visible_through_local_transaction_id = 582;
+  SetEngineStatementAuthority(&context);
 
   sbsql::NativeDescriptorBindingInput order_id;
   order_id.descriptor_id = 1;
@@ -220,6 +236,7 @@ sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
       "019f0000-0000-7150-8000-0000000005b3";
   context.local_transaction_id = 591;
   context.snapshot_visible_through_local_transaction_id = 592;
+  SetEngineStatementAuthority(&context);
   const auto aggregate_relation = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind ==
@@ -703,11 +720,17 @@ api::EngineRequestContext GroupingSetsEngineContext() {
   context.security_context_present = true;
   context.statement_uuid.canonical =
       "019f0000-0000-7120-8000-0000000005a2";
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-0000000005a3";
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-0000000005a4";
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-0000000005a2";
   context.local_transaction_id = 55;
   context.snapshot_visible_through_local_transaction_id = 53;
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7100-8000-0000000005a2";
+      "019f0000-0000-7150-8000-0000000005a5";
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-0000000005a2";
@@ -944,11 +967,17 @@ bool ValidateCanonicalLoweringAndDispatch() {
   engine_context.security_context_present = true;
   engine_context.statement_uuid.canonical =
       "019f0000-0000-7120-8000-000000000502";
+  engine_context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000000503";
+  engine_context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000000504";
+  engine_context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000502";
   engine_context.local_transaction_id = 51;
   engine_context.snapshot_visible_through_local_transaction_id = 49;
   engine_context.statement_metadata_snapshot_engine_owned = true;
   engine_context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7100-8000-000000000502";
+      "019f0000-0000-7150-8000-000000000505";
   engine_context.authorization_context.present = true;
   engine_context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000502";

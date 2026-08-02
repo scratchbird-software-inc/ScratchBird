@@ -364,7 +364,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           "binding requires a non-null UUIDv7 BoundAST identity");
     return RefusedBoundAst(std::move(bound));
   }
-  if (!LooksLikeCanonicalUuid(context.catalog_epoch_uuid)) {
+  if (!IsNonNullCanonicalUuid(context.catalog_epoch_uuid)) {
     AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
                           "binding requires an engine-supplied catalog epoch UUID");
     return RefusedBoundAst(std::move(bound));
@@ -388,6 +388,33 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     AddBoundAstDiagnostic(
         &bound, "QOW-DIAG-BOUNDAST-SCOPE",
         "binding requires a nonzero engine-supplied local transaction number");
+    return RefusedBoundAst(std::move(bound));
+  }
+  const auto& authority = context.engine_statement_authority;
+  if (!IsNonNullCanonicalUuid(authority.statement_uuid) ||
+      !IsNonNullCanonicalUuid(authority.transaction_uuid) ||
+      !IsNonNullCanonicalUuid(authority.statement_snapshot_uuid) ||
+      !IsNonNullCanonicalUuid(
+          authority.statement_metadata_snapshot_uuid) ||
+      !IsNonNullCanonicalUuid(authority.catalog_epoch_uuid) ||
+      authority.local_transaction_id == 0) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-SCOPE",
+        "binding requires complete non-null engine MGA statement authority");
+    return RefusedBoundAst(std::move(bound));
+  }
+  if (context.statement_uuid != authority.statement_uuid ||
+      context.owning_transaction_uuid != authority.transaction_uuid ||
+      context.statement_snapshot_uuid != authority.statement_snapshot_uuid ||
+      context.statement_metadata_snapshot_uuid !=
+          authority.statement_metadata_snapshot_uuid ||
+      context.catalog_epoch_uuid != authority.catalog_epoch_uuid ||
+      context.local_transaction_id != authority.local_transaction_id ||
+      context.snapshot_visible_through_local_transaction_id !=
+          authority.snapshot_visible_through_local_transaction_id) {
+    AddBoundAstDiagnostic(
+        &bound, "QOW-DIAG-BOUNDAST-SCOPE",
+        "binding MGA statement context does not exactly match engine authority");
     return RefusedBoundAst(std::move(bound));
   }
   bound.statement_uuid = context.statement_uuid;
