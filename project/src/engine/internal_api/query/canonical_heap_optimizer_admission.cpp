@@ -161,8 +161,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       !IsCanonicalUuid(context.database_uuid.canonical) ||
       !IsCanonicalUuid(context.statement_uuid.canonical) ||
       !IsCanonicalUuid(context.transaction_uuid.canonical) ||
+      !IsCanonicalUuid(context.statement_snapshot_uuid.canonical) ||
+      !IsCanonicalUuid(context.catalog_epoch_uuid.canonical) ||
       context.local_transaction_id == 0 ||
-      context.snapshot_visible_through_local_transaction_id == 0 ||
       !context.statement_metadata_snapshot_engine_owned ||
       !IsCanonicalUuid(context.statement_metadata_snapshot_uuid.canonical) ||
       !context.security_context_present ||
@@ -235,11 +236,17 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
 
   CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+      context.catalog_epoch_uuid.canonical;
   planning_scope.security_context_uuid =
       context.authorization_context.authority_uuid.canonical;
+  planning_scope.statement_uuid = context.statement_uuid.canonical;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+  planning_scope.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  planning_scope.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
   planning_scope.local_transaction_id = context.local_transaction_id;
-  planning_scope.statement_snapshot_id =
+  planning_scope.snapshot_visible_through_local_transaction_id =
       context.snapshot_visible_through_local_transaction_id;
   planning_scope.metadata_snapshot_engine_owned =
       context.statement_metadata_snapshot_engine_owned;

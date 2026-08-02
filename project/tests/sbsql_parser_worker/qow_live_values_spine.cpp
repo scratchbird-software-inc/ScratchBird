@@ -8,6 +8,7 @@
 
 #include "sblr_dispatch.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
@@ -83,6 +85,36 @@ api::EngineRequestContext Context() {
   return context;
 }
 
+sblr::SblrOperationEnvelope FinalizeStatementContextEnvelope(
+    sblr::SblrOperationEnvelope envelope) {
+  const auto already_bound = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "uuid" &&
+               operand.name == "relational_statement_uuid";
+      });
+  if (already_bound != envelope.operands.end()) return envelope;
+  const auto root = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "uint32" &&
+               operand.name == "relational_root_node_id";
+      });
+  if (root == envelope.operands.end()) return envelope;
+  envelope.operands.insert(
+      root,
+      {{"uuid", "relational_statement_uuid",
+        "019f0000-0000-7120-8000-000000008101"},
+       {"uuid", "relational_owning_transaction_uuid",
+        "019f0000-0000-7130-8000-000000008107"},
+       {"uuid", "relational_statement_snapshot_uuid",
+        "019f0000-0000-7140-8000-000000008108"},
+       {"uuid", "relational_statement_metadata_snapshot_uuid",
+        "019f0000-0000-7150-8000-000000008109"},
+       {"uint64", "relational_local_transaction_id", "8101"},
+       {"uint64",
+        "relational_snapshot_visible_through_local_transaction_id", "8099"}});
+  return sblr::SblrOperationEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope ValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.spine");
@@ -116,7 +148,7 @@ sblr::SblrOperationEnvelope ValuesEnvelope() {
       {"relational_node_binding_v1", "1",
        "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope ComposedValuesEnvelope() {
@@ -200,7 +232,7 @@ sblr::SblrOperationEnvelope ComposedValuesEnvelope() {
        "76616c7565732e6c69746572616c2d7461626c652e7631|"
        "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope UnionAllValuesEnvelope() {
@@ -249,7 +281,7 @@ sblr::SblrOperationEnvelope UnionAllValuesEnvelope() {
       {"relational_node_binding_v1", "3",
        "7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e7631|-|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope InnerJoinValuesEnvelope() {
@@ -295,7 +327,7 @@ sblr::SblrOperationEnvelope InnerJoinValuesEnvelope() {
       {"relational_node_binding_v1", "3",
        "6a6f696e2e696e6e65722e7631|5|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope FilterValuesEnvelope() {
@@ -332,7 +364,7 @@ sblr::SblrOperationEnvelope FilterValuesEnvelope() {
       {"relational_node_binding_v1", "2",
        "66696c7465722e77686572652e7631|4|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope ProjectValuesEnvelope() {
@@ -369,7 +401,7 @@ sblr::SblrOperationEnvelope ProjectValuesEnvelope() {
       {"relational_node_binding_v1", "2",
        "70726f6a6563742e73656c6563742d6c6973742e7631|-|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
@@ -408,7 +440,7 @@ sblr::SblrOperationEnvelope LimitValuesEnvelope() {
       {"relational_node_binding_v1", "2",
        "6c696d69742e626f756e642d636f756e742e7631|5|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope SortValuesEnvelope() {
@@ -473,7 +505,7 @@ sblr::SblrOperationEnvelope SortValuesEnvelope() {
        "019f0000-0000-7200-8000-000000008907",
        "1|2|-|1:2:1:-,2:1:2:-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
@@ -513,7 +545,7 @@ sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d636f756e742d737461722e7631|"
        "4|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
@@ -559,7 +591,7 @@ sblr::SblrOperationEnvelope GlobalCountExpressionValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d636f756e742d65787072657373696f6e2e7631|"
        "6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
@@ -604,7 +636,7 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d73756d2d65787072657373696f6e2e7631|"
        "6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 std::string EncodeHex(std::string_view value);
@@ -883,7 +915,7 @@ sblr::SblrOperationEnvelope GlobalUnaryAggregateModifierValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|15|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalAvgExpressionValuesEnvelope() {
@@ -928,7 +960,7 @@ sblr::SblrOperationEnvelope GlobalAvgExpressionValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d6176672d65787072657373696f6e2e7631|"
        "6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalExtremumExpressionValuesEnvelope(
@@ -991,7 +1023,7 @@ sblr::SblrOperationEnvelope GlobalExtremumExpressionValuesEnvelope(
            : "6167677265676174652e676c6f62616c2d6d696e2d65787072657373696f6e2e7631|"
              "6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 enum class BooleanAggregateKind {
@@ -1095,7 +1127,7 @@ sblr::SblrOperationEnvelope GlobalBooleanAggregateExpressionValuesEnvelope(
       {"relational_node_binding_v1", "2",
        semantic_variant + "|6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 struct StatisticalAggregateProfile {
@@ -1279,7 +1311,7 @@ sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
        {"relational_node_binding_v1", "2",
         EncodeHex("aggregate.grouped-int64-key-count-sum.v1") +
             "|13,14,16|-|-|-"}});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
@@ -1381,7 +1413,7 @@ sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
        {"relational_node_binding_v1", "2",
         EncodeHex("aggregate.rollup-int64-keys-count-sum.v1") +
             "|19,20,21,23|-|-|-"}});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope RollupCountSumGroupingValuesEnvelope() {
@@ -1420,7 +1452,7 @@ sblr::SblrOperationEnvelope RollupCountSumGroupingValuesEnvelope() {
           "|19,20,21,23,24,25,26|-|-|-";
     }
   }
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope CubeCountSumValuesEnvelope() {
@@ -1437,7 +1469,7 @@ sblr::SblrOperationEnvelope CubeCountSumValuesEnvelope() {
           "|19,20,21,23|-|-|-";
     }
   }
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope CubeCountSumGroupingValuesEnvelope() {
@@ -1454,7 +1486,7 @@ sblr::SblrOperationEnvelope CubeCountSumGroupingValuesEnvelope() {
                       "|19,20,21,23,24,25,26|-|-|-";
     }
   }
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GroupingSetsCountSumValuesEnvelope() {
@@ -1477,7 +1509,7 @@ sblr::SblrOperationEnvelope GroupingSetsCountSumValuesEnvelope() {
        {"relational_grouping_set_v1", "1", "2|-"},
        {"relational_grouping_set_v1", "2", "2|19,20"},
        {"relational_grouping_set_v1", "3", "2|20"}});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GroupingSetsCountSumGroupingValuesEnvelope() {
@@ -1501,7 +1533,7 @@ sblr::SblrOperationEnvelope GroupingSetsCountSumGroupingValuesEnvelope() {
        {"relational_grouping_set_v1", "1", "2|-"},
        {"relational_grouping_set_v1", "2", "2|19,20"},
        {"relational_grouping_set_v1", "3", "2|20"}});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
@@ -1545,7 +1577,7 @@ sblr::SblrOperationEnvelope GlobalStatisticalAggregateExpressionValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|6|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 enum class PairStatisticalAggregateKind {
@@ -1760,7 +1792,7 @@ GlobalPairStatisticalAggregateExpressionValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|11|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope
@@ -1874,7 +1906,7 @@ GlobalPairStatisticalAggregateModifierValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|25|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 struct OrderedSetAggregateProfile {
@@ -2050,7 +2082,7 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|8|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
@@ -2163,7 +2195,7 @@ sblr::SblrOperationEnvelope GlobalOrderedSetAggregateModifierValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|18|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 struct ApproximateAggregateProfile {
@@ -2337,7 +2369,7 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|9|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
@@ -2464,7 +2496,7 @@ sblr::SblrOperationEnvelope GlobalApproximateAggregateModifierValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|18|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope GlobalStringAggExpressionValuesEnvelope() {
@@ -2514,7 +2546,7 @@ sblr::SblrOperationEnvelope GlobalStringAggExpressionValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d737472696e672d6167672d657870"
        "72657373696f6e2e7631|7|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
@@ -2581,7 +2613,7 @@ sblr::SblrOperationEnvelope OrderedStringAggExpressionValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d737472696e672d6167672d6f7264"
        "657265642d65787072657373696f6e2e7631|12|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope StringAggModifierValuesEnvelope(
@@ -2701,7 +2733,7 @@ sblr::SblrOperationEnvelope StringAggModifierValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|26|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 enum class LiveListaggProfile {
@@ -2830,7 +2862,7 @@ sblr::SblrOperationEnvelope OrderedListaggExpressionValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|15|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope OrderedListaggModifierExpressionValuesEnvelope(
@@ -2989,7 +3021,7 @@ sblr::SblrOperationEnvelope OrderedListaggModifierExpressionValuesEnvelope(
   envelope.operands.push_back(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|29|-|-|-"});
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 struct OrderedSingleCollectionProfile {
@@ -3086,7 +3118,7 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(profile.semantic_variant) + "|11|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope OrderedSingleCollectionModifierValuesEnvelope(
@@ -3201,7 +3233,7 @@ sblr::SblrOperationEnvelope OrderedSingleCollectionModifierValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|25|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope OrderedJsonObjectAggValuesEnvelope() {
@@ -3275,7 +3307,7 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggValuesEnvelope() {
        "6167677265676174652e676c6f62616c2d6a736f6e2d6f626a6563742d"
        "6167672d6f7264657265642d65787072657373696f6e2e7631|16|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
@@ -3403,7 +3435,7 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
       {"relational_node_binding_v1", "2",
        EncodeHex(semantic_variant) + "|37|-|-|-"},
   };
-  return envelope;
+  return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
 bool ValidateLiveValuesSpine() {
@@ -8654,11 +8686,11 @@ bool ValidateSortRefusalIsAtomic() {
 
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
-  malformed.operands[7].value = "1|-|1|-|-|1|-|6e6f74";
+  malformed.operands[13].value = "1|-|1|-|-|1|-|6e6f74";
   auto invalid_uuid = ValuesEnvelope();
-  invalid_uuid.operands[7].value = "1|-|1|-|-|5|-|6e6f74";
+  invalid_uuid.operands[13].value = "1|-|1|-|-|5|-|6e6f74";
   auto ambiguous_temporal = ValuesEnvelope();
-  ambiguous_temporal.operands[7].value =
+  ambiguous_temporal.operands[13].value =
       "1|-|1|-|-|4|-|323032362d30372d32365430303a30303a30305a";
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
     const auto result = sblr::DispatchSblrOperation(

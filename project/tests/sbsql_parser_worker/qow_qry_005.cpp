@@ -719,18 +719,18 @@ api::EngineRequestContext GroupingSetsEngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-0000000005a2";
+      "019f0000-0000-7120-8000-0000000005b0";
   context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-0000000005a3";
+      "019f0000-0000-7130-8000-0000000005b1";
   context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-0000000005a4";
+      "019f0000-0000-7140-8000-0000000005b2";
   context.catalog_epoch_uuid.canonical =
       "019f0000-0000-7100-8000-0000000005a2";
-  context.local_transaction_id = 55;
-  context.snapshot_visible_through_local_transaction_id = 53;
+  context.local_transaction_id = 591;
+  context.snapshot_visible_through_local_transaction_id = 592;
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-0000000005a5";
+      "019f0000-0000-7150-8000-0000000005b3";
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-0000000005a2";
@@ -781,7 +781,7 @@ bool ValidateCatalogRelationSourceLowering() {
   passed &= Require(!lowered.messages.has_errors() &&
                         lowered.operation_id == "query.execute" &&
                         lowered.sblr_opcode == "SBLR_QUERY_EXECUTE" &&
-                        lowered.operands.size() == 13,
+                        lowered.operands.size() == 19,
                     "complete catalog relation did not select the sole canonical query root");
   passed &= Require(
       lowered.resolved_object_uuids == std::vector<std::string>{relation_uuid} &&
@@ -918,7 +918,7 @@ bool ValidateCanonicalLoweringAndDispatch() {
              operand.value == value;
     });
   };
-  passed &= Require(lowered.operands.size() == 17 &&
+  passed &= Require(lowered.operands.size() == 23 &&
                         lowered.operands[0].type == "uint16" &&
                         lowered.operands[0].name ==
                             "relational_wire_version" &&
@@ -928,10 +928,29 @@ bool ValidateCanonicalLoweringAndDispatch() {
                             "relational_bound_sblr_tree_uuid" &&
                         lowered.operands[1].value ==
                             "019f0000-0000-7000-8000-000000000501" &&
-                        lowered.operands[4].type == "uint32" &&
+                        lowered.operands[4].type == "uuid" &&
                         lowered.operands[4].name ==
+                            "relational_statement_uuid" &&
+                        lowered.operands[4].value ==
+                            "019f0000-0000-7120-8000-000000000510" &&
+                        lowered.operands[5].name ==
+                            "relational_owning_transaction_uuid" &&
+                        lowered.operands[6].name ==
+                            "relational_statement_snapshot_uuid" &&
+                        lowered.operands[7].name ==
+                            "relational_statement_metadata_snapshot_uuid" &&
+                        lowered.operands[8].type == "uint64" &&
+                        lowered.operands[8].name ==
+                            "relational_local_transaction_id" &&
+                        lowered.operands[8].value == "501" &&
+                        lowered.operands[9].type == "uint64" &&
+                        lowered.operands[9].name ==
+                            "relational_snapshot_visible_through_local_transaction_id" &&
+                        lowered.operands[9].value == "502" &&
+                        lowered.operands[10].type == "uint32" &&
+                        lowered.operands[10].name ==
                             "relational_root_node_id" &&
-                        lowered.operands[4].value == "1" &&
+                        lowered.operands[10].value == "1" &&
                         has_operand("relational_descriptor_v1", "1",
                                     "019f0000-0000-7200-8000-000000000503|"
                                     "019f0000-0000-7300-8000-000000000504|"
@@ -966,18 +985,18 @@ bool ValidateCanonicalLoweringAndDispatch() {
   api::EngineRequestContext engine_context;
   engine_context.security_context_present = true;
   engine_context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000502";
+      "019f0000-0000-7120-8000-000000000510";
   engine_context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000503";
+      "019f0000-0000-7130-8000-000000000511";
   engine_context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000504";
+      "019f0000-0000-7140-8000-000000000512";
   engine_context.catalog_epoch_uuid.canonical =
       "019f0000-0000-7100-8000-000000000502";
-  engine_context.local_transaction_id = 51;
-  engine_context.snapshot_visible_through_local_transaction_id = 49;
+  engine_context.local_transaction_id = 501;
+  engine_context.snapshot_visible_through_local_transaction_id = 502;
   engine_context.statement_metadata_snapshot_engine_owned = true;
   engine_context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000505";
+      "019f0000-0000-7150-8000-000000000513";
   engine_context.authorization_context.present = true;
   engine_context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000502";

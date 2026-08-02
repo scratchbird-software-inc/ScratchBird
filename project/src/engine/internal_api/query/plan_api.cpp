@@ -102,7 +102,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   };
   const auto canonical_uuid = [](const std::string_view value) {
     if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
+        value[18] != '-' || value[23] != '-' ||
+        value == "00000000-0000-0000-0000-000000000000") {
       return false;
     }
     for (std::size_t index = 0; index < value.size(); ++index) {
@@ -145,11 +146,22 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   };
   const bool any_planning_scope = !dag.bound_sblr_tree_uuid.empty() ||
                                   !dag.bound_catalog_epoch_uuid.empty() ||
-                                  !dag.bound_security_context_uuid.empty();
+                                  !dag.bound_security_context_uuid.empty() ||
+                                  !dag.statement_uuid.empty() ||
+                                  !dag.owning_transaction_uuid.empty() ||
+                                  !dag.statement_snapshot_uuid.empty() ||
+                                  !dag.statement_metadata_snapshot_uuid.empty() ||
+                                  dag.local_transaction_id != 0 ||
+                                  dag.snapshot_visible_through_local_transaction_id != 0;
   if ((planning_wire || any_planning_scope) &&
       (!canonical_uuid(dag.bound_sblr_tree_uuid) ||
        !canonical_uuid(dag.bound_catalog_epoch_uuid) ||
-       !canonical_uuid(dag.bound_security_context_uuid))) {
+       !canonical_uuid(dag.bound_security_context_uuid) ||
+       !canonical_uuid(dag.statement_uuid) ||
+       !canonical_uuid(dag.owning_transaction_uuid) ||
+       !canonical_uuid(dag.statement_snapshot_uuid) ||
+       !canonical_uuid(dag.statement_metadata_snapshot_uuid) ||
+       dag.local_transaction_id == 0)) {
     return refuse("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1", 0,
                   "typed_planning_scope");
   }
@@ -656,6 +668,13 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     result.data_access_allowed = false;
     result.logical_graph = {};
     result.property_catalog = {};
+    result.catalog_epoch_uuid.clear();
+    result.statement_uuid.clear();
+    result.owning_transaction_uuid.clear();
+    result.statement_snapshot_uuid.clear();
+    result.statement_metadata_snapshot_uuid.clear();
+    result.local_transaction_id = 0;
+    result.snapshot_visible_through_local_transaction_id = 0;
     result.issues.push_back({std::move(diagnostic_id), node_id,
                              std::move(field_id)});
     return result;
@@ -670,8 +689,15 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
       !engine_scope.authorization_context_engine_owned ||
       dag.bound_catalog_epoch_uuid != engine_scope.catalog_epoch_uuid ||
       dag.bound_security_context_uuid != engine_scope.security_context_uuid ||
+      dag.statement_uuid != engine_scope.statement_uuid ||
+      dag.owning_transaction_uuid != engine_scope.owning_transaction_uuid ||
+      dag.statement_snapshot_uuid != engine_scope.statement_snapshot_uuid ||
+      dag.statement_metadata_snapshot_uuid !=
+          engine_scope.statement_metadata_snapshot_uuid ||
+      dag.local_transaction_id != engine_scope.local_transaction_id ||
       engine_scope.local_transaction_id == 0 ||
-      engine_scope.statement_snapshot_id == 0) {
+      dag.snapshot_visible_through_local_transaction_id !=
+          engine_scope.snapshot_visible_through_local_transaction_id) {
     return refuse("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1", 0,
                   "engine_owned_planning_scope");
   }
@@ -681,7 +707,8 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   graph.catalog_epoch_uuid = engine_scope.catalog_epoch_uuid;
   graph.security_context_uuid = engine_scope.security_context_uuid;
   graph.local_transaction_id = engine_scope.local_transaction_id;
-  graph.statement_snapshot_id = engine_scope.statement_snapshot_id;
+  graph.statement_snapshot_id =
+      engine_scope.snapshot_visible_through_local_transaction_id;
   graph.root_logical_node_id = dag.root_node_id;
   for (const auto& node : dag.nodes) {
     plan::CanonicalLogicalRelationalNode logical_node;
@@ -745,6 +772,15 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   }
   result.accepted = true;
   result.data_access_allowed = false;
+  result.catalog_epoch_uuid = dag.bound_catalog_epoch_uuid;
+  result.statement_uuid = dag.statement_uuid;
+  result.owning_transaction_uuid = dag.owning_transaction_uuid;
+  result.statement_snapshot_uuid = dag.statement_snapshot_uuid;
+  result.statement_metadata_snapshot_uuid =
+      dag.statement_metadata_snapshot_uuid;
+  result.local_transaction_id = dag.local_transaction_id;
+  result.snapshot_visible_through_local_transaction_id =
+      dag.snapshot_visible_through_local_transaction_id;
   result.logical_graph = std::move(populated.logical_graph);
   result.property_catalog = std::move(populated.property_catalog);
   return result;

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "query/canonical_relational_bridge.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -104,6 +105,17 @@ sblr::SblrOperationEnvelope PropertyEnvelope() {
        std::string(kCatalogEpochUuid)},
       {"uuid", "relational_security_context_uuid",
        std::string(kSecurityContextUuid)},
+      {"uuid", "relational_statement_uuid",
+       "019f0000-0000-7120-8000-000000003001"},
+      {"uuid", "relational_owning_transaction_uuid",
+       "019f0000-0000-7130-8000-000000003004"},
+      {"uuid", "relational_statement_snapshot_uuid",
+       "019f0000-0000-7140-8000-000000003005"},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       "019f0000-0000-7150-8000-000000003006"},
+      {"uint64", "relational_local_transaction_id", "3001"},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", "2999"},
       {"uint32", "relational_root_node_id", "4"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7300-8000-000000003201|"
@@ -188,7 +200,7 @@ bool ValidateEngineScopeAndPropertyRefusal() {
       {std::move(stale_context), PropertyEnvelope(), {}});
 
   auto unknown_property = PropertyEnvelope();
-  unknown_property.operands[17].value =
+  unknown_property.operands[23].value =
       "6167677265676174652e67726f75702e7631|1,2|-|"
       "019f0000-0000-7200-8000-000000003999|"
       "019f0000-0000-7200-8000-000000003102";
@@ -220,12 +232,60 @@ bool ValidateEngineScopeAndPropertyRefusal() {
   return passed;
 }
 
+bool ValidateZeroHighwaterTypedCarriage() {
+  api::TypedRelationalDag dag;
+  dag.wire_version = 2;
+  dag.bound_sblr_tree_uuid =
+      "019f0000-0000-7000-8000-000000003401";
+  dag.bound_catalog_epoch_uuid = std::string(kCatalogEpochUuid);
+  dag.bound_security_context_uuid = std::string(kSecurityContextUuid);
+  dag.statement_uuid = "019f0000-0000-7120-8000-000000003001";
+  dag.owning_transaction_uuid =
+      "019f0000-0000-7130-8000-000000003004";
+  dag.statement_snapshot_uuid =
+      "019f0000-0000-7140-8000-000000003005";
+  dag.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7150-8000-000000003006";
+  dag.local_transaction_id = 3001;
+  dag.snapshot_visible_through_local_transaction_id = 0;
+  dag.root_node_id = 1;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000003401",
+       "019f0000-0000-7300-8000-000000003402",
+       api::RelationalNullability::kNonNull},
+  };
+  api::RelationalExpressionRecord expression;
+  expression.expression_id = 1;
+  expression.expression_kind = api::RelationalExpressionKind::kLiteral;
+  expression.result_descriptor_id = 1;
+  expression.literal_kind = api::RelationalLiteralKind::kNumeric;
+  expression.literal_or_parameter_ref = "1";
+  dag.expressions.push_back(std::move(expression));
+  dag.outputs = {{1, 1, 1, "value", 1, false, 0}};
+  dag.values_rows = {{1, {1}}};
+  api::RelationalDagNode node;
+  node.node_id = 1;
+  node.node_kind = api::RelationalDagNodeKind::kValues;
+  node.output_descriptor_ids = {1};
+  node.values_row_ids = {1};
+  node.bound_expression_ids = {1};
+  node.semantic_variant_id = "values.literal-table.v1";
+  dag.nodes.push_back(std::move(node));
+
+  const auto validation = api::ValidateTypedRelationalDag(dag);
+  return Require(
+      validation.accepted &&
+          dag.snapshot_visible_through_local_transaction_id == 0,
+      "zero visibility high-water was refused by typed DAG admission");
+}
+
 }  // namespace
 
 // QOW-TEST-302-PROPERTY-BRIDGE-V1
 int main() {
   if (!ValidateLivePropertyPopulation() ||
-      !ValidateEngineScopeAndPropertyRefusal()) {
+      !ValidateEngineScopeAndPropertyRefusal() ||
+      !ValidateZeroHighwaterTypedCarriage()) {
     return EXIT_FAILURE;
   }
   std::cout << "QOW-TEST-302-PROPERTY-BRIDGE-V1: PASS\n";

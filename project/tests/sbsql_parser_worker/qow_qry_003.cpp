@@ -15,6 +15,11 @@
 #include <string_view>
 #include <utility>
 
+namespace scratchbird::engine::sblr {
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request);
+}
+
 namespace sblr = scratchbird::engine::sblr;
 namespace api = scratchbird::engine::internal_api;
 
@@ -97,6 +102,17 @@ sblr::SblrOperationEnvelope QueryEnvelope() {
        "019f0000-0000-7100-8000-000000000303"},
       {"uuid", "relational_security_context_uuid",
        "019f0000-0000-7110-8000-000000000304"},
+      {"uuid", "relational_statement_uuid",
+       "019f0000-0000-7120-8000-000000000303"},
+      {"uuid", "relational_owning_transaction_uuid",
+       "019f0000-0000-7130-8000-000000000313"},
+      {"uuid", "relational_statement_snapshot_uuid",
+       "019f0000-0000-7140-8000-000000000314"},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       "019f0000-0000-7150-8000-000000000315"},
+      {"uint64", "relational_local_transaction_id", "37"},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", "35"},
       {"uint32", "relational_root_node_id", "1"},
       {"relational_descriptor_v1", "1",
        "019f0000-0000-7200-8000-000000000301|"
@@ -170,7 +186,7 @@ bool ValidateCanonicalDispatchSeam() {
 
 bool ValidateDagAndTransportRefusal() {
   auto dangling = QueryEnvelope();
-  dangling.operands[9].value = "3|0|99|1|-";
+  dangling.operands[15].value = "3|0|99|1|-";
   auto dangling_result = sblr::DispatchSblrOperation(
       {Context(), std::move(dangling), {}});
 
@@ -180,7 +196,7 @@ bool ValidateDagAndTransportRefusal() {
       {Context(), std::move(unknown), {}});
 
   auto malformed_expression = QueryEnvelope();
-  malformed_expression.operands[6].value = "1|-|1|-|-|1|-|not_hex";
+  malformed_expression.operands[12].value = "1|-|1|-|-|1|-|not_hex";
   auto malformed_expression_result = sblr::DispatchSblrOperation(
       {Context(), std::move(malformed_expression), {}});
 
@@ -223,6 +239,85 @@ bool ValidateDagAndTransportRefusal() {
           HasApiDiagnostic(side_channel_result,
                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "out-of-band flat API payload bypassed the typed DAG route");
+  return passed;
+}
+
+bool ValidateStatementContextDecoderMatrix() {
+  auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                     api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  auto refuses_before_logical_graph = [](const auto& result) {
+    return !result.envelope_validated && !result.accepted &&
+           !result.logical_graph_populated &&
+           !result.logical_properties_populated &&
+           !result.optimizer_admitted &&
+           HasApiDiagnostic(result,
+                            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
+  };
+
+  auto pre_correction_v2 = QueryEnvelope();
+  pre_correction_v2.operands.erase(pre_correction_v2.operands.begin() + 4,
+                                   pre_correction_v2.operands.begin() + 10);
+  const auto pre_correction_result =
+      dispatch(std::move(pre_correction_v2));
+
+  auto missing_statement = QueryEnvelope();
+  missing_statement.operands.erase(missing_statement.operands.begin() + 4);
+  const auto missing_result = dispatch(std::move(missing_statement));
+
+  auto duplicate_statement = QueryEnvelope();
+  duplicate_statement.operands.push_back(duplicate_statement.operands[4]);
+  const auto duplicate_result = dispatch(std::move(duplicate_statement));
+
+  auto swapped_statement_transaction = QueryEnvelope();
+  std::swap(swapped_statement_transaction.operands[4],
+            swapped_statement_transaction.operands[5]);
+  const auto swapped_result =
+      dispatch(std::move(swapped_statement_transaction));
+
+  auto narrowed_local_transaction = QueryEnvelope();
+  narrowed_local_transaction.operands[8].type = "uint32";
+  const auto narrowed_result =
+      dispatch(std::move(narrowed_local_transaction));
+
+  auto nil_statement = QueryEnvelope();
+  nil_statement.operands[4].value =
+      "00000000-0000-0000-0000-000000000000";
+  const auto nil_result = dispatch(std::move(nil_statement));
+
+  auto stale_statement_context = Context();
+  stale_statement_context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000000399";
+  const auto stale_statement_result =
+      dispatch(QueryEnvelope(), std::move(stale_statement_context));
+
+  auto zero_highwater = QueryEnvelope();
+  zero_highwater.operands[9].value = "0";
+  auto zero_highwater_context = Context();
+  zero_highwater_context.snapshot_visible_through_local_transaction_id = 0;
+  const auto zero_highwater_result = dispatch(
+      std::move(zero_highwater), std::move(zero_highwater_context));
+
+  bool passed = true;
+  passed &= Require(refuses_before_logical_graph(pre_correction_result),
+                    "pre-correction wire v2 reached typed planning");
+  passed &= Require(refuses_before_logical_graph(missing_result),
+                    "missing statement operand reached typed planning");
+  passed &= Require(refuses_before_logical_graph(duplicate_result),
+                    "duplicate statement operand reached typed planning");
+  passed &= Require(refuses_before_logical_graph(swapped_result),
+                    "swapped statement operands reached typed planning");
+  passed &= Require(refuses_before_logical_graph(narrowed_result),
+                    "narrowed local transaction operand reached typed planning");
+  passed &= Require(refuses_before_logical_graph(nil_result),
+                    "nil statement operand reached typed planning");
+  passed &= Require(refuses_before_logical_graph(stale_statement_result),
+                    "stale carried statement identity reached typed planning");
+  passed &= Require(
+      zero_highwater_result.envelope_validated,
+      "zero visibility high-water was refused by the engine decoder");
   return passed;
 }
 
@@ -298,6 +393,7 @@ int main() {
   passed &= ValidateRegistryClosure();
   passed &= ValidateCanonicalDispatchSeam();
   passed &= ValidateDagAndTransportRefusal();
+  passed &= ValidateStatementContextDecoderMatrix();
   passed &= ValidateRegistryAndAuthorityRefusal();
   passed &= ValidateDecodePath();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

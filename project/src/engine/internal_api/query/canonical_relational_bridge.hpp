@@ -20,8 +20,12 @@ namespace scratchbird::engine::internal_api {
 struct CanonicalRelationalPlanningScope {
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
-  std::uint64_t statement_snapshot_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
   bool metadata_snapshot_engine_owned{false};
   bool authorization_context_engine_owned{false};
 };
@@ -35,6 +39,13 @@ struct CanonicalRelationalBridgeIssue {
 struct CanonicalRelationalBridgeResult {
   bool accepted{false};
   bool data_access_allowed{false};
+  std::string catalog_epoch_uuid;
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
   scratchbird::engine::planner::CanonicalLogicalRelationalGraph logical_graph;
   scratchbird::engine::planner::CanonicalLogicalPropertyCatalog
       property_catalog;

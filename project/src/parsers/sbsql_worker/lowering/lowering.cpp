@@ -34604,6 +34604,24 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       {"uuid", "relational_security_context_uuid",
        native.security_context_uuid});
   envelope.operands.push_back(
+      {"uuid", "relational_statement_uuid", native.statement_uuid});
+  envelope.operands.push_back(
+      {"uuid", "relational_owning_transaction_uuid",
+       native.owning_transaction_uuid});
+  envelope.operands.push_back(
+      {"uuid", "relational_statement_snapshot_uuid",
+       native.statement_snapshot_uuid});
+  envelope.operands.push_back(
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       native.statement_metadata_snapshot_uuid});
+  envelope.operands.push_back(
+      {"uint64", "relational_local_transaction_id",
+       std::to_string(native.local_transaction_id)});
+  envelope.operands.push_back(
+      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
+       std::to_string(
+           native.snapshot_visible_through_local_transaction_id)});
+  envelope.operands.push_back(
       {"uint32", "relational_root_node_id",
        std::to_string(native.root_relation_id)});
   for (const auto& descriptor : native.descriptors) {
@@ -36400,6 +36418,12 @@ struct ParsedRelationalGraph {
   std::string bound_sblr_tree_uuid;
   std::string catalog_epoch_uuid;
   std::string security_context_uuid;
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
   std::uint32_t root_node_id{0};
   std::vector<ParsedRelationalDescriptor> descriptors;
   std::vector<ParsedRelationalExpression> expressions;
@@ -36467,6 +36491,11 @@ bool IsCanonicalRelationalUuid(const std::string_view value) {
     }
   }
   return true;
+}
+
+bool IsNonNullCanonicalRelationalUuid(const std::string_view value) {
+  return IsCanonicalRelationalUuid(value) &&
+         value != "00000000-0000-0000-0000-000000000000";
 }
 
 template <std::size_t FieldCount>
@@ -36659,10 +36688,57 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
                                  "relational graph destination is absent",
                                  "graph_destination");
   }
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 10>
+      kLeadingOperands{{
+          {"uint16", "relational_wire_version"},
+          {"uuid", "relational_bound_sblr_tree_uuid"},
+          {"uuid", "relational_catalog_epoch_uuid"},
+          {"uuid", "relational_security_context_uuid"},
+          {"uuid", "relational_statement_uuid"},
+          {"uuid", "relational_owning_transaction_uuid"},
+          {"uuid", "relational_statement_snapshot_uuid"},
+          {"uuid", "relational_statement_metadata_snapshot_uuid"},
+          {"uint64", "relational_local_transaction_id"},
+          {"uint64",
+           "relational_snapshot_visible_through_local_transaction_id"},
+      }};
+  if (envelope.operands.size() < kLeadingOperands.size()) {
+    return RefuseRelationalGraph(
+        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+        "wire version 2 requires the complete leading statement context",
+        "typed_planning_scope");
+  }
+  for (std::size_t index = 0; index < kLeadingOperands.size(); ++index) {
+    if (envelope.operands[index].type != kLeadingOperands[index].first ||
+        envelope.operands[index].name != kLeadingOperands[index].second) {
+      return RefuseRelationalGraph(
+          "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+          "wire version 2 leading statement context is out of order or narrowed",
+          std::string(kLeadingOperands[index].second));
+    }
+  }
+  const auto root_operand = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "uint32" &&
+               operand.name == "relational_root_node_id";
+      });
+  if (root_operand != envelope.operands.end() &&
+      root_operand != envelope.operands.begin() + 10) {
+    return RefuseRelationalGraph(
+        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+        "wire version 2 relational root is out of leading order",
+        "relational_root_node_id");
+  }
   bool wire_version_present = false;
   bool tree_uuid_present = false;
   bool catalog_uuid_present = false;
   bool security_uuid_present = false;
+  bool statement_uuid_present = false;
+  bool owning_transaction_uuid_present = false;
+  bool statement_snapshot_uuid_present = false;
+  bool statement_metadata_snapshot_uuid_present = false;
+  bool local_transaction_id_present = false;
+  bool snapshot_visible_through_local_transaction_id_present = false;
   bool root_present = false;
   std::size_t record_count = 0;
   std::size_t encoded_bytes = 0;
@@ -36698,7 +36774,8 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
-      if (tree_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+      if (tree_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "bound SBLR tree identity is malformed or duplicated",
@@ -36710,7 +36787,8 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_catalog_epoch_uuid") {
-      if (catalog_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+      if (catalog_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "catalog epoch identity is malformed or duplicated",
@@ -36722,7 +36800,8 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_security_context_uuid") {
-      if (security_uuid_present || !IsCanonicalRelationalUuid(operand.value)) {
+      if (security_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
             "security context identity is malformed or duplicated",
@@ -36730,6 +36809,92 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       }
       graph->security_context_uuid = operand.value;
       security_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_uuid") {
+      if (statement_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "statement identity is malformed or duplicated",
+            "statement_uuid");
+      }
+      graph->statement_uuid = operand.value;
+      statement_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_owning_transaction_uuid") {
+      if (owning_transaction_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "owning transaction identity is malformed or duplicated",
+            "owning_transaction_uuid");
+      }
+      graph->owning_transaction_uuid = operand.value;
+      owning_transaction_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_snapshot_uuid") {
+      if (statement_snapshot_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "statement snapshot identity is malformed or duplicated",
+            "statement_snapshot_uuid");
+      }
+      graph->statement_snapshot_uuid = operand.value;
+      statement_snapshot_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_metadata_snapshot_uuid") {
+      if (statement_metadata_snapshot_uuid_present ||
+          !IsNonNullCanonicalRelationalUuid(operand.value)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "statement metadata snapshot identity is malformed or duplicated",
+            "statement_metadata_snapshot_uuid");
+      }
+      graph->statement_metadata_snapshot_uuid = operand.value;
+      statement_metadata_snapshot_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uint64" &&
+        operand.name == "relational_local_transaction_id") {
+      std::uint64_t parsed = 0;
+      if (local_transaction_id_present ||
+          !ParseCanonicalRelationalUnsigned(
+              operand.value, std::numeric_limits<std::uint64_t>::max(),
+              &parsed) ||
+          parsed == 0) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "local transaction identity is malformed or duplicated",
+            "local_transaction_id");
+      }
+      graph->local_transaction_id = parsed;
+      local_transaction_id_present = true;
+      continue;
+    }
+    if (operand.type == "uint64" &&
+        operand.name ==
+            "relational_snapshot_visible_through_local_transaction_id") {
+      std::uint64_t parsed = 0;
+      if (snapshot_visible_through_local_transaction_id_present ||
+          !ParseCanonicalRelationalUnsigned(
+              operand.value, std::numeric_limits<std::uint64_t>::max(),
+              &parsed)) {
+        return RefuseRelationalGraph(
+            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+            "visibility high-water is malformed or duplicated",
+            "snapshot_visible_through_local_transaction_id");
+      }
+      graph->snapshot_visible_through_local_transaction_id = parsed;
+      snapshot_visible_through_local_transaction_id_present = true;
       continue;
     }
     if (operand.type == "uint32" &&
@@ -37052,7 +37217,12 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
                                  "query.execute requires relational wire version 2",
                                  "wire_version");
   }
-  if (!tree_uuid_present || !catalog_uuid_present || !security_uuid_present) {
+  if (!tree_uuid_present || !catalog_uuid_present || !security_uuid_present ||
+      !statement_uuid_present || !owning_transaction_uuid_present ||
+      !statement_snapshot_uuid_present ||
+      !statement_metadata_snapshot_uuid_present ||
+      !local_transaction_id_present ||
+      !snapshot_visible_through_local_transaction_id_present) {
     return RefuseRelationalGraph("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
                                  "wire version 2 requires complete UUID planning scope",
                                  "typed_planning_scope");

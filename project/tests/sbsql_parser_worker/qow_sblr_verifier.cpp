@@ -99,6 +99,17 @@ sbsql::SblrEnvelope BaseEnvelope(const std::uint32_t root_node_id) {
        "019f0000-0000-7100-8000-000000000403"},
       {"uuid", "relational_security_context_uuid",
        "019f0000-0000-7110-8000-000000000404"},
+      {"uuid", "relational_statement_uuid",
+       "019f0000-0000-7120-8000-000000000405"},
+      {"uuid", "relational_owning_transaction_uuid",
+       "019f0000-0000-7130-8000-000000000406"},
+      {"uuid", "relational_statement_snapshot_uuid",
+       "019f0000-0000-7140-8000-000000000407"},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       "019f0000-0000-7150-8000-000000000408"},
+      {"uint64", "relational_local_transaction_id", "401"},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", "0"},
       {"uint32", "relational_root_node_id", std::to_string(root_node_id)},
       {"relational_descriptor_v1", "1",
        std::string(kDescriptorUuid) + "|" + std::string(kTypeUuid) +
@@ -349,6 +360,50 @@ bool ValidateEnvelopeAndRecordRefusals() {
   const auto duplicate_version_result =
       sbsql::VerifySblrEnvelope(duplicate_version);
 
+  auto pre_correction_v2 = ValuesEnvelope();
+  pre_correction_v2.operands.erase(pre_correction_v2.operands.begin() + 4,
+                                   pre_correction_v2.operands.begin() + 10);
+  const auto pre_correction_v2_result =
+      sbsql::VerifySblrEnvelope(pre_correction_v2);
+
+  auto missing_statement = ValuesEnvelope();
+  RemoveOperand(&missing_statement, "uuid", "relational_statement_uuid");
+  const auto missing_statement_result =
+      sbsql::VerifySblrEnvelope(missing_statement);
+
+  auto duplicate_statement = ValuesEnvelope();
+  duplicate_statement.operands.push_back(
+      *FindOperand(&duplicate_statement, "uuid", "relational_statement_uuid"));
+  const auto duplicate_statement_result =
+      sbsql::VerifySblrEnvelope(duplicate_statement);
+
+  auto nil_statement = ValuesEnvelope();
+  FindOperand(&nil_statement, "uuid", "relational_statement_uuid")->value =
+      "00000000-0000-0000-0000-000000000000";
+  const auto nil_statement_result =
+      sbsql::VerifySblrEnvelope(nil_statement);
+
+  auto swapped_statement_authority = ValuesEnvelope();
+  std::swap(swapped_statement_authority.operands[4],
+            swapped_statement_authority.operands[5]);
+  const auto swapped_statement_authority_result =
+      sbsql::VerifySblrEnvelope(swapped_statement_authority);
+
+  auto narrowed_local_transaction = ValuesEnvelope();
+  FindOperand(&narrowed_local_transaction, "uint64",
+              "relational_local_transaction_id")
+      ->type = "uint32";
+  const auto narrowed_local_transaction_result =
+      sbsql::VerifySblrEnvelope(narrowed_local_transaction);
+
+  auto malformed_highwater = ValuesEnvelope();
+  FindOperand(
+      &malformed_highwater, "uint64",
+      "relational_snapshot_visible_through_local_transaction_id")
+      ->value = "01";
+  const auto malformed_highwater_result =
+      sbsql::VerifySblrEnvelope(malformed_highwater);
+
   auto scope = ValuesEnvelope();
   FindOperand(&scope, "uuid", "relational_catalog_epoch_uuid")->value =
       "NOT-A-CANONICAL-UUID";
@@ -424,6 +479,44 @@ bool ValidateEnvelopeAndRecordRefusals() {
                                       "SBLR.PLAN_TREE.INVALID_VERSION",
                                       "wire_version"),
                     "duplicate relational version was accepted");
+  passed &= Require(
+      !pre_correction_v2_result.admitted &&
+          HasDiagnostic(pre_correction_v2_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
+      "pre-correction wire-v2 statement authority defaulted ambiently");
+  passed &= Require(
+      !missing_statement_result.admitted &&
+          HasDiagnostic(missing_statement_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
+      "missing statement identity was accepted");
+  passed &= Require(
+      !duplicate_statement_result.admitted &&
+          HasDiagnostic(duplicate_statement_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+                        "statement_uuid"),
+      "duplicate statement identity was accepted");
+  passed &= Require(
+      !nil_statement_result.admitted &&
+          HasDiagnostic(nil_statement_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+                        "statement_uuid"),
+      "nil statement identity was accepted");
+  passed &= Require(
+      !swapped_statement_authority_result.admitted &&
+          HasDiagnostic(swapped_statement_authority_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
+      "swapped statement and transaction identities were accepted");
+  passed &= Require(
+      !narrowed_local_transaction_result.admitted &&
+          HasDiagnostic(narrowed_local_transaction_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
+      "narrowed local transaction identity was accepted");
+  passed &= Require(
+      !malformed_highwater_result.admitted &&
+          HasDiagnostic(malformed_highwater_result,
+                        "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",
+                        "snapshot_visible_through_local_transaction_id"),
+      "noncanonical visibility high-water was accepted");
   passed &= Require(!scope_result.admitted &&
                         HasDiagnostic(scope_result,
                                       "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1",

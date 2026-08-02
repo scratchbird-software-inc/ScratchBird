@@ -180,6 +180,12 @@ struct TypedRelationalDag {
   std::string bound_sblr_tree_uuid;
   std::string bound_catalog_epoch_uuid;
   std::string bound_security_context_uuid;
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t local_transaction_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
   std::uint32_t root_node_id{0};
   std::vector<RelationalTypeDescriptor> descriptors;
   std::vector<RelationalExpressionRecord> expressions;

@@ -198,18 +198,18 @@ bool ValidateComposableScalarLowering() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.statement_uuid.canonical =
-      "019f0000-0000-7120-8000-000000000602";
+      "019f0000-0000-7120-8000-000000000610";
   context.transaction_uuid.canonical =
-      "019f0000-0000-7130-8000-000000000603";
+      "019f0000-0000-7130-8000-000000000611";
   context.statement_snapshot_uuid.canonical =
-      "019f0000-0000-7140-8000-000000000604";
+      "019f0000-0000-7140-8000-000000000612";
   context.catalog_epoch_uuid.canonical =
       "019f0000-0000-7100-8000-000000000602";
-  context.local_transaction_id = 61;
-  context.snapshot_visible_through_local_transaction_id = 59;
+  context.local_transaction_id = 601;
+  context.snapshot_visible_through_local_transaction_id = 602;
   context.statement_metadata_snapshot_engine_owned = true;
   context.statement_metadata_snapshot_uuid.canonical =
-      "019f0000-0000-7150-8000-000000000605";
+      "019f0000-0000-7150-8000-000000000613";
   context.authorization_context.present = true;
   context.authorization_context.authority_uuid.canonical =
       "019f0000-0000-7110-8000-000000000602";

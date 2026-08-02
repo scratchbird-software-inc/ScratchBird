@@ -182,6 +182,22 @@ bool ParseCanonicalUnsigned(std::string_view text,
   return true;
 }
 
+bool IsCanonicalNonNilUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool CanonicalQueryApiPayloadEmpty(const api::EngineApiRequest& request) {
   const auto object_reference_empty = [](const api::EngineObjectReference& ref) {
     return ref.uuid.canonical.empty() && ref.object_kind.empty();
@@ -440,11 +456,59 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   decoded.request.relational_dag.package_root =
       api::RelationalPackageRoot::kQueryExecute;
 
+  constexpr std::array<std::pair<std::string_view, std::string_view>, 10>
+      kLeadingOperands{{
+          {"uint16", "relational_wire_version"},
+          {"uuid", "relational_bound_sblr_tree_uuid"},
+          {"uuid", "relational_catalog_epoch_uuid"},
+          {"uuid", "relational_security_context_uuid"},
+          {"uuid", "relational_statement_uuid"},
+          {"uuid", "relational_owning_transaction_uuid"},
+          {"uuid", "relational_statement_snapshot_uuid"},
+          {"uuid", "relational_statement_metadata_snapshot_uuid"},
+          {"uint64", "relational_local_transaction_id"},
+          {"uint64",
+           "relational_snapshot_visible_through_local_transaction_id"},
+      }};
+  if (dispatch_request.envelope.operands.size() < kLeadingOperands.size()) {
+    decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+    decoded.detail =
+        "wire v2 requires the complete leading statement context";
+    return decoded;
+  }
+  for (std::size_t index = 0; index < kLeadingOperands.size(); ++index) {
+    const auto& operand = dispatch_request.envelope.operands[index];
+    if (operand.type != kLeadingOperands[index].first ||
+        operand.name != kLeadingOperands[index].second) {
+      decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+      decoded.detail =
+          "wire v2 leading statement context is out of order or narrowed";
+      return decoded;
+    }
+  }
+  const auto root_operand = std::ranges::find_if(
+      dispatch_request.envelope.operands, [](const auto& operand) {
+        return operand.type == "uint32" &&
+               operand.name == "relational_root_node_id";
+      });
+  if (root_operand != dispatch_request.envelope.operands.end() &&
+      root_operand != dispatch_request.envelope.operands.begin() + 10) {
+    decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+    decoded.detail = "relational root is out of corrected wire-v2 order";
+    return decoded;
+  }
+
   bool wire_version_present = false;
   bool root_node_present = false;
   bool bound_sblr_tree_present = false;
   bool bound_catalog_epoch_present = false;
   bool bound_security_context_present = false;
+  bool statement_uuid_present = false;
+  bool owning_transaction_uuid_present = false;
+  bool statement_snapshot_uuid_present = false;
+  bool statement_metadata_snapshot_uuid_present = false;
+  bool local_transaction_id_present = false;
+  bool snapshot_visible_through_local_transaction_id_present = false;
   for (const auto& operand : dispatch_request.envelope.operands) {
     if (operand.type == "uint16" &&
         operand.name == "relational_wire_version") {
@@ -469,7 +533,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
-      if (bound_sblr_tree_present || operand.value.empty()) {
+      if (bound_sblr_tree_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty bound SBLR tree identity";
         return decoded;
@@ -480,7 +545,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_catalog_epoch_uuid") {
-      if (bound_catalog_epoch_present || operand.value.empty()) {
+      if (bound_catalog_epoch_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty catalog epoch identity";
         return decoded;
@@ -491,7 +557,8 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     }
     if (operand.type == "uuid" &&
         operand.name == "relational_security_context_uuid") {
-      if (bound_security_context_present || operand.value.empty()) {
+      if (bound_security_context_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
         decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
         decoded.detail = "duplicate or empty security context identity";
         return decoded;
@@ -499,6 +566,93 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.bound_security_context_uuid =
           operand.value;
       bound_security_context_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_uuid") {
+      if (statement_uuid_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or malformed statement identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.statement_uuid = operand.value;
+      statement_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_owning_transaction_uuid") {
+      if (owning_transaction_uuid_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail =
+            "duplicate or malformed owning transaction identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.owning_transaction_uuid = operand.value;
+      owning_transaction_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_snapshot_uuid") {
+      if (statement_snapshot_uuid_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or malformed statement snapshot identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.statement_snapshot_uuid = operand.value;
+      statement_snapshot_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uuid" &&
+        operand.name == "relational_statement_metadata_snapshot_uuid") {
+      if (statement_metadata_snapshot_uuid_present ||
+          !IsCanonicalNonNilUuid(operand.value)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail =
+            "duplicate or malformed statement metadata snapshot identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.statement_metadata_snapshot_uuid =
+          operand.value;
+      statement_metadata_snapshot_uuid_present = true;
+      continue;
+    }
+    if (operand.type == "uint64" &&
+        operand.name == "relational_local_transaction_id") {
+      std::uint64_t local_transaction_id = 0;
+      if (local_transaction_id_present ||
+          (operand.value.size() > 1 && operand.value.front() == '0') ||
+          !ParseCanonicalUnsigned(
+              operand.value, std::numeric_limits<std::uint64_t>::max(),
+              &local_transaction_id) ||
+          local_transaction_id == 0) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or malformed local transaction identity";
+        return decoded;
+      }
+      decoded.request.relational_dag.local_transaction_id =
+          local_transaction_id;
+      local_transaction_id_present = true;
+      continue;
+    }
+    if (operand.type == "uint64" &&
+        operand.name ==
+            "relational_snapshot_visible_through_local_transaction_id") {
+      std::uint64_t visible_through = 0;
+      if (snapshot_visible_through_local_transaction_id_present ||
+          (operand.value.size() > 1 && operand.value.front() == '0') ||
+          !ParseCanonicalUnsigned(
+              operand.value, std::numeric_limits<std::uint64_t>::max(),
+              &visible_through)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+        decoded.detail = "duplicate or malformed visibility high-water";
+        return decoded;
+      }
+      decoded.request.relational_dag
+          .snapshot_visible_through_local_transaction_id = visible_through;
+      snapshot_visible_through_local_transaction_id_present = true;
       continue;
     }
     if (operand.type == "uint32" &&
@@ -865,9 +1019,33 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
   }
   if (decoded.request.relational_dag.wire_version == 2 &&
       (!bound_sblr_tree_present || !bound_catalog_epoch_present ||
-       !bound_security_context_present)) {
+       !bound_security_context_present || !statement_uuid_present ||
+       !owning_transaction_uuid_present || !statement_snapshot_uuid_present ||
+       !statement_metadata_snapshot_uuid_present ||
+       !local_transaction_id_present ||
+       !snapshot_visible_through_local_transaction_id_present)) {
     decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
     decoded.detail = "wire v2 requires complete logical planning scope";
+    return decoded;
+  }
+  const auto& dag = decoded.request.relational_dag;
+  const auto& context = dispatch_request.context;
+  if (dag.bound_catalog_epoch_uuid != context.catalog_epoch_uuid.canonical ||
+      dag.bound_security_context_uuid !=
+          context.authorization_context.authority_uuid.canonical ||
+      dag.statement_uuid != context.statement_uuid.canonical ||
+      dag.owning_transaction_uuid != context.transaction_uuid.canonical ||
+      dag.statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      dag.statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      dag.local_transaction_id != context.local_transaction_id ||
+      context.local_transaction_id == 0 ||
+      dag.snapshot_visible_through_local_transaction_id !=
+          context.snapshot_visible_through_local_transaction_id) {
+    decoded.diagnostic_id = "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1";
+    decoded.detail =
+        "carried statement context does not match engine statement authority";
     return decoded;
   }
   decoded.ok = true;
@@ -920,12 +1098,19 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   routed.graph_validated = true;
   api::CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
-      request.context.statement_metadata_snapshot_uuid.canonical;
+      request.context.catalog_epoch_uuid.canonical;
   planning_scope.security_context_uuid =
       request.context.authorization_context.authority_uuid.canonical;
+  planning_scope.statement_uuid = request.context.statement_uuid.canonical;
+  planning_scope.owning_transaction_uuid =
+      request.context.transaction_uuid.canonical;
+  planning_scope.statement_snapshot_uuid =
+      request.context.statement_snapshot_uuid.canonical;
+  planning_scope.statement_metadata_snapshot_uuid =
+      request.context.statement_metadata_snapshot_uuid.canonical;
   planning_scope.local_transaction_id =
       request.context.local_transaction_id;
-  planning_scope.statement_snapshot_id =
+  planning_scope.snapshot_visible_through_local_transaction_id =
       request.context.snapshot_visible_through_local_transaction_id;
   planning_scope.metadata_snapshot_engine_owned =
       request.context.statement_metadata_snapshot_engine_owned;
@@ -1063,6 +1248,50 @@ SblrEnvelopeDiagnostic QueryRouteDiagnostic(const api::EngineApiResult& result) 
 }  // namespace
 
 #ifdef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request) {
+  SblrDispatchResult result;
+  const auto decoded = TypedPlanOperationRequest(request);
+  result.envelope_validated = decoded.ok;
+  if (!decoded.ok) {
+    result.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        decoded.diagnostic_id, decoded.detail);
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+    return result;
+  }
+  const auto routed = DispatchTypedPlanOperation(request);
+  result.accepted = routed.optimizer_admitted;
+  result.dispatched_to_api = routed.optimizer_admitted;
+  result.logical_graph_populated = routed.logical_graph_populated;
+  result.logical_properties_populated = routed.logical_properties_populated;
+  result.logical_node_count = routed.logical_node_count;
+  result.logical_property_count = routed.logical_property_count;
+  result.optimizer_admitted = routed.optimizer_admitted;
+  result.optimizer_admission_degraded =
+      routed.optimizer_admission_degraded;
+  result.optimizer_benchmark_clean_ready =
+      routed.optimizer_benchmark_clean_ready;
+  result.optimizer_selected = routed.optimizer_selected;
+  result.physical_dag_published = routed.physical_dag_published;
+  result.physical_dag_executed = routed.physical_dag_executed;
+  result.runtime_actuals_attached = routed.runtime_actuals_attached;
+  result.canonical_result_published = routed.canonical_result_published;
+  result.optimizer_admission_stage_count =
+      routed.optimizer_admission_stage_count;
+  result.physical_node_count = routed.physical_node_count;
+  result.canonical_result_column_count =
+      routed.canonical_result_column_count;
+  result.canonical_result_row_count = routed.canonical_result_row_count;
+  result.selected_plan_uuid = routed.selected_plan_uuid;
+  result.canonical_result_bytes = routed.canonical_result_bytes;
+  result.api_result = routed.api_result;
+  if (!result.api_result.ok) {
+    result.diagnostics.push_back(QueryRouteDiagnostic(result.api_result));
+  }
+  return result;
+}
 
 bool IsClusterOperationId(std::string_view operation_id) {
   return operation_id.starts_with("cluster.") ||
