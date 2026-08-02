@@ -151,8 +151,8 @@ sbsql::NativeRelationalBindingContext CatalogSourceBindingContext() {
   relation.security_epoch = 582;
   relation.resource_epoch = 583;
   relation.columns = {
-      {0, "019f0000-0000-7600-8000-00000000058c", 1},
-      {1, "019f0000-0000-7600-8000-00000000058d", 2},
+      {0, "019f0000-0000-7600-8000-00000000058c", 1, "order_id"},
+      {1, "019f0000-0000-7600-8000-00000000058d", 2, "order_note"},
   };
   context.catalog_relations.push_back(std::move(relation));
   return context;

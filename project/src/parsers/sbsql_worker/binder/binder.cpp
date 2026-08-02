@@ -497,6 +497,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto descriptor = descriptor_by_id.find(column.descriptor_id);
       if (column.ordinal != ordinal ||
           !IsNonNullCanonicalUuid(column.column_uuid) ||
+          column.canonical_name_key.empty() ||
           !column_uuids.insert(column.column_uuid).second ||
           descriptor == descriptor_by_id.end() ||
           descriptor->second->nullability == BoundNullability::kUnknown ||
@@ -509,7 +510,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       used_descriptor_ids.insert(column.descriptor_id);
       bound_source.columns.push_back(
-          {column.ordinal, column.column_uuid, column.descriptor_id});
+          {column.ordinal, column.column_uuid, column.descriptor_id,
+           column.canonical_name_key});
     }
     if (used_descriptor_ids.size() != descriptor_by_id.size()) {
       AddBoundAstDiagnostic(

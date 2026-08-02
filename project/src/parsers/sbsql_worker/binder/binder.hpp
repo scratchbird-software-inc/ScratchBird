@@ -71,6 +71,7 @@ struct NativeCatalogColumnBindingInput {
   std::uint32_t ordinal{0};
   std::string column_uuid;
   std::uint32_t descriptor_id{0};
+  std::string canonical_name_key;
 };
 
 struct NativeCatalogRelationBindingInput {
@@ -172,6 +173,7 @@ struct BoundCatalogColumnAstRecord {
   std::uint32_t ordinal{0};
   std::string column_uuid;
   std::uint32_t descriptor_id{0};
+  std::string canonical_name_key;
 };
 
 struct BoundCatalogRelationSourceAstRecord {

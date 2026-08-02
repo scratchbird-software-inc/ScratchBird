@@ -123,8 +123,8 @@ sbsql::NativeRelationalBindingContext CatalogBindingContext() {
   relation.security_epoch = 19;
   relation.resource_epoch = 23;
   relation.columns = {
-      {0, "019f0000-0000-7600-8000-00000000020c", 1},
-      {1, "019f0000-0000-7600-8000-00000000020d", 2},
+      {0, "019f0000-0000-7600-8000-00000000020c", 1, "order_id"},
+      {1, "019f0000-0000-7600-8000-00000000020d", 2, "order_note"},
   };
   context.catalog_relations.push_back(std::move(relation));
   return context;
@@ -286,9 +286,15 @@ bool ValidateCatalogRelationBinding() {
         source.columns.size() == 2 && source.columns[0].ordinal == 0 &&
             source.columns[0].column_uuid == input.columns[0].column_uuid &&
             source.columns[0].descriptor_id == 1 &&
+            source.columns[0].canonical_name_key ==
+                input.columns[0].canonical_name_key &&
+            source.columns[0].canonical_name_key == "order_id" &&
             source.columns[1].ordinal == 1 &&
             source.columns[1].column_uuid == input.columns[1].column_uuid &&
-            source.columns[1].descriptor_id == 2,
+            source.columns[1].descriptor_id == 2 &&
+            source.columns[1].canonical_name_key ==
+                input.columns[1].canonical_name_key &&
+            source.columns[1].canonical_name_key == "order_note",
         "catalog column identity inventory differs");
   }
   passed &= Require(native.descriptors.size() == 2 &&
@@ -472,6 +478,12 @@ bool ValidateCatalogRelationRefusals() {
   passed &= RequireAtomicCatalogRefusal(
       context, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
       "malformed column UUID did not refuse atomically");
+
+  context = CatalogBindingContext();
+  context.catalog_relations[0].columns[0].canonical_name_key.clear();
+  passed &= RequireAtomicCatalogRefusal(
+      context, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+      "empty canonical column name did not refuse atomically");
 
   context = CatalogBindingContext();
   context.catalog_relations[0].columns[0].column_uuid =
