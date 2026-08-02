@@ -113,6 +113,85 @@ sbsql::BoundStatement BoundValues(const sbsql::CstDocument& cst) {
                         {}, &context);
 }
 
+sbsql::NativeRelationalBindingContext CatalogSourceBindingContext() {
+  sbsql::NativeRelationalBindingContext context;
+  context.bound_ast_uuid = "019f0000-0000-7000-8000-000000000581";
+  context.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000582";
+  context.security_context_uuid = "019f0000-0000-7110-8000-000000000583";
+
+  sbsql::NativeDescriptorBindingInput order_id;
+  order_id.descriptor_id = 1;
+  order_id.descriptor_uuid = "019f0000-0000-7200-8000-000000000584";
+  order_id.type_uuid = "019f0000-0000-7300-8000-000000000585";
+  order_id.nullability = sbsql::BoundNullability::kNonNull;
+  order_id.width_precision_scale.precision = 18;
+  order_id.width_precision_scale.scale = 0;
+  context.descriptors.push_back(order_id);
+
+  sbsql::NativeDescriptorBindingInput order_note;
+  order_note.descriptor_id = 2;
+  order_note.descriptor_uuid = "019f0000-0000-7200-8000-000000000586";
+  order_note.type_uuid = "019f0000-0000-7300-8000-000000000587";
+  order_note.nullability = sbsql::BoundNullability::kNullable;
+  order_note.width_precision_scale.width = 128;
+  order_note.collation_uuid = "019f0000-0000-7400-8000-000000000588";
+  context.descriptors.push_back(order_note);
+
+  sbsql::NativeCatalogRelationBindingInput relation;
+  relation.source_id = 1;
+  relation.resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kBound;
+  relation.object_uuid = "019f0000-0000-7500-8000-000000000589";
+  relation.resolved_object_type = "relation";
+  relation.resolved_schema_uuid =
+      "019f0000-0000-7500-8000-00000000058a";
+  relation.parent_object_uuid =
+      "019f0000-0000-7500-8000-00000000058b";
+  relation.catalog_generation_id = 581;
+  relation.security_epoch = 582;
+  relation.resource_epoch = 583;
+  relation.columns = {
+      {0, "019f0000-0000-7600-8000-00000000058c", 1},
+      {1, "019f0000-0000-7600-8000-00000000058d", 2},
+  };
+  context.catalog_relations.push_back(std::move(relation));
+  return context;
+}
+
+sbsql::BoundStatement BoundCatalogSource(const sbsql::CstDocument& cst,
+                                         const bool complete) {
+  const auto ast = sbsql::BuildAst(cst);
+  const auto context = CatalogSourceBindingContext();
+  auto bound = sbsql::BindAst(ast, cst, ParserConfigForTest(),
+                              SessionForTest(), {}, &context);
+  if (!complete || !bound.native_relational.bound) return bound;
+
+  auto& native = bound.native_relational;
+  sbsql::BoundExpressionAstRecord order_id;
+  order_id.expression_id = 1;
+  order_id.expression_kind = sbsql::NativeExpressionAstKind::kIdentifier;
+  order_id.result_descriptor_id = 1;
+  order_id.bound_name_uuid = native.catalog_relation_sources[0].columns[0].column_uuid;
+  native.expressions.push_back(std::move(order_id));
+
+  sbsql::BoundExpressionAstRecord order_note;
+  order_note.expression_id = 2;
+  order_note.expression_kind = sbsql::NativeExpressionAstKind::kIdentifier;
+  order_note.result_descriptor_id = 2;
+  order_note.bound_name_uuid =
+      native.catalog_relation_sources[0].columns[1].column_uuid;
+  native.expressions.push_back(std::move(order_note));
+
+  native.outputs = {
+      {1, 1, 1, "order_id", 1, true, 0},
+      {2, 1, 2, "order_note", 2, true, 1},
+  };
+  native.relations[0].output_expression_ids = {1, 2};
+  native.relations[0].bound_expression_ids = {1, 2};
+  native.scopes[0].visible_projection_ids = {1, 2};
+  return bound;
+}
+
 sbsql::NativeRelationalBindingContext GroupedAggregateBindingContext(
     const sbsql::NativeRelationalAstDocument& ast,
     const std::string_view semantic_variant_id) {
@@ -633,6 +712,143 @@ api::EngineRequestContext GroupingSetsEngineContext() {
   context.authorization_context.policy_epoch = 554;
   context.authorization_context.catalog_generation_id = 552;
   return context;
+}
+
+bool ValidateCatalogRelationSourceLowering() {
+  const auto cst =
+      sbsql::BuildCst("SELECT * FROM tenant.sales.orders AS o;");
+  const auto bound = BoundCatalogSource(cst, true);
+  const auto lowered = sbsql::LowerToSblr(bound, cst, SessionForTest());
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+  const auto has_operand = [&](const std::string_view type,
+                               const std::string_view name,
+                               const std::string_view value) {
+    return std::ranges::any_of(lowered.operands, [&](const auto& operand) {
+      return operand.type == type && operand.name == name &&
+             operand.value == value;
+    });
+  };
+
+  const std::string relation_uuid =
+      "019f0000-0000-7500-8000-000000000589";
+  bool passed = true;
+  passed &= Require(bound.bound && bound.native_relational.bound,
+                    "complete catalog relation fixture was not bound");
+  passed &= Require(!lowered.messages.has_errors() &&
+                        lowered.operation_id == "query.execute" &&
+                        lowered.sblr_opcode == "SBLR_QUERY_EXECUTE" &&
+                        lowered.operands.size() == 13,
+                    "complete catalog relation did not select the sole canonical query root");
+  passed &= Require(
+      lowered.resolved_object_uuids == std::vector<std::string>{relation_uuid} &&
+          has_operand("relational_descriptor_v1", "1",
+                      "019f0000-0000-7200-8000-000000000584|"
+                      "019f0000-0000-7300-8000-000000000585|1|-|-|-|18|0") &&
+          has_operand("relational_expression_v1", "1",
+                      "3|-|1|-|019f0000-0000-7600-8000-00000000058c|-|-|-") &&
+          has_operand("relational_expression_v1", "2",
+                      "3|-|2|-|019f0000-0000-7600-8000-00000000058d|-|-|-") &&
+          has_operand("relational_output_v1", "1",
+                      "1|1|1|1|0|" + EncodeHex("order_id")) &&
+          has_operand("relational_output_v1", "2",
+                      "1|2|2|1|1|" + EncodeHex("order_note")) &&
+          has_operand("relational_node_v1", "1", "1|0|-|1,2|-") &&
+          has_operand("relational_node_binding_v1", "1",
+                      EncodeHex("relation.source.v1") + "|1,2|" +
+                          relation_uuid + "|-|-"),
+      "catalog relation typed envelope lost exact UUID, descriptor, expression, output, or node lineage");
+  passed &= Require(
+      lowered.payload.find("opcode=SBLR_QUERY_EXECUTE\n") !=
+              std::string::npos &&
+          lowered.payload.find("SELECT * FROM") == std::string::npos &&
+          lowered.payload.find("catalog.relation-source.v1") ==
+              std::string::npos &&
+          verified.admitted && !verified.messages.has_errors(),
+      "catalog relation wire-v2 envelope was not canonical or verifier-admitted");
+
+  const auto refused = [&](sbsql::BoundStatement drift,
+                           const std::string_view label) {
+    const auto result = sbsql::LowerToSblr(drift, cst, SessionForTest());
+    return Require(
+        result.messages.has_errors() && result.operands.empty() &&
+            result.payload.empty() &&
+            HasParserDiagnostic(result.messages,
+                                "SBLR.PLAN_TREE.INVALID_HANDLE"),
+        label);
+  };
+
+  passed &= refused(BoundCatalogSource(cst, false),
+                    "incomplete source-only binder output did not fail closed");
+
+  auto missing_relation_uuid = BoundCatalogSource(cst, true);
+  missing_relation_uuid.native_relational.relations[0].bound_object_uuid.reset();
+  passed &= refused(std::move(missing_relation_uuid),
+                    "missing catalog relation UUID did not fail closed");
+
+  auto mismatched_source_uuid = BoundCatalogSource(cst, true);
+  mismatched_source_uuid.native_relational.catalog_relation_sources[0]
+      .object_uuid = "019f0000-0000-7500-8000-000000000590";
+  passed &= refused(std::move(mismatched_source_uuid),
+                    "mismatched catalog source UUID did not fail closed");
+
+  auto descriptor_drift = BoundCatalogSource(cst, true);
+  descriptor_drift.native_relational.catalog_relation_sources[0]
+      .columns[0]
+      .descriptor_id = 2;
+  passed &= refused(std::move(descriptor_drift),
+                    "catalog descriptor lineage drift did not fail closed");
+
+  auto expression_drift = BoundCatalogSource(cst, true);
+  expression_drift.native_relational.expressions[0].bound_name_uuid =
+      expression_drift.native_relational.catalog_relation_sources[0]
+          .columns[1]
+          .column_uuid;
+  passed &= refused(std::move(expression_drift),
+                    "catalog identifier UUID drift did not fail closed");
+
+  auto output_binding_drift = BoundCatalogSource(cst, true);
+  output_binding_drift.native_relational.outputs[0].expression_id = 2;
+  passed &= refused(std::move(output_binding_drift),
+                    "catalog output binding drift did not fail closed");
+
+  auto duplicate_output_name = BoundCatalogSource(cst, true);
+  duplicate_output_name.native_relational.outputs[1].output_name_utf8 =
+      duplicate_output_name.native_relational.outputs[0].output_name_utf8;
+  passed &= refused(std::move(duplicate_output_name),
+                    "duplicate catalog output names did not fail closed");
+
+  auto descriptor_order_drift = BoundCatalogSource(cst, true);
+  std::swap(descriptor_order_drift.native_relational.descriptors[0],
+            descriptor_order_drift.native_relational.descriptors[1]);
+  passed &= refused(std::move(descriptor_order_drift),
+                    "catalog descriptor order drift did not fail closed");
+
+  auto non_leaf = BoundCatalogSource(cst, true);
+  non_leaf.native_relational.relations[0].input_relation_ids = {2};
+  passed &= refused(std::move(non_leaf),
+                    "non-leaf catalog relation did not fail closed");
+
+  auto multiple_sources = BoundCatalogSource(cst, true);
+  auto second_relation = multiple_sources.native_relational.relations[0];
+  second_relation.relation_id = 2;
+  multiple_sources.native_relational.relations.push_back(
+      std::move(second_relation));
+  passed &= refused(std::move(multiple_sources),
+                    "multiple catalog relations did not fail closed");
+
+  auto unresolved_source = BoundCatalogSource(cst, true);
+  unresolved_source.native_relational.catalog_relation_sources[0]
+      .resolution_state =
+      sbsql::NativeCatalogRelationResolutionState::kUnresolved;
+  passed &= refused(std::move(unresolved_source),
+                    "unresolved catalog source did not fail closed");
+
+  auto projection_scope_drift = BoundCatalogSource(cst, true);
+  projection_scope_drift.native_relational.scopes[0]
+      .visible_projection_ids = {2, 1};
+  passed &= refused(std::move(projection_scope_drift),
+                    "catalog projection scope order drift did not fail closed");
+  return passed;
 }
 
 bool ValidateCanonicalLoweringAndDispatch() {
@@ -51686,6 +51902,7 @@ bool ValidateFailClosedLowering() {
 // QOW-TEST-QRY-005-V1
 int main() {
   bool passed = true;
+  passed &= ValidateCatalogRelationSourceLowering();
   passed &= ValidateCanonicalLoweringAndDispatch();
   passed &= ValidateSimpleGroupByParserBindingLoweringAndDispatch();
   passed &= ValidateHavingParserBindingLoweringAndDispatch();

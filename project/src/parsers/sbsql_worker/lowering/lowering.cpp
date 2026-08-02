@@ -32727,6 +32727,22 @@ std::string JoinCanonicalHandleList(
   return out.str();
 }
 
+bool IsCanonicalBoundSourceUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-' ||
+      value == "00000000-0000-0000-0000-000000000000") {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const char ch = value[index];
+    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::string EncodeCanonicalHex(std::string_view value) {
   static constexpr char kHex[] = "0123456789abcdef";
   std::string encoded;
@@ -32906,10 +32922,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         "canonical relational lowering requires parser identity and exact engine epochs");
     return envelope;
   }
+  const bool catalog_source_candidate =
+      native.relations.size() == 1 &&
+      native.relations.front().relation_kind ==
+          NativeRelationAstKind::kCatalogSource;
   if (native.root_relation_id == 0 || native.relations.empty() ||
       native.relations.size() > 3 ||
       native.descriptors.empty() || native.expressions.empty() ||
-      native.outputs.empty() || native.values_rows.empty() ||
+      native.outputs.empty() ||
+      (!catalog_source_candidate && native.values_rows.empty()) ||
       native.bound_ast_uuid.empty() || native.security_context_uuid.empty() ||
       native.scopes.size() != 1 ||
       native.scopes.front().scope_id != native.root_scope_id ||
@@ -32925,9 +32946,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* values_relation = nullptr;
   const BoundRelationAstRecord* aggregate_relation = nullptr;
   const BoundRelationAstRecord* filter_relation = nullptr;
+  const BoundRelationAstRecord* catalog_relation = nullptr;
   for (const auto& relation : native.relations) {
     if (relation.relation_id == 0 || relation.lateral ||
-        relation.bound_object_uuid.has_value() ||
+        (relation.relation_kind == NativeRelationAstKind::kCatalogSource) !=
+            relation.bound_object_uuid.has_value() ||
         relation.semantic_variant_id.empty() ||
         !relations_by_id.emplace(relation.relation_id, &relation).second) {
       AddNativeRelationalLoweringError(
@@ -33046,37 +33069,63 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       filter_relation = &relation;
+    } else if (relation.relation_kind ==
+               NativeRelationAstKind::kCatalogSource) {
+      if (catalog_relation != nullptr || !relation.input_relation_ids.empty() ||
+          !relation.values_row_ids.empty() ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
+          relation.output_expression_ids.empty() ||
+          relation.bound_expression_ids != relation.output_expression_ids ||
+          relation.semantic_variant_id != "catalog.relation-source.v1") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed catalog relation fields do not form the accepted canonical leaf");
+        return envelope;
+      }
+      catalog_relation = &relation;
     }
   }
-  if (values_relation == nullptr ||
-      (aggregate_relation == nullptr &&
-       (native.relations.size() != 1 ||
-        values_relation->relation_id != native.root_relation_id ||
-        !native.grouping_sets.empty())) ||
-      (aggregate_relation != nullptr &&
-       ((filter_relation == nullptr &&
-         (native.relations.size() != 2 ||
-          aggregate_relation->relation_id != native.root_relation_id)) ||
-        (filter_relation != nullptr &&
-         (native.relations.size() != 3 ||
-          filter_relation->relation_id != native.root_relation_id ||
-          filter_relation->input_relation_ids.front() !=
-              aggregate_relation->relation_id)) ||
-        aggregate_relation->input_relation_ids.front() !=
-            values_relation->relation_id ||
-        (aggregate_relation->aggregate_grouping_form ==
-             NativeAggregateGroupingForm::kGroupingSets &&
-         native.grouping_sets.empty()) ||
+  const bool catalog_graph_is_exact =
+      catalog_relation != nullptr && values_relation == nullptr &&
+      aggregate_relation == nullptr && filter_relation == nullptr &&
+      native.relations.size() == 1 &&
+      catalog_relation->relation_id == native.root_relation_id &&
+      native.values_rows.empty() && native.grouping_sets.empty();
+  const bool values_graph_is_exact =
+      catalog_relation == nullptr && values_relation != nullptr &&
+      ((aggregate_relation == nullptr &&
+        native.relations.size() == 1 &&
+        values_relation->relation_id == native.root_relation_id &&
+        native.grouping_sets.empty()) ||
+       (aggregate_relation != nullptr &&
+        ((filter_relation == nullptr && native.relations.size() == 2 &&
+          aggregate_relation->relation_id == native.root_relation_id) ||
+         (filter_relation != nullptr && native.relations.size() == 3 &&
+          filter_relation->relation_id == native.root_relation_id &&
+          filter_relation->input_relation_ids.front() ==
+              aggregate_relation->relation_id)) &&
+        aggregate_relation->input_relation_ids.front() ==
+            values_relation->relation_id &&
         ((aggregate_relation->aggregate_grouping_form ==
-              NativeAggregateGroupingForm::kSimple ||
-          aggregate_relation->aggregate_grouping_form ==
-              NativeAggregateGroupingForm::kRollup ||
-          aggregate_relation->aggregate_grouping_form ==
-              NativeAggregateGroupingForm::kCube) &&
-         !native.grouping_sets.empty())))) {
+              NativeAggregateGroupingForm::kGroupingSets &&
+          !native.grouping_sets.empty()) ||
+         ((aggregate_relation->aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kSimple ||
+           aggregate_relation->aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kRollup ||
+           aggregate_relation->aggregate_grouping_form ==
+               NativeAggregateGroupingForm::kCube) &&
+          native.grouping_sets.empty()))));
+  if (!catalog_graph_is_exact && !values_graph_is_exact) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-        "typed native relation graph is not the accepted VALUES or aggregate shape");
+        "typed native relation graph is not an accepted catalog, VALUES, or aggregate shape");
     return envelope;
   }
 
@@ -33136,39 +33185,41 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
 
-  std::unordered_map<std::uint32_t, const BoundValuesRowAstRecord*>
-      rows_by_id;
-  for (const auto& row : native.values_rows) {
-    if (row.row_id == 0 || row.expression_ids.empty() ||
-        !rows_by_id.emplace(row.row_id, &row).second) {
-      AddNativeRelationalLoweringError(
-          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed VALUES row handles must be complete and unique");
-      return envelope;
-    }
-    for (const auto expression_id : row.expression_ids) {
-      if (!expressions_by_id.contains(expression_id)) {
+  if (values_relation != nullptr) {
+    std::unordered_map<std::uint32_t, const BoundValuesRowAstRecord*>
+        rows_by_id;
+    for (const auto& row : native.values_rows) {
+      if (row.row_id == 0 || row.expression_ids.empty() ||
+          !rows_by_id.emplace(row.row_id, &row).second) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed VALUES row contains a dangling expression handle");
+            "typed VALUES row handles must be complete and unique");
         return envelope;
       }
+      for (const auto expression_id : row.expression_ids) {
+        if (!expressions_by_id.contains(expression_id)) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed VALUES row contains a dangling expression handle");
+          return envelope;
+        }
+      }
     }
-  }
-  if (values_relation->values_row_ids.size() != native.values_rows.size()) {
-    AddNativeRelationalLoweringError(
-        &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-        "typed VALUES relation does not declare every row handle");
-    return envelope;
-  }
-  for (std::size_t index = 0;
-       index < values_relation->values_row_ids.size(); ++index) {
-    if (values_relation->values_row_ids[index] !=
-        native.values_rows[index].row_id) {
+    if (values_relation->values_row_ids.size() != native.values_rows.size()) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed VALUES relation row order is not canonical");
+          "typed VALUES relation does not declare every row handle");
       return envelope;
+    }
+    for (std::size_t index = 0;
+         index < values_relation->values_row_ids.size(); ++index) {
+      if (values_relation->values_row_ids[index] !=
+          native.values_rows[index].row_id) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed VALUES relation row order is not canonical");
+        return envelope;
+      }
     }
   }
 
@@ -33209,45 +33260,176 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return envelope;
     }
   }
-  const auto& values_outputs = outputs_by_relation.at(values_relation->relation_id);
-  for (const auto& row : native.values_rows) {
-    if (row.expression_ids.size() != values_outputs.size()) {
-      AddNativeRelationalLoweringError(
-          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed VALUES row arity differs from the output descriptor arity");
-      return envelope;
-    }
-    for (std::size_t ordinal = 0; ordinal < row.expression_ids.size(); ++ordinal) {
-      if (expressions_by_id.at(row.expression_ids[ordinal])
-              ->result_descriptor_id != values_outputs[ordinal]->descriptor_id) {
+  if (values_relation != nullptr) {
+    const auto& values_outputs =
+        outputs_by_relation.at(values_relation->relation_id);
+    for (const auto& row : native.values_rows) {
+      if (row.expression_ids.size() != values_outputs.size()) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed VALUES expression descriptor differs from its output column");
+            "typed VALUES row arity differs from the output descriptor arity");
+        return envelope;
+      }
+      for (std::size_t ordinal = 0; ordinal < row.expression_ids.size();
+           ++ordinal) {
+        if (expressions_by_id.at(row.expression_ids[ordinal])
+                ->result_descriptor_id !=
+            values_outputs[ordinal]->descriptor_id) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed VALUES expression descriptor differs from its output column");
+          return envelope;
+        }
+      }
+    }
+    for (std::size_t ordinal = 0; ordinal < values_outputs.size(); ++ordinal) {
+      if (values_outputs[ordinal]->expression_id !=
+          native.values_rows.front().expression_ids[ordinal]) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed output expression does not identify the first VALUES row");
         return envelope;
       }
     }
-  }
-  for (std::size_t ordinal = 0; ordinal < values_outputs.size(); ++ordinal) {
-    if (values_outputs[ordinal]->expression_id !=
-        native.values_rows.front().expression_ids[ordinal]) {
+    std::vector<std::uint32_t> expected_values_bound_expression_ids;
+    for (const auto& row : native.values_rows) {
+      expected_values_bound_expression_ids.insert(
+          expected_values_bound_expression_ids.end(),
+          row.expression_ids.begin(), row.expression_ids.end());
+    }
+    if (values_relation->bound_expression_ids !=
+        expected_values_bound_expression_ids) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-          "typed output expression does not identify the first VALUES row");
+          "typed VALUES binding does not contain exactly its row expressions");
       return envelope;
     }
   }
-  std::vector<std::uint32_t> expected_values_bound_expression_ids;
-  for (const auto& row : native.values_rows) {
-    expected_values_bound_expression_ids.insert(
-        expected_values_bound_expression_ids.end(), row.expression_ids.begin(),
-        row.expression_ids.end());
-  }
-  if (values_relation->bound_expression_ids !=
-      expected_values_bound_expression_ids) {
-    AddNativeRelationalLoweringError(
-        &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-        "typed VALUES binding does not contain exactly its row expressions");
-    return envelope;
+
+  if (catalog_relation != nullptr) {
+    if (native.catalog_relation_sources.size() != 1 ||
+        bound.resolved_object_uuids.size() != 1 ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{catalog_relation->relation_id} ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(
+            native.scopes.front().catalog_epoch_uuid)) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed catalog relation scope and source cardinality are incomplete");
+      return envelope;
+    }
+
+    const auto& source = native.catalog_relation_sources.front();
+    const auto& relation_uuid = *catalog_relation->bound_object_uuid;
+    const bool accepted_object_type =
+        source.resolved_object_type == "relation" ||
+        source.resolved_object_type == "table" ||
+        source.resolved_object_type == "view" ||
+        source.resolved_object_type == "materialized_view" ||
+        source.resolved_object_type == "external_table" ||
+        source.resolved_object_type == "foreign_table";
+    if (source.source_id == 0 ||
+        source.source_kind != NativeRelationSourceAstKind::kCatalogRelation ||
+        source.resolution_state !=
+            NativeCatalogRelationResolutionState::kBound ||
+        source.qualified_name.empty() ||
+        std::ranges::any_of(source.qualified_name, [](const auto& component) {
+          return component.spelling.empty();
+        }) ||
+        (source.alias.has_value() && source.alias->spelling.empty()) ||
+        (!source.alias.has_value() && source.alias_is_explicit) ||
+        !IsCanonicalBoundSourceUuid(relation_uuid) ||
+        source.object_uuid != relation_uuid ||
+        bound.resolved_object_uuids.front() != relation_uuid ||
+        !accepted_object_type ||
+        !IsCanonicalBoundSourceUuid(source.resolved_schema_uuid) ||
+        (source.parent_object_uuid.has_value() &&
+         !IsCanonicalBoundSourceUuid(*source.parent_object_uuid)) ||
+        source.catalog_generation_id == 0 || source.security_epoch == 0 ||
+        source.resource_epoch == 0 || source.columns.empty()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed catalog relation identity and epoch evidence are incomplete");
+      return envelope;
+    }
+
+    const std::size_t width = source.columns.size();
+    if (native.descriptors.size() != width ||
+        native.expressions.size() != width || native.outputs.size() != width ||
+        catalog_relation->output_expression_ids.size() != width ||
+        catalog_relation->bound_expression_ids.size() != width ||
+        native.scopes.front().visible_projection_ids.size() != width ||
+        bound.descriptor_refs.size() != width) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed catalog relation does not cover its complete bound width");
+      return envelope;
+    }
+
+    std::unordered_set<std::string> column_uuids;
+    std::unordered_set<std::string> output_names;
+    std::uint32_t previous_descriptor_id = 0;
+    std::uint32_t previous_expression_id = 0;
+    std::uint32_t previous_output_id = 0;
+    for (std::size_t ordinal = 0; ordinal < width; ++ordinal) {
+      const auto& column = source.columns[ordinal];
+      const auto& descriptor = native.descriptors[ordinal];
+      const auto& expression = native.expressions[ordinal];
+      const auto& output = native.outputs[ordinal];
+      const bool ordered_handles =
+          (ordinal == 0 ||
+           (descriptor.descriptor_id > previous_descriptor_id &&
+            expression.expression_id > previous_expression_id &&
+            output.output_id > previous_output_id));
+      if (column.ordinal != ordinal ||
+          !IsCanonicalBoundSourceUuid(column.column_uuid) ||
+          !column_uuids.insert(column.column_uuid).second ||
+          descriptor.descriptor_id != column.descriptor_id ||
+          !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+          descriptor.nullability == BoundNullability::kUnknown ||
+          (descriptor.collation_uuid.has_value() &&
+           !IsCanonicalBoundSourceUuid(*descriptor.collation_uuid)) ||
+          (descriptor.timezone_profile_id.has_value() &&
+           descriptor.timezone_profile_id->empty()) ||
+          (descriptor.width_precision_scale.scale.has_value() &&
+           (!descriptor.width_precision_scale.precision.has_value() ||
+            *descriptor.width_precision_scale.scale >
+                *descriptor.width_precision_scale.precision)) ||
+          expression.expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          !expression.child_expression_ids.empty() ||
+          expression.result_descriptor_id != descriptor.descriptor_id ||
+          expression.bound_name_uuid != column.column_uuid ||
+          expression.literal_kind.has_value() ||
+          expression.bound_function_uuid.has_value() ||
+          expression.canonical_operator_name.has_value() ||
+          expression.literal_or_parameter_ref.has_value() ||
+          catalog_relation->output_expression_ids[ordinal] !=
+              expression.expression_id ||
+          catalog_relation->bound_expression_ids[ordinal] !=
+              expression.expression_id ||
+          output.relation_id != catalog_relation->relation_id ||
+          output.expression_id != expression.expression_id ||
+          output.descriptor_id != descriptor.descriptor_id || !output.visible ||
+          output.ordinal != ordinal || output.output_name_utf8.empty() ||
+          !output_names.insert(output.output_name_utf8).second ||
+          native.scopes.front().visible_projection_ids[ordinal] !=
+              output.output_id ||
+          bound.descriptor_refs[ordinal] != descriptor.descriptor_uuid ||
+          !ordered_handles) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed catalog column lineage is incomplete, mismatched, or noncanonical");
+        return envelope;
+      }
+      previous_descriptor_id = descriptor.descriptor_id;
+      previous_expression_id = expression.expression_id;
+      previous_output_id = output.output_id;
+    }
   }
 
   if (aggregate_relation != nullptr) {
@@ -34492,7 +34674,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             ? 13
             : (relation.relation_kind == NativeRelationAstKind::kAggregate
                    ? 5
-                   : 2);
+                   : (relation.relation_kind ==
+                              NativeRelationAstKind::kCatalogSource
+                          ? 1
+                          : 2));
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +
@@ -34501,9 +34686,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              JoinCanonicalHandleList(relation.values_row_ids)});
     envelope.operands.push_back(
         {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex(relation.semantic_variant_id) + "|" +
+         EncodeCanonicalHex(
+             relation.relation_kind == NativeRelationAstKind::kCatalogSource
+                 ? "relation.source.v1"
+                 : relation.semantic_variant_id) +
+             "|" +
              JoinCanonicalHandleList(relation.bound_expression_ids) +
-             "|-|-|-"});
+             "|" +
+             (relation.bound_object_uuid.has_value()
+                  ? *relation.bound_object_uuid
+                  : "-") +
+             "|-|-"});
   }
   envelope.payload = EncodeCanonicalNativeRelationalEnvelope(envelope, bound);
   return envelope;
