@@ -211,6 +211,9 @@ struct CanonicalOptimizerSearchResult {
   std::uint64_t pruned_plan_count{0};
   std::uint64_t selected_scalar_score{0};
   std::string bound_sblr_tree_uuid;
+  std::string catalog_epoch_uuid;
+  scratchbird::engine::planner::CanonicalMgaStatementContext
+      mga_statement_context;
   std::string statistics_snapshot_uuid;
   std::uint64_t statistics_generation{0};
   std::string model_family_id;

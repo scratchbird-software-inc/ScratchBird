@@ -74,6 +74,12 @@ using scratchbird::transaction::mga::TransactionInventoryEntry;
 using scratchbird::transaction::mga::TransactionRuntimePolicy;
 using scratchbird::transaction::mga::TransactionState;
 using scratchbird::transaction::mga::LocalTransactionLockTable;
+using scratchbird::transaction::mga::PublishStatementStableSnapshotVector;
+using scratchbird::transaction::mga::ResolveCurrentStatementStableSnapshotVector;
+using scratchbird::transaction::mga::RevokePublishedSnapshotVector;
+using scratchbird::transaction::mga::RevokePublishedSnapshotVectorsForTransaction;
+using scratchbird::transaction::mga::SnapshotVectorDescriptor;
+using scratchbird::transaction::mga::SnapshotVectorKindName;
 using scratchbird::transaction::mga::TransactionLockDecisionName;
 using scratchbird::transaction::mga::TransactionLockMode;
 using scratchbird::transaction::mga::TransactionLockRequest;
@@ -122,6 +128,60 @@ std::map<std::string, std::shared_ptr<std::recursive_mutex>>&
 TransactionInventoryGuardRegistry() {
   static std::map<std::string, std::shared_ptr<std::recursive_mutex>> registry;
   return registry;
+}
+
+struct StatementSnapshotBinding {
+  std::string database_path;
+  std::string statement_uuid;
+  std::string snapshot_uuid;
+  TypedUuid owning_transaction_uuid;
+  LocalTransactionId owning_transaction;
+};
+
+std::mutex& StatementSnapshotBindingRegistryMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::map<std::string, StatementSnapshotBinding>&
+StatementSnapshotBindingRegistry() {
+  static std::map<std::string, StatementSnapshotBinding> registry;
+  return registry;
+}
+
+std::string StatementSnapshotBindingKey(const std::string& database_path,
+                                        const std::string& snapshot_uuid) {
+  return database_path + '\x1f' + snapshot_uuid;
+}
+
+bool RegisterStatementSnapshotBinding(StatementSnapshotBinding binding) {
+  std::lock_guard<std::mutex> guard(StatementSnapshotBindingRegistryMutex());
+  auto& registry = StatementSnapshotBindingRegistry();
+  const std::string key = StatementSnapshotBindingKey(binding.database_path,
+                                                      binding.snapshot_uuid);
+  if (registry.find(key) != registry.end()) {
+    return false;
+  }
+  for (const auto& [candidate_key, candidate] : registry) {
+    (void)candidate_key;
+    if (candidate.database_path == binding.database_path &&
+        candidate.statement_uuid == binding.statement_uuid) {
+      return false;
+    }
+  }
+  return registry.emplace(key, std::move(binding)).second;
+}
+
+std::optional<StatementSnapshotBinding> FindStatementSnapshotBinding(
+    const std::string& database_path,
+    const std::string& snapshot_uuid) {
+  std::lock_guard<std::mutex> guard(StatementSnapshotBindingRegistryMutex());
+  const auto found = StatementSnapshotBindingRegistry().find(
+      StatementSnapshotBindingKey(database_path, snapshot_uuid));
+  if (found == StatementSnapshotBindingRegistry().end()) {
+    return std::nullopt;
+  }
+  return found->second;
 }
 
 std::unique_lock<std::recursive_mutex> AcquireTransactionInventoryGuardImpl(
@@ -1440,6 +1500,213 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   return result;
 }
 
+EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
+    const EnginePublishStatementSnapshotRequest& request) {
+  const std::string operation_id = "transaction.snapshot.publish";
+  if (const auto path_status = ValidateDatabasePath(request.context, operation_id);
+      path_status.error) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context, operation_id, path_status);
+  }
+  if (request.context.local_transaction_id == 0 ||
+      request.context.transaction_uuid.canonical.empty() ||
+      request.context.statement_uuid.canonical.empty() ||
+      !request.context.statement_snapshot_uuid.canonical.empty()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(
+            operation_id,
+            "active_transaction_and_unbound_statement_snapshot_required"));
+  }
+  const auto statement_uuid = ParseTypedUuid(
+      UuidKind::object, request.context.statement_uuid.canonical);
+  if (!statement_uuid.ok()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_uuid_malformed"));
+  }
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(
+      request.context.database_path);
+  if (!loaded.ok()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed"));
+  }
+  const auto exact_identity =
+      FindExactTransactionIdentity(loaded.inventory, request.context);
+  if (!exact_identity.entry.has_value()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     exact_identity.refusal_reason));
+  }
+  const std::string canonical_statement_uuid =
+      UuidToString(statement_uuid.value.value);
+  auto published = PublishStatementStableSnapshotVector(
+      loaded.inventory,
+      MakeLocalTransactionId(request.context.local_transaction_id),
+      CurrentUnixMillis());
+  if (!published.ok()) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(published.diagnostic,
+                          "SB-MGA-SNAPSHOT-VECTOR-PUBLISH-FAILED",
+                          "mga.snapshot_vector.publish_failed"));
+  }
+  const std::string snapshot_uuid =
+      UuidToString(published.descriptor.snapshot_uuid.value);
+  if (!RegisterStatementSnapshotBinding(
+          {request.context.database_path,
+           canonical_statement_uuid,
+           snapshot_uuid,
+           published.descriptor.owning_transaction_uuid,
+           published.descriptor.owning_transaction})) {
+    RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_snapshot_binding_collision"));
+  }
+
+  auto result = MakeTxnOk<EnginePublishStatementSnapshotResult>(
+      request.context, operation_id);
+  result.statement_uuid.canonical = canonical_statement_uuid;
+  result.statement_snapshot_uuid.canonical = snapshot_uuid;
+  result.snapshot_vector = std::move(published.descriptor);
+  result.transaction_uuid = request.context.transaction_uuid;
+  result.local_transaction_id = request.context.local_transaction_id;
+  result.evidence.push_back(
+      {"statement_snapshot_kind",
+       SnapshotVectorKindName(result.snapshot_vector.snapshot_kind)});
+  result.evidence.push_back(
+      {"statement_snapshot_inventory_authoritative", "true"});
+  result.evidence.push_back({"statement_snapshot_current", "true"});
+  result.evidence.push_back(
+      {"statement_snapshot_visible_committed_high_watermark",
+       std::to_string(
+           result.snapshot_vector.visible_committed_high_watermark)});
+  result.evidence.push_back(
+      {"statement_snapshot_visibility_boundary_source",
+       "established_local_snapshot_max_committed_or_archived"});
+  result.evidence.push_back(
+      {"statement_snapshot_publication_inventory_next",
+       std::to_string(result.snapshot_vector
+                          .publication_inventory_next_local_transaction_id)});
+  return result;
+}
+
+EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
+    const EngineResolveStatementSnapshotRequest& request) {
+  const std::string operation_id = "transaction.snapshot.resolve";
+  if (const auto path_status = ValidateDatabasePath(request.context, operation_id);
+      path_status.error) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context, operation_id, path_status);
+  }
+  if (request.context.local_transaction_id == 0 ||
+      request.context.transaction_uuid.canonical.empty() ||
+      request.context.statement_uuid.canonical.empty() ||
+      request.context.statement_snapshot_uuid.canonical.empty()) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(
+            operation_id,
+            "complete_statement_snapshot_binding_required"));
+  }
+  const auto statement_uuid = ParseTypedUuid(
+      UuidKind::object, request.context.statement_uuid.canonical);
+  const auto snapshot_uuid = ParseTypedUuid(
+      UuidKind::object, request.context.statement_snapshot_uuid.canonical);
+  const auto transaction_uuid = ParseTypedUuid(
+      UuidKind::transaction, request.context.transaction_uuid.canonical);
+  if (!statement_uuid.ok() || !snapshot_uuid.ok() ||
+      !transaction_uuid.ok()) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_snapshot_binding_malformed"));
+  }
+  const std::string canonical_statement_uuid =
+      UuidToString(statement_uuid.value.value);
+  const std::string canonical_snapshot_uuid =
+      UuidToString(snapshot_uuid.value.value);
+  const auto binding = FindStatementSnapshotBinding(
+      request.context.database_path, canonical_snapshot_uuid);
+  if (!binding.has_value() ||
+      binding->statement_uuid != canonical_statement_uuid ||
+      binding->owning_transaction.value !=
+          request.context.local_transaction_id ||
+      binding->owning_transaction_uuid.value != transaction_uuid.value.value) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_snapshot_binding_mismatch"));
+  }
+
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(
+      request.context.database_path);
+  if (!loaded.ok()) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(loaded.diagnostic,
+                          "SB-MGA-TXN-INV-LOAD-FAILED",
+                          "mga.transaction_inventory.load_failed"));
+  }
+  auto resolved = ResolveCurrentStatementStableSnapshotVector(
+      loaded.inventory,
+      snapshot_uuid.value,
+      transaction_uuid.value,
+      MakeLocalTransactionId(request.context.local_transaction_id));
+  if (!resolved.ok()) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(resolved.diagnostic,
+                          "SB-MGA-SNAPSHOT-VECTOR-RESOLVE-FAILED",
+                          "mga.snapshot_vector.resolve_failed"));
+  }
+  if (request.context.snapshot_visible_through_local_transaction_id !=
+      resolved.descriptor.visible_committed_high_watermark) {
+    return MakeTxnError<EngineResolveStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_snapshot_high_watermark_mismatch"));
+  }
+
+  auto result = MakeTxnOk<EngineResolveStatementSnapshotResult>(
+      request.context, operation_id);
+  result.statement_uuid.canonical = canonical_statement_uuid;
+  result.statement_snapshot_uuid.canonical = canonical_snapshot_uuid;
+  result.snapshot_vector = std::move(resolved.descriptor);
+  result.transaction_uuid = request.context.transaction_uuid;
+  result.local_transaction_id = request.context.local_transaction_id;
+  result.evidence.push_back(
+      {"statement_snapshot_kind",
+       SnapshotVectorKindName(result.snapshot_vector.snapshot_kind)});
+  result.evidence.push_back(
+      {"statement_snapshot_inventory_authoritative", "true"});
+  result.evidence.push_back({"statement_snapshot_current", "true"});
+  return result;
+}
+
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request) {
   const std::string operation_id = "transaction.commit";
   const auto trace_start = TransactionApiSteadyClock::now();
@@ -1608,6 +1875,9 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
         &result, committed.entry);
     return trace_and_return(std::move(result));
   }
+  RevokePublishedSnapshotVectorsForTransaction(
+      committed.entry.identity.transaction_uuid,
+      committed.entry.identity.local_id);
   // DPC_DEFERRED_INDEX_WRITE_PATH
   const auto committed_deltas = CommitMgaSecondaryIndexDeltaLedgerTransaction(
       request.context,
@@ -1977,6 +2247,9 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                           "SB-MGA-TXN-INV-PERSIST-FAILED",
                           "mga.transaction_inventory.persist_failed"));
   }
+  RevokePublishedSnapshotVectorsForTransaction(
+      finalized_entry.identity.transaction_uuid,
+      finalized_entry.identity.local_id);
 
   auto result = MakeTxnOk<EngineAutocommitBoundaryResult>(request.context, operation_id);
   result.local_transaction_id = finalized_entry.identity.local_id.value;
@@ -2196,6 +2469,9 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
         &result, rolled_back.entry);
     return result;
   }
+  RevokePublishedSnapshotVectorsForTransaction(
+      rolled_back.entry.identity.transaction_uuid,
+      rolled_back.entry.identity.local_id);
   // DPC_DEFERRED_INDEX_WRITE_PATH
   if (!read_only_rollback) {
     if (IparFaultPointRequested(request.option_envelopes,

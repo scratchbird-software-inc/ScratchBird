@@ -134,6 +134,7 @@
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
 namespace opt = scratchbird::engine::optimizer;
+namespace planner = scratchbird::engine::planner;
 
 namespace {
 
@@ -1096,6 +1097,24 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   }
 
   routed.graph_validated = true;
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+  const auto inventory_guard = api::AcquireTransactionInventoryGuard(
+      request.context.database_path);
+  api::EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = request.context;
+  const auto snapshot = api::EngineResolveStatementSnapshot(snapshot_request);
+  if (!snapshot.ok) {
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        snapshot.diagnostics.empty()
+            ? "QOW-DIAG-SBLR-QUERY-MGA-SNAPSHOT-V1"
+            : snapshot.diagnostics.front().code,
+        snapshot.diagnostics.empty()
+            ? "current statement snapshot resolution failed"
+            : snapshot.diagnostics.front().detail);
+    return routed;
+  }
+#endif
   api::CanonicalRelationalPlanningScope planning_scope;
   planning_scope.catalog_epoch_uuid =
       request.context.catalog_epoch_uuid.canonical;
@@ -1116,7 +1135,7 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
       request.context.statement_metadata_snapshot_engine_owned;
   planning_scope.authorization_context_engine_owned =
       request.context.authorization_context.present;
-  const auto logical =
+  auto logical =
       api::PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
           decoded.request.relational_dag, planning_scope);
   if (!logical.accepted) {
@@ -1127,6 +1146,56 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
             std::to_string(issue.logical_node_id));
     return routed;
   }
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+  planner::CanonicalMgaStatementContext canonical_mga;
+  canonical_mga.statement_uuid = request.context.statement_uuid.canonical;
+  canonical_mga.owning_transaction_uuid =
+      request.context.transaction_uuid.canonical;
+  canonical_mga.statement_snapshot_uuid =
+      request.context.statement_snapshot_uuid.canonical;
+  canonical_mga.statement_metadata_snapshot_uuid =
+      request.context.statement_metadata_snapshot_uuid.canonical;
+  canonical_mga.owning_local_transaction_id =
+      snapshot.snapshot_vector.owning_transaction.value;
+  canonical_mga.visible_committed_high_watermark =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  canonical_mga.oldest_active_transaction_id =
+      snapshot.snapshot_vector.oldest_active_transaction.value;
+  canonical_mga.oldest_interesting_transaction_id =
+      snapshot.snapshot_vector.oldest_interesting_transaction.value;
+  canonical_mga.oldest_snapshot_transaction_id =
+      snapshot.snapshot_vector.oldest_snapshot_transaction.value;
+  canonical_mga.retention_horizon_transaction_id =
+      snapshot.snapshot_vector.retention_horizon_transaction.value;
+  canonical_mga.active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  canonical_mga.in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  canonical_mga.snapshot_kind =
+      scratchbird::transaction::mga::SnapshotVectorKindName(
+          snapshot.snapshot_vector.snapshot_kind);
+  canonical_mga.publication_inventory_next_local_transaction_id =
+      snapshot.snapshot_vector
+          .publication_inventory_next_local_transaction_id;
+  canonical_mga.inventory_authoritative =
+      snapshot.snapshot_vector.inventory_authoritative;
+  canonical_mga.complete = snapshot.snapshot_vector.complete;
+  canonical_mga.current = true;
+  auto registered_mga = canonical_mga;
+  registered_mga.current = false;
+  if (!planner::CanonicalMgaStatementContextEqual(
+          logical.logical_graph.mga_statement_context, registered_mga) ||
+      !planner::CanonicalMgaStatementContextEqual(
+          logical.property_catalog.mga_statement_context, registered_mga)) {
+    routed.api_result = QueryRouteFailure(
+        request.context, request.envelope.operation_id,
+        "QOW-DIAG-SBLR-QUERY-MGA-SNAPSHOT-V1",
+        "plan bridge changed the registered statement snapshot carrier");
+    return routed;
+  }
+  logical.logical_graph.mga_statement_context = canonical_mga;
+  logical.property_catalog.mga_statement_context = canonical_mga;
+#endif
   routed.logical_graph_populated = true;
   routed.logical_properties_populated = true;
   routed.logical_node_count = logical.logical_graph.nodes.size();
@@ -1180,6 +1249,8 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
       request.context.local_transaction_id;
   admission_context.statement_snapshot_id =
       request.context.snapshot_visible_through_local_transaction_id;
+  admission_context.mga_statement_context =
+      logical.logical_graph.mga_statement_context;
   admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
   admission_context.metadata_snapshot_engine_owned =
       request.context.statement_metadata_snapshot_engine_owned;

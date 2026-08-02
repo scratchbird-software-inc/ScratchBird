@@ -31,7 +31,7 @@ bool IsCanonicalUuid(const std::string_view value) {
     const auto ch = static_cast<unsigned char>(value[index]);
     if (!std::isxdigit(ch) || std::isupper(ch)) return false;
   }
-  return true;
+  return value != "00000000-0000-0000-0000-000000000000";
 }
 
 template <typename T>
@@ -134,9 +134,14 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
   const auto required_objects = RequiredObjects(request.logical_graph);
   if (!request.catalog.engine_owned ||
       !IsCanonicalUuid(request.catalog.snapshot_uuid) ||
+      !IsCanonicalUuid(request.catalog.catalog_epoch_uuid) ||
       request.catalog.catalog_epoch_uuid !=
           request.logical_graph.catalog_epoch_uuid ||
-      request.catalog.snapshot_uuid != request.catalog.catalog_epoch_uuid ||
+      request.catalog.snapshot_uuid ==
+          request.catalog.catalog_epoch_uuid ||
+      request.catalog.snapshot_uuid !=
+          request.logical_graph.mga_statement_context
+              .statement_metadata_snapshot_uuid ||
       request.catalog.catalog_generation == 0 ||
       !IsUnique(request.catalog.object_uuids) ||
       !IsUnique(request.catalog.descriptor_ids)) {
@@ -188,9 +193,28 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
   record(CanonicalOptimizerAdmissionStage::kSecurity,
          "security_snapshot=validated");
 
-  if (!request.mga.engine_owned || !request.mga.transaction_active ||
-      !request.mga.statement_snapshot_fixed ||
+  const bool strict_mga_authority =
+      request.mga.engine_owned && request.mga.transaction_active &&
+      request.mga.statement_snapshot_fixed &&
+      planner::CanonicalMgaStatementContextStructurallyValid(
+          request.mga.statement_context, true);
+#ifdef SCRATCHBIRD_QOW_CANONICAL_CANDIDATE_LEGALITY_ONLY
+  const bool unresolved_contract_mga =
+      !request.mga.engine_owned && !request.mga.transaction_active &&
+      !request.mga.statement_snapshot_fixed &&
+      !request.mga.statement_context.inventory_authoritative &&
+      !request.mga.statement_context.complete &&
+      !request.mga.statement_context.current &&
+      planner::CanonicalMgaStatementContextStructurallyValid(
+          request.mga.statement_context, false);
+#else
+  const bool unresolved_contract_mga = false;
+#endif
+  if ((!strict_mga_authority && !unresolved_contract_mga) ||
       request.mga.finality_authority_claimed ||
+      !planner::CanonicalMgaStatementContextEqual(
+          request.mga.statement_context,
+          request.logical_graph.mga_statement_context) ||
       request.mga.local_transaction_id !=
           request.logical_graph.local_transaction_id ||
       request.mga.statement_snapshot_id !=
@@ -201,7 +225,9 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
                   "mga_statement_boundary");
   }
   record(CanonicalOptimizerAdmissionStage::kMgaStatementBoundary,
-         "mga_statement_boundary=engine_owned");
+         strict_mga_authority
+             ? "mga_statement_boundary=engine_owned_current"
+             : "mga_statement_boundary=unresolved_contract_carriage");
 
   if (!request.policy_capability.engine_owned ||
       !IsCanonicalUuid(request.policy_capability.policy_snapshot_uuid) ||
@@ -290,6 +316,8 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
   result.route_snapshot_uuid = request.route.route_snapshot_uuid;
   result.local_transaction_id = request.logical_graph.local_transaction_id;
   result.statement_snapshot_id = request.logical_graph.statement_snapshot_id;
+  result.mga_statement_context =
+      request.logical_graph.mga_statement_context;
   result.catalog_generation = request.catalog.catalog_generation;
   result.security_epoch = request.security.security_epoch;
   result.policy_epoch = request.security.policy_epoch;
@@ -355,10 +383,13 @@ BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
 
   request.mga.local_transaction_id = context.local_transaction_id;
   request.mga.statement_snapshot_id = context.statement_snapshot_id;
+  request.mga.statement_context = context.mga_statement_context;
   request.mga.metadata_snapshot_uuid = context.catalog_snapshot_uuid;
-  request.mga.transaction_active = context.local_transaction_id != 0;
-  request.mga.statement_snapshot_fixed = context.statement_snapshot_id != 0;
-  request.mga.engine_owned = true;
+  request.mga.transaction_active = context.mga_statement_context.current;
+  request.mga.statement_snapshot_fixed =
+      context.mga_statement_context.complete;
+  request.mga.engine_owned =
+      context.mga_statement_context.inventory_authoritative;
 
   request.policy_capability.policy_snapshot_uuid =
       context.security_context_uuid;

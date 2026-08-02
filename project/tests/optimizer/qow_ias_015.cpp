@@ -54,6 +54,13 @@ int main() {
   logical.security_context_uuid = "00000000-0000-7000-8000-000000000003";
   logical.local_transaction_id = 41;
   logical.statement_snapshot_id = 42;
+  logical.mga_statement_context = {
+      "00000000-0000-7000-8000-000000000011",
+      "00000000-0000-7000-8000-000000000012",
+      "00000000-0000-7000-8000-000000000013",
+      "00000000-0000-7000-8000-000000000014",
+      41,
+      42};
   logical.root_logical_node_id = 1;
   logical.result_descriptor_ids = {101};
   logical.nodes = {{1,
@@ -72,6 +79,7 @@ int main() {
   alternatives.security_context_uuid = logical.security_context_uuid;
   alternatives.local_transaction_id = logical.local_transaction_id;
   alternatives.statement_snapshot_id = logical.statement_snapshot_id;
+  alternatives.mga_statement_context = logical.mga_statement_context;
   alternatives.alternatives = {
       {"00000000-0000-7000-8000-000000000004", 1, "values.materialize.v1",
        "00000000-0000-7000-8000-000000000005", {101}, true, ""}};

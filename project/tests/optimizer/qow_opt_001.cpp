@@ -30,6 +30,17 @@ std::string Uuid(const std::uint64_t suffix) {
   return text;
 }
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid = Uuid(9001);
+  context.owning_transaction_uuid = Uuid(9002);
+  context.statement_snapshot_uuid = Uuid(9003);
+  context.statement_metadata_snapshot_uuid = Uuid(9004);
+  context.owning_local_transaction_id = 701;
+  context.visible_committed_high_watermark = 702;
+  return context;
+}
+
 plan::CanonicalLogicalRelationalNode Node(
     const std::uint32_t id,
     const plan::CanonicalLogicalRelationalNodeKind kind,
@@ -54,6 +65,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.security_context_uuid = Uuid(3);
   graph.local_transaction_id = 701;
   graph.statement_snapshot_id = 702;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 17;
   graph.result_descriptor_ids = {117};
   graph.nodes = {

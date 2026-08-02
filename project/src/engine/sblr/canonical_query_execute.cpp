@@ -3600,6 +3600,7 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
   alternatives.security_context_uuid = graph.security_context_uuid;
   alternatives.local_transaction_id = graph.local_transaction_id;
   alternatives.statement_snapshot_id = graph.statement_snapshot_id;
+  alternatives.mga_statement_context = graph.mga_statement_context;
 
   std::unordered_set<std::uint32_t> covered_nodes;
   std::unordered_set<std::string> published_capabilities;
@@ -6784,6 +6785,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
   alternatives.security_context_uuid = graph.security_context_uuid;
   alternatives.local_transaction_id = graph.local_transaction_id;
   alternatives.statement_snapshot_id = graph.statement_snapshot_id;
+  alternatives.mga_statement_context = graph.mga_statement_context;
   alternatives.alternatives.push_back(
       {alternative_uuid,
        graph.nodes.front().logical_node_id,

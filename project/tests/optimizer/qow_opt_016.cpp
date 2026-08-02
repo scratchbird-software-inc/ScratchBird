@@ -119,7 +119,10 @@ bool ValidatePublishedDag() {
           result.physical_dag.capability_validated_before_access &&
           !result.physical_dag.data_access_observed &&
           result.physical_dag.nodes.size() == 4 &&
-          result.physical_dag.root_physical_node_id == 4,
+          result.physical_dag.root_physical_node_id == 4 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.physical_dag.nodes.front().mga_statement_context,
+              result.physical_dag.mga_statement_context),
       "selected plan did not publish one validated immutable physical DAG");
   const auto* scan = PhysicalNode(result.physical_dag, 1);
   const auto* join = PhysicalNode(result.physical_dag, 3);
@@ -148,7 +151,7 @@ bool ValidatePublishedDag() {
   passed &= Require016(
       result.physical_dag.admission_evidence.size() == 8 &&
           result.physical_dag.admission_evidence[3].evidence_uuid ==
-              inputs.admission.catalog_epoch_uuid,
+              inputs.admission.mga_statement_context.statement_snapshot_uuid,
       "published DAG lost ordered MGA/catalog admission evidence");
 
   auto mutated_capability = result.physical_dag;
@@ -161,6 +164,16 @@ bool ValidatePublishedDag() {
   passed &= Require016(!exec::ValidateTypedPhysicalNodeDag(late_publication)
                             .accepted,
                        "physical ABI accepted publication after data access");
+  auto changed_snapshot = result.physical_dag;
+  changed_snapshot.mga_statement_context.current = false;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_snapshot).accepted,
+      "physical ABI accepted a non-current DAG snapshot");
+  auto changed_node_snapshot = result.physical_dag;
+  changed_node_snapshot.nodes.front().mga_statement_context.current = false;
+  passed &= Require016(
+      !exec::ValidateTypedPhysicalNodeDag(changed_node_snapshot).accepted,
+      "physical ABI accepted a node-level snapshot mismatch");
   return passed;
 }
 
@@ -230,6 +243,13 @@ bool ValidateCapabilityRefusals() {
       "QOW-DIAG-OPTIMIZER-EXECUTOR-CAPABILITY-V1",
       "stale capability snapshot published a DAG");
 
+  auto stale_search = Inputs();
+  stale_search.search.mga_statement_context.current = false;
+  passed &= ExpectRefusal(
+      stale_search, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
+      "changed search snapshot published a DAG");
+
   auto observed = Inputs();
   auto identity = PublicationIdentity();
   identity.data_access_observed = true;
@@ -248,6 +268,7 @@ PublicationInputs PropertyInputs() {
   properties.security_context_uuid = Uuid(3);
   properties.local_transaction_id = 701;
   properties.statement_snapshot_id = 699;
+  properties.mga_statement_context = MgaContext();
   plan::CanonicalLogicalPropertyRecord ordering;
   ordering.property_uuid = Uuid(10);
   ordering.property_kind = plan::CanonicalLogicalPropertyKind::kOrdering;

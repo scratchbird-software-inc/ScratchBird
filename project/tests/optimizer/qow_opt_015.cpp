@@ -23,6 +23,21 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid =
+      "019f0000-0000-7300-8000-000000015041";
+  context.owning_transaction_uuid =
+      "019f0000-0000-7300-8000-000000015042";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015043";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015044";
+  context.owning_local_transaction_id = 1515;
+  context.visible_committed_high_watermark = 1514;
+  return context;
+}
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-015-V1: " << detail << '\n';
   return condition;
@@ -152,6 +167,7 @@ bool ValidateActualsCannotBecomePreAccessEstimates() {
   graph.security_context_uuid = "019f0000-0000-7300-8000-000000015033";
   graph.local_transaction_id = 1515;
   graph.statement_snapshot_id = 1514;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 11;
   graph.result_descriptor_ids = {1};
   plan::CanonicalLogicalRelationalNode values;

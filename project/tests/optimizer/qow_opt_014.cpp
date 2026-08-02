@@ -33,6 +33,27 @@ std::string Uuid(const std::uint64_t suffix) {
   return text;
 }
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid = Uuid(10);
+  context.owning_transaction_uuid = Uuid(11);
+  context.statement_snapshot_uuid = Uuid(12);
+  context.statement_metadata_snapshot_uuid = Uuid(4);
+  context.owning_local_transaction_id = 701;
+  context.visible_committed_high_watermark = 699;
+  context.oldest_active_transaction_id = 701;
+  context.oldest_interesting_transaction_id = 701;
+  context.oldest_snapshot_transaction_id = 701;
+  context.retention_horizon_transaction_id = 701;
+  context.active_excluded_local_transaction_ids = {701};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 702;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
 plan::CanonicalLogicalRelationalNode Node(
     const std::uint32_t id,
     const plan::CanonicalLogicalRelationalNodeKind kind,
@@ -72,6 +93,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   graph.security_context_uuid = Uuid(3);
   graph.local_transaction_id = 701;
   graph.statement_snapshot_id = 699;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 4;
   graph.result_descriptor_ids = {104};
   graph.nodes = {
@@ -92,8 +114,9 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   properties.security_context_uuid = Uuid(3);
   properties.local_transaction_id = 701;
   properties.statement_snapshot_id = 699;
+  properties.mga_statement_context = MgaContext();
 
-  request.catalog.snapshot_uuid = Uuid(2);
+  request.catalog.snapshot_uuid = Uuid(4);
   request.catalog.catalog_epoch_uuid = Uuid(2);
   request.catalog.catalog_generation = 31;
   request.catalog.object_uuids = {Uuid(9)};
@@ -109,7 +132,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
 
   request.mga.local_transaction_id = 701;
   request.mga.statement_snapshot_id = 699;
-  request.mga.metadata_snapshot_uuid = Uuid(2);
+  request.mga.statement_context = MgaContext();
+  request.mga.metadata_snapshot_uuid = Uuid(4);
   request.mga.transaction_active = true;
   request.mga.statement_snapshot_fixed = true;
   request.mga.engine_owned = true;
@@ -192,6 +216,7 @@ plan::CanonicalPhysicalAlternativeCatalog Alternatives() {
   catalog.security_context_uuid = Uuid(3);
   catalog.local_transaction_id = 701;
   catalog.statement_snapshot_id = 699;
+  catalog.mga_statement_context = MgaContext();
   catalog.alternatives = {
       Alternative(1, 1, "scan.heap.v1", 101),
       Alternative(2, 2, "values.materialize.v1", 102),
@@ -281,7 +306,10 @@ bool ValidateExhaustiveSearch() {
           result.exhaustive_oracle_executed &&
           result.exhaustive_oracle_agreed && result.resource_bounded &&
           result.deterministic && !result.physical_dag_published &&
-          !result.data_access_allowed && result.selected_alternatives.size() == 4,
+          !result.data_access_allowed && result.selected_alternatives.size() == 4 &&
+          result.catalog_epoch_uuid == Uuid(2) &&
+          plan::CanonicalMgaStatementContextEqual(
+              result.mga_statement_context, MgaContext()),
       "small legal plan space was not exhaustively and independently proved");
   passed &= Require(
       result.selected_plan_signature ==
@@ -389,6 +417,13 @@ bool ValidateAtomicRefusals() {
       request, admission, alternatives, incomparable, policy,
       "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
       "incomparable calibration profiles were ranked together");
+
+  auto stale_alternatives = alternatives;
+  stale_alternatives.mga_statement_context.current = false;
+  passed &= expect_refusal(
+      request, admission, stale_alternatives, candidates, policy,
+      "QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1",
+      "alternative catalog reused a different statement snapshot");
 
   auto unbounded = request;
   unbounded.resource.maximum_search_steps = 4;

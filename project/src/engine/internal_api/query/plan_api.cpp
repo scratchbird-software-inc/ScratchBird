@@ -27,6 +27,8 @@
 #include "optimizer_plan_cache.hpp"
 #include "physical_plan.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#include "transaction_snapshot.hpp"
+#include "uuid.hpp"
 #endif
 
 #include <algorithm>
@@ -709,6 +711,63 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   graph.local_transaction_id = engine_scope.local_transaction_id;
   graph.statement_snapshot_id =
       engine_scope.snapshot_visible_through_local_transaction_id;
+  graph.mga_statement_context.statement_uuid = engine_scope.statement_uuid;
+  graph.mga_statement_context.owning_transaction_uuid =
+      engine_scope.owning_transaction_uuid;
+  graph.mga_statement_context.statement_snapshot_uuid =
+      engine_scope.statement_snapshot_uuid;
+  graph.mga_statement_context.statement_metadata_snapshot_uuid =
+      engine_scope.statement_metadata_snapshot_uuid;
+  graph.mga_statement_context.owning_local_transaction_id =
+      engine_scope.local_transaction_id;
+  graph.mga_statement_context.visible_committed_high_watermark =
+      engine_scope.snapshot_visible_through_local_transaction_id;
+#ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
+  const auto snapshot_uuid = scratchbird::core::uuid::ParseTypedUuid(
+      scratchbird::core::platform::UuidKind::object,
+      engine_scope.statement_snapshot_uuid);
+  if (!snapshot_uuid.ok()) {
+    return refuse("QOW-DIAG-LOGICAL-GRAPH-MGA-SNAPSHOT-V1", 0,
+                  "statement_snapshot_uuid");
+  }
+  const auto resolved_snapshot =
+      scratchbird::transaction::mga::ResolvePublishedSnapshotVector(
+          snapshot_uuid.value);
+  if (!resolved_snapshot.ok() ||
+      scratchbird::core::uuid::UuidToString(
+          resolved_snapshot.descriptor.owning_transaction_uuid.value) !=
+          engine_scope.owning_transaction_uuid ||
+      resolved_snapshot.descriptor.owning_transaction.value !=
+          engine_scope.local_transaction_id ||
+      resolved_snapshot.descriptor.visible_committed_high_watermark !=
+          engine_scope.snapshot_visible_through_local_transaction_id) {
+    return refuse("QOW-DIAG-LOGICAL-GRAPH-MGA-SNAPSHOT-V1", 0,
+                  "registered_statement_snapshot");
+  }
+  const auto& descriptor = resolved_snapshot.descriptor;
+  graph.mga_statement_context.oldest_active_transaction_id =
+      descriptor.oldest_active_transaction.value;
+  graph.mga_statement_context.oldest_interesting_transaction_id =
+      descriptor.oldest_interesting_transaction.value;
+  graph.mga_statement_context.oldest_snapshot_transaction_id =
+      descriptor.oldest_snapshot_transaction.value;
+  graph.mga_statement_context.retention_horizon_transaction_id =
+      descriptor.retention_horizon_transaction.value;
+  graph.mga_statement_context.active_excluded_local_transaction_ids =
+      descriptor.active_excluded_local_transaction_ids;
+  graph.mga_statement_context.in_doubt_excluded_local_transaction_ids =
+      descriptor.in_doubt_excluded_local_transaction_ids;
+  graph.mga_statement_context.snapshot_kind =
+      scratchbird::transaction::mga::SnapshotVectorKindName(
+          descriptor.snapshot_kind);
+  graph.mga_statement_context
+      .publication_inventory_next_local_transaction_id =
+      descriptor.publication_inventory_next_local_transaction_id;
+  graph.mga_statement_context.inventory_authoritative =
+      descriptor.inventory_authoritative;
+  graph.mga_statement_context.complete = descriptor.complete;
+  graph.mga_statement_context.current = false;
+#endif
   graph.root_logical_node_id = dag.root_node_id;
   for (const auto& node : dag.nodes) {
     plan::CanonicalLogicalRelationalNode logical_node;
@@ -734,6 +793,7 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   catalog.security_context_uuid = graph.security_context_uuid;
   catalog.local_transaction_id = graph.local_transaction_id;
   catalog.statement_snapshot_id = graph.statement_snapshot_id;
+  catalog.mga_statement_context = graph.mga_statement_context;
   for (const auto& property : dag.properties) {
     plan::CanonicalLogicalPropertyRecord logical_property;
     logical_property.property_uuid = property.property_uuid;

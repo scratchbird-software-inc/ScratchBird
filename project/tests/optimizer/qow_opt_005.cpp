@@ -30,6 +30,21 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid =
+      "019f0000-0000-7100-8000-000000005011";
+  context.owning_transaction_uuid =
+      "019f0000-0000-7100-8000-000000005012";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000005013";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000005014";
+  context.owning_local_transaction_id = 501;
+  context.visible_committed_high_watermark = 499;
+  return context;
+}
+
 plan::CanonicalLogicalRelationalGraph Graph() {
   plan::CanonicalLogicalRelationalGraph graph;
   graph.bound_sblr_tree_uuid =
@@ -39,6 +54,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
       "019f0000-0000-7100-8000-000000005005";
   graph.local_transaction_id = 501;
   graph.statement_snapshot_id = 499;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 3;
   graph.result_descriptor_ids = {1};
 

@@ -16,6 +16,7 @@
 #include "query/plan_api.hpp"
 #include "secondary_index_delta_merge.hpp"
 #include "security/security_model.hpp"
+#include "transaction/transaction_api.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
@@ -3049,8 +3050,7 @@ std::uint64_t SnapshotVisibleThroughForOverlay(const CrudState& state,
                                     ? std::string("read_committed")
                                     : context.transaction_isolation_level;
   if ((isolation == "snapshot" || isolation == "repeatable_read" ||
-       isolation == "serializable") &&
-      context.snapshot_visible_through_local_transaction_id != 0) {
+       isolation == "serializable")) {
     return context.snapshot_visible_through_local_transaction_id;
   }
   return MaxCommittedLocalTransactionId(state);
@@ -6451,8 +6451,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
     return invalid("relation_uuid_required");
   }
   if (context.local_transaction_id == 0 ||
-      context.transaction_uuid.canonical.empty() ||
-      context.snapshot_visible_through_local_transaction_id == 0) {
+      context.transaction_uuid.canonical.empty()) {
     return invalid("exact_active_transaction_and_snapshot_required");
   }
   if (request.maximum_scanned_row_versions == 0 ||
@@ -10414,6 +10413,65 @@ DescriptorRuntimeDiagnostic HeapAcquisitionRefusal(std::string code,
   return diagnostic;
 }
 
+PhysicalMgaStatementContext PhysicalMgaContextFromResolvedSnapshot(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
+  PhysicalMgaStatementContext expected;
+  expected.statement_uuid = context.statement_uuid.canonical;
+  expected.owning_transaction_uuid = context.transaction_uuid.canonical;
+  expected.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  expected.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  expected.owning_local_transaction_id = descriptor.owning_transaction.value;
+  expected.visible_committed_high_watermark =
+      descriptor.visible_committed_high_watermark;
+  expected.oldest_active_transaction_id =
+      descriptor.oldest_active_transaction.value;
+  expected.oldest_interesting_transaction_id =
+      descriptor.oldest_interesting_transaction.value;
+  expected.oldest_snapshot_transaction_id =
+      descriptor.oldest_snapshot_transaction.value;
+  expected.retention_horizon_transaction_id =
+      descriptor.retention_horizon_transaction.value;
+  expected.active_excluded_local_transaction_ids =
+      descriptor.active_excluded_local_transaction_ids;
+  expected.in_doubt_excluded_local_transaction_ids =
+      descriptor.in_doubt_excluded_local_transaction_ids;
+  expected.snapshot_kind =
+      scratchbird::transaction::mga::SnapshotVectorKindName(
+          descriptor.snapshot_kind);
+  expected.publication_inventory_next_local_transaction_id =
+      descriptor.publication_inventory_next_local_transaction_id;
+  expected.inventory_authoritative = descriptor.inventory_authoritative;
+  expected.complete = descriptor.complete;
+  expected.current = true;
+  return expected;
+}
+
+DescriptorRuntimeDiagnostic ValidateCurrentHeapPhysicalMgaAuthority(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const TypedPhysicalNodeDag& physical_dag) {
+  namespace api = scratchbird::engine::internal_api;
+  api::EngineResolveStatementSnapshotRequest resolve_request;
+  resolve_request.context = context;
+  const auto resolved = api::EngineResolveStatementSnapshot(resolve_request);
+  if (!resolved.ok) {
+    return HeapAcquisitionRefusal(
+        "SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
+        "statement snapshot is unknown, revoked, stale, or not current");
+  }
+  const auto expected = PhysicalMgaContextFromResolvedSnapshot(
+      context, resolved.snapshot_vector);
+  if (!PhysicalMgaStatementContextEqual(physical_dag.mga_statement_context,
+                                        expected)) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
+        "physical MGA statement context differs from current inventory authority");
+  }
+  return {};
+}
+
 bool IsCanonicalHeapBindingUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -10571,6 +10629,8 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   }
   const auto& context = *request.context;
   const auto& relational = *request.relational_dag;
+  const auto inventory_guard =
+      api::AcquireTransactionInventoryGuard(context.database_path);
   const auto relational_validation = api::ValidateTypedRelationalDag(relational);
   if (!relational_validation.accepted) {
     const auto& issue = relational_validation.issues.front();
@@ -10583,6 +10643,11 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   if (!physical_validation.accepted) {
     const auto& issue = physical_validation.issues.front();
     return invalid(issue.diagnostic_id, issue.field_id);
+  }
+  const auto current_mga =
+      ValidateCurrentHeapPhysicalMgaAuthority(context, request.physical_dag);
+  if (!current_mga.ok) {
+    return refuse(current_mga);
   }
   if (relational.wire_version != 2 ||
       request.physical_dag.abi_version != 2 ||
@@ -10618,7 +10683,6 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   }
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.canonical.empty() ||
-      context.snapshot_visible_through_local_transaction_id == 0 ||
       request.physical_dag.local_transaction_id !=
           context.local_transaction_id ||
       request.physical_dag.statement_snapshot_id !=
@@ -10631,10 +10695,20 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
           request.physical_dag.bound_sblr_tree_uuid ||
+      relational.statement_uuid != context.statement_uuid.canonical ||
+      relational.owning_transaction_uuid !=
+          context.transaction_uuid.canonical ||
+      relational.statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      relational.statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      relational.local_transaction_id != context.local_transaction_id ||
+      relational.snapshot_visible_through_local_transaction_id !=
+          context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.catalog_epoch_uuid.canonical ||
       request.physical_dag.catalog_epoch_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.catalog_epoch_uuid.canonical ||
       relational.bound_security_context_uuid !=
           authorization.authority_uuid.canonical ||
       request.physical_dag.security_context_uuid !=
@@ -11041,6 +11115,8 @@ bool SameHeapPhysicalDagAuthority(const TypedPhysicalNodeDag& left,
          left.root_physical_node_id == right.root_physical_node_id &&
          left.local_transaction_id == right.local_transaction_id &&
          left.statement_snapshot_id == right.statement_snapshot_id &&
+         PhysicalMgaStatementContextEqual(left.mga_statement_context,
+                                          right.mga_statement_context) &&
          left.bound_sblr_tree_uuid == right.bound_sblr_tree_uuid &&
          left.catalog_epoch_uuid == right.catalog_epoch_uuid &&
          left.security_context_uuid == right.security_context_uuid &&
@@ -11094,6 +11170,8 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   }
   const auto& context = *request.context;
   const auto& relational = *request.relational_dag;
+  const auto inventory_guard =
+      api::AcquireTransactionInventoryGuard(context.database_path);
   const auto relational_validation = api::ValidateTypedRelationalDag(relational);
   if (!relational_validation.accepted) {
     const auto& issue = relational_validation.issues.front();
@@ -11104,6 +11182,11 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   if (!physical_validation.accepted) {
     const auto& issue = physical_validation.issues.front();
     return HeapAcquisitionRefusal(issue.diagnostic_id, issue.field_id);
+  }
+  const auto current_mga =
+      ValidateCurrentHeapPhysicalMgaAuthority(context, request.physical_dag);
+  if (!current_mga.ok) {
+    return current_mga;
   }
   if (relational.wire_version != 2 ||
       request.physical_dag.abi_version != 2 ||
@@ -11135,7 +11218,6 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   const auto& authorization = context.authorization_context;
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.canonical.empty() ||
-      context.snapshot_visible_through_local_transaction_id == 0 ||
       request.physical_dag.local_transaction_id !=
           context.local_transaction_id ||
       request.physical_dag.statement_snapshot_id !=
@@ -11144,10 +11226,20 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
       !context.security_context_present || !authorization.present ||
       relational.bound_sblr_tree_uuid !=
           request.physical_dag.bound_sblr_tree_uuid ||
+      relational.statement_uuid != context.statement_uuid.canonical ||
+      relational.owning_transaction_uuid !=
+          context.transaction_uuid.canonical ||
+      relational.statement_snapshot_uuid !=
+          context.statement_snapshot_uuid.canonical ||
+      relational.statement_metadata_snapshot_uuid !=
+          context.statement_metadata_snapshot_uuid.canonical ||
+      relational.local_transaction_id != context.local_transaction_id ||
+      relational.snapshot_visible_through_local_transaction_id !=
+          context.snapshot_visible_through_local_transaction_id ||
       relational.bound_catalog_epoch_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.catalog_epoch_uuid.canonical ||
       request.physical_dag.catalog_epoch_uuid !=
-          context.statement_metadata_snapshot_uuid.canonical ||
+          context.catalog_epoch_uuid.canonical ||
       relational.bound_security_context_uuid !=
           authorization.authority_uuid.canonical ||
       request.physical_dag.security_context_uuid !=
@@ -11360,6 +11452,14 @@ CanonicalPhysicalDagDispatchResult HeapPhysicalDispatchRefusal(
 // QOW-SOURCE-QRY-004-HEAP-DISPATCH-V1
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
     const CanonicalHeapPhysicalDagDispatchRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  if (request.context == nullptr) {
+    return HeapPhysicalDispatchRefusal(HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-DISPATCH-BINDING-V1",
+        "engine context is required"));
+  }
+  const auto inventory_guard =
+      api::AcquireTransactionInventoryGuard(request.context->database_path);
   auto built = BuildHeapPhysicalRegistration(request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||
       built.observation == nullptr) {
@@ -11453,6 +11553,8 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   const auto& context = request.context;
   const auto& relational = request.relational_dag;
   const auto& physical = request.selected_physical_dag;
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
   if (!exec::IsCanonicalHeapBindingUuid(context.statement_uuid.canonical) ||
       !exec::IsCanonicalHeapBindingUuid(request.execution_attempt_uuid) ||
       !exec::IsCanonicalHeapBindingUuid(
@@ -11485,6 +11587,11 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   if (!physical_validation.accepted) {
     const auto& issue = physical_validation.issues.front();
     return refuse(issue.diagnostic_id, issue.physical_node_id, issue.field_id);
+  }
+  const auto current_mga =
+      exec::ValidateCurrentHeapPhysicalMgaAuthority(context, physical);
+  if (!current_mga.ok) {
+    return refuse(current_mga.diagnostic_code, 0, current_mga.detail);
   }
   if (relational.wire_version != 2 || relational.nodes.size() != 1 ||
       relational.root_node_id != relational.nodes.front().node_id ||

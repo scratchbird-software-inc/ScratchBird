@@ -13,6 +13,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -21,6 +23,127 @@
 #include <vector>
 
 namespace scratchbird::engine::executor {
+
+struct PhysicalMgaStatementContext {
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t owning_local_transaction_id{0};
+  std::uint64_t visible_committed_high_watermark{0};
+  std::uint64_t oldest_active_transaction_id{0};
+  std::uint64_t oldest_interesting_transaction_id{0};
+  std::uint64_t oldest_snapshot_transaction_id{0};
+  std::uint64_t retention_horizon_transaction_id{0};
+  std::vector<std::uint64_t> active_excluded_local_transaction_ids;
+  std::vector<std::uint64_t> in_doubt_excluded_local_transaction_ids;
+  std::string snapshot_kind;
+  std::uint64_t publication_inventory_next_local_transaction_id{0};
+  bool inventory_authoritative{false};
+  bool complete{false};
+  bool current{false};
+};
+
+inline bool PhysicalMgaStatementContextEqual(
+    const PhysicalMgaStatementContext& left,
+    const PhysicalMgaStatementContext& right) {
+  return left.statement_uuid == right.statement_uuid &&
+         left.owning_transaction_uuid == right.owning_transaction_uuid &&
+         left.statement_snapshot_uuid == right.statement_snapshot_uuid &&
+         left.statement_metadata_snapshot_uuid ==
+             right.statement_metadata_snapshot_uuid &&
+         left.owning_local_transaction_id ==
+             right.owning_local_transaction_id &&
+         left.visible_committed_high_watermark ==
+             right.visible_committed_high_watermark &&
+         left.oldest_active_transaction_id ==
+             right.oldest_active_transaction_id &&
+         left.oldest_interesting_transaction_id ==
+             right.oldest_interesting_transaction_id &&
+         left.oldest_snapshot_transaction_id ==
+             right.oldest_snapshot_transaction_id &&
+         left.retention_horizon_transaction_id ==
+             right.retention_horizon_transaction_id &&
+         left.active_excluded_local_transaction_ids ==
+             right.active_excluded_local_transaction_ids &&
+         left.in_doubt_excluded_local_transaction_ids ==
+             right.in_doubt_excluded_local_transaction_ids &&
+         left.snapshot_kind == right.snapshot_kind &&
+         left.publication_inventory_next_local_transaction_id ==
+             right.publication_inventory_next_local_transaction_id &&
+         left.inventory_authoritative == right.inventory_authoritative &&
+         left.complete == right.complete && left.current == right.current;
+}
+
+inline bool PhysicalMgaStatementContextValid(
+    const PhysicalMgaStatementContext& context) {
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return value != "00000000-0000-0000-0000-000000000000";
+  };
+  if (!canonical_uuid(context.statement_uuid) ||
+      !canonical_uuid(context.owning_transaction_uuid) ||
+      !canonical_uuid(context.statement_snapshot_uuid) ||
+      !canonical_uuid(context.statement_metadata_snapshot_uuid) ||
+      context.owning_local_transaction_id == 0 ||
+      !context.inventory_authoritative || !context.complete ||
+      !context.current || context.snapshot_kind != "statement_stable" ||
+      context.publication_inventory_next_local_transaction_id == 0 ||
+      context.visible_committed_high_watermark >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.owning_local_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_active_transaction_id == 0 ||
+      context.oldest_interesting_transaction_id == 0 ||
+      context.oldest_snapshot_transaction_id == 0 ||
+      context.retention_horizon_transaction_id == 0 ||
+      context.oldest_active_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_interesting_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_snapshot_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.retention_horizon_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_snapshot_transaction_id !=
+          context.retention_horizon_transaction_id ||
+      context.oldest_snapshot_transaction_id !=
+          std::min(context.oldest_interesting_transaction_id,
+                   context.owning_local_transaction_id)) {
+    return false;
+  }
+  const auto canonical_exclusions = [&](const auto& values) {
+    return std::ranges::is_sorted(values) &&
+           std::adjacent_find(values.begin(), values.end()) == values.end() &&
+           std::ranges::all_of(values, [&](const std::uint64_t value) {
+             return value != 0 &&
+                    value <
+                        context.publication_inventory_next_local_transaction_id;
+           });
+  };
+  if (!canonical_exclusions(context.active_excluded_local_transaction_ids) ||
+      !canonical_exclusions(
+          context.in_doubt_excluded_local_transaction_ids) ||
+      !std::ranges::binary_search(
+          context.active_excluded_local_transaction_ids,
+          context.owning_local_transaction_id)) {
+    return false;
+  }
+  std::vector<std::uint64_t> intersection;
+  std::ranges::set_intersection(
+      context.active_excluded_local_transaction_ids,
+      context.in_doubt_excluded_local_transaction_ids,
+      std::back_inserter(intersection));
+  return intersection.empty();
+}
 
 enum class PhysicalNodeKind : std::uint8_t {
   kScan = 1,
@@ -76,6 +199,7 @@ struct PhysicalNodeRecord {
   std::uint64_t memory_bytes_required{0};
   std::uint64_t spill_bytes_expected{0};
   bool engine_capability_validated{false};
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct TypedPhysicalNodeDag {
@@ -84,6 +208,7 @@ struct TypedPhysicalNodeDag {
   std::uint64_t root_physical_node_id{0};
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  PhysicalMgaStatementContext mga_statement_context;
   std::vector<PhysicalAdmissionEvidence> admission_evidence;
   std::vector<PhysicalNodeRecord> nodes;
   std::string bound_sblr_tree_uuid;
@@ -152,7 +277,7 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
       const auto ch = static_cast<unsigned char>(value[index]);
       if (!std::isxdigit(ch) || std::isupper(ch)) return false;
     }
-    return true;
+    return value != "00000000-0000-0000-0000-000000000000";
   };
   const auto known_kind = [](const PhysicalNodeKind kind) {
     return kind >= PhysicalNodeKind::kScan &&
@@ -174,13 +299,20 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                   "selected_plan_uuid");
   }
-  if (dag.local_transaction_id == 0 || dag.statement_snapshot_id == 0) {
+  if (dag.local_transaction_id == 0) {
     return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION", 0,
                   "mga_statement_context");
   }
   const bool optimizer_publication_v2 = dag.abi_version == 2;
   if (optimizer_publication_v2 &&
-      (!canonical_uuid(dag.bound_sblr_tree_uuid) ||
+      (!PhysicalMgaStatementContextValid(dag.mga_statement_context) ||
+       dag.local_transaction_id !=
+           dag.mga_statement_context.owning_local_transaction_id ||
+       dag.statement_snapshot_id !=
+           dag.mga_statement_context.visible_committed_high_watermark ||
+       dag.catalog_epoch_uuid ==
+           dag.mga_statement_context.statement_metadata_snapshot_uuid ||
+       !canonical_uuid(dag.bound_sblr_tree_uuid) ||
        !canonical_uuid(dag.catalog_epoch_uuid) ||
        !canonical_uuid(dag.security_context_uuid) ||
        !canonical_uuid(dag.capability_snapshot_uuid) ||
@@ -209,7 +341,8 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
   if (optimizer_publication_v2) {
     expected_publication_evidence = {
         dag.bound_sblr_tree_uuid, dag.catalog_epoch_uuid,
-        dag.security_context_uuid, dag.catalog_epoch_uuid,
+        dag.security_context_uuid,
+        dag.mga_statement_context.statement_snapshot_uuid,
         dag.capability_snapshot_uuid, dag.resource_snapshot_uuid,
         dag.statistics_snapshot_uuid, dag.route_snapshot_uuid};
   }
@@ -266,7 +399,9 @@ inline PhysicalNodeAbiValidationResult ValidateTypedPhysicalNodeDag(
                             &delivered_properties) ||
           node.memory_bytes_required > dag.memory_budget_bytes ||
           (!dag.spill_allowed && node.spill_bytes_expected != 0) ||
-          !node.engine_capability_validated) {
+          !node.engine_capability_validated ||
+          !PhysicalMgaStatementContextEqual(node.mga_statement_context,
+                                            dag.mga_statement_context)) {
         return refuse("QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
                       node.physical_node_id,
                       "selected_node_capability_contract");

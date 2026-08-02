@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "procedural/procedural_block_ir.hpp"
+#include "transaction_snapshot.hpp"
 
 #include <mutex>
 
@@ -38,6 +39,24 @@ struct EngineBeginTransactionResult : EngineApiResult {
   EngineApiU64 snapshot_visible_through_local_transaction_id = 0;
 };
 EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransactionRequest& request);
+
+struct EnginePublishStatementSnapshotRequest : EngineApiRequest {};
+struct EnginePublishStatementSnapshotResult : EngineApiResult {
+  EngineUuid statement_uuid;
+  EngineUuid statement_snapshot_uuid;
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+};
+EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
+    const EnginePublishStatementSnapshotRequest& request);
+
+struct EngineResolveStatementSnapshotRequest : EngineApiRequest {};
+struct EngineResolveStatementSnapshotResult : EngineApiResult {
+  EngineUuid statement_uuid;
+  EngineUuid statement_snapshot_uuid;
+  scratchbird::transaction::mga::SnapshotVectorDescriptor snapshot_vector;
+};
+EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
+    const EngineResolveStatementSnapshotRequest& request);
 
 struct EngineSetTransactionCharacteristicsRequest : EngineApiRequest {};
 struct EngineSetTransactionCharacteristicsResult : EngineApiResult {};

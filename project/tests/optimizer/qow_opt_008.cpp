@@ -327,6 +327,16 @@ bool ValidateAuthorityAndAbiRefusal() {
           result.issues.front().diagnostic_id ==
               "QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-SCOPE-V1",
       "legacy evidence-only physical root reached canonical execution");
+
+  request = SelectedExecutionRequest(&invocation_order);
+  request.selected_physical_dag.mga_statement_context.current = false;
+  result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  passed &= Require008(
+      !result.accepted && invocation_order.empty() &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+      "non-current physical MGA vector reached selected execution");
   return passed;
 }
 

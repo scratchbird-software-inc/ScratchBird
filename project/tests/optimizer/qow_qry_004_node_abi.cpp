@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
+#include <utility>
 
 namespace exec = scratchbird::engine::executor;
 
@@ -36,16 +37,52 @@ bool HasIssue(const exec::PhysicalNodeAbiValidationResult& result,
 
 exec::TypedPhysicalNodeDag SharedDag() {
   exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
   dag.selected_plan_uuid = "019f0000-0000-7000-8000-000000000401";
   dag.root_physical_node_id = 4;
   dag.local_transaction_id = 41;
   dag.statement_snapshot_id = 43;
-  for (std::uint8_t stage = 1; stage <= 8; ++stage) {
-    std::string uuid = "019f0000-0000-7100-8000-00000000040";
-    uuid.push_back(static_cast<char>('1' + stage));
-    dag.admission_evidence.push_back(
-        {static_cast<exec::PhysicalAdmissionStage>(stage), std::move(uuid)});
-  }
+  dag.mga_statement_context = {
+      "019f0000-0000-7100-8000-000000000411",
+      "019f0000-0000-7100-8000-000000000412",
+      "019f0000-0000-7100-8000-000000000413",
+      "019f0000-0000-7100-8000-000000000414",
+      41,
+      43,
+      41,
+      41,
+      41,
+      41,
+      {41},
+      {42},
+      "statement_stable",
+      44,
+      true,
+      true,
+      true,
+  };
+  dag.bound_sblr_tree_uuid = "019f0000-0000-7100-8000-000000000421";
+  dag.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000000422";
+  dag.security_context_uuid = "019f0000-0000-7100-8000-000000000423";
+  dag.capability_snapshot_uuid = "019f0000-0000-7100-8000-000000000425";
+  dag.resource_snapshot_uuid = "019f0000-0000-7100-8000-000000000426";
+  dag.statistics_snapshot_uuid = "019f0000-0000-7100-8000-000000000427";
+  dag.route_snapshot_uuid = "019f0000-0000-7100-8000-000000000428";
+  dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       dag.bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity, dag.security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       dag.mga_statement_context.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       dag.capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource, dag.resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       dag.statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       dag.route_snapshot_uuid},
+  };
   dag.nodes = {
       {1, 1, exec::PhysicalNodeKind::kValues, "values.literal.v1", {}, {1},
        true, 101},
@@ -56,6 +93,34 @@ exec::TypedPhysicalNodeDag SharedDag() {
       {4, 4, exec::PhysicalNodeKind::kSetOperation, "set.union-all.v1", {2, 3},
        {3}, false, 104},
   };
+  dag.catalog_generation = 1;
+  dag.security_epoch = 1;
+  dag.policy_epoch = 1;
+  dag.resource_epoch = 1;
+  dag.statistics_generation = 1;
+  dag.route_epoch = 1;
+  dag.route_generation = 1;
+  dag.memory_budget_bytes = 1 << 20;
+  dag.spill_allowed = false;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  for (std::size_t index = 0; index < dag.nodes.size(); ++index) {
+    auto& node = dag.nodes[index];
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000043" +
+        std::to_string(index + 1);
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000044" +
+        std::to_string(index + 1);
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000045" +
+        std::to_string(index + 1);
+    node.memory_bytes_required = 1024;
+    node.engine_capability_validated = true;
+    node.mga_statement_context = dag.mga_statement_context;
+  }
   return dag;
 }
 
@@ -91,6 +156,73 @@ bool ValidateAdmissionRefusal() {
           HasIssue(mga_result, "QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION",
                    "mga_statement_context"),
       "physical DAG without engine MGA statement context was accepted");
+  return passed;
+}
+
+bool ValidateSnapshotVectorAbi() {
+  auto zero_highwater = SharedDag();
+  zero_highwater.statement_snapshot_id = 0;
+  zero_highwater.mga_statement_context.visible_committed_high_watermark = 0;
+  for (auto& node : zero_highwater.nodes) {
+    node.mga_statement_context = zero_highwater.mga_statement_context;
+  }
+  const auto zero_result =
+      exec::ValidateTypedPhysicalNodeDag(zero_highwater);
+
+  auto dag_current_mismatch = SharedDag();
+  dag_current_mismatch.mga_statement_context.current = false;
+  const auto dag_current_result =
+      exec::ValidateTypedPhysicalNodeDag(dag_current_mismatch);
+
+  auto node_current_mismatch = SharedDag();
+  node_current_mismatch.nodes[0].mga_statement_context.current = false;
+  const auto node_current_result =
+      exec::ValidateTypedPhysicalNodeDag(node_current_mismatch);
+
+  auto conflated_catalog = SharedDag();
+  conflated_catalog.catalog_epoch_uuid =
+      conflated_catalog.mga_statement_context.statement_metadata_snapshot_uuid;
+  conflated_catalog.admission_evidence[1].evidence_uuid =
+      conflated_catalog.catalog_epoch_uuid;
+  const auto conflated_catalog_result =
+      exec::ValidateTypedPhysicalNodeDag(conflated_catalog);
+
+  auto nil_catalog = SharedDag();
+  nil_catalog.catalog_epoch_uuid =
+      "00000000-0000-0000-0000-000000000000";
+  nil_catalog.admission_evidence[1].evidence_uuid =
+      nil_catalog.catalog_epoch_uuid;
+  const auto nil_catalog_result =
+      exec::ValidateTypedPhysicalNodeDag(nil_catalog);
+
+  bool passed = true;
+  passed &= Require(
+      zero_result.accepted,
+      "zero visible-committed boundary was treated as missing MGA authority");
+  passed &= Require(
+      !dag_current_result.accepted &&
+          HasIssue(dag_current_result,
+                   "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                   "optimizer_publication_scope"),
+      "non-current DAG MGA snapshot vector was accepted");
+  passed &= Require(
+      !node_current_result.accepted &&
+          HasIssue(node_current_result,
+                   "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+                   "selected_node_capability_contract"),
+      "node/DAG MGA snapshot-vector mismatch was accepted");
+  passed &= Require(
+      !conflated_catalog_result.accepted &&
+          HasIssue(conflated_catalog_result,
+                   "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                   "optimizer_publication_scope"),
+      "metadata snapshot was accepted as the physical catalog epoch");
+  passed &= Require(
+      !nil_catalog_result.accepted &&
+          HasIssue(nil_catalog_result,
+                   "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                   "optimizer_publication_scope"),
+      "nil physical catalog epoch was accepted");
   return passed;
 }
 
@@ -137,9 +269,22 @@ bool ValidateGraphRefusal() {
   const auto cycle_result = exec::ValidateTypedPhysicalNodeDag(cycle);
 
   auto orphan = SharedDag();
-  orphan.nodes.push_back(
-      {5, 5, exec::PhysicalNodeKind::kScan, "scan.heap.v1", {}, {4}, false,
-       105});
+  auto orphan_node = orphan.nodes.front();
+  orphan_node.physical_node_id = 5;
+  orphan_node.relational_node_id = 5;
+  orphan_node.node_kind = exec::PhysicalNodeKind::kScan;
+  orphan_node.implementation_id = "scan.heap.v1";
+  orphan_node.input_physical_node_ids.clear();
+  orphan_node.output_descriptor_ids = {4};
+  orphan_node.shareable = false;
+  orphan_node.causal_counter_id = 105;
+  orphan_node.selected_alternative_uuid =
+      "019f0000-0000-7200-8000-000000000435";
+  orphan_node.executor_capability_uuid =
+      "019f0000-0000-7200-8000-000000000445";
+  orphan_node.cost_vector_uuid =
+      "019f0000-0000-7200-8000-000000000455";
+  orphan.nodes.push_back(std::move(orphan_node));
   const auto orphan_result = exec::ValidateTypedPhysicalNodeDag(orphan);
 
   bool passed = true;
@@ -194,6 +339,7 @@ int main() {
   bool passed = true;
   passed &= ValidateAcceptedAbi();
   passed &= ValidateAdmissionRefusal();
+  passed &= ValidateSnapshotVectorAbi();
   passed &= ValidateHandleAndImplementationRefusal();
   passed &= ValidateGraphRefusal();
   passed &= ValidateResourceRefusal();

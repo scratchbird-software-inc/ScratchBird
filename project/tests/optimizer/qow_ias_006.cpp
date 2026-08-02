@@ -31,6 +31,27 @@ std::string Uuid(const std::uint64_t suffix) {
   return text;
 }
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid = Uuid(9001);
+  context.owning_transaction_uuid = Uuid(9002);
+  context.statement_snapshot_uuid = Uuid(9003);
+  context.statement_metadata_snapshot_uuid = Uuid(9004);
+  context.owning_local_transaction_id = 71;
+  context.visible_committed_high_watermark = 72;
+  context.oldest_active_transaction_id = 71;
+  context.oldest_interesting_transaction_id = 71;
+  context.oldest_snapshot_transaction_id = 71;
+  context.retention_horizon_transaction_id = 71;
+  context.active_excluded_local_transaction_ids = {71};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 73;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
 plan::CanonicalLogicalRelationalGraph Graph() {
   plan::CanonicalLogicalRelationalGraph graph;
   graph.bound_sblr_tree_uuid = Uuid(1);
@@ -38,6 +59,7 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.security_context_uuid = Uuid(3);
   graph.local_transaction_id = 71;
   graph.statement_snapshot_id = 72;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 2;
   graph.result_descriptor_ids = {201};
 
@@ -68,6 +90,7 @@ plan::CanonicalLogicalPropertyCatalog Catalog() {
   catalog.security_context_uuid = Uuid(3);
   catalog.local_transaction_id = 71;
   catalog.statement_snapshot_id = 72;
+  catalog.mga_statement_context = MgaContext();
 
   plan::CanonicalLogicalPropertyRecord equivalence;
   equivalence.property_uuid = Uuid(101);
@@ -135,6 +158,98 @@ bool ValidateCanonicalSerialization() {
                         changed.canonical_serialization !=
                             baseline.canonical_serialization,
                     "ordering-term order was not identity-significant");
+
+  auto changed_graph = populated.logical_graph;
+  auto changed_scope = populated.property_catalog;
+  changed_graph.mga_statement_context.statement_uuid = Uuid(9010);
+  changed_scope.mga_statement_context.statement_uuid = Uuid(9010);
+  const auto changed_uuid = plan::SerializeCanonicalLogicalPropertyCatalog(
+      changed_graph, changed_scope);
+  passed &= Require(changed_uuid.accepted &&
+                        changed_uuid.canonical_serialization !=
+                            baseline.canonical_serialization,
+                    "statement UUID mutation did not change serialization");
+
+  changed_graph = populated.logical_graph;
+  changed_scope = populated.property_catalog;
+  changed_graph.mga_statement_context.active_excluded_local_transaction_ids =
+      {70, 71};
+  changed_graph.mga_statement_context.oldest_active_transaction_id = 70;
+  changed_graph.mga_statement_context.oldest_interesting_transaction_id = 70;
+  changed_graph.mga_statement_context.oldest_snapshot_transaction_id = 70;
+  changed_graph.mga_statement_context.retention_horizon_transaction_id = 70;
+  changed_scope.mga_statement_context =
+      changed_graph.mga_statement_context;
+  const auto changed_vector = plan::SerializeCanonicalLogicalPropertyCatalog(
+      changed_graph, changed_scope);
+  passed &= Require(changed_vector.accepted &&
+                        changed_vector.canonical_serialization !=
+                            baseline.canonical_serialization,
+                    "snapshot exclusion-vector mutation did not change serialization");
+
+  changed_graph = populated.logical_graph;
+  changed_scope = populated.property_catalog;
+  changed_graph.mga_statement_context.current = false;
+  changed_scope.mga_statement_context.current = false;
+  const auto changed_current = plan::SerializeCanonicalLogicalPropertyCatalog(
+      changed_graph, changed_scope);
+  passed &= Require(changed_current.accepted &&
+                        changed_current.canonical_serialization !=
+                            baseline.canonical_serialization,
+                    "snapshot-current mutation did not change serialization");
+
+  changed_graph = populated.logical_graph;
+  changed_scope = populated.property_catalog;
+  changed_graph.mga_statement_context.oldest_active_transaction_id = 73;
+  changed_scope.mga_statement_context =
+      changed_graph.mga_statement_context;
+  const auto invalid_horizon =
+      plan::SerializeCanonicalLogicalPropertyCatalog(changed_graph,
+                                                     changed_scope);
+  passed &= Require(!invalid_horizon.accepted,
+                    "future MGA horizon mutation was serialized");
+
+  auto missing_owner_graph = populated.logical_graph;
+  auto missing_owner_scope = populated.property_catalog;
+  missing_owner_graph.mga_statement_context
+      .active_excluded_local_transaction_ids.clear();
+  missing_owner_scope.mga_statement_context =
+      missing_owner_graph.mga_statement_context;
+  const auto missing_owner = plan::SerializeCanonicalLogicalPropertyCatalog(
+      missing_owner_graph, missing_owner_scope);
+  passed &= Require(!missing_owner.accepted,
+                    "MGA vector without its active owner was serialized");
+
+  auto nil_graph = populated.logical_graph;
+  auto nil_scope = populated.property_catalog;
+  nil_graph.mga_statement_context.statement_snapshot_uuid =
+      "00000000-0000-0000-0000-000000000000";
+  nil_scope.mga_statement_context = nil_graph.mga_statement_context;
+  const auto nil_identity = plan::SerializeCanonicalLogicalPropertyCatalog(
+      nil_graph, nil_scope);
+  passed &= Require(!nil_identity.accepted,
+                    "nil MGA snapshot identity was serialized");
+
+  auto nil_catalog_graph = populated.logical_graph;
+  auto nil_catalog_scope = populated.property_catalog;
+  nil_catalog_graph.catalog_epoch_uuid =
+      "00000000-0000-0000-0000-000000000000";
+  nil_catalog_scope.catalog_epoch_uuid = nil_catalog_graph.catalog_epoch_uuid;
+  const auto nil_catalog = plan::SerializeCanonicalLogicalPropertyCatalog(
+      nil_catalog_graph, nil_catalog_scope);
+  passed &= Require(!nil_catalog.accepted,
+                    "nil catalog epoch identity was serialized");
+
+  auto conflated_graph = populated.logical_graph;
+  auto conflated_scope = populated.property_catalog;
+  conflated_graph.catalog_epoch_uuid =
+      conflated_graph.mga_statement_context.statement_metadata_snapshot_uuid;
+  conflated_scope.catalog_epoch_uuid = conflated_graph.catalog_epoch_uuid;
+  const auto conflated_identity =
+      plan::SerializeCanonicalLogicalPropertyCatalog(conflated_graph,
+                                                     conflated_scope);
+  passed &= Require(!conflated_identity.accepted,
+                    "metadata snapshot was accepted as the catalog epoch");
   return passed;
 }
 

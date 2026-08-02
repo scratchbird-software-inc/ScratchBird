@@ -13,6 +13,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -21,6 +23,145 @@
 #include <vector>
 
 namespace scratchbird::engine::planner {
+
+struct CanonicalMgaStatementContext {
+  std::string statement_uuid;
+  std::string owning_transaction_uuid;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::uint64_t owning_local_transaction_id{0};
+  std::uint64_t visible_committed_high_watermark{0};
+  std::uint64_t oldest_active_transaction_id{0};
+  std::uint64_t oldest_interesting_transaction_id{0};
+  std::uint64_t oldest_snapshot_transaction_id{0};
+  std::uint64_t retention_horizon_transaction_id{0};
+  std::vector<std::uint64_t> active_excluded_local_transaction_ids;
+  std::vector<std::uint64_t> in_doubt_excluded_local_transaction_ids;
+  std::string snapshot_kind;
+  std::uint64_t publication_inventory_next_local_transaction_id{0};
+  bool inventory_authoritative{false};
+  bool complete{false};
+  bool current{false};
+};
+
+inline bool CanonicalMgaStatementContextEqual(
+    const CanonicalMgaStatementContext& left,
+    const CanonicalMgaStatementContext& right) {
+  return left.statement_uuid == right.statement_uuid &&
+         left.owning_transaction_uuid == right.owning_transaction_uuid &&
+         left.statement_snapshot_uuid == right.statement_snapshot_uuid &&
+         left.statement_metadata_snapshot_uuid ==
+             right.statement_metadata_snapshot_uuid &&
+         left.owning_local_transaction_id ==
+             right.owning_local_transaction_id &&
+         left.visible_committed_high_watermark ==
+             right.visible_committed_high_watermark &&
+         left.oldest_active_transaction_id ==
+             right.oldest_active_transaction_id &&
+         left.oldest_interesting_transaction_id ==
+             right.oldest_interesting_transaction_id &&
+         left.oldest_snapshot_transaction_id ==
+             right.oldest_snapshot_transaction_id &&
+         left.retention_horizon_transaction_id ==
+             right.retention_horizon_transaction_id &&
+         left.active_excluded_local_transaction_ids ==
+             right.active_excluded_local_transaction_ids &&
+         left.in_doubt_excluded_local_transaction_ids ==
+             right.in_doubt_excluded_local_transaction_ids &&
+         left.snapshot_kind == right.snapshot_kind &&
+         left.publication_inventory_next_local_transaction_id ==
+             right.publication_inventory_next_local_transaction_id &&
+         left.inventory_authoritative == right.inventory_authoritative &&
+         left.complete == right.complete && left.current == right.current;
+}
+
+inline bool CanonicalMgaStatementContextStructurallyValid(
+    const CanonicalMgaStatementContext& context,
+    const bool require_current = false) {
+  const auto canonical_uuid = [](const std::string_view value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return value != "00000000-0000-0000-0000-000000000000";
+  };
+  if (!canonical_uuid(context.statement_uuid) ||
+      !canonical_uuid(context.owning_transaction_uuid) ||
+      !canonical_uuid(context.statement_snapshot_uuid) ||
+      !canonical_uuid(context.statement_metadata_snapshot_uuid) ||
+      context.owning_local_transaction_id == 0) {
+    return false;
+  }
+  const bool has_descriptor_evidence =
+      context.oldest_active_transaction_id != 0 ||
+      context.oldest_interesting_transaction_id != 0 ||
+      context.oldest_snapshot_transaction_id != 0 ||
+      context.retention_horizon_transaction_id != 0 ||
+      !context.active_excluded_local_transaction_ids.empty() ||
+      !context.in_doubt_excluded_local_transaction_ids.empty() ||
+      !context.snapshot_kind.empty() ||
+      context.publication_inventory_next_local_transaction_id != 0 ||
+      context.inventory_authoritative || context.complete || context.current;
+  if (!has_descriptor_evidence) {
+    return !require_current && !context.inventory_authoritative &&
+           !context.complete && !context.current;
+  }
+  if (!context.inventory_authoritative || !context.complete ||
+      (require_current && !context.current) ||
+      context.snapshot_kind != "statement_stable" ||
+      context.publication_inventory_next_local_transaction_id == 0 ||
+      context.visible_committed_high_watermark >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.owning_local_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_active_transaction_id == 0 ||
+      context.oldest_interesting_transaction_id == 0 ||
+      context.oldest_snapshot_transaction_id == 0 ||
+      context.retention_horizon_transaction_id == 0 ||
+      context.oldest_active_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_interesting_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_snapshot_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.retention_horizon_transaction_id >=
+          context.publication_inventory_next_local_transaction_id ||
+      context.oldest_snapshot_transaction_id !=
+          context.retention_horizon_transaction_id ||
+      context.oldest_snapshot_transaction_id !=
+          std::min(context.oldest_interesting_transaction_id,
+                   context.owning_local_transaction_id)) {
+    return false;
+  }
+  const auto canonical_exclusions = [&](const auto& values) {
+    return std::ranges::is_sorted(values) &&
+           std::adjacent_find(values.begin(), values.end()) == values.end() &&
+           std::ranges::all_of(values, [&](const std::uint64_t value) {
+             return value != 0 &&
+                    value <
+                        context.publication_inventory_next_local_transaction_id;
+           });
+  };
+  if (!canonical_exclusions(context.active_excluded_local_transaction_ids) ||
+      !canonical_exclusions(
+          context.in_doubt_excluded_local_transaction_ids) ||
+      !std::ranges::binary_search(
+          context.active_excluded_local_transaction_ids,
+          context.owning_local_transaction_id)) {
+    return false;
+  }
+  std::vector<std::uint64_t> intersection;
+  std::ranges::set_intersection(
+      context.active_excluded_local_transaction_ids,
+      context.in_doubt_excluded_local_transaction_ids,
+      std::back_inserter(intersection));
+  return intersection.empty();
+}
 
 enum class CanonicalLogicalRelationalNodeKind : std::uint8_t {
   kRelationSource = 1,
@@ -64,6 +205,7 @@ struct CanonicalLogicalRelationalGraph {
   std::string security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  CanonicalMgaStatementContext mga_statement_context;
   std::uint32_t root_logical_node_id{0};
   std::vector<std::uint32_t> result_descriptor_ids;
   std::vector<CanonicalLogicalRelationalNode> nodes;
@@ -161,7 +303,7 @@ ValidateCanonicalLogicalRelationalGraph(
       const auto ch = static_cast<unsigned char>(value[index]);
       if (!std::isxdigit(ch) || std::isupper(ch)) return false;
     }
-    return true;
+    return value != "00000000-0000-0000-0000-000000000000";
   };
   const auto known_kind = [](const CanonicalLogicalRelationalNodeKind kind) {
     return kind >= CanonicalLogicalRelationalNodeKind::kRelationSource &&
@@ -192,7 +334,14 @@ ValidateCanonicalLogicalRelationalGraph(
   if (!canonical_uuid(graph.bound_sblr_tree_uuid) ||
       !canonical_uuid(graph.catalog_epoch_uuid) ||
       !canonical_uuid(graph.security_context_uuid) ||
-      graph.local_transaction_id == 0 || graph.statement_snapshot_id == 0) {
+      !CanonicalMgaStatementContextStructurallyValid(
+          graph.mga_statement_context) ||
+      graph.catalog_epoch_uuid ==
+          graph.mga_statement_context.statement_metadata_snapshot_uuid ||
+      graph.local_transaction_id !=
+          graph.mga_statement_context.owning_local_transaction_id ||
+      graph.statement_snapshot_id !=
+          graph.mga_statement_context.visible_committed_high_watermark) {
     return refuse("QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1", 0,
                   "bound_authority_context");
   }
@@ -381,6 +530,7 @@ struct CanonicalPhysicalAlternativeCatalog {
   std::string security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  CanonicalMgaStatementContext mga_statement_context;
   std::vector<CanonicalPhysicalAlternativeRecord> alternatives;
   bool raw_sql_text_present{false};
   bool parser_execution_authority_claimed{false};
@@ -439,7 +589,7 @@ ValidateCanonicalLogicalPhysicalBoundary(
       const auto ch = static_cast<unsigned char>(value[index]);
       if (!std::isxdigit(ch) || std::isupper(ch)) return false;
     }
-    return true;
+    return value != "00000000-0000-0000-0000-000000000000";
   };
   const auto stable_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -464,7 +614,9 @@ ValidateCanonicalLogicalPhysicalBoundary(
       catalog.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
       catalog.security_context_uuid != graph.security_context_uuid ||
       catalog.local_transaction_id != graph.local_transaction_id ||
-      catalog.statement_snapshot_id != graph.statement_snapshot_id) {
+      catalog.statement_snapshot_id != graph.statement_snapshot_id ||
+      !CanonicalMgaStatementContextEqual(catalog.mga_statement_context,
+                                         graph.mga_statement_context)) {
     return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1", 0,
                   "logical_scope_identity");
   }
@@ -581,6 +733,7 @@ struct CanonicalLogicalPropertyCatalog {
   std::string security_context_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  CanonicalMgaStatementContext mga_statement_context;
   std::vector<CanonicalLogicalPropertyRecord> properties;
   bool raw_sql_text_present{false};
   bool parser_execution_authority_claimed{false};
@@ -702,7 +855,7 @@ ValidateCanonicalLogicalPropertyCatalog(
       const auto ch = static_cast<unsigned char>(value[index]);
       if (!std::isxdigit(ch) || std::isupper(ch)) return false;
     }
-    return true;
+    return value != "00000000-0000-0000-0000-000000000000";
   };
   const auto graph_validation = ValidateCanonicalLogicalRelationalGraph(graph);
   if (!graph_validation.accepted) {
@@ -717,7 +870,9 @@ ValidateCanonicalLogicalPropertyCatalog(
       catalog.catalog_epoch_uuid != graph.catalog_epoch_uuid ||
       catalog.security_context_uuid != graph.security_context_uuid ||
       catalog.local_transaction_id != graph.local_transaction_id ||
-      catalog.statement_snapshot_id != graph.statement_snapshot_id) {
+      catalog.statement_snapshot_id != graph.statement_snapshot_id ||
+      !CanonicalMgaStatementContextEqual(catalog.mga_statement_context,
+                                         graph.mga_statement_context)) {
     return refuse("QOW-DIAG-LOGICAL-PROPERTY-SCOPE-V1", 0,
                   "bound_property_scope");
   }
@@ -944,6 +1099,44 @@ struct CanonicalLogicalPropertySerializationResult {
 // sets and catalog record order are canonicalized; ordering-term order remains
 // significant. The exact bound SBLR/catalog/security/MGA scope is part of the
 // preimage, so any invalidating scope change produces refusal, not reuse.
+inline std::string SerializeCanonicalMgaStatementContext(
+    const CanonicalMgaStatementContext& context) {
+  std::string serialized =
+      "mga-v1|statement=" + context.statement_uuid +
+      "|owner_uuid=" + context.owning_transaction_uuid +
+      "|snapshot_uuid=" + context.statement_snapshot_uuid +
+      "|metadata_uuid=" + context.statement_metadata_snapshot_uuid +
+      "|owner_local=" +
+      std::to_string(context.owning_local_transaction_id) +
+      "|visible_high_water=" +
+      std::to_string(context.visible_committed_high_watermark) +
+      "|oldest_active=" +
+      std::to_string(context.oldest_active_transaction_id) +
+      "|oldest_interesting=" +
+      std::to_string(context.oldest_interesting_transaction_id) +
+      "|oldest_snapshot=" +
+      std::to_string(context.oldest_snapshot_transaction_id) +
+      "|retention=" +
+      std::to_string(context.retention_horizon_transaction_id) +
+      "|active_excluded=";
+  for (const auto id : context.active_excluded_local_transaction_ids) {
+    serialized += std::to_string(id) + ",";
+  }
+  serialized += "|in_doubt_excluded=";
+  for (const auto id : context.in_doubt_excluded_local_transaction_ids) {
+    serialized += std::to_string(id) + ",";
+  }
+  serialized +=
+      "|kind=" + context.snapshot_kind + "|publication_next=" +
+      std::to_string(
+          context.publication_inventory_next_local_transaction_id) +
+      "|inventory_authoritative=" +
+      (context.inventory_authoritative ? "true" : "false") +
+      "|complete=" + (context.complete ? "true" : "false") +
+      "|current=" + (context.current ? "true" : "false");
+  return serialized;
+}
+
 inline CanonicalLogicalPropertySerializationResult
 SerializeCanonicalLogicalPropertyCatalog(
     const CanonicalLogicalRelationalGraph& graph,
@@ -960,7 +1153,9 @@ SerializeCanonicalLogicalPropertyCatalog(
       catalog.bound_sblr_tree_uuid + "|catalog=" + catalog.catalog_epoch_uuid +
       "|security=" + catalog.security_context_uuid + "|transaction=" +
       std::to_string(catalog.local_transaction_id) + "|snapshot=" +
-      std::to_string(catalog.statement_snapshot_id) + "|";
+      std::to_string(catalog.statement_snapshot_id) + "|" +
+      SerializeCanonicalMgaStatementContext(
+          catalog.mga_statement_context) + "|";
 
   std::vector<const CanonicalLogicalPropertyRecord*> properties;
   properties.reserve(catalog.properties.size());

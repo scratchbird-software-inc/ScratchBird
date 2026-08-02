@@ -117,6 +117,25 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
   dag.root_physical_node_id = 2;
   dag.local_transaction_id = 4011;
   dag.statement_snapshot_id = 4012;
+  dag.mga_statement_context = {
+      WindowUuid(4310),
+      WindowUuid(4311),
+      WindowUuid(4312),
+      WindowUuid(4313),
+      4011,
+      4012,
+      4011,
+      4011,
+      4011,
+      4011,
+      {4011},
+      {},
+      "statement_stable",
+      4013,
+      true,
+      true,
+      true,
+  };
   dag.bound_sblr_tree_uuid = WindowUuid(4302);
   dag.catalog_epoch_uuid = WindowUuid(4303);
   dag.security_context_uuid = WindowUuid(4304);
@@ -141,7 +160,7 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
       {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
       {exec::PhysicalAdmissionStage::kSecurity, dag.security_context_uuid},
       {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
-       dag.catalog_epoch_uuid},
+       dag.mga_statement_context.statement_snapshot_uuid},
       {exec::PhysicalAdmissionStage::kPolicyCapability,
        dag.capability_snapshot_uuid},
       {exec::PhysicalAdmissionStage::kResource, dag.resource_snapshot_uuid},
@@ -183,6 +202,9 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
        .memory_bytes_required = 16384,
        .engine_capability_validated = true},
   };
+  for (auto& node : dag.nodes) {
+    node.mga_statement_context = dag.mga_statement_context;
+  }
 
   request.selected_physical_node_id = 2;
   request.input_batch = exec::MakeDescriptorBatch(

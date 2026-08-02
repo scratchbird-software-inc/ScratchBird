@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -35,17 +36,49 @@ std::string Uuid(const std::uint64_t suffix) {
   return text;
 }
 
+void BindPublishedNodeContexts(exec::TypedPhysicalNodeDag* dag) {
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid = Uuid(7000 + node.physical_node_id);
+    node.executor_capability_uuid = Uuid(8000 + node.physical_node_id);
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid = Uuid(9000 + node.physical_node_id);
+    node.memory_bytes_required = 1024;
+    node.engine_capability_validated = true;
+    node.mga_statement_context = dag->mga_statement_context;
+  }
+}
+
 exec::TypedPhysicalNodeDag Dag() {
   exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
   dag.selected_plan_uuid = Uuid(401);
   dag.root_physical_node_id = 43;
   dag.local_transaction_id = 501;
   dag.statement_snapshot_id = 502;
-  for (std::uint8_t stage = 1; stage <= 8; ++stage) {
-    dag.admission_evidence.push_back(
-        {static_cast<exec::PhysicalAdmissionStage>(stage),
-         Uuid(510 + stage)});
-  }
+  dag.mga_statement_context = {
+      Uuid(540), Uuid(541), Uuid(542), Uuid(543), 501, 502, 501, 501,
+      501, 501, {501}, {}, "statement_stable", 503, true, true, true};
+  dag.bound_sblr_tree_uuid = Uuid(551);
+  dag.catalog_epoch_uuid = Uuid(552);
+  dag.security_context_uuid = Uuid(553);
+  dag.capability_snapshot_uuid = Uuid(555);
+  dag.resource_snapshot_uuid = Uuid(556);
+  dag.statistics_snapshot_uuid = Uuid(557);
+  dag.route_snapshot_uuid = Uuid(558);
+  dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest, dag.bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity, dag.security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       dag.mga_statement_context.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       dag.capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource, dag.resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       dag.statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       dag.route_snapshot_uuid},
+  };
   // Deliberately not topological: dispatch must follow typed input edges.
   dag.nodes = {
       {.physical_node_id = 43,
@@ -69,6 +102,18 @@ exec::TypedPhysicalNodeDag Dag() {
        .output_descriptor_ids = {411, 412},
        .causal_counter_id = 4201},
   };
+  dag.catalog_generation = 1;
+  dag.security_epoch = 1;
+  dag.policy_epoch = 1;
+  dag.resource_epoch = 1;
+  dag.statistics_generation = 1;
+  dag.route_epoch = 1;
+  dag.route_generation = 1;
+  dag.memory_budget_bytes = 1 << 20;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  BindPublishedNodeContexts(&dag);
   return dag;
 }
 
@@ -84,6 +129,25 @@ exec::CanonicalPhysicalDispatchStepResult Step(
   result.output_descriptor_ids = node.output_descriptor_ids;
   result.authority.engine_mga_snapshot_bound = true;
   return result;
+}
+
+exec::CanonicalPhysicalExecutorRegistration Registration(
+    const exec::TypedPhysicalNodeDag& dag,
+    const std::uint64_t physical_node_id,
+    exec::CanonicalPhysicalNodeExecutor execute) {
+  const auto node = std::ranges::find_if(dag.nodes, [&](const auto& candidate) {
+    return candidate.physical_node_id == physical_node_id;
+  });
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = node->node_kind;
+  registration.implementation_id = node->implementation_id;
+  registration.execute = std::move(execute);
+  registration.executor_capability_uuid = node->executor_capability_uuid;
+  registration.executor_capability_abi_version =
+      node->executor_capability_abi_version;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  return registration;
 }
 
 exec::CanonicalScanAccessRequest ScanRequest(
@@ -122,8 +186,8 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
   request.inventory_statement_snapshot_id = 502;
   const auto scan_request = ScanRequest(request.physical_dag);
 
-  request.available_executors.push_back(
-      {exec::PhysicalNodeKind::kScan, "scan.index.v1",
+  request.available_executors.push_back(Registration(
+      request.physical_dag, 41,
        [invocation_order, scan_request](const auto& dag, const auto& node,
                                         const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
@@ -142,9 +206,9 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
            return result;
          }
          return Step(dag, node, 9001);
-       }});
-  request.available_executors.push_back(
-      {exec::PhysicalNodeKind::kFilter, "filter.3vl.v1",
+       }));
+  request.available_executors.push_back(Registration(
+      request.physical_dag, 42,
        [invocation_order](const auto& dag, const auto& node,
                           const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
@@ -157,9 +221,9 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
            return result;
          }
          return Step(dag, node, 9002);
-       }});
-  request.available_executors.push_back(
-      {exec::PhysicalNodeKind::kProject, "project.typed.v1",
+       }));
+  request.available_executors.push_back(Registration(
+      request.physical_dag, 43,
        [invocation_order](const auto& dag, const auto& node,
                           const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
@@ -172,7 +236,7 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
            return result;
          }
          return Step(dag, node, 9003);
-       }});
+       }));
   return request;
 }
 
@@ -238,6 +302,7 @@ bool ValidateSharedNodeExecutesOnce() {
        .output_descriptor_ids = {531},
        .causal_counter_id = 5301},
   };
+  BindPublishedNodeContexts(&dag);
 
   exec::CanonicalPhysicalDagDispatchRequest request;
   request.physical_dag = dag;
@@ -246,13 +311,18 @@ bool ValidateSharedNodeExecutesOnce() {
   std::vector<std::uint64_t> invocation_order;
   const auto register_executor = [&](const exec::PhysicalNodeKind kind,
                                      const std::string& implementation) {
-    request.available_executors.push_back(
-        {kind, implementation,
+    const auto node = std::ranges::find_if(
+        dag.nodes, [&](const auto& candidate) {
+          return candidate.node_kind == kind &&
+                 candidate.implementation_id == implementation;
+        });
+    request.available_executors.push_back(Registration(
+        dag, node->physical_node_id,
          [&invocation_order](const auto& selected_dag, const auto& node,
                              const auto&) {
            invocation_order.push_back(node.physical_node_id);
            return Step(selected_dag, node, 9100 + node.physical_node_id);
-         }});
+         }));
   };
   register_executor(exec::PhysicalNodeKind::kValues, "values.literal.v1");
   register_executor(exec::PhysicalNodeKind::kFilter, "filter.shared.v1");
@@ -291,6 +361,17 @@ bool ValidatePreflightAndSnapshotRefusal() {
                             "SB_DIAG_MGA_READ_SNAPSHOT_MISSING" &&
                         invocation_order.empty(),
                     "snapshot mismatch reached a physical executor");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  request.physical_dag.nodes.front().mga_statement_context.current = false;
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY" &&
+          invocation_order.empty(),
+      "node-level MGA vector drift reached physical dispatch");
   return passed;
 }
 

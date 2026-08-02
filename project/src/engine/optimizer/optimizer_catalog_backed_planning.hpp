@@ -52,6 +52,7 @@ struct CanonicalOptimizerSecuritySnapshot {
 struct CanonicalOptimizerMgaSnapshot {
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  planner::CanonicalMgaStatementContext statement_context;
   std::string metadata_snapshot_uuid;
   bool transaction_active{false};
   bool statement_snapshot_fixed{false};
@@ -137,6 +138,7 @@ struct CanonicalOptimizerAdmissionResult {
   std::string route_snapshot_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  planner::CanonicalMgaStatementContext mga_statement_context;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
@@ -170,6 +172,7 @@ struct CanonicalNativeObjectFreeAdmissionContext {
   bool spill_allowed{false};
   std::uint64_t local_transaction_id{0};
   std::uint64_t statement_snapshot_id{0};
+  planner::CanonicalMgaStatementContext mga_statement_context;
   std::uint64_t admitted_at_monotonic_ns{0};
   bool metadata_snapshot_engine_owned{false};
   bool authorization_context_engine_owned{false};

@@ -11,6 +11,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_relational_bridge.hpp"
 #include "security/security_model.hpp"
+#include "transaction/transaction_api.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -25,6 +26,7 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 namespace opt = scratchbird::engine::optimizer;
+namespace plan = scratchbird::engine::planner;
 
 bool IsCanonicalUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
@@ -148,6 +150,40 @@ CanonicalHeapOptimizerAdmissionResult Refuse(std::string diagnostic_id,
   return result;
 }
 
+plan::CanonicalMgaStatementContext CanonicalMgaContextFromResolvedSnapshot(
+    const EngineRequestContext& context,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
+  plan::CanonicalMgaStatementContext result;
+  result.statement_uuid = context.statement_uuid.canonical;
+  result.owning_transaction_uuid = context.transaction_uuid.canonical;
+  result.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  result.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  result.owning_local_transaction_id = descriptor.owning_transaction.value;
+  result.visible_committed_high_watermark =
+      descriptor.visible_committed_high_watermark;
+  result.oldest_active_transaction_id =
+      descriptor.oldest_active_transaction.value;
+  result.oldest_interesting_transaction_id =
+      descriptor.oldest_interesting_transaction.value;
+  result.oldest_snapshot_transaction_id =
+      descriptor.oldest_snapshot_transaction.value;
+  result.retention_horizon_transaction_id =
+      descriptor.retention_horizon_transaction.value;
+  result.active_excluded_local_transaction_ids =
+      descriptor.active_excluded_local_transaction_ids;
+  result.in_doubt_excluded_local_transaction_ids =
+      descriptor.in_doubt_excluded_local_transaction_ids;
+  result.snapshot_kind = scratchbird::transaction::mga::SnapshotVectorKindName(
+      descriptor.snapshot_kind);
+  result.publication_inventory_next_local_transaction_id =
+      descriptor.publication_inventory_next_local_transaction_id;
+  result.inventory_authoritative = descriptor.inventory_authoritative;
+  result.complete = descriptor.complete;
+  result.current = true;
+  return result;
+}
+
 }  // namespace
 
 CanonicalHeapOptimizerAdmissionResult
@@ -198,6 +234,24 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SCOPE-V1",
                   "prepared_or_cached_execution");
   }
+
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
+  EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = context;
+  const auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
+  if (!snapshot.ok) {
+    return Refuse(
+        snapshot.diagnostics.empty()
+            ? "QOW-DIAG-QRY-004-HEAP-OPTIMIZER-MGA-SNAPSHOT-V1"
+            : snapshot.diagnostics.front().code,
+        snapshot.diagnostics.empty()
+            ? "current_statement_snapshot"
+            : snapshot.diagnostics.front().detail);
+  }
+  const auto canonical_mga =
+      CanonicalMgaContextFromResolvedSnapshot(context,
+                                              snapshot.snapshot_vector);
 
   const auto validation = ValidateTypedRelationalDag(relational);
   if (!validation.accepted) {
@@ -252,7 +306,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       context.statement_metadata_snapshot_engine_owned;
   planning_scope.authorization_context_engine_owned =
       context.authorization_context.present;
-  const auto logical =
+  auto logical =
       PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
           relational, planning_scope);
   if (!logical.accepted || !logical.property_catalog.properties.empty()) {
@@ -263,6 +317,17 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "object_source_properties");
   }
+  auto registered_mga = canonical_mga;
+  registered_mga.current = false;
+  if (!plan::CanonicalMgaStatementContextEqual(
+          logical.logical_graph.mga_statement_context, registered_mga) ||
+      !plan::CanonicalMgaStatementContextEqual(
+          logical.property_catalog.mga_statement_context, registered_mga)) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-MGA-SNAPSHOT-V1",
+                  "bridge_statement_snapshot_carriage");
+  }
+  logical.logical_graph.mga_statement_context = canonical_mga;
+  logical.property_catalog.mga_statement_context = canonical_mga;
 
   const std::string& relation_uuid = node.required_object_uuids.front();
   const auto temporary =
@@ -408,6 +473,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   admission_context.local_transaction_id = context.local_transaction_id;
   admission_context.statement_snapshot_id =
       context.snapshot_visible_through_local_transaction_id;
+  admission_context.mga_statement_context = canonical_mga;
   admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
   admission_context.metadata_snapshot_engine_owned = true;
   admission_context.authorization_context_engine_owned = true;

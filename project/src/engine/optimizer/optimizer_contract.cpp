@@ -487,6 +487,9 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
           admission_request.logical_graph.local_transaction_id ||
       admission.statement_snapshot_id !=
           admission_request.logical_graph.statement_snapshot_id ||
+      !planner::CanonicalMgaStatementContextEqual(
+          admission.mga_statement_context,
+          admission_request.logical_graph.mga_statement_context) ||
       admission.catalog_generation !=
           admission_request.catalog.catalog_generation ||
       admission.security_epoch != admission_request.security.security_epoch ||
@@ -886,6 +889,8 @@ CanonicalOptimizerSearchResult SearchCanonicalRelationalMemo(
   result.data_access_allowed = false;
   result.selected_scalar_score = selected.scalar_score;
   result.bound_sblr_tree_uuid = admission.bound_sblr_tree_uuid;
+  result.catalog_epoch_uuid = admission.catalog_epoch_uuid;
+  result.mga_statement_context = admission.mga_statement_context;
   result.statistics_snapshot_uuid = admission.statistics_snapshot_uuid;
   result.statistics_generation = admission.statistics_generation;
   result.model_family_id = "relational.local.v1";
@@ -1006,6 +1011,9 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
           admission_request.logical_graph.local_transaction_id ||
       admission.statement_snapshot_id !=
           admission_request.logical_graph.statement_snapshot_id ||
+      !planner::CanonicalMgaStatementContextEqual(
+          admission.mga_statement_context,
+          admission_request.logical_graph.mga_statement_context) ||
       admission.catalog_generation !=
           admission_request.catalog.catalog_generation ||
       admission.security_epoch != admission_request.security.security_epoch ||
@@ -1030,6 +1038,10 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       !search.resource_bounded || !search.deterministic ||
       search.physical_dag_published || search.data_access_allowed ||
       search.bound_sblr_tree_uuid != admission.bound_sblr_tree_uuid ||
+      search.catalog_epoch_uuid != admission.catalog_epoch_uuid ||
+      !planner::CanonicalMgaStatementContextEqual(
+          search.mga_statement_context,
+          admission.mga_statement_context) ||
       search.statistics_snapshot_uuid !=
           admission.statistics_snapshot_uuid ||
       search.statistics_generation != admission.statistics_generation ||
@@ -1253,6 +1265,37 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       admission_request.logical_graph.root_logical_node_id;
   dag.local_transaction_id = admission.local_transaction_id;
   dag.statement_snapshot_id = admission.statement_snapshot_id;
+  const auto& mga = admission.mga_statement_context;
+  dag.mga_statement_context.statement_uuid = mga.statement_uuid;
+  dag.mga_statement_context.owning_transaction_uuid =
+      mga.owning_transaction_uuid;
+  dag.mga_statement_context.statement_snapshot_uuid =
+      mga.statement_snapshot_uuid;
+  dag.mga_statement_context.statement_metadata_snapshot_uuid =
+      mga.statement_metadata_snapshot_uuid;
+  dag.mga_statement_context.owning_local_transaction_id =
+      mga.owning_local_transaction_id;
+  dag.mga_statement_context.visible_committed_high_watermark =
+      mga.visible_committed_high_watermark;
+  dag.mga_statement_context.oldest_active_transaction_id =
+      mga.oldest_active_transaction_id;
+  dag.mga_statement_context.oldest_interesting_transaction_id =
+      mga.oldest_interesting_transaction_id;
+  dag.mga_statement_context.oldest_snapshot_transaction_id =
+      mga.oldest_snapshot_transaction_id;
+  dag.mga_statement_context.retention_horizon_transaction_id =
+      mga.retention_horizon_transaction_id;
+  dag.mga_statement_context.active_excluded_local_transaction_ids =
+      mga.active_excluded_local_transaction_ids;
+  dag.mga_statement_context.in_doubt_excluded_local_transaction_ids =
+      mga.in_doubt_excluded_local_transaction_ids;
+  dag.mga_statement_context.snapshot_kind = mga.snapshot_kind;
+  dag.mga_statement_context.publication_inventory_next_local_transaction_id =
+      mga.publication_inventory_next_local_transaction_id;
+  dag.mga_statement_context.inventory_authoritative =
+      mga.inventory_authoritative;
+  dag.mga_statement_context.complete = mga.complete;
+  dag.mga_statement_context.current = mga.current;
   dag.bound_sblr_tree_uuid = admission.bound_sblr_tree_uuid;
   dag.catalog_epoch_uuid = admission.catalog_epoch_uuid;
   dag.security_context_uuid = admission.security_context_uuid;
@@ -1280,7 +1323,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
       {executor::PhysicalAdmissionStage::kSecurity,
        admission.security_context_uuid},
       {executor::PhysicalAdmissionStage::kMgaStatementBoundary,
-       admission.catalog_epoch_uuid},
+       admission.mga_statement_context.statement_snapshot_uuid},
       {executor::PhysicalAdmissionStage::kPolicyCapability,
        admission.capability_snapshot_uuid},
       {executor::PhysicalAdmissionStage::kResource,
@@ -1369,6 +1412,7 @@ CanonicalOptimizerPhysicalPublicationResult PublishCanonicalPhysicalDag(
     physical.spill_bytes_expected =
         selection.cost.terms.spill_bytes_expected;
     physical.engine_capability_validated = true;
+    physical.mga_statement_context = dag.mga_statement_context;
     dag.nodes.push_back(std::move(physical));
   }
 

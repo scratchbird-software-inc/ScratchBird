@@ -22,6 +22,8 @@ constexpr std::string_view kTree =
     "019f0000-0000-7300-8000-000000006101";
 constexpr std::string_view kCatalog =
     "019f0000-0000-7300-8000-000000006102";
+constexpr std::string_view kMetadata =
+    "019f0000-0000-7300-8000-000000006109";
 constexpr std::string_view kSecurity =
     "019f0000-0000-7300-8000-000000006103";
 constexpr std::string_view kRelation =
@@ -36,6 +38,30 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
+plan::CanonicalMgaStatementContext MgaContext() {
+  plan::CanonicalMgaStatementContext context;
+  context.statement_uuid =
+      "019f0000-0000-7300-8000-000000006110";
+  context.owning_transaction_uuid =
+      "019f0000-0000-7300-8000-000000006111";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000006112";
+  context.statement_metadata_snapshot_uuid = std::string(kMetadata);
+  context.owning_local_transaction_id = 601;
+  context.visible_committed_high_watermark = 599;
+  context.oldest_active_transaction_id = 601;
+  context.oldest_interesting_transaction_id = 601;
+  context.oldest_snapshot_transaction_id = 601;
+  context.retention_horizon_transaction_id = 601;
+  context.active_excluded_local_transaction_ids = {601};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 602;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
 opt::CanonicalOptimizerAdmissionRequest Request() {
   opt::CanonicalOptimizerAdmissionRequest request;
   auto& graph = request.logical_graph;
@@ -44,6 +70,7 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   graph.security_context_uuid = std::string(kSecurity);
   graph.local_transaction_id = 601;
   graph.statement_snapshot_id = 599;
+  graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 1;
   graph.result_descriptor_ids = {1};
   plan::CanonicalLogicalRelationalNode source;
@@ -60,8 +87,9 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   request.logical_properties.security_context_uuid = std::string(kSecurity);
   request.logical_properties.local_transaction_id = 601;
   request.logical_properties.statement_snapshot_id = 599;
+  request.logical_properties.mga_statement_context = MgaContext();
 
-  request.catalog.snapshot_uuid = std::string(kCatalog);
+  request.catalog.snapshot_uuid = std::string(kMetadata);
   request.catalog.catalog_epoch_uuid = std::string(kCatalog);
   request.catalog.catalog_generation = 17;
   request.catalog.object_uuids = {std::string(kRelation)};
@@ -77,7 +105,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
 
   request.mga.local_transaction_id = 601;
   request.mga.statement_snapshot_id = 599;
-  request.mga.metadata_snapshot_uuid = std::string(kCatalog);
+  request.mga.statement_context = MgaContext();
+  request.mga.metadata_snapshot_uuid = std::string(kMetadata);
   request.mga.transaction_active = true;
   request.mga.statement_snapshot_fixed = true;
   request.mga.engine_owned = true;
@@ -144,7 +173,9 @@ bool ValidateCatalogAdmission() {
                         result.benchmark_clean_ready &&
                         !result.degraded_for_unknown_statistics &&
                         !result.data_access_allowed && result.issues.empty() &&
-                        result.evidence.size() == 8,
+                        result.evidence.size() == 8 &&
+                        plan::CanonicalMgaStatementContextEqual(
+                            result.mga_statement_context, MgaContext()),
                     "complete catalog-backed request was not admitted");
   for (std::size_t index = 0; index < result.evidence.size(); ++index) {
     passed &= Require(
@@ -187,6 +218,52 @@ bool ValidateCatalogRefusals() {
             "019f0000-0000-7300-8000-000000006999";
       },
       "stale catalog epoch was admitted");
+  passed &= expect_catalog_refusal(
+      [](auto& request) {
+        request.catalog.catalog_epoch_uuid =
+            "00000000-0000-0000-0000-000000000000";
+      },
+      "nil catalog epoch was admitted");
+  passed &= expect_catalog_refusal(
+      [](auto& request) {
+        request.catalog.snapshot_uuid = request.catalog.catalog_epoch_uuid;
+      },
+      "catalog epoch was accepted as the metadata snapshot");
+  passed &= expect_catalog_refusal(
+      [](auto& request) {
+        std::swap(request.catalog.snapshot_uuid,
+                  request.catalog.catalog_epoch_uuid);
+      },
+      "swapped catalog epoch and metadata snapshot were admitted");
+
+  const auto expect_mga_refusal = [&](auto mutation,
+                                      const std::string_view detail) {
+    auto request = Request();
+    mutation(request);
+    const auto result = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+    return Require(!result.admitted && !result.planning_allowed &&
+                       !result.issues.empty() &&
+                       result.issues.front().stage ==
+                           opt::CanonicalOptimizerAdmissionStage::
+                               kMgaStatementBoundary,
+                   detail);
+  };
+  passed &= expect_mga_refusal(
+      [](auto& request) {
+        request.mga.statement_context.current = false;
+      },
+      "non-current inventory snapshot was admitted");
+  passed &= expect_mga_refusal(
+      [](auto& request) {
+        request.mga.statement_context.oldest_active_transaction_id = 602;
+      },
+      "future snapshot horizon was admitted");
+  passed &= expect_mga_refusal(
+      [](auto& request) {
+        request.mga.statement_context
+            .active_excluded_local_transaction_ids = {601, 603};
+      },
+      "out-of-ceiling snapshot exclusion was admitted");
   return passed;
 }
 

@@ -10,6 +10,7 @@
 #include "dml/delete_api.hpp"
 #include "dml/insert_api.hpp"
 #include "descriptor_value_runtime.hpp"
+#include "local_transaction_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/canonical_heap_optimizer_admission.hpp"
 #include "query/plan_api.hpp"
@@ -40,6 +41,7 @@ namespace db = scratchbird::storage::database;
 namespace exec = scratchbird::engine::executor;
 namespace opt = scratchbird::engine::optimizer;
 namespace platform = scratchbird::core::platform;
+namespace mga = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 
 constexpr std::string_view kTypeUuid =
@@ -500,11 +502,25 @@ void Rollback(const api::EngineRequestContext& context) {
   RequireOk(api::EngineRollbackTransaction(request), "rollback failed");
 }
 
+void Prepare(const api::EngineRequestContext& context) {
+  api::EnginePrepareTransactionRequest request;
+  request.context = context;
+  RequireOk(api::EnginePrepareTransaction(request), "prepare failed");
+}
+
 api::EngineRequestContext QueryContext(api::EngineRequestContext context,
                                        const std::string& table_uuid,
                                        const platform::u64 salt) {
   context.statement_uuid.canonical =
       NewUuidText(platform::UuidKind::object, salt + 1);
+  context.statement_snapshot_uuid.canonical.clear();
+  api::EnginePublishStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = context;
+  const auto snapshot = api::EnginePublishStatementSnapshot(snapshot_request);
+  RequireOk(snapshot, "publish statement-stable MGA snapshot failed");
+  context.statement_snapshot_uuid = snapshot.statement_snapshot_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
   context.statement_metadata_snapshot_uuid.canonical =
       NewUuidText(platform::UuidKind::object, salt + 2);
   context.statement_metadata_snapshot_engine_owned = true;
@@ -535,6 +551,8 @@ api::EngineRequestContext QueryContext(api::EngineRequestContext context,
       NewUuidText(platform::UuidKind::object, salt + 6);
   context.optimizer_route_snapshot_uuid.canonical =
       NewUuidText(platform::UuidKind::object, salt + 7);
+  context.catalog_epoch_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, salt + 8);
   context.optimizer_route_epoch = 1;
   context.optimizer_route_generation = 1;
   context.optimizer_memory_budget_bytes = 8 * 1024 * 1024;
@@ -544,6 +562,103 @@ api::EngineRequestContext QueryContext(api::EngineRequestContext context,
   context.optimizer_maximum_planning_time_ns = 1'000'000;
   context.current_monotonic_ns = "1";
   return context;
+}
+
+void ValidateStatementStableSnapshotAuthority(const Fixture& fixture) {
+  auto older_active = Begin(fixture, "qow-snapshot-older-active");
+  auto committed_between = Begin(fixture, "qow-snapshot-committed-between");
+  Commit(committed_between);
+  auto prepared = Begin(fixture, "qow-snapshot-prepared");
+  Prepare(prepared);
+  auto owner = Begin(fixture, "qow-snapshot-owner");
+
+  auto prepared_owner = prepared;
+  prepared_owner.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 5000);
+  api::EnginePublishStatementSnapshotRequest refused_publish;
+  refused_publish.context = prepared_owner;
+  Require(!api::EnginePublishStatementSnapshot(refused_publish).ok,
+          "prepared transaction published a statement snapshot");
+
+  owner.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 5001);
+  api::EnginePublishStatementSnapshotRequest publish;
+  publish.context = owner;
+  const auto published = api::EnginePublishStatementSnapshot(publish);
+  RequireOk(published, "statement snapshot authority publication failed");
+  const auto descriptor = published.snapshot_vector;
+  owner.statement_snapshot_uuid = published.statement_snapshot_uuid;
+  owner.snapshot_visible_through_local_transaction_id =
+      descriptor.visible_committed_high_watermark;
+
+  const auto contains = [](const std::vector<platform::u64>& values,
+                           const platform::u64 value) {
+    return std::ranges::find(values, value) != values.end();
+  };
+  Require(descriptor.complete && descriptor.inventory_authoritative &&
+              descriptor.snapshot_kind ==
+                  mga::SnapshotVectorKind::statement_stable,
+          "published statement snapshot was not complete inventory authority");
+  Require(descriptor.visible_committed_high_watermark ==
+              committed_between.local_transaction_id,
+          "statement snapshot did not preserve max-committed visibility");
+  Require(descriptor.publication_inventory_next_local_transaction_id ==
+              owner.local_transaction_id + 1,
+          "statement snapshot lost the separate publication inventory ceiling");
+  Require(contains(descriptor.active_excluded_local_transaction_ids,
+                   older_active.local_transaction_id) &&
+              contains(descriptor.active_excluded_local_transaction_ids,
+                       owner.local_transaction_id),
+          "statement snapshot omitted active exclusions");
+  Require(contains(descriptor.in_doubt_excluded_local_transaction_ids,
+                   prepared.local_transaction_id),
+          "statement snapshot omitted prepared in-doubt exclusion");
+  Require(!contains(descriptor.active_excluded_local_transaction_ids,
+                    committed_between.local_transaction_id) &&
+              !contains(descriptor.in_doubt_excluded_local_transaction_ids,
+                        committed_between.local_transaction_id),
+          "statement snapshot excluded an already committed transaction");
+  Require(descriptor.oldest_snapshot_transaction.value ==
+              older_active.local_transaction_id &&
+              descriptor.retention_horizon_transaction.value ==
+                  older_active.local_transaction_id,
+          "statement snapshot ignored an older unresolved retention horizon");
+
+  auto later_active = Begin(fixture, "qow-snapshot-later-active");
+  Rollback(older_active);
+  Rollback(prepared);
+  api::EngineResolveStatementSnapshotRequest resolve;
+  resolve.context = owner;
+  const auto resolved = api::EngineResolveStatementSnapshot(resolve);
+  RequireOk(resolved, "current statement snapshot resolution failed");
+  Require(mga::SnapshotVectorDescriptorEqual(descriptor,
+                                              resolved.snapshot_vector),
+          "captured statement snapshot changed after excluded finality");
+
+  auto tampered = resolve;
+  ++tampered.context.snapshot_visible_through_local_transaction_id;
+  Require(!api::EngineResolveStatementSnapshot(tampered).ok,
+          "tampered statement snapshot high-water resolved");
+  tampered = resolve;
+  tampered.context.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 5002);
+  Require(!api::EngineResolveStatementSnapshot(tampered).ok,
+          "mismatched statement identity resolved a snapshot");
+  tampered = resolve;
+  tampered.context.statement_snapshot_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 5003);
+  Require(!api::EngineResolveStatementSnapshot(tampered).ok,
+          "unknown statement snapshot resolved");
+  tampered = resolve;
+  tampered.context.transaction_uuid = later_active.transaction_uuid;
+  tampered.context.local_transaction_id = later_active.local_transaction_id;
+  Require(!api::EngineResolveStatementSnapshot(tampered).ok,
+          "mismatched snapshot owner resolved");
+
+  Rollback(owner);
+  Require(!api::EngineResolveStatementSnapshot(resolve).ok,
+          "revoked/finalized owner statement snapshot resolved");
+  Rollback(later_active);
 }
 
 std::string EncodedInt64Descriptor() {
@@ -726,6 +841,70 @@ Fixture MakeFixture() {
       NewUuidText(platform::UuidKind::object, fixture.salt + 26);
 
   auto metadata = Begin(fixture, "qow-heap-metadata");
+  auto zero_snapshot_context = metadata;
+  zero_snapshot_context.statement_uuid.canonical =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 5004);
+  api::EngineResolveStatementSnapshotRequest zero_resolve_request;
+  {
+    const auto inventory_guard =
+        api::AcquireTransactionInventoryGuard(metadata.database_path);
+    const auto loaded_inventory =
+        db::LoadLocalTransactionInventoryFromDatabase(metadata.database_path);
+    Require(loaded_inventory.ok(),
+            "initial durable inventory load for zero boundary failed");
+    auto zero_inventory = loaded_inventory.inventory;
+    std::erase_if(zero_inventory.entries, [&](const auto& entry) {
+      return entry.identity.local_id.value != metadata.local_transaction_id;
+    });
+    Require(zero_inventory.entries.size() == 1 &&
+                zero_inventory.entries.front().identity.local_id.value ==
+                    metadata.local_transaction_id &&
+                zero_inventory.entries.front().state ==
+                    mga::TransactionState::active &&
+                std::ranges::none_of(
+                    zero_inventory.entries, [](const auto& entry) {
+                      return entry.state == mga::TransactionState::committed ||
+                             entry.state == mga::TransactionState::archived;
+                    }),
+            "isolated zero-boundary inventory was not one active owner");
+    zero_inventory.entries.front()
+        .begin_visible_through_local_transaction_id = 0;
+    Require(zero_inventory.entries.front()
+                .begin_visible_through_local_transaction_id == 0,
+            "isolated zero-boundary owner retained prior visibility");
+    const auto zero_persisted = db::PersistLocalTransactionInventoryToDatabase(
+        metadata.database_path, zero_inventory);
+    Require(zero_persisted.ok(),
+            "isolated no-committed durable inventory publication failed");
+
+    api::EnginePublishStatementSnapshotRequest zero_publish_request;
+    zero_publish_request.context = zero_snapshot_context;
+    const auto zero_published =
+        api::EnginePublishStatementSnapshot(zero_publish_request);
+    RequireOk(zero_published,
+              "initial zero-boundary statement snapshot publication failed");
+    Require(
+        zero_published.snapshot_vector.visible_committed_high_watermark == 0,
+        "initial statement snapshot did not preserve a valid zero boundary");
+    zero_snapshot_context.statement_snapshot_uuid =
+        zero_published.statement_snapshot_uuid;
+    zero_snapshot_context.snapshot_visible_through_local_transaction_id = 0;
+    zero_resolve_request.context = zero_snapshot_context;
+    const auto zero_resolved =
+        api::EngineResolveStatementSnapshot(zero_resolve_request);
+    RequireOk(zero_resolved,
+              "current zero-boundary statement snapshot resolution failed");
+    Require(mga::SnapshotVectorDescriptorEqual(
+                zero_published.snapshot_vector,
+                zero_resolved.snapshot_vector),
+            "zero-boundary statement snapshot changed during resolution");
+
+    const auto restored_inventory =
+        db::PersistLocalTransactionInventoryToDatabase(
+            metadata.database_path, loaded_inventory.inventory);
+    Require(restored_inventory.ok(),
+            "durable bootstrap inventory restoration failed");
+  }
   PersistTable(fixture, metadata, fixture.main_table_uuid);
   PersistTable(fixture, metadata, fixture.empty_table_uuid);
   PersistTable(fixture, metadata, fixture.full_width_table_uuid, false, true);
@@ -740,6 +919,8 @@ Fixture MakeFixture() {
   PersistTable(fixture, metadata, fixture.malformed_table_uuid);
   PersistTable(fixture, metadata, fixture.temporary_table_uuid, true);
   Commit(metadata);
+  Require(!api::EngineResolveStatementSnapshot(zero_resolve_request).ok,
+          "committed owner retained its zero-boundary statement snapshot");
 
   auto writer = Begin(fixture, "qow-heap-main-writer");
   InsertRows(fixture,
@@ -825,10 +1006,18 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   relational->wire_version = 2;
   relational->bound_sblr_tree_uuid =
       NewUuidText(platform::UuidKind::object, salt + 1);
-  relational->bound_catalog_epoch_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+  relational->bound_catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
   relational->bound_security_context_uuid =
       context.authorization_context.authority_uuid.canonical;
+  relational->statement_uuid = context.statement_uuid.canonical;
+  relational->owning_transaction_uuid = context.transaction_uuid.canonical;
+  relational->statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  relational->statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  relational->local_transaction_id = context.local_transaction_id;
+  relational->snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
   relational->root_node_id = 1;
   api::RelationalDagNode node;
   node.node_id = 1;
@@ -879,10 +1068,45 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   request.physical_dag.local_transaction_id = context.local_transaction_id;
   request.physical_dag.statement_snapshot_id =
       context.snapshot_visible_through_local_transaction_id;
+  api::EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = context;
+  const auto snapshot = api::EngineResolveStatementSnapshot(snapshot_request);
+  RequireOk(snapshot, "resolve physical statement snapshot failed");
+  auto& physical_mga = request.physical_dag.mga_statement_context;
+  physical_mga.statement_uuid = context.statement_uuid.canonical;
+  physical_mga.owning_transaction_uuid = context.transaction_uuid.canonical;
+  physical_mga.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  physical_mga.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  physical_mga.owning_local_transaction_id =
+      snapshot.snapshot_vector.owning_transaction.value;
+  physical_mga.visible_committed_high_watermark =
+      snapshot.snapshot_vector.visible_committed_high_watermark;
+  physical_mga.oldest_active_transaction_id =
+      snapshot.snapshot_vector.oldest_active_transaction.value;
+  physical_mga.oldest_interesting_transaction_id =
+      snapshot.snapshot_vector.oldest_interesting_transaction.value;
+  physical_mga.oldest_snapshot_transaction_id =
+      snapshot.snapshot_vector.oldest_snapshot_transaction.value;
+  physical_mga.retention_horizon_transaction_id =
+      snapshot.snapshot_vector.retention_horizon_transaction.value;
+  physical_mga.active_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.active_excluded_local_transaction_ids;
+  physical_mga.in_doubt_excluded_local_transaction_ids =
+      snapshot.snapshot_vector.in_doubt_excluded_local_transaction_ids;
+  physical_mga.snapshot_kind = mga::SnapshotVectorKindName(
+      snapshot.snapshot_vector.snapshot_kind);
+  physical_mga.publication_inventory_next_local_transaction_id =
+      snapshot.snapshot_vector
+          .publication_inventory_next_local_transaction_id;
+  physical_mga.inventory_authoritative =
+      snapshot.snapshot_vector.inventory_authoritative;
+  physical_mga.complete = snapshot.snapshot_vector.complete;
+  physical_mga.current = true;
   request.physical_dag.bound_sblr_tree_uuid =
       relational->bound_sblr_tree_uuid;
-  request.physical_dag.catalog_epoch_uuid =
-      context.statement_metadata_snapshot_uuid.canonical;
+  request.physical_dag.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
   request.physical_dag.security_context_uuid =
       context.authorization_context.authority_uuid.canonical;
   request.physical_dag.capability_snapshot_uuid =
@@ -910,9 +1134,9 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
       context.optimizer_capability_snapshot_uuid.canonical;
   const std::vector<std::string> evidence{
       relational->bound_sblr_tree_uuid,
-      context.statement_metadata_snapshot_uuid.canonical,
+      context.catalog_epoch_uuid.canonical,
       context.authorization_context.authority_uuid.canonical,
-      context.statement_metadata_snapshot_uuid.canonical,
+      context.statement_snapshot_uuid.canonical,
       capability,
       context.optimizer_resource_snapshot_uuid.canonical,
       request.physical_dag.statistics_snapshot_uuid,
@@ -937,6 +1161,7 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
       NewUuidText(platform::UuidKind::object, salt + 5);
   physical.memory_bytes_required = 1024;
   physical.engine_capability_validated = true;
+  physical.mga_statement_context = request.physical_dag.mga_statement_context;
   request.physical_dag.nodes.push_back(physical);
   request.selected_physical_node_id = 11;
   request.maximum_scanned_row_versions = 1024;
@@ -2483,6 +2708,34 @@ void ValidateBindingSecurityAndResourceRefusals(Fixture& fixture) {
   RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
                        "mismatched physical statement snapshot was accepted");
 
+  mutated = baseline;
+  mutated.physical_dag.mga_statement_context
+      .active_excluded_local_transaction_ids.insert(
+          mutated.physical_dag.mga_statement_context
+              .active_excluded_local_transaction_ids.begin(),
+          1);
+  mutated.physical_dag.mga_statement_context.oldest_active_transaction_id = 1;
+  mutated.physical_dag.mga_statement_context
+      .oldest_interesting_transaction_id = 1;
+  mutated.physical_dag.mga_statement_context.oldest_snapshot_transaction_id =
+      1;
+  mutated.physical_dag.mga_statement_context.retention_horizon_transaction_id =
+      1;
+  for (auto& node : mutated.physical_dag.nodes) {
+    node.mga_statement_context = mutated.physical_dag.mga_statement_context;
+  }
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "substituted physical snapshot vector was accepted");
+
+  mutated = baseline;
+  const_cast<api::TypedRelationalDag*>(mutated.relational_dag)
+      ->statement_uuid = NewUuidText(platform::UuidKind::object,
+                                    fixture.salt + 4990);
+  RequireAtomicFailure(exec::ExecuteCanonicalHeapRelationAcquisition(mutated),
+                       "substituted relational statement identity was accepted");
+  *const_cast<api::TypedRelationalDag*>(mutated.relational_dag) =
+      original_relational;
+
   auto wrong_snapshot_context = reader;
   wrong_snapshot_context.snapshot_visible_through_local_transaction_id += 1;
   mutated = baseline;
@@ -2693,7 +2946,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   Require(result.request.catalog.snapshot_uuid ==
                   reader.statement_metadata_snapshot_uuid.canonical &&
               result.request.catalog.catalog_epoch_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.catalog_epoch_uuid.canonical &&
               result.request.catalog.catalog_generation ==
                   reader.catalog_generation_id &&
               result.request.catalog.engine_owned &&
@@ -2744,7 +2997,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               result.request.statistics.statistics_snapshot_uuid ==
                   reader.statement_uuid.canonical &&
               result.request.statistics.catalog_epoch_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.catalog_epoch_uuid.canonical &&
               result.request.statistics.statistics_generation ==
                   reader.catalog_generation_id &&
               result.request.statistics.admitted_at_monotonic_ns == 1 &&
@@ -2766,7 +3019,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               result.admission.bound_sblr_tree_uuid ==
                   request.relational_dag.bound_sblr_tree_uuid &&
               result.admission.catalog_epoch_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.catalog_epoch_uuid.canonical &&
               result.admission.security_context_uuid ==
                   reader.authorization_context.authority_uuid.canonical &&
               result.admission.capability_snapshot_uuid ==
@@ -2821,7 +3074,7 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
               !estimate.derived_from_runtime_actuals &&
               !estimate.benchmark_clean_authority_claimed &&
               estimate.catalog_epoch_uuid ==
-                  reader.statement_metadata_snapshot_uuid.canonical &&
+                  reader.catalog_epoch_uuid.canonical &&
               estimate.statistics_snapshot_uuid ==
                   reader.statement_uuid.canonical &&
               estimate.statistics_generation == reader.catalog_generation_id &&
@@ -2870,6 +3123,8 @@ void ValidateHeapOptimizerAdmissionMatrix(Fixture& fixture) {
   object_free_context.local_transaction_id = reader.local_transaction_id;
   object_free_context.statement_snapshot_id =
       reader.snapshot_visible_through_local_transaction_id;
+  object_free_context.mga_statement_context =
+      result.request.logical_graph.mga_statement_context;
   object_free_context.admitted_at_monotonic_ns = 1;
   object_free_context.metadata_snapshot_engine_owned = true;
   object_free_context.authorization_context_engine_owned = true;
@@ -3270,7 +3525,9 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
   mutated = baseline;
   mutated.context.snapshot_visible_through_local_transaction_id = 0;
-  expect_refusal(mutated, "missing MGA snapshot was admitted");
+  expect_refusal(
+      mutated,
+      "tampered zero high-water mismatching the published snapshot was admitted");
 
   mutated = baseline;
   mutated.context.optimizer_memory_budget_bytes = 0;
@@ -3367,6 +3624,7 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 
 int main() {
   auto fixture = MakeFixture();
+  ValidateStatementStableSnapshotAuthority(fixture);
   ValidateHeapOptimizerAdmissionMatrix(fixture);
   ValidateHeapOptimizerAdmissionRefusals(fixture);
   ValidateFullWidthHeapMatrix(fixture);
