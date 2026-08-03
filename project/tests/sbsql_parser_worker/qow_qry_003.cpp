@@ -9,6 +9,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -155,7 +156,8 @@ bool ValidateCanonicalDispatchSeam() {
   sblr::SblrDispatchRequest request;
   request.context = Context();
   request.envelope = QueryEnvelope();
-  const auto result = sblr::DispatchSblrOperation(std::move(request));
+  const auto result =
+      sblr::DispatchTextualRelationalQueryForContractTest(std::move(request));
 
   bool passed = true;
   passed &= Require(result.envelope_validated,
@@ -188,28 +190,30 @@ bool ValidateCanonicalDispatchSeam() {
 bool ValidateDagAndTransportRefusal() {
   auto dangling = QueryEnvelope();
   dangling.operands[15].value = "3|0|99|1|-";
-  auto dangling_result = sblr::DispatchSblrOperation(
+  auto dangling_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(dangling), {}});
 
   auto unknown = QueryEnvelope();
   unknown.operands.push_back({"text", "silent_default", "forbidden"});
-  auto unknown_result = sblr::DispatchSblrOperation(
+  auto unknown_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(unknown), {}});
 
   auto malformed_expression = QueryEnvelope();
   malformed_expression.operands[12].value = "1|-|1|-|-|1|-|not_hex";
-  auto malformed_expression_result = sblr::DispatchSblrOperation(
+  auto malformed_expression_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(malformed_expression), {}});
 
   auto wrong_shape = QueryEnvelope();
   wrong_shape.result_shape = "engine.api.result.v1";
-  auto shape_result = sblr::DispatchSblrOperation(
+  auto shape_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(wrong_shape), {}});
 
   auto side_channel = QueryEnvelope();
   api::EngineApiRequest generic_payload;
   generic_payload.option_envelopes.push_back("query_operation:scan");
-  auto side_channel_result = sblr::DispatchSblrOperation(
+  auto side_channel_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(side_channel), std::move(generic_payload)});
 
   bool passed = true;
@@ -428,7 +432,8 @@ bool ValidateRegistryAndAuthorityRefusal() {
   auto missing_authority = QueryEnvelope();
   auto context = Context();
   context.local_transaction_id = 0;
-  const auto authority_result = sblr::DispatchSblrOperation(
+  const auto authority_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
       {std::move(context), std::move(missing_authority), {}});
 
   auto legacy = sblr::MakeSblrEnvelope(
@@ -438,34 +443,52 @@ bool ValidateRegistryAndAuthorityRefusal() {
       {Context(), std::move(legacy), {}});
 
   bool passed = true;
+  const auto rejects_noncanonical_operation_envelope = [](const auto& result) {
+    return !result.envelope_validated && !result.accepted &&
+           !result.dispatched_to_api && !result.logical_graph_populated &&
+           !result.optimizer_admitted && !result.optimizer_selected &&
+           !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published &&
+           HasDispatchDiagnostic(result, "SBLR.OPERATION.HEADER_INVALID") &&
+           HasApiDiagnostic(result, "SB_SBLR_DISPATCH_ENVELOPE_REJECTED");
+  };
   passed &= Require(
-      HasDispatchDiagnostic(mismatch_result,
-                            "SB_DIAG_SBLR_OPCODE_MISMATCH"),
-      "registry opcode mismatch did not reach dispatch diagnostics");
+      rejects_noncanonical_operation_envelope(mismatch_result),
+      "registry opcode mismatch crossed the canonical operation-envelope boundary");
   passed &= Require(
-      HasDispatchDiagnostic(declaration_result,
-                            "SB_DIAG_SBLR_TRANSACTION_CONTEXT_REQUIRED"),
-      "missing MGA-context declaration was not refused by the registry");
+      rejects_noncanonical_operation_envelope(declaration_result),
+      "missing MGA-context declaration crossed the canonical operation-envelope boundary");
   passed &= Require(
-      HasDispatchDiagnostic(authority_result,
-                            "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED"),
-      "missing engine MGA context was not refused by dispatch");
+      !authority_result.envelope_validated && !authority_result.accepted &&
+          !authority_result.logical_graph_populated &&
+          !authority_result.optimizer_admitted &&
+          !authority_result.canonical_result_published &&
+          HasApiDiagnostic(authority_result,
+                           "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
+      "missing engine MGA context crossed the typed relational boundary");
   passed &= Require(
-      HasDispatchDiagnostic(legacy_result,
-                            "QOW-DIAG-RELATIONAL-ROOT-NONCANONICAL") &&
-          !legacy_result.accepted && !legacy_result.dispatched_to_api,
-      "legacy relational root did not fail closed before execution");
+      rejects_noncanonical_operation_envelope(legacy_result),
+      "legacy relational root crossed the canonical operation-envelope boundary");
   return passed;
 }
 
 bool ValidateDecodePath() {
   const auto encoded = sblr::EncodeSblrEnvelope(QueryEnvelope());
-  const auto result =
-      sblr::DecodeAndDispatchSblrOperation(encoded, Context());
+  const auto decoded = sblr::DecodeSblrEnvelope(encoded);
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), QueryEnvelope(), {}});
   bool passed = true;
+  passed &= Require(
+      encoded.empty() && !decoded.ok &&
+          std::ranges::any_of(decoded.diagnostics, [](const auto& diagnostic) {
+            return diagnostic.code == "SBLR.OPERATION.HEADER_INVALID";
+          }),
+      "textual relational fixture entered the canonical binary operation codec");
   passed &= Require(result.envelope_validated && result.accepted &&
                         result.dispatched_to_api,
-                    "decoded canonical query did not reach the typed seam");
+                    "bounded textual query did not reach the typed seam");
   passed &= Require(result.optimizer_selected &&
                         result.physical_dag_published &&
                         result.physical_dag_executed &&
@@ -473,7 +496,7 @@ bool ValidateDecodePath() {
                         result.canonical_result_published &&
                         result.api_result.ok &&
                         result.canonical_result_row_count == 1,
-                    "decoded canonical VALUES query did not complete the live spine");
+                    "bounded textual VALUES query did not complete the live spine");
   return passed;
 }
 

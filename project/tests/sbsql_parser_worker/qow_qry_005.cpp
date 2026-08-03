@@ -23,16 +23,56 @@
 #include <unordered_map>
 #include <vector>
 
+namespace scratchbird::engine::sblr {
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request);
+}
+
 namespace sbsql = scratchbird::parser::sbsql;
 namespace sblr = scratchbird::engine::sblr;
 namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+#if defined(__GNUC__) && !defined(__clang__)
+#define SB_QOW_TEST_NOINLINE __attribute__((noinline, noipa))
+#elif defined(__clang__)
+#define SB_QOW_TEST_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define SB_QOW_TEST_NOINLINE __declspec(noinline)
+#else
+#define SB_QOW_TEST_NOINLINE
+#endif
+
 bool Require(const bool condition, const std::string_view message) {
   if (!condition) std::cerr << message << '\n';
   return condition;
 }
+
+sblr::SblrOperationEnvelope EngineQueryEnvelope(
+    const sbsql::SblrEnvelope& lowered) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      lowered.operation_id, lowered.sblr_opcode, lowered.trace_key);
+  envelope.result_shape = lowered.result_shape_key;
+  envelope.requires_transaction_context = true;
+  envelope.operands.reserve(lowered.operands.size());
+  for (const auto& operand : lowered.operands) {
+    envelope.operands.push_back({operand.type, operand.name, operand.value});
+  }
+  return envelope;
+}
+
+SB_QOW_TEST_NOINLINE sblr::SblrDispatchResult
+DispatchLoweredRelationalQueryForContractTest(
+    const sbsql::SblrEnvelope& lowered,
+    api::EngineRequestContext context,
+    api::EngineApiRequest api_request = {}) {
+  return sblr::DispatchTextualRelationalQueryForContractTest(
+      {std::move(context), EngineQueryEnvelope(lowered),
+       std::move(api_request)});
+}
+
+#undef SB_QOW_TEST_NOINLINE
 
 std::string EncodeHex(const std::string_view value) {
   static constexpr char kHex[] = "0123456789abcdef";
@@ -1057,8 +1097,8 @@ bool ValidateCanonicalLoweringAndDispatch() {
   engine_context.authorization_context.security_epoch = 503;
   engine_context.authorization_context.policy_epoch = 504;
   engine_context.authorization_context.catalog_generation_id = 502;
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, std::move(engine_context));
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, std::move(engine_context));
   passed &= Require(dispatched.envelope_validated && dispatched.accepted &&
                         dispatched.dispatched_to_api &&
                         dispatched.logical_graph_populated &&
@@ -1396,8 +1436,8 @@ bool ValidateTwoKeyNotNotSumHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "double-NOT SUM did not lower two distinct NOT nodes to typed wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -1431,8 +1471,8 @@ bool ValidateTwoKeyNotNotSumHavingParserBindingLoweringAndDispatch() {
         &source_context);
     const auto source_lowered =
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
-    return sblr::DecodeAndDispatchSblrOperation(
-        source_lowered.payload, GroupingSetsEngineContext());
+    return DispatchLoweredRelationalQueryForContractTest(
+        source_lowered, GroupingSetsEngineContext());
   };
   const auto threshold_four = execute_threshold("4");
   const auto& threshold_four_rows =
@@ -2638,8 +2678,8 @@ bool ValidateSimpleGroupByParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "ordinary GROUP BY did not lower to the exact canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto has_group = [&](const std::string_view key,
                              const std::string_view count,
                              const std::string_view sum) {
@@ -2790,8 +2830,8 @@ bool ValidateHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING SUM") == std::string::npos,
       "HAVING did not lower to the exact canonical three-node DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto has_value_group = [&](const std::string_view key,
                                    const std::string_view count,
                                    const std::string_view sum) {
@@ -2960,8 +3000,8 @@ bool ValidateBooleanHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "Boolean HAVING did not lower to the exact canonical three-node DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const bool only_expected_group =
       dispatched.api_result.result_shape.rows.size() == 1 &&
       dispatched.api_result.result_shape.rows.front().fields.size() == 3 &&
@@ -3097,8 +3137,8 @@ bool ValidateOneKeyOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -3305,8 +3345,8 @@ bool ValidateOneKeyOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "one-key OR HAVING did not lower the exact canonical three-node DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -3784,8 +3824,8 @@ bool ValidateTwoKeyOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -3997,8 +4037,8 @@ bool ValidateTwoKeyOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "two-key OR HAVING did not lower to the exact canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -4565,8 +4605,8 @@ bool ValidateTwoKeyBooleanHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "two-key Boolean HAVING did not lower to the exact canonical three-node DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const bool only_expected_group =
       dispatched.api_result.result_shape.rows.size() == 1 &&
       dispatched.api_result.result_shape.rows.front().fields.size() == 4 &&
@@ -4684,8 +4724,8 @@ bool ValidateTwoKeySumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 4>;
@@ -4817,8 +4857,8 @@ bool ValidateTwoKeySumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING SUM") == std::string::npos,
       "ordinary two-key SUM-only HAVING did not lower to the exact canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -4953,8 +4993,8 @@ bool ValidateTwoKeyNotSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -5187,8 +5227,8 @@ bool ValidateTwoKeyNotSumHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "NOT-SUM did not lower to canonical wire-v2 VALUES/AGGREGATE/FILTER");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -6036,8 +6076,8 @@ bool ValidateTwoKeyNotCountHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "NOT-COUNT did not lower to exact canonical wire-v2 VALUES/AGGREGATE/FILTER");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -6071,8 +6111,8 @@ bool ValidateTwoKeyNotCountHavingParserBindingLoweringAndDispatch() {
         &source_context);
     const auto source_lowered =
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
-    return sblr::DecodeAndDispatchSblrOperation(
-        source_lowered.payload, GroupingSetsEngineContext());
+    return DispatchLoweredRelationalQueryForContractTest(
+        source_lowered, GroupingSetsEngineContext());
   };
   const auto threshold_zero = execute_threshold("0");
   const auto threshold_two = execute_threshold("2");
@@ -7375,8 +7415,8 @@ bool ValidateTwoKeyNotNotCountHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "double-NOT COUNT did not lower to exact canonical wire-v2 VALUES/AGGREGATE/FILTER");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -7410,8 +7450,8 @@ bool ValidateTwoKeyNotNotCountHavingParserBindingLoweringAndDispatch() {
         &source_context);
     const auto source_lowered =
         sbsql::LowerToSblr(source_bound, source_cst, SessionForTest());
-    return sblr::DecodeAndDispatchSblrOperation(
-        source_lowered.payload, GroupingSetsEngineContext());
+    return DispatchLoweredRelationalQueryForContractTest(
+        source_lowered, GroupingSetsEngineContext());
   };
   const auto threshold_zero = execute_threshold("0");
   const auto threshold_two = execute_threshold("2");
@@ -8692,8 +8732,8 @@ bool ValidateTwoKeyNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -9118,8 +9158,8 @@ bool ValidateTwoKeyNotCountSumAndHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "NOT COUNT/SUM AND did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -9152,8 +9192,8 @@ bool ValidateTwoKeyNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -10420,8 +10460,8 @@ bool ValidateTwoKeyNotNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -10868,8 +10908,8 @@ bool ValidateTwoKeyNotNotCountSumAndHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "double-NOT COUNT/SUM AND did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -10902,8 +10942,8 @@ bool ValidateTwoKeyNotNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -10982,8 +11022,8 @@ bool ValidateTwoKeyNotNotCountSumAndHavingParserBindingLoweringAndDispatch() {
     const auto overflow_lowered =
         sbsql::LowerToSblr(overflow_bound, overflow_cst, SessionForTest());
     if (overflow_lowered.messages.has_errors()) return true;
-    const auto overflow_dispatched = sblr::DecodeAndDispatchSblrOperation(
-        overflow_lowered.payload, GroupingSetsEngineContext());
+    const auto overflow_dispatched = DispatchLoweredRelationalQueryForContractTest(
+        overflow_lowered, GroupingSetsEngineContext());
     return !overflow_dispatched.accepted || !overflow_dispatched.api_result.ok ||
            !overflow_dispatched.canonical_result_published;
   };
@@ -12346,8 +12386,8 @@ bool ValidateTwoKeyNotNotCountSumOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -12794,8 +12834,8 @@ bool ValidateTwoKeyNotNotCountSumOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "double-NOT COUNT/SUM OR did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -12828,8 +12868,8 @@ bool ValidateTwoKeyNotNotCountSumOrHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -12900,8 +12940,8 @@ bool ValidateTwoKeyNotNotCountSumOrHavingParserBindingLoweringAndDispatch() {
       &all_context);
   const auto all_lowered =
       sbsql::LowerToSblr(all_bound, all_cst, SessionForTest());
-  const auto all_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      all_lowered.payload, GroupingSetsEngineContext());
+  const auto all_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      all_lowered, GroupingSetsEngineContext());
   const auto all_root_id =
       all_bound.native_relational.relations.size() == 3
           ? all_bound.native_relational.relations[2]
@@ -12981,8 +13021,8 @@ bool ValidateTwoKeyNotNotCountSumOrHavingParserBindingLoweringAndDispatch() {
     const auto overflow_lowered =
         sbsql::LowerToSblr(overflow_bound, overflow_cst, SessionForTest());
     if (overflow_lowered.messages.has_errors()) return true;
-    const auto overflow_dispatched = sblr::DecodeAndDispatchSblrOperation(
-        overflow_lowered.payload, GroupingSetsEngineContext());
+    const auto overflow_dispatched = DispatchLoweredRelationalQueryForContractTest(
+        overflow_lowered, GroupingSetsEngineContext());
     return !overflow_dispatched.accepted || !overflow_dispatched.api_result.ok ||
            !overflow_dispatched.canonical_result_published;
   };
@@ -14349,8 +14389,8 @@ bool ValidateTwoKeyNotNotSumCountOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -14797,8 +14837,8 @@ bool ValidateTwoKeyNotNotSumCountOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "double-NOT SUM/COUNT OR did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -14831,8 +14871,8 @@ bool ValidateTwoKeyNotNotSumCountOrHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -14903,8 +14943,8 @@ bool ValidateTwoKeyNotNotSumCountOrHavingParserBindingLoweringAndDispatch() {
       &all_context);
   const auto all_lowered =
       sbsql::LowerToSblr(all_bound, all_cst, SessionForTest());
-  const auto all_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      all_lowered.payload, GroupingSetsEngineContext());
+  const auto all_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      all_lowered, GroupingSetsEngineContext());
   const auto all_root_id =
       all_bound.native_relational.relations.size() == 3
           ? all_bound.native_relational.relations[2]
@@ -14984,8 +15024,8 @@ bool ValidateTwoKeyNotNotSumCountOrHavingParserBindingLoweringAndDispatch() {
     const auto overflow_lowered =
         sbsql::LowerToSblr(overflow_bound, overflow_cst, SessionForTest());
     if (overflow_lowered.messages.has_errors()) return true;
-    const auto overflow_dispatched = sblr::DecodeAndDispatchSblrOperation(
-        overflow_lowered.payload, GroupingSetsEngineContext());
+    const auto overflow_dispatched = DispatchLoweredRelationalQueryForContractTest(
+        overflow_lowered, GroupingSetsEngineContext());
     return !overflow_dispatched.accepted || !overflow_dispatched.api_result.ok ||
            !overflow_dispatched.canonical_result_published;
   };
@@ -16375,8 +16415,8 @@ bool ValidateTwoKeyNotCountSumOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -16799,8 +16839,8 @@ bool ValidateTwoKeyNotCountSumOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "NOT COUNT/SUM OR did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -16833,8 +16873,8 @@ bool ValidateTwoKeyNotCountSumOrHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto* general_filter =
       general_bound.native_relational.relations.size() == 3
           ? &general_bound.native_relational.relations[2]
@@ -16908,8 +16948,8 @@ bool ValidateTwoKeyNotCountSumOrHavingParserBindingLoweringAndDispatch() {
         &probe_context);
     const auto probe_lowered =
         sbsql::LowerToSblr(probe_bound, probe_cst, SessionForTest());
-    return sblr::DecodeAndDispatchSblrOperation(
-        probe_lowered.payload, GroupingSetsEngineContext());
+    return DispatchLoweredRelationalQueryForContractTest(
+        probe_lowered, GroupingSetsEngineContext());
   };
   const auto count_overflow_dispatched = execute_sql(kCountOverflowSql);
   const auto sum_overflow_dispatched = execute_sql(kSumOverflowSql);
@@ -18204,8 +18244,8 @@ bool ValidateGroupingSetsNotCountSumAndHavingParserBindingLoweringAndDispatch() 
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -18692,8 +18732,8 @@ bool ValidateGroupingSetsNotCountSumAndHavingParserBindingLoweringAndDispatch() 
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "grouping-sets NOT COUNT/SUM AND did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -18734,8 +18774,8 @@ bool ValidateGroupingSetsNotCountSumAndHavingParserBindingLoweringAndDispatch() 
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -20145,8 +20185,8 @@ bool ValidateRollupNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -20583,8 +20623,8 @@ bool ValidateRollupNotCountSumAndHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "ROLLUP NOT COUNT/SUM AND did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -20625,8 +20665,8 @@ bool ValidateRollupNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -22009,8 +22049,8 @@ bool ValidateCubeNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -22455,8 +22495,8 @@ bool ValidateCubeNotCountSumAndHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "CUBE NOT COUNT/SUM AND did not lower to exact canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -22503,8 +22543,8 @@ bool ValidateCubeNotCountSumAndHavingParserBindingLoweringAndDispatch() {
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -23901,8 +23941,8 @@ bool ValidateGroupingSetsGroupingMetadataNotCountSumAndHavingParserBindingLoweri
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -24508,8 +24548,8 @@ bool ValidateGroupingSetsGroupingMetadataNotCountSumAndHavingParserBindingLoweri
               std::string::npos,
       "metadata GROUPING SETS NOT COUNT/SUM AND did not lower the exact nested predicate, GROUPING metadata, outputs, and sets to canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -24550,8 +24590,8 @@ bool ValidateGroupingSetsGroupingMetadataNotCountSumAndHavingParserBindingLoweri
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -26447,8 +26487,8 @@ bool ValidateRollupGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndD
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -27003,8 +27043,8 @@ bool ValidateRollupGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndD
               std::string::npos,
       "metadata ROLLUP NOT COUNT/SUM AND did not lower the exact nested predicate, GROUPING metadata, seven outputs, and fixed-form authority to canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -27044,8 +27084,8 @@ bool ValidateRollupGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndD
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -28908,8 +28948,8 @@ bool ValidateCubeGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndDis
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   passed &= Require(
       pre_dispatched.envelope_validated && pre_dispatched.accepted &&
@@ -29472,8 +29512,8 @@ bool ValidateCubeGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndDis
               std::string::npos,
       "metadata CUBE NOT COUNT/SUM AND did not lower the exact nested predicate, GROUPING metadata, seven outputs, and fixed-form authority to canonical wire-v2");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -29521,8 +29561,8 @@ bool ValidateCubeGroupingMetadataNotCountSumAndHavingParserBindingLoweringAndDis
       &general_context);
   const auto general_lowered =
       sbsql::LowerToSblr(general_bound, general_cst, SessionForTest());
-  const auto general_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      general_lowered.payload, GroupingSetsEngineContext());
+  const auto general_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      general_lowered, GroupingSetsEngineContext());
   const auto general_root_id =
       general_bound.native_relational.relations.size() == 3
           ? general_bound.native_relational.relations[2]
@@ -31418,8 +31458,8 @@ bool ValidateSimpleTwoKeyGroupByParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "two-key GROUP BY did not lower to the exact canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto has_group = [&](const std::string_view key_a,
                              const std::string_view key_b,
                              const std::string_view count,
@@ -31598,8 +31638,8 @@ bool ValidateGroupingSetsParserBindingLoweringAndDispatch() {
       canonical_grouping_lowered,
       "typed GROUPING SETS lowering did not emit the canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
           dispatched.dispatched_to_api &&
@@ -31709,8 +31749,8 @@ bool ValidateGroupingSetsNotSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -31991,8 +32031,8 @@ bool ValidateGroupingSetsNotSumHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "GROUPING SETS NOT-SUM did not lower exact canonical wire-v2 DAG and sets");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -32093,8 +32133,8 @@ bool ValidateGroupingSetsNotSumHavingParserBindingLoweringAndDispatch() {
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -32217,8 +32257,8 @@ bool ValidateGroupingSetsNotSumHavingParserBindingLoweringAndDispatch() {
       &ordinary_context);
   const auto ordinary_lowered =
       sbsql::LowerToSblr(ordinary_bound, ordinary_cst, SessionForTest());
-  const auto ordinary_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      ordinary_lowered.payload, GroupingSetsEngineContext());
+  const auto ordinary_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      ordinary_lowered, GroupingSetsEngineContext());
   passed &= Require(
       ordinary_ast.native_relational.accepted() && ordinary_bound.bound &&
           !ordinary_lowered.messages.has_errors() &&
@@ -32933,8 +32973,8 @@ bool ValidateGroupingSetsGroupingMetadataNotSumHavingParserBindingLoweringAndDis
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -33337,8 +33377,8 @@ bool ValidateGroupingSetsGroupingMetadataNotSumHavingParserBindingLoweringAndDis
               std::string::npos,
       "metadata GROUPING SETS NOT-SUM did not lower exact canonical wire-v2 DAG and sets");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -33455,8 +33495,8 @@ bool ValidateGroupingSetsGroupingMetadataNotSumHavingParserBindingLoweringAndDis
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -33596,8 +33636,8 @@ bool ValidateGroupingSetsGroupingMetadataNotSumHavingParserBindingLoweringAndDis
             &route_context);
         const auto route_lowered =
             sbsql::LowerToSblr(route_bound, route_cst, SessionForTest());
-        const auto route_dispatched = sblr::DecodeAndDispatchSblrOperation(
-            route_lowered.payload, GroupingSetsEngineContext());
+        const auto route_dispatched = DispatchLoweredRelationalQueryForContractTest(
+            route_lowered, GroupingSetsEngineContext());
         return route_ast.native_relational.accepted() && route_bound.bound &&
                !route_lowered.messages.has_errors() &&
                route_dispatched.accepted && route_dispatched.api_result.ok &&
@@ -34925,8 +34965,8 @@ bool ValidateRollupGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch(
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -35323,8 +35363,8 @@ bool ValidateRollupGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch(
               std::string::npos,
       "metadata ROLLUP NOT-SUM did not lower exact canonical wire-v2 DAG without explicit grouping sets");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -35440,8 +35480,8 @@ bool ValidateRollupGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch(
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -35572,8 +35612,8 @@ bool ValidateRollupGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch(
             &route_context);
         const auto route_lowered =
             sbsql::LowerToSblr(route_bound, route_cst, SessionForTest());
-        const auto route_dispatched = sblr::DecodeAndDispatchSblrOperation(
-            route_lowered.payload, GroupingSetsEngineContext());
+        const auto route_dispatched = DispatchLoweredRelationalQueryForContractTest(
+            route_lowered, GroupingSetsEngineContext());
         return route_ast.native_relational.accepted() && route_bound.bound &&
                !route_lowered.messages.has_errors() &&
                route_dispatched.accepted && route_dispatched.api_result.ok &&
@@ -36893,8 +36933,8 @@ bool ValidateCubeGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch() 
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -37296,8 +37336,8 @@ bool ValidateCubeGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch() 
               std::string::npos,
       "metadata CUBE NOT-SUM did not lower exact canonical wire-v2 DAG without explicit grouping sets");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -37418,8 +37458,8 @@ bool ValidateCubeGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch() 
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -37555,8 +37595,8 @@ bool ValidateCubeGroupingMetadataNotSumHavingParserBindingLoweringAndDispatch() 
             &route_context);
         const auto route_lowered =
             sbsql::LowerToSblr(route_bound, route_cst, SessionForTest());
-        const auto route_dispatched = sblr::DecodeAndDispatchSblrOperation(
-            route_lowered.payload, GroupingSetsEngineContext());
+        const auto route_dispatched = DispatchLoweredRelationalQueryForContractTest(
+            route_lowered, GroupingSetsEngineContext());
         return route_ast.native_relational.accepted() && route_bound.bound &&
                !route_lowered.messages.has_errors() &&
                route_dispatched.accepted && route_dispatched.api_result.ok &&
@@ -38889,8 +38929,8 @@ bool ValidateRollupNotSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   bool passed = true;
   passed &= Require(
@@ -39163,8 +39203,8 @@ bool ValidateRollupNotSumHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "ROLLUP NOT-SUM did not lower exact canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -39250,8 +39290,8 @@ bool ValidateRollupNotSumHavingParserBindingLoweringAndDispatch() {
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -39345,8 +39385,8 @@ bool ValidateRollupNotSumHavingParserBindingLoweringAndDispatch() {
             &route_context);
         const auto route_lowered =
             sbsql::LowerToSblr(route_bound, route_cst, SessionForTest());
-        const auto route_dispatched = sblr::DecodeAndDispatchSblrOperation(
-            route_lowered.payload, GroupingSetsEngineContext());
+        const auto route_dispatched = DispatchLoweredRelationalQueryForContractTest(
+            route_lowered, GroupingSetsEngineContext());
         return route_ast.native_relational.accepted() && route_bound.bound &&
                !route_lowered.messages.has_errors() &&
                route_dispatched.accepted && route_dispatched.api_result.ok &&
@@ -40058,8 +40098,8 @@ bool ValidateCubeNotSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
   bool passed = true;
   passed &= Require(
@@ -40338,8 +40378,8 @@ bool ValidateCubeNotSumHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "CUBE NOT-SUM did not lower exact canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -40431,8 +40471,8 @@ bool ValidateCubeNotSumHavingParserBindingLoweringAndDispatch() {
                      operand.value == value;
             });
       };
-  const auto alternate_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      alternate_lowered.payload, GroupingSetsEngineContext());
+  const auto alternate_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      alternate_lowered, GroupingSetsEngineContext());
   const auto& alternate_rows =
       alternate_dispatched.api_result.result_shape.rows;
   passed &= Require(
@@ -40530,8 +40570,8 @@ bool ValidateCubeNotSumHavingParserBindingLoweringAndDispatch() {
             &route_context);
         const auto route_lowered =
             sbsql::LowerToSblr(route_bound, route_cst, SessionForTest());
-        const auto route_dispatched = sblr::DecodeAndDispatchSblrOperation(
-            route_lowered.payload, GroupingSetsEngineContext());
+        const auto route_dispatched = DispatchLoweredRelationalQueryForContractTest(
+            route_lowered, GroupingSetsEngineContext());
         return route_ast.native_relational.accepted() && route_bound.bound &&
                !route_lowered.messages.has_errors() &&
                route_dispatched.accepted && route_dispatched.api_result.ok &&
@@ -41303,8 +41343,8 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -41548,8 +41588,8 @@ bool ValidateGroupingSetsOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "GROUPING SETS OR did not lower exact canonical wire-v2 DAG/set records");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -42206,8 +42246,8 @@ bool ValidateGroupingSetsBooleanHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "grouping-set Boolean HAVING did not lower to the exact canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto matching_key_b_subtotals = std::ranges::count_if(
       dispatched.api_result.result_shape.rows, [](const auto& row) {
         return row.fields.size() == 4 && row.fields[0].second.is_null &&
@@ -42297,8 +42337,8 @@ bool ValidateGroupingSetsSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 4>;
@@ -42447,8 +42487,8 @@ bool ValidateGroupingSetsSumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING SUM") == std::string::npos,
       "GROUPING SETS SUM-only HAVING did not lower exact explicit set records");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -42583,8 +42623,8 @@ bool ValidateGroupingSetsGroupingMetadataOrHavingParserBindingLoweringAndDispatc
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -42932,8 +42972,8 @@ bool ValidateGroupingSetsGroupingMetadataOrHavingParserBindingLoweringAndDispatc
               std::string::npos,
       "GROUPING SETS metadata OR did not lower the exact seven-column canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -43516,8 +43556,8 @@ bool ValidateRollupGroupingMetadataOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -43853,8 +43893,8 @@ bool ValidateRollupGroupingMetadataOrHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "ROLLUP metadata OR did not lower the exact seven-column canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -44504,8 +44544,8 @@ bool ValidateCubeGroupingMetadataOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -44851,8 +44891,8 @@ bool ValidateCubeGroupingMetadataOrHavingParserBindingLoweringAndDispatch() {
               std::string::npos,
       "CUBE metadata OR did not lower the exact seven-column canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -45531,8 +45571,8 @@ bool ValidateGroupingSetsGroupingMetadataBooleanHavingParserBindingLoweringAndDi
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -45688,8 +45728,8 @@ bool ValidateGroupingSetsGroupingMetadataBooleanHavingParserBindingLoweringAndDi
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "grouping metadata HAVING did not lower to the exact seven-column canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -45831,8 +45871,8 @@ bool ValidateGroupingSetsGroupingMetadataSumHavingParserBindingLoweringAndDispat
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -46072,8 +46112,8 @@ bool ValidateGroupingSetsGroupingMetadataSumHavingParserBindingLoweringAndDispat
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "metadata SUM HAVING did not lower the exact seven-column canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -46544,8 +46584,8 @@ bool ValidateRollupParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "typed ROLLUP lowering did not emit the fixed-profile canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
           dispatched.dispatched_to_api &&
@@ -46655,8 +46695,8 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -46881,8 +46921,8 @@ bool ValidateRollupOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "ROLLUP OR did not lower exact fixed canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -47531,8 +47571,8 @@ bool ValidateRollupBooleanHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "ROLLUP Boolean HAVING did not lower to the exact canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto matching_key_a_subtotals = std::ranges::count_if(
       dispatched.api_result.result_shape.rows, [](const auto& row) {
         return row.fields.size() == 4 &&
@@ -47641,8 +47681,8 @@ bool ValidateRollupSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -47839,8 +47879,8 @@ bool ValidateRollupSumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "ROLLUP SUM-only HAVING did not lower to the exact fixed canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -48111,8 +48151,8 @@ bool ValidateRollupGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -48259,8 +48299,8 @@ bool ValidateRollupGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "ROLLUP metadata HAVING did not lower to the exact fixed seven-column DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -48403,8 +48443,8 @@ bool ValidateRollupGroupingMetadataSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -48632,8 +48672,8 @@ bool ValidateRollupGroupingMetadataSumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "ROLLUP metadata SUM HAVING did not lower the exact fixed canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -49129,8 +49169,8 @@ bool ValidateCubeParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "typed CUBE lowering did not emit the fixed-profile canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
           dispatched.dispatched_to_api &&
@@ -49240,8 +49280,8 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -49474,8 +49514,8 @@ bool ValidateCubeOrHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "CUBE OR did not lower exact fixed canonical wire-v2 DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -50132,8 +50172,8 @@ bool ValidateCubeBooleanHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "CUBE Boolean HAVING did not lower to the exact canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto matching_key_a_subtotals = std::ranges::count_if(
       dispatched.api_result.result_shape.rows, [](const auto& row) {
         return row.fields.size() == 4 &&
@@ -50251,8 +50291,8 @@ bool ValidateCubeSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -50457,8 +50497,8 @@ bool ValidateCubeSumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "CUBE SUM-only HAVING did not lower to the exact fixed canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -50744,8 +50784,8 @@ bool ValidateCubeGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch()
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   using ExpectedRow =
       std::array<std::optional<std::string_view>, 7>;
@@ -50904,8 +50944,8 @@ bool ValidateCubeGroupingMetadataBooleanHavingParserBindingLoweringAndDispatch()
           lowered.payload.find("HAVING COUNT") == std::string::npos,
       "CUBE metadata HAVING did not lower to the exact fixed seven-column DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
@@ -51068,8 +51108,8 @@ bool ValidateCubeGroupingMetadataSumHavingParserBindingLoweringAndDispatch() {
       &pre_context);
   const auto pre_lowered =
       sbsql::LowerToSblr(pre_bound, pre_cst, SessionForTest());
-  const auto pre_dispatched = sblr::DecodeAndDispatchSblrOperation(
-      pre_lowered.payload, GroupingSetsEngineContext());
+  const auto pre_dispatched = DispatchLoweredRelationalQueryForContractTest(
+      pre_lowered, GroupingSetsEngineContext());
 
   bool passed = true;
   const auto& pre_rows = pre_dispatched.api_result.result_shape.rows;
@@ -51266,8 +51306,8 @@ bool ValidateCubeGroupingMetadataSumHavingParserBindingLoweringAndDispatch() {
           lowered.payload.find("query.plan_operation") == std::string::npos,
       "CUBE metadata SUM HAVING did not lower the exact fixed canonical DAG");
 
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, GroupingSetsEngineContext());
+  const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+      lowered, GroupingSetsEngineContext());
   const auto& rows = dispatched.api_result.result_shape.rows;
   const std::array<ExpectedRow, 7> expected_survivors = {{
       {"1", "20", "1", "7", "0", "0", "0"},
@@ -51754,8 +51794,8 @@ bool ValidateGroupingMetadataParserBindingLoweringAndDispatch() {
             lowered.payload.find("query.plan_operation") == std::string::npos,
         "grouping metadata did not lower to the exact canonical wire-v2 form");
 
-    const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-        lowered.payload, GroupingSetsEngineContext());
+    const auto dispatched = DispatchLoweredRelationalQueryForContractTest(
+        lowered, GroupingSetsEngineContext());
     passed &= Require(
         dispatched.envelope_validated && dispatched.accepted &&
             dispatched.dispatched_to_api &&

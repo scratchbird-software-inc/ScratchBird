@@ -15,6 +15,11 @@
 #include <string_view>
 #include <utility>
 
+namespace scratchbird::engine::sblr {
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request);
+}
+
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
@@ -171,7 +176,7 @@ sblr::SblrOperationEnvelope PropertyEnvelope() {
 }
 
 bool ValidateLivePropertyPopulation() {
-  const auto result = sblr::DispatchSblrOperation(
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), PropertyEnvelope(), {}});
   bool passed = true;
   passed &= Require(result.envelope_validated && result.accepted &&
@@ -195,7 +200,7 @@ bool ValidateLivePropertyPopulation() {
 
 bool ValidateEngineScopeAndPropertyRefusal() {
   const auto refuses_context_before_graph = [](api::EngineRequestContext context) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {std::move(context), PropertyEnvelope(), {}});
     return !result.envelope_validated && !result.accepted &&
            !result.logical_graph_populated &&
@@ -214,7 +219,7 @@ bool ValidateEngineScopeAndPropertyRefusal() {
   auto stale_context = Context();
   stale_context.statement_metadata_snapshot_uuid.canonical =
       "019f0000-0000-7100-8000-000000003999";
-  const auto stale = sblr::DispatchSblrOperation(
+  const auto stale = sblr::DispatchTextualRelationalQueryForContractTest(
       {std::move(stale_context), PropertyEnvelope(), {}});
 
   auto unknown_property = PropertyEnvelope();
@@ -222,11 +227,12 @@ bool ValidateEngineScopeAndPropertyRefusal() {
       "6167677265676174652e67726f75702e7631|1,2|-|"
       "019f0000-0000-7200-8000-000000003999|"
       "019f0000-0000-7200-8000-000000003102";
-  const auto malformed = sblr::DispatchSblrOperation(
+  const auto malformed = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(unknown_property), {}});
   auto missing_resource_context = Context();
   missing_resource_context.optimizer_memory_budget_bytes = 0;
-  const auto missing_resource = sblr::DispatchSblrOperation(
+  const auto missing_resource =
+      sblr::DispatchTextualRelationalQueryForContractTest(
       {std::move(missing_resource_context), PropertyEnvelope(), {}});
 
   bool passed = true;

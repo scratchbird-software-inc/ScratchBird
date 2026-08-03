@@ -330,8 +330,8 @@ bool ValidateComposableScalarLowering() {
   context.authorization_context.security_epoch = 603;
   context.authorization_context.policy_epoch = 604;
   context.authorization_context.catalog_generation_id = 602;
-  const auto dispatched = sblr::DecodeAndDispatchSblrOperation(
-      lowered.payload, std::move(context));
+  const auto dispatched = sblr::DispatchTextualRelationalQueryForContractTest(
+      {std::move(context), EngineQueryEnvelope(lowered), {}});
   passed &= Require(
       dispatched.envelope_validated && dispatched.accepted &&
           dispatched.dispatched_to_api &&
