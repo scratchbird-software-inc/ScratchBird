@@ -21,9 +21,98 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-011-GROUP-V1: " << detail << '\n';
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000f901",
+      "019f0000-0000-7200-8000-00000000f902",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000f903",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+void SetStatementContext(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context) {
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) node.mga_statement_context = context;
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context = StatementContext(
+      dag->admission_evidence.at(3).evidence_uuid);
+  SetStatementContext(dag, context);
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000f904";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000f905";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000f906";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -75,8 +164,6 @@ exec::CanonicalInt64SumGroupRequest Request() {
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000001409";
   request.physical_dag.root_physical_node_id = 1402;
-  request.physical_dag.local_transaction_id = 1403;
-  request.physical_dag.statement_snapshot_id = 1404;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000001411"},
@@ -129,6 +216,7 @@ exec::CanonicalInt64SumGroupRequest Request() {
       {"sum_amount", sum_result_descriptor, true, 1404};
   request.grouping_set_rule =
       exec::CanonicalInt64GroupingSetRule::key_and_grand_total;
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
 }
 
@@ -157,8 +245,6 @@ exec::CanonicalGroupedAggregateRuntimeRequest GroupedRegistryRequest() {
   aggregate.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000001433";
   aggregate.physical_dag.root_physical_node_id = 1422;
-  aggregate.physical_dag.local_transaction_id = 1423;
-  aggregate.physical_dag.statement_snapshot_id = 1424;
   aggregate.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000001434"},
@@ -223,6 +309,7 @@ exec::CanonicalGroupedAggregateRuntimeRequest GroupedRegistryRequest() {
       {.key_term_ordinals = {0}},
       {.key_term_ordinals = {}},
   };
+  aggregate.mga_authority = BindPhysicalAbiV2(&aggregate.physical_dag);
   return request;
 }
 
@@ -247,6 +334,8 @@ exec::CanonicalGroupedAggregateSetRuntimeRequest GroupedAggregateSetRequest() {
   count.filter_truth_values = std::vector<Truth>{
       Truth::true_value, Truth::true_value, Truth::false_value,
       Truth::true_value, Truth::false_value};
+  count.mga_authority =
+      request.first_aggregate.aggregate_request.mga_authority;
   request.additional_aggregates = {std::move(count)};
   return request;
 }
@@ -282,7 +371,13 @@ bool ValidateGroupedRegistryState() {
                         result.groups.size() == 8 &&
                         result.output_batch.rows.size() == 8 &&
                         result.grouping_set_transition_count == 15 &&
-                        result.executed_physical_node_id == 1422,
+                        result.executed_physical_node_id == 1422 &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0 &&
+                        exec::PhysicalMgaStatementContextEqual(
+                            result.mga_statement_context,
+                            request.aggregate_request.mga_authority
+                                .statement_context),
                     "multi-column registry grouping sets did not execute");
   passed &= Require(
       result.groups[0].grouping_id == 0 &&
@@ -396,6 +491,14 @@ bool ValidateGroupedRegistryState() {
   result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
   passed &= Require(!result.diagnostic.ok && result.groups.empty(),
                     "grouped aggregate FILTER cardinality drift was accepted");
+
+  request = GroupedRegistryRequest();
+  request.aggregate_request.mga_authority.statement_context.statement_uuid =
+      "019f0000-0000-7200-8000-00000000f907";
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "cross-statement authority reached grouped aggregation");
   return passed;
 }
 
@@ -461,7 +564,12 @@ bool ValidateTypedGroupingState() {
   bool passed = true;
   auto result = exec::ExecuteCanonicalInt64SumGroups(Request());
   passed &= Require(result.diagnostic.ok && result.groups.size() == 4 &&
-                        result.executed_physical_node_id == 1402,
+                        result.executed_physical_node_id == 1402 &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0 &&
+                        exec::PhysicalMgaStatementContextEqual(
+                            result.mga_statement_context,
+                            Request().mga_authority.statement_context),
                     "typed grouping sets did not execute four states");
   passed &= Require(!result.groups[0].is_grand_total &&
                         result.groups[0].group_key.encoded_value == "1" &&
@@ -544,6 +652,12 @@ bool ValidateTypedGroupingState() {
   result = exec::ExecuteCanonicalInt64SumGroups(request);
   passed &= Require(!result.diagnostic.ok && result.groups.empty(),
                     "mismatched grouped output handle was accepted");
+
+  request = Request();
+  request.mga_authority.origin = exec::CanonicalMgaAuthorityOrigin::kMissing;
+  result = exec::ExecuteCanonicalInt64SumGroups(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "missing statement authority reached grouped aggregation");
   return passed;
 }
 

@@ -22,10 +22,98 @@ namespace {
 
 constexpr std::string_view kCollationUuid =
     "019f0000-0000-7400-8000-000000001001";
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-010-V1: " << detail << '\n';
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000ff01",
+      "019f0000-0000-7200-8000-00000000ff02",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000ff03",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+void SetStatementContext(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context) {
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) node.mga_statement_context = context;
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context = StatementContext(
+      dag->admission_evidence.at(3).evidence_uuid);
+  SetStatementContext(dag, context);
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000ff04";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000ff05";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000ff06";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -86,8 +174,6 @@ exec::CanonicalDescriptorSortRequest Request() {
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000001008";
   request.physical_dag.root_physical_node_id = 1012;
-  request.physical_dag.local_transaction_id = 1013;
-  request.physical_dag.statement_snapshot_id = 1014;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000001011"},
@@ -162,6 +248,7 @@ exec::CanonicalDescriptorSortRequest Request() {
   request.order_terms = {name_term, amount_term, id_term};
   request.deterministic_tie_evidence_uuid =
       "019f0000-0000-7200-8000-000000001019";
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
 }
 
@@ -179,7 +266,12 @@ bool ValidateTypedPhysicalOrdering() {
   auto result = exec::ExecuteCanonicalDescriptorSort(Request());
   passed &= Require(result.diagnostic.ok &&
                         result.executed_physical_node_id == 1012 &&
-                        result.causal_counter_id == 10102,
+                        result.causal_counter_id == 10102 &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0 &&
+                        exec::PhysicalMgaStatementContextEqual(
+                            result.mga_statement_context,
+                            Request().mga_authority.statement_context),
                     "typed physical sort node was not executable");
   passed &= Require(RowIds(result.output_batch) ==
                         std::vector<std::string>({"1", "2", "4", "5", "3"}),
@@ -232,6 +324,37 @@ bool ValidateTypedPhysicalOrdering() {
   passed &= Require(result.diagnostic.ok && result.output_batch.rows.empty() &&
                         result.output_batch.columns.size() == 3,
                     "empty typed input lost its bound output schema");
+
+  request = Request();
+  request.mga_authority = {};
+  result = exec::ExecuteCanonicalDescriptorSort(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "missing current MGA authority reached sort access");
+
+  request = Request();
+  auto swapped = request.physical_dag.mga_statement_context;
+  std::swap(swapped.statement_uuid, swapped.owning_transaction_uuid);
+  SetStatementContext(&request.physical_dag, swapped);
+  result = exec::ExecuteCanonicalDescriptorSort(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "swapped statement/transaction identity reached sort access");
+
+  request = Request();
+  request.physical_dag.local_transaction_id =
+      static_cast<std::uint32_t>(kOwnerLocalTransactionId);
+  result = exec::ExecuteCanonicalDescriptorSort(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "narrowed numeric transaction alias reached sort access");
+
+  request = Request();
+  auto duplicate = request.physical_dag.mga_statement_context;
+  duplicate.active_excluded_local_transaction_ids.push_back(
+      kOwnerLocalTransactionId);
+  SetStatementContext(&request.physical_dag, duplicate);
+  request.mga_authority.statement_context = duplicate;
+  result = exec::ExecuteCanonicalDescriptorSort(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "duplicate snapshot exclusion reached sort access");
   return passed;
 }
 

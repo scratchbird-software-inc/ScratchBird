@@ -1536,6 +1536,146 @@ void ValidateRevokedHeapAuthorityHasNoAccess(Fixture& fixture) {
   ReleaseRequest(&request);
 }
 
+void ValidatePhysicalV2StatementContextRefusalMatrix(Fixture& fixture) {
+  auto reader = QueryContext(
+      Begin(fixture, "qow-heap-physical-v2-context-reader"),
+      fixture.main_table_uuid, fixture.salt + 7250);
+  auto baseline = RequestFor(reader, fixture.main_table_uuid,
+                             fixture.salt + 7260);
+  const auto& context = baseline.mga_authority.statement_context;
+  const std::vector<std::string> statement_identity_uuids{
+      context.statement_uuid,
+      context.owning_transaction_uuid,
+      context.statement_snapshot_uuid,
+      context.statement_metadata_snapshot_uuid,
+  };
+  auto unique_statement_identity_uuids = statement_identity_uuids;
+  std::ranges::sort(unique_statement_identity_uuids);
+  Require(baseline.physical_dag.abi_version == 2 &&
+              exec::PhysicalMgaStatementContextValid(context) &&
+              exec::PhysicalMgaStatementContextEqual(
+                  context, baseline.physical_dag.mga_statement_context) &&
+              baseline.physical_dag.local_transaction_id ==
+                  context.owning_local_transaction_id &&
+              baseline.physical_dag.statement_snapshot_id ==
+                  context.visible_committed_high_watermark &&
+              std::adjacent_find(unique_statement_identity_uuids.begin(),
+                                 unique_statement_identity_uuids.end()) ==
+                  unique_statement_identity_uuids.end() &&
+              baseline.physical_dag.catalog_epoch_uuid !=
+                  context.statement_metadata_snapshot_uuid,
+          "real durable inventory did not bind distinct physical ABI-v2 statement authority");
+
+  const auto set_physical_context = [](
+                                        auto* request,
+                                        const exec::PhysicalMgaStatementContext&
+                                            replacement) {
+    request->physical_dag.mga_statement_context = replacement;
+    for (auto& node : request->physical_dag.nodes) {
+      node.mga_statement_context = replacement;
+    }
+  };
+  const auto expect_pre_access_refusal = [&](auto candidate,
+                                             const std::string_view detail) {
+    const auto result =
+        exec::ExecuteCanonicalHeapRelationAcquisition(candidate);
+    RequireAtomicFailure(result, detail);
+    Require(!result.data_access_observed &&
+                !exec::PhysicalMgaStatementContextValid(
+                    result.mga_statement_context),
+            "invalid physical ABI-v2 context reached heap access or publication");
+  };
+
+  auto mutated = baseline;
+  auto replacement = context;
+  replacement.statement_uuid.clear();
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(mutated,
+                            "missing physical statement UUID was accepted");
+
+  mutated = baseline;
+  replacement = context;
+  replacement.statement_metadata_snapshot_uuid =
+      "00000000-0000-0000-0000-000000000000";
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(
+      mutated, "nil physical metadata snapshot UUID was accepted");
+
+  mutated = baseline;
+  replacement = context;
+  replacement.statement_snapshot_uuid.front() = 'A';
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(
+      mutated, "malformed physical statement snapshot UUID was accepted");
+
+  mutated = baseline;
+  replacement = context;
+  replacement.active_excluded_local_transaction_ids.push_back(
+      context.owning_local_transaction_id);
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(mutated,
+                            "duplicate physical active exclusion was accepted");
+
+  mutated = baseline;
+  replacement = context;
+  replacement.active_excluded_local_transaction_ids = {
+      context.owning_local_transaction_id,
+      context.owning_local_transaction_id - 1};
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(mutated,
+                            "reordered physical active exclusions were accepted");
+
+  mutated = baseline;
+  replacement = context;
+  std::swap(replacement.statement_uuid,
+            replacement.owning_transaction_uuid);
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(
+      mutated, "swapped physical statement identities were accepted");
+
+  mutated = baseline;
+  auto stale_current = context;
+  stale_current.current = false;
+  mutated.mga_authority.resolve_current = [stale_current] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = stale_current;
+    return current;
+  };
+  expect_pre_access_refusal(mutated,
+                            "stale current durable statement was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.local_transaction_id =
+      static_cast<std::uint32_t>(context.owning_local_transaction_id + 1);
+  expect_pre_access_refusal(
+      mutated, "narrowed/mismatched physical transaction alias was accepted");
+
+  mutated = baseline;
+  replacement = context;
+  replacement.publication_inventory_next_local_transaction_id = 0;
+  set_physical_context(&mutated, replacement);
+  expect_pre_access_refusal(mutated,
+                            "truncated physical inventory ceiling was accepted");
+
+  mutated = baseline;
+  mutated.physical_dag.catalog_epoch_uuid =
+      context.statement_metadata_snapshot_uuid;
+  mutated.physical_dag.admission_evidence[1].evidence_uuid =
+      mutated.physical_dag.catalog_epoch_uuid;
+  expect_pre_access_refusal(
+      mutated, "catalog epoch was conflated with metadata snapshot");
+
+  mutated = baseline;
+  mutated.physical_dag.nodes.front()
+      .mga_statement_context.statement_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 7270);
+  expect_pre_access_refusal(mutated,
+                            "node-swapped statement context was accepted");
+
+  ReleaseRequest(&baseline);
+  Rollback(reader);
+}
+
 bool SameDescriptor(const api::EngineDescriptor& left,
                     const api::EngineDescriptor& right) {
   return left.descriptor_uuid.canonical == right.descriptor_uuid.canonical &&
@@ -3928,6 +4068,7 @@ int main() {
   ValidateDurableZeroHighWaterHeapGate(fixture);
   ValidateDurableCapturedExclusionHeapGate(fixture);
   ValidateRevokedHeapAuthorityHasNoAccess(fixture);
+  ValidatePhysicalV2StatementContextRefusalMatrix(fixture);
   ValidateHeapOptimizerAdmissionMatrix(fixture);
   ValidateHeapOptimizerAdmissionRefusals(fixture);
   ValidateFullWidthHeapMatrix(fixture);

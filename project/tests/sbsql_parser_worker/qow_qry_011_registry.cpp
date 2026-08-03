@@ -23,11 +23,100 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-011-REGISTRY-V1: " << detail << '\n';
   }
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000f601",
+      "019f0000-0000-7200-8000-00000000f602",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000f603",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+void SetStatementContext(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context) {
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) node.mga_statement_context = context;
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context = StatementContext(
+      dag->admission_evidence.at(3).evidence_uuid);
+  SetStatementContext(dag, context);
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000f604";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000f605";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000f606";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -94,8 +183,6 @@ exec::CanonicalAggregateRuntimeRequest Request(
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000002110";
   request.physical_dag.root_physical_node_id = 2102;
-  request.physical_dag.local_transaction_id = 2103;
-  request.physical_dag.statement_snapshot_id = 2104;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000002111"},
@@ -154,6 +241,7 @@ exec::CanonicalAggregateRuntimeRequest Request(
   request.result_column = {"aggregate_result", result_descriptor,
                            function != exec::CanonicalAggregateFunction::count,
                            2199};
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
 }
 
@@ -940,6 +1028,35 @@ bool ValidateCanonicalAggregateRegistry() {
   refusal = exec::ExecuteCanonicalAggregateRuntime(authority);
   passed &= Require(!refusal.diagnostic.ok && refusal.output_batch.rows.empty(),
                     "aggregate runtime accepted transaction finality authority");
+
+  auto context_bound = Request(exec::CanonicalAggregateFunction::sum, 0,
+                               2101, "int64");
+  const auto context_result =
+      exec::ExecuteCanonicalAggregateRuntime(context_bound);
+  passed &= Require(
+      context_result.diagnostic.ok &&
+          context_result.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              context_result.mga_statement_context,
+              context_bound.mga_authority.statement_context),
+      "aggregate registry lost the exact full-width statement context");
+
+  auto missing_authority = context_bound;
+  missing_authority.mga_authority = {};
+  refusal = exec::ExecuteCanonicalAggregateRuntime(missing_authority);
+  passed &= Require(!refusal.diagnostic.ok && refusal.output_batch.rows.empty(),
+                    "aggregate registry executed without MGA authority");
+
+  auto duplicate_context = context_bound;
+  auto duplicate = duplicate_context.physical_dag.mga_statement_context;
+  duplicate.in_doubt_excluded_local_transaction_ids.push_back(
+      kInDoubtLocalTransactionId);
+  SetStatementContext(&duplicate_context.physical_dag, duplicate);
+  duplicate_context.mga_authority.statement_context = duplicate;
+  refusal = exec::ExecuteCanonicalAggregateRuntime(duplicate_context);
+  passed &= Require(!refusal.diagnostic.ok && refusal.output_batch.rows.empty(),
+                    "duplicate in-doubt exclusion reached aggregate registry");
   return passed;
 }
 

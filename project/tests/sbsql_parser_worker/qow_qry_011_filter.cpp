@@ -18,9 +18,98 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-QRY-011-FILTER-V1: " << detail << '\n';
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000fb01",
+      "019f0000-0000-7200-8000-00000000fb02",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000fb03",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+void SetStatementContext(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context) {
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) node.mga_statement_context = context;
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context = StatementContext(
+      dag->admission_evidence.at(3).evidence_uuid);
+  SetStatementContext(dag, context);
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000fb04";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000fb05";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000fb06";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -64,8 +153,6 @@ exec::CanonicalInt64SumFilterRequest Request() {
   aggregate.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000001505";
   aggregate.physical_dag.root_physical_node_id = 1502;
-  aggregate.physical_dag.local_transaction_id = 1503;
-  aggregate.physical_dag.statement_snapshot_id = 1504;
   aggregate.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000001511"},
@@ -116,6 +203,7 @@ exec::CanonicalInt64SumFilterRequest Request() {
       api::EngineSqlTruthValue::true_value,
       api::EngineSqlTruthValue::true_value,
   };
+  aggregate.mga_authority = BindPhysicalAbiV2(&aggregate.physical_dag);
   return request;
 }
 
@@ -127,7 +215,13 @@ bool ValidateAggregateFilter() {
                         result.executed_physical_node_id == 1502 &&
                         result.state.transition_count == 3 &&
                         result.state.non_null_count == 2 &&
-                        result.state.accumulated_value == 7,
+                        result.state.accumulated_value == 7 &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0 &&
+                        exec::PhysicalMgaStatementContextEqual(
+                            result.mga_statement_context,
+                            Request().aggregate_request.mga_authority
+                                .statement_context),
                     "aggregate FILTER did not apply TRUE-only 3VL transitions");
 
   auto request = Request();
@@ -181,6 +275,29 @@ bool ValidateAggregateFilter() {
   result = exec::ExecuteCanonicalInt64SumFilter(request);
   passed &= Require(!result.diagnostic.ok && !result.state.has_value,
                     "aggregate FILTER bypassed MGA physical admission");
+
+  request = Request();
+  request.aggregate_request.physical_dag.mga_statement_context.complete =
+      false;
+  for (auto& node : request.aggregate_request.physical_dag.nodes) {
+    node.mga_statement_context.complete = false;
+  }
+  request.aggregate_request.mga_authority.statement_context.complete = false;
+  result = exec::ExecuteCanonicalInt64SumFilter(request);
+  passed &= Require(!result.diagnostic.ok && !result.state.has_value,
+                    "incomplete statement vector reached aggregate FILTER");
+
+  request = Request();
+  request.aggregate_request.physical_dag.mga_statement_context
+      .inventory_authoritative = false;
+  for (auto& node : request.aggregate_request.physical_dag.nodes) {
+    node.mga_statement_context.inventory_authoritative = false;
+  }
+  request.aggregate_request.mga_authority.statement_context
+      .inventory_authoritative = false;
+  result = exec::ExecuteCanonicalInt64SumFilter(request);
+  passed &= Require(!result.diagnostic.ok && !result.state.has_value,
+                    "non-inventory statement vector reached aggregate FILTER");
   return passed;
 }
 
