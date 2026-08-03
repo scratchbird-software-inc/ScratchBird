@@ -24,6 +24,11 @@ constexpr std::string_view kStatisticsSnapshot =
     "019f0000-0000-7100-8000-000000005002";
 constexpr std::string_view kRelation =
     "019f0000-0000-7100-8000-000000005003";
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-005-V1: " << detail << '\n';
@@ -40,8 +45,19 @@ plan::CanonicalMgaStatementContext MgaContext() {
       "019f0000-0000-7100-8000-000000005013";
   context.statement_metadata_snapshot_uuid =
       "019f0000-0000-7100-8000-000000005014";
-  context.owning_local_transaction_id = 501;
-  context.visible_committed_high_watermark = 499;
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
   return context;
 }
 
@@ -52,8 +68,8 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.catalog_epoch_uuid = std::string(kCatalogEpoch);
   graph.security_context_uuid =
       "019f0000-0000-7100-8000-000000005005";
-  graph.local_transaction_id = 501;
-  graph.statement_snapshot_id = 499;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 3;
   graph.result_descriptor_ids = {1};
@@ -206,6 +222,44 @@ bool ValidateNoDefaultOrActualSubstitution() {
   return passed;
 }
 
+bool ValidateStatementContextStatisticsRefusal() {
+  const auto expect_refusal = [](auto mutation,
+                                 const std::string_view detail) {
+    auto graph = Graph();
+    mutation(graph);
+    const auto result = opt::AdmitCanonicalOptimizerStatisticsBeforeAccess(
+        graph, Snapshot());
+    return Require(!result.accepted && !result.data_access_allowed &&
+                       !result.benchmark_clean_ready &&
+                       result.known_estimate_count == 0 &&
+                       result.unknown_estimate_count == 0 &&
+                       result.not_applicable_estimate_count == 0 &&
+                       !result.issues.empty(),
+                   detail);
+  };
+  bool passed = true;
+  passed &= expect_refusal(
+      [](auto& graph) { graph.mga_statement_context.complete = false; },
+      "incomplete statement vector reached statistics admission");
+  passed &= expect_refusal(
+      [](auto& graph) {
+        graph.mga_statement_context.statement_snapshot_uuid.clear();
+      },
+      "missing snapshot UUID reached statistics admission");
+  passed &= expect_refusal(
+      [](auto& graph) {
+        graph.mga_statement_context.active_excluded_local_transaction_ids =
+            {kOwner, kOldestActive};
+      },
+      "unsorted exclusions reached statistics admission");
+  passed &= expect_refusal(
+      [](auto& graph) {
+        graph.local_transaction_id = static_cast<std::uint32_t>(kOwner);
+      },
+      "narrowed transaction alias reached statistics admission");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-OPT-005-V1
@@ -213,5 +267,6 @@ int main() {
   bool passed = true;
   passed &= ValidateQualifiedAndUnknownStatistics();
   passed &= ValidateNoDefaultOrActualSubstitution();
+  passed &= ValidateStatementContextStatisticsRefusal();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

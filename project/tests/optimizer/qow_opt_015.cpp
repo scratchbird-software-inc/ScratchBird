@@ -23,6 +23,12 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 plan::CanonicalMgaStatementContext MgaContext() {
   plan::CanonicalMgaStatementContext context;
   context.statement_uuid =
@@ -33,15 +39,16 @@ plan::CanonicalMgaStatementContext MgaContext() {
       "019f0000-0000-7300-8000-000000015043";
   context.statement_metadata_snapshot_uuid =
       "019f0000-0000-7300-8000-000000015044";
-  context.owning_local_transaction_id = 1515;
-  context.visible_committed_high_watermark = 1514;
-  context.oldest_active_transaction_id = 1515;
-  context.oldest_interesting_transaction_id = 1515;
-  context.oldest_snapshot_transaction_id = 1515;
-  context.retention_horizon_transaction_id = 1515;
-  context.active_excluded_local_transaction_ids = {1515};
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
   context.snapshot_kind = "statement_stable";
-  context.publication_inventory_next_local_transaction_id = 1516;
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
   context.inventory_authoritative = true;
   context.complete = true;
   context.current = true;
@@ -68,7 +75,7 @@ exec::CanonicalExecutionMgaAuthority ClosureAuthority(
 }
 
 exec::PhysicalMgaStatementContext PhysicalContext(
-    const std::uint64_t visible_committed_high_watermark) {
+    const std::uint64_t visible_committed_high_watermark = 0) {
   exec::PhysicalMgaStatementContext context;
   context.statement_uuid =
       "019f0000-0000-7300-8000-000000015041";
@@ -78,16 +85,17 @@ exec::PhysicalMgaStatementContext PhysicalContext(
       "019f0000-0000-7300-8000-000000015043";
   context.statement_metadata_snapshot_uuid =
       "019f0000-0000-7300-8000-000000015044";
-  context.owning_local_transaction_id = 1515;
+  context.owning_local_transaction_id = kOwner;
   context.visible_committed_high_watermark =
       visible_committed_high_watermark;
-  context.oldest_active_transaction_id = 1515;
-  context.oldest_interesting_transaction_id = 1515;
-  context.oldest_snapshot_transaction_id = 1515;
-  context.retention_horizon_transaction_id = 1515;
-  context.active_excluded_local_transaction_ids = {1515};
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
   context.snapshot_kind = "statement_stable";
-  context.publication_inventory_next_local_transaction_id = 1516;
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
   context.inventory_authoritative = true;
   context.complete = true;
   context.current = true;
@@ -95,12 +103,12 @@ exec::PhysicalMgaStatementContext PhysicalContext(
 }
 
 exec::TypedPhysicalNodeDag PhysicalDag(
-    const std::uint64_t visible_committed_high_watermark = 1514) {
+    const std::uint64_t visible_committed_high_watermark = 0) {
   exec::TypedPhysicalNodeDag dag;
   dag.abi_version = 2;
   dag.selected_plan_uuid = "019f0000-0000-7300-8000-000000015001";
   dag.root_physical_node_id = 2;
-  dag.local_transaction_id = 1515;
+  dag.local_transaction_id = kOwner;
   dag.statement_snapshot_id = visible_committed_high_watermark;
   dag.mga_statement_context =
       PhysicalContext(visible_committed_high_watermark);
@@ -186,7 +194,7 @@ exec::TypedPhysicalNodeDag PhysicalDag(
 }
 
 api::CanonicalRuntimeOptimizerStatisticsRequest ActualsRequest(
-    const std::uint64_t visible_committed_high_watermark = 1514) {
+    const std::uint64_t visible_committed_high_watermark = 0) {
   api::CanonicalRuntimeOptimizerStatisticsRequest request;
   request.selected_physical_dag =
       PhysicalDag(visible_committed_high_watermark);
@@ -229,7 +237,7 @@ bool ValidatePostExecutionActuals() {
 }
 
 bool ValidateZeroHighWaterActuals() {
-  const auto request = ActualsRequest(0);
+  const auto request = ActualsRequest();
   const auto result = api::BuildRuntimeOptimizerStatistics(request);
   return Require(
       result.accepted && result.issues.empty() &&
@@ -296,6 +304,62 @@ bool ValidatePhaseAndAuthorityRefusals() {
       [](auto& request) { request.benchmark_authority_claimed = true; },
       "QOW-DIAG-OPTIMIZER-ACTUALS-AUTHORITY-V1",
       "runtime actuals benchmark authority was accepted");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.origin =
+            exec::CanonicalMgaAuthorityOrigin::kMissing;
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing MGA authority origin published runtime actuals");
+  passed &= expect_refusal(
+      [](auto& request) { request.mga_authority.resolve_current = {}; },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing current-context resolver published runtime actuals");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.statement_uuid.clear();
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "malformed carried statement context published runtime actuals");
+  const auto expect_current_refusal = [&](auto mutation,
+                                          const std::string_view detail) {
+    return expect_refusal(
+        [mutation](auto& request) {
+          auto current = request.mga_authority.statement_context;
+          mutation(current);
+          request.mga_authority.resolve_current = [current] {
+            exec::CanonicalMgaCurrentResolution resolution;
+            resolution.statement_context = current;
+            return resolution;
+          };
+        },
+        "QOW-DIAG-MGA-RUNTIME-CURRENT-V1", detail);
+  };
+  passed &= expect_current_refusal(
+      [](auto& current) { current.statement_snapshot_uuid[35] = '9'; },
+      "swapped current statement snapshot published runtime actuals");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.owning_local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "narrowed current local transaction published runtime actuals");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.in_doubt_excluded_local_transaction_ids =
+            {kInDoubt, kInDoubt};
+      },
+      "duplicate current exclusions published runtime actuals");
+  passed &= expect_current_refusal(
+      [](auto& current) { current.current = false; },
+      "stale resolved statement vector published runtime actuals");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.selected_physical_dag.nodes.front()
+            .mga_statement_context.current = false;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+      "node-level statement-context mismatch published runtime actuals");
   return passed;
 }
 
@@ -304,8 +368,8 @@ bool ValidateActualsCannotBecomePreAccessEstimates() {
   graph.bound_sblr_tree_uuid = "019f0000-0000-7300-8000-000000015031";
   graph.catalog_epoch_uuid = "019f0000-0000-7300-8000-000000015032";
   graph.security_context_uuid = "019f0000-0000-7300-8000-000000015033";
-  graph.local_transaction_id = 1515;
-  graph.statement_snapshot_id = 1514;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 11;
   graph.result_descriptor_ids = {1};

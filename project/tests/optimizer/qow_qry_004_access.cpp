@@ -19,6 +19,14 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kCommittedHighWater =
+    0xffff'ffff'ffff'fec8ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-004-ACCESS-V1: " << detail << '\n';
@@ -63,11 +71,13 @@ exec::CanonicalScanAccessRequest Request(const bool index_scan = true) {
   request.physical_dag.abi_version = 2;
   request.physical_dag.selected_plan_uuid = Uuid(401);
   request.physical_dag.root_physical_node_id = 41;
-  request.physical_dag.local_transaction_id = 401;
-  request.physical_dag.statement_snapshot_id = 402;
+  request.physical_dag.local_transaction_id = kOwner;
+  request.physical_dag.statement_snapshot_id = 0;
   request.physical_dag.mga_statement_context = {
-      Uuid(440), Uuid(441), Uuid(442), Uuid(443), 401, 402, 401, 401,
-      401, 401, {401}, {}, "statement_stable", 403, true, true, true};
+      Uuid(440), Uuid(441), Uuid(442), Uuid(443), kOwner, 0,
+      kOldestActive, kHorizon, kHorizon, kHorizon,
+      {kOldestActive, kOwner}, {kInDoubt}, "statement_stable",
+      kInventoryNext, true, true, true};
   request.physical_dag.bound_sblr_tree_uuid = Uuid(451);
   request.physical_dag.catalog_epoch_uuid = Uuid(452);
   request.physical_dag.security_context_uuid = Uuid(453);
@@ -135,7 +145,7 @@ exec::CanonicalScanCandidateEvidence Candidate(
     const exec::CanonicalMgaSecurityDecision security,
     const api::EngineSqlTruthValue residual,
     const bool locator_matches = true,
-    const std::uint64_t creator_local_transaction_id = 401) {
+    const std::uint64_t creator_local_transaction_id = kOwner) {
   exec::CanonicalScanCandidateEvidence candidate;
   candidate.candidate_uuid = Uuid(500 + ordinal);
   candidate.record_uuid = Uuid(600 + ordinal);
@@ -207,7 +217,11 @@ bool ValidateIndexAccessRechecks() {
                     "scan causal counters do not match recheck outcomes");
   passed &= Require(result.selected_plan_uuid == Uuid(401) &&
                         result.executed_physical_node_id == 41 &&
-                        result.causal_counter_id == 4101,
+                        result.causal_counter_id == 4101 &&
+                        result.mga_statement_context
+                                .owning_local_transaction_id == kOwner &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0,
                     "selected plan/node/causal identity was not retained");
   passed &= Require(result.authority.engine_mga_snapshot_bound &&
                         result.authority.visibility_rechecks_complete &&
@@ -296,19 +310,22 @@ bool ValidateCapturedCreatorVisibility() {
   bool passed = true;
 
   auto excluded_context = Request().physical_dag.mga_statement_context;
-  excluded_context.oldest_active_transaction_id = 399;
-  excluded_context.oldest_interesting_transaction_id = 399;
-  excluded_context.oldest_snapshot_transaction_id = 399;
-  excluded_context.retention_horizon_transaction_id = 399;
-  excluded_context.active_excluded_local_transaction_ids = {399, 401};
-  excluded_context.in_doubt_excluded_local_transaction_ids = {400};
+  excluded_context.visible_committed_high_watermark = kCommittedHighWater;
+  excluded_context.oldest_active_transaction_id = kOldestActive;
+  excluded_context.oldest_interesting_transaction_id = kHorizon;
+  excluded_context.oldest_snapshot_transaction_id = kHorizon;
+  excluded_context.retention_horizon_transaction_id = kHorizon;
+  excluded_context.active_excluded_local_transaction_ids =
+      {kOldestActive, kOwner};
+  excluded_context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
 
-  auto expect_creator_refusal = [&](const std::uint64_t creator,
+  auto expect_creator_refusal = [&](const std::uint64_t ordinal,
+                                    const std::uint64_t creator,
                                     const std::string_view detail) {
     auto request = Request();
     BindContext(&request, excluded_context);
     request.candidates = {
-        Candidate(70 + creator, exec::CanonicalMgaVisibilityDecision::kVisible,
+        Candidate(ordinal, exec::CanonicalMgaVisibilityDecision::kVisible,
                   exec::CanonicalMgaSecurityDecision::kAllowed,
                   api::EngineSqlTruthValue::true_value, true, creator),
     };
@@ -320,16 +337,19 @@ bool ValidateCapturedCreatorVisibility() {
         detail);
   };
   passed &= expect_creator_refusal(
-      399, "visible verdict bypassed the captured active exclusion");
+      71, kOldestActive,
+      "visible verdict bypassed the captured active exclusion");
   passed &= expect_creator_refusal(
-      400, "visible verdict bypassed the captured in-doubt exclusion");
+      72, kInDoubt,
+      "visible verdict bypassed the captured in-doubt exclusion");
 
   auto committed_request = Request();
   BindContext(&committed_request, excluded_context);
   committed_request.candidates = {
       Candidate(73, exec::CanonicalMgaVisibilityDecision::kVisible,
                 exec::CanonicalMgaSecurityDecision::kAllowed,
-                api::EngineSqlTruthValue::true_value, true, 398),
+                api::EngineSqlTruthValue::true_value, true,
+                kCommittedHighWater - 1),
   };
   auto result =
       exec::ExecuteCanonicalSelectedScanAccess(committed_request);
@@ -348,7 +368,8 @@ bool ValidateCapturedCreatorVisibility() {
   zero_request.candidates = {
       Candidate(74, exec::CanonicalMgaVisibilityDecision::kVisible,
                 exec::CanonicalMgaSecurityDecision::kAllowed,
-                api::EngineSqlTruthValue::true_value, true, 398),
+                api::EngineSqlTruthValue::true_value, true,
+                kCommittedHighWater - 1),
   };
   result = exec::ExecuteCanonicalSelectedScanAccess(zero_request);
   passed &= Require(
@@ -356,6 +377,100 @@ bool ValidateCapturedCreatorVisibility() {
           result.diagnostic.diagnostic_code ==
               "SB_DIAG_MGA_READ_VISIBILITY_DECISION_INVALID",
       "zero high-water admitted a non-owner creator or leaked scan output");
+  return passed;
+}
+
+bool ValidateCompleteAuthorityRefusalMatrix() {
+  const auto expect_refusal = [](auto mutation,
+                                 const std::string_view diagnostic,
+                                 const std::string_view detail) {
+    auto request = Request();
+    request.candidates = {
+        Candidate(91, exec::CanonicalMgaVisibilityDecision::kVisible,
+                  exec::CanonicalMgaSecurityDecision::kAllowed,
+                  api::EngineSqlTruthValue::true_value),
+    };
+    mutation(request);
+    const auto result = exec::ExecuteCanonicalSelectedScanAccess(request);
+    return Require(EmptyFailureResult(result) &&
+                       result.diagnostic.diagnostic_code == diagnostic &&
+                       !result.replan_required,
+                   detail);
+  };
+  bool passed = true;
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.origin =
+            exec::CanonicalMgaAuthorityOrigin::kMissing;
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing MGA authority reached scan access");
+  passed &= expect_refusal(
+      [](auto& request) { request.mga_authority.resolve_current = {}; },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing current resolver reached scan access");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.statement_uuid.clear();
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "malformed carried context reached scan access");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.owning_local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "narrowed carried transaction identity reached scan access");
+  const auto expect_current_refusal = [&](auto mutation,
+                                          const std::string_view detail) {
+    return expect_refusal(
+        [mutation](auto& request) {
+          auto current = request.mga_authority.statement_context;
+          mutation(current);
+          request.mga_authority.resolve_current = [current] {
+            exec::CanonicalMgaCurrentResolution resolution;
+            resolution.statement_context = current;
+            return resolution;
+          };
+        },
+        "QOW-DIAG-MGA-RUNTIME-CURRENT-V1", detail);
+  };
+  passed &= expect_current_refusal(
+      [](auto& current) { current.statement_snapshot_uuid = Uuid(999); },
+      "swapped current snapshot reached scan access");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.active_excluded_local_transaction_ids =
+            {kOldestActive, kOwner, kOwner};
+      },
+      "duplicate current exclusion reached scan access");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.publication_inventory_next_local_transaction_id =
+            static_cast<std::uint32_t>(kInventoryNext);
+      },
+      "truncated current inventory reached scan access");
+  passed &= expect_current_refusal(
+      [](auto& current) { current.current = false; },
+      "stale current vector reached scan access");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.physical_dag.nodes.front().mga_statement_context.current =
+            false;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+      "node-swapped context reached scan access");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.physical_dag.catalog_epoch_uuid =
+            request.physical_dag.mga_statement_context
+                .statement_metadata_snapshot_uuid;
+        request.physical_dag.admission_evidence[1].evidence_uuid =
+            request.physical_dag.catalog_epoch_uuid;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+      "metadata/catalog conflation reached scan access");
   return passed;
 }
 
@@ -404,6 +519,7 @@ int main() {
   if (!ValidateIndexAccessRechecks() || !ValidateRelationAccessOrder() ||
       !ValidateAuthorityAndReplanRefusals() ||
       !ValidateCapturedCreatorVisibility() ||
+      !ValidateCompleteAuthorityRefusalMatrix() ||
       !ValidateAllOrNothingRefusal()) {
     return 1;
   }

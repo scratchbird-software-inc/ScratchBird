@@ -23,6 +23,12 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-004-CONSUMPTION-V1: " << detail << '\n';
@@ -68,11 +74,13 @@ exec::TypedPhysicalNodeDag Dag() {
   dag.abi_version = 2;
   dag.selected_plan_uuid = Uuid(401);
   dag.root_physical_node_id = 43;
-  dag.local_transaction_id = 501;
-  dag.statement_snapshot_id = 502;
+  dag.local_transaction_id = kOwner;
+  dag.statement_snapshot_id = 0;
   dag.mga_statement_context = {
-      Uuid(540), Uuid(541), Uuid(542), Uuid(543), 501, 502, 501, 501,
-      501, 501, {501}, {}, "statement_stable", 503, true, true, true};
+      Uuid(540), Uuid(541), Uuid(542), Uuid(543), kOwner, 0,
+      kOldestActive, kHorizon, kHorizon, kHorizon,
+      {kOldestActive, kOwner}, {kInDoubt}, "statement_stable",
+      kInventoryNext, true, true, true};
   dag.bound_sblr_tree_uuid = Uuid(551);
   dag.catalog_epoch_uuid = Uuid(552);
   dag.security_context_uuid = Uuid(553);
@@ -181,7 +189,7 @@ exec::CanonicalScanAccessRequest ScanRequest(
   candidate.record_uuid = Uuid(603);
   candidate.relation_uuid = request.relation_uuid;
   candidate.visibility_decision_uuid = Uuid(604);
-  candidate.creator_local_transaction_id = 501;
+  candidate.creator_local_transaction_id = kOwner;
   candidate.row_version_id = 605;
   candidate.candidate_generation = 3;
   candidate.observed_generation = 3;
@@ -272,7 +280,20 @@ bool ValidateCausalDagConsumption() {
                             std::vector<std::uint32_t>{433} &&
                         result.selected_plan_uuid == Uuid(401) &&
                         result.executed_root_physical_node_id == 43 &&
-                        result.root_causal_counter_id == 4301,
+                        result.root_causal_counter_id == 4301 &&
+                        result.mga_statement_context
+                                .owning_local_transaction_id == kOwner &&
+                        result.mga_statement_context
+                                .visible_committed_high_watermark == 0 &&
+                        exec::PhysicalMgaStatementContextEqual(
+                            result.mga_statement_context,
+                            Dag().mga_statement_context) &&
+                        std::ranges::all_of(
+                            result.executed_steps, [&](const auto& step) {
+                              return exec::PhysicalMgaStatementContextEqual(
+                                  step.mga_statement_context,
+                                  result.mga_statement_context);
+                            }),
                     "dispatch root lost result or causal evidence");
   passed &= Require(result.authority.engine_mga_snapshot_bound &&
                         !result.authority.owns_transaction_finality &&
@@ -395,6 +416,106 @@ bool ValidatePreflightAndSnapshotRefusal() {
   return passed;
 }
 
+bool ValidateCompletePreflightMgaRefusalMatrix() {
+  const auto expect_refusal = [](auto mutation,
+                                 const std::string_view diagnostic,
+                                 const std::string_view detail) {
+    std::vector<std::uint64_t> invocation_order;
+    auto request = Request(&invocation_order);
+    mutation(request);
+    const auto result = exec::ExecuteCanonicalPhysicalDag(request);
+    return Require(!result.diagnostic.ok &&
+                       result.diagnostic.diagnostic_code == diagnostic &&
+                       !result.replan_required &&
+                       !result.data_access_observed &&
+                       invocation_order.empty() &&
+                       result.executed_steps.empty() &&
+                       result.root_result_handle_id == 0 &&
+                       result.root_output_descriptor_ids.empty() &&
+                       result.selected_plan_uuid.empty() &&
+                       result.executed_root_physical_node_id == 0 &&
+                       result.root_causal_counter_id == 0 &&
+                       !exec::PhysicalMgaStatementContextValid(
+                           result.mga_statement_context),
+                   detail);
+  };
+  bool passed = true;
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.origin =
+            exec::CanonicalMgaAuthorityOrigin::kMissing;
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing MGA authority reached a physical executor");
+  passed &= expect_refusal(
+      [](auto& request) { request.mga_authority.resolve_current = {}; },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing current resolver reached a physical executor");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.statement_uuid.clear();
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "malformed carried context reached a physical executor");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.owning_local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "narrowed carried transaction identity reached a physical executor");
+  const auto expect_current_refusal = [&](auto mutation,
+                                          const std::string_view detail) {
+    return expect_refusal(
+        [mutation](auto& request) {
+          auto current = request.mga_authority.statement_context;
+          mutation(current);
+          request.mga_authority.resolve_current = [current] {
+            exec::CanonicalMgaCurrentResolution resolution;
+            resolution.statement_context = current;
+            return resolution;
+          };
+        },
+        "QOW-DIAG-MGA-RUNTIME-CURRENT-V1", detail);
+  };
+  passed &= expect_current_refusal(
+      [](auto& current) { current.statement_snapshot_uuid = Uuid(999); },
+      "swapped resolved snapshot reached a physical executor");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.in_doubt_excluded_local_transaction_ids =
+            {kInDoubt, kInDoubt};
+      },
+      "duplicate resolved exclusion reached a physical executor");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.publication_inventory_next_local_transaction_id =
+            static_cast<std::uint32_t>(kInventoryNext);
+      },
+      "truncated resolved inventory reached a physical executor");
+  passed &= expect_current_refusal(
+      [](auto& current) { current.current = false; },
+      "stale resolved vector reached a physical executor");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.physical_dag.nodes.front().mga_statement_context.current =
+            false;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+      "node-swapped statement context reached a physical executor");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.physical_dag.catalog_epoch_uuid =
+            request.physical_dag.mga_statement_context
+                .statement_metadata_snapshot_uuid;
+        request.physical_dag.admission_evidence[1].evidence_uuid =
+            request.physical_dag.catalog_epoch_uuid;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+      "metadata/catalog conflation reached a physical executor");
+  return passed;
+}
+
 bool ValidateEvidenceAndRegistryRefusal() {
   bool passed = true;
   std::vector<std::uint64_t> invocation_order;
@@ -507,6 +628,7 @@ bool ValidateFetchFinalRevalidationScrubsOutput() {
 int main() {
   if (!ValidateCausalDagConsumption() || !ValidateSharedNodeExecutesOnce() ||
       !ValidatePreflightAndSnapshotRefusal() ||
+      !ValidateCompletePreflightMgaRefusalMatrix() ||
       !ValidateEvidenceAndRegistryRefusal() ||
       !ValidateFetchFinalRevalidationScrubsOutput()) {
     return 1;

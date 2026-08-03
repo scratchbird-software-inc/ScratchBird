@@ -304,7 +304,23 @@ bool ValidateExactSelectedExecution() {
           result.runtime_actuals.planning_estimates_immutable &&
           !result.runtime_actuals.feedback_authorized &&
           result.runtime_actuals.selected_plan_uuid == Uuid(900) &&
-          result.runtime_actuals.node_actuals.size() == 4,
+          result.runtime_actuals.node_actuals.size() == 4 &&
+          result.runtime_actuals.selected_plan_uuid ==
+              request.selected_physical_dag.selected_plan_uuid &&
+          request.selected_physical_dag.local_transaction_id == kOwner &&
+          request.selected_physical_dag.statement_snapshot_id == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.dispatch.mga_statement_context,
+              request.mga_authority.statement_context) &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.runtime_actuals.mga_statement_context,
+              request.mga_authority.statement_context) &&
+          std::ranges::all_of(
+              result.dispatch.executed_steps, [&](const auto& step) {
+                return exec::PhysicalMgaStatementContextEqual(
+                    step.mga_statement_context,
+                    request.mga_authority.statement_context);
+              }),
       "runtime actuals were not attached to the selected physical identities");
   passed &= Require008(
       result.result_publication.published &&
@@ -389,11 +405,11 @@ bool ValidateAuthorityAndAbiRefusal() {
       Uuid(998);
   result = api::ExecuteCanonicalOptimizerSelectedDag(request);
   passed &= Require008(
-      !result.accepted && invocation_order.empty() &&
+          !result.accepted && invocation_order.empty() &&
           result.issues.size() == 1 &&
           result.issues.front().diagnostic_id ==
-              "QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-SCOPE-V1",
-      "legacy evidence-only physical root reached canonical execution");
+              "QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION",
+      "legacy scalar snapshot alias treated zero as full MGA authority");
 
   request = SelectedExecutionRequest(&invocation_order);
   request.selected_physical_dag.mga_statement_context.current = false;
@@ -404,6 +420,105 @@ bool ValidateAuthorityAndAbiRefusal() {
           result.issues.front().diagnostic_id ==
               "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
       "non-current physical MGA vector reached selected execution");
+  return passed;
+}
+
+bool ValidateCompletePreAccessMgaRefusals() {
+  const auto expect_refusal = [](auto mutation,
+                                 const std::string_view diagnostic,
+                                 const std::string_view detail) {
+    std::vector<std::uint64_t> invocation_order;
+    auto request = SelectedExecutionRequest(&invocation_order);
+    mutation(request);
+    const auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+    return Require008(
+        !result.accepted && !result.data_access_observed &&
+            !result.exact_selected_nodes_executed &&
+            !result.canonical_result_published && invocation_order.empty() &&
+            result.dispatch.executed_steps.empty() &&
+            result.dispatch.root_result_handle_id == 0 &&
+            result.runtime_actuals.node_actuals.empty() &&
+            !result.result_publication.published &&
+            result.result_publication.canonical_envelope_bytes.empty() &&
+            result.issues.size() == 1 &&
+            result.issues.front().diagnostic_id == diagnostic,
+        detail);
+  };
+  bool passed = true;
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.origin =
+            exec::CanonicalMgaAuthorityOrigin::kMissing;
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing runtime authority origin reached selected execution");
+  passed &= expect_refusal(
+      [](auto& request) { request.mga_authority.resolve_current = {}; },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "missing current resolver reached selected execution");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.statement_snapshot_uuid =
+            Uuid(997);
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "DAG-swapped runtime statement context reached execution");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.mga_authority.statement_context.owning_local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+      "narrowed runtime transaction identity reached execution");
+  const auto expect_current_refusal = [&](auto mutation,
+                                          const std::string_view detail) {
+    return expect_refusal(
+        [mutation](auto& request) {
+          auto current = request.mga_authority.statement_context;
+          mutation(current);
+          request.mga_authority.resolve_current = [current] {
+            exec::CanonicalMgaCurrentResolution resolution;
+            resolution.statement_context = current;
+            return resolution;
+          };
+        },
+        "QOW-DIAG-MGA-RUNTIME-CURRENT-V1", detail);
+  };
+  passed &= expect_current_refusal(
+      [](auto& current) { current.statement_snapshot_uuid = Uuid(996); },
+      "swapped resolved statement snapshot reached execution");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.active_excluded_local_transaction_ids =
+            {kOldestActive, kOwner, kOwner};
+      },
+      "duplicate resolved exclusion vector reached execution");
+  passed &= expect_current_refusal(
+      [](auto& current) {
+        current.publication_inventory_next_local_transaction_id =
+            static_cast<std::uint32_t>(kInventoryNext);
+      },
+      "truncated resolved inventory ceiling reached execution");
+  passed &= expect_current_refusal(
+      [](auto& current) { current.current = false; },
+      "stale resolved vector reached execution");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.selected_physical_dag.nodes.front()
+            .mga_statement_context.current = false;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-CAPABILITY",
+      "node-swapped statement context reached execution");
+  passed &= expect_refusal(
+      [](auto& request) {
+        request.selected_physical_dag.catalog_epoch_uuid =
+            request.selected_physical_dag.mga_statement_context
+                .statement_metadata_snapshot_uuid;
+        request.selected_physical_dag.admission_evidence[1].evidence_uuid =
+            request.selected_physical_dag.catalog_epoch_uuid;
+      },
+      "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+      "metadata snapshot was accepted as the execution catalog epoch");
   return passed;
 }
 
@@ -577,6 +692,7 @@ int main() {
   passed &= ValidateExactSelectedExecution();
   passed &= ValidatePreflightReplan();
   passed &= ValidateAuthorityAndAbiRefusal();
+  passed &= ValidateCompletePreAccessMgaRefusals();
   passed &= ValidatePostStartFailureIsTruthful();
   passed &= ValidatePhaseSpecificStaleRefusals();
   passed &= ValidateResultPublicationRefusalIsTruthful();

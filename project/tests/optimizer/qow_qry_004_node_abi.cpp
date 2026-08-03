@@ -11,12 +11,19 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <utility>
 
 namespace exec = scratchbird::engine::executor;
 
 namespace {
+
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view message) {
   if (!condition) std::cerr << message << '\n';
@@ -40,23 +47,23 @@ exec::TypedPhysicalNodeDag SharedDag() {
   dag.abi_version = 2;
   dag.selected_plan_uuid = "019f0000-0000-7000-8000-000000000401";
   dag.root_physical_node_id = 4;
-  dag.local_transaction_id = 41;
-  dag.statement_snapshot_id = 43;
+  dag.local_transaction_id = kOwner;
+  dag.statement_snapshot_id = 0;
   dag.mga_statement_context = {
       "019f0000-0000-7100-8000-000000000411",
       "019f0000-0000-7100-8000-000000000412",
       "019f0000-0000-7100-8000-000000000413",
       "019f0000-0000-7100-8000-000000000414",
-      41,
-      43,
-      41,
-      41,
-      41,
-      41,
-      {41},
-      {42},
+      kOwner,
+      0,
+      kOldestActive,
+      kHorizon,
+      kHorizon,
+      kHorizon,
+      {kOldestActive, kOwner},
+      {kInDoubt},
       "statement_stable",
-      44,
+      kInventoryNext,
       true,
       true,
       true,
@@ -131,7 +138,11 @@ bool ValidateAcceptedAbi() {
   passed &= Require(result.issues.empty(),
                     "valid typed physical DAG emitted issues");
   passed &= Require(result.validated_node_count == 4 &&
-                        result.maximum_observed_depth == 3,
+                        result.maximum_observed_depth == 3 &&
+                        SharedDag().local_transaction_id == kOwner &&
+                        SharedDag().statement_snapshot_id == 0 &&
+                        exec::PhysicalMgaStatementContextValid(
+                            SharedDag().mga_statement_context),
                     "typed physical DAG validation counters differ");
   return passed;
 }
@@ -223,6 +234,129 @@ bool ValidateSnapshotVectorAbi() {
                    "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
                    "optimizer_publication_scope"),
       "nil physical catalog epoch was accepted");
+  return passed;
+}
+
+bool ValidateCompleteSnapshotVectorRefusalMatrix() {
+  const auto expect_publication_refusal = [](auto mutation,
+                                             const std::string_view detail) {
+    auto dag = SharedDag();
+    mutation(dag.mga_statement_context);
+    for (auto& node : dag.nodes) {
+      node.mga_statement_context = dag.mga_statement_context;
+    }
+    const auto result = exec::ValidateTypedPhysicalNodeDag(dag);
+    return Require(
+        !result.accepted && result.validated_node_count == 0 &&
+            HasIssue(result, "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                     "optimizer_publication_scope"),
+        detail);
+  };
+  bool passed = true;
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.statement_uuid.clear(); },
+      "missing statement UUID entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.owning_transaction_uuid =
+            "019F0000-0000-7100-8000-000000000412";
+      },
+      "malformed owner UUID entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.statement_snapshot_uuid =
+            "00000000-0000-0000-0000-000000000000";
+      },
+      "nil statement snapshot UUID entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.statement_metadata_snapshot_uuid.clear();
+      },
+      "missing metadata snapshot UUID entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.inventory_authoritative = false; },
+      "non-authoritative inventory entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.complete = false; },
+      "incomplete inventory entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.current = false; },
+      "stale inventory entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.snapshot_kind.clear(); },
+      "missing snapshot kind entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.publication_inventory_next_local_transaction_id =
+            static_cast<std::uint32_t>(kInventoryNext);
+      },
+      "truncated inventory ceiling entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) { context.oldest_active_transaction_id = 0; },
+      "missing active horizon entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.oldest_snapshot_transaction_id = kOldestActive;
+      },
+      "swapped snapshot horizon entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.active_excluded_local_transaction_ids =
+            {kOwner, kOldestActive};
+      },
+      "unsorted active exclusions entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.active_excluded_local_transaction_ids =
+            {kOldestActive, kOwner, kOwner};
+      },
+      "duplicate active exclusion entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.in_doubt_excluded_local_transaction_ids =
+            {kInDoubt, kInDoubt};
+      },
+      "duplicate in-doubt exclusion entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.in_doubt_excluded_local_transaction_ids = {kOwner};
+      },
+      "overlapping exclusion vectors entered the physical ABI");
+  passed &= expect_publication_refusal(
+      [](auto& context) {
+        context.in_doubt_excluded_local_transaction_ids =
+            {std::numeric_limits<std::uint64_t>::max()};
+      },
+      "overflowing exclusion entered the physical ABI");
+
+  auto narrowed_local = SharedDag();
+  narrowed_local.local_transaction_id =
+      static_cast<std::uint32_t>(kOwner);
+  auto result = exec::ValidateTypedPhysicalNodeDag(narrowed_local);
+  passed &= Require(
+      !result.accepted &&
+          HasIssue(result, "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                   "optimizer_publication_scope"),
+      "narrowed local-transaction alias entered the physical ABI");
+
+  auto stale_scalar = SharedDag();
+  stale_scalar.statement_snapshot_id = 1;
+  result = exec::ValidateTypedPhysicalNodeDag(stale_scalar);
+  passed &= Require(
+      !result.accepted &&
+          HasIssue(result, "QOW-DIAG-PHYSICAL-NODE-ABI-PUBLICATION",
+                   "optimizer_publication_scope"),
+      "stale numeric snapshot alias entered the physical ABI");
+
+  auto duplicate_evidence = SharedDag();
+  duplicate_evidence.admission_evidence[3].evidence_uuid =
+      duplicate_evidence.admission_evidence[2].evidence_uuid;
+  result = exec::ValidateTypedPhysicalNodeDag(duplicate_evidence);
+  passed &= Require(
+      !result.accepted &&
+          HasIssue(result, "QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION",
+                   "admission_order_or_evidence"),
+      "duplicate/swapped admission evidence entered the physical ABI");
   return passed;
 }
 
@@ -340,6 +474,7 @@ int main() {
   passed &= ValidateAcceptedAbi();
   passed &= ValidateAdmissionRefusal();
   passed &= ValidateSnapshotVectorAbi();
+  passed &= ValidateCompleteSnapshotVectorRefusalMatrix();
   passed &= ValidateHandleAndImplementationRefusal();
   passed &= ValidateGraphRefusal();
   passed &= ValidateResourceRefusal();

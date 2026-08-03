@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -18,6 +19,12 @@
 namespace plan = scratchbird::engine::planner;
 
 namespace {
+
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-IAS-006-V1: " << detail << '\n';
@@ -37,15 +44,16 @@ plan::CanonicalMgaStatementContext MgaContext() {
   context.owning_transaction_uuid = Uuid(9002);
   context.statement_snapshot_uuid = Uuid(9003);
   context.statement_metadata_snapshot_uuid = Uuid(9004);
-  context.owning_local_transaction_id = 71;
-  context.visible_committed_high_watermark = 72;
-  context.oldest_active_transaction_id = 71;
-  context.oldest_interesting_transaction_id = 71;
-  context.oldest_snapshot_transaction_id = 71;
-  context.retention_horizon_transaction_id = 71;
-  context.active_excluded_local_transaction_ids = {71};
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
   context.snapshot_kind = "statement_stable";
-  context.publication_inventory_next_local_transaction_id = 73;
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
   context.inventory_authoritative = true;
   context.complete = true;
   context.current = true;
@@ -57,8 +65,8 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.bound_sblr_tree_uuid = Uuid(1);
   graph.catalog_epoch_uuid = Uuid(2);
   graph.security_context_uuid = Uuid(3);
-  graph.local_transaction_id = 71;
-  graph.statement_snapshot_id = 72;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 2;
   graph.result_descriptor_ids = {201};
@@ -88,8 +96,8 @@ plan::CanonicalLogicalPropertyCatalog Catalog() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 71;
-  catalog.statement_snapshot_id = 72;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
 
   plan::CanonicalLogicalPropertyRecord equivalence;
@@ -173,11 +181,8 @@ bool ValidateCanonicalSerialization() {
   changed_graph = populated.logical_graph;
   changed_scope = populated.property_catalog;
   changed_graph.mga_statement_context.active_excluded_local_transaction_ids =
-      {70, 71};
-  changed_graph.mga_statement_context.oldest_active_transaction_id = 70;
-  changed_graph.mga_statement_context.oldest_interesting_transaction_id = 70;
-  changed_graph.mga_statement_context.oldest_snapshot_transaction_id = 70;
-  changed_graph.mga_statement_context.retention_horizon_transaction_id = 70;
+      {kHorizon, kOldestActive, kOwner};
+  changed_graph.mga_statement_context.oldest_active_transaction_id = kHorizon;
   changed_scope.mga_statement_context =
       changed_graph.mga_statement_context;
   const auto changed_vector = plan::SerializeCanonicalLogicalPropertyCatalog(
@@ -200,7 +205,8 @@ bool ValidateCanonicalSerialization() {
 
   changed_graph = populated.logical_graph;
   changed_scope = populated.property_catalog;
-  changed_graph.mga_statement_context.oldest_active_transaction_id = 73;
+  changed_graph.mga_statement_context.oldest_active_transaction_id =
+      kInventoryNext;
   changed_scope.mga_statement_context =
       changed_graph.mga_statement_context;
   const auto invalid_horizon =
@@ -253,6 +259,96 @@ bool ValidateCanonicalSerialization() {
   return passed;
 }
 
+bool ValidateCompleteStatementContextRefusals() {
+  using Mutation =
+      std::function<void(plan::CanonicalMgaStatementContext&)>;
+  const std::vector<std::pair<std::string_view, Mutation>> mutations = {
+      {"missing statement UUID", [](auto& context) {
+         context.statement_uuid.clear();
+       }},
+      {"malformed owner UUID", [](auto& context) {
+         context.owning_transaction_uuid = "019F0000-0000-7700-8000-000000009002";
+       }},
+      {"nil snapshot UUID", [](auto& context) {
+         context.statement_snapshot_uuid =
+             "00000000-0000-0000-0000-000000000000";
+       }},
+      {"nil metadata UUID", [](auto& context) {
+         context.statement_metadata_snapshot_uuid =
+             "00000000-0000-0000-0000-000000000000";
+       }},
+      {"missing local transaction", [](auto& context) {
+         context.owning_local_transaction_id = 0;
+       }},
+      {"missing snapshot kind", [](auto& context) {
+         context.snapshot_kind.clear();
+       }},
+      {"non-authoritative inventory", [](auto& context) {
+         context.inventory_authoritative = false;
+       }},
+      {"incomplete inventory", [](auto& context) {
+         context.complete = false;
+       }},
+      {"missing inventory next", [](auto& context) {
+         context.publication_inventory_next_local_transaction_id = 0;
+       }},
+      {"truncated inventory next", [](auto& context) {
+         context.publication_inventory_next_local_transaction_id =
+             static_cast<std::uint32_t>(kInventoryNext);
+       }},
+      {"missing horizon", [](auto& context) {
+         context.oldest_snapshot_transaction_id = 0;
+       }},
+      {"swapped horizon", [](auto& context) {
+         std::swap(context.oldest_snapshot_transaction_id,
+                   context.oldest_active_transaction_id);
+       }},
+      {"unsorted active exclusions", [](auto& context) {
+         context.active_excluded_local_transaction_ids =
+             {kOwner, kOldestActive};
+       }},
+      {"duplicate active exclusion", [](auto& context) {
+         context.active_excluded_local_transaction_ids =
+             {kOldestActive, kOwner, kOwner};
+       }},
+      {"duplicate in-doubt exclusion", [](auto& context) {
+         context.in_doubt_excluded_local_transaction_ids =
+             {kInDoubt, kInDoubt};
+       }},
+      {"overlapping exclusions", [](auto& context) {
+         context.in_doubt_excluded_local_transaction_ids = {kOwner};
+       }},
+      {"overflowing exclusion", [](auto& context) {
+         context.in_doubt_excluded_local_transaction_ids =
+             {kInventoryNext};
+       }},
+  };
+
+  bool passed = true;
+  for (const auto& [detail, mutate] : mutations) {
+    auto graph = Graph();
+    auto catalog = Catalog();
+    mutate(graph.mga_statement_context);
+    catalog.mga_statement_context = graph.mga_statement_context;
+    const auto result =
+        plan::SerializeCanonicalLogicalPropertyCatalog(graph, catalog);
+    passed &= Require(!result.accepted &&
+                          result.canonical_serialization.empty(),
+                      detail);
+  }
+
+  auto narrowed_alias = Graph();
+  auto narrowed_catalog = Catalog();
+  narrowed_alias.local_transaction_id =
+      static_cast<std::uint32_t>(kOwner);
+  const auto narrowed = plan::SerializeCanonicalLogicalPropertyCatalog(
+      narrowed_alias, narrowed_catalog);
+  passed &= Require(!narrowed.accepted &&
+                        narrowed.canonical_serialization.empty(),
+                    "narrowed legacy local-transaction alias was accepted");
+  return passed;
+}
+
 bool ValidateScopeInvalidationAndPropagation() {
   const auto populated = Populated();
   bool passed = true;
@@ -283,6 +379,7 @@ bool ValidateScopeInvalidationAndPropagation() {
 // QOW-TEST-IAS-006-V1
 int main() {
   if (!ValidateCanonicalSerialization() ||
+      !ValidateCompleteStatementContextRefusals() ||
       !ValidateScopeInvalidationAndPropagation()) {
     return 1;
   }

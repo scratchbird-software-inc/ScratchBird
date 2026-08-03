@@ -21,6 +21,12 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-014-V1: " << detail << '\n';
   return condition;
@@ -39,15 +45,16 @@ plan::CanonicalMgaStatementContext MgaContext() {
   context.owning_transaction_uuid = Uuid(11);
   context.statement_snapshot_uuid = Uuid(12);
   context.statement_metadata_snapshot_uuid = Uuid(4);
-  context.owning_local_transaction_id = 701;
-  context.visible_committed_high_watermark = 699;
-  context.oldest_active_transaction_id = 701;
-  context.oldest_interesting_transaction_id = 701;
-  context.oldest_snapshot_transaction_id = 701;
-  context.retention_horizon_transaction_id = 701;
-  context.active_excluded_local_transaction_ids = {701};
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
   context.snapshot_kind = "statement_stable";
-  context.publication_inventory_next_local_transaction_id = 702;
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
   context.inventory_authoritative = true;
   context.complete = true;
   context.current = true;
@@ -91,8 +98,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   graph.bound_sblr_tree_uuid = Uuid(1);
   graph.catalog_epoch_uuid = Uuid(2);
   graph.security_context_uuid = Uuid(3);
-  graph.local_transaction_id = 701;
-  graph.statement_snapshot_id = 699;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 4;
   graph.result_descriptor_ids = {104};
@@ -112,8 +119,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   properties.bound_sblr_tree_uuid = Uuid(1);
   properties.catalog_epoch_uuid = Uuid(2);
   properties.security_context_uuid = Uuid(3);
-  properties.local_transaction_id = 701;
-  properties.statement_snapshot_id = 699;
+  properties.local_transaction_id = kOwner;
+  properties.statement_snapshot_id = 0;
   properties.mga_statement_context = MgaContext();
 
   request.catalog.snapshot_uuid = Uuid(4);
@@ -130,8 +137,8 @@ opt::CanonicalOptimizerAdmissionRequest Request() {
   request.security.authorized_object_uuids = {Uuid(9)};
   request.security.engine_owned = true;
 
-  request.mga.local_transaction_id = 701;
-  request.mga.statement_snapshot_id = 699;
+  request.mga.local_transaction_id = kOwner;
+  request.mga.statement_snapshot_id = 0;
   request.mga.statement_context = MgaContext();
   request.mga.metadata_snapshot_uuid = Uuid(4);
   request.mga.transaction_active = true;
@@ -214,8 +221,8 @@ plan::CanonicalPhysicalAlternativeCatalog Alternatives() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 701;
-  catalog.statement_snapshot_id = 699;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
   catalog.alternatives = {
       Alternative(1, 1, "scan.heap.v1", 101),
@@ -424,6 +431,38 @@ bool ValidateAtomicRefusals() {
       request, admission, stale_alternatives, candidates, policy,
       "QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1",
       "alternative catalog reused a different statement snapshot");
+
+  auto stale_admission_context = admission;
+  stale_admission_context.mga_statement_context.current = false;
+  passed &= expect_refusal(
+      request, stale_admission_context, alternatives, candidates, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1",
+      "stale admitted statement context entered search");
+
+  auto swapped_request_context = request;
+  swapped_request_context.logical_graph.mga_statement_context
+      .statement_snapshot_uuid = Uuid(998);
+  passed &= expect_refusal(
+      swapped_request_context, admission, alternatives, candidates, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1",
+      "swapped request statement context entered search");
+
+  auto narrowed_request_context = request;
+  narrowed_request_context.logical_graph.local_transaction_id =
+      static_cast<std::uint32_t>(kOwner);
+  passed &= expect_refusal(
+      narrowed_request_context, admission, alternatives, candidates, policy,
+      "QOW-DIAG-OPTIMIZER-SEARCH-ADMISSION-V1",
+      "narrowed request transaction alias entered search");
+
+  auto duplicate_vector = alternatives;
+  duplicate_vector.mga_statement_context
+      .active_excluded_local_transaction_ids =
+          {kOldestActive, kOwner, kOwner};
+  passed &= expect_refusal(
+      request, admission, duplicate_vector, candidates, policy,
+      "QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1",
+      "duplicate alternative exclusion entered search");
 
   auto unbounded = request;
   unbounded.resource.maximum_search_steps = 4;

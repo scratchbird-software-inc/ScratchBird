@@ -20,6 +20,12 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-011-V1: " << detail << '\n';
   return condition;
@@ -38,8 +44,19 @@ plan::CanonicalMgaStatementContext MgaContext() {
   context.owning_transaction_uuid = Uuid(9002);
   context.statement_snapshot_uuid = Uuid(9003);
   context.statement_metadata_snapshot_uuid = Uuid(9004);
-  context.owning_local_transaction_id = 501;
-  context.visible_committed_high_watermark = 502;
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
   return context;
 }
 
@@ -66,8 +83,8 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.bound_sblr_tree_uuid = Uuid(1);
   graph.catalog_epoch_uuid = Uuid(2);
   graph.security_context_uuid = Uuid(3);
-  graph.local_transaction_id = 501;
-  graph.statement_snapshot_id = 502;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 4;
   graph.result_descriptor_ids = {103};
@@ -90,8 +107,8 @@ plan::CanonicalLogicalPropertyCatalog Properties() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 501;
-  catalog.statement_snapshot_id = 502;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
 
   plan::CanonicalLogicalPropertyRecord source_order;
@@ -171,8 +188,8 @@ plan::CanonicalPhysicalAlternativeCatalog Alternatives() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 501;
-  catalog.statement_snapshot_id = 502;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
   catalog.alternatives = {
       Alternative(1, 1, "values.materialize.v1", 101, {}, {Uuid(101)}),
@@ -288,13 +305,62 @@ bool ValidatePerNodeCoverageRefusal() {
                  "node without a property-complete candidate was executable");
 }
 
+bool ValidateStatementContextLegalityRefusal() {
+  const auto expect_refusal = [](auto mutation,
+                                 const std::string_view detail) {
+    auto inputs = ValidInputs();
+    mutation(inputs);
+    const auto result = opt::EvaluateCanonicalRelationalCandidateLegality(
+        inputs.graph, inputs.properties, inputs.alternatives);
+    return Require(!result.accepted && !result.data_access_allowed &&
+                       !result.complete_legal_coverage &&
+                       result.selectable_candidate_count == 0 &&
+                       result.candidates.empty() &&
+                       result.issues.size() == 1,
+                   detail);
+  };
+  bool passed = true;
+  passed &= expect_refusal(
+      [](auto& inputs) {
+        inputs.properties.mga_statement_context.statement_uuid = Uuid(999);
+      },
+      "property statement-context mismatch produced candidates");
+  passed &= expect_refusal(
+      [](auto& inputs) {
+        inputs.alternatives.mga_statement_context.current = false;
+      },
+      "stale alternative statement context produced candidates");
+  passed &= expect_refusal(
+      [](auto& inputs) {
+        inputs.alternatives.mga_statement_context
+            .active_excluded_local_transaction_ids =
+                {kOldestActive, kOwner, kOwner};
+      },
+      "duplicate alternative exclusion produced candidates");
+  passed &= expect_refusal(
+      [](auto& inputs) {
+        inputs.properties.local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "narrowed property transaction alias produced candidates");
+  passed &= expect_refusal(
+      [](auto& inputs) {
+        inputs.alternatives.catalog_epoch_uuid =
+            inputs.graph.mga_statement_context
+                .statement_metadata_snapshot_uuid;
+      },
+      "metadata/catalog conflation produced candidates");
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-OPT-011-V1
 int main() {
   if (!ValidateCanonicalLegalityAndEnforcement() ||
       !ValidateNoMarkersOrDefaults() ||
-      !ValidatePerNodeCoverageRefusal()) {
+      !ValidatePerNodeCoverageRefusal() ||
+      !ValidateStatementContextLegalityRefusal()) {
     return 1;
   }
   std::cout << "QOW-TEST-OPT-011-V1: PASS\n";

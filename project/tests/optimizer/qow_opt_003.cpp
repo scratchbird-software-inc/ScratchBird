@@ -19,6 +19,12 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-003-V1: " << detail << '\n';
   return condition;
@@ -37,8 +43,19 @@ plan::CanonicalMgaStatementContext MgaContext() {
   context.owning_transaction_uuid = Uuid(9002);
   context.statement_snapshot_uuid = Uuid(9003);
   context.statement_metadata_snapshot_uuid = Uuid(9004);
-  context.owning_local_transaction_id = 801;
-  context.visible_committed_high_watermark = 802;
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
   return context;
 }
 
@@ -65,8 +82,8 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.bound_sblr_tree_uuid = Uuid(1);
   graph.catalog_epoch_uuid = Uuid(2);
   graph.security_context_uuid = Uuid(3);
-  graph.local_transaction_id = 801;
-  graph.statement_snapshot_id = 802;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 3;
   graph.result_descriptor_ids = {102};
@@ -87,8 +104,8 @@ plan::CanonicalLogicalPropertyCatalog Catalog() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 801;
-  catalog.statement_snapshot_id = 802;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
 
   plan::CanonicalLogicalPropertyRecord equivalence;
@@ -196,6 +213,48 @@ bool ValidateSourceScopeAndExpressionRefusal() {
                         HasIssue(result,
                                  "QOW-DIAG-LOGICAL-PROPERTY-SCOPE-V1"),
                     "property catalog crossed statement scope");
+
+  const auto expect_scope_refusal = [&](auto mutation,
+                                        const std::string_view detail) {
+    auto graph = Graph();
+    auto changed = Catalog();
+    mutation(graph, changed);
+    const auto refused =
+        plan::PopulateCanonicalLogicalPropertiesFromBoundSblr(
+            graph, changed, Bindings());
+    return Require(!refused.accepted &&
+                       HasIssue(refused,
+                                "QOW-DIAG-LOGICAL-PROPERTY-SCOPE-V1"),
+                   detail);
+  };
+  passed &= expect_scope_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.statement_metadata_snapshot_uuid =
+            Uuid(999);
+      },
+      "swapped metadata snapshot populated logical properties");
+  passed &= expect_scope_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.current = false;
+      },
+      "stale property-catalog statement vector was populated");
+  passed &= expect_scope_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.complete = false;
+      },
+      "incomplete property-catalog statement vector was populated");
+  passed &= expect_scope_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.in_doubt_excluded_local_transaction_ids =
+            {kInDoubt, kInDoubt};
+      },
+      "duplicate property-catalog exclusion was populated");
+  passed &= expect_scope_refusal(
+      [](auto&, auto& changed) {
+        changed.local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "narrowed property-catalog transaction alias was populated");
   return passed;
 }
 

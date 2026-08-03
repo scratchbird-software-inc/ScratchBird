@@ -9,11 +9,18 @@
 #include "logical_plan.hpp"
 #include "rule_planner.hpp"
 
+#include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <string>
 
 namespace {
+
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
 
 int Fail(const int line) { return line; }
 
@@ -52,15 +59,26 @@ int main() {
   logical.bound_sblr_tree_uuid = "00000000-0000-7000-8000-000000000001";
   logical.catalog_epoch_uuid = "00000000-0000-7000-8000-000000000002";
   logical.security_context_uuid = "00000000-0000-7000-8000-000000000003";
-  logical.local_transaction_id = 41;
-  logical.statement_snapshot_id = 42;
+  logical.local_transaction_id = kOwner;
+  logical.statement_snapshot_id = 0;
   logical.mga_statement_context = {
       "00000000-0000-7000-8000-000000000011",
       "00000000-0000-7000-8000-000000000012",
       "00000000-0000-7000-8000-000000000013",
       "00000000-0000-7000-8000-000000000014",
-      41,
-      42};
+      kOwner,
+      0,
+      kOldestActive,
+      kHorizon,
+      kHorizon,
+      kHorizon,
+      {kOldestActive, kOwner},
+      {kInDoubt},
+      "statement_stable",
+      kInventoryNext,
+      true,
+      true,
+      true};
   logical.root_logical_node_id = 1;
   logical.result_descriptor_ids = {101};
   logical.nodes = {{1,
@@ -87,7 +105,42 @@ int main() {
   const auto validation =
       ValidateCanonicalLogicalPhysicalBoundary(logical, alternatives);
   if (!validation.accepted || validation.data_access_allowed ||
-      !validation.issues.empty()) {
+      !validation.issues.empty() ||
+      logical.statement_snapshot_id != 0 ||
+      logical.local_transaction_id !=
+          logical.mga_statement_context.owning_local_transaction_id) {
+    return Fail(__LINE__);
+  }
+
+  auto stale = alternatives;
+  stale.mga_statement_context.current = false;
+  const auto stale_result =
+      ValidateCanonicalLogicalPhysicalBoundary(logical, stale);
+  if (stale_result.accepted || stale_result.data_access_allowed ||
+      stale_result.validated_alternative_count != 0 ||
+      stale_result.executable_alternative_count != 0 ||
+      stale_result.issues.size() != 1) {
+    return Fail(__LINE__);
+  }
+
+  auto duplicate = alternatives;
+  duplicate.mga_statement_context.active_excluded_local_transaction_ids =
+      {kOldestActive, kOwner, kOwner};
+  const auto duplicate_result =
+      ValidateCanonicalLogicalPhysicalBoundary(logical, duplicate);
+  if (duplicate_result.accepted || duplicate_result.data_access_allowed ||
+      duplicate_result.validated_alternative_count != 0 ||
+      duplicate_result.issues.size() != 1) {
+    return Fail(__LINE__);
+  }
+
+  auto narrowed = alternatives;
+  narrowed.local_transaction_id = static_cast<std::uint32_t>(kOwner);
+  const auto narrowed_result =
+      ValidateCanonicalLogicalPhysicalBoundary(logical, narrowed);
+  if (narrowed_result.accepted || narrowed_result.data_access_allowed ||
+      narrowed_result.validated_alternative_count != 0 ||
+      narrowed_result.issues.size() != 1) {
     return Fail(__LINE__);
   }
   return 0;

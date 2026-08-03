@@ -19,6 +19,12 @@ namespace plan = scratchbird::engine::planner;
 
 namespace {
 
+constexpr std::uint64_t kOwner = 0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActive = 0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kHorizon = 0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubt = 0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNext = 0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-002-V1: " << detail << '\n';
   return condition;
@@ -37,8 +43,19 @@ plan::CanonicalMgaStatementContext MgaContext() {
   context.owning_transaction_uuid = Uuid(9002);
   context.statement_snapshot_uuid = Uuid(9003);
   context.statement_metadata_snapshot_uuid = Uuid(9004);
-  context.owning_local_transaction_id = 801;
-  context.visible_committed_high_watermark = 802;
+  context.owning_local_transaction_id = kOwner;
+  context.visible_committed_high_watermark = 0;
+  context.oldest_active_transaction_id = kOldestActive;
+  context.oldest_interesting_transaction_id = kHorizon;
+  context.oldest_snapshot_transaction_id = kHorizon;
+  context.retention_horizon_transaction_id = kHorizon;
+  context.active_excluded_local_transaction_ids = {kOldestActive, kOwner};
+  context.in_doubt_excluded_local_transaction_ids = {kInDoubt};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = kInventoryNext;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
   return context;
 }
 
@@ -64,8 +81,8 @@ plan::CanonicalLogicalRelationalGraph Graph() {
   graph.bound_sblr_tree_uuid = Uuid(1);
   graph.catalog_epoch_uuid = Uuid(2);
   graph.security_context_uuid = Uuid(3);
-  graph.local_transaction_id = 801;
-  graph.statement_snapshot_id = 802;
+  graph.local_transaction_id = kOwner;
+  graph.statement_snapshot_id = 0;
   graph.mga_statement_context = MgaContext();
   graph.root_logical_node_id = 3;
   graph.result_descriptor_ids = {103};
@@ -100,8 +117,8 @@ plan::CanonicalPhysicalAlternativeCatalog Catalog() {
   catalog.bound_sblr_tree_uuid = Uuid(1);
   catalog.catalog_epoch_uuid = Uuid(2);
   catalog.security_context_uuid = Uuid(3);
-  catalog.local_transaction_id = 801;
-  catalog.statement_snapshot_id = 802;
+  catalog.local_transaction_id = kOwner;
+  catalog.statement_snapshot_id = 0;
   catalog.mga_statement_context = MgaContext();
   catalog.alternatives = {
       Alternative(1, 1, "scan.heap.v1", 101),
@@ -226,6 +243,55 @@ bool ValidateBoundaryAndAvailabilityEvidence() {
                                  "QOW-DIAG-PHYSICAL-ALTERNATIVE-AUTHORITY-V1",
                                  0),
                     "parser SQL text entered physical alternative admission");
+
+  const auto expect_context_refusal = [&](auto mutation,
+                                          const std::string_view detail) {
+    auto graph = Graph();
+    auto changed = Catalog();
+    mutation(graph, changed);
+    const auto refused =
+        plan::ValidateCanonicalLogicalPhysicalBoundary(graph, changed);
+    return Require(
+        !refused.accepted && !refused.data_access_allowed &&
+            refused.validated_alternative_count == 0 &&
+            refused.executable_alternative_count == 0 &&
+            HasIssue(refused,
+                     "QOW-DIAG-PHYSICAL-ALTERNATIVE-BOUNDARY-V1", 0),
+        detail);
+  };
+  passed &= expect_context_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.statement_snapshot_uuid = Uuid(999);
+      },
+      "swapped alternative-catalog snapshot context was accepted");
+  passed &= expect_context_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.current = false;
+      },
+      "stale alternative-catalog context was accepted");
+  passed &= expect_context_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.statement_uuid.clear();
+      },
+      "missing alternative-catalog statement UUID was accepted");
+  passed &= expect_context_refusal(
+      [](auto&, auto& changed) {
+        changed.mga_statement_context.active_excluded_local_transaction_ids =
+            {kOldestActive, kOwner, kOwner};
+      },
+      "duplicate alternative-catalog exclusion was accepted");
+  passed &= expect_context_refusal(
+      [](auto&, auto& changed) {
+        changed.local_transaction_id =
+            static_cast<std::uint32_t>(kOwner);
+      },
+      "narrowed alternative-catalog transaction alias was accepted");
+  passed &= expect_context_refusal(
+      [](auto& graph, auto& changed) {
+        changed.catalog_epoch_uuid =
+            graph.mga_statement_context.statement_metadata_snapshot_uuid;
+      },
+      "metadata snapshot was accepted as an alternative catalog epoch");
   return passed;
 }
 

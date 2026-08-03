@@ -10,6 +10,7 @@
 #include "qow_opt_014.cpp"
 
 #include <cstdlib>
+#include <limits>
 #include <string_view>
 
 namespace {
@@ -98,6 +99,40 @@ const exec::PhysicalNodeRecord* PhysicalNode(
   return node == dag.nodes.end() ? nullptr : &*node;
 }
 
+bool ExactPhysicalStatementContext(
+    const plan::CanonicalMgaStatementContext& logical,
+    const exec::PhysicalMgaStatementContext& physical) {
+  return logical.statement_uuid == physical.statement_uuid &&
+         logical.owning_transaction_uuid ==
+             physical.owning_transaction_uuid &&
+         logical.statement_snapshot_uuid ==
+             physical.statement_snapshot_uuid &&
+         logical.statement_metadata_snapshot_uuid ==
+             physical.statement_metadata_snapshot_uuid &&
+         logical.owning_local_transaction_id ==
+             physical.owning_local_transaction_id &&
+         logical.visible_committed_high_watermark ==
+             physical.visible_committed_high_watermark &&
+         logical.oldest_active_transaction_id ==
+             physical.oldest_active_transaction_id &&
+         logical.oldest_interesting_transaction_id ==
+             physical.oldest_interesting_transaction_id &&
+         logical.oldest_snapshot_transaction_id ==
+             physical.oldest_snapshot_transaction_id &&
+         logical.retention_horizon_transaction_id ==
+             physical.retention_horizon_transaction_id &&
+         logical.active_excluded_local_transaction_ids ==
+             physical.active_excluded_local_transaction_ids &&
+         logical.in_doubt_excluded_local_transaction_ids ==
+             physical.in_doubt_excluded_local_transaction_ids &&
+         logical.snapshot_kind == physical.snapshot_kind &&
+         logical.publication_inventory_next_local_transaction_id ==
+             physical.publication_inventory_next_local_transaction_id &&
+         logical.inventory_authoritative == physical.inventory_authoritative &&
+         logical.complete == physical.complete &&
+         logical.current == physical.current;
+}
+
 bool ValidatePublishedDag() {
   const auto inputs = Inputs();
   const auto result = opt::PublishCanonicalPhysicalDag(
@@ -120,6 +155,17 @@ bool ValidatePublishedDag() {
           !result.physical_dag.data_access_observed &&
           result.physical_dag.nodes.size() == 4 &&
           result.physical_dag.root_physical_node_id == 4 &&
+          result.physical_dag.local_transaction_id == kOwner &&
+          result.physical_dag.statement_snapshot_id == 0 &&
+          ExactPhysicalStatementContext(
+              inputs.admission.mga_statement_context,
+              result.physical_dag.mga_statement_context) &&
+          std::ranges::all_of(
+              result.physical_dag.nodes, [&](const auto& node) {
+                return ExactPhysicalStatementContext(
+                    inputs.admission.mga_statement_context,
+                    node.mga_statement_context);
+              }) &&
           exec::PhysicalMgaStatementContextEqual(
               result.physical_dag.nodes.front().mga_statement_context,
               result.physical_dag.mga_statement_context),
@@ -250,6 +296,47 @@ bool ValidateCapabilityRefusals() {
       "QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
       "changed search snapshot published a DAG");
 
+  auto stale_admission = Inputs();
+  stale_admission.admission.mga_statement_context.current = false;
+  passed &= ExpectRefusal(
+      stale_admission, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-ADMISSION-V1",
+      "stale admission statement context published a DAG");
+
+  auto swapped_request = Inputs();
+  swapped_request.request.logical_graph.mga_statement_context
+      .statement_snapshot_uuid = Uuid(998);
+  passed &= ExpectRefusal(
+      swapped_request, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-ADMISSION-V1",
+      "swapped request statement context published a DAG");
+
+  auto narrowed_request = Inputs();
+  narrowed_request.request.logical_graph.local_transaction_id =
+      static_cast<std::uint32_t>(kOwner);
+  passed &= ExpectRefusal(
+      narrowed_request, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-ADMISSION-V1",
+      "narrowed request transaction alias published a DAG");
+
+  auto duplicate_search = Inputs();
+  duplicate_search.search.mga_statement_context
+      .active_excluded_local_transaction_ids =
+          {kOldestActive, kOwner, kOwner};
+  passed &= ExpectRefusal(
+      duplicate_search, PublicationIdentity(),
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-SEARCH-V1",
+      "duplicate search exclusion vector published a DAG");
+
+  auto overflowing = Inputs();
+  auto overflowing_identity = PublicationIdentity();
+  overflowing_identity.first_causal_counter_id =
+      std::numeric_limits<std::uint64_t>::max() - 2;
+  passed &= ExpectRefusal(
+      overflowing, overflowing_identity,
+      "QOW-DIAG-OPTIMIZER-PHYSICAL-RESOURCE-V1",
+      "overflowing physical causal-counter range published a DAG");
+
   auto observed = Inputs();
   auto identity = PublicationIdentity();
   identity.data_access_observed = true;
@@ -266,8 +353,8 @@ PublicationInputs PropertyInputs() {
   properties.bound_sblr_tree_uuid = Uuid(1);
   properties.catalog_epoch_uuid = Uuid(2);
   properties.security_context_uuid = Uuid(3);
-  properties.local_transaction_id = 701;
-  properties.statement_snapshot_id = 699;
+  properties.local_transaction_id = kOwner;
+  properties.statement_snapshot_id = 0;
   properties.mga_statement_context = MgaContext();
   plan::CanonicalLogicalPropertyRecord ordering;
   ordering.property_uuid = Uuid(10);
