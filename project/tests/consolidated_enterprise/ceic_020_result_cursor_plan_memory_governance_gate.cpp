@@ -467,6 +467,8 @@ executor::PreparedTemplateAdmission Admission(std::string suffix = "a") {
   executor::PreparedTemplateAdmission admission;
   admission.key.operation_id = "dml.select_rows";
   admission.key.sblr_digest_or_trace_key = "sblr:prepared:" + suffix;
+  admission.key.catalog_epoch_uuid =
+      "019f0200-0000-7000-8000-00000000ce20";
   admission.key.descriptor_set_digest = "prepared:descriptor-set:" + suffix;
   admission.key.epochs.catalog_epoch = 200;
   admission.key.epochs.security_epoch = 201;

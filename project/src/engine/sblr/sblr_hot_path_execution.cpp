@@ -162,11 +162,12 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   }
   if (!request.authority.engine_mga_snapshot_bound ||
       !request.authority.transaction_inventory_authoritative ||
-      request.context.snapshot_visible_through_local_transaction_id == 0 ||
-      request.context.local_transaction_id == 0) {
+      request.context.local_transaction_id == 0 ||
+      request.mga_authority.origin !=
+          exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      !request.mga_authority.resolve_current) {
     return Refuse(request, "ORH_SBLR_HOT_PATH_MGA_UNPROVEN",
-                  "engine MGA snapshot and transaction inventory proof are "
-                  "required");
+                  "engine MGA statement vector and transaction-inventory current resolver are required");
   }
   if (!request.authority.security_recheck_required ||
       !request.context.security_context_present) {
@@ -201,7 +202,8 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   }
 
   auto build = BuildPreparedTemplateFromSblr(
-      request.envelope, request.context, request.api_request);
+      request.envelope, request.context, request.api_request,
+      request.mga_authority);
   if (!build.ok) {
     return Refuse(request, build.diagnostic_code, build.detail);
   }
@@ -225,6 +227,17 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   if (!result.bind.ok) {
     return Refuse(request, result.bind.diagnostic_code, result.bind.detail);
   }
+  result.statement_use_validation =
+      exec::RevalidatePreparedTemplateStatementUse(
+          *result.reused_prepare.prepared_template,
+          result.bind.statement_use_receipt);
+  if (!result.statement_use_validation.ok ||
+      !result.statement_use_validation.executable_receipt) {
+    return Refuse(request, result.statement_use_validation.diagnostic_code,
+                  result.statement_use_validation.detail);
+  }
+  result.executable_statement_use_receipt =
+      result.statement_use_validation.executable_receipt;
 
   auto native_request = request.native_specialization;
   native_request.identity.stable_template_id =
@@ -262,15 +275,13 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
 
   result.specialization = ExecuteSblrNativeSpecialization(native_request);
   if (!result.specialization.ok) {
-    result.fail_closed = true;
-    result.diagnostic_code = result.specialization.diagnostic_code;
-    result.detail = result.specialization.diagnostic_detail;
-    AddCommonEvidence(request, &result);
-    result.evidence.push_back("sblr_hot_path.fail_closed=true");
-    result.evidence.insert(result.evidence.end(),
-                           result.specialization.evidence.begin(),
-                           result.specialization.evidence.end());
-    return result;
+    auto refused = Refuse(request, result.specialization.diagnostic_code,
+                          result.specialization.diagnostic_detail);
+    refused.specialization = std::move(result.specialization);
+    refused.evidence.insert(refused.evidence.end(),
+                            refused.specialization.evidence.begin(),
+                            refused.specialization.evidence.end());
+    return refused;
   }
   if (!result.specialization.native_used) {
     return Fallback(request, result.specialization.diagnostic_code,
@@ -301,6 +312,15 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   result.evidence.push_back("sblr_hot_path.prepared_template_id=" +
                             result.reused_prepare.prepared_template->template_id);
   result.evidence.push_back("sblr_hot_path.prepared_template_reused=true");
+  result.evidence.push_back(
+      "sblr_hot_path.statement_use_receipt_id=" +
+      result.executable_statement_use_receipt->receipt_id());
+  result.evidence.push_back(
+      "sblr_hot_path.statement_use_receipt_executable=true");
+  result.evidence.push_back(
+      "sblr_hot_path.statement_uuid=" +
+      result.executable_statement_use_receipt->statement_context()
+          .statement_uuid);
   result.evidence.push_back("sblr_hot_path.opcode_specialization=native");
   result.evidence.push_back("sblr_hot_path.superinstruction_id=" +
                             request.superinstruction.superinstruction_id);
@@ -317,6 +337,9 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
   result.evidence.insert(result.evidence.end(),
                          result.bind.evidence.begin(),
                          result.bind.evidence.end());
+  result.evidence.insert(result.evidence.end(),
+                         result.statement_use_validation.evidence.begin(),
+                         result.statement_use_validation.evidence.end());
   result.evidence.insert(result.evidence.end(),
                          result.specialization.evidence.begin(),
                          result.specialization.evidence.end());

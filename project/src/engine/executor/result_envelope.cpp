@@ -425,11 +425,68 @@ std::string HexBytes(const std::vector<std::uint8_t>& bytes) {
   return output;
 }
 
+void AppendMgaStatementContext(
+    std::ostringstream* out,
+    const PhysicalMgaStatementContext& context) {
+  AppendLengthField(out, "mga.statement_uuid", context.statement_uuid);
+  AppendLengthField(out, "mga.owning_transaction_uuid",
+                    context.owning_transaction_uuid);
+  AppendLengthField(out, "mga.statement_snapshot_uuid",
+                    context.statement_snapshot_uuid);
+  AppendLengthField(out, "mga.statement_metadata_snapshot_uuid",
+                    context.statement_metadata_snapshot_uuid);
+  AppendLengthField(out, "mga.owning_local_transaction_id",
+                    std::to_string(context.owning_local_transaction_id));
+  AppendLengthField(
+      out, "mga.visible_committed_high_watermark",
+      std::to_string(context.visible_committed_high_watermark));
+  AppendLengthField(out, "mga.oldest_active_transaction_id",
+                    std::to_string(context.oldest_active_transaction_id));
+  AppendLengthField(
+      out, "mga.oldest_interesting_transaction_id",
+      std::to_string(context.oldest_interesting_transaction_id));
+  AppendLengthField(
+      out, "mga.oldest_snapshot_transaction_id",
+      std::to_string(context.oldest_snapshot_transaction_id));
+  AppendLengthField(
+      out, "mga.retention_horizon_transaction_id",
+      std::to_string(context.retention_horizon_transaction_id));
+  AppendLengthField(
+      out, "mga.active_excluded_local_transaction_id_count",
+      std::to_string(context.active_excluded_local_transaction_ids.size()));
+  for (const auto transaction_id :
+       context.active_excluded_local_transaction_ids) {
+    AppendLengthField(out, "mga.active_excluded_local_transaction_id",
+                      std::to_string(transaction_id));
+  }
+  AppendLengthField(
+      out, "mga.in_doubt_excluded_local_transaction_id_count",
+      std::to_string(context.in_doubt_excluded_local_transaction_ids.size()));
+  for (const auto transaction_id :
+       context.in_doubt_excluded_local_transaction_ids) {
+    AppendLengthField(out, "mga.in_doubt_excluded_local_transaction_id",
+                      std::to_string(transaction_id));
+  }
+  AppendLengthField(out, "mga.snapshot_kind", context.snapshot_kind);
+  AppendLengthField(
+      out, "mga.publication_inventory_next_local_transaction_id",
+      std::to_string(
+          context.publication_inventory_next_local_transaction_id));
+  AppendLengthField(out, "mga.inventory_authoritative",
+                    context.inventory_authoritative ? "true" : "false");
+  AppendLengthField(out, "mga.complete",
+                    context.complete ? "true" : "false");
+  AppendLengthField(out, "mga.current",
+                    context.current ? "true" : "false");
+}
+
 std::string EncodeEnvelope(const CanonicalResultEnvelopeV1& envelope) {
   std::ostringstream out;
   AppendLengthField(&out, "abi_family_id", "QOW-RESULT-DIAGNOSTIC-ABI-V1");
   AppendLengthField(&out, "abi_version", std::to_string(envelope.abi_version));
   AppendLengthField(&out, "statement_uuid", envelope.statement_uuid);
+  AppendMgaStatementContext(&out, envelope.mga_statement_context);
+  AppendLengthField(&out, "catalog_epoch_uuid", envelope.catalog_epoch_uuid);
   AppendLengthField(&out, "execution_attempt_uuid",
                     envelope.execution_attempt_uuid);
   AppendLengthField(&out, "result_kind", ResultKindName(envelope.result_kind));
@@ -522,6 +579,9 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
 
   if (request.abi_version != 1 ||
       !IsCanonicalUuid(request.statement_uuid) ||
+      request.mga_authority.origin !=
+          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      !IsCanonicalUuid(request.selected_catalog_epoch_uuid) ||
       !IsCanonicalUuid(request.execution_attempt_uuid) ||
       request.statement_uuid == request.execution_attempt_uuid ||
       !IsCanonicalUuid(request.transaction_effect_evidence_uuid) ||
@@ -582,7 +642,6 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     return refuse(Refusal("descriptor-free result carries rows or bindings"));
   }
 
-  DescriptorBatch visible_batch;
   std::uint32_t visible_ordinal = 0;
   for (std::size_t index = 0; index < request.column_bindings.size(); ++index) {
     const auto& binding = request.column_bindings[index];
@@ -605,16 +664,44 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
         request.physical_output_batch.columns[index],
         *binding.published_descriptor, visible_ordinal);
     if (!validated.ok) return refuse(validated);
-    visible_batch.columns.push_back(request.physical_output_batch.columns[index]);
-    visible_batch.columns.back().stable_name =
-        binding.published_descriptor->name_utf8;
     ++visible_ordinal;
   }
   if (!request.physical_output_batch.columns.empty() &&
-      visible_batch.columns.empty()) {
+      visible_ordinal == 0) {
     return refuse(Refusal("result shape hides every physical column"));
   }
 
+  // Result publication is a statement use. Re-resolve the durable engine MGA
+  // inventory at this final boundary, after structural validation and
+  // immediately before any result metadata or row is materialized.
+  const auto authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.selected_physical_dag);
+  if (!authority.ok) return refuse(authority);
+  const auto& statement_context = request.mga_authority.statement_context;
+  if (request.statement_uuid != statement_context.statement_uuid ||
+      request.selected_catalog_epoch_uuid !=
+          request.selected_physical_dag.catalog_epoch_uuid ||
+      request.selected_catalog_epoch_uuid == statement_context.statement_uuid ||
+      request.selected_catalog_epoch_uuid ==
+          statement_context.owning_transaction_uuid ||
+      request.selected_catalog_epoch_uuid ==
+          statement_context.statement_snapshot_uuid ||
+      request.selected_catalog_epoch_uuid ==
+          statement_context.statement_metadata_snapshot_uuid) {
+    return refuse(Refusal(
+        "result statement authority or independent catalog epoch is not "
+        "the selected execution identity"));
+  }
+
+  DescriptorBatch visible_batch;
+  visible_batch.columns.reserve(visible_ordinal);
+  for (std::size_t index = 0; index < request.column_bindings.size(); ++index) {
+    const auto& binding = request.column_bindings[index];
+    if (!binding.visible) continue;
+    visible_batch.columns.push_back(request.physical_output_batch.columns[index]);
+    visible_batch.columns.back().stable_name =
+        binding.published_descriptor->name_utf8;
+  }
   visible_batch.rows.reserve(request.physical_output_batch.rows.size());
   for (const auto& physical_row : request.physical_output_batch.rows) {
     DescriptorTuple visible_row;
@@ -629,6 +716,8 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
 
   result.envelope.abi_version = 1;
   result.envelope.statement_uuid = request.statement_uuid;
+  result.envelope.mga_statement_context = statement_context;
+  result.envelope.catalog_epoch_uuid = request.selected_catalog_epoch_uuid;
   result.envelope.execution_attempt_uuid = request.execution_attempt_uuid;
   result.envelope.result_kind = request.result_kind;
   for (const auto& binding : request.column_bindings) {

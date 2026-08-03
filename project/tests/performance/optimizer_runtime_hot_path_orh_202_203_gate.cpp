@@ -99,9 +99,18 @@ api::EngineRequestContext PreparedRouteContext(const std::string& family) {
   context.principal_uuid = Uuid("principal.orh202");
   context.current_role_uuid = Uuid("role.reader");
   context.session_uuid = Uuid("session.orh202." + family);
-  context.transaction_uuid = Uuid("txn.orh202." + family);
+  context.transaction_uuid =
+      Uuid("019f2020-0000-7000-8000-000000000002");
+  context.statement_uuid =
+      Uuid("019f2020-0000-7000-8000-000000000003");
+  context.statement_snapshot_uuid =
+      Uuid("019f2020-0000-7000-8000-000000000004");
+  context.statement_metadata_snapshot_uuid =
+      Uuid("019f2020-0000-7000-8000-000000000005");
+  context.catalog_epoch_uuid =
+      Uuid("019f2020-0000-7000-8000-000000000001");
   context.local_transaction_id = 88;
-  context.snapshot_visible_through_local_transaction_id = 55;
+  context.snapshot_visible_through_local_transaction_id = 0;
   context.transaction_isolation_level = "snapshot";
   context.security_context_present = true;
   context.catalog_generation_id = 20;
@@ -111,12 +120,47 @@ api::EngineRequestContext PreparedRouteContext(const std::string& family) {
   return context;
 }
 
+exec::CanonicalExecutionMgaAuthority PreparedRouteAuthority(
+    const api::EngineRequestContext& context) {
+  exec::PhysicalMgaStatementContext statement;
+  statement.statement_uuid = context.statement_uuid.canonical;
+  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  statement.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  statement.owning_local_transaction_id = context.local_transaction_id;
+  statement.visible_committed_high_watermark =
+      context.snapshot_visible_through_local_transaction_id;
+  statement.oldest_active_transaction_id = 40;
+  statement.oldest_interesting_transaction_id = 40;
+  statement.oldest_snapshot_transaction_id = 40;
+  statement.retention_horizon_transaction_id = 40;
+  statement.active_excluded_local_transaction_ids = {
+      context.local_transaction_id};
+  statement.snapshot_kind = "statement_stable";
+  statement.publication_inventory_next_local_transaction_id = 100;
+  statement.inventory_authoritative = true;
+  statement.complete = true;
+  statement.current = true;
+
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = statement;
+  authority.resolve_current = [statement]() {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = statement;
+    return resolution;
+  };
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  return authority;
+}
+
 api::EngineApiRequest PreparedRouteRequest(
     const api::EngineRequestContext& context,
     const std::string& family) {
   api::EngineApiRequest request;
   request.context = context;
-  request.operation_id = "orh202." + family;
+  request.operation_id = "query.execute";
   request.target_database.uuid = context.database_uuid;
   request.target_database.object_kind = "database";
   request.target_schema.uuid = Uuid("schema.public");
@@ -144,16 +188,17 @@ api::EngineApiRequest PreparedRouteRequest(
 }
 
 sblr::SblrOperationEnvelope PreparedRouteEnvelope(const std::string& family) {
-  auto envelope = sblr::MakeSblrEnvelope("orh202." + family,
-                                         "SBLR_ORH202_" + family,
+  auto envelope = sblr::MakeSblrEnvelope("query.execute",
+                                         "SBLR_QUERY_EXECUTE",
                                          "trace.orh202." + family);
+  envelope.opcode_code = 0x1207;
+  envelope.parser_package_uuid =
+      "019f2020-0000-7000-8000-000000000101";
+  envelope.registry_snapshot_uuid =
+      "019f2020-0000-7000-8000-000000000102";
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.result_shape = "engine.result.orh202." + family + ".v1";
-  envelope.operands.push_back({"predicate_slot", "predicate:scalar_eq",
-                               "col." + family + ".id"});
-  envelope.operands.push_back({"parameter_slot", "param:0",
-                               "col." + family + ".id"});
   return envelope;
 }
 
@@ -163,8 +208,8 @@ opt::FixedRouteOverheadEvidence FixedRouteEvidenceFromRuntimePreparedFamily(
   const auto context = PreparedRouteContext(family);
   const auto request = PreparedRouteRequest(context, family);
   const auto envelope = PreparedRouteEnvelope(family);
-  const auto build = sblr::BuildPreparedTemplateFromSblr(envelope, context,
-                                                         request);
+  const auto build = sblr::BuildPreparedTemplateFromSblr(
+      envelope, context, request, PreparedRouteAuthority(context));
   Require(build.ok, family + " SBLR prepared template build failed: " +
                         build.diagnostic_code);
   Require(Contains(build.evidence, "parser_sql_text_authority=false"),
@@ -182,6 +227,10 @@ opt::FixedRouteOverheadEvidence FixedRouteEvidenceFromRuntimePreparedFamily(
   Require(bound.ok,
           family + " warmed prepared template bind failed: " +
               bound.diagnostic_code);
+  const auto use = exec::RevalidatePreparedTemplateStatementUse(
+      *warmed_prepare.prepared_template, bound.statement_use_receipt);
+  Require(use.ok && use.executable_receipt != nullptr,
+          family + " prepared route did not revalidate its exact statement receipt");
 
   exec::PreparedRouteOverheadObservation observation;
   observation.route_kind = "embedded";

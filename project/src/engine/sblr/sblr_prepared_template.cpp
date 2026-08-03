@@ -9,7 +9,9 @@
 #include "sblr_prepared_template.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::sblr {
@@ -21,6 +23,19 @@ namespace {
 
 bool EmptyUuid(const api::EngineUuid& uuid) {
   return uuid.canonical.empty();
+}
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return value != "00000000-0000-0000-0000-000000000000";
 }
 
 void AddUuid(std::vector<std::string>* out, const api::EngineUuid& uuid) {
@@ -217,7 +232,9 @@ std::vector<std::string> ParameterSlotNames(const std::vector<exec::PreparedPara
 
 SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperationEnvelope& envelope,
                                                              const api::EngineRequestContext& context,
-                                                             const api::EngineApiRequest& request) {
+                                                             const api::EngineApiRequest& request,
+                                                             exec::CanonicalExecutionMgaAuthority
+                                                                 mga_authority) {
   const auto validation = ValidateSblrEnvelope(envelope);
   if (!validation.ok) {
     const std::string code = validation.diagnostics.empty()
@@ -231,6 +248,10 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
   if (!request.operation_id.empty() && request.operation_id != envelope.operation_id) {
     return BuildFailure("SB_SBLR_PREPARED_TEMPLATE_OPERATION_MISMATCH",
                         "engine API operation_id does not match the SBLR operation envelope");
+  }
+  if (!IsCanonicalUuid(context.catalog_epoch_uuid.canonical)) {
+    return BuildFailure("SB_SBLR_PREPARED_TEMPLATE_CATALOG_EPOCH_UUID_REQUIRED",
+                        "engine context must carry a canonical catalog epoch UUID");
   }
 
   auto descriptor_slots = DescriptorSlotsFromRequest(request);
@@ -253,8 +274,9 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
   admission.index_descriptors = IndexDescriptorsFromRequest(request);
   admission.policy_metadata.security_policy_digest = ProfileDigest(request.policy_profile);
   admission.policy_metadata.visibility_policy_digest =
-      exec::PreparedTemplateStableDigest({"visibility_epoch:" + std::to_string(context.snapshot_visible_through_local_transaction_id),
-                                          "isolation:" + context.transaction_isolation_level});
+      exec::PreparedTemplateStableDigest(
+          {"visibility_recheck:engine_statement_use",
+           "isolation:" + context.transaction_isolation_level});
   admission.policy_metadata.authorization_policy_digest =
       exec::PreparedTemplateStableDigest({"principal:" + context.principal_uuid.canonical,
                                           "role:" + context.current_role_uuid.canonical});
@@ -266,20 +288,19 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
   admission.key.sblr_digest_or_trace_key = envelope.trace_key.empty()
                                                ? exec::PreparedTemplateStableDigest({EncodeSblrEnvelope(envelope)})
                                                : envelope.trace_key;
+  admission.key.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
   admission.key.descriptor_set_digest = exec::PreparedDescriptorSetDigest(request.descriptors, request.columns);
   admission.key.result_shape_digest = result_shape.digest;
   admission.key.epochs.catalog_epoch = context.catalog_generation_id;
   admission.key.epochs.security_epoch = context.security_epoch;
   admission.key.epochs.policy_resource_epoch = context.resource_epoch;
   admission.key.epochs.name_resolution_epoch = context.name_resolution_epoch;
-  admission.key.epochs.transaction_visibility_epoch = context.snapshot_visible_through_local_transaction_id;
-  admission.key.epochs.transaction_visibility_epoch_relevant =
-      envelope.requires_transaction_context || context.snapshot_visible_through_local_transaction_id != 0;
   admission.key.dependency_uuids = dependencies;
 
   exec::PreparedTemplateBindContext bind_context;
   bind_context.engine_context = context;
   bind_context.request = request;
+  bind_context.mga_authority = std::move(mga_authority);
   bind_context.descriptor_set_digest = admission.key.descriptor_set_digest;
   bind_context.result_shape_digest = admission.key.result_shape_digest;
   bind_context.dependency_uuids = dependencies;
@@ -295,7 +316,8 @@ SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(const SblrOperatio
       "sblr_prepared_template_source=operation_envelope",
       "parser_sql_text_authority=false",
       "uuid_bound_descriptors_authority=true",
-      "engine_context_epoch_bound=true",
+      "catalog_epoch_uuid_bound=" + context.catalog_epoch_uuid.canonical,
+      "shared_template_transaction_visibility_authority=false",
   };
   return result;
 }

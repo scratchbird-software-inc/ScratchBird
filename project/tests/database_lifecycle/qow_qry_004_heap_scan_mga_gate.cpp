@@ -2033,10 +2033,12 @@ void ValidatePhysicalHeapDispatchRefusals(Fixture& fixture) {
 }
 
 exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
+    const exec::CanonicalHeapRelationAcquisitionRequest& acquisition,
     const std::string& encoded_descriptor,
     const bool physical_nullable,
     const exec::CanonicalResultNullability published_nullability,
-    const platform::u64 salt) {
+    const platform::u64 salt,
+    const bool mismatch_statement_authority = false) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid.canonical =
       NewUuidText(platform::UuidKind::object, salt + 1);
@@ -2045,7 +2047,15 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
   descriptor.encoded_descriptor = encoded_descriptor;
   exec::CanonicalResultPublicationRequest request;
   request.statement_uuid =
-      NewUuidText(platform::UuidKind::object, salt + 2);
+      acquisition.mga_authority.statement_context.statement_uuid;
+  request.mga_authority = acquisition.mga_authority;
+  if (mismatch_statement_authority) {
+    request.mga_authority.statement_context.owning_transaction_uuid =
+        NewUuidText(platform::UuidKind::object, salt + 5);
+  }
+  request.selected_physical_dag = acquisition.physical_dag;
+  request.selected_catalog_epoch_uuid =
+      acquisition.physical_dag.catalog_epoch_uuid;
   request.execution_attempt_uuid =
       NewUuidText(platform::UuidKind::object, salt + 3);
   request.transaction_effect_evidence_uuid =
@@ -2063,29 +2073,44 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
 }
 
 void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-result-carrier-reader"),
+                             fixture.main_table_uuid, fixture.salt + 390);
+  auto acquisition = RequestFor(reader, fixture.main_table_uuid,
+                                fixture.salt + 395);
   const std::string prefix =
       "canonical=int64;type_uuid=" + std::string(kTypeUuid) + ";";
   auto result = PublishDescriptorCarrier(
+      acquisition,
       prefix + "nullable=true", true,
       exec::CanonicalResultNullability::kNullable, fixture.salt + 400);
   Require(result.diagnostic.ok && result.published,
           "persisted nullable=true carrier was refused");
+  Require(exec::PhysicalMgaStatementContextEqual(
+              result.envelope.mga_statement_context,
+              acquisition.mga_authority.statement_context) &&
+              result.envelope.catalog_epoch_uuid ==
+                  acquisition.physical_dag.catalog_epoch_uuid,
+          "direct real-inventory carrier lost statement or catalog identity");
   result = PublishDescriptorCarrier(
+      acquisition,
       prefix + "nullable=false", false,
       exec::CanonicalResultNullability::kNonNull, fixture.salt + 410);
   Require(result.diagnostic.ok && result.published,
           "persisted nullable=false carrier was refused");
   result = PublishDescriptorCarrier(
+      acquisition,
       prefix + "nullability=nullable", true,
       exec::CanonicalResultNullability::kNullable, fixture.salt + 420);
   Require(result.diagnostic.ok && result.published,
           "canonical nullability carrier regressed");
   result = PublishDescriptorCarrier(
+      acquisition,
       prefix + "nullability=nullable;nullable=true", true,
       exec::CanonicalResultNullability::kNullable, fixture.salt + 430);
   Require(result.diagnostic.ok && result.published,
           "agreeing nullability carriers were refused");
   result = PublishDescriptorCarrier(
+      acquisition,
       prefix + "nullability=unknown", true,
       exec::CanonicalResultNullability::kUnknown, fixture.salt + 435);
   Require(result.diagnostic.ok && result.published,
@@ -2099,6 +2124,7 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
       prefix + "nullability=indeterminate"};
   for (std::size_t index = 0; index < refused.size(); ++index) {
     result = PublishDescriptorCarrier(
+        acquisition,
         refused[index], true, exec::CanonicalResultNullability::kNullable,
         fixture.salt + 440 + index * 10);
     Require(!result.diagnostic.ok && !result.published &&
@@ -2107,6 +2133,20 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
             "missing, malformed, duplicate, contradictory, or unknown "
             "nullability carrier was accepted");
   }
+  result = PublishDescriptorCarrier(
+      acquisition, prefix + "nullable=true", true,
+      exec::CanonicalResultNullability::kNullable, fixture.salt + 490, true);
+  Require(!result.diagnostic.ok && !result.published &&
+              result.envelope.statement_uuid.empty() &&
+              result.envelope.mga_statement_context.statement_uuid.empty() &&
+              result.envelope.catalog_epoch_uuid.empty() &&
+              result.row_stream.columns.empty() &&
+              result.row_stream.rows.empty() &&
+              result.delivery_records.empty() &&
+              result.canonical_envelope_bytes.empty(),
+          "mismatched real-inventory statement carrier exposed output");
+  ReleaseRequest(&acquisition);
+  Rollback(reader);
 }
 
 // QOW-TEST-QRY-004-HEAP-RESULT-V1
@@ -2141,6 +2181,11 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
   Require(publication.diagnostic.ok && publication.published &&
               publication.envelope.statement_uuid ==
                   reader.statement_uuid.canonical &&
+              exec::PhysicalMgaStatementContextEqual(
+                  publication.envelope.mga_statement_context,
+                  request.selected_physical_dag.mga_statement_context) &&
+              publication.envelope.catalog_epoch_uuid ==
+                  request.selected_physical_dag.catalog_epoch_uuid &&
               publication.envelope.execution_attempt_uuid ==
                   request.execution_attempt_uuid &&
               publication.envelope.column_descriptors.size() == 1 &&
@@ -2161,7 +2206,12 @@ void ValidateOptimizerSelectedHeapResultMatrix(Fixture& fixture) {
               publication.delivery_records.size() == 4 &&
               publication.delivery_records.front().kind ==
                   exec::CanonicalResultDeliveryKind::kMetadata &&
-              !publication.canonical_envelope_bytes.empty(),
+              publication.canonical_envelope_bytes.find(
+                  "mga.statement_metadata_snapshot_uuid") !=
+                  std::string::npos &&
+              publication.canonical_envelope_bytes.find(
+                  request.selected_physical_dag.catalog_epoch_uuid) !=
+                  std::string::npos,
           "selected heap result lost derived metadata, rows, or delivery order");
   for (std::size_t index = 1; index < publication.delivery_records.size();
        ++index) {

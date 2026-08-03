@@ -29,6 +29,115 @@ namespace opt = scratchbird::engine::optimizer;
 namespace exec = scratchbird::engine::executor;
 namespace wire = scratchbird::wire;
 
+exec::PhysicalMgaStatementContext CacheMgaContext(
+    const std::string& statement_uuid =
+        "019f0000-0000-7500-8000-000000006101") {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid = statement_uuid;
+  context.owning_transaction_uuid =
+      "019f0000-0000-7500-8000-000000006102";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7500-8000-000000006103";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7500-8000-000000006104";
+  context.owning_local_transaction_id = 7;
+  context.visible_committed_high_watermark = 6;
+  context.oldest_active_transaction_id = 7;
+  context.oldest_interesting_transaction_id = 3;
+  context.oldest_snapshot_transaction_id = 3;
+  context.retention_horizon_transaction_id = 3;
+  context.active_excluded_local_transaction_ids = {7, 9};
+  context.in_doubt_excluded_local_transaction_ids = {8};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 10;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
+exec::TypedPhysicalNodeDag CacheSelectedDag(
+    const exec::PhysicalMgaStatementContext& context) {
+  exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
+  dag.selected_plan_uuid = "019f0000-0000-7500-8000-000000006120";
+  dag.root_physical_node_id = 1;
+  dag.local_transaction_id = context.owning_local_transaction_id;
+  dag.statement_snapshot_id = context.visible_committed_high_watermark;
+  dag.mga_statement_context = context;
+  dag.bound_sblr_tree_uuid = "019f0000-0000-7500-8000-000000006121";
+  dag.catalog_epoch_uuid = "019f0000-0000-7500-8000-000000006122";
+  dag.security_context_uuid = "019f0000-0000-7500-8000-000000006123";
+  dag.capability_snapshot_uuid = "019f0000-0000-7500-8000-000000006124";
+  dag.resource_snapshot_uuid = "019f0000-0000-7500-8000-000000006125";
+  dag.statistics_snapshot_uuid = "019f0000-0000-7500-8000-000000006126";
+  dag.route_snapshot_uuid = "019f0000-0000-7500-8000-000000006127";
+  dag.catalog_generation = 1;
+  dag.security_epoch = 1;
+  dag.policy_epoch = 1;
+  dag.resource_epoch = 1;
+  dag.statistics_generation = 1;
+  dag.route_epoch = 1;
+  dag.route_generation = 1;
+  dag.memory_budget_bytes = 1024;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest, dag.bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity, dag.security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       context.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       dag.capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource, dag.resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       dag.statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute, dag.route_snapshot_uuid}};
+  exec::PhysicalNodeRecord node;
+  node.physical_node_id = 1;
+  node.relational_node_id = 1;
+  node.node_kind = exec::PhysicalNodeKind::kValues;
+  node.implementation_id = "values.materialize.v1";
+  node.output_descriptor_ids = {1};
+  node.causal_counter_id = 1;
+  node.selected_alternative_uuid = "019f0000-0000-7500-8000-000000006130";
+  node.executor_capability_uuid = "019f0000-0000-7500-8000-000000006131";
+  node.executor_capability_abi_version = 1;
+  node.cost_vector_uuid = "019f0000-0000-7500-8000-000000006132";
+  node.memory_bytes_required = 1;
+  node.engine_capability_validated = true;
+  node.mga_statement_context = context;
+  dag.nodes.push_back(node);
+  return dag;
+}
+
+template <typename Request>
+void BindCacheRequest(Request* request,
+                      const exec::PhysicalMgaStatementContext& context =
+                          CacheMgaContext()) {
+  const auto dag = CacheSelectedDag(context);
+  request->mga_authority.statement_context = context;
+  request->mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  request->mga_authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = context;
+    return resolution;
+  };
+  request->selected_physical_dag = dag;
+  request->selected_catalog_epoch_uuid = dag.catalog_epoch_uuid;
+  if constexpr (requires { request->entry; }) {
+    request->entry.key.catalog_epoch_uuid = dag.catalog_epoch_uuid;
+    request->entry.producing_statement_context = context;
+    request->entry.catalog_epoch_uuid = dag.catalog_epoch_uuid;
+  } else {
+    request->key.catalog_epoch_uuid = dag.catalog_epoch_uuid;
+  }
+}
+
+
 constexpr const char* kClosureSearchKey =
     "ODFR_FOCUSED_BENCHMARK_ROUTE_CLOSURE";
 
@@ -289,6 +398,11 @@ void ProveCompressionVectorStreamingSnapshotClosure(
   lookup.row_count = 1;
   lookup.recomputed_result_digest = "r";
   lookup.recomputed_mga_security_digest = "m";
+  const auto missing_authority = cache.Lookup(lookup);
+  Require(missing_authority.action == exec::SnapshotSafeCacheAction::kRefuse &&
+              !missing_authority.cache_hit,
+          "disabled cache bypassed exact statement authority validation");
+  BindCacheRequest(&lookup);
   const auto cache_decision = cache.Lookup(lookup);
   Require(cache_decision.action ==
               exec::SnapshotSafeCacheAction::kDisabledRecompute,

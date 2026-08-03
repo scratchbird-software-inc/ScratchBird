@@ -33,7 +33,9 @@ struct SblrPreparedTemplateBuildResult {
 SblrPreparedTemplateBuildResult BuildPreparedTemplateFromSblr(
     const SblrOperationEnvelope& envelope,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
-    const scratchbird::engine::internal_api::EngineApiRequest& request);
+    const scratchbird::engine::internal_api::EngineApiRequest& request,
+    scratchbird::engine::executor::CanonicalExecutionMgaAuthority
+        mga_authority = {});
 
 scratchbird::engine::executor::PreparedTemplatePrepareResult PrepareSblrExecutionTemplate(
     scratchbird::engine::executor::PreparedTemplateCache* cache,

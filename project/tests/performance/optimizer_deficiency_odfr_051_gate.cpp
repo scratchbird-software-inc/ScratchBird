@@ -10,11 +10,16 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+namespace exec = scratchbird::engine::executor;
 
 using scratchbird::engine::executor::SnapshotSafeCacheAction;
 using scratchbird::engine::executor::SnapshotSafeCacheDecision;
@@ -45,6 +50,145 @@ bool HasEvidencePrefix(const std::vector<std::string>& evidence,
                      [&](const std::string& value) {
                        return value.rfind(prefix, 0) == 0;
                      });
+}
+
+std::string CacheUuid(const std::uint64_t suffix) {
+  std::ostringstream out;
+  out << "019f0000-0000-7500-8000-" << std::hex << std::setfill('0')
+      << std::setw(12) << suffix;
+  return out.str();
+}
+
+exec::PhysicalMgaStatementContext CacheStatementContext(
+    const std::uint64_t statement_suffix = 5101,
+    const bool zero_high_water = false) {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid = CacheUuid(statement_suffix);
+  context.owning_transaction_uuid = CacheUuid(5102);
+  context.statement_snapshot_uuid = CacheUuid(5103);
+  context.statement_metadata_snapshot_uuid = CacheUuid(5104);
+  context.owning_local_transaction_id = 7;
+  context.visible_committed_high_watermark = zero_high_water ? 0 : 6;
+  context.oldest_active_transaction_id = 7;
+  context.oldest_interesting_transaction_id = 3;
+  context.oldest_snapshot_transaction_id = 3;
+  context.retention_horizon_transaction_id = 3;
+  context.active_excluded_local_transaction_ids = {7, 9};
+  context.in_doubt_excluded_local_transaction_ids = {8};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 10;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
+exec::TypedPhysicalNodeDag CacheSelectedDag(
+    const exec::PhysicalMgaStatementContext& context) {
+  exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
+  dag.selected_plan_uuid = CacheUuid(5120);
+  dag.root_physical_node_id = 1;
+  dag.local_transaction_id = context.owning_local_transaction_id;
+  dag.statement_snapshot_id = context.visible_committed_high_watermark;
+  dag.mga_statement_context = context;
+  dag.bound_sblr_tree_uuid = CacheUuid(5121);
+  dag.catalog_epoch_uuid = CacheUuid(5122);
+  dag.security_context_uuid = CacheUuid(5123);
+  dag.capability_snapshot_uuid = CacheUuid(5124);
+  dag.resource_snapshot_uuid = CacheUuid(5125);
+  dag.statistics_snapshot_uuid = CacheUuid(5126);
+  dag.route_snapshot_uuid = CacheUuid(5127);
+  dag.catalog_generation = 1;
+  dag.security_epoch = 1;
+  dag.policy_epoch = 1;
+  dag.resource_epoch = 1;
+  dag.statistics_generation = 1;
+  dag.route_epoch = 1;
+  dag.route_generation = 1;
+  dag.memory_budget_bytes = 1024;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  const std::vector<std::string> evidence{
+      dag.bound_sblr_tree_uuid, dag.catalog_epoch_uuid,
+      dag.security_context_uuid, context.statement_snapshot_uuid,
+      dag.capability_snapshot_uuid, dag.resource_snapshot_uuid,
+      dag.statistics_snapshot_uuid, dag.route_snapshot_uuid};
+  for (std::size_t index = 0; index < evidence.size(); ++index) {
+    dag.admission_evidence.push_back(
+        {static_cast<exec::PhysicalAdmissionStage>(index + 1),
+         evidence[index]});
+  }
+  exec::PhysicalNodeRecord node;
+  node.physical_node_id = 1;
+  node.relational_node_id = 1;
+  node.node_kind = exec::PhysicalNodeKind::kValues;
+  node.implementation_id = "values.materialize.v1";
+  node.output_descriptor_ids = {1};
+  node.causal_counter_id = 1;
+  node.selected_alternative_uuid = CacheUuid(5130);
+  node.executor_capability_uuid = CacheUuid(5131);
+  node.executor_capability_abi_version = 1;
+  node.cost_vector_uuid = CacheUuid(5132);
+  node.memory_bytes_required = 1;
+  node.engine_capability_validated = true;
+  node.mga_statement_context = context;
+  dag.nodes.push_back(std::move(node));
+  return dag;
+}
+
+struct CacheCurrentState {
+  exec::DescriptorRuntimeDiagnostic diagnostic;
+  exec::PhysicalMgaStatementContext statement_context;
+};
+
+struct CacheBinding {
+  exec::CanonicalExecutionMgaAuthority authority;
+  exec::TypedPhysicalNodeDag selected_dag;
+  std::string catalog_epoch_uuid;
+  std::shared_ptr<CacheCurrentState> current;
+};
+
+CacheBinding MakeCacheBinding(const std::uint64_t statement_suffix = 5101,
+                              const bool zero_high_water = false) {
+  CacheBinding binding;
+  binding.current = std::make_shared<CacheCurrentState>();
+  binding.current->statement_context =
+      CacheStatementContext(statement_suffix, zero_high_water);
+  binding.selected_dag =
+      CacheSelectedDag(binding.current->statement_context);
+  binding.catalog_epoch_uuid = binding.selected_dag.catalog_epoch_uuid;
+  binding.authority.statement_context = binding.current->statement_context;
+  binding.authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  const auto current = binding.current;
+  binding.authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.diagnostic = current->diagnostic;
+    resolution.statement_context = current->statement_context;
+    return resolution;
+  };
+  return binding;
+}
+
+void ApplyBinding(SnapshotSafeCacheStoreRequest* request,
+                  const CacheBinding& binding) {
+  request->entry.key.catalog_epoch_uuid = binding.catalog_epoch_uuid;
+  request->entry.producing_statement_context =
+      binding.authority.statement_context;
+  request->entry.catalog_epoch_uuid = binding.catalog_epoch_uuid;
+  request->mga_authority = binding.authority;
+  request->selected_physical_dag = binding.selected_dag;
+  request->selected_catalog_epoch_uuid = binding.catalog_epoch_uuid;
+}
+
+void ApplyBinding(SnapshotSafeCacheLookupRequest* request,
+                  const CacheBinding& binding) {
+  request->key.catalog_epoch_uuid = binding.catalog_epoch_uuid;
+  request->mga_authority = binding.authority;
+  request->selected_physical_dag = binding.selected_dag;
+  request->selected_catalog_epoch_uuid = binding.catalog_epoch_uuid;
 }
 
 SnapshotSafeCacheKey BaseKey() {
@@ -82,6 +226,7 @@ SnapshotSafeCacheStoreRequest CandidateStoreRequest() {
   request.read_only_operation = true;
   request.candidate_set_snapshot_safe = true;
   request.small_final_result = false;
+  ApplyBinding(&request, MakeCacheBinding());
   return request;
 }
 
@@ -95,27 +240,14 @@ SnapshotSafeCacheLookupRequest CandidateLookupRequest() {
   request.recomputed_result_digest = "candidate_digest:32:ordered";
   request.recomputed_mga_security_digest =
       "mga_security_digest:visible_authorized_32";
+  ApplyBinding(&request, MakeCacheBinding());
   return request;
 }
 
 void RequireAuthorityEvidence(const SnapshotSafeCacheDecision& decision) {
   const auto& evidence = decision.evidence;
-  Require(HasEvidence(evidence, "cache_storage_authority=false"),
-          "cache must not own storage authority");
-  Require(HasEvidence(evidence, "cache_authorization_authority=false"),
-          "cache must not own authorization authority");
-  Require(HasEvidence(evidence, "cache_visibility_authority=false"),
-          "cache must not own visibility authority");
-  Require(HasEvidence(evidence, "cache_transaction_finality_authority=false"),
-          "cache must not own transaction finality authority");
-  Require(HasEvidence(evidence, "cache_recovery_authority=false"),
-          "cache must not own recovery authority");
-  Require(HasEvidence(evidence, "cache_parser_execution_authority=false"),
-          "cache must not own parser execution authority");
-  Require(HasEvidence(evidence, "cache_reference_behavior_authority=false"),
-          "cache must not own reference behavior authority");
-  Require(HasEvidence(evidence, "cache_durability_log_authority=false"),
-          "cache must not own durability-log authority");
+  Require(HasEvidence(evidence, "cache_authority=none"),
+          "cache must retain data without authority booleans");
 }
 
 void RequireKeyEvidence(const SnapshotSafeCacheDecision& decision) {
@@ -130,6 +262,8 @@ void RequireKeyEvidence(const SnapshotSafeCacheDecision& decision) {
           "missing safe parameter digest evidence");
   Require(HasEvidence(evidence, "catalog_epoch=11"),
           "missing catalog epoch evidence");
+  Require(HasEvidence(evidence, "catalog_epoch_uuid=" + CacheUuid(5122)),
+          "missing independent catalog UUID evidence");
   Require(HasEvidence(evidence, "statistics_epoch=12"),
           "missing statistics epoch evidence");
   Require(HasEvidence(evidence, "security_epoch=13"),
@@ -196,6 +330,7 @@ void ProveSmallFinalResultHit() {
   store_request.entry = entry;
   store_request.read_only_operation = true;
   store_request.small_final_result = true;
+  ApplyBinding(&store_request, MakeCacheBinding());
   const auto store = cache.Store(store_request);
   Require(store.accepted && !store.fail_closed,
           "small final result store should be accepted");
@@ -209,6 +344,7 @@ void ProveSmallFinalResultHit() {
   lookup.recomputed_result_digest = "small_result_digest:4";
   lookup.recomputed_mga_security_digest =
       "mga_security_digest:small_visible_4";
+  ApplyBinding(&lookup, MakeCacheBinding());
   const auto hit = cache.Lookup(lookup);
   Require(hit.accepted && hit.cache_hit && !hit.fail_closed,
           "small final result lookup should hit");
@@ -239,6 +375,7 @@ void ProvePayloadKindsDoNotCollideForSameBaseKey() {
   small_store.entry = small_entry;
   small_store.read_only_operation = true;
   small_store.small_final_result = true;
+  ApplyBinding(&small_store, MakeCacheBinding());
   const auto small_store_decision = cache.Store(small_store);
   Require(small_store_decision.accepted && !small_store_decision.fail_closed,
           "small-result store with same base key should be accepted");
@@ -261,6 +398,7 @@ void ProvePayloadKindsDoNotCollideForSameBaseKey() {
   small_lookup.recomputed_result_digest = "small_result_digest:4";
   small_lookup.recomputed_mga_security_digest =
       "mga_security_digest:small_visible_4";
+  ApplyBinding(&small_lookup, MakeCacheBinding());
   const auto small_hit = cache.Lookup(small_lookup);
   Require(small_hit.accepted && small_hit.cache_hit,
           "small-result entry should hit independently");
@@ -320,13 +458,60 @@ void ProveStrictUncertaintyAndAuthorityRefusals() {
           "uncertainty diagnostic mismatch");
 
   auto authority = CandidateLookupRequest();
-  authority.transaction_finality_authority_cached = true;
+  authority.mga_authority.origin = exec::CanonicalMgaAuthorityOrigin::kMissing;
   const auto authority_decision = cache.Lookup(authority);
   Require(!authority_decision.accepted && authority_decision.fail_closed,
           "cached finality authority must fail closed");
   Require(authority_decision.diagnostic_code ==
-              "EXECUTOR.SNAPSHOT_RESULT_CACHE.AUTHORITY_REFUSED",
+              "EXECUTOR.SNAPSHOT_RESULT_CACHE.MGA_AUTHORITY_REQUIRED",
           "authority diagnostic mismatch");
+}
+
+void ProveExactStatementBindingAndAtomicRefusal() {
+  SnapshotSafeResultCache cache;
+  auto zero_binding = MakeCacheBinding(5101, true);
+  auto store = CandidateStoreRequest();
+  ApplyBinding(&store, zero_binding);
+  const auto stored = cache.Store(store);
+  Require(stored.action == SnapshotSafeCacheAction::kStore &&
+              cache.Size() == 1,
+          "valid zero-high-water producing statement did not store");
+
+  auto lookup = CandidateLookupRequest();
+  ApplyBinding(&lookup, zero_binding);
+  Require(cache.Lookup(lookup).action == SnapshotSafeCacheAction::kHit,
+          "exact zero-high-water producing statement did not hit");
+
+  auto different_statement = CandidateLookupRequest();
+  ApplyBinding(&different_statement, MakeCacheBinding(5199, true));
+  const auto miss = cache.Lookup(different_statement);
+  Require(miss.action == SnapshotSafeCacheAction::kMissRecompute &&
+              !miss.cache_hit && cache.Size() == 1,
+          "different statement reused equal scalar/digest result data");
+
+  auto missing_resolver = CandidateLookupRequest();
+  missing_resolver.mga_authority.resolve_current = {};
+  const auto refused = cache.Lookup(missing_resolver);
+  Require(refused.action == SnapshotSafeCacheAction::kRefuse &&
+              !refused.accepted && !refused.cache_hit && cache.Size() == 1,
+          "missing resolver exposed or mutated a retained payload");
+
+  auto changed_current_binding = MakeCacheBinding();
+  auto changed_current = CandidateLookupRequest();
+  ApplyBinding(&changed_current, changed_current_binding);
+  changed_current_binding.current->statement_context.current = false;
+  const auto stale = cache.Lookup(changed_current);
+  Require(stale.action == SnapshotSafeCacheAction::kRefuse &&
+              !stale.cache_hit && cache.Size() == 1,
+          "changed current inventory state exposed retained payload");
+
+  auto mismatched_entry = CandidateStoreRequest();
+  mismatched_entry.entry.producing_statement_context.statement_uuid =
+      CacheUuid(5188);
+  const auto mismatched = cache.Store(mismatched_entry);
+  Require(mismatched.action == SnapshotSafeCacheAction::kRefuse &&
+              !mismatched.cache_hit && cache.Size() == 1,
+          "mismatched producing context stored or exposed payload");
 }
 
 void ProveDisabledPathRecomputes() {
@@ -387,6 +572,7 @@ int main() {
   ProveRowCountMismatchInvalidatesBeforeHit();
   ProveMismatchInvalidatesBeforeHit();
   ProveStrictUncertaintyAndAuthorityRefusals();
+  ProveExactStatementBindingAndAtomicRefusal();
   ProveDisabledPathRecomputes();
   ProveEligibilityAndRecomputeProofRequired();
   return 0;

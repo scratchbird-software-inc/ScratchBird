@@ -48,6 +48,49 @@ api::EngineDescriptor Descriptor(const std::string& uuid, const std::string& enc
   return descriptor;
 }
 
+constexpr const char* kCatalogEpochUuid =
+    "019f0210-0000-7000-8000-000000000001";
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const api::EngineRequestContext& context) {
+  exec::PhysicalMgaStatementContext statement;
+  statement.statement_uuid = context.statement_uuid.canonical;
+  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  statement.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  statement.owning_local_transaction_id = context.local_transaction_id;
+  statement.visible_committed_high_watermark =
+      context.snapshot_visible_through_local_transaction_id;
+  statement.oldest_active_transaction_id = 40;
+  statement.oldest_interesting_transaction_id = 40;
+  statement.oldest_snapshot_transaction_id = 40;
+  statement.retention_horizon_transaction_id = 40;
+  statement.active_excluded_local_transaction_ids = {
+      context.local_transaction_id};
+  statement.snapshot_kind = "statement_stable";
+  statement.publication_inventory_next_local_transaction_id = 100;
+  statement.inventory_authoritative = true;
+  statement.complete = true;
+  statement.current = true;
+  return statement;
+}
+
+exec::CanonicalExecutionMgaAuthority Authority(
+    const api::EngineRequestContext& context) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = StatementContext(context);
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current]() {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  return authority;
+}
+
 api::CatalogPinnedDescriptorCacheKey BaseCatalogKey() {
   api::CatalogPinnedDescriptorCacheKey key;
   key.descriptor_family = "catalog_descriptor";
@@ -320,6 +363,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   admission.result_shape = result_shape;
   admission.key.operation_id = "dml.select.odf021";
   admission.key.sblr_digest_or_trace_key = "trace.odf021";
+  admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
   admission.key.descriptor_set_digest = "descset.customer.v1";
   admission.key.result_shape_digest = result_shape.digest;
   admission.key.epochs.catalog_epoch = 101;
@@ -330,6 +374,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
 
   exec::PreparedPinnedDescriptorReference pinned;
   pinned.cache_key = api::CatalogPinnedDescriptorCacheKeyText(BaseCatalogKey());
+  pinned.catalog_epoch_uuid = kCatalogEpochUuid;
   pinned.descriptor_uuid = "rel.customer";
   pinned.object_uuid = "rel.customer";
   pinned.index_uuid = "idx.customer.id";
@@ -349,6 +394,18 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   }
 
   exec::PreparedTemplateBindContext bind_context;
+  bind_context.engine_context.catalog_epoch_uuid = Uuid(kCatalogEpochUuid);
+  bind_context.engine_context.transaction_uuid =
+      Uuid("019f0210-0000-7000-8000-000000000002");
+  bind_context.engine_context.statement_uuid =
+      Uuid("019f0210-0000-7000-8000-000000000003");
+  bind_context.engine_context.statement_snapshot_uuid =
+      Uuid("019f0210-0000-7000-8000-000000000004");
+  bind_context.engine_context.statement_metadata_snapshot_uuid =
+      Uuid("019f0210-0000-7000-8000-000000000005");
+  bind_context.engine_context.local_transaction_id = 88;
+  bind_context.engine_context.snapshot_visible_through_local_transaction_id =
+      0;
   bind_context.engine_context.catalog_generation_id = 101;
   bind_context.engine_context.security_epoch = 202;
   bind_context.engine_context.resource_epoch = 303;
@@ -357,6 +414,7 @@ bool PreparedTemplateConsumesPinnedDescriptorsWithRecheckEvidence() {
   bind_context.descriptor_set_digest = "descset.customer.v1";
   bind_context.result_shape_digest = result_shape.digest;
   bind_context.dependency_uuids = admission.key.dependency_uuids;
+  bind_context.mga_authority = Authority(bind_context.engine_context);
 
   const auto bound = cache.Bind(*prepared.prepared_template, bind_context);
   if (!Require(bound.ok, "prepared template bind failed: " + bound.diagnostic_code) ||
@@ -413,6 +471,7 @@ bool PreparedPinnedDescriptorsSeparateTemplateCacheIdentity() {
     admission.result_shape = result_shape;
     admission.key.operation_id = "dml.select.odf021.identity";
     admission.key.sblr_digest_or_trace_key = "trace.odf021.identity";
+    admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
     admission.key.descriptor_set_digest = "descset.customer.v1";
     admission.key.result_shape_digest = result_shape.digest;
     admission.key.epochs.catalog_epoch = 101;
@@ -422,6 +481,7 @@ bool PreparedPinnedDescriptorsSeparateTemplateCacheIdentity() {
     admission.key.dependency_uuids = {"rel.customer"};
     exec::PreparedPinnedDescriptorReference pinned;
     pinned.cache_key = std::move(cache_key);
+    pinned.catalog_epoch_uuid = kCatalogEpochUuid;
     pinned.descriptor_uuid = "rel.customer";
     pinned.object_uuid = "rel.customer";
     pinned.descriptor_set_digest = "descset.customer.v1";
@@ -470,6 +530,7 @@ bool UnsafeSnapshotsFailClosed() {
   exec::PreparedTemplateAdmission admission;
   admission.key.operation_id = "dml.select.odf021.unsafe";
   admission.key.sblr_digest_or_trace_key = "trace.unsafe";
+  admission.key.catalog_epoch_uuid = kCatalogEpochUuid;
   admission.key.descriptor_set_digest = "descset.customer.v1";
   api::EngineDescriptor descriptor = Descriptor("rel.customer", "version=1");
   exec::PreparedDescriptorSlot slot;
@@ -482,6 +543,7 @@ bool UnsafeSnapshotsFailClosed() {
   admission.key.result_shape_digest = admission.result_shape.digest;
   exec::PreparedPinnedDescriptorReference pinned;
   pinned.cache_key = "unsafe";
+  pinned.catalog_epoch_uuid = kCatalogEpochUuid;
   pinned.object_uuid = "rel.customer";
   pinned.descriptor_set_digest = "descset.customer.v1";
   pinned.finality_authority_cached = true;

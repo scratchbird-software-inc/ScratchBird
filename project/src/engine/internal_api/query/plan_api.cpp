@@ -1187,6 +1187,15 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   auto publication_request = request.result_publication_request;
   publication_request.physical_output_batch =
       *root_step->materialized_output_batch;
+  // The nested request is caller-shaped only for result metadata. Statement
+  // use authority and catalog identity always come from the already-selected
+  // execution request and immutable physical DAG.
+  publication_request.statement_uuid =
+      request.mga_authority.statement_context.statement_uuid;
+  publication_request.mga_authority = request.mga_authority;
+  publication_request.selected_physical_dag = request.selected_physical_dag;
+  publication_request.selected_catalog_epoch_uuid =
+      request.selected_physical_dag.catalog_epoch_uuid;
 
   CanonicalRuntimeOptimizerStatisticsRequest actuals_request;
   actuals_request.selected_physical_dag = request.selected_physical_dag;

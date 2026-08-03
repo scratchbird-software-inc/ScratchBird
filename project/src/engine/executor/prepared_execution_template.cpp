@@ -9,8 +9,10 @@
 #include "prepared_execution_template.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iomanip>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -32,6 +34,16 @@ std::vector<std::string> Sorted(std::vector<std::string> values) {
   return values;
 }
 
+std::string ProfileSetDigest(
+    const internal_api::EngineProfileSet& profile_set) {
+  std::vector<std::string> parts;
+  for (const auto& name : profile_set.names) parts.push_back("name:" + name);
+  for (const auto& encoded : profile_set.encoded_profiles) {
+    parts.push_back("profile:" + encoded);
+  }
+  return PreparedTemplateStableDigest(parts);
+}
+
 std::string DescriptorText(const EngineDescriptor& descriptor) {
   return descriptor.descriptor_uuid.canonical + ":" + descriptor.descriptor_kind + ":" +
          descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
@@ -42,10 +54,145 @@ std::string EpochText(const PreparedTemplateEpochs& epochs) {
   out << "catalog=" << epochs.catalog_epoch
       << "|security=" << epochs.security_epoch
       << "|policy_resource=" << epochs.policy_resource_epoch
-      << "|name_resolution=" << epochs.name_resolution_epoch
-      << "|visibility_relevant=" << (epochs.transaction_visibility_epoch_relevant ? "true" : "false")
-      << "|visibility=" << epochs.transaction_visibility_epoch;
+      << "|name_resolution=" << epochs.name_resolution_epoch;
   return out.str();
+}
+
+bool IsCanonicalUuid(const std::string_view value) {
+  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+      value[18] != '-' || value[23] != '-') {
+    return false;
+  }
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+    const auto ch = static_cast<unsigned char>(value[index]);
+    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+  }
+  return value != "00000000-0000-0000-0000-000000000000";
+}
+
+std::string LocalTransactionIdsText(const std::vector<std::uint64_t>& values) {
+  std::ostringstream out;
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index != 0) out << ',';
+    out << values[index];
+  }
+  return out.str();
+}
+
+std::string MgaStatementContextText(
+    const PhysicalMgaStatementContext& context) {
+  std::ostringstream out;
+  out << "statement=" << context.statement_uuid
+      << "|owner_uuid=" << context.owning_transaction_uuid
+      << "|snapshot=" << context.statement_snapshot_uuid
+      << "|metadata_snapshot=" << context.statement_metadata_snapshot_uuid
+      << "|owner_local=" << context.owning_local_transaction_id
+      << "|committed_high_water=" << context.visible_committed_high_watermark
+      << "|oldest_active=" << context.oldest_active_transaction_id
+      << "|oldest_interesting=" << context.oldest_interesting_transaction_id
+      << "|oldest_snapshot=" << context.oldest_snapshot_transaction_id
+      << "|retention_horizon=" << context.retention_horizon_transaction_id
+      << "|active_excluded="
+      << LocalTransactionIdsText(
+             context.active_excluded_local_transaction_ids)
+      << "|in_doubt_excluded="
+      << LocalTransactionIdsText(
+             context.in_doubt_excluded_local_transaction_ids)
+      << "|snapshot_kind=" << context.snapshot_kind
+      << "|inventory_next="
+      << context.publication_inventory_next_local_transaction_id
+      << "|inventory_authoritative="
+      << (context.inventory_authoritative ? "true" : "false")
+      << "|complete=" << (context.complete ? "true" : "false")
+      << "|current=" << (context.current ? "true" : "false");
+  return out.str();
+}
+
+bool CatalogEpochUuidIndependent(
+    const std::string& catalog_epoch_uuid,
+    const PhysicalMgaStatementContext& statement_context) {
+  return catalog_epoch_uuid != statement_context.statement_uuid &&
+         catalog_epoch_uuid != statement_context.owning_transaction_uuid &&
+         catalog_epoch_uuid != statement_context.statement_snapshot_uuid &&
+         catalog_epoch_uuid !=
+             statement_context.statement_metadata_snapshot_uuid;
+}
+
+struct PreparedMgaResolutionCheck {
+  bool ok = false;
+  std::string diagnostic_code;
+  std::string detail;
+  PhysicalMgaStatementContext current_statement_context;
+};
+
+PreparedMgaResolutionCheck ResolveExactPreparedMgaStatementContext(
+    const CanonicalExecutionMgaAuthority& authority,
+    const internal_api::EngineRequestContext* engine_context) {
+  PreparedMgaResolutionCheck check;
+  if (authority.origin !=
+          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      !authority.resolve_current) {
+    check.diagnostic_code = "SB_PREPARED_TEMPLATE_MGA_AUTHORITY_REQUIRED";
+    check.detail =
+        "statement-bound engine MGA authority and current resolver are required";
+    return check;
+  }
+  if (!PhysicalMgaStatementContextValid(authority.statement_context)) {
+    check.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_MGA_STATEMENT_CONTEXT_INVALID";
+    check.detail = "statement-bound MGA context is incomplete or malformed";
+    return check;
+  }
+  if (engine_context != nullptr &&
+      (authority.statement_context.statement_uuid !=
+           engine_context->statement_uuid.canonical ||
+       authority.statement_context.owning_transaction_uuid !=
+           engine_context->transaction_uuid.canonical ||
+       authority.statement_context.statement_snapshot_uuid !=
+           engine_context->statement_snapshot_uuid.canonical ||
+       authority.statement_context.statement_metadata_snapshot_uuid !=
+           engine_context->statement_metadata_snapshot_uuid.canonical ||
+       authority.statement_context.owning_local_transaction_id !=
+           engine_context->local_transaction_id ||
+       authority.statement_context.visible_committed_high_watermark !=
+           engine_context->snapshot_visible_through_local_transaction_id)) {
+    check.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_MGA_REQUEST_CONTEXT_MISMATCH";
+    check.detail =
+        "statement-bound MGA identity or owner does not match the engine request context";
+    return check;
+  }
+
+  const auto current = authority.resolve_current();
+  if (!current.diagnostic.ok) {
+    check.diagnostic_code = current.diagnostic.diagnostic_code.empty()
+                                ? "SB_PREPARED_TEMPLATE_MGA_CURRENT_RESOLUTION_REFUSED"
+                                : current.diagnostic.diagnostic_code;
+    check.detail = current.diagnostic.detail.empty()
+                       ? "engine transaction inventory refused current statement resolution"
+                       : current.diagnostic.detail;
+    return check;
+  }
+  if (!PhysicalMgaStatementContextValid(current.statement_context)) {
+    check.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_MGA_CURRENT_CONTEXT_INVALID";
+    check.detail =
+        "engine transaction inventory returned an incomplete or noncurrent statement context";
+    return check;
+  }
+  if (!PhysicalMgaStatementContextEqual(authority.statement_context,
+                                        current.statement_context)) {
+    check.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_MGA_CURRENT_CONTEXT_MISMATCH";
+    check.detail =
+        "current engine statement MGA vector differs from the statement-bound vector";
+    return check;
+  }
+  check.ok = true;
+  check.diagnostic_code = kOk;
+  check.current_statement_context = current.statement_context;
+  return check;
 }
 
 std::string UInt64Hex(std::uint64_t value) {
@@ -102,11 +249,12 @@ std::optional<std::string> UnsafePinnedDescriptor(
     const std::vector<PreparedPinnedDescriptorReference>& pinned_descriptors) {
   for (const auto& descriptor : pinned_descriptors) {
     if (descriptor.cache_key.empty() ||
+        descriptor.catalog_epoch_uuid.empty() ||
         descriptor.descriptor_set_digest.empty() ||
         descriptor.object_uuid.empty() ||
         descriptor.security_policy_identity.empty() ||
         descriptor.redaction_policy_identity.empty()) {
-      return "pinned descriptor cache key, object UUID, descriptor digest, and policy identities are required";
+      return "pinned descriptor cache key, catalog epoch UUID, object UUID, descriptor digest, and policy identities are required";
     }
     if (!descriptor.read_only_snapshot ||
         !descriptor.security_recheck_required ||
@@ -127,6 +275,10 @@ std::optional<PreparedTemplatePrepareResult> ValidateAndCanonicalizeAdmission(
   if (admission->key.sblr_digest_or_trace_key.empty()) {
     return PrepareFailure("SB_PREPARED_TEMPLATE_SBLR_DIGEST_REQUIRED",
                           "SBLR digest or trace key is required");
+  }
+  if (!IsCanonicalUuid(admission->key.catalog_epoch_uuid)) {
+    return PrepareFailure("SB_PREPARED_TEMPLATE_CATALOG_EPOCH_UUID_REQUIRED",
+                          "a canonical catalog epoch UUID is required");
   }
   if (admission->key.descriptor_set_digest.empty() ||
       admission->key.result_shape_digest.empty()) {
@@ -275,6 +427,7 @@ std::string PreparedPinnedDescriptorDigest(
   for (const auto& descriptor : pinned_descriptors) {
     std::ostringstream out;
     out << "cache_key=" << descriptor.cache_key
+        << "|catalog_epoch_uuid=" << descriptor.catalog_epoch_uuid
         << "|descriptor_uuid=" << descriptor.descriptor_uuid
         << "|object_uuid=" << descriptor.object_uuid
         << "|index_uuid=" << descriptor.index_uuid
@@ -299,6 +452,7 @@ std::string PreparedTemplateCanonicalKey(const PreparedTemplateKey& key) {
   std::ostringstream out;
   out << "operation=" << key.operation_id
       << "|sblr=" << key.sblr_digest_or_trace_key
+      << "|catalog_epoch_uuid=" << key.catalog_epoch_uuid
       << "|descriptor_set=" << key.descriptor_set_digest
       << "|pinned_descriptor_set=" << key.pinned_descriptor_set_digest
       << "|result_shape=" << key.result_shape_digest
@@ -567,6 +721,12 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
                        "SB_PREPARED_TEMPLATE_MISSING_TRANSACTION_CONTEXT",
                        "transaction context is required for this prepared template");
   }
+  if (!IsCanonicalUuid(context.catalog_epoch_uuid.canonical) ||
+      context.catalog_epoch_uuid.canonical != key.catalog_epoch_uuid) {
+    return BindFailure(prepared_template,
+                       "SB_PREPARED_TEMPLATE_STALE_CATALOG_EPOCH_UUID",
+                       "canonical catalog epoch UUID does not match the prepared template");
+  }
   if (context.catalog_generation_id != key.epochs.catalog_epoch) {
     return BindFailure(prepared_template,
                        "SB_PREPARED_TEMPLATE_STALE_CATALOG_EPOCH",
@@ -591,13 +751,27 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
                        "name-resolution epoch changed from " + std::to_string(key.epochs.name_resolution_epoch) +
                            " to " + std::to_string(context.name_resolution_epoch));
   }
-  if (key.epochs.transaction_visibility_epoch_relevant &&
-      context.snapshot_visible_through_local_transaction_id != key.epochs.transaction_visibility_epoch) {
-    return BindFailure(prepared_template,
-                       "SB_PREPARED_TEMPLATE_STALE_VISIBILITY_EPOCH",
-                       "visibility snapshot epoch changed from " +
-                           std::to_string(key.epochs.transaction_visibility_epoch) + " to " +
-                           std::to_string(context.snapshot_visible_through_local_transaction_id));
+  const auto expected_security_policy_digest =
+      ProfileSetDigest(bind_context.request.policy_profile);
+  const auto expected_visibility_policy_digest = PreparedTemplateStableDigest(
+      {"visibility_recheck:engine_statement_use",
+       "isolation:" + context.transaction_isolation_level});
+  const auto expected_authorization_policy_digest = PreparedTemplateStableDigest(
+      {"principal:" + context.principal_uuid.canonical,
+       "role:" + context.current_role_uuid.canonical});
+  if ((!prepared_template.policy_metadata.security_policy_digest.empty() &&
+       prepared_template.policy_metadata.security_policy_digest !=
+           expected_security_policy_digest) ||
+      (!prepared_template.policy_metadata.visibility_policy_digest.empty() &&
+       prepared_template.policy_metadata.visibility_policy_digest !=
+           expected_visibility_policy_digest) ||
+      (!prepared_template.policy_metadata.authorization_policy_digest.empty() &&
+       prepared_template.policy_metadata.authorization_policy_digest !=
+           expected_authorization_policy_digest)) {
+    return BindFailure(
+        prepared_template,
+        "SB_PREPARED_TEMPLATE_POLICY_METADATA_MISMATCH",
+        "current security, visibility, or authorization policy identity does not match the prepared metadata");
   }
   if (bind_context.descriptor_set_digest != key.descriptor_set_digest ||
       !DependencySetMatches(key.dependency_uuids, bind_context.dependency_uuids)) {
@@ -634,6 +808,12 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
                              std::to_string(pinned.catalog_epoch) + " to " +
                              std::to_string(context.catalog_generation_id));
     }
+    if (pinned.catalog_epoch_uuid != context.catalog_epoch_uuid.canonical) {
+      return BindFailure(
+          prepared_template,
+          "SB_PREPARED_TEMPLATE_PINNED_DESCRIPTOR_STALE_CATALOG_EPOCH_UUID",
+          "pinned descriptor catalog epoch UUID does not match the current catalog epoch UUID");
+    }
     if (pinned.security_epoch != 0 && pinned.security_epoch != context.security_epoch) {
       return BindFailure(prepared_template,
                          "SB_PREPARED_TEMPLATE_PINNED_DESCRIPTOR_STALE_SECURITY_EPOCH",
@@ -658,23 +838,123 @@ PreparedTemplateBindResult PreparedTemplateCache::Bind(const PreparedExecutionTe
     }
   }
 
+  const auto mga_check = ResolveExactPreparedMgaStatementContext(
+      bind_context.mga_authority, &context);
+  if (!mga_check.ok) {
+    return BindFailure(prepared_template, mga_check.diagnostic_code,
+                       mga_check.detail);
+  }
+  if (!CatalogEpochUuidIndependent(key.catalog_epoch_uuid,
+                                   mga_check.current_statement_context)) {
+    return BindFailure(
+        prepared_template,
+        "SB_PREPARED_TEMPLATE_CATALOG_EPOCH_UUID_NOT_INDEPENDENT",
+        "catalog epoch UUID must be independent from statement and transaction MGA identities");
+  }
+
+  auto receipt = std::shared_ptr<PreparedTemplateStatementUseReceipt>(
+      new PreparedTemplateStatementUseReceipt());
+  receipt->prepared_template_id_ = prepared_template.template_id;
+  receipt->catalog_epoch_uuid_ = key.catalog_epoch_uuid;
+  receipt->statement_context_ = mga_check.current_statement_context;
+  receipt->resolve_current_ = bind_context.mga_authority.resolve_current;
+  receipt->authority_origin_ = bind_context.mga_authority.origin;
+  receipt->metadata_dependencies_revalidated_ = true;
+  receipt->security_authorization_recheck_preserved_ = true;
+  receipt->receipt_id_ = PreparedTemplateStableDigest(
+      {prepared_template.template_id, key.catalog_epoch_uuid,
+       MgaStatementContextText(receipt->statement_context_)});
+
   PreparedTemplateBindResult result;
   result.ok = true;
   result.diagnostic_code = kOk;
-  (void)prepared_template;
+  result.statement_use_receipt = std::move(receipt);
   result.evidence = {
       "prepared_template_cached_metadata_only=true",
       "mga_visibility_recheck=preserved",
+      "mga_statement_context_exact_match=true",
       "mga_finality_authority=engine_transaction_inventory",
       "security_authorization_recheck=preserved",
+      "statement_use_receipt_id=" + result.statement_use_receipt->receipt_id(),
+      "statement_use_receipt_immutable=true",
+      "statement_use_receipt_executable=false",
+      "metadata_dependencies_revalidated=true",
+      "catalog_epoch_uuid_rechecked=" + context.catalog_epoch_uuid.canonical,
       "pinned_descriptor_snapshots_consumed=" + std::to_string(prepared_template.pinned_descriptors.size()),
       "pinned_descriptor_set_digest_rechecked=" + prepared_template.key.pinned_descriptor_set_digest,
       "catalog_epoch_rechecked=" + std::to_string(context.catalog_generation_id),
       "security_epoch_rechecked=" + std::to_string(context.security_epoch),
       "policy_resource_epoch_rechecked=" + std::to_string(context.resource_epoch),
       "name_resolution_epoch_rechecked=" + std::to_string(context.name_resolution_epoch),
-      "visibility_snapshot_epoch_rechecked=" +
-          std::to_string(context.snapshot_visible_through_local_transaction_id),
+      "statement_uuid_rechecked=" +
+          result.statement_use_receipt->statement_context().statement_uuid,
+      "statement_snapshot_uuid_rechecked=" +
+          result.statement_use_receipt->statement_context()
+              .statement_snapshot_uuid,
+      "visibility_snapshot_high_water_rechecked=" +
+          std::to_string(result.statement_use_receipt->statement_context()
+                             .visible_committed_high_watermark),
+  };
+  return result;
+}
+
+PreparedTemplateUseValidationResult RevalidatePreparedTemplateStatementUse(
+    const PreparedExecutionTemplate& prepared_template,
+    const std::shared_ptr<const PreparedTemplateStatementUseReceipt>& receipt) {
+  PreparedTemplateUseValidationResult result;
+  if (!receipt || !receipt->resolve_current_) {
+    result.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_STATEMENT_USE_RECEIPT_REQUIRED";
+    result.detail =
+        "an immutable statement-bound use receipt is required before executable use";
+    return result;
+  }
+  if (receipt->prepared_template_id_ != prepared_template.template_id ||
+      receipt->catalog_epoch_uuid_ !=
+          prepared_template.key.catalog_epoch_uuid ||
+      !receipt->metadata_dependencies_revalidated_ ||
+      !receipt->security_authorization_recheck_preserved_) {
+    result.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_STATEMENT_USE_RECEIPT_MISMATCH";
+    result.detail =
+        "statement-bound use receipt does not match the prepared metadata template";
+    return result;
+  }
+  if (!IsCanonicalUuid(receipt->catalog_epoch_uuid_) ||
+      !CatalogEpochUuidIndependent(receipt->catalog_epoch_uuid_,
+                                   receipt->statement_context_)) {
+    result.diagnostic_code =
+        "SB_PREPARED_TEMPLATE_CATALOG_EPOCH_UUID_NOT_INDEPENDENT";
+    result.detail =
+        "catalog epoch UUID is missing or aliases an MGA statement identity";
+    return result;
+  }
+
+  CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = receipt->statement_context_;
+  authority.resolve_current = receipt->resolve_current_;
+  authority.origin = receipt->authority_origin_;
+  const auto mga_check =
+      ResolveExactPreparedMgaStatementContext(authority, nullptr);
+  if (!mga_check.ok) {
+    result.diagnostic_code = mga_check.diagnostic_code;
+    result.detail = mga_check.detail;
+    return result;
+  }
+
+  result.ok = true;
+  result.diagnostic_code = kOk;
+  result.executable_receipt = receipt;
+  result.evidence = {
+      "statement_use_receipt_id=" + receipt->receipt_id_,
+      "statement_use_receipt_executable=true",
+      "mga_statement_context_exact_match_before_use=true",
+      "mga_finality_authority=engine_transaction_inventory",
+      "catalog_epoch_uuid_rechecked=" + receipt->catalog_epoch_uuid_,
+      "statement_uuid_rechecked=" + receipt->statement_context_.statement_uuid,
+      "visibility_snapshot_high_water_rechecked=" +
+          std::to_string(
+              receipt->statement_context_.visible_committed_high_watermark),
   };
   return result;
 }

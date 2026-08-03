@@ -26,11 +26,12 @@ bool Require008(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-exec::CanonicalExecutionMgaAuthority ClosureAuthority(
+exec::CanonicalExecutionMgaAuthority EngineInventoryAuthority(
     const exec::TypedPhysicalNodeDag& dag) {
   exec::CanonicalExecutionMgaAuthority authority;
   authority.statement_context = dag.mga_statement_context;
-  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
   const auto current = authority.statement_context;
   authority.resolve_current = [current] {
     exec::CanonicalMgaCurrentResolution resolution;
@@ -112,6 +113,7 @@ exec::CanonicalResultPublicationRequest ResultPublicationRequest() {
   request.statement_uuid = Uuid(8210);
   request.execution_attempt_uuid = Uuid(8211);
   request.transaction_effect_evidence_uuid = Uuid(8212);
+  request.selected_catalog_epoch_uuid = Uuid(8298);
   request.result_kind = exec::CanonicalResultKind::kRows;
   request.column_bindings = {{
       0,
@@ -171,9 +173,11 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
   request.selected_physical_dag = publication.physical_dag;
   request.pre_access_statistics_snapshot_uuid =
       publication.physical_dag.statistics_snapshot_uuid;
-  request.mga_authority = ClosureAuthority(publication.physical_dag);
+  request.mga_authority = EngineInventoryAuthority(publication.physical_dag);
   request.engine_execution_authorized = true;
   request.result_publication_request = ResultPublicationRequest();
+  request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kPrepared;
 
   const auto* scan = PhysicalNode(publication.physical_dag, 1);
   const auto* values = PhysicalNode(publication.physical_dag, 2);
@@ -209,7 +213,7 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
         scan_request.selected_physical_node_id = node.physical_node_id;
         scan_request.available_implementation_id = node.implementation_id;
         scan_request.relation_uuid = Uuid(9);
-        scan_request.mga_authority = ClosureAuthority(dag);
+        scan_request.mga_authority = EngineInventoryAuthority(dag);
         scan_request.selected_descriptor_generation = 31;
         scan_request.current_descriptor_generation = 31;
         exec::CanonicalScanCandidateEvidence candidate;
@@ -304,6 +308,13 @@ bool ValidateExactSelectedExecution() {
       "runtime actuals were not attached to the selected physical identities");
   passed &= Require008(
       result.result_publication.published &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.result_publication.envelope.mga_statement_context,
+              request.mga_authority.statement_context) &&
+          result.result_publication.envelope.statement_uuid ==
+              request.mga_authority.statement_context.statement_uuid &&
+          result.result_publication.envelope.catalog_epoch_uuid ==
+              request.selected_physical_dag.catalog_epoch_uuid &&
           result.result_publication.envelope.result_kind ==
               exec::CanonicalResultKind::kRows &&
           result.result_publication.envelope.row_count == 2 &&
@@ -314,7 +325,7 @@ bool ValidateExactSelectedExecution() {
           result.result_publication.delivery_records.size() == 3 &&
           result.result_publication.delivery_records.front().kind ==
               exec::CanonicalResultDeliveryKind::kMetadata,
-      "selected root batch did not publish through the canonical result ABI");
+      "selected root batch did not publish through the statement-bound result ABI");
   passed &= Require008(
       result.runtime_actuals.node_actuals[0].physical_node_id == 1 &&
           result.runtime_actuals.node_actuals[0].causal_counter_id == 10'000 &&
@@ -426,7 +437,8 @@ bool ValidatePostStartFailureIsTruthful() {
 
 // Packet 4 resolves the selected statement authority at these exact execution
 // boundaries: selected-entry, dispatch-entry, pre/post each node, dispatch
-// root acceptance, runtime-actuals entry/result, and immediate pre-result.
+// root acceptance, runtime-actuals entry/result, immediate pre-result, and the
+// result publisher's own final current-authority boundary.
 // Returning a revoked vector at each named phase proves that the outer selected
 // result does not leak the locally accumulated dispatch/actual/result state.
 bool ValidatePhaseSpecificStaleRefusals() {
@@ -441,6 +453,7 @@ bool ValidatePhaseSpecificStaleRefusals() {
       {"inter-node", 5, {1}},
       {"pre-actuals", 12, {1, 2, 3, 4}},
       {"immediate-pre-result", 14, {1, 2, 3, 4}},
+      {"publisher-boundary", 15, {1, 2, 3, 4}},
   };
 
   bool passed = true;
@@ -493,6 +506,34 @@ bool ValidateResultPublicationRefusalIsTruthful() {
   return passed;
 }
 
+bool ValidateNestedPublicationAuthorityCannotOverrideSelection() {
+  std::vector<std::uint64_t> invocation_order;
+  auto request = SelectedExecutionRequest(&invocation_order);
+  auto& nested = request.result_publication_request;
+  nested.statement_uuid = Uuid(8290);
+  nested.mga_authority = request.mga_authority;
+  nested.mga_authority.origin = exec::CanonicalMgaAuthorityOrigin::kMissing;
+  nested.mga_authority.statement_context.statement_uuid = Uuid(8291);
+  nested.selected_physical_dag = request.selected_physical_dag;
+  nested.selected_physical_dag.catalog_epoch_uuid = Uuid(8292);
+  nested.selected_catalog_epoch_uuid = Uuid(8293);
+
+  const auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  return Require008(
+      result.accepted && result.canonical_result_published &&
+          result.result_publication.published &&
+          result.result_publication.envelope.statement_uuid ==
+              request.mga_authority.statement_context.statement_uuid &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.result_publication.envelope.mga_statement_context,
+              request.mga_authority.statement_context) &&
+          result.result_publication.envelope.catalog_epoch_uuid ==
+              request.selected_physical_dag.catalog_epoch_uuid &&
+          result.result_publication.envelope.catalog_epoch_uuid !=
+              nested.selected_catalog_epoch_uuid,
+      "caller-supplied nested statement or catalog authority overrode selection");
+}
+
 bool ValidateCanonicalRouteIsolation() {
   std::ifstream source_file(SB_QOW_PLAN_API_SOURCE_FILE);
   const std::string source((std::istreambuf_iterator<char>(source_file)),
@@ -539,6 +580,7 @@ int main() {
   passed &= ValidatePostStartFailureIsTruthful();
   passed &= ValidatePhaseSpecificStaleRefusals();
   passed &= ValidateResultPublicationRefusalIsTruthful();
+  passed &= ValidateNestedPublicationAuthorityCannotOverrideSelection();
   passed &= ValidateCanonicalRouteIsolation();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

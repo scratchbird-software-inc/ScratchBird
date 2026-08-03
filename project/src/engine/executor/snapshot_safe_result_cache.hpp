@@ -9,6 +9,8 @@
 #pragma once
 
 // ODFR_SNAPSHOT_SAFE_CANDIDATE_RESULT_CACHE
+#include "descriptor_value_runtime.hpp"
+
 #include <cstdint>
 #include <map>
 #include <string>
@@ -36,6 +38,7 @@ enum class SnapshotSafeCacheAction {
 struct SnapshotSafeCacheKey {
   std::string normalized_operation;
   std::string safe_parameter_digest;
+  std::string catalog_epoch_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t statistics_epoch = 0;
   std::uint64_t security_epoch = 0;
@@ -52,6 +55,8 @@ struct SnapshotSafeCacheKey {
 
 struct SnapshotSafeCacheEntry {
   SnapshotSafeCacheKey key;
+  PhysicalMgaStatementContext producing_statement_context;
+  std::string catalog_epoch_uuid;
   SnapshotSafeCachePayloadKind payload_kind =
       SnapshotSafeCachePayloadKind::kCandidateSet;
   std::uint64_t row_count = 0;
@@ -62,6 +67,9 @@ struct SnapshotSafeCacheEntry {
 struct SnapshotSafeCacheStoreRequest {
   bool cache_enabled = true;
   SnapshotSafeCacheEntry entry;
+  CanonicalExecutionMgaAuthority mga_authority;
+  TypedPhysicalNodeDag selected_physical_dag;
+  std::string selected_catalog_epoch_uuid;
   bool read_only_operation = true;
   bool candidate_set_snapshot_safe = false;
   bool small_final_result = false;
@@ -83,19 +91,14 @@ struct SnapshotSafeCacheStoreRequest {
   bool uncommitted_own_transaction_visibility_dependency = false;
   bool negative_cache_entry = false;
   bool negative_cache_snapshot_safe_proven = false;
-  bool storage_authority_cached = false;
-  bool authorization_authority_cached = false;
-  bool visibility_authority_cached = false;
-  bool transaction_finality_authority_cached = false;
-  bool recovery_authority_cached = false;
-  bool parser_execution_authority_cached = false;
-  bool reference_behavior_authority_cached = false;
-  bool durability_log_authority_cached = false;
 };
 
 struct SnapshotSafeCacheLookupRequest {
   bool cache_enabled = true;
   SnapshotSafeCacheKey key;
+  CanonicalExecutionMgaAuthority mga_authority;
+  TypedPhysicalNodeDag selected_physical_dag;
+  std::string selected_catalog_epoch_uuid;
   SnapshotSafeCachePayloadKind payload_kind =
       SnapshotSafeCachePayloadKind::kCandidateSet;
   bool read_only_operation = true;
@@ -123,14 +126,6 @@ struct SnapshotSafeCacheLookupRequest {
   bool uncommitted_own_transaction_visibility_dependency = false;
   bool negative_cache_entry = false;
   bool negative_cache_snapshot_safe_proven = false;
-  bool storage_authority_cached = false;
-  bool authorization_authority_cached = false;
-  bool visibility_authority_cached = false;
-  bool transaction_finality_authority_cached = false;
-  bool recovery_authority_cached = false;
-  bool parser_execution_authority_cached = false;
-  bool reference_behavior_authority_cached = false;
-  bool durability_log_authority_cached = false;
 };
 
 struct SnapshotSafeCacheDecision {

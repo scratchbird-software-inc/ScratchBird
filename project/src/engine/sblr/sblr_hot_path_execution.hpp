@@ -71,6 +71,7 @@ struct SblrHotPathExecutionRequest {
   SblrHotPathBatchPlan batch;
   SblrHotPathProfilerEvidence profiler;
   SblrHotPathAuthorityContext authority;
+  scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct SblrHotPathExecutionResult {
@@ -83,6 +84,11 @@ struct SblrHotPathExecutionResult {
   scratchbird::engine::executor::PreparedTemplatePrepareResult first_prepare;
   scratchbird::engine::executor::PreparedTemplatePrepareResult reused_prepare;
   scratchbird::engine::executor::PreparedTemplateBindResult bind;
+  scratchbird::engine::executor::PreparedTemplateUseValidationResult
+      statement_use_validation;
+  std::shared_ptr<const scratchbird::engine::executor::
+                      PreparedTemplateStatementUseReceipt>
+      executable_statement_use_receipt;
   SblrNativeSpecializationResult specialization;
   std::uint64_t dispatch_us_saved = 0;
   std::uint64_t opcode_dispatches_saved = 0;

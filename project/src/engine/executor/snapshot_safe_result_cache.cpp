@@ -27,6 +27,7 @@ void AddBool(std::vector<std::string>* evidence,
 bool KeyComplete(const SnapshotSafeCacheKey& key) {
   return !key.normalized_operation.empty() &&
          !key.safe_parameter_digest.empty() &&
+         !key.catalog_epoch_uuid.empty() &&
          key.catalog_epoch != 0 &&
          key.statistics_epoch != 0 &&
          key.security_epoch != 0 &&
@@ -139,28 +140,6 @@ bool HardRefusal(const SnapshotSafeCacheLookupRequest& request,
   return false;
 }
 
-bool AnyAuthorityCached(const SnapshotSafeCacheStoreRequest& request) {
-  return request.storage_authority_cached ||
-         request.authorization_authority_cached ||
-         request.visibility_authority_cached ||
-         request.transaction_finality_authority_cached ||
-         request.recovery_authority_cached ||
-         request.parser_execution_authority_cached ||
-         request.reference_behavior_authority_cached ||
-         request.durability_log_authority_cached;
-}
-
-bool AnyAuthorityCached(const SnapshotSafeCacheLookupRequest& request) {
-  return request.storage_authority_cached ||
-         request.authorization_authority_cached ||
-         request.visibility_authority_cached ||
-         request.transaction_finality_authority_cached ||
-         request.recovery_authority_cached ||
-         request.parser_execution_authority_cached ||
-         request.reference_behavior_authority_cached ||
-         request.durability_log_authority_cached;
-}
-
 bool Eligible(SnapshotSafeCachePayloadKind kind,
               bool candidate_set_snapshot_safe,
               bool small_final_result,
@@ -172,12 +151,94 @@ bool Eligible(SnapshotSafeCachePayloadKind kind,
   return small_final_result && row_count <= max_small_result_rows;
 }
 
-SnapshotSafeCacheDecision BaseDecision(const SnapshotSafeCacheKey& key,
-                                       SnapshotSafeCachePayloadKind kind) {
+std::string StatementBoundCacheIdentity(
+    const SnapshotSafeCacheKey& key,
+    const PhysicalMgaStatementContext& context,
+    const std::string& catalog_epoch_uuid) {
+  std::ostringstream out;
+  out << SnapshotSafeCacheKeyText(key)
+      << "|selected_catalog_uuid=" << catalog_epoch_uuid
+      << "|statement_uuid=" << context.statement_uuid
+      << "|owning_transaction_uuid=" << context.owning_transaction_uuid
+      << "|statement_snapshot_uuid=" << context.statement_snapshot_uuid
+      << "|statement_metadata_snapshot_uuid="
+      << context.statement_metadata_snapshot_uuid
+      << "|owning_local_transaction_id="
+      << context.owning_local_transaction_id
+      << "|visible_committed_high_watermark="
+      << context.visible_committed_high_watermark
+      << "|oldest_active_transaction_id="
+      << context.oldest_active_transaction_id
+      << "|oldest_interesting_transaction_id="
+      << context.oldest_interesting_transaction_id
+      << "|oldest_snapshot_transaction_id="
+      << context.oldest_snapshot_transaction_id
+      << "|retention_horizon_transaction_id="
+      << context.retention_horizon_transaction_id
+      << "|active_excluded_local_transaction_ids=";
+  for (const auto transaction_id :
+       context.active_excluded_local_transaction_ids) {
+    out << transaction_id << ',';
+  }
+  out << "|in_doubt_excluded_local_transaction_ids=";
+  for (const auto transaction_id :
+       context.in_doubt_excluded_local_transaction_ids) {
+    out << transaction_id << ',';
+  }
+  out << "|snapshot_kind=" << context.snapshot_kind
+      << "|publication_inventory_next_local_transaction_id="
+      << context.publication_inventory_next_local_transaction_id
+      << "|inventory_authoritative=" << context.inventory_authoritative
+      << "|complete=" << context.complete
+      << "|current=" << context.current;
+  return out.str();
+}
+
+DescriptorRuntimeDiagnostic ValidateStatementBinding(
+    const CanonicalExecutionMgaAuthority& authority,
+    const TypedPhysicalNodeDag& selected_physical_dag,
+    const std::string& selected_catalog_epoch_uuid,
+    const SnapshotSafeCacheKey& key) {
+  DescriptorRuntimeDiagnostic diagnostic;
+  const auto refuse = [&](std::string code, std::string detail) {
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code = std::move(code);
+    diagnostic.detail = std::move(detail);
+    return diagnostic;
+  };
+  if (authority.origin !=
+          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      selected_physical_dag.abi_version != 2) {
+    return refuse("EXECUTOR.SNAPSHOT_RESULT_CACHE.MGA_AUTHORITY_REQUIRED",
+                  "ABI-v2 engine transaction inventory authority is required");
+  }
+  const auto revalidated = RevalidateCanonicalExecutionMgaAuthority(
+      authority, selected_physical_dag);
+  if (!revalidated.ok) return revalidated;
+  const auto& context = authority.statement_context;
+  if (selected_catalog_epoch_uuid != selected_physical_dag.catalog_epoch_uuid ||
+      key.catalog_epoch_uuid != selected_catalog_epoch_uuid ||
+      selected_catalog_epoch_uuid == context.statement_uuid ||
+      selected_catalog_epoch_uuid == context.owning_transaction_uuid ||
+      selected_catalog_epoch_uuid == context.statement_snapshot_uuid ||
+      selected_catalog_epoch_uuid ==
+          context.statement_metadata_snapshot_uuid) {
+    return refuse("EXECUTOR.SNAPSHOT_RESULT_CACHE.CATALOG_IDENTITY_REQUIRED",
+                  "independent selected catalog UUID must match the key and DAG");
+  }
+  return diagnostic;
+}
+
+SnapshotSafeCacheDecision BaseDecision(
+    const SnapshotSafeCacheKey& key,
+    SnapshotSafeCachePayloadKind kind,
+    const PhysicalMgaStatementContext& statement_context,
+    const std::string& catalog_epoch_uuid) {
   SnapshotSafeCacheDecision decision;
   decision.cache_key_text = std::string("payload=") +
                             SnapshotSafeCachePayloadKindName(kind) + "|" +
-                            SnapshotSafeCacheKeyText(key);
+                            StatementBoundCacheIdentity(
+                                key, statement_context, catalog_epoch_uuid);
   Add(&decision.evidence, kSnapshotSafeCandidateResultCacheSearchKey);
   Add(&decision.evidence, "snapshot_cache_payload_kind=" +
                               std::string(SnapshotSafeCachePayloadKindName(kind)));
@@ -186,6 +247,8 @@ SnapshotSafeCacheDecision BaseDecision(const SnapshotSafeCacheKey& key,
       "normalized_operation=" + key.normalized_operation);
   Add(&decision.evidence,
       "safe_parameter_digest=" + key.safe_parameter_digest);
+  Add(&decision.evidence,
+      "catalog_epoch_uuid=" + key.catalog_epoch_uuid);
   Add(&decision.evidence,
       "catalog_epoch=" + std::to_string(key.catalog_epoch));
   Add(&decision.evidence,
@@ -211,14 +274,7 @@ SnapshotSafeCacheDecision BaseDecision(const SnapshotSafeCacheKey& key,
       "route_compatibility=" + key.route_compatibility);
   Add(&decision.evidence,
       "dialect_compatibility=" + key.dialect_compatibility);
-  Add(&decision.evidence, "cache_storage_authority=false");
-  Add(&decision.evidence, "cache_authorization_authority=false");
-  Add(&decision.evidence, "cache_visibility_authority=false");
-  Add(&decision.evidence, "cache_transaction_finality_authority=false");
-  Add(&decision.evidence, "cache_recovery_authority=false");
-  Add(&decision.evidence, "cache_parser_execution_authority=false");
-  Add(&decision.evidence, "cache_reference_behavior_authority=false");
-  Add(&decision.evidence, "cache_durability_log_authority=false");
+  Add(&decision.evidence, "cache_authority=none");
   Add(&decision.evidence, "support_bundle_ready=true");
   return decision;
 }
@@ -331,6 +387,7 @@ std::string SnapshotSafeCacheKeyText(const SnapshotSafeCacheKey& key) {
   std::ostringstream out;
   out << "op=" << key.normalized_operation
       << "|params=" << key.safe_parameter_digest
+      << "|catalog_uuid=" << key.catalog_epoch_uuid
       << "|catalog=" << key.catalog_epoch
       << "|stats=" << key.statistics_epoch
       << "|security=" << key.security_epoch
@@ -348,8 +405,18 @@ std::string SnapshotSafeCacheKeyText(const SnapshotSafeCacheKey& key) {
 
 SnapshotSafeCacheDecision SnapshotSafeResultCache::Store(
     const SnapshotSafeCacheStoreRequest& request) {
-  auto decision = BaseDecision(request.entry.key, request.entry.payload_kind);
+  auto decision = BaseDecision(
+      request.entry.key, request.entry.payload_kind,
+      request.mga_authority.statement_context,
+      request.selected_catalog_epoch_uuid);
   AddStoreBooleans(&decision, request);
+  const auto binding = ValidateStatementBinding(
+      request.mga_authority, request.selected_physical_dag,
+      request.selected_catalog_epoch_uuid, request.entry.key);
+  if (!binding.ok) {
+    return Refuse(std::move(decision), binding.diagnostic_code,
+                  binding.detail);
+  }
   if (!request.cache_enabled) {
     return Finish(std::move(decision),
                   SnapshotSafeCacheAction::kDisabledRecompute,
@@ -385,10 +452,14 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Store(
                   "EXECUTOR.SNAPSHOT_RESULT_CACHE.UNCERTAINTY_REFUSED",
                   "DML DDL security redaction statistics provider route dialect or visibility uncertainty");
   }
-  if (AnyAuthorityCached(request)) {
+  if (!PhysicalMgaStatementContextEqual(
+          request.entry.producing_statement_context,
+          request.mga_authority.statement_context) ||
+      request.entry.catalog_epoch_uuid !=
+          request.selected_catalog_epoch_uuid) {
     return Refuse(std::move(decision),
-                  "EXECUTOR.SNAPSHOT_RESULT_CACHE.AUTHORITY_REFUSED",
-                  "cache cannot own storage authorization visibility finality recovery parser reference or durability-log authority");
+                  "EXECUTOR.SNAPSHOT_RESULT_CACHE.PRODUCING_CONTEXT_MISMATCH",
+                  "entry must retain the exact producing statement context and catalog UUID");
   }
   if (request.entry.cached_result_digest.empty() ||
       request.entry.cached_mga_security_digest.empty()) {
@@ -409,8 +480,18 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Store(
 
 SnapshotSafeCacheDecision SnapshotSafeResultCache::Lookup(
     const SnapshotSafeCacheLookupRequest& request) const {
-  auto decision = BaseDecision(request.key, request.payload_kind);
+  auto decision = BaseDecision(
+      request.key, request.payload_kind,
+      request.mga_authority.statement_context,
+      request.selected_catalog_epoch_uuid);
   AddLookupBooleans(&decision, request);
+  const auto binding = ValidateStatementBinding(
+      request.mga_authority, request.selected_physical_dag,
+      request.selected_catalog_epoch_uuid, request.key);
+  if (!binding.ok) {
+    return Refuse(std::move(decision), binding.diagnostic_code,
+                  binding.detail);
+  }
   if (!request.cache_enabled) {
     Add(&decision.evidence, "snapshot_cache_disabled_recompute=true");
     return Finish(std::move(decision),
@@ -447,11 +528,6 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Lookup(
                   "EXECUTOR.SNAPSHOT_RESULT_CACHE.UNCERTAINTY_REFUSED",
                   "DML DDL security redaction statistics provider route dialect or visibility uncertainty");
   }
-  if (AnyAuthorityCached(request)) {
-    return Refuse(std::move(decision),
-                  "EXECUTOR.SNAPSHOT_RESULT_CACHE.AUTHORITY_REFUSED",
-                  "cache cannot own storage authorization visibility finality recovery parser reference or durability-log authority");
-  }
   if (!request.ordinary_recompute_available ||
       request.recomputed_result_digest.empty() ||
       request.recomputed_mga_security_digest.empty()) {
@@ -480,6 +556,12 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Lookup(
   const bool payload_kind_match =
       found->second.payload_kind == request.payload_kind;
   const bool row_count_match = found->second.row_count == request.row_count;
+  const bool producing_statement_context_match =
+      PhysicalMgaStatementContextEqual(
+          found->second.producing_statement_context,
+          request.mga_authority.statement_context);
+  const bool catalog_epoch_uuid_match =
+      found->second.catalog_epoch_uuid == request.selected_catalog_epoch_uuid;
   AddBool(&decision.evidence, "snapshot_cache_payload_kind_match",
           payload_kind_match);
   AddBool(&decision.evidence, "snapshot_cache_row_count_match",
@@ -488,13 +570,18 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Lookup(
           result_match);
   AddBool(&decision.evidence, "snapshot_cache_recompute_mga_security_match",
           mga_security_match);
+  AddBool(&decision.evidence, "snapshot_cache_statement_context_match",
+          producing_statement_context_match);
+  AddBool(&decision.evidence, "snapshot_cache_catalog_epoch_uuid_match",
+          catalog_epoch_uuid_match);
   if (!payload_kind_match || !row_count_match ||
-      !result_match || !mga_security_match) {
+      !result_match || !mga_security_match ||
+      !producing_statement_context_match || !catalog_epoch_uuid_match) {
     Add(&decision.evidence, "snapshot_cache_invalidated=true");
     return Finish(std::move(decision),
                   SnapshotSafeCacheAction::kInvalidateRecompute,
                   "EXECUTOR.SNAPSHOT_RESULT_CACHE.STORED_ENTRY_MISMATCH",
-                  "stored_payload_kind_row_count_or_digest_differs_from_request_recompute",
+                  "stored payload, digest, producing statement context, or catalog differs from request recompute",
                   true,
                   false,
                   false);

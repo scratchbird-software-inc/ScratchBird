@@ -186,6 +186,8 @@ struct CanonicalResultDiagnosticRecord {
 struct CanonicalResultEnvelopeV1 {
   std::uint16_t abi_version = 1;
   std::string statement_uuid;
+  PhysicalMgaStatementContext mga_statement_context;
+  std::string catalog_epoch_uuid;
   std::string execution_attempt_uuid;
   CanonicalResultKind result_kind = CanonicalResultKind::kRows;
   std::vector<CanonicalResultColumnDescriptor> column_descriptors;
@@ -204,6 +206,9 @@ struct CanonicalResultDeliveryRecord {
 struct CanonicalResultPublicationRequest {
   std::uint16_t abi_version = 1;
   std::string statement_uuid;
+  CanonicalExecutionMgaAuthority mga_authority;
+  TypedPhysicalNodeDag selected_physical_dag;
+  std::string selected_catalog_epoch_uuid;
   std::string execution_attempt_uuid;
   CanonicalResultKind result_kind = CanonicalResultKind::kRows;
   CanonicalResultInvocationMode invocation_mode =

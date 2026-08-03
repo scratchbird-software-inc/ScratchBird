@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "descriptor_value_runtime.hpp"
 #include "result_cursor_plan_memory_governance.hpp"
 #include "runtime_consumption_evidence.hpp"
 
@@ -27,16 +28,14 @@ namespace memory = scratchbird::core::memory;
 
 // SEARCH_KEY: SB_EXECUTOR_PREPARED_TEMPLATE_METADATA_ONLY
 // Prepared execution templates cache descriptor and slot metadata only.
-// MGA visibility/finality and authorization remain engine-owned bind-time
-// checks against the current request context and epochs.
+// MGA visibility/finality and authorization remain engine-owned statement-use
+// checks. Transaction visibility is deliberately absent from shared identity.
 
 struct PreparedTemplateEpochs {
   scratchbird::engine::internal_api::EngineApiU64 catalog_epoch = 0;
   scratchbird::engine::internal_api::EngineApiU64 security_epoch = 0;
   scratchbird::engine::internal_api::EngineApiU64 policy_resource_epoch = 0;
   scratchbird::engine::internal_api::EngineApiU64 name_resolution_epoch = 0;
-  scratchbird::engine::internal_api::EngineApiU64 transaction_visibility_epoch = 0;
-  bool transaction_visibility_epoch_relevant = false;
 };
 
 struct PreparedDescriptorSlot {
@@ -82,6 +81,7 @@ struct PreparedIndexDescriptor {
 
 struct PreparedPinnedDescriptorReference {
   std::string cache_key;
+  std::string catalog_epoch_uuid;
   std::string descriptor_uuid;
   std::string object_uuid;
   std::string index_uuid;
@@ -114,6 +114,7 @@ struct PreparedSecurityVisibilityPolicyMetadata {
 struct PreparedTemplateKey {
   std::string operation_id;
   std::string sblr_digest_or_trace_key;
+  std::string catalog_epoch_uuid;
   std::string descriptor_set_digest;
   std::string pinned_descriptor_set_digest;
   std::string result_shape_digest;
@@ -176,11 +177,52 @@ struct PreparedTemplateMemoryGovernanceRequest {
 struct PreparedTemplateBindContext {
   scratchbird::engine::internal_api::EngineRequestContext engine_context;
   scratchbird::engine::internal_api::EngineApiRequest request;
+  CanonicalExecutionMgaAuthority mga_authority;
   std::string descriptor_set_digest;
   std::string result_shape_digest;
   std::vector<std::string> dependency_uuids;
   std::vector<std::string> available_predicate_slots;
   std::vector<std::string> available_parameter_slots;
+};
+
+// SEARCH_KEY: SB_EXECUTOR_PREPARED_TEMPLATE_STATEMENT_USE_RECEIPT
+// A successful bind issues an immutable receipt for one exact statement MGA
+// vector. The resolver is retained so the vector can be compared in full
+// immediately before executable use. It is never stored in the shared cache.
+struct PreparedTemplateUseValidationResult;
+
+class PreparedTemplateStatementUseReceipt {
+ public:
+  const std::string& receipt_id() const noexcept { return receipt_id_; }
+  const std::string& catalog_epoch_uuid() const noexcept {
+    return catalog_epoch_uuid_;
+  }
+  const PhysicalMgaStatementContext& statement_context() const noexcept {
+    return statement_context_;
+  }
+  CanonicalMgaAuthorityOrigin authority_origin() const noexcept {
+    return authority_origin_;
+  }
+
+ private:
+  friend class PreparedTemplateCache;
+  friend PreparedTemplateUseValidationResult
+  RevalidatePreparedTemplateStatementUse(
+      const PreparedExecutionTemplate& prepared_template,
+      const std::shared_ptr<const PreparedTemplateStatementUseReceipt>&
+          receipt);
+
+  PreparedTemplateStatementUseReceipt() = default;
+
+  std::string receipt_id_;
+  std::string prepared_template_id_;
+  std::string catalog_epoch_uuid_;
+  PhysicalMgaStatementContext statement_context_;
+  CanonicalMgaCurrentResolver resolve_current_;
+  CanonicalMgaAuthorityOrigin authority_origin_ =
+      CanonicalMgaAuthorityOrigin::kMissing;
+  bool metadata_dependencies_revalidated_ = false;
+  bool security_authorization_recheck_preserved_ = false;
 };
 
 struct PreparedTemplateBindResult {
@@ -189,6 +231,17 @@ struct PreparedTemplateBindResult {
   std::string detail;
   std::vector<std::string> evidence;
   std::shared_ptr<const PreparedExecutionTemplate> prepared_template;
+  std::shared_ptr<const PreparedTemplateStatementUseReceipt>
+      statement_use_receipt;
+};
+
+struct PreparedTemplateUseValidationResult {
+  bool ok = false;
+  std::string diagnostic_code;
+  std::string detail;
+  std::vector<std::string> evidence;
+  std::shared_ptr<const PreparedTemplateStatementUseReceipt>
+      executable_receipt;
 };
 
 // SEARCH_KEY: ORH_FIXED_ROUTE_OVERHEAD_REMOVAL
@@ -230,6 +283,9 @@ std::string PreparedResultShapeDigest(const PreparedResultShapeDescriptor& resul
 std::string PreparedDependencyDigest(std::vector<std::string> dependency_uuids);
 std::string PreparedPinnedDescriptorDigest(
     const std::vector<PreparedPinnedDescriptorReference>& pinned_descriptors);
+PreparedTemplateUseValidationResult RevalidatePreparedTemplateStatementUse(
+    const PreparedExecutionTemplate& prepared_template,
+    const std::shared_ptr<const PreparedTemplateStatementUseReceipt>& receipt);
 
 class PreparedTemplateCache {
  public:

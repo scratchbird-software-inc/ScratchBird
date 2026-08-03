@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -22,6 +23,7 @@ namespace {
 
 namespace agents = scratchbird::core::agents;
 namespace api = scratchbird::engine::internal_api;
+namespace exec = scratchbird::engine::executor;
 namespace native = scratchbird::engine::native_compile;
 namespace sblr = scratchbird::engine::sblr;
 
@@ -68,8 +70,14 @@ api::EngineRequestContext Context() {
   context.session_uuid.canonical = "019f0000-0000-7000-8000-000000280004";
   context.transaction_uuid.canonical = "019f0000-0000-7000-8000-000000280005";
   context.statement_uuid.canonical = "019f0000-0000-7000-8000-000000280006";
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7000-8000-000000280007";
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7000-8000-000000280008";
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7000-8000-000000280009";
   context.local_transaction_id = 280;
-  context.snapshot_visible_through_local_transaction_id = 279;
+  context.snapshot_visible_through_local_transaction_id = 0;
   context.transaction_isolation_level = "snapshot";
   context.catalog_generation_id = 2800;
   context.security_epoch = 2801;
@@ -79,6 +87,47 @@ api::EngineRequestContext Context() {
   context.trace_tags = {"ORH-280", "ORH-GATE-280",
                         "mga_transaction_regression"};
   return context;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const api::EngineRequestContext& context) {
+  exec::PhysicalMgaStatementContext statement;
+  statement.statement_uuid = context.statement_uuid.canonical;
+  statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+  statement.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  statement.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  statement.owning_local_transaction_id = context.local_transaction_id;
+  statement.visible_committed_high_watermark =
+      context.snapshot_visible_through_local_transaction_id;
+  statement.oldest_active_transaction_id = 100;
+  statement.oldest_interesting_transaction_id = 100;
+  statement.oldest_snapshot_transaction_id = 100;
+  statement.retention_horizon_transaction_id = 100;
+  statement.active_excluded_local_transaction_ids = {
+      context.local_transaction_id};
+  statement.in_doubt_excluded_local_transaction_ids = {250};
+  statement.snapshot_kind = "statement_stable";
+  statement.publication_inventory_next_local_transaction_id = 1000;
+  statement.inventory_authoritative = true;
+  statement.complete = true;
+  statement.current = true;
+  return statement;
+}
+
+exec::CanonicalExecutionMgaAuthority Authority(
+    const api::EngineRequestContext& context) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = StatementContext(context);
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current]() {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  return authority;
 }
 
 api::EngineDescriptor Descriptor() {
@@ -92,30 +141,25 @@ api::EngineDescriptor Descriptor() {
 }
 
 sblr::SblrOperationEnvelope Envelope() {
-  auto envelope = sblr::MakeSblrEnvelope("query.plan_operation",
-                                         "SBLR_QUERY_PLAN_OPERATION",
+  auto envelope = sblr::MakeSblrEnvelope("query.execute",
+                                         "SBLR_QUERY_EXECUTE",
                                          "trace.orh280.hot_path");
+  envelope.opcode_code = 0x1207;
+  envelope.parser_package_uuid =
+      "019f0000-0000-7000-8000-000000280010";
+  envelope.registry_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000280011";
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = true;
   envelope.contains_sql_text = false;
   envelope.parser_resolved_names_to_uuids = true;
-  envelope.source_artifact_map.policy_status =
-      "non_authoritative_render_metadata";
-  envelope.source_artifact_map.source_identity =
-      "sblr-envelope:orh280:projection";
-  envelope.source_artifact_map.source_hash = "sha256:orh280-sblr-envelope";
-  envelope.source_artifact_map.render_metadata_only = true;
-  envelope.source_artifact_map.contains_sql_text = false;
-  envelope.source_artifact_map.raw_sql_text_authoritative = false;
-  envelope.operands.push_back({"predicate_slot", "predicate:tenant", "tenant"});
-  envelope.operands.push_back({"parameter_slot", "param:tenant", "tenant"});
   return envelope;
 }
 
 api::EngineApiRequest ApiRequest(const api::EngineRequestContext& context) {
   api::EngineApiRequest request;
   request.context = context;
-  request.operation_id = "query.plan_operation";
+  request.operation_id = "query.execute";
   request.target_object.uuid.canonical =
       "019f0000-0000-7000-8000-000000280200";
   request.target_object.object_kind = "table";
@@ -263,6 +307,7 @@ sblr::SblrHotPathExecutionRequest Request(
   request.authority.engine_mga_snapshot_bound = true;
   request.authority.transaction_inventory_authoritative = true;
   request.authority.security_recheck_required = true;
+  request.mga_authority = Authority(context);
   return request;
 }
 
@@ -275,6 +320,18 @@ void RequireAccepted(const sblr::SblrHotPathExecutionResult& result) {
               result.reused_prepare.reused_existing_template,
           "prepared template was not built and reused");
   Require(result.bind.ok, "prepared template did not bind");
+  Require(result.bind.statement_use_receipt != nullptr,
+          "prepared bind omitted the immutable statement-use receipt");
+  Require(result.statement_use_validation.ok &&
+              result.statement_use_validation.executable_receipt != nullptr &&
+              result.executable_statement_use_receipt != nullptr,
+          "prepared statement-use receipt was not revalidated before execution");
+  Require(result.executable_statement_use_receipt->statement_context()
+                  .statement_uuid == Context().statement_uuid.canonical,
+          "successful hot path did not retain exact statement identity");
+  Require(result.executable_statement_use_receipt->statement_context()
+                  .visible_committed_high_watermark == 0,
+          "zero committed high-water was treated as missing");
   Require(result.specialization.ok && result.specialization.native_used,
           "opcode specialization did not use native route");
   Require(result.dispatch_us_saved > 0 && result.opcode_dispatches_saved > 0,
@@ -319,6 +376,10 @@ void RequireRejected(const sblr::SblrHotPathExecutionResult& result,
   Require(result.diagnostic_code.find(diagnostic) != std::string::npos,
           std::string(label) + " diagnostic mismatch: " +
               result.diagnostic_code);
+  Require(result.executable_statement_use_receipt == nullptr &&
+              result.bind.statement_use_receipt == nullptr &&
+              result.statement_use_validation.executable_receipt == nullptr,
+          std::string(label) + " retained an executable statement-use receipt");
 }
 
 void RequireFallback(const sblr::SblrHotPathExecutionResult& result,
@@ -332,6 +393,9 @@ void RequireFallback(const sblr::SblrHotPathExecutionResult& result,
   Require(HasEvidence(result.evidence,
                       "sblr_hot_path.exact_fallback_required=true"),
           std::string(label) + " missing exact fallback evidence");
+  Require(result.executable_statement_use_receipt == nullptr &&
+              result.bind.statement_use_receipt == nullptr,
+          std::string(label) + " fallback retained an executable receipt");
 }
 
 void TestPositiveHotPath() {
@@ -424,6 +488,13 @@ void TestNegativeMgaSecurityProfilerCases() {
                   "ORH_SBLR_HOT_PATH_MGA_UNPROVEN",
                   "missing MGA evidence");
 
+  scratchbird::engine::executor::PreparedTemplateCache resolver_cache;
+  auto resolver = Request(&resolver_cache);
+  resolver.mga_authority.resolve_current = {};
+  RequireRejected(sblr::ExecuteSblrHotPath(resolver),
+                  "ORH_SBLR_HOT_PATH_MGA_UNPROVEN",
+                  "missing MGA current resolver");
+
   scratchbird::engine::executor::PreparedTemplateCache security_cache;
   auto security = Request(&security_cache);
   security.authority.security_recheck_required = false;
@@ -440,6 +511,29 @@ void TestNegativeMgaSecurityProfilerCases() {
                   "profiler missing/contract-only evidence");
 }
 
+void TestCurrentStateChangeBetweenBindAndExecutableUseRefuses() {
+  scratchbird::engine::executor::PreparedTemplateCache cache;
+  auto request = Request(&cache);
+  const auto expected = request.mga_authority.statement_context;
+  auto resolver_calls = std::make_shared<std::uint64_t>(0);
+  request.mga_authority.resolve_current = [expected, resolver_calls]() mutable {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = expected;
+    ++*resolver_calls;
+    if (*resolver_calls >= 2) {
+      resolution.statement_context.active_excluded_local_transaction_ids
+          .push_back(281);
+    }
+    return resolution;
+  };
+  RequireRejected(
+      sblr::ExecuteSblrHotPath(request),
+      "SB_PREPARED_TEMPLATE_MGA_CURRENT_CONTEXT_MISMATCH",
+      "MGA current-state change after bind");
+  Require(*resolver_calls == 2,
+          "hot path did not resolve MGA at bind and immediately before use");
+}
+
 }  // namespace
 
 int main() {
@@ -447,6 +541,7 @@ int main() {
   TestNegativeAuthorityAndEnvelopeCases();
   TestNegativeFallbackAndSafetyCases();
   TestNegativeMgaSecurityProfilerCases();
+  TestCurrentStateChangeBetweenBindAndExecutableUseRefuses();
   std::cout << "ORH-280 SBLR hot path gate passed\n";
   return EXIT_SUCCESS;
 }

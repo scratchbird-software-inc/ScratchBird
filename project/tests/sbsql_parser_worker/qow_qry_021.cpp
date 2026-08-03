@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <string_view>
 
 namespace exec = scratchbird::engine::executor;
@@ -22,6 +23,62 @@ bool Require(const bool condition, const std::string_view detail) {
     std::cerr << "QOW-TEST-QRY-021-V1: " << detail << '\n';
   }
   return condition;
+}
+
+std::string LengthFieldToken(const std::string_view key,
+                             const std::string& value) {
+  return std::string(key) + "=" + std::to_string(value.size()) + ":" +
+         value + "\n";
+}
+
+bool ContainsExactStatementIdentityBytes(
+    const std::string& bytes,
+    const exec::PhysicalMgaStatementContext& context,
+    const std::string& catalog_epoch_uuid) {
+  const auto number = [](const std::uint64_t value) {
+    return std::to_string(value);
+  };
+  const std::vector<std::string> fields{
+      LengthFieldToken("mga.statement_uuid", context.statement_uuid),
+      LengthFieldToken("mga.owning_transaction_uuid",
+                       context.owning_transaction_uuid),
+      LengthFieldToken("mga.statement_snapshot_uuid",
+                       context.statement_snapshot_uuid),
+      LengthFieldToken("mga.statement_metadata_snapshot_uuid",
+                       context.statement_metadata_snapshot_uuid),
+      LengthFieldToken("mga.owning_local_transaction_id",
+                       number(context.owning_local_transaction_id)),
+      LengthFieldToken("mga.visible_committed_high_watermark",
+                       number(context.visible_committed_high_watermark)),
+      LengthFieldToken("mga.oldest_active_transaction_id",
+                       number(context.oldest_active_transaction_id)),
+      LengthFieldToken("mga.oldest_interesting_transaction_id",
+                       number(context.oldest_interesting_transaction_id)),
+      LengthFieldToken("mga.oldest_snapshot_transaction_id",
+                       number(context.oldest_snapshot_transaction_id)),
+      LengthFieldToken("mga.retention_horizon_transaction_id",
+                       number(context.retention_horizon_transaction_id)),
+      LengthFieldToken("mga.active_excluded_local_transaction_id_count", "2"),
+      LengthFieldToken("mga.active_excluded_local_transaction_id", "7"),
+      LengthFieldToken("mga.active_excluded_local_transaction_id", "9"),
+      LengthFieldToken("mga.in_doubt_excluded_local_transaction_id_count", "1"),
+      LengthFieldToken("mga.in_doubt_excluded_local_transaction_id", "8"),
+      LengthFieldToken("mga.snapshot_kind", context.snapshot_kind),
+      LengthFieldToken(
+          "mga.publication_inventory_next_local_transaction_id",
+          number(context.publication_inventory_next_local_transaction_id)),
+      LengthFieldToken("mga.inventory_authoritative", "true"),
+      LengthFieldToken("mga.complete", "true"),
+      LengthFieldToken("mga.current", "true"),
+      LengthFieldToken("catalog_epoch_uuid", catalog_epoch_uuid),
+  };
+  std::size_t position = 0;
+  for (const auto& field : fields) {
+    position = bytes.find(field, position);
+    if (position == std::string::npos) return false;
+    position += field.size();
+  }
+  return true;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -54,7 +111,105 @@ api::EngineTypedValue SqlNull(const api::EngineDescriptor& descriptor) {
   return value;
 }
 
-exec::CanonicalResultPublicationRequest RowsRequest() {
+exec::PhysicalMgaStatementContext StatementContext(
+    const bool zero_high_water = false) {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid = "019f0000-0000-7100-8000-000000002101";
+  context.owning_transaction_uuid =
+      "019f0000-0000-7100-8000-000000002104";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000002105";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000002106";
+  context.owning_local_transaction_id = 7;
+  context.visible_committed_high_watermark = zero_high_water ? 0 : 6;
+  context.oldest_active_transaction_id = 7;
+  context.oldest_interesting_transaction_id = 3;
+  context.oldest_snapshot_transaction_id = 3;
+  context.retention_horizon_transaction_id = 3;
+  context.active_excluded_local_transaction_ids = {7, 9};
+  context.in_doubt_excluded_local_transaction_ids = {8};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 10;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
+exec::TypedPhysicalNodeDag SelectedDag(
+    const exec::PhysicalMgaStatementContext& context) {
+  exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
+  dag.selected_plan_uuid = "019f0000-0000-7100-8000-000000002130";
+  dag.root_physical_node_id = 1;
+  dag.local_transaction_id = context.owning_local_transaction_id;
+  dag.statement_snapshot_id = context.visible_committed_high_watermark;
+  dag.mga_statement_context = context;
+  dag.bound_sblr_tree_uuid = "019f0000-0000-7100-8000-000000002131";
+  dag.catalog_epoch_uuid = "019f0000-0000-7100-8000-000000002132";
+  dag.security_context_uuid = "019f0000-0000-7100-8000-000000002133";
+  dag.capability_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000002134";
+  dag.resource_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000002135";
+  dag.statistics_snapshot_uuid =
+      "019f0000-0000-7100-8000-000000002136";
+  dag.route_snapshot_uuid = "019f0000-0000-7100-8000-000000002137";
+  dag.catalog_generation = 1;
+  dag.security_epoch = 1;
+  dag.policy_epoch = 1;
+  dag.resource_epoch = 1;
+  dag.statistics_generation = 1;
+  dag.route_epoch = 1;
+  dag.route_generation = 1;
+  dag.memory_budget_bytes = 1024;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  const std::vector<std::string> evidence{
+      dag.bound_sblr_tree_uuid,
+      dag.catalog_epoch_uuid,
+      dag.security_context_uuid,
+      context.statement_snapshot_uuid,
+      dag.capability_snapshot_uuid,
+      dag.resource_snapshot_uuid,
+      dag.statistics_snapshot_uuid,
+      dag.route_snapshot_uuid,
+  };
+  for (std::size_t index = 0; index < evidence.size(); ++index) {
+    dag.admission_evidence.push_back(
+        {static_cast<exec::PhysicalAdmissionStage>(index + 1),
+         evidence[index]});
+  }
+  exec::PhysicalNodeRecord node;
+  node.physical_node_id = 1;
+  node.relational_node_id = 1;
+  node.node_kind = exec::PhysicalNodeKind::kValues;
+  node.implementation_id = "values.materialize.v1";
+  node.output_descriptor_ids = {2101, 2102, 2103};
+  node.causal_counter_id = 1;
+  node.selected_alternative_uuid =
+      "019f0000-0000-7100-8000-000000002140";
+  node.executor_capability_uuid =
+      "019f0000-0000-7100-8000-000000002141";
+  node.executor_capability_abi_version = 1;
+  node.cost_vector_uuid = "019f0000-0000-7100-8000-000000002142";
+  node.memory_bytes_required = 1;
+  node.engine_capability_validated = true;
+  node.mga_statement_context = context;
+  dag.nodes.push_back(std::move(node));
+  return dag;
+}
+
+struct CurrentAuthorityState {
+  exec::DescriptorRuntimeDiagnostic diagnostic;
+  exec::PhysicalMgaStatementContext statement_context;
+};
+
+exec::CanonicalResultPublicationRequest RowsRequest(
+    std::shared_ptr<CurrentAuthorityState> state = {},
+    const bool zero_high_water = false) {
   const auto id = Descriptor(
       "019f0000-0000-7200-8000-000000002101",
       "019f0000-0000-7300-8000-000000002101", "int64", "non_null");
@@ -67,7 +222,22 @@ exec::CanonicalResultPublicationRequest RowsRequest() {
       ";collation_uuid=019f0000-0000-7400-8000-000000002103");
 
   exec::CanonicalResultPublicationRequest request;
-  request.statement_uuid = "019f0000-0000-7100-8000-000000002101";
+  const auto statement_context = StatementContext(zero_high_water);
+  request.statement_uuid = statement_context.statement_uuid;
+  request.selected_physical_dag = SelectedDag(statement_context);
+  request.selected_catalog_epoch_uuid =
+      request.selected_physical_dag.catalog_epoch_uuid;
+  request.mga_authority.statement_context = statement_context;
+  request.mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  if (!state) state = std::make_shared<CurrentAuthorityState>();
+  state->statement_context = statement_context;
+  request.mga_authority.resolve_current = [state] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.diagnostic = state->diagnostic;
+    resolution.statement_context = state->statement_context;
+    return resolution;
+  };
   request.execution_attempt_uuid =
       "019f0000-0000-7110-8000-000000002101";
   request.transaction_effect_evidence_uuid =
@@ -105,6 +275,11 @@ bool ValidateRowsEmptyCursorAndParity() {
   passed &= Require(
       direct.diagnostic.ok && direct.published &&
           direct.envelope.abi_version == 1 &&
+          exec::PhysicalMgaStatementContextEqual(
+              direct.envelope.mga_statement_context,
+              StatementContext()) &&
+          direct.envelope.catalog_epoch_uuid ==
+              "019f0000-0000-7100-8000-000000002132" &&
           direct.envelope.result_kind == exec::CanonicalResultKind::kRows &&
           direct.envelope.row_count == 2 &&
           direct.envelope.column_descriptors.size() == 2 &&
@@ -131,8 +306,11 @@ bool ValidateRowsEmptyCursorAndParity() {
       direct.canonical_envelope_bytes.find("internal_sort_key") ==
               std::string::npos &&
           direct.canonical_envelope_bytes.find(
-              "QOW-RESULT-DIAGNOSTIC-ABI-V1") != std::string::npos,
-      "canonical envelope leaked a hidden column or lost its ABI identity");
+              "QOW-RESULT-DIAGNOSTIC-ABI-V1") != std::string::npos &&
+          ContainsExactStatementIdentityBytes(
+              direct.canonical_envelope_bytes, StatementContext(),
+              "019f0000-0000-7100-8000-000000002132"),
+      "canonical envelope leaked a hidden column or omitted statement identity");
 
   auto prepared_request = RowsRequest();
   prepared_request.invocation_mode =
@@ -234,9 +412,17 @@ bool ValidateDiagnosticAndCancellation() {
 bool RefusedAtomically(const exec::CanonicalResultPublicationRequest& request) {
   const auto result = exec::PublishCanonicalResultEnvelope(request);
   return !result.diagnostic.ok && !result.published &&
-         result.diagnostic.diagnostic_code ==
-             "QOW-DIAG-QRY-021-REFUSAL-V1" &&
+         !result.diagnostic.diagnostic_code.empty() &&
          result.envelope.statement_uuid.empty() &&
+         result.envelope.mga_statement_context.statement_uuid.empty() &&
+         result.envelope.catalog_epoch_uuid.empty() &&
+         result.envelope.execution_attempt_uuid.empty() &&
+         result.envelope.column_descriptors.empty() &&
+         result.envelope.row_stream_format_id.empty() &&
+         !result.envelope.row_count.has_value() &&
+         !result.envelope.command_tag.has_value() &&
+         !result.envelope.cursor_state.has_value() &&
+         result.envelope.diagnostics.empty() &&
          result.row_stream.columns.empty() && result.row_stream.rows.empty() &&
          result.delivery_records.empty() && result.canonical_envelope_bytes.empty();
 }
@@ -301,6 +487,103 @@ bool ValidateAtomicRefusals() {
   return passed;
 }
 
+bool ValidateStatementAuthorityPublicationBoundary() {
+  bool passed = true;
+
+  const auto zero = exec::PublishCanonicalResultEnvelope(
+      RowsRequest({}, true));
+  passed &= Require(
+      zero.diagnostic.ok && zero.published &&
+          zero.envelope.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+          zero.canonical_envelope_bytes.find(
+              "mga.visible_committed_high_watermark=1:0") !=
+              std::string::npos,
+      "valid zero committed high-water statement was refused or not encoded");
+
+  auto request = RowsRequest();
+  request.mga_authority.origin = exec::CanonicalMgaAuthorityOrigin::kMissing;
+  passed &= Require(RefusedAtomically(request),
+                    "missing engine-inventory origin published output");
+
+  request = RowsRequest();
+  request.mga_authority.resolve_current = {};
+  passed &= Require(RefusedAtomically(request),
+                    "nil current-authority resolver published output");
+
+  request = RowsRequest();
+  request.mga_authority.statement_context.current = false;
+  passed &= Require(RefusedAtomically(request),
+                    "malformed authority context published output");
+
+  auto state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  state->statement_context.current = false;
+  passed &= Require(RefusedAtomically(request),
+                    "non-current resolved statement published output");
+
+  request = RowsRequest();
+  request.mga_authority.statement_context.owning_transaction_uuid =
+      "019f0000-0000-7100-8000-000000002199";
+  passed &= Require(RefusedAtomically(request),
+                    "wrong owning transaction published output");
+
+  request = RowsRequest();
+  request.statement_uuid = "019f0000-0000-7100-8000-000000002198";
+  passed &= Require(RefusedAtomically(request),
+                    "cross-statement scalar identity published output");
+
+  state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  request.mga_authority.statement_context
+      .active_excluded_local_transaction_ids = {7};
+  request.selected_physical_dag.mga_statement_context =
+      request.mga_authority.statement_context;
+  request.selected_physical_dag.nodes.front().mga_statement_context =
+      request.mga_authority.statement_context;
+  passed &= Require(RefusedAtomically(request),
+                    "narrowed active exclusion set published output");
+
+  state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  request.mga_authority.statement_context
+      .active_excluded_local_transaction_ids = {7, 8};
+  request.mga_authority.statement_context
+      .in_doubt_excluded_local_transaction_ids = {9};
+  request.selected_physical_dag.mga_statement_context =
+      request.mga_authority.statement_context;
+  request.selected_physical_dag.nodes.front().mga_statement_context =
+      request.mga_authority.statement_context;
+  passed &= Require(RefusedAtomically(request),
+                    "swapped exclusion-set membership published output");
+
+  request = RowsRequest();
+  request.mga_authority.statement_context
+      .active_excluded_local_transaction_ids = {9, 7};
+  request.selected_physical_dag.mga_statement_context =
+      request.mga_authority.statement_context;
+  request.selected_physical_dag.nodes.front().mga_statement_context =
+      request.mga_authority.statement_context;
+  passed &= Require(RefusedAtomically(request),
+                    "reordered exclusions published output");
+
+  request = RowsRequest();
+  request.selected_catalog_epoch_uuid =
+      "019f0000-0000-7100-8000-000000002197";
+  passed &= Require(RefusedAtomically(request),
+                    "conflicting selected catalog epoch published output");
+
+  state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  state->diagnostic.ok = false;
+  state->diagnostic.diagnostic_code = "SB_TEST_INVENTORY_RESOLUTION_REFUSED";
+  state->diagnostic.detail = "durable inventory unavailable";
+  passed &= Require(RefusedAtomically(request),
+                    "resolver refusal published output");
+
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-021-V1
@@ -310,5 +593,6 @@ int main() {
   passed &= ValidateRowsEmptyCursorAndParity();
   passed &= ValidateDiagnosticAndCancellation();
   passed &= ValidateAtomicRefusals();
+  passed &= ValidateStatementAuthorityPublicationBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }
