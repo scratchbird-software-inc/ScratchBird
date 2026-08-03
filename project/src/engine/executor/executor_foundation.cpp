@@ -54,6 +54,49 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+bool CanonicalWindowAuthorityAbsent(
+    const CanonicalExecutionMgaAuthority& authority) {
+  return authority.origin == CanonicalMgaAuthorityOrigin::kMissing &&
+         !authority.resolve_current &&
+         !PhysicalMgaStatementContextValid(authority.statement_context);
+}
+
+const CanonicalExecutionMgaAuthority& CanonicalWindowFrameExecutionAuthority(
+    const CanonicalExecutionMgaAuthority& requested,
+    const CanonicalWindowFrameResult& frames) {
+  return CanonicalWindowAuthorityAbsent(requested) ? frames.mga_authority
+                                                   : requested;
+}
+
+DescriptorRuntimeDiagnostic RevalidateCanonicalWindowFrameAuthority(
+    const CanonicalExecutionMgaAuthority& requested,
+    const CanonicalWindowFrameResult& frames) {
+  auto diagnostic = RevalidateCanonicalExecutionMgaAuthority(
+      frames.mga_authority, frames.physical_dag);
+  if (!diagnostic.ok) return diagnostic;
+  if (!PhysicalMgaStatementContextEqual(frames.mga_authority.statement_context,
+                                        frames.mga_statement_context)) {
+    diagnostic.ok = false;
+    diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-MGA-CONTEXT-V1";
+    diagnostic.detail =
+        "window frame carrier and frame result MGA contexts differ";
+    return diagnostic;
+  }
+  if (!CanonicalWindowAuthorityAbsent(requested)) {
+    diagnostic = RevalidateCanonicalExecutionMgaAuthority(
+        requested, frames.physical_dag);
+    if (!diagnostic.ok) return diagnostic;
+    if (!PhysicalMgaStatementContextEqual(requested.statement_context,
+                                          frames.mga_statement_context)) {
+      diagnostic.ok = false;
+      diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-MGA-CONTEXT-V1";
+      diagnostic.detail =
+          "window request and frame result MGA contexts differ";
+    }
+  }
+  return diagnostic;
+}
+
 bool ParseInt64Text(const std::string_view text, std::int64_t* value) {
   if (value == nullptr || text.empty()) return false;
   const auto* begin = text.data();
@@ -220,6 +263,12 @@ void RequireResolvedColumnHandles(
 CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request) {
   CanonicalDescriptorFetchProfileResult result;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!entry_authority.ok) {
+    result.diagnostic = entry_authority;
+    return result;
+  }
   if (request.form !=
           CanonicalFetchTopProfileForm::fetch_first_rows_only ||
       !request.row_count_is_bound) {
@@ -238,12 +287,35 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
   limit_request.input_batch = request.input_batch;
   limit_request.limit = request.row_count;
   limit_request.offset = request.offset;
+  limit_request.mga_authority = request.mga_authority;
   auto limited = ExecuteCanonicalDescriptorLimit(limit_request);
+  if (limited.diagnostic.ok &&
+      !PhysicalMgaStatementContextEqual(
+          limited.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    limited.diagnostic.ok = false;
+    limited.diagnostic.diagnostic_code =
+        "QOW-DIAG-QRY-010-FETCH-TOP-MGA-V1";
+    limited.diagnostic.detail =
+        "FETCH nested limit returned a different MGA statement context";
+  }
+  if (limited.diagnostic.ok) {
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, request.physical_dag);
+    if (!result_authority.ok) limited.diagnostic = result_authority;
+  }
+  if (!limited.diagnostic.ok) {
+    result.diagnostic = std::move(limited.diagnostic);
+    return result;
+  }
   result.diagnostic = std::move(limited.diagnostic);
   result.output_batch = std::move(limited.output_batch);
   result.selected_plan_uuid = std::move(limited.selected_plan_uuid);
   result.executed_physical_node_id = limited.executed_physical_node_id;
   result.causal_counter_id = limited.causal_counter_id;
+  if (result.diagnostic.ok) {
+    result.mga_statement_context = request.mga_authority.statement_context;
+  }
   return result;
 }
 
@@ -266,12 +338,11 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -348,11 +419,18 @@ CanonicalInt64SumStateResult ExecuteCanonicalInt64SumState(
     }
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.state = std::move(state);
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -375,12 +453,11 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -428,11 +505,16 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
-
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
   result.diagnostic = {};
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -455,12 +537,11 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -639,11 +720,18 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
     groups.push_back(std::move(grand_total));
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.groups = std::move(groups);
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -665,12 +753,11 @@ CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(aggregate.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (aggregate.selected_physical_node_id == 0 ||
       aggregate.selected_physical_node_id !=
           aggregate.physical_dag.root_physical_node_id) {
@@ -740,12 +827,23 @@ CanonicalInt64SumFilterResult ExecuteCanonicalInt64SumFilter(
     return refuse(transitioned.diagnostic.diagnostic_code + ":" +
                   transitioned.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          transitioned.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse("filtered aggregate state returned a different MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
   result.diagnostic = {};
   result.state = std::move(transitioned.state);
   result.selected_plan_uuid = std::move(transitioned.selected_plan_uuid);
   result.executed_physical_node_id =
       transitioned.executed_physical_node_id;
   result.causal_counter_id = transitioned.causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -768,12 +866,11 @@ CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(aggregate.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (aggregate.selected_physical_node_id == 0 ||
       aggregate.selected_physical_node_id !=
           aggregate.physical_dag.root_physical_node_id) {
@@ -883,6 +980,16 @@ CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
     return refuse(transitioned.diagnostic.diagnostic_code + ":" +
                   transitioned.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          transitioned.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse("DISTINCT aggregate state returned a different MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
   result.diagnostic = {};
   result.state = std::move(transitioned.state);
   result.distinct_value_count = observed_values.size();
@@ -890,6 +997,7 @@ CanonicalInt64SumDistinctResult ExecuteCanonicalInt64SumDistinct(
   result.executed_physical_node_id =
       transitioned.executed_physical_node_id;
   result.causal_counter_id = transitioned.causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -913,6 +1021,12 @@ CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
   };
   const auto& aggregate = request.aggregate_request;
 
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!entry_authority.ok)
+    return refuse(entry_authority.diagnostic_code + ":" +
+                  entry_authority.detail);
+
   auto route_request = aggregate;
   route_request.input_batch.rows.clear();
   const auto route_validation =
@@ -920,6 +1034,11 @@ CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
   if (!route_validation.diagnostic.ok) {
     return refuse(route_validation.diagnostic.diagnostic_code + ":" +
                   route_validation.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          route_validation.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse("ordered aggregate preflight returned a different MGA statement context");
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
@@ -1049,6 +1168,16 @@ CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
     return refuse(transitioned.diagnostic.diagnostic_code + ":" +
                   transitioned.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          transitioned.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse("ordered aggregate state returned a different MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.state = std::move(transitioned.state);
@@ -1057,6 +1186,7 @@ CanonicalInt64SumOrderedResult ExecuteCanonicalInt64SumOrdered(
   result.executed_physical_node_id =
       transitioned.executed_physical_node_id;
   result.causal_counter_id = transitioned.causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -1082,6 +1212,11 @@ CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!entry_authority.ok)
+    return refuse(entry_authority.diagnostic_code + ":" +
+                  entry_authority.detail);
   if (aggregate.grouping_set_rule !=
       CanonicalInt64GroupingSetRule::key_only) {
     return refuse("aggregate spill admits one ordinary int64 grouping key");
@@ -1113,6 +1248,11 @@ CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
   if (!canonical.diagnostic.ok) {
     return refuse(canonical.diagnostic.diagnostic_code + ":" +
                   canonical.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          canonical.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse("aggregate spill baseline returned a different MGA statement context");
   }
   if (aggregate.input_batch.rows.empty() || canonical.groups.empty()) {
     return refuse("aggregate spill requires a nonempty grouped input");
@@ -1250,12 +1390,19 @@ CanonicalInt64SumSpillResult ExecuteCanonicalInt64SumSpill(
     }
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.groups = std::move(canonical.groups);
   result.selected_plan_uuid = std::move(canonical.selected_plan_uuid);
   result.executed_physical_node_id =
       canonical.executed_physical_node_id;
   result.causal_counter_id = canonical.causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -1279,6 +1426,11 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
     result.pair_count = 0;
     return result;
   };
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!entry_authority.ok)
+    return refuse(entry_authority.diagnostic_code + ":" +
+                  entry_authority.detail);
   if (request.key_terms.empty() || request.maximum_key_term_count == 0 ||
       request.key_terms.size() > request.maximum_key_term_count ||
       request.maximum_key_comparisons == 0) {
@@ -1304,10 +1456,16 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
   route.right_batch = request.right_batch;
   route.pair_truth_values.assign(
       pair_count, api::EngineSqlTruthValue::false_value);
+  route.mga_authority = request.mga_authority;
   const auto route_validation = ExecuteCanonicalDescriptorInnerJoin(route);
   if (!route_validation.diagnostic.ok) {
     return refuse(route_validation.diagnostic.diagnostic_code + ":" +
                   route_validation.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          route_validation.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    return refuse("composite join route returned a different MGA statement context");
   }
 
   std::set<std::pair<std::uint32_t, std::uint32_t>> bound_term_handles;
@@ -1377,6 +1535,12 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
     }
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.pair_truth_values = std::move(pair_truth_values);
   result.pair_count = pair_count;
@@ -1384,6 +1548,7 @@ CanonicalCompositeJoinKeyResult ExecuteCanonicalCompositeJoinKey(
   result.executed_physical_node_id =
       route_validation.executed_physical_node_id;
   result.causal_counter_id = route_validation.causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -1418,6 +1583,11 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   if (!keys.diagnostic.ok) {
     return refuse(keys.diagnostic.diagnostic_code + ":" +
                   keys.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          keys.mga_statement_context,
+          request.key_request.mga_authority.statement_context)) {
+    return refuse("residual join key route returned a different MGA statement context");
   }
   if (request.residual_truth_values.size() != keys.pair_count) {
     return refuse("residual join predicate cardinality is not bound");
@@ -1468,11 +1638,22 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   join.right_batch = request.key_request.right_batch;
   join.pair_truth_values = std::move(accepted_pair_truth_values);
   join.consumer = api::EnginePredicateConsumer::join_on;
+  join.mga_authority = request.key_request.mga_authority;
   auto joined = ExecuteCanonicalDescriptorInnerJoin(join);
   if (!joined.diagnostic.ok) {
     return refuse(joined.diagnostic.diagnostic_code + ":" +
                   joined.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          joined.mga_statement_context,
+          request.key_request.mga_authority.statement_context)) {
+    return refuse("residual join materialization returned a different MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.key_request.mga_authority, request.key_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(joined.output_batch);
@@ -1482,6 +1663,8 @@ CanonicalJoinResidualResult ExecuteCanonicalJoinResidual(
   result.selected_plan_uuid = std::move(joined.selected_plan_uuid);
   result.executed_physical_node_id = joined.executed_physical_node_id;
   result.causal_counter_id = joined.causal_counter_id;
+  result.mga_statement_context =
+      request.key_request.mga_authority.statement_context;
   return result;
 }
 
@@ -1526,6 +1709,11 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     return refuse("join-kind output resource contract is invalid");
   }
   const auto& key_request = request.residual_request.key_request;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      key_request.mga_authority, key_request.physical_dag);
+  if (!entry_authority.ok)
+    return refuse(entry_authority.diagnostic_code + ":" +
+                  entry_authority.detail);
   const auto left_count = key_request.left_batch.rows.size();
   const auto right_count = key_request.right_batch.rows.size();
   if (left_count != 0 &&
@@ -1567,10 +1755,16 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     conditionless.right_batch = key_request.right_batch;
     conditionless.pair_truth_values.assign(
         pair_count, api::EngineSqlTruthValue::true_value);
+    conditionless.mga_authority = key_request.mga_authority;
     auto joined = ExecuteCanonicalDescriptorInnerJoin(conditionless);
     if (!joined.diagnostic.ok) {
       return refuse(joined.diagnostic.diagnostic_code + ":" +
                     joined.diagnostic.detail);
+    }
+    if (!PhysicalMgaStatementContextEqual(
+            joined.mga_statement_context,
+            key_request.mga_authority.statement_context)) {
+      return refuse("conditionless join returned a different MGA statement context");
     }
     accepted_pair_indices.resize(pair_count);
     std::iota(accepted_pair_indices.begin(), accepted_pair_indices.end(), 0);
@@ -1585,10 +1779,16 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     cross.right_batch = key_request.right_batch;
     cross.pair_truth_values.assign(
         pair_count, api::EngineSqlTruthValue::true_value);
+    cross.mga_authority = key_request.mga_authority;
     auto crossed = ExecuteCanonicalDescriptorInnerJoin(cross);
     if (!crossed.diagnostic.ok) {
       return refuse(crossed.diagnostic.diagnostic_code + ":" +
                     crossed.diagnostic.detail);
+    }
+    if (!PhysicalMgaStatementContextEqual(
+            crossed.mga_statement_context,
+            key_request.mga_authority.statement_context)) {
+      return refuse("cross join returned a different MGA statement context");
     }
     accepted_pair_indices.resize(pair_count);
     std::iota(accepted_pair_indices.begin(), accepted_pair_indices.end(), 0);
@@ -1600,6 +1800,11 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     if (!residual.diagnostic.ok) {
       return refuse(residual.diagnostic.diagnostic_code + ":" +
                     residual.diagnostic.detail);
+    }
+    if (!PhysicalMgaStatementContextEqual(
+            residual.mga_statement_context,
+            key_request.mga_authority.statement_context)) {
+      return refuse("join residual returned a different MGA statement context");
     }
     if (residual.accepted_pair_indices.size() !=
         residual.output_batch.rows.size()) {
@@ -1778,6 +1983,11 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   if (!validation.ok) {
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      key_request.mga_authority, key_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -1797,6 +2007,7 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   result.selected_plan_uuid = std::move(selected_plan_uuid);
   result.executed_physical_node_id = executed_physical_node_id;
   result.causal_counter_id = causal_counter_id;
+  result.mga_statement_context = key_request.mga_authority.statement_context;
   return result;
 }
 
@@ -1829,6 +2040,12 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
     result.projection_causal_counter_id = 0;
     return result;
   };
+  const auto join_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.key_request.mga_authority,
+      request.key_request.physical_dag);
+  if (!join_authority.ok)
+    return refuse(join_authority.diagnostic_code + ":" +
+                  join_authority.detail);
 
   if (request.form != CanonicalNamedJoinForm::kUsing &&
       request.form != CanonicalNamedJoinForm::kNatural) {
@@ -1985,12 +2202,11 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
     }
   }
 
-  const auto projection_validation =
-      ValidateTypedPhysicalNodeDag(request.projection_dag);
-  if (!projection_validation.accepted) {
-    const auto& issue = projection_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto projection_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.key_request.mga_authority, request.projection_dag);
+  if (!projection_validation.ok)
+    return refuse(projection_validation.diagnostic_code + ":" +
+                  projection_validation.detail);
   if (request.projection_dag.selected_plan_uuid !=
           request.key_request.physical_dag.selected_plan_uuid ||
       request.projection_dag.local_transaction_id !=
@@ -2072,6 +2288,11 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
     return refuse(joined.diagnostic.diagnostic_code + ":" +
                   joined.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          joined.mga_statement_context,
+          request.key_request.mga_authority.statement_context)) {
+    return refuse("named join route returned a different MGA statement context");
+  }
   if (joined.executed_physical_node_id !=
           projection_join_node->physical_node_id ||
       joined.causal_counter_id != projection_join_node->causal_counter_id) {
@@ -2136,6 +2357,11 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.key_request.mga_authority, request.projection_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
   result.diagnostic = {};
   result.output_batch = std::move(output);
   result.form = request.form;
@@ -2149,6 +2375,8 @@ CanonicalNamedJoinResult ExecuteCanonicalNamedJoin(
   result.join_causal_counter_id = joined.causal_counter_id;
   result.executed_projection_node_id = projection_node->physical_node_id;
   result.projection_causal_counter_id = projection_node->causal_counter_id;
+  result.mga_statement_context =
+      request.key_request.mga_authority.statement_context;
   return result;
 }
 
@@ -2188,6 +2416,14 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.causal_counter_id = 0;
     return result;
   };
+
+  const auto& key_authority_request = request.residual_request.key_request;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      key_authority_request.mga_authority,
+      key_authority_request.physical_dag);
+  if (!entry_authority.ok)
+    return refuse(entry_authority.diagnostic_code + ":" +
+                  entry_authority.detail);
 
   std::string_view join_kind_id;
   switch (request.join_kind) {
@@ -2297,6 +2533,11 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     return refuse(canonical.diagnostic.diagnostic_code + ":" +
                   canonical.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          canonical.mga_statement_context,
+          key_request.mga_authority.statement_context)) {
+    return refuse("join strategy canonical route returned a different MGA statement context");
+  }
   if (legacy_int64_strategy) {
     const auto& term = key_request.key_terms.front();
     if (key_request.left_batch.columns[term.left_column]
@@ -2330,6 +2571,11 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
       return refuse(canonical_output.diagnostic.diagnostic_code + ":" +
                     canonical_output.diagnostic.detail);
     }
+    if (!PhysicalMgaStatementContextEqual(
+            canonical_output.mga_statement_context,
+            key_request.mga_authority.statement_context)) {
+      return refuse("join strategy output route returned a different MGA statement context");
+    }
     if (canonical_output.matched_pair_count != strategy_pair_indices.size() ||
         canonical_output.selected_plan_uuid != canonical.selected_plan_uuid ||
         canonical_output.executed_physical_node_id !=
@@ -2337,6 +2583,11 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
         canonical_output.causal_counter_id != canonical.causal_counter_id) {
       return refuse("canonical join-kind output identity drifted from strategy");
     }
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        key_request.mga_authority, key_request.physical_dag);
+    if (!result_authority.ok)
+      return refuse(result_authority.diagnostic_code + ":" +
+                    result_authority.detail);
 
     result.diagnostic = {};
     result.output_batch = std::move(canonical_output.output_batch);
@@ -2358,6 +2609,7 @@ CanonicalJoinStrategyResult ExecuteCanonicalJoinStrategy(
     result.selected_plan_uuid = canonical.selected_plan_uuid;
     result.executed_physical_node_id = canonical.executed_physical_node_id;
     result.causal_counter_id = canonical.causal_counter_id;
+    result.mga_statement_context = key_request.mga_authority.statement_context;
     return result;
   };
 
@@ -2892,6 +3144,18 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
 
   const auto& physical_dag =
       request.strategy_request.residual_request.key_request.physical_dag;
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, physical_dag);
+  if (!authority_validation.ok ||
+      !PhysicalMgaStatementContextEqual(
+          request.mga_authority.statement_context,
+          request.strategy_request.residual_request.key_request.mga_authority
+              .statement_context)) {
+    return refuse(authority_validation.ok
+                      ? "join key context differs from MGA boundary"
+                      : authority_validation.diagnostic_code + ":" +
+                            authority_validation.detail);
+  }
   if (request.strategy_request.join_kind !=
           CanonicalAcceptedJoinKind::kInner &&
       !request.input_row_evidence_profile) {
@@ -2899,12 +3163,6 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
         "non-inner MGA execution requires input-row evidence");
   }
   if (request.transaction_inventory_id == 0 ||
-      request.inventory_local_transaction_id == 0 ||
-      request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_local_transaction_id !=
-          physical_dag.local_transaction_id ||
-      request.inventory_statement_snapshot_id !=
-          physical_dag.statement_snapshot_id ||
       !IsCanonicalUuid(request.transaction_inventory_evidence_uuid)) {
     return refuse("engine transaction inventory evidence is not bound");
   }
@@ -2963,11 +3221,18 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     original_input_validation.right_batch = original_key_request.right_batch;
     original_input_validation.pair_truth_values.assign(
         original_pair_count, api::EngineSqlTruthValue::false_value);
+    original_input_validation.mga_authority = request.mga_authority;
     const auto original_input =
         ExecuteCanonicalDescriptorInnerJoin(original_input_validation);
     if (!original_input.diagnostic.ok) {
       return refuse(original_input.diagnostic.diagnostic_code + ":" +
                     original_input.diagnostic.detail);
+    }
+    if (!PhysicalMgaStatementContextEqual(
+            original_input.mga_statement_context,
+            request.mga_authority.statement_context)) {
+      return refuse(
+          "MGA original input validation returned a different statement context");
     }
     const auto& original_key_term = original_key_request.key_terms.front();
     const auto validate_key_domain = [&](const DescriptorBatch& batch,
@@ -3009,15 +3274,18 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
       for (std::size_t index = 0; index < evidence_vector.size(); ++index) {
         const auto& evidence = evidence_vector[index];
         if (evidence.row_index != index ||
-            evidence.local_transaction_id !=
-                request.inventory_local_transaction_id ||
-            evidence.statement_snapshot_id !=
-                request.inventory_statement_snapshot_id ||
+            evidence.creator_local_transaction_id == 0 ||
             evidence.row_version_id == 0 ||
             evidence.candidate_generation == 0 ||
             evidence.current_generation == 0 ||
             evidence.candidate_generation != evidence.current_generation ||
             !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
+          return false;
+        }
+        if (evidence.visibility == CanonicalMgaVisibilityDecision::kVisible &&
+            !CanonicalMgaCreatorVisibleToStatement(
+                request.mga_authority.statement_context,
+                evidence.creator_local_transaction_id)) {
           return false;
         }
         if (evidence.visibility !=
@@ -3080,6 +3348,12 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
       return refuse(strategy.diagnostic.diagnostic_code + ":" +
                     strategy.diagnostic.detail);
     }
+    if (!PhysicalMgaStatementContextEqual(
+            strategy.mga_statement_context,
+            request.mga_authority.statement_context)) {
+      return refuse(
+          "MGA filtered join strategy returned a different statement context");
+    }
     if (request.candidate_evidence.size() !=
         strategy.strategy_pair_indices.size()) {
       return refuse("MGA matched-pair evidence cardinality is not bound");
@@ -3109,10 +3383,12 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
           original_left * original_right_count + original_right;
       const auto& evidence = request.candidate_evidence[index];
       if (evidence.pair_index != original_pair ||
-          evidence.local_transaction_id !=
-              request.inventory_local_transaction_id ||
-          evidence.statement_snapshot_id !=
-              request.inventory_statement_snapshot_id ||
+          evidence.left_creator_local_transaction_id !=
+              request.left_row_evidence[original_left]
+                  .creator_local_transaction_id ||
+          evidence.right_creator_local_transaction_id !=
+              request.right_row_evidence[original_right]
+                  .creator_local_transaction_id ||
           evidence.left_row_version_id !=
               request.left_row_evidence[original_left].row_version_id ||
           evidence.right_row_version_id !=
@@ -3129,6 +3405,15 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
               evidence.current_index_generation ||
           !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
         return refuse("matched MGA candidate evidence is not exact");
+      }
+      if (!CanonicalMgaCreatorVisibleToStatement(
+              request.mga_authority.statement_context,
+              evidence.left_creator_local_transaction_id) ||
+          !CanonicalMgaCreatorVisibleToStatement(
+              request.mga_authority.statement_context,
+              evidence.right_creator_local_transaction_id)) {
+        return refuse(
+            "matched visible MGA candidate contradicts captured vector");
       }
       const auto& left_key = filtered_key_request.left_batch
                                  .rows[filtered_left]
@@ -3177,6 +3462,13 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     result.selected_plan_uuid = std::move(strategy.selected_plan_uuid);
     result.executed_physical_node_id = strategy.executed_physical_node_id;
     result.causal_counter_id = strategy.causal_counter_id;
+    const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, physical_dag);
+    if (!result_authority.ok) {
+      return refuse(result_authority.diagnostic_code + ":" +
+                    result_authority.detail);
+    }
+    result.mga_statement_context = request.mga_authority.statement_context;
     return result;
   }
 
@@ -3185,6 +3477,11 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   if (!strategy.diagnostic.ok) {
     return refuse(strategy.diagnostic.diagnostic_code + ":" +
                   strategy.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          strategy.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    return refuse("MGA join strategy returned a different statement context");
   }
   if (request.candidate_evidence.size() !=
           strategy.strategy_pair_indices.size() ||
@@ -3206,10 +3503,8 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
        ++index) {
     const auto& evidence = request.candidate_evidence[index];
     if (evidence.pair_index != strategy.strategy_pair_indices[index] ||
-        evidence.local_transaction_id !=
-            request.inventory_local_transaction_id ||
-        evidence.statement_snapshot_id !=
-            request.inventory_statement_snapshot_id ||
+        evidence.left_creator_local_transaction_id == 0 ||
+        evidence.right_creator_local_transaction_id == 0 ||
         evidence.left_row_version_id == 0 ||
         evidence.right_row_version_id == 0 ||
         !IsCanonicalUuid(evidence.engine_evidence_uuid)) {
@@ -3228,6 +3523,18 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
         evidence.right_visibility ==
             CanonicalMgaVisibilityDecision::kIndeterminate) {
       return refuse("MGA visibility decision is invalid or indeterminate");
+    }
+    if ((evidence.left_visibility ==
+             CanonicalMgaVisibilityDecision::kVisible &&
+         !CanonicalMgaCreatorVisibleToStatement(
+             request.mga_authority.statement_context,
+             evidence.left_creator_local_transaction_id)) ||
+        (evidence.right_visibility ==
+             CanonicalMgaVisibilityDecision::kVisible &&
+         !CanonicalMgaCreatorVisibleToStatement(
+             request.mga_authority.statement_context,
+             evidence.right_creator_local_transaction_id))) {
+      return refuse("visible MGA candidate contradicts captured vector");
     }
     if (evidence.security_decision !=
             CanonicalMgaSecurityDecision::kAllowed &&
@@ -3321,6 +3628,13 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
   result.executed_physical_node_id =
       strategy.executed_physical_node_id;
   result.causal_counter_id = strategy.causal_counter_id;
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -3385,11 +3699,11 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
                   "QOW-DIAG-QRY-016-TYPE-REFUSAL-V1");
   }
 
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -4014,6 +4328,12 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
     return refuse(validation.diagnostic_code + ":" + validation.detail);
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.output_batch = std::move(output);
   result.left_input_row_count = request.left_batch.rows.size();
@@ -4031,6 +4351,7 @@ static CanonicalSetOperationAllResult ExecuteCanonicalSetOperationQuantified(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -4098,6 +4419,24 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
   if (request.maximum_intermediate_row_count == 0) {
     return refuse("set-operation intermediate resource bound is zero");
   }
+  const auto inner_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.inner_request_template.mga_authority,
+      request.inner_request_template.physical_dag);
+  const auto outer_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.outer_request_template.mga_authority,
+      request.outer_request_template.physical_dag);
+  if (!inner_authority.ok || !outer_authority.ok ||
+      !PhysicalMgaStatementContextEqual(
+          request.inner_request_template.mga_authority.statement_context,
+          request.outer_request_template.mga_authority.statement_context)) {
+    return refuse(!inner_authority.ok
+                      ? inner_authority.diagnostic_code + ":" +
+                            inner_authority.detail
+                      : (!outer_authority.ok
+                             ? outer_authority.diagnostic_code + ":" +
+                                   outer_authority.detail
+                             : "nested set operations do not share one MGA statement context"));
+  }
   if (request.inner_request_template.physical_dag.local_transaction_id !=
           request.outer_request_template.physical_dag.local_transaction_id ||
       request.inner_request_template.physical_dag.statement_snapshot_id !=
@@ -4149,6 +4488,11 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
     return refuse("inner:" + inner_result.diagnostic.diagnostic_code + ":" +
                   inner_result.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          inner_result.mga_statement_context,
+          request.inner_request_template.mga_authority.statement_context)) {
+    return refuse("inner set operation returned a different MGA statement context");
+  }
   if (inner_result.output_batch.rows.size() >
       request.maximum_intermediate_row_count) {
     return refuse("nested intermediate row resource bound was exceeded");
@@ -4170,9 +4514,26 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
     return refuse("outer:" + outer_result.diagnostic.diagnostic_code + ":" +
                   outer_result.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          outer_result.mga_statement_context,
+          request.outer_request_template.mga_authority.statement_context)) {
+    return refuse("outer set operation returned a different MGA statement context");
+  }
   if (inner_result.causal_counter_id == 0 ||
       outer_result.causal_counter_id <= inner_result.causal_counter_id) {
     return refuse("nested physical causal order is not inner before outer");
+  }
+  const auto final_inner_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.inner_request_template.mga_authority,
+      request.inner_request_template.physical_dag);
+  const auto final_outer_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.outer_request_template.mga_authority,
+      request.outer_request_template.physical_dag);
+  if (!final_inner_authority.ok || !final_outer_authority.ok) {
+    const auto& diagnostic = !final_inner_authority.ok
+                                 ? final_inner_authority
+                                 : final_outer_authority;
+    return refuse(diagnostic.diagnostic_code + ":" + diagnostic.detail);
   }
 
   result.diagnostic = {};
@@ -4183,6 +4544,8 @@ CanonicalSetOperationNestingResult ExecuteCanonicalSetOperationNesting(
   result.outer_physical_node_id = outer_result.executed_physical_node_id;
   result.inner_causal_counter_id = inner_result.causal_counter_id;
   result.outer_causal_counter_id = outer_result.causal_counter_id;
+  result.mga_statement_context =
+      request.outer_request_template.mga_authority.statement_context;
   return result;
 }
 
@@ -4859,6 +5222,13 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
         WindowRankingRefusal(request.function, std::move(detail));
     return result;
   };
+  const auto authority_validation = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.detail);
+  }
+  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
+      request.mga_authority, request.frames);
   const auto expected_uuid = RankingFunctionUuid(request.function);
   if (expected_uuid.empty() || request.function_uuid != expected_uuid ||
       !IsCanonicalUuid(request.function_uuid)) {
@@ -4975,6 +5345,9 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
     }
   }
 
+  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!result_authority.ok) return refuse(result_authority.detail);
   result.diagnostic = {};
   result.function = request.function;
   result.frame_and_exclusion_validated_then_ignored = true;
@@ -4984,6 +5357,7 @@ CanonicalWindowRankingResult ExecuteCanonicalWindowRanking(
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
   result.causal_counter_id = request.frames.causal_counter_id;
+  result.mga_statement_context = execution_authority.statement_context;
   return result;
 }
 
@@ -5171,6 +5545,14 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
         WindowValueRefusal(std::move(code), std::move(detail));
     return result;
   };
+  const auto authority_validation = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code,
+                  authority_validation.detail);
+  }
+  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
+      request.mga_authority, request.frames);
   const auto expected_uuid = WindowValueFunctionUuid(request.function);
   if (expected_uuid.empty() || request.function_uuid != expected_uuid ||
       !IsCanonicalUuid(request.function_uuid)) {
@@ -5356,6 +5738,12 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
                                                : typed_null);
   }
 
+  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
   result.diagnostic = {};
   result.function = request.function;
   result.frame_and_exclusion_validated = true;
@@ -5366,6 +5754,7 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
   result.causal_counter_id = request.frames.causal_counter_id;
+  result.mga_statement_context = execution_authority.statement_context;
   return result;
 }
 
@@ -5394,6 +5783,14 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
     result.diagnostic.detail = std::move(detail);
     return result;
   };
+  const auto authority_validation = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code,
+                  authority_validation.detail);
+  }
+  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
+      request.mga_authority, request.frames);
   if (request.function != CanonicalWindowAggregateFunction::int64_sum ||
       request.function_uuid != kInt64SumUuid ||
       !IsCanonicalUuid(request.function_uuid)) {
@@ -5657,7 +6054,12 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
                   output_validation.diagnostic_code + ":" +
                       output_validation.detail);
   }
-
+  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, request.frames);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
   result.diagnostic = {};
   result.function = request.function;
   result.filter_applied_before_transition =
@@ -5673,6 +6075,7 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
   result.causal_counter_id = request.frames.causal_counter_id;
+  result.mga_statement_context = execution_authority.statement_context;
   return result;
 }
 
@@ -5699,6 +6102,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-FRAME",
                   "aggregate registry bridge lacks canonical frame evidence");
   }
+  const auto authority_validation = RevalidateCanonicalWindowFrameAuthority(
+      request.aggregate_template.mga_authority, request.frames);
+  if (!authority_validation.ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  authority_validation.detail);
+  }
   if (request.frames.authority.owns_transaction_finality ||
       request.frames.authority.owns_recovery ||
       request.frames.authority.owns_parser_execution ||
@@ -5718,7 +6127,17 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE",
                   "aggregate registry window resource contract is invalid");
   }
-  const auto& aggregate_template = request.aggregate_template;
+  auto aggregate_template = request.aggregate_template;
+  aggregate_template.mga_authority = CanonicalWindowFrameExecutionAuthority(
+      request.aggregate_template.mga_authority, request.frames);
+  const auto aggregate_template_authority =
+      RevalidateCanonicalExecutionMgaAuthority(
+          aggregate_template.mga_authority,
+          aggregate_template.physical_dag);
+  if (!aggregate_template_authority.ok) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  aggregate_template_authority.detail);
+  }
   const auto aggregate_registry = CanonicalAggregateRuntimeRegistryV1();
   const auto aggregate_registry_row = std::ranges::find_if(
       aggregate_registry, [&](const CanonicalAggregateRegistryEntry& row) {
@@ -5744,12 +6163,6 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                   "aggregate FILTER cardinality does not match window rows");
   }
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(aggregate_template.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id, issue.field_id);
-  }
   const PhysicalNodeRecord* aggregate_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
   for (const auto& node : aggregate_template.physical_dag.nodes) {
@@ -5824,10 +6237,6 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
       input_node->output_descriptor_ids != frame_descriptor_ids ||
       aggregate_template.physical_dag.selected_plan_uuid !=
           request.frames.selected_plan_uuid ||
-      aggregate_template.physical_dag.local_transaction_id !=
-          request.frames.inventory_local_transaction_id ||
-      aggregate_template.physical_dag.statement_snapshot_id !=
-          request.frames.inventory_statement_snapshot_id ||
       aggregate_node->physical_node_id !=
           request.frames.executed_physical_node_id ||
       aggregate_node->causal_counter_id != request.frames.causal_counter_id) {
@@ -5849,6 +6258,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic.diagnostic_code,
                   preflight.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          preflight.mga_statement_context,
+          aggregate_template.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
+                  "aggregate window preflight returned a different MGA statement context");
   }
 
   const auto within_total = [](const std::size_t next,
@@ -5894,7 +6309,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
         moving.selected_plan_uuid != request.frames.selected_plan_uuid ||
         moving.executed_physical_node_id !=
             request.frames.executed_physical_node_id ||
-        moving.causal_counter_id != request.frames.causal_counter_id) {
+        moving.causal_counter_id != request.frames.causal_counter_id ||
+        !PhysicalMgaStatementContextEqual(
+            moving.mga_statement_context,
+            aggregate_template.mga_authority.statement_context)) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
                     "moving aggregate window evidence is inconsistent");
     }
@@ -5930,7 +6348,10 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
           frame_result.selected_plan_uuid != request.frames.selected_plan_uuid ||
           frame_result.executed_physical_node_id !=
               request.frames.executed_physical_node_id ||
-          frame_result.causal_counter_id != request.frames.causal_counter_id) {
+          frame_result.causal_counter_id != request.frames.causal_counter_id ||
+          !PhysicalMgaStatementContextEqual(
+              frame_result.mga_statement_context,
+              aggregate_template.mga_authority.statement_context)) {
         return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-EVIDENCE",
                       "aggregate frame result evidence is inconsistent");
       }
@@ -5967,6 +6388,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
                   output_validation.diagnostic_code + ":" +
                       output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate_template.mga_authority, aggregate_template.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
 
   result.diagnostic = {};
   result.descriptor = aggregate_template.descriptor;
@@ -5985,6 +6412,8 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
   result.executed_physical_node_id =
       request.frames.executed_physical_node_id;
   result.causal_counter_id = request.frames.causal_counter_id;
+  result.mga_statement_context =
+      aggregate_template.mga_authority.statement_context;
   return result;
 }
 
@@ -6012,11 +6441,32 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
     return result;
   };
 
+  auto aggregate_request = request.aggregate_request;
+  auto& aggregate_template = aggregate_request.aggregate_template;
+  const auto frame_authority = RevalidateCanonicalWindowFrameAuthority(
+      aggregate_template.mga_authority, aggregate_request.frames);
+  if (!frame_authority.ok) {
+    return refuse(frame_authority.diagnostic_code, frame_authority.detail);
+  }
+  aggregate_template.mga_authority = CanonicalWindowFrameExecutionAuthority(
+      aggregate_template.mga_authority, aggregate_request.frames);
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate_template.mga_authority, aggregate_template.physical_dag);
+  if (!entry_authority.ok) {
+    return refuse(entry_authority.diagnostic_code, entry_authority.detail);
+  }
+
   const auto canonical = ExecuteCanonicalRegistryWindowAggregateSelected(
-      request.aggregate_request, true);
+      aggregate_request, true);
   if (!canonical.diagnostic.ok) {
     return refuse(canonical.diagnostic.diagnostic_code,
                   canonical.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          canonical.mga_statement_context,
+          aggregate_template.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-MGA",
+                  "window spill baseline returned a different MGA statement context");
   }
   if (!canonical.aggregate_state_spill_required ||
       canonical.selected_state_implementation_id !=
@@ -6029,7 +6479,7 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
       request.runtime_generation == 0 || request.memory_quota_bytes == 0 ||
       request.maximum_serialized_state_bytes == 0 ||
       request.maximum_spill_record_count == 0 ||
-      !request.aggregate_request.aggregate_template.physical_dag.spill_allowed) {
+      !aggregate_template.physical_dag.spill_allowed) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL",
                   "window aggregate spill ownership or resource contract is invalid");
   }
@@ -6082,23 +6532,20 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                     "window aggregate state spill bound is exhausted");
     }
 
-    auto aggregate = request.aggregate_request.aggregate_template;
+    auto aggregate = aggregate_template;
     aggregate.input_batch.columns =
-        request.aggregate_request.frames.ordered_batch.columns;
+        aggregate_request.frames.ordered_batch.columns;
     const auto& frame = canonical.frame_row_indices[frame_index];
     aggregate.input_batch.rows.reserve(frame.size());
     for (const auto row : frame) {
       aggregate.input_batch.rows.push_back(
-          request.aggregate_request.frames.ordered_batch.rows[row]);
+          aggregate_request.frames.ordered_batch.rows[row]);
     }
-    if (request.aggregate_request.aggregate_template.filter_truth_values
-            .has_value()) {
+    if (aggregate_template.filter_truth_values.has_value()) {
       std::vector<api::EngineSqlTruthValue> filter;
       filter.reserve(frame.size());
       for (const auto row : frame) {
-        filter.push_back(
-            (*request.aggregate_request.aggregate_template.filter_truth_values)
-                [row]);
+        filter.push_back((*aggregate_template.filter_truth_values)[row]);
       }
       aggregate.filter_truth_values = std::move(filter);
     }
@@ -6144,7 +6591,13 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
             canonical.selected_plan_uuid ||
         state.aggregate_result.executed_physical_node_id !=
             canonical.executed_physical_node_id ||
-        state.aggregate_result.causal_counter_id != canonical.causal_counter_id) {
+        state.aggregate_result.causal_counter_id != canonical.causal_counter_id ||
+        !PhysicalMgaStatementContextEqual(
+            state.mga_statement_context,
+            aggregate_template.mga_authority.statement_context) ||
+        !PhysicalMgaStatementContextEqual(
+            state.aggregate_result.mga_statement_context,
+            aggregate_template.mga_authority.statement_context)) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-EVIDENCE",
                     "restored aggregate frame state evidence is inconsistent");
     }
@@ -6156,17 +6609,17 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                       request.maximum_spill_record_count) ||
         !within_total(state.aggregate_result.transition_count,
                       reopened.transition_count,
-                      request.aggregate_request.maximum_transition_count) ||
+                      aggregate_request.maximum_transition_count) ||
         !within_total(state.aggregate_result.distinct_tuple_count,
                       reopened.distinct_tuple_count,
-                      request.aggregate_request.maximum_distinct_tuple_count) ||
+                      aggregate_request.maximum_distinct_tuple_count) ||
         !within_total(
             state.aggregate_result.order_comparison_count,
             reopened.order_comparison_count,
-            request.aggregate_request.maximum_order_comparison_count) ||
+            aggregate_request.maximum_order_comparison_count) ||
         !within_total(state.aggregate_result.state_bytes,
                       reopened.combined_state_bytes,
-                      request.aggregate_request.maximum_combined_state_bytes)) {
+                      aggregate_request.maximum_combined_state_bytes)) {
       return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-SPILL-RESOURCE",
                     "restored aggregate frame state exceeds its combined bound");
     }
@@ -6224,8 +6677,16 @@ ExecuteCanonicalRegistryWindowAggregateSpill(
                   "restored and in-memory aggregate window results diverge");
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate_template.mga_authority, aggregate_template.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, result_authority.detail);
+  }
+
   result.diagnostic = {};
   result.aggregate_result = std::move(reopened);
+  result.mga_statement_context =
+      aggregate_template.mga_authority.statement_context;
   return result;
 }
 
@@ -6410,9 +6871,39 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
                   "window runtime requires exactly one class-matching strategy payload");
   }
 
+  const CanonicalWindowFrameResult* payload_frames = nullptr;
+  if (request.ranking.has_value()) payload_frames = &request.ranking->frames;
+  if (request.value.has_value()) payload_frames = &request.value->frames;
+  if (request.registry_aggregate.has_value())
+    payload_frames = &request.registry_aggregate->frames;
+  if (request.registry_aggregate_spill.has_value())
+    payload_frames = &request.registry_aggregate_spill->aggregate_request.frames;
+  if (payload_frames == nullptr) {
+    return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
+                  "window runtime payload has no frame authority");
+  }
+  const auto runtime_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, *payload_frames);
+  if (!runtime_authority.ok) {
+    return refuse(runtime_authority.diagnostic_code,
+                  runtime_authority.detail);
+  }
+  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
+      request.mga_authority, *payload_frames);
+
   const auto publish = [&](const auto& strategy_result) {
     result.diagnostic = strategy_result.diagnostic;
     if (!result.diagnostic.ok) {
+      result.values.clear();
+      return false;
+    }
+    if (!PhysicalMgaStatementContextEqual(
+            strategy_result.mga_statement_context,
+            execution_authority.statement_context)) {
+      result.diagnostic.ok = false;
+      result.diagnostic.diagnostic_code = "QOW-DIAG-WINDOW-RUNTIME-MGA";
+      result.diagnostic.detail =
+          "window strategy returned a different MGA statement context";
       result.values.clear();
       return false;
     }
@@ -6480,6 +6971,12 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
         result.values.clear();
         return result;
       }
+      if (!PhysicalMgaStatementContextEqual(
+              spill_result.mga_statement_context,
+              execution_authority.statement_context)) {
+        return refuse("QOW-DIAG-WINDOW-RUNTIME-MGA",
+                      "window spill wrapper returned a different MGA statement context");
+      }
       aggregate_result = spill_result.aggregate_result;
       result.aggregate_state_spill_used = spill_result.spilled;
       result.aggregate_spill_reopened = spill_result.spill_reopened;
@@ -6515,6 +7012,12 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
   result.every_descriptor_field_consumed = true;
   result.exactly_one_strategy_payload_consumed = true;
   result.retained_strategy_reached = true;
+  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, *payload_frames);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, result_authority.detail);
+  }
+  result.mga_statement_context = execution_authority.statement_context;
   return result;
 }
 
@@ -6604,6 +7107,14 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
   }
 
   const auto& first_frames = request.windows.front().frames;
+  const auto composition_authority = RevalidateCanonicalWindowFrameAuthority(
+      request.mga_authority, first_frames);
+  if (!composition_authority.ok) {
+    return refuse("QOW-DIAG-WINDOW-COMPOSITION",
+                  composition_authority.detail);
+  }
+  const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
+      request.mga_authority, first_frames);
   if (!CanonicalWindowFrameEvidenceValid(first_frames) ||
       !first_frames.authority.engine_mga_snapshot_bound ||
       first_frames.authority.owns_transaction_finality ||
@@ -6623,12 +7134,14 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
   for (std::size_t window_index = 0;
        window_index < request.windows.size(); ++window_index) {
     const auto& window = request.windows[window_index];
-    if (!CanonicalWindowFrameEvidenceValid(window.frames) ||
+    const auto window_authority = RevalidateCanonicalWindowFrameAuthority(
+        execution_authority, window.frames);
+    if (!window_authority.ok ||
+        !CanonicalWindowFrameEvidenceValid(window.frames) ||
         window.frames.selected_plan_uuid != first_frames.selected_plan_uuid ||
-        window.frames.inventory_local_transaction_id !=
-            first_frames.inventory_local_transaction_id ||
-        window.frames.inventory_statement_snapshot_id !=
-            first_frames.inventory_statement_snapshot_id ||
+        !PhysicalMgaStatementContextEqual(
+            window.frames.mga_statement_context,
+            first_frames.mga_statement_context) ||
         !authority_equal(window.frames.authority, first_frames.authority) ||
         !IsCanonicalUuid(window.function_state_uuid) ||
         !function_state_uuids.insert(window.function_state_uuid).second) {
@@ -6804,16 +7317,13 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
 
   result.stage_trace.push_back(CanonicalQueryEvaluationStage::from);
   if (request.composition_dag.has_value()) {
-    const auto dag_validation =
-        ValidateTypedPhysicalNodeDag(*request.composition_dag);
-    if (!dag_validation.accepted || request.composition_dag->abi_version != 2 ||
+    if (request.composition_dag->abi_version != 2 ||
         !request.composition_dag->optimizer_published ||
         request.composition_dag->selected_plan_uuid !=
             first_frames.selected_plan_uuid ||
-        request.composition_dag->local_transaction_id !=
-            first_frames.inventory_local_transaction_id ||
-        request.composition_dag->statement_snapshot_id !=
-            first_frames.inventory_statement_snapshot_id ||
+        !PhysicalMgaStatementContextEqual(
+            request.composition_dag->mga_statement_context,
+            first_frames.mga_statement_context) ||
         request.composition_dag->root_physical_node_id !=
             first_frames.executed_physical_node_id) {
       return refuse("QOW-DIAG-WINDOW-COMPOSITION",
@@ -7052,16 +7562,28 @@ CanonicalWindowCompositionResult ExecuteCanonicalWindowComposition(
                   output_validation.diagnostic_code + ":" +
                       output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalWindowFrameAuthority(
+      execution_authority, first_frames);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
+  if (request.composition_dag.has_value()) {
+    const auto composition_result_authority =
+        RevalidateCanonicalExecutionMgaAuthority(
+            execution_authority, *request.composition_dag);
+    if (!composition_result_authority.ok) {
+      return refuse(composition_result_authority.diagnostic_code,
+                    composition_result_authority.detail);
+    }
+  }
 
   result.diagnostic = {};
   result.output_batch = std::move(materialized);
   result.every_function_state_independent = true;
   result.authority = first_frames.authority;
   result.selected_plan_uuid = first_frames.selected_plan_uuid;
-  result.inventory_local_transaction_id =
-      first_frames.inventory_local_transaction_id;
-  result.inventory_statement_snapshot_id =
-      first_frames.inventory_statement_snapshot_id;
+  result.mga_statement_context = first_frames.mga_statement_context;
   result.executed_physical_node_id =
       first_frames.executed_physical_node_id;
   result.causal_counter_id = first_frames.causal_counter_id;

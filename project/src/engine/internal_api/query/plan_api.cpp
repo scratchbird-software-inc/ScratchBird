@@ -958,21 +958,23 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-VERSION-V1", 0,
                   "abi_version");
   }
-  const auto physical_validation =
-      executor::ValidateTypedPhysicalNodeDag(request.selected_physical_dag);
-  if (!physical_validation.accepted) {
-    const auto& issue = physical_validation.issues.front();
-    return refuse(issue.diagnostic_id, issue.physical_node_id, issue.field_id);
+  const auto authority_validation =
+      executor::RevalidateCanonicalExecutionMgaAuthority(
+          request.mga_authority, request.selected_physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code, 0,
+                  authority_validation.detail);
   }
+#if !defined(SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY)
+  if (request.mga_authority.origin != executor::CanonicalMgaAuthorityOrigin::
+                                          kEngineTransactionInventory) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-MGA-ORIGIN-V1", 0,
+                  "engine_transaction_inventory_authority");
+  }
+#endif
   if (!canonical_uuid(request.pre_access_statistics_snapshot_uuid) ||
       request.pre_access_statistics_snapshot_uuid ==
-          request.selected_physical_dag.selected_plan_uuid ||
-      request.inventory_local_transaction_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.selected_physical_dag.local_transaction_id ||
-      request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_statement_snapshot_id !=
-          request.selected_physical_dag.statement_snapshot_id) {
+          request.selected_physical_dag.selected_plan_uuid) {
     return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-SCOPE-V1", 0,
                   "plan_estimate_mga_scope");
   }
@@ -1048,6 +1050,14 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
     }
   }
 
+  const auto result_authority =
+      executor::RevalidateCanonicalExecutionMgaAuthority(
+          request.mga_authority, request.selected_physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, 0,
+                  result_authority.detail);
+  }
+
   result.accepted = true;
   result.post_execution_actuals = true;
   result.planning_estimates_immutable = true;
@@ -1057,6 +1067,7 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
   result.pre_access_statistics_snapshot_uuid =
       request.pre_access_statistics_snapshot_uuid;
   result.node_actuals = request.node_actuals;
+  result.mga_statement_context = request.mga_authority.statement_context;
   std::ranges::sort(result.node_actuals, {},
                     &CanonicalRuntimeOptimizerNodeActual::execution_ordinal);
   return result;
@@ -1097,29 +1108,35 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
     return refuse(issue.diagnostic_id, issue.physical_node_id,
                   issue.field_id);
   }
+  const auto authority_validation =
+      executor::RevalidateCanonicalExecutionMgaAuthority(
+          request.mga_authority, request.selected_physical_dag,
+          request.limits);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code, 0,
+                  authority_validation.detail);
+  }
+#if !defined(SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY)
+  if (request.mga_authority.origin != executor::CanonicalMgaAuthorityOrigin::
+                                          kEngineTransactionInventory) {
+    return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-MGA-ORIGIN-V1", 0,
+                  "engine_transaction_inventory_authority");
+  }
+#endif
   if (request.selected_physical_dag.abi_version != 2 ||
       !request.selected_physical_dag.optimizer_published ||
       !request.selected_physical_dag.immutable_node_identity_validated ||
       !request.selected_physical_dag.capability_validated_before_access ||
       request.selected_physical_dag.data_access_observed ||
       request.pre_access_statistics_snapshot_uuid !=
-          request.selected_physical_dag.statistics_snapshot_uuid ||
-      request.inventory_local_transaction_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.selected_physical_dag.local_transaction_id ||
-      request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_statement_snapshot_id !=
-          request.selected_physical_dag.statement_snapshot_id) {
+          request.selected_physical_dag.statistics_snapshot_uuid) {
     return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-SCOPE-V1", 0,
                   "published_plan_statistics_mga_scope");
   }
 
   executor::CanonicalPhysicalDagDispatchRequest dispatch_request;
   dispatch_request.physical_dag = request.selected_physical_dag;
-  dispatch_request.inventory_local_transaction_id =
-      request.inventory_local_transaction_id;
-  dispatch_request.inventory_statement_snapshot_id =
-      request.inventory_statement_snapshot_id;
+  dispatch_request.mga_authority = request.mga_authority;
   dispatch_request.limits = request.limits;
   dispatch_request.available_executors = request.available_executors;
   auto dispatch = executor::ExecuteCanonicalPhysicalDag(dispatch_request);
@@ -1134,6 +1151,9 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
           request.selected_physical_dag.selected_plan_uuid ||
       dispatch.executed_root_physical_node_id !=
           request.selected_physical_dag.root_physical_node_id ||
+      !executor::PhysicalMgaStatementContextEqual(
+          dispatch.mga_statement_context,
+          request.mga_authority.statement_context) ||
       !dispatch.authority.engine_mga_snapshot_bound) {
     return refuse("QOW-DIAG-OPTIMIZER-SELECTED-EXECUTION-EVIDENCE-V1", 0,
                   "complete_dispatch_identity", false,
@@ -1150,6 +1170,9 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
       });
   if (root_step == dispatch.executed_steps.end() ||
       !root_step->materialized_output_batch.has_value() ||
+      !executor::PhysicalMgaStatementContextEqual(
+          root_step->mga_statement_context,
+          request.mga_authority.statement_context) ||
       root_step->materialized_output_batch->columns.size() !=
           root_step->output_descriptor_ids.size() ||
       root_step->materialized_output_batch->rows.size() !=
@@ -1169,10 +1192,7 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   actuals_request.selected_physical_dag = request.selected_physical_dag;
   actuals_request.pre_access_statistics_snapshot_uuid =
       request.pre_access_statistics_snapshot_uuid;
-  actuals_request.inventory_local_transaction_id =
-      request.inventory_local_transaction_id;
-  actuals_request.inventory_statement_snapshot_id =
-      request.inventory_statement_snapshot_id;
+  actuals_request.mga_authority = request.mga_authority;
   actuals_request.data_access_observed = dispatch.data_access_observed;
   actuals_request.engine_zero_data_access_completion_evidence =
       !dispatch.data_access_observed;
@@ -1213,6 +1233,22 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
     return refuse(issue.diagnostic_id, issue.physical_node_id,
                   issue.field_id, false, dispatch.data_access_observed);
   }
+  if (!executor::PhysicalMgaStatementContextEqual(
+          actuals.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-OPTIMIZER-ACTUALS-MGA-CONTEXT-V1", 0,
+                  "runtime_actuals_mga_statement_context", false,
+                  dispatch.data_access_observed);
+  }
+  const auto pre_publication_authority =
+      executor::RevalidateCanonicalExecutionMgaAuthority(
+          request.mga_authority, request.selected_physical_dag,
+          request.limits);
+  if (!pre_publication_authority.ok) {
+    return refuse(pre_publication_authority.diagnostic_code, 0,
+                  pre_publication_authority.detail, false,
+                  dispatch.data_access_observed);
+  }
   auto result_publication =
       executor::PublishCanonicalResultEnvelope(publication_request);
   if (!result_publication.diagnostic.ok || !result_publication.published) {
@@ -1230,6 +1266,7 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   result.dispatch = std::move(dispatch);
   result.result_publication = std::move(result_publication);
   result.runtime_actuals = std::move(actuals);
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

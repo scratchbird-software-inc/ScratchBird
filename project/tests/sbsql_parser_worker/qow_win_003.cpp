@@ -45,6 +45,7 @@ exec::CanonicalWindowFrameResult ExecuteFrame(
   exec::CanonicalWindowFrameRequest request;
   request.partition_order =
       exec::ExecuteCanonicalWindowPartitionOrder(partition_request);
+  request.mga_authority = partition_request.mga_authority;
   request.frame = std::move(frame);
   request.maximum_effective_row_references = maximum_references;
   return exec::ExecuteCanonicalWindowFrames(request);
@@ -266,10 +267,9 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
           result.selected_plan_uuid == temporal.physical_dag.selected_plan_uuid &&
           result.executed_physical_node_id == 2 &&
           result.causal_counter_id == 40102 &&
-          result.inventory_local_transaction_id ==
-              temporal.physical_dag.local_transaction_id &&
-          result.inventory_statement_snapshot_id ==
-              temporal.physical_dag.statement_snapshot_id &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              temporal.physical_dag.mga_statement_context) &&
           result.authority.engine_mga_snapshot_bound,
       "temporal RANGE or selected-plan/MGA evidence did not carry through");
   const auto wider = ExecuteFrame(

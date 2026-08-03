@@ -575,8 +575,7 @@ bool MetadataIsCanonical(const CanonicalWindowPartitionOrderResult& input) {
       !input.weaker_peer_recomputation_forbidden ||
       input.final_query_order_guaranteed ||
       !input.authority.engine_mga_snapshot_bound ||
-      input.inventory_local_transaction_id == 0 ||
-      input.inventory_statement_snapshot_id == 0 ||
+      !PhysicalMgaStatementContextValid(input.mga_statement_context) ||
       !IsCanonicalUuid(input.window_property_uuid) ||
       (input.order_terms.empty() != input.ordering_property_uuid.empty()) ||
       (!input.order_terms.empty() &&
@@ -1088,6 +1087,16 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
   if (!MetadataIsCanonical(request.partition_order)) {
     return refuse("window frame input is not canonical QOW-401 evidence");
   }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.partition_order.physical_dag);
+  if (!authority_validation.ok ||
+      !PhysicalMgaStatementContextEqual(
+          request.mga_authority.statement_context,
+          request.partition_order.mga_statement_context)) {
+    return refuse(authority_validation.ok
+                      ? "window frame and partition MGA contexts diverge"
+                      : authority_validation.detail);
+  }
   if (request.parser_execution_authority_claimed ||
       request.transaction_finality_claimed ||
       request.recovery_authority_claimed) {
@@ -1164,6 +1173,11 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
     }
     result.effective_frames.push_back(std::move(effective));
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.partition_order.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.detail);
+  }
 
   result.diagnostic = {};
   result.window_property_uuid = request.partition_order.window_property_uuid;
@@ -1171,14 +1185,13 @@ CanonicalWindowFrameResult ExecuteCanonicalWindowFrames(
   result.every_frame_operand_consumed = true;
   result.empty_state_uses_optional_bounds = true;
   result.authority = request.partition_order.authority;
-  result.inventory_local_transaction_id =
-      request.partition_order.inventory_local_transaction_id;
-  result.inventory_statement_snapshot_id =
-      request.partition_order.inventory_statement_snapshot_id;
+  result.mga_authority = request.mga_authority;
+  result.mga_statement_context = request.mga_authority.statement_context;
   result.selected_plan_uuid = request.partition_order.selected_plan_uuid;
   result.executed_physical_node_id =
       request.partition_order.executed_physical_node_id;
   result.causal_counter_id = request.partition_order.causal_counter_id;
+  result.physical_dag = request.partition_order.physical_dag;
   return result;
 }
 

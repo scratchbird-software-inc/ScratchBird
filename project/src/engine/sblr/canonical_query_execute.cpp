@@ -12,6 +12,9 @@
 
 #include "catalog/name_resolution_api.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+#include "transaction/transaction_api.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -37,6 +40,108 @@ namespace {
 
 constexpr std::string_view kValuesImplementationId =
     "values.materialize.canonical.v1";
+
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+// Deterministic closure-test seam only.  A one-node selected execution resolves
+// current MGA authority at selected-entry, dispatch-entry, node pre/post,
+// dispatch-root, actuals entry/result, and immediate pre-result (resolution 8).
+// Production builds have no mutable seam and always resolve through the durable
+// transaction inventory below.
+thread_local bool g_contract_pre_result_revocation_armed = false;
+thread_local std::size_t g_contract_revalidation_resolution_count = 0;
+#endif
+
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+exec::PhysicalMgaStatementContext PhysicalMgaContextFromResolvedSnapshot(
+    const api::EngineRequestContext& context,
+    const scratchbird::transaction::mga::SnapshotVectorDescriptor& descriptor) {
+  exec::PhysicalMgaStatementContext expected;
+  expected.statement_uuid = context.statement_uuid.canonical;
+  expected.owning_transaction_uuid = context.transaction_uuid.canonical;
+  expected.statement_snapshot_uuid = context.statement_snapshot_uuid.canonical;
+  expected.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  expected.owning_local_transaction_id = descriptor.owning_transaction.value;
+  expected.visible_committed_high_watermark =
+      descriptor.visible_committed_high_watermark;
+  expected.oldest_active_transaction_id =
+      descriptor.oldest_active_transaction.value;
+  expected.oldest_interesting_transaction_id =
+      descriptor.oldest_interesting_transaction.value;
+  expected.oldest_snapshot_transaction_id =
+      descriptor.oldest_snapshot_transaction.value;
+  expected.retention_horizon_transaction_id =
+      descriptor.retention_horizon_transaction.value;
+  expected.active_excluded_local_transaction_ids =
+      descriptor.active_excluded_local_transaction_ids;
+  expected.in_doubt_excluded_local_transaction_ids =
+      descriptor.in_doubt_excluded_local_transaction_ids;
+  expected.snapshot_kind =
+      scratchbird::transaction::mga::SnapshotVectorKindName(
+          descriptor.snapshot_kind);
+  expected.publication_inventory_next_local_transaction_id =
+      descriptor.publication_inventory_next_local_transaction_id;
+  expected.inventory_authoritative = descriptor.inventory_authoritative;
+  expected.complete = descriptor.complete;
+  expected.current = true;
+  return expected;
+}
+#endif
+
+exec::CanonicalExecutionMgaAuthority BuildCanonicalExecutionMgaAuthority(
+    const api::EngineRequestContext& context,
+    const exec::TypedPhysicalNodeDag& physical_dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = physical_dag.mga_statement_context;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [expected = authority.statement_context]() {
+    exec::CanonicalMgaCurrentResolution resolved;
+    resolved.statement_context = expected;
+    ++g_contract_revalidation_resolution_count;
+    if (g_contract_pre_result_revocation_armed &&
+        g_contract_revalidation_resolution_count == 8) {
+      resolved.statement_context.current = false;
+      g_contract_pre_result_revocation_armed = false;
+    }
+    return resolved;
+  };
+#else
+  authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  authority.resolve_current = [context]() {
+    exec::CanonicalMgaCurrentResolution current;
+    api::EngineResolveStatementSnapshotRequest resolve_request;
+    resolve_request.context = context;
+    const auto resolved = api::EngineResolveStatementSnapshot(resolve_request);
+    if (!resolved.ok) {
+      current.diagnostic.ok = false;
+      current.diagnostic.diagnostic_code =
+          "SB_DIAG_MGA_READ_SNAPSHOT_MISSING";
+      current.diagnostic.detail =
+          "statement snapshot is unknown, revoked, stale, or not current";
+      return current;
+    }
+    current.statement_context =
+        PhysicalMgaContextFromResolvedSnapshot(context,
+                                               resolved.snapshot_vector);
+    return current;
+  };
+#endif
+  return authority;
+}
+
+api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
+    const api::EngineRequestContext& context,
+    const api::CanonicalOptimizerSelectedExecutionRequest& request) {
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  return api::ExecuteCanonicalOptimizerSelectedDag(request);
+#else
+  const auto inventory_guard =
+      api::AcquireTransactionInventoryGuard(context.database_path);
+  return api::ExecuteCanonicalOptimizerSelectedDag(request);
+#endif
+}
 
 std::uint64_t Fnv1a64(const std::string_view value,
                       std::uint64_t hash = 14695981039346656037ull) {
@@ -3747,6 +3852,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -3937,12 +4043,14 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   set_registration.engine_owned = true;
   set_registration.accepts_optimizer_publication_v2 = true;
   set_registration.execute =
-      [result_columns = prepared_root.result_columns, set_output_row_bound](
+      [result_columns = prepared_root.result_columns, set_output_row_bound,
+       mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -3972,6 +4080,8 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
             exec::CanonicalSetOperationTypeProfile::kExact;
         set_request.maximum_output_row_count =
             std::max<std::size_t>(1, set_output_row_bound);
+        set_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto set_result =
             exec::ExecuteCanonicalSetOperationAll(set_request);
         if (!set_result.diagnostic.ok) {
@@ -3984,6 +4094,7 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
         step.rows_examined = step.input_row_count;
         step.output_row_count = set_result.output_batch.rows.size();
         step.materialized_output_batch = set_result.output_batch;
+        step.mga_statement_context = set_result.mga_statement_context;
         return step;
       };
 
@@ -3991,10 +4102,9 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(std::move(set_registration));
@@ -4022,7 +4132,7 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
       std::max<std::size_t>(1, set_output_row_bound);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -4246,12 +4356,13 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   join_registration.engine_owned = true;
   join_registration.accepts_optimizer_publication_v2 = true;
   join_registration.execute =
-      [predicate_truth, pair_count](
+      [predicate_truth, pair_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -4299,6 +4410,8 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
         join_request.right_batch = right_batch;
         join_request.pair_truth_values.assign(pair_count, predicate_truth);
         join_request.consumer = api::EnginePredicateConsumer::join_on;
+        join_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto join_result =
             exec::ExecuteCanonicalDescriptorInnerJoin(join_request);
         if (!join_result.diagnostic.ok) {
@@ -4311,6 +4424,7 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
         step.rows_examined = pair_count;
         step.output_row_count = join_result.output_batch.rows.size();
         step.materialized_output_batch = join_result.output_batch;
+        step.mga_statement_context = join_result.mga_statement_context;
         return step;
       };
 
@@ -4318,10 +4432,9 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(std::move(join_registration));
@@ -4349,7 +4462,7 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -4531,12 +4644,13 @@ ExecuteCanonicalObjectFreeFilterQuery(
   filter_registration.engine_owned = true;
   filter_registration.accepts_optimizer_publication_v2 = true;
   filter_registration.execute =
-      [predicate_truth, input_row_count](
+      [predicate_truth, input_row_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -4566,6 +4680,8 @@ ExecuteCanonicalObjectFreeFilterQuery(
         filter_request.row_truth_values.assign(input_row_count,
                                                predicate_truth);
         filter_request.consumer = api::EnginePredicateConsumer::filter;
+        filter_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto filter_result =
             exec::ExecuteCanonicalDescriptorFilter(filter_request);
         if (!filter_result.diagnostic.ok) {
@@ -4577,6 +4693,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = filter_result.output_batch.rows.size();
         step.materialized_output_batch = filter_result.output_batch;
+        step.mga_statement_context = filter_result.mga_statement_context;
         return step;
       };
 
@@ -4584,10 +4701,9 @@ ExecuteCanonicalObjectFreeFilterQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -4616,7 +4732,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -4777,12 +4893,14 @@ ExecuteCanonicalObjectFreeProjectQuery(
   project_registration.engine_owned = true;
   project_registration.accepts_optimizer_publication_v2 = true;
   project_registration.execute =
-      [projected_columns = prepared_root.projected_columns, input_row_count](
+      [projected_columns = prepared_root.projected_columns, input_row_count,
+       mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -4810,6 +4928,8 @@ ExecuteCanonicalObjectFreeProjectQuery(
         project_request.selected_physical_node_id = node.physical_node_id;
         project_request.input_batch = input_batch;
         project_request.projected_columns = projected_columns;
+        project_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto project_result =
             exec::ExecuteCanonicalDescriptorProjection(project_request);
         if (!project_result.diagnostic.ok) {
@@ -4821,6 +4941,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = project_result.output_batch.rows.size();
         step.materialized_output_batch = project_result.output_batch;
+        step.mga_statement_context = project_result.mga_statement_context;
         return step;
       };
 
@@ -4828,10 +4949,9 @@ ExecuteCanonicalObjectFreeProjectQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -4860,7 +4980,7 @@ ExecuteCanonicalObjectFreeProjectQuery(
       std::max<std::size_t>(1, input_row_count);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -5163,12 +5283,14 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   aggregate_registration.engine_owned = true;
   aggregate_registration.accepts_optimizer_publication_v2 = true;
   aggregate_registration.execute =
-      [prepared_root, input_row_count, maximum_output_rows, has_having](
+      [prepared_root, input_row_count, maximum_output_rows, has_having,
+       mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -5259,13 +5381,21 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         first.aggregate_request.selected_physical_node_id =
             node.physical_node_id;
         first.aggregate_request.input_batch = input_batch;
+        first.aggregate_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context,
+                                                first.aggregate_request.physical_dag);
         first.group_key_terms = prepared_root.key_terms;
         first.group_result_columns = prepared_root.key_result_columns;
         first.grouping_sets = prepared_root.grouping_sets;
         first.maximum_group_count = maximum_output_rows;
         first.maximum_output_rows = maximum_output_rows;
-        grouped_request.additional_aggregates = {
-            make_aggregate(prepared_root.sum)};
+        auto additional_sum = make_aggregate(prepared_root.sum);
+        // Grouped-set runtimes deliberately share the first aggregate's DAG,
+        // selected node, and input batch.  The additional specification still
+        // has to carry the exact same statement authority so it cannot become
+        // a stale or detached participant in that shared execution.
+        additional_sum.mga_authority = first.aggregate_request.mga_authority;
+        grouped_request.additional_aggregates = {std::move(additional_sum)};
 
         auto aggregate_result =
             exec::ExecuteCanonicalGroupedAggregateSetRuntime(grouped_request);
@@ -5408,6 +5538,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = aggregate_result.output_batch.rows.size();
         step.materialized_output_batch = aggregate_result.output_batch;
+        step.mga_statement_context = aggregate_result.mga_statement_context;
         return step;
       };
 
@@ -5421,12 +5552,14 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
     having_registration.accepts_optimizer_publication_v2 = true;
     having_registration.execute =
         [prepared_having, maximum_output_rows,
-         relational_dag = request.relational_dag](
+         relational_dag = request.relational_dag,
+         mga_context = request.context](
             const exec::TypedPhysicalNodeDag& dag,
             const exec::PhysicalNodeRecord& node,
             const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
           exec::CanonicalPhysicalDispatchStepResult step;
           step.selected_plan_uuid = dag.selected_plan_uuid;
+          step.mga_statement_context = dag.mga_statement_context;
           step.executed_physical_node_id = node.physical_node_id;
           step.causal_counter_id = node.causal_counter_id;
           step.output_descriptor_ids = node.output_descriptor_ids;
@@ -5493,6 +5626,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           filter_request.input_batch = input_batch;
           filter_request.row_truth_values = std::move(row_truth_values);
           filter_request.consumer = api::EnginePredicateConsumer::having;
+          filter_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
           const auto filter_result =
               exec::ExecuteCanonicalDescriptorFilter(filter_request);
           if (!filter_result.diagnostic.ok) {
@@ -5504,6 +5639,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           step.rows_examined = input_batch.rows.size();
           step.output_row_count = filter_result.output_batch.rows.size();
           step.materialized_output_batch = filter_result.output_batch;
+          step.mga_statement_context = filter_result.mga_statement_context;
           return step;
         };
   }
@@ -5512,10 +5648,9 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -5550,7 +5685,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
       maximum_output_rows;
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -6018,12 +6153,13 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
        listagg_truncation_indicator =
            prepared_root.listagg_truncation_indicator,
        listagg_with_count = prepared_root.listagg_with_count,
-       input_row_count](
+       input_row_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -6063,12 +6199,15 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           filter_truth_values = std::move(materialized_filter);
         }
         exec::DescriptorBatch output_batch;
+        const auto mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         if (count_star) {
           exec::CanonicalDescriptorCountRequest aggregate_request;
           aggregate_request.physical_dag = dag;
           aggregate_request.selected_physical_node_id = node.physical_node_id;
           aggregate_request.input_batch = input_batch;
           aggregate_request.count_column = result_column;
+          aggregate_request.mga_authority = mga_authority;
           const auto aggregate_result =
               exec::ExecuteCanonicalDescriptorCountStar(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
@@ -6100,6 +6239,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
           aggregate_request.listagg_with_count = listagg_with_count;
           aggregate_request.forced_strategy =
               exec::CanonicalAggregateExecutionStrategy::serial;
+          aggregate_request.mga_authority = mga_authority;
           const auto aggregate_result =
               exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
           if (!aggregate_result.diagnostic.ok) {
@@ -6114,6 +6254,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = output_batch.rows.size();
         step.materialized_output_batch = std::move(output_batch);
+        step.mga_statement_context = mga_authority.statement_context;
         return step;
       };
 
@@ -6121,10 +6262,9 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -6152,7 +6292,7 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
   execution_request.result_publication_request.maximum_row_count = 1;
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -6328,12 +6468,13 @@ ExecuteCanonicalObjectFreeLimitQuery(
   limit_registration.engine_owned = true;
   limit_registration.accepts_optimizer_publication_v2 = true;
   limit_registration.execute =
-      [row_limit, input_row_count](
+      [row_limit, input_row_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -6362,6 +6503,8 @@ ExecuteCanonicalObjectFreeLimitQuery(
         limit_request.input_batch = input_batch;
         limit_request.limit = row_limit;
         limit_request.offset = 0;
+        limit_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto limit_result =
             exec::ExecuteCanonicalDescriptorLimit(limit_request);
         if (!limit_result.diagnostic.ok) {
@@ -6373,6 +6516,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
         step.rows_examined = limit_result.output_batch.rows.size();
         step.output_row_count = limit_result.output_batch.rows.size();
         step.materialized_output_batch = limit_result.output_batch;
+        step.mga_statement_context = limit_result.mga_statement_context;
         return step;
       };
 
@@ -6380,10 +6524,9 @@ ExecuteCanonicalObjectFreeLimitQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -6412,7 +6555,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
       std::max<std::size_t>(1, output_row_bound);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -6589,12 +6732,14 @@ ExecuteCanonicalObjectFreeSortQuery(
       [order_terms = prepared_root.order_terms,
        deterministic_tie_evidence_uuid, input_row_count,
        maximum_pair_comparisons =
-           std::max<std::size_t>(1, static_cast<std::size_t>(comparison_count))](
+           std::max<std::size_t>(1, static_cast<std::size_t>(comparison_count)),
+       mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -6625,6 +6770,8 @@ ExecuteCanonicalObjectFreeSortQuery(
         sort_request.deterministic_tie_evidence_uuid =
             deterministic_tie_evidence_uuid;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
+        sort_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
@@ -6636,6 +6783,7 @@ ExecuteCanonicalObjectFreeSortQuery(
         step.rows_examined = input_batch.rows.size();
         step.output_row_count = sort_result.output_batch.rows.size();
         step.materialized_output_batch = sort_result.output_batch;
+        step.mga_statement_context = sort_result.mga_statement_context;
         return step;
       };
 
@@ -6643,10 +6791,9 @@ ExecuteCanonicalObjectFreeSortQuery(
   execution_request.selected_physical_dag = planning.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       planning.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      planning.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      planning.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
   execution_request.available_executors.push_back(
       std::move(values_registration));
   execution_request.available_executors.push_back(
@@ -6675,7 +6822,7 @@ ExecuteCanonicalObjectFreeSortQuery(
       std::max<std::size_t>(1, input_row_count);
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {
@@ -6702,9 +6849,52 @@ ExecuteCanonicalObjectFreeSortQuery(
 
 }  // namespace
 
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+void ArmCanonicalQueryPreResultRevocationForContractTest() {
+  g_contract_revalidation_resolution_count = 0;
+  g_contract_pre_result_revocation_armed = true;
+}
+
+std::size_t CanonicalQueryContractRevalidationCountForTest() {
+  return g_contract_revalidation_resolution_count;
+}
+#endif
+
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
-    const CanonicalObjectFreeValuesExecutionRequest& request) {
+    const CanonicalObjectFreeValuesExecutionRequest& input_request) {
+  auto request = input_request;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  // The textual closure seam does not own a durable transaction inventory.
+  // Complete its already-bound statement vector here so the same ABI-v2
+  // publication and executor revalidation used by production is exercised.
+  auto closure_mga = request.optimizer_request.logical_graph
+                         .mga_statement_context;
+  closure_mga.oldest_active_transaction_id =
+      closure_mga.owning_local_transaction_id;
+  closure_mga.oldest_interesting_transaction_id =
+      closure_mga.owning_local_transaction_id;
+  closure_mga.oldest_snapshot_transaction_id =
+      closure_mga.owning_local_transaction_id;
+  closure_mga.retention_horizon_transaction_id =
+      closure_mga.owning_local_transaction_id;
+  closure_mga.active_excluded_local_transaction_ids = {
+      closure_mga.owning_local_transaction_id};
+  closure_mga.in_doubt_excluded_local_transaction_ids.clear();
+  closure_mga.snapshot_kind = "statement_stable";
+  closure_mga.publication_inventory_next_local_transaction_id =
+      std::max(closure_mga.owning_local_transaction_id,
+               closure_mga.visible_committed_high_watermark) +
+      1;
+  closure_mga.inventory_authoritative = true;
+  closure_mga.complete = true;
+  closure_mga.current = true;
+  request.optimizer_request.logical_graph.mga_statement_context = closure_mga;
+  request.optimizer_request.logical_properties.mga_statement_context =
+      closure_mga;
+  request.optimizer_request.mga.statement_context = closure_mga;
+  request.optimizer_admission.mga_statement_context = closure_mga;
+#endif
   auto grouped_aggregate =
       ExecuteCanonicalObjectFreeGroupedCountSumQuery(request);
   if (grouped_aggregate.profile_matched) return grouped_aggregate;
@@ -6907,6 +7097,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
                                        inputs) {
         exec::CanonicalPhysicalDispatchStepResult step;
         step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
         step.executed_physical_node_id = node.physical_node_id;
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
@@ -6929,10 +7120,9 @@ ExecuteCanonicalObjectFreeValuesQuery(
   execution_request.selected_physical_dag = publication.physical_dag;
   execution_request.pre_access_statistics_snapshot_uuid =
       publication.physical_dag.statistics_snapshot_uuid;
-  execution_request.inventory_local_transaction_id =
-      publication.physical_dag.local_transaction_id;
-  execution_request.inventory_statement_snapshot_id =
-      publication.physical_dag.statement_snapshot_id;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          publication.physical_dag);
   execution_request.available_executors.push_back(std::move(registration));
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
@@ -6958,7 +7148,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
       std::max<std::size_t>(1, materialized.batch.rows.size());
 
   const auto execution =
-      api::ExecuteCanonicalOptimizerSelectedDag(execution_request);
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
   if (!execution.accepted || !execution.exact_selected_nodes_executed ||
       !execution.causal_counters_attached ||
       !execution.canonical_result_published || !execution.issues.empty()) {

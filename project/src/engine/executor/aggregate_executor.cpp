@@ -1981,11 +1981,10 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     result.output_batch = {};
     return result;
   };
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -2043,11 +2042,15 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -2149,10 +2152,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
                           "aggregate physical strategy is not bound"));
   }
 
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -2354,6 +2357,9 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.executed_strategy = request.forced_strategy;
@@ -2372,6 +2378,7 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -2399,11 +2406,24 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
     return result;
   };
 
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.aggregate_request.mga_authority,
+      request.aggregate_request.physical_dag);
+  if (!entry_authority.ok) {
+    return refuse(entry_authority.diagnostic_code, entry_authority.detail);
+  }
+
   const auto baseline =
       ExecuteCanonicalAggregateRuntime(request.aggregate_request);
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          baseline.mga_statement_context,
+          request.aggregate_request.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-SPILL-MGA-V1",
+                  "aggregate spill baseline returned a different MGA statement context");
   }
   const PhysicalNodeRecord* selected_node = nullptr;
   for (const auto& node : request.aggregate_request.physical_dag.nodes) {
@@ -2638,9 +2658,18 @@ CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(
                   "restored aggregate state finalization differs from the in-memory route");
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.aggregate_request.mga_authority,
+      request.aggregate_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, result_authority.detail);
+  }
+
   result.diagnostic = {};
   result.aggregate_result = std::move(restored);
   result.restored_result_equivalent = true;
+  result.mga_statement_context =
+      request.aggregate_request.mga_authority.statement_context;
   return result;
 }
 
@@ -2665,6 +2694,13 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     result.merged_result_equivalent = false;
     return result;
   };
+
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.aggregate_request.mga_authority,
+      request.aggregate_request.physical_dag);
+  if (!entry_authority.ok) {
+    return refuse(entry_authority.diagnostic_code, entry_authority.detail);
+  }
 
   const auto worker_count = request.worker_ordinals.size();
   if (worker_count < 2 || worker_count > 1024 ||
@@ -2708,6 +2744,12 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          baseline.mga_statement_context,
+          request.aggregate_request.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-QRY-011-REGISTRY-STATE-EXCHANGE-MGA-V1",
+                  "aggregate exchange baseline returned a different MGA statement context");
   }
 
   PreparedAggregateTransitions prepared;
@@ -2862,9 +2904,18 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
         "merged aggregate exchange finalization differs from local combine");
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.aggregate_request.mga_authority,
+      request.aggregate_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, result_authority.detail);
+  }
+
   result.diagnostic = {};
   result.aggregate_result = std::move(merged);
   result.merged_result_equivalent = true;
+  result.mga_statement_context =
+      request.aggregate_request.mga_authority.statement_context;
   return result;
 }
 
@@ -2889,6 +2940,9 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     return result;
   };
   const auto& aggregate = request.aggregate_request;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!entry_authority.ok) return refuse(entry_authority);
   const auto registry = CanonicalAggregateRuntimeRegistryV1();
   const auto entry = std::find_if(
       registry.begin(), registry.end(), [&](const auto& candidate) {
@@ -2961,6 +3015,13 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   const auto preflight = ExecuteCanonicalAggregateRuntime(preflight_request);
   if (!preflight.diagnostic.ok) {
     return refuse(preflight.diagnostic);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          preflight.mga_statement_context,
+          aggregate.mga_authority.statement_context)) {
+    return refuse(Refusal(
+        "QOW-DIAG-QRY-011-REGISTRY-INVERSE-MGA-V1",
+        "moving aggregate preflight returned a different MGA statement context"));
   }
 
   DescriptorRuntimeDiagnostic state_diagnostic;
@@ -3063,6 +3124,9 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   const auto output_validation = ValidateCanonicalDescriptorBatch(
       output, {aggregate.result_column.descriptor_id});
   if (!output_validation.ok) return refuse(output_validation);
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.moving_inverse_state_used = true;
@@ -3071,6 +3135,7 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   result.selected_plan_uuid = preflight.selected_plan_uuid;
   result.executed_physical_node_id = preflight.executed_physical_node_id;
   result.causal_counter_id = preflight.causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -3127,11 +3192,10 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
         "grouped aggregate shape or resource contract is invalid");
   }
 
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(
-      aggregate.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   if (aggregate.selected_physical_node_id == 0 ||
       aggregate.selected_physical_node_id !=
@@ -3516,6 +3580,9 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      aggregate.mga_authority, aggregate.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.grouping_set_count = request.grouping_sets.size();
@@ -3530,6 +3597,7 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   result.selected_plan_uuid = aggregate.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  result.mga_statement_context = aggregate.mga_authority.statement_context;
   return result;
 }
 
@@ -3586,10 +3654,10 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
 
   const auto& first = request.first_aggregate;
   const auto& common = first.aggregate_request;
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(common.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      common.mga_authority, common.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   const PhysicalNodeRecord* aggregate_node = nullptr;
   for (const auto& node : common.physical_dag.nodes) {
@@ -3658,6 +3726,15 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       return set_refusal(
           "additional aggregate carries shadow physical or input authority");
     }
+    const auto additional_authority = RevalidateCanonicalExecutionMgaAuthority(
+        specification.mga_authority, common.physical_dag);
+    if (!additional_authority.ok ||
+        !PhysicalMgaStatementContextEqual(
+            specification.mga_authority.statement_context,
+            common.mga_authority.statement_context)) {
+      return set_refusal(
+          "additional aggregate carries a missing, stale, or different MGA statement context");
+    }
     aggregate_specs.push_back(&specification);
   }
 
@@ -3697,6 +3774,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
     grouped_request.aggregate_request.selected_physical_node_id =
         common.selected_physical_node_id;
     grouped_request.aggregate_request.input_batch = common.input_batch;
+    grouped_request.aggregate_request.mga_authority = common.mga_authority;
     for (auto& node : grouped_request.aggregate_request.physical_dag.nodes) {
       if (node.physical_node_id == common.selected_physical_node_id) {
         node.output_descriptor_ids.clear();
@@ -3825,6 +3903,9 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, aggregate_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      common.mga_authority, common.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.aggregate_count = aggregate_count;
@@ -3840,6 +3921,7 @@ ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
   result.selected_plan_uuid = common.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = aggregate_node->physical_node_id;
   result.causal_counter_id = aggregate_node->causal_counter_id;
+  result.mga_statement_context = common.mga_authority.statement_context;
   return result;
 }
 
@@ -3868,11 +3950,36 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
     return result;
   };
 
+  const auto& entry_common =
+      request.grouped_request.first_aggregate.aggregate_request;
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      entry_common.mga_authority, entry_common.physical_dag);
+  if (!entry_authority.ok) {
+    return refuse(entry_authority.diagnostic_code, entry_authority.detail);
+  }
+  for (const auto& additional : request.grouped_request.additional_aggregates) {
+    const auto additional_authority = RevalidateCanonicalExecutionMgaAuthority(
+        additional.mga_authority, entry_common.physical_dag);
+    if (!additional_authority.ok ||
+        !PhysicalMgaStatementContextEqual(
+            additional.mga_authority.statement_context,
+            entry_common.mga_authority.statement_context)) {
+      return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-MGA-V1",
+                    "grouped spill aggregate carriers do not share one current MGA statement context");
+    }
+  }
+
   const auto baseline = ExecuteCanonicalGroupedAggregateSetRuntimeSelected(
       request.grouped_request, true);
   if (!baseline.diagnostic.ok) {
     return refuse(baseline.diagnostic.diagnostic_code,
                   baseline.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          baseline.mga_statement_context,
+          entry_common.mga_authority.statement_context)) {
+    return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-MGA-V1",
+                  "grouped spill baseline returned a different MGA statement context");
   }
   const auto& first = request.grouped_request.first_aggregate;
   const auto& common = first.aggregate_request;
@@ -4017,7 +4124,13 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
           state.aggregate_result.transition_count !=
               group.aggregate_transition_counts[aggregate_index] ||
           state.aggregate_result.state_bytes !=
-              group.aggregate_state_bytes[aggregate_index]) {
+              group.aggregate_state_bytes[aggregate_index] ||
+          !PhysicalMgaStatementContextEqual(
+              state.mga_statement_context,
+              common.mga_authority.statement_context) ||
+          !PhysicalMgaStatementContextEqual(
+              state.aggregate_result.mga_statement_context,
+              common.mga_authority.statement_context)) {
         return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EVIDENCE-V1",
                       "restored grouped aggregate state evidence is inconsistent");
       }
@@ -4071,8 +4184,14 @@ ExecuteCanonicalGroupedAggregateSetStateSpill(
     return refuse("QOW-DIAG-QRY-011-GROUPED-STATE-SPILL-EQUIVALENCE-V1",
                   "restored grouped aggregate totals diverge from the in-memory result");
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      common.mga_authority, common.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code, result_authority.detail);
+  }
   result.diagnostic = {};
   result.grouped_result = std::move(restored);
+  result.mga_statement_context = common.mga_authority.statement_context;
   return result;
 }
 

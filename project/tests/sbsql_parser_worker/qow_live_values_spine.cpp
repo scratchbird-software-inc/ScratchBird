@@ -18,6 +18,13 @@
 #include <string_view>
 #include <utility>
 
+namespace scratchbird::engine::sblr {
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request);
+void ArmCanonicalQueryPreResultRevocationForContractTest();
+std::size_t CanonicalQueryContractRevalidationCountForTest();
+}
+
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
@@ -3440,9 +3447,17 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
 
 bool ValidateLiveValuesSpine() {
   const auto first =
-      sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
+      sblr::DispatchTextualRelationalQueryForContractTest({Context(), ValuesEnvelope(), {}});
   const auto repeated =
-      sblr::DispatchSblrOperation({Context(), ValuesEnvelope(), {}});
+      sblr::DispatchTextualRelationalQueryForContractTest({Context(), ValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+    }
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
   bool passed = true;
   passed &= Require(
       first.accepted && first.envelope_validated && first.dispatched_to_api &&
@@ -3486,8 +3501,28 @@ bool ValidateLiveValuesSpine() {
   return passed;
 }
 
+bool ValidateLiveValuesPreResultRevocationIsAtomic() {
+  sblr::ArmCanonicalQueryPreResultRevocationForContractTest();
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), ValuesEnvelope(), {}});
+  return Require(
+      result.accepted && result.optimizer_admitted &&
+          !result.optimizer_selected && !result.physical_dag_published &&
+          !result.physical_dag_executed &&
+          !result.runtime_actuals_attached &&
+          !result.canonical_result_published && !result.api_result.ok &&
+          result.physical_node_count == 0 &&
+          result.canonical_result_column_count == 0 &&
+          result.canonical_result_row_count == 0 &&
+          result.selected_plan_uuid.empty() &&
+          result.canonical_result_bytes.empty() &&
+          sblr::CanonicalQueryContractRevalidationCountForTest() == 8 &&
+          HasApiDiagnostic(result, "QOW-DIAG-MGA-RUNTIME-CURRENT-V1"),
+      "pre-result MGA revocation exposed an internal route DAG, actual, row, or result");
+}
+
 bool ValidateComposedScalarValuesSpine() {
-  const auto result = sblr::DispatchSblrOperation(
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), ComposedValuesEnvelope(), {}});
   bool passed = true;
   passed &= Require(
@@ -3528,9 +3563,9 @@ bool ValidateComposedScalarValuesSpine() {
 }
 
 bool ValidateUnionAllValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), UnionAllValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), UnionAllValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -3572,7 +3607,7 @@ bool ValidateUnionAllRefusalIsAtomic() {
       operand.value = "1|-|2|-|-|2|-|7468726565";
     }
   }
-  const auto result = sblr::DispatchSblrOperation(
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(incompatible), {}});
   return Require(
       result.accepted && result.optimizer_admitted &&
@@ -3587,9 +3622,9 @@ bool ValidateUnionAllRefusalIsAtomic() {
 }
 
 bool ValidateInnerJoinValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), InnerJoinValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), InnerJoinValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -3641,9 +3676,9 @@ bool ValidateInnerJoinThreeValuedPredicate() {
       operand.value = "1|-|3|-|-|7|-|2d";
     }
   }
-  const auto false_result = sblr::DispatchSblrOperation(
+  const auto false_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(false_predicate), {}});
-  const auto unknown_result = sblr::DispatchSblrOperation(
+  const auto unknown_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(unknown_predicate), {}});
   const auto empty_success = [](const sblr::SblrDispatchResult& result) {
     return result.accepted && result.optimizer_admitted &&
@@ -3674,7 +3709,7 @@ bool ValidateInnerJoinRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -3693,9 +3728,9 @@ bool ValidateInnerJoinRefusalIsAtomic() {
 }
 
 bool ValidateFilterValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), FilterValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), FilterValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -3741,9 +3776,9 @@ bool ValidateFilterThreeValuedPredicate() {
       operand.value = "1|-|2|-|-|7|-|2d";
     }
   }
-  const auto false_result = sblr::DispatchSblrOperation(
+  const auto false_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(false_predicate), {}});
-  const auto unknown_result = sblr::DispatchSblrOperation(
+  const auto unknown_result = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(unknown_predicate), {}});
   const auto empty_success = [](const sblr::SblrDispatchResult& result) {
     return result.accepted && result.optimizer_admitted &&
@@ -3775,7 +3810,7 @@ bool ValidateFilterRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -3794,9 +3829,9 @@ bool ValidateFilterRefusalIsAtomic() {
 }
 
 bool ValidateProjectValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), ProjectValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), ProjectValuesEnvelope(), {}});
   auto dropped_envelope = ProjectValuesEnvelope();
   for (auto& operand : dropped_envelope.operands) {
@@ -3804,7 +3839,7 @@ bool ValidateProjectValuesSpine() {
       operand.value = "3|0|1|2|-";
     }
   }
-  const auto dropped = sblr::DispatchSblrOperation(
+  const auto dropped = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(dropped_envelope), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -3869,7 +3904,7 @@ bool ValidateProjectRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -3888,9 +3923,9 @@ bool ValidateProjectRefusalIsAtomic() {
 }
 
 bool ValidateLimitValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), LimitValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), LimitValuesEnvelope(), {}});
   auto zero_envelope = LimitValuesEnvelope();
   auto oversized_envelope = LimitValuesEnvelope();
@@ -3904,9 +3939,9 @@ bool ValidateLimitValuesSpine() {
       operand.value = "1|-|2|-|-|1|-|3939";
     }
   }
-  const auto zero = sblr::DispatchSblrOperation(
+  const auto zero = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(zero_envelope), {}});
-  const auto oversized = sblr::DispatchSblrOperation(
+  const auto oversized = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), std::move(oversized_envelope), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -3973,7 +4008,7 @@ bool ValidateLimitRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -3993,13 +4028,13 @@ bool ValidateLimitRefusalIsAtomic() {
 }
 
 bool ValidateGroupedCountSumValuesSpine() {
-  const auto many = sblr::DispatchSblrOperation(
+  const auto many = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupedCountSumValuesEnvelope(), {}});
-  const auto many_repeated = sblr::DispatchSblrOperation(
+  const auto many_repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupedCountSumValuesEnvelope(), {}});
-  const auto one = sblr::DispatchSblrOperation(
+  const auto one = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupedCountSumValuesEnvelope(true), {}});
-  const auto one_repeated = sblr::DispatchSblrOperation(
+  const auto one_repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupedCountSumValuesEnvelope(true), {}});
   if (!many.api_result.ok) {
     for (const auto& diagnostic : many.api_result.diagnostics) {
@@ -4126,7 +4161,7 @@ bool ValidateGroupedCountSumRefusalIsAtomic() {
 
   const auto refused_atomically = [](const std::string_view label,
                                      sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -4154,7 +4189,7 @@ bool ValidateGroupedCountSumRefusalIsAtomic() {
   };
   const auto refused_before_admission =
       [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return !result.accepted && !result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -4179,9 +4214,9 @@ bool ValidateGroupedCountSumRefusalIsAtomic() {
 }
 
 bool ValidateRollupCountSumValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), RollupCountSumValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), RollupCountSumValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -4320,7 +4355,7 @@ bool ValidateRollupCountSumRefusalIsAtomic() {
 
   const auto refused_atomically = [](const std::string_view label,
                                      sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -4348,7 +4383,7 @@ bool ValidateRollupCountSumRefusalIsAtomic() {
   };
   const auto refused_before_admission =
       [](sblr::SblrOperationEnvelope envelope) {
-        const auto result = sblr::DispatchSblrOperation(
+        const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
             {Context(), std::move(envelope), {}});
         return !result.accepted && !result.optimizer_admitted &&
                !result.optimizer_selected &&
@@ -4377,9 +4412,9 @@ bool ValidateRollupCountSumRefusalIsAtomic() {
 }
 
 bool ValidateRollupCountSumGroupingValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), RollupCountSumGroupingValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), RollupCountSumGroupingValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -4521,7 +4556,7 @@ bool ValidateRollupCountSumGroupingRefusalIsAtomic() {
 
   const auto refused_atomically = [](const std::string_view label,
                                      sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -4549,7 +4584,7 @@ bool ValidateRollupCountSumGroupingRefusalIsAtomic() {
   };
   const auto refused_before_admission =
       [](sblr::SblrOperationEnvelope envelope) {
-        const auto result = sblr::DispatchSblrOperation(
+        const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
             {Context(), std::move(envelope), {}});
         return !result.accepted && !result.optimizer_admitted &&
                !result.optimizer_selected &&
@@ -4579,9 +4614,9 @@ bool ValidateRollupCountSumGroupingRefusalIsAtomic() {
 }
 
 bool ValidateCubeCountSumValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), CubeCountSumValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), CubeCountSumValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -4708,7 +4743,7 @@ bool ValidateCubeCountSumRefusalIsAtomic() {
 
   const auto refused_atomically = [](const std::string_view label,
                                      sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -4736,7 +4771,7 @@ bool ValidateCubeCountSumRefusalIsAtomic() {
   };
   const auto refused_before_admission =
       [](sblr::SblrOperationEnvelope envelope) {
-        const auto result = sblr::DispatchSblrOperation(
+        const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
             {Context(), std::move(envelope), {}});
         return !result.accepted && !result.optimizer_admitted &&
                !result.optimizer_selected &&
@@ -4762,9 +4797,9 @@ bool ValidateCubeCountSumRefusalIsAtomic() {
 }
 
 bool ValidateCubeCountSumGroupingValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), CubeCountSumGroupingValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), CubeCountSumGroupingValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -4910,7 +4945,7 @@ bool ValidateCubeCountSumGroupingRefusalIsAtomic() {
 
   const auto refused_atomically = [](const std::string_view label,
                                      sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -4938,7 +4973,7 @@ bool ValidateCubeCountSumGroupingRefusalIsAtomic() {
   };
   const auto refused_before_admission =
       [](sblr::SblrOperationEnvelope envelope) {
-        const auto result = sblr::DispatchSblrOperation(
+        const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
             {Context(), std::move(envelope), {}});
         return !result.accepted && !result.optimizer_admitted &&
                !result.optimizer_selected &&
@@ -4968,9 +5003,9 @@ bool ValidateCubeCountSumGroupingRefusalIsAtomic() {
 }
 
 bool ValidateGroupingSetsCountSumValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupingSetsCountSumValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupingSetsCountSumValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5056,9 +5091,9 @@ bool ValidateGroupingSetsCountSumValuesSpine() {
 }
 
 bool ValidateGroupingSetsCountSumGroupingValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupingSetsCountSumGroupingValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GroupingSetsCountSumGroupingValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5211,7 +5246,7 @@ bool ValidateGroupingSetsCountSumRefusalIsAtomic() {
   const auto refused_after_admission = [](
                                           const std::string_view label,
                                           sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         result.accepted && result.optimizer_admitted &&
@@ -5232,7 +5267,7 @@ bool ValidateGroupingSetsCountSumRefusalIsAtomic() {
   const auto refused_before_admission = [](
                                            const std::string_view label,
                                            sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     const bool refused =
         !result.accepted && !result.optimizer_admitted &&
@@ -5268,9 +5303,9 @@ bool ValidateGroupingSetsCountSumRefusalIsAtomic() {
 }
 
 bool ValidateGlobalCountStarValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalCountStarValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalCountStarValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5331,7 +5366,7 @@ bool ValidateGlobalCountStarRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5351,9 +5386,9 @@ bool ValidateGlobalCountStarRefusalIsAtomic() {
 }
 
 bool ValidateGlobalCountExpressionValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalCountExpressionValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalCountExpressionValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5414,7 +5449,7 @@ bool ValidateGlobalCountExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5435,9 +5470,9 @@ bool ValidateGlobalCountExpressionRefusalIsAtomic() {
 }
 
 bool ValidateGlobalSumExpressionValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalSumExpressionValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalSumExpressionValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5506,7 +5541,7 @@ bool ValidateGlobalSumExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5615,10 +5650,10 @@ bool ValidateGlobalUnaryAggregateModifierValuesSpine() {
     for (const auto profile : {AggregateModifierProfile::kFilter,
                                AggregateModifierProfile::kDistinct,
                                AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalUnaryAggregateModifierValuesEnvelope(target, profile), {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalUnaryAggregateModifierValuesEnvelope(target, profile), {}});
       if (!first.api_result.ok) {
@@ -5748,7 +5783,7 @@ bool ValidateGlobalUnaryAggregateModifierRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5775,9 +5810,9 @@ bool ValidateGlobalUnaryAggregateModifierRefusalIsAtomic() {
 }
 
 bool ValidateGlobalAvgExpressionValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalAvgExpressionValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalAvgExpressionValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -5846,7 +5881,7 @@ bool ValidateGlobalAvgExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5867,9 +5902,9 @@ bool ValidateGlobalAvgExpressionRefusalIsAtomic() {
 }
 
 bool ValidateGlobalExtremumExpressionValuesSpine(const bool maximum) {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalExtremumExpressionValuesEnvelope(maximum), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalExtremumExpressionValuesEnvelope(maximum), {}});
   const std::string aggregate_name = maximum ? "MAX" : "MIN";
   if (!first.api_result.ok) {
@@ -5945,7 +5980,7 @@ bool ValidateGlobalExtremumExpressionRefusalIsAtomic(const bool maximum) {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -5968,9 +6003,9 @@ bool ValidateGlobalExtremumExpressionRefusalIsAtomic(const bool maximum) {
 
 bool ValidateGlobalBooleanAggregateExpressionValuesSpine(
     const BooleanAggregateKind kind) {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalBooleanAggregateExpressionValuesEnvelope(kind), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalBooleanAggregateExpressionValuesEnvelope(kind), {}});
   const auto aggregate_name = BooleanAggregateName(kind);
   if (!first.api_result.ok) {
@@ -6056,7 +6091,7 @@ bool ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -6080,10 +6115,10 @@ bool ValidateGlobalBooleanAggregateExpressionRefusalIsAtomic(
 bool ValidateGlobalStatisticalAggregateExpressionValuesSpine() {
   bool passed = true;
   for (const auto& profile : kStatisticalAggregateProfiles) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(),
          GlobalStatisticalAggregateExpressionValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(),
          GlobalStatisticalAggregateExpressionValuesEnvelope(profile), {}});
     if (!first.api_result.ok) {
@@ -6174,7 +6209,7 @@ bool ValidateGlobalStatisticalAggregateExpressionRefusalIsAtomic() {
       }
     }
     const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-      const auto result = sblr::DispatchSblrOperation(
+      const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(envelope), {}});
       return result.accepted && result.optimizer_admitted &&
              !result.optimizer_selected && !result.physical_dag_published &&
@@ -6278,11 +6313,11 @@ bool ValidateGlobalPairStatisticalAggregateModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), GlobalPairStatisticalAggregateModifierValuesEnvelope(
                           profile, modifier),
            {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), GlobalPairStatisticalAggregateModifierValuesEnvelope(
                           profile, modifier),
            {}});
@@ -6377,7 +6412,7 @@ bool ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -6401,10 +6436,10 @@ bool ValidateGlobalPairStatisticalAggregateModifierRefusalIsAtomic() {
 bool ValidateGlobalPairStatisticalAggregateExpressionValuesSpine() {
   bool passed = true;
   for (const auto& profile : kPairStatisticalAggregateProfiles) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(),
          GlobalPairStatisticalAggregateExpressionValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(),
          GlobalPairStatisticalAggregateExpressionValuesEnvelope(profile), {}});
     if (!first.api_result.ok) {
@@ -6525,7 +6560,7 @@ bool ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() {
       }
     }
     const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-      const auto result = sblr::DispatchSblrOperation(
+      const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(envelope), {}});
       return result.accepted && result.optimizer_admitted &&
              !result.optimizer_selected && !result.physical_dag_published &&
@@ -6552,9 +6587,9 @@ bool ValidateGlobalPairStatisticalAggregateExpressionRefusalIsAtomic() {
 bool ValidateGlobalOrderedSetAggregateValuesSpine() {
   bool passed = true;
   for (const auto& profile : kOrderedSetAggregateProfiles) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), GlobalOrderedSetAggregateValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), GlobalOrderedSetAggregateValuesEnvelope(profile), {}});
     if (!first.api_result.ok) {
       for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -6621,7 +6656,7 @@ bool ValidateGlobalOrderedSetAggregateRefusalIsAtomic() {
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope,
                                      const std::string_view diagnostic_id) {
     const auto result =
-        sblr::DispatchSblrOperation({Context(), std::move(envelope), {}});
+        sblr::DispatchTextualRelationalQueryForContractTest({Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
            !result.physical_dag_executed &&
@@ -6780,11 +6815,11 @@ bool ValidateGlobalOrderedSetAggregateModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
            {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
            {}});
@@ -6847,7 +6882,7 @@ bool ValidateGlobalOrderedSetAggregateModifierValuesSpine() {
 
 bool ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic() {
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -6924,9 +6959,9 @@ bool ValidateGlobalOrderedSetAggregateModifierRefusalIsAtomic() {
 bool ValidateGlobalApproximateAggregateValuesSpine() {
   bool passed = true;
   for (const auto& profile : kApproximateAggregateProfiles) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), GlobalApproximateAggregateValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), GlobalApproximateAggregateValuesEnvelope(profile), {}});
     if (!first.api_result.ok) {
       for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -6980,7 +7015,7 @@ bool ValidateGlobalApproximateAggregateRefusalIsAtomic() {
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope,
                                      const std::string_view diagnostic_id) {
     const auto result =
-        sblr::DispatchSblrOperation({Context(), std::move(envelope), {}});
+        sblr::DispatchTextualRelationalQueryForContractTest({Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
            !result.physical_dag_executed &&
@@ -7137,11 +7172,11 @@ bool ValidateGlobalApproximateAggregateModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalApproximateAggregateModifierValuesEnvelope(profile, modifier),
            {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            GlobalApproximateAggregateModifierValuesEnvelope(profile, modifier),
            {}});
@@ -7191,7 +7226,7 @@ bool ValidateGlobalApproximateAggregateModifierValuesSpine() {
 
 bool ValidateGlobalApproximateAggregateModifierRefusalIsAtomic() {
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -7266,9 +7301,9 @@ bool ValidateGlobalApproximateAggregateModifierRefusalIsAtomic() {
 }
 
 bool ValidateGlobalStringAggExpressionValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalStringAggExpressionValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), GlobalStringAggExpressionValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -7357,7 +7392,7 @@ bool ValidateGlobalStringAggExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -7381,9 +7416,9 @@ bool ValidateGlobalStringAggExpressionRefusalIsAtomic() {
 }
 
 bool ValidateOrderedStringAggExpressionValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), OrderedStringAggExpressionValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), OrderedStringAggExpressionValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -7485,7 +7520,7 @@ bool ValidateOrderedStringAggExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -7538,9 +7573,9 @@ bool ValidateStringAggModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), StringAggModifierValuesEnvelope(ordered, modifier), {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), StringAggModifierValuesEnvelope(ordered, modifier), {}});
       if (!first.api_result.ok) {
         for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -7636,7 +7671,7 @@ bool ValidateStringAggModifierRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -7673,10 +7708,10 @@ bool ValidateOrderedListaggExpressionValuesSpine() {
   };
   bool passed = true;
   for (const auto& test_case : kSuccessCases) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedListaggExpressionValuesEnvelope(test_case.profile),
          {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedListaggExpressionValuesEnvelope(test_case.profile),
          {}});
     if (!first.api_result.ok) {
@@ -7719,7 +7754,7 @@ bool ValidateOrderedListaggExpressionValuesSpine() {
             " LISTAGG input changed canonical plan/result bytes");
   }
 
-  const auto overflow_error = sblr::DispatchSblrOperation(
+  const auto overflow_error = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), OrderedListaggExpressionValuesEnvelope(
                       LiveListaggProfile::kOverflowError),
        {}});
@@ -7829,7 +7864,7 @@ bool ValidateOrderedListaggExpressionRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -7886,11 +7921,11 @@ bool ValidateOrderedListaggModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            OrderedListaggModifierExpressionValuesEnvelope(profile, modifier),
            {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(),
            OrderedListaggModifierExpressionValuesEnvelope(profile, modifier),
            {}});
@@ -7938,7 +7973,7 @@ bool ValidateOrderedListaggModifierValuesSpine() {
 
 bool ValidateOrderedListaggModifierRefusalIsAtomic() {
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8023,9 +8058,9 @@ bool ValidateOrderedListaggModifierRefusalIsAtomic() {
 bool ValidateOrderedSingleCollectionValuesSpine() {
   bool passed = true;
   for (const auto& profile : kOrderedSingleCollectionProfiles) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedSingleCollectionValuesEnvelope(profile), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedSingleCollectionValuesEnvelope(profile), {}});
     if (!first.api_result.ok) {
       for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -8123,7 +8158,7 @@ bool ValidateOrderedSingleCollectionRefusalIsAtomic() {
       }
     }
     const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-      const auto result = sblr::DispatchSblrOperation(
+      const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(envelope), {}});
       return result.accepted && result.optimizer_admitted &&
              !result.optimizer_selected && !result.physical_dag_published &&
@@ -8178,11 +8213,11 @@ bool ValidateOrderedSingleCollectionModifierValuesSpine() {
     for (const auto modifier : {AggregateModifierProfile::kFilter,
                                 AggregateModifierProfile::kDistinct,
                                 AggregateModifierProfile::kDistinctFilter}) {
-      const auto first = sblr::DispatchSblrOperation(
+      const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), OrderedSingleCollectionModifierValuesEnvelope(
                           profile, modifier),
            {}});
-      const auto repeated = sblr::DispatchSblrOperation(
+      const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), OrderedSingleCollectionModifierValuesEnvelope(
                           profile, modifier),
            {}});
@@ -8292,7 +8327,7 @@ bool ValidateOrderedSingleCollectionModifierRefusalIsAtomic() {
       }
     }
     const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-      const auto result = sblr::DispatchSblrOperation(
+      const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
           {Context(), std::move(envelope), {}});
       return result.accepted && result.optimizer_admitted &&
              !result.optimizer_selected && !result.physical_dag_published &&
@@ -8317,9 +8352,9 @@ bool ValidateOrderedSingleCollectionModifierRefusalIsAtomic() {
 }
 
 bool ValidateOrderedJsonObjectAggValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), OrderedJsonObjectAggValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), OrderedJsonObjectAggValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -8430,7 +8465,7 @@ bool ValidateOrderedJsonObjectAggRefusalIsAtomic() {
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope,
                                      const std::string_view diagnostic_code) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8484,9 +8519,9 @@ bool ValidateOrderedJsonObjectAggModifierValuesSpine() {
   for (const auto modifier : {AggregateModifierProfile::kFilter,
                               AggregateModifierProfile::kDistinct,
                               AggregateModifierProfile::kDistinctFilter}) {
-    const auto first = sblr::DispatchSblrOperation(
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedJsonObjectAggModifierValuesEnvelope(modifier), {}});
-    const auto repeated = sblr::DispatchSblrOperation(
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), OrderedJsonObjectAggModifierValuesEnvelope(modifier), {}});
     if (!first.api_result.ok) {
       for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -8585,7 +8620,7 @@ bool ValidateOrderedJsonObjectAggModifierRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8608,9 +8643,9 @@ bool ValidateOrderedJsonObjectAggModifierRefusalIsAtomic() {
 }
 
 bool ValidateSortValuesSpine() {
-  const auto first = sblr::DispatchSblrOperation(
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), SortValuesEnvelope(), {}});
-  const auto repeated = sblr::DispatchSblrOperation(
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
       {Context(), SortValuesEnvelope(), {}});
   if (!first.api_result.ok) {
     for (const auto& diagnostic : first.api_result.diagnostics) {
@@ -8666,7 +8701,7 @@ bool ValidateSortRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8693,7 +8728,7 @@ bool ValidatePayloadRefusalIsAtomic() {
   ambiguous_temporal.operands[13].value =
       "1|-|1|-|-|4|-|323032362d30372d32365430303a30303a30305a";
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8729,7 +8764,7 @@ bool ValidateComposedScalarRefusalIsAtomic() {
     }
   }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
-    const auto result = sblr::DispatchSblrOperation(
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
     return result.accepted && result.optimizer_admitted &&
            !result.optimizer_selected && !result.physical_dag_published &&
@@ -8752,6 +8787,7 @@ bool ValidateComposedScalarRefusalIsAtomic() {
 // QOW-TEST-INTEGRATION-306-211-LIVE-VALUES-V1
 int main() {
   const bool passed = ValidateLiveValuesSpine() &&
+                      ValidateLiveValuesPreResultRevocationIsAtomic() &&
                       ValidateComposedScalarValuesSpine() &&
                       ValidateUnionAllValuesSpine() &&
                       ValidateUnionAllRefusalIsAtomic() &&

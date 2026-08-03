@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -23,6 +24,63 @@ namespace api = scratchbird::engine::internal_api;
 bool Require008(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-OPT-008-V1: " << detail << '\n';
   return condition;
+}
+
+exec::CanonicalExecutionMgaAuthority ClosureAuthority(
+    const exec::TypedPhysicalNodeDag& dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = dag.mga_statement_context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
+struct StaleResolutionState008 {
+  exec::PhysicalMgaStatementContext current;
+  std::size_t resolution_count = 0;
+  std::size_t stale_on_resolution = 0;
+};
+
+std::shared_ptr<StaleResolutionState008> RefuseAtResolution008(
+    api::CanonicalOptimizerSelectedExecutionRequest* request,
+    const std::size_t stale_on_resolution) {
+  auto state = std::make_shared<StaleResolutionState008>();
+  state->current = request->mga_authority.statement_context;
+  state->stale_on_resolution = stale_on_resolution;
+  request->mga_authority.resolve_current = [state] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    ++state->resolution_count;
+    resolution.statement_context = state->current;
+    if (state->resolution_count >= state->stale_on_resolution) {
+      resolution.statement_context.current = false;
+    }
+    return resolution;
+  };
+  return state;
+}
+
+bool RequireNoSelectedExposure008(
+    const api::CanonicalOptimizerSelectedExecutionResult& result,
+    const std::string_view phase) {
+  return Require008(
+      !result.accepted && !result.exact_selected_nodes_executed &&
+          !result.canonical_result_published &&
+          result.dispatch.executed_steps.empty() &&
+          result.dispatch.root_result_handle_id == 0 &&
+          result.runtime_actuals.node_actuals.empty() &&
+          !result.runtime_actuals.accepted &&
+          !result.result_publication.published &&
+          result.result_publication.canonical_envelope_bytes.empty() &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-MGA-RUNTIME-CURRENT-V1",
+      std::string(phase) +
+          " stale authority exposed a step, root batch, runtime actual, or result");
 }
 
 api::EngineDescriptor RootResultDescriptor() {
@@ -79,6 +137,7 @@ exec::CanonicalPhysicalDispatchStepResult Step008(
   result.result_handle_id = result_handle;
   result.output_descriptor_ids = node.output_descriptor_ids;
   result.authority.engine_mga_snapshot_bound = true;
+  result.mga_statement_context = dag.mga_statement_context;
   result.input_row_count = input_rows;
   result.output_row_count = output_rows;
   result.rows_examined = rows_examined;
@@ -112,10 +171,7 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
   request.selected_physical_dag = publication.physical_dag;
   request.pre_access_statistics_snapshot_uuid =
       publication.physical_dag.statistics_snapshot_uuid;
-  request.inventory_local_transaction_id =
-      publication.physical_dag.local_transaction_id;
-  request.inventory_statement_snapshot_id =
-      publication.physical_dag.statement_snapshot_id;
+  request.mga_authority = ClosureAuthority(publication.physical_dag);
   request.engine_execution_authorized = true;
   request.result_publication_request = ResultPublicationRequest();
 
@@ -153,9 +209,7 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
         scan_request.selected_physical_node_id = node.physical_node_id;
         scan_request.available_implementation_id = node.implementation_id;
         scan_request.relation_uuid = Uuid(9);
-        scan_request.inventory_local_transaction_id = dag.local_transaction_id;
-        scan_request.inventory_statement_snapshot_id =
-            dag.statement_snapshot_id;
+        scan_request.mga_authority = ClosureAuthority(dag);
         scan_request.selected_descriptor_generation = 31;
         scan_request.current_descriptor_generation = 31;
         exec::CanonicalScanCandidateEvidence candidate;
@@ -163,6 +217,8 @@ api::CanonicalOptimizerSelectedExecutionRequest SelectedExecutionRequest(
         candidate.record_uuid = Uuid(911);
         candidate.relation_uuid = Uuid(9);
         candidate.visibility_decision_uuid = Uuid(912);
+        candidate.creator_local_transaction_id =
+            dag.mga_statement_context.owning_local_transaction_id;
         candidate.row_version_id = 913;
         candidate.candidate_generation = 31;
         candidate.observed_generation = 31;
@@ -368,6 +424,42 @@ bool ValidatePostStartFailureIsTruthful() {
       "post-start executor failure falsely reported a pre-read refusal");
 }
 
+// Packet 4 resolves the selected statement authority at these exact execution
+// boundaries: selected-entry, dispatch-entry, pre/post each node, dispatch
+// root acceptance, runtime-actuals entry/result, and immediate pre-result.
+// Returning a revoked vector at each named phase proves that the outer selected
+// result does not leak the locally accumulated dispatch/actual/result state.
+bool ValidatePhaseSpecificStaleRefusals() {
+  struct PhaseCase {
+    const char* name;
+    std::size_t stale_on_resolution;
+    std::vector<std::uint64_t> expected_invocations;
+  };
+  const std::vector<PhaseCase> cases = {
+      {"pre-node", 3, {}},
+      {"post-node", 4, {1}},
+      {"inter-node", 5, {1}},
+      {"pre-actuals", 12, {1, 2, 3, 4}},
+      {"immediate-pre-result", 14, {1, 2, 3, 4}},
+  };
+
+  bool passed = true;
+  for (const auto& phase : cases) {
+    std::vector<std::uint64_t> invocation_order;
+    auto request = SelectedExecutionRequest(&invocation_order);
+    const auto state =
+        RefuseAtResolution008(&request, phase.stale_on_resolution);
+    const auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+    passed &= RequireNoSelectedExposure008(result, phase.name);
+    passed &= Require008(
+        invocation_order == phase.expected_invocations &&
+            state->resolution_count == phase.stale_on_resolution,
+        std::string(phase.name) +
+            " refusal did not occur at the intended revalidation boundary");
+  }
+  return passed;
+}
+
 // QOW-TEST-INTEGRATION-306-211-V1
 bool ValidateResultPublicationRefusalIsTruthful() {
   std::vector<std::uint64_t> invocation_order;
@@ -445,6 +537,7 @@ int main() {
   passed &= ValidatePreflightReplan();
   passed &= ValidateAuthorityAndAbiRefusal();
   passed &= ValidatePostStartFailureIsTruthful();
+  passed &= ValidatePhaseSpecificStaleRefusals();
   passed &= ValidateResultPublicationRefusalIsTruthful();
   passed &= ValidateCanonicalRouteIsolation();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

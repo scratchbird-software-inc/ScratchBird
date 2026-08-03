@@ -6467,6 +6467,16 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
     return invalid("heap_read_cancelled_before_descriptor_load");
   }
 
+  const auto inventory_guard =
+      AcquireTransactionInventoryGuard(context.database_path);
+  EngineResolveStatementSnapshotRequest snapshot_request;
+  snapshot_request.context = context;
+  const auto snapshot = EngineResolveStatementSnapshot(snapshot_request);
+  if (!snapshot.ok || !snapshot.snapshot_vector.inventory_authoritative ||
+      !snapshot.snapshot_vector.complete) {
+    return invalid("exact_current_statement_snapshot_vector_required");
+  }
+
   const auto loaded_descriptor =
       LoadMgaRelationStorageDescriptor(context, request.relation_uuid);
   if (!loaded_descriptor.ok) { return refuse(loaded_descriptor.diagnostic); }
@@ -6488,6 +6498,31 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
   if (authority.error) { return refuse(authority); }
   FilterVisibleRetiredTemporaryMetadata(context, &metadata);
   FilterMgaTemporaryObjectsForSession(context, &metadata);
+  const auto creator_visible = [&](const std::uint64_t creator) {
+    const auto& vector = snapshot.snapshot_vector;
+    if (creator == 0) return false;
+    const auto transaction = metadata.transactions.find(creator);
+    if (transaction == metadata.transactions.end()) return false;
+    if (creator == vector.owning_transaction.value) {
+      return transaction->second == "active" ||
+             transaction->second == "preparing" ||
+             transaction->second == "prepared";
+    }
+    if (transaction->second != "committed" &&
+        transaction->second != "archived") {
+      return false;
+    }
+    if (vector.visible_committed_high_watermark == 0 ||
+        creator > vector.visible_committed_high_watermark) {
+      return false;
+    }
+    return !std::binary_search(
+               vector.active_excluded_local_transaction_ids.begin(),
+               vector.active_excluded_local_transaction_ids.end(), creator) &&
+           !std::binary_search(
+               vector.in_doubt_excluded_local_transaction_ids.begin(),
+               vector.in_doubt_excluded_local_transaction_ids.end(), creator);
+  };
   const auto table = FindVisibleCrudTable(
       metadata, request.relation_uuid, context.local_transaction_id);
   if (!table) { return invalid("heap_relation_not_visible"); }
@@ -6553,7 +6588,9 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelation(
     }
     const auto& row = admitted_versions[index];
     ++result.visibility_recheck_count;
-    if (!CrudRowVersionVisibleToContext(metadata, row, context)) {
+    if ((!row.temporary_session_uuid.empty() &&
+         row.temporary_session_uuid != context.session_uuid.canonical) ||
+        !creator_visible(row.creator_tx)) {
       ++result.invisible_row_version_count;
       continue;
     }
@@ -10472,6 +10509,31 @@ DescriptorRuntimeDiagnostic ValidateCurrentHeapPhysicalMgaAuthority(
   return {};
 }
 
+CanonicalExecutionMgaAuthority BuildCurrentHeapExecutionMgaAuthority(
+    const scratchbird::engine::internal_api::EngineRequestContext& context,
+    const TypedPhysicalNodeDag& physical_dag) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = physical_dag.mga_statement_context;
+  authority.origin = CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  authority.resolve_current = [context]() {
+    CanonicalMgaCurrentResolution current;
+    api::EngineResolveStatementSnapshotRequest resolve_request;
+    resolve_request.context = context;
+    const auto resolved = api::EngineResolveStatementSnapshot(resolve_request);
+    if (!resolved.ok) {
+      current.diagnostic = HeapAcquisitionRefusal(
+          "SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
+          "statement snapshot is unknown, revoked, stale, or not current");
+      return current;
+    }
+    current.statement_context = PhysicalMgaContextFromResolvedSnapshot(
+        context, resolved.snapshot_vector);
+    return current;
+  };
+  return authority;
+}
+
 bool IsCanonicalHeapBindingUuid(const std::string_view value) {
   if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
       value[18] != '-' || value[23] != '-') {
@@ -10631,6 +10693,14 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   const auto& relational = *request.relational_dag;
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(context.database_path);
+  if (request.mga_authority.origin !=
+      CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
+    return invalid("QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
+                   "heap acquisition requires engine transaction-inventory authority");
+  }
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!entry_authority.ok) return refuse(entry_authority);
   const auto relational_validation = api::ValidateTypedRelationalDag(relational);
   if (!relational_validation.accepted) {
     const auto& issue = relational_validation.issues.front();
@@ -11033,6 +11103,9 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    value_validation.detail,
                    true);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority, true);
 
   result.diagnostic = {};
   result.output_batch = std::move(batch);
@@ -11062,6 +11135,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = physical->physical_node_id;
   result.causal_counter_id = physical->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -11083,6 +11157,7 @@ struct HeapPhysicalExecutorState {
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct HeapPhysicalRegistrationBuildResult {
@@ -11172,6 +11247,15 @@ DescriptorRuntimeDiagnostic ValidateHeapPhysicalRegistrationRequest(
   const auto& relational = *request.relational_dag;
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(context.database_path);
+  if (request.mga_authority.origin !=
+      CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
+    return HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
+        "heap registration requires engine transaction-inventory authority");
+  }
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!entry_authority.ok) return entry_authority;
   const auto relational_validation = api::ValidateTypedRelationalDag(relational);
   if (!relational_validation.accepted) {
     const auto& issue = relational_validation.issues.front();
@@ -11337,6 +11421,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
   state->maximum_output_columns = request.maximum_output_columns;
   state->maximum_output_cells = request.maximum_output_cells;
   state->cancellation_requested = request.cancellation_requested;
+  state->mga_authority = request.mga_authority;
   result.observation = std::make_shared<HeapPhysicalDispatchObservation>();
 
   CanonicalPhysicalExecutorRegistration registration;
@@ -11384,6 +11469,12 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
               "dispatched heap node differs from captured optimizer authority");
           return step;
         }
+        const auto callback_entry = RevalidateCanonicalExecutionMgaAuthority(
+            state->mga_authority, dispatched_dag);
+        if (!callback_entry.ok) {
+          step.diagnostic = callback_entry;
+          return step;
+        }
 
         CanonicalHeapRelationAcquisitionRequest acquisition_request;
         acquisition_request.context = &state->context;
@@ -11401,6 +11492,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         acquisition_request.maximum_output_cells = state->maximum_output_cells;
         acquisition_request.cancellation_requested =
             state->cancellation_requested;
+        acquisition_request.mga_authority = state->mga_authority;
         auto acquisition =
             ExecuteCanonicalHeapRelationAcquisition(acquisition_request);
         observation->data_access_observed = acquisition.data_access_observed;
@@ -11408,6 +11500,20 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         step.data_access_observed = acquisition.data_access_observed;
         if (!acquisition.diagnostic.ok) {
           step.diagnostic = std::move(acquisition.diagnostic);
+          return step;
+        }
+        if (!PhysicalMgaStatementContextEqual(
+                acquisition.mga_statement_context,
+                state->mga_authority.statement_context)) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-QRY-004-HEAP-MGA-VECTOR-V1",
+              "heap acquisition returned a different MGA statement context");
+          return step;
+        }
+        const auto callback_result = RevalidateCanonicalExecutionMgaAuthority(
+            state->mga_authority, dispatched_dag);
+        if (!callback_result.ok) {
+          step.diagnostic = callback_result;
           return step;
         }
 
@@ -11430,6 +11536,7 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
         step.current_relation_descriptor_generation =
             acquisition.current_relation_descriptor_generation;
         step.materialized_output_batch = std::move(acquisition.output_batch);
+        step.mga_statement_context = state->mga_authority.statement_context;
         return step;
       };
   result.registration = std::move(registration);
@@ -11460,6 +11567,11 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
   }
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(request.context->database_path);
+  const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!entry_authority.ok) {
+    return HeapPhysicalDispatchRefusal(entry_authority);
+  }
   auto built = BuildHeapPhysicalRegistration(request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||
       built.observation == nullptr) {
@@ -11484,10 +11596,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
 
   CanonicalPhysicalDagDispatchRequest dispatch_request;
   dispatch_request.physical_dag = physical;
-  dispatch_request.inventory_local_transaction_id =
-      request.context->local_transaction_id;
-  dispatch_request.inventory_statement_snapshot_id =
-      request.context->snapshot_visible_through_local_transaction_id;
+  dispatch_request.mga_authority = request.mga_authority;
   dispatch_request.available_executors.push_back(
       std::move(*built.registration));
   auto dispatched = ExecuteCanonicalPhysicalDag(dispatch_request);
@@ -11518,13 +11627,25 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
           physical.nodes.front().causal_counter_id ||
       !dispatched.executed_steps.front().materialized_output_batch.has_value() ||
       !dispatched.executed_steps.front().heap_read_counters.has_value() ||
-      !dispatched.executed_steps.front().heap_read_authority.has_value()) {
+      !dispatched.executed_steps.front().heap_read_authority.has_value() ||
+      !PhysicalMgaStatementContextEqual(
+          dispatched.mga_statement_context,
+          request.mga_authority.statement_context) ||
+      !PhysicalMgaStatementContextEqual(
+          dispatched.executed_steps.front().mga_statement_context,
+          request.mga_authority.statement_context)) {
     return HeapPhysicalDispatchRefusal(
         HeapAcquisitionRefusal(
             "QOW-DIAG-QRY-004-HEAP-DISPATCH-EVIDENCE-V1",
             "heap dispatch lost materialized or causal evidence"),
         built.observation->callback_invoked,
         built.observation->data_access_observed);
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return HeapPhysicalDispatchRefusal(
+        result_authority, true, built.observation->data_access_observed);
   }
   return dispatched;
 }
@@ -11592,6 +11713,14 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
       exec::ValidateCurrentHeapPhysicalMgaAuthority(context, physical);
   if (!current_mga.ok) {
     return refuse(current_mga.diagnostic_code, 0, current_mga.detail);
+  }
+  auto mga_authority =
+      exec::BuildCurrentHeapExecutionMgaAuthority(context, physical);
+  const auto carrier_validation =
+      exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority, physical);
+  if (!carrier_validation.ok) {
+    return refuse(carrier_validation.diagnostic_code, 0,
+                  carrier_validation.detail);
   }
   if (relational.wire_version != 2 || relational.nodes.size() != 1 ||
       relational.root_node_id != relational.nodes.front().node_id ||
@@ -11695,6 +11824,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   registration_request.maximum_output_columns = request.maximum_output_columns;
   registration_request.maximum_output_cells = request.maximum_output_cells;
   registration_request.cancellation_requested = request.cancellation_requested;
+  registration_request.mga_authority = mga_authority;
   auto built = exec::BuildHeapPhysicalRegistration(registration_request);
   if (!built.diagnostic.ok || !built.registration.has_value() ||
       built.observation == nullptr) {
@@ -11712,9 +11842,7 @@ ExecuteCanonicalHeapOptimizerSelectedDag(
   selected.selected_physical_dag = request.selected_physical_dag;
   selected.pre_access_statistics_snapshot_uuid =
       request.selected_physical_dag.statistics_snapshot_uuid;
-  selected.inventory_local_transaction_id = context.local_transaction_id;
-  selected.inventory_statement_snapshot_id =
-      context.snapshot_visible_through_local_transaction_id;
+  selected.mga_authority = mga_authority;
   selected.available_executors.push_back(std::move(*built.registration));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =

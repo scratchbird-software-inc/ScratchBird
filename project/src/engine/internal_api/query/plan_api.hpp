@@ -241,8 +241,7 @@ struct CanonicalRuntimeOptimizerStatisticsRequest {
   std::uint16_t abi_version{1};
   scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
   std::string pre_access_statistics_snapshot_uuid;
-  std::uint64_t inventory_local_transaction_id{0};
-  std::uint64_t inventory_statement_snapshot_id{0};
+  scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
   std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
   bool data_access_observed{false};
   bool engine_zero_data_access_completion_evidence{false};
@@ -273,6 +272,8 @@ struct CanonicalRuntimeOptimizerStatisticsResult {
   std::string pre_access_statistics_snapshot_uuid;
   std::vector<CanonicalRuntimeOptimizerNodeActual> node_actuals;
   std::vector<CanonicalRuntimeOptimizerStatisticsIssue> issues;
+  scratchbird::engine::executor::PhysicalMgaStatementContext
+      mga_statement_context;
 };
 
 // QOW-SOURCE-OPT-015-V1
@@ -283,8 +284,7 @@ struct CanonicalOptimizerSelectedExecutionRequest {
   std::uint16_t abi_version{1};
   scratchbird::engine::executor::TypedPhysicalNodeDag selected_physical_dag;
   std::string pre_access_statistics_snapshot_uuid;
-  std::uint64_t inventory_local_transaction_id{0};
-  std::uint64_t inventory_statement_snapshot_id{0};
+  scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
   scratchbird::engine::executor::PhysicalNodeAbiLimits limits;
   std::vector<
       scratchbird::engine::executor::CanonicalPhysicalExecutorRegistration>
@@ -315,6 +315,8 @@ struct CanonicalOptimizerSelectedExecutionResult {
       result_publication;
   CanonicalRuntimeOptimizerStatisticsResult runtime_actuals;
   std::vector<CanonicalOptimizerSelectedExecutionIssue> issues;
+  scratchbird::engine::executor::PhysicalMgaStatementContext
+      mga_statement_context;
 };
 
 // QOW-SOURCE-OPT-008-V1

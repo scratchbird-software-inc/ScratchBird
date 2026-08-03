@@ -86,11 +86,10 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;
@@ -119,18 +118,6 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
         true);
   }
 
-  if (request.inventory_local_transaction_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.physical_dag.local_transaction_id) {
-    return refuse(Refusal("SB_DIAG_MGA_READ_TRANSACTION_MISSING",
-                          "engine transaction inventory is not bound"));
-  }
-  if (request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_statement_snapshot_id !=
-          request.physical_dag.statement_snapshot_id) {
-    return refuse(Refusal("SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
-                          "engine statement snapshot is not bound"));
-  }
   if (!IsCanonicalUuid(request.relation_uuid)) {
     return refuse(Refusal("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
                           "relation UUID is not canonical"));
@@ -163,6 +150,7 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
         !IsCanonicalUuid(candidate.relation_uuid) ||
         candidate.relation_uuid != request.relation_uuid ||
         !IsCanonicalUuid(candidate.visibility_decision_uuid) ||
+        candidate.creator_local_transaction_id == 0 ||
         candidate.row_version_id == 0 ||
         candidate.candidate_generation == 0 ||
         candidate.observed_generation == 0 ||
@@ -184,6 +172,14 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
       return refuse(Refusal("SB_DIAG_MGA_READ_VISIBILITY_DECISION_INVALID",
                             "visibility decision is invalid or indeterminate",
                             index));
+    }
+    if (candidate.visibility == CanonicalMgaVisibilityDecision::kVisible &&
+        !CanonicalMgaCreatorVisibleToStatement(
+            request.mga_authority.statement_context,
+            candidate.creator_local_transaction_id)) {
+      return refuse(Refusal(
+          "SB_DIAG_MGA_READ_VISIBILITY_DECISION_INVALID",
+          "visible scan candidate contradicts captured MGA vector", index));
     }
     if (!IsKnownSecurity(candidate.security_decision) ||
         candidate.security_decision ==
@@ -228,6 +224,9 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
     result.accepted_row_version_ids.push_back(candidate.row_version_id);
     ++result.counters.emitted_count;
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.authority.engine_mga_snapshot_bound = true;
@@ -237,6 +236,7 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

@@ -55,6 +55,38 @@ struct DescriptorRuntimeDiagnostic {
   std::size_t column_index = 0;
 };
 
+enum class CanonicalMgaAuthorityOrigin : std::uint8_t {
+  kMissing = 0,
+  kEngineTransactionInventory,
+  kClosureTestSeam,
+};
+
+struct CanonicalMgaCurrentResolution {
+  DescriptorRuntimeDiagnostic diagnostic;
+  PhysicalMgaStatementContext statement_context;
+};
+
+using CanonicalMgaCurrentResolver =
+    std::function<CanonicalMgaCurrentResolution()>;
+
+// The DAG carries the statement vector selected before access; this carrier
+// supplies the operation that resolves the vector that is current now. The
+// resolver never decides equality. Common executor code compares every field.
+struct CanonicalExecutionMgaAuthority {
+  PhysicalMgaStatementContext statement_context;
+  CanonicalMgaCurrentResolver resolve_current;
+  CanonicalMgaAuthorityOrigin origin = CanonicalMgaAuthorityOrigin::kMissing;
+};
+
+DescriptorRuntimeDiagnostic RevalidateCanonicalExecutionMgaAuthority(
+    const CanonicalExecutionMgaAuthority& authority,
+    const TypedPhysicalNodeDag& physical_dag,
+    const PhysicalNodeAbiLimits& limits = {});
+
+bool CanonicalMgaCreatorVisibleToStatement(
+    const PhysicalMgaStatementContext& statement_context,
+    std::uint64_t creator_local_transaction_id);
+
 enum class CanonicalResultKind : std::uint8_t {
   kRows = 1,
   kCommand,
@@ -200,6 +232,7 @@ struct CanonicalDescriptorProjectionRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
   std::vector<std::size_t> projected_columns;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorProjectionResult {
@@ -208,6 +241,7 @@ struct CanonicalDescriptorProjectionResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorFilterRequest {
@@ -218,6 +252,7 @@ struct CanonicalDescriptorFilterRequest {
       row_truth_values;
   scratchbird::engine::internal_api::EnginePredicateConsumer consumer =
       scratchbird::engine::internal_api::EnginePredicateConsumer::filter;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorFilterResult {
@@ -226,6 +261,7 @@ struct CanonicalDescriptorFilterResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorLimitRequest {
@@ -234,6 +270,7 @@ struct CanonicalDescriptorLimitRequest {
   DescriptorBatch input_batch;
   std::uint64_t limit = 0;
   std::uint64_t offset = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorLimitResult {
@@ -242,6 +279,7 @@ struct CanonicalDescriptorLimitResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalTableSubqueryRequest {
@@ -249,6 +287,7 @@ struct CanonicalTableSubqueryRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
   std::size_t maximum_materialized_row_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalTableSubqueryResult {
@@ -258,6 +297,7 @@ struct CanonicalTableSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalScalarSubqueryRequest {
@@ -273,6 +313,7 @@ struct CanonicalScalarSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalRowSubqueryRequest {
@@ -288,6 +329,7 @@ struct CanonicalRowSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalExistsSubqueryRequest {
@@ -304,6 +346,7 @@ struct CanonicalExistsSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalQuantifiedSubqueryQuantifier : std::uint8_t {
@@ -335,6 +378,7 @@ struct CanonicalQuantifiedSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalCorrelatedSubqueryRequest {
@@ -349,6 +393,7 @@ struct CanonicalCorrelatedSubqueryRequest {
   std::size_t maximum_scope_execution_count = 1048576;
   std::size_t maximum_comparison_count = 1048576;
   std::size_t maximum_result_row_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalCorrelatedScopeResult {
@@ -366,6 +411,7 @@ struct CanonicalCorrelatedSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalLateralJoinForm : std::uint8_t {
@@ -381,6 +427,7 @@ struct CanonicalLateralSubqueryRequest {
   std::uint64_t selected_physical_node_id = 0;
   CanonicalLateralJoinForm form = CanonicalLateralJoinForm::kInnerLateral;
   std::size_t maximum_output_row_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalLateralSubqueryResult {
@@ -395,6 +442,7 @@ struct CanonicalLateralSubqueryResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 using CanonicalRecursiveCteStep =
@@ -408,6 +456,7 @@ struct CanonicalRecursiveCteWorkingRequest {
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
   std::size_t maximum_result_row_count = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalRecursiveCteIteration {
@@ -426,6 +475,7 @@ struct CanonicalRecursiveCteWorkingResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalRecursiveCteUnionMode : std::uint8_t {
@@ -444,6 +494,7 @@ struct CanonicalRecursiveCteUnionResult {
   CanonicalRecursiveCteUnionMode union_mode =
       CanonicalRecursiveCteUnionMode::kAll;
   std::size_t duplicate_row_count = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalRecursiveCteGeneratedBatch {
@@ -473,6 +524,7 @@ struct CanonicalRecursiveCteSearchCycleRequest {
   std::size_t maximum_iteration_count = 0;
   std::size_t maximum_working_row_count = 0;
   std::size_t maximum_result_row_count = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalRecursiveCteSearchCycleMetadata {
@@ -492,6 +544,7 @@ struct CanonicalRecursiveCteSearchCycleResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalRecursiveCteResourceRequest {
@@ -505,6 +558,7 @@ struct CanonicalRecursiveCteResourceResult {
   std::size_t materialized_value_bytes = 0;
   bool working_state_cleaned = false;
   std::string memory_grant_evidence_uuid;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 using CanonicalRecursiveCteCancellationProbe =
@@ -522,6 +576,7 @@ struct CanonicalRecursiveCteCancellationResult {
   std::size_t cancellation_iteration_ordinal = 0;
   bool working_state_cleaned = false;
   std::string cancellation_evidence_uuid;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalFetchTopProfileForm : std::uint8_t {
@@ -541,6 +596,7 @@ struct CanonicalDescriptorFetchProfileRequest {
   std::uint64_t row_count = 0;
   std::uint64_t offset = 0;
   bool row_count_is_bound = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorFetchProfileResult {
@@ -549,6 +605,7 @@ struct CanonicalDescriptorFetchProfileResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorCountRequest {
@@ -556,6 +613,7 @@ struct CanonicalDescriptorCountRequest {
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
   ExecutorColumnDescriptor count_column;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorCountResult {
@@ -564,6 +622,7 @@ struct CanonicalDescriptorCountResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalInt64SumAggregateState {
@@ -583,6 +642,7 @@ struct CanonicalInt64SumStateRequest {
   std::uint32_t value_expression_descriptor_id = 0;
   ExecutorColumnDescriptor result_column;
   std::size_t maximum_transition_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalInt64SumStateResult {
@@ -591,12 +651,14 @@ struct CanonicalInt64SumStateResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalInt64SumFinalizeRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   CanonicalInt64SumAggregateState state;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalInt64SumFinalizeResult {
@@ -605,6 +667,7 @@ struct CanonicalInt64SumFinalizeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalInt64GroupingSetRule : std::uint8_t {
@@ -633,6 +696,7 @@ struct CanonicalInt64SumGroupRequest {
       CanonicalInt64GroupingSetRule::key_only;
   std::size_t maximum_group_count = 65536;
   std::size_t maximum_transition_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalInt64SumGroupResult {
@@ -641,6 +705,7 @@ struct CanonicalInt64SumGroupResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalInt64SumFilterRequest {
@@ -655,6 +720,7 @@ struct CanonicalInt64SumFilterResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalInt64SumDistinctRequest {
@@ -669,6 +735,7 @@ struct CanonicalInt64SumDistinctResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalInt64SumSpillRequest {
@@ -694,6 +761,7 @@ struct CanonicalInt64SumSpillResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorInnerJoinRequest {
@@ -705,6 +773,7 @@ struct CanonicalDescriptorInnerJoinRequest {
       pair_truth_values;
   scratchbird::engine::internal_api::EnginePredicateConsumer consumer =
       scratchbird::engine::internal_api::EnginePredicateConsumer::join_on;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorInnerJoinResult {
@@ -713,6 +782,7 @@ struct CanonicalDescriptorInnerJoinResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalCompositeJoinKeyTerm {
@@ -734,6 +804,7 @@ struct CanonicalCompositeJoinKeyRequest {
   std::vector<CanonicalCompositeJoinKeyTerm> key_terms;
   std::size_t maximum_key_term_count = 64;
   std::size_t maximum_key_comparisons = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalCompositeJoinKeyResult {
@@ -744,6 +815,7 @@ struct CanonicalCompositeJoinKeyResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalJoinResidualRequest {
@@ -762,6 +834,7 @@ struct CanonicalJoinResidualResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalAcceptedJoinKind : std::uint8_t {
@@ -792,6 +865,7 @@ struct CanonicalJoinKindResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalNamedJoinForm : std::uint8_t {
@@ -832,6 +906,7 @@ struct CanonicalNamedJoinResult {
   std::uint64_t join_causal_counter_id = 0;
   std::uint64_t executed_projection_node_id = 0;
   std::uint64_t projection_causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalJoinStrategyKind : std::uint8_t {
@@ -878,6 +953,7 @@ struct CanonicalJoinStrategyResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalMgaVisibilityDecision : std::uint8_t {
@@ -905,6 +981,7 @@ struct CanonicalScanCandidateEvidence {
   std::uint64_t row_version_id = 0;
   std::uint64_t candidate_generation = 0;
   std::uint64_t observed_generation = 0;
+  std::uint64_t creator_local_transaction_id = 0;
   CanonicalScanCandidateSource source =
       CanonicalScanCandidateSource::kRelationPage;
   CanonicalMgaVisibilityDecision visibility =
@@ -921,8 +998,7 @@ struct CanonicalScanAccessRequest {
   std::uint64_t selected_physical_node_id = 0;
   std::string available_implementation_id;
   std::string relation_uuid;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
   std::uint64_t selected_descriptor_generation = 0;
   std::uint64_t current_descriptor_generation = 0;
   std::vector<CanonicalScanCandidateEvidence> candidates;
@@ -959,6 +1035,7 @@ struct CanonicalScanAccessResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalHeapRelationAcquisitionRequest {
@@ -977,6 +1054,7 @@ struct CanonicalHeapRelationAcquisitionRequest {
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalHeapRelationAcquisitionCounters {
@@ -1018,6 +1096,7 @@ struct CanonicalHeapRelationAcquisitionResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalHeapPhysicalDagDispatchRequest {
@@ -1032,6 +1111,7 @@ struct CanonicalHeapPhysicalDagDispatchRequest {
   std::size_t maximum_output_columns = 0;
   std::size_t maximum_output_cells = 0;
   std::function<bool()> cancellation_requested;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalPhysicalDispatchInput {
@@ -1044,6 +1124,7 @@ struct CanonicalPhysicalDispatchInput {
   // causal ABI; this payload is the engine-owned value channel and is never
   // reconstructed from parser text or an opaque handle.
   std::optional<DescriptorBatch> materialized_output_batch;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalPhysicalDispatchAuthorityEvidence {
@@ -1088,6 +1169,7 @@ struct CanonicalPhysicalDispatchStepResult {
   bool execution_started = false;
   bool execution_finished = false;
   bool counters_captured_after_finish = false;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 using CanonicalPhysicalNodeExecutor = std::function<
@@ -1108,8 +1190,7 @@ struct CanonicalPhysicalExecutorRegistration {
 
 struct CanonicalPhysicalDagDispatchRequest {
   TypedPhysicalNodeDag physical_dag;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
   PhysicalNodeAbiLimits limits;
   std::vector<CanonicalPhysicalExecutorRegistration> available_executors;
 };
@@ -1126,12 +1207,12 @@ struct CanonicalPhysicalDagDispatchResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_root_physical_node_id = 0;
   std::uint64_t root_causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalRecursiveCteMgaIterationEvidence {
   std::size_t iteration_ordinal = 0;
-  std::uint64_t local_transaction_id = 0;
-  std::uint64_t statement_snapshot_id = 0;
+  std::uint64_t creator_local_transaction_id = 0;
   CanonicalMgaVisibilityDecision visibility =
       CanonicalMgaVisibilityDecision::kIndeterminate;
   CanonicalMgaSecurityDecision security_decision =
@@ -1142,8 +1223,7 @@ struct CanonicalRecursiveCteMgaIterationEvidence {
 struct CanonicalRecursiveCteMgaRequest {
   CanonicalRecursiveCteWorkingRequest working_request;
   std::uint64_t transaction_inventory_id = 0;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
   std::string transaction_inventory_evidence_uuid;
   std::vector<CanonicalRecursiveCteMgaIterationEvidence> iteration_evidence;
   std::size_t maximum_boundary_rechecks = 1048576;
@@ -1154,6 +1234,7 @@ struct CanonicalRecursiveCteMgaResult {
   std::size_t iteration_evidence_count = 0;
   bool mga_boundary_proven = false;
   std::string transaction_inventory_evidence_uuid;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalSetOperationKind : std::uint8_t {
@@ -1208,6 +1289,7 @@ struct CanonicalSetOperationAllRequest {
   std::vector<CanonicalSetOperationCollationBinding> collation_bindings;
   std::size_t maximum_equality_comparison_count = 1048576;
   std::size_t maximum_output_row_count = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalSetOperationAllResult {
@@ -1225,6 +1307,7 @@ struct CanonicalSetOperationAllResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalSetOperationNestingRule : std::uint8_t {
@@ -1266,12 +1349,13 @@ struct CanonicalSetOperationNestingResult {
   std::uint64_t outer_physical_node_id = 0;
   std::uint64_t inner_causal_counter_id = 0;
   std::uint64_t outer_causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalJoinMgaCandidateEvidence {
   std::size_t pair_index = 0;
-  std::uint64_t local_transaction_id = 0;
-  std::uint64_t statement_snapshot_id = 0;
+  std::uint64_t left_creator_local_transaction_id = 0;
+  std::uint64_t right_creator_local_transaction_id = 0;
   std::uint64_t left_row_version_id = 0;
   std::uint64_t right_row_version_id = 0;
   CanonicalMgaVisibilityDecision left_visibility =
@@ -1289,8 +1373,7 @@ struct CanonicalJoinMgaCandidateEvidence {
 
 struct CanonicalJoinMgaInputRowEvidence {
   std::size_t row_index = 0;
-  std::uint64_t local_transaction_id = 0;
-  std::uint64_t statement_snapshot_id = 0;
+  std::uint64_t creator_local_transaction_id = 0;
   std::uint64_t row_version_id = 0;
   CanonicalMgaVisibilityDecision visibility =
       CanonicalMgaVisibilityDecision::kIndeterminate;
@@ -1304,8 +1387,7 @@ struct CanonicalJoinMgaInputRowEvidence {
 struct CanonicalJoinMgaRequest {
   CanonicalJoinStrategyRequest strategy_request;
   std::uint64_t transaction_inventory_id = 0;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
   std::string transaction_inventory_evidence_uuid;
   bool input_row_evidence_profile = false;
   std::vector<CanonicalJoinMgaInputRowEvidence> left_row_evidence;
@@ -1332,6 +1414,7 @@ struct CanonicalJoinMgaResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorRowNumberRequest {
@@ -1340,6 +1423,7 @@ struct CanonicalDescriptorRowNumberRequest {
   DescriptorBatch ordered_input_batch;
   ExecutorColumnDescriptor row_number_column;
   std::string deterministic_order_evidence_uuid;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorRowNumberResult {
@@ -1348,6 +1432,7 @@ struct CanonicalDescriptorRowNumberResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalDescriptorOrderDirection : std::uint8_t {
@@ -1480,6 +1565,7 @@ struct CanonicalAggregateRuntimeRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalAggregateRuntimeResult {
@@ -1504,6 +1590,7 @@ struct CanonicalAggregateRuntimeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalAggregateStateSpillRequest {
@@ -1533,6 +1620,7 @@ struct CanonicalAggregateStateSpillResult {
   bool cleanup_proven = false;
   bool cancellation_observed = false;
   std::vector<std::string> spill_evidence;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalAggregateStateExchangeRequest {
@@ -1562,6 +1650,7 @@ struct CanonicalAggregateStateExchangeResult {
   bool deterministic_merge_order_proven = false;
   bool merged_result_equivalent = false;
   bool cancellation_observed = false;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalAggregateMovingRuntimeRequest {
@@ -1587,6 +1676,7 @@ struct CanonicalAggregateMovingRuntimeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalAggregateGroupingSet {
@@ -1636,6 +1726,7 @@ struct CanonicalGroupedAggregateRuntimeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalGroupedAggregateSetRuntimeRequest {
@@ -1680,6 +1771,7 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalGroupedAggregateSetStateSpillRequest {
@@ -1707,6 +1799,7 @@ struct CanonicalGroupedAggregateSetStateSpillResult {
   bool cleanup_proven = false;
   bool cancellation_observed = false;
   std::vector<std::string> spill_evidence;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalDescriptorOrderComparisonResult {
@@ -1721,6 +1814,7 @@ struct CanonicalDescriptorSortRequest {
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string deterministic_tie_evidence_uuid;
   std::size_t maximum_pair_comparisons = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalDescriptorSortResult {
@@ -1729,6 +1823,7 @@ struct CanonicalDescriptorSortResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalWindowPartitionTerm {
@@ -1760,8 +1855,7 @@ struct CanonicalWindowPartitionOrderRequest {
   std::string window_property_uuid;
   std::string partition_property_uuid;
   std::string ordering_property_uuid;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
   std::size_t maximum_term_count = 64;
   std::size_t maximum_pair_comparisons = 1048576;
   bool parser_execution_authority_claimed = false;
@@ -1783,11 +1877,11 @@ struct CanonicalWindowPartitionOrderResult {
   bool weaker_peer_recomputation_forbidden = false;
   bool final_query_order_guaranteed = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  TypedPhysicalNodeDag physical_dag;
 };
 
 enum class CanonicalWindowFrameUnit : std::uint8_t {
@@ -1851,6 +1945,7 @@ struct CanonicalWindowFrameRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowFrameResult {
@@ -1866,11 +1961,12 @@ struct CanonicalWindowFrameResult {
   bool every_frame_operand_consumed = false;
   bool empty_state_uses_optional_bounds = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  CanonicalExecutionMgaAuthority mga_authority;
+  PhysicalMgaStatementContext mga_statement_context;
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  TypedPhysicalNodeDag physical_dag;
 };
 
 struct CanonicalInt64SumOrderedRequest {
@@ -1892,6 +1988,7 @@ struct CanonicalInt64SumOrderedResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct Int64DecodeResult {

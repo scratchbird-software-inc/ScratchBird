@@ -77,10 +77,11 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     result.diagnostic = Refusal(std::move(code), std::move(detail));
     return result;
   };
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id, issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code,
+                  authority_validation.detail);
   }
   if (request.physical_dag.abi_version != 2 ||
       !request.physical_dag.optimizer_published ||
@@ -93,13 +94,7 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     return refuse("QOW-DIAG-WINDOW-PEER",
                   "window stage lacks immutable optimizer publication");
   }
-  if (request.inventory_local_transaction_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.physical_dag.local_transaction_id ||
-      request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_statement_snapshot_id !=
-          request.physical_dag.statement_snapshot_id ||
-      request.parser_execution_authority_claimed ||
+  if (request.parser_execution_authority_claimed ||
       request.transaction_finality_claimed ||
       request.recovery_authority_claimed) {
     return refuse("QOW-DIAG-WINDOW-PEER",
@@ -314,6 +309,12 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
     return refuse(output_validation.diagnostic_code,
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
   result.diagnostic = {};
   result.partition_count = partitions.size();
   result.order_terms = request.order_terms;
@@ -324,13 +325,11 @@ CanonicalWindowPartitionOrderResult ExecuteCanonicalWindowPartitionOrder(
   result.weaker_peer_recomputation_forbidden = true;
   result.final_query_order_guaranteed = false;
   result.authority.engine_mga_snapshot_bound = true;
-  result.inventory_local_transaction_id =
-      request.inventory_local_transaction_id;
-  result.inventory_statement_snapshot_id =
-      request.inventory_statement_snapshot_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.physical_dag = request.physical_dag;
   return result;
 }
 
@@ -349,11 +348,10 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     result.output_batch = {};
     return result;
   };
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -420,11 +418,15 @@ CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
 
   result.diagnostic = {};
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

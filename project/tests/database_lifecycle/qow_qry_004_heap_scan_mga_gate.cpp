@@ -15,6 +15,7 @@
 #include "query/canonical_heap_optimizer_admission.hpp"
 #include "query/plan_api.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction_prepare.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -442,6 +443,7 @@ struct Fixture {
   std::string malformed_later_column_table_uuid;
   std::string malformed_table_uuid;
   std::string temporary_table_uuid;
+  std::string exclusion_table_uuid;
   platform::u64 salt = 0;
 
   ~Fixture() {
@@ -839,6 +841,8 @@ Fixture MakeFixture() {
       NewUuidText(platform::UuidKind::object, fixture.salt + 25);
   fixture.temporary_table_uuid =
       NewUuidText(platform::UuidKind::object, fixture.salt + 26);
+  fixture.exclusion_table_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 29);
 
   auto metadata = Begin(fixture, "qow-heap-metadata");
   auto zero_snapshot_context = metadata;
@@ -918,6 +922,7 @@ Fixture MakeFixture() {
                false, true);
   PersistTable(fixture, metadata, fixture.malformed_table_uuid);
   PersistTable(fixture, metadata, fixture.temporary_table_uuid, true);
+  PersistTable(fixture, metadata, fixture.exclusion_table_uuid);
   Commit(metadata);
   Require(!api::EngineResolveStatementSnapshot(zero_resolve_request).ok,
           "committed owner retained its zero-boundary statement snapshot");
@@ -994,6 +999,60 @@ Fixture MakeFixture() {
   Require(!append.error, "malformed fixture row append failed");
   Commit(malformed_writer);
   return fixture;
+}
+
+exec::CanonicalExecutionMgaAuthority DurableInventoryAuthority(
+    const api::EngineRequestContext& context,
+    const exec::TypedPhysicalNodeDag& physical_dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = physical_dag.mga_statement_context;
+  authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    api::EngineResolveStatementSnapshotRequest resolve_request;
+    resolve_request.context = context;
+    const auto resolved = api::EngineResolveStatementSnapshot(resolve_request);
+    if (!resolved.ok) {
+      current.diagnostic.ok = false;
+      current.diagnostic.diagnostic_code =
+          "SB_DIAG_MGA_READ_SNAPSHOT_MISSING";
+      current.diagnostic.detail =
+          "durable statement snapshot is revoked, stale, or unavailable";
+      return current;
+    }
+    const auto& vector = resolved.snapshot_vector;
+    auto& statement = current.statement_context;
+    statement.statement_uuid = context.statement_uuid.canonical;
+    statement.owning_transaction_uuid = context.transaction_uuid.canonical;
+    statement.statement_snapshot_uuid =
+        context.statement_snapshot_uuid.canonical;
+    statement.statement_metadata_snapshot_uuid =
+        context.statement_metadata_snapshot_uuid.canonical;
+    statement.owning_local_transaction_id = vector.owning_transaction.value;
+    statement.visible_committed_high_watermark =
+        vector.visible_committed_high_watermark;
+    statement.oldest_active_transaction_id =
+        vector.oldest_active_transaction.value;
+    statement.oldest_interesting_transaction_id =
+        vector.oldest_interesting_transaction.value;
+    statement.oldest_snapshot_transaction_id =
+        vector.oldest_snapshot_transaction.value;
+    statement.retention_horizon_transaction_id =
+        vector.retention_horizon_transaction.value;
+    statement.active_excluded_local_transaction_ids =
+        vector.active_excluded_local_transaction_ids;
+    statement.in_doubt_excluded_local_transaction_ids =
+        vector.in_doubt_excluded_local_transaction_ids;
+    statement.snapshot_kind = mga::SnapshotVectorKindName(vector.snapshot_kind);
+    statement.publication_inventory_next_local_transaction_id =
+        vector.publication_inventory_next_local_transaction_id;
+    statement.inventory_authoritative = vector.inventory_authoritative;
+    statement.complete = vector.complete;
+    statement.current = true;
+    return current;
+  };
+  return authority;
 }
 
 exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
@@ -1170,6 +1229,8 @@ exec::CanonicalHeapRelationAcquisitionRequest BoundRequest(
   request.maximum_output_columns = descriptor.columns.size();
   request.maximum_output_cells = 1024 * descriptor.columns.size();
   request.cancellation_requested = [] { return false; };
+  request.mga_authority =
+      DurableInventoryAuthority(context, request.physical_dag);
   return request;
 }
 
@@ -1210,6 +1271,7 @@ exec::CanonicalHeapPhysicalDagDispatchRequest DispatchRequestFor(
   request.maximum_output_columns = acquisition.maximum_output_columns;
   request.maximum_output_cells = acquisition.maximum_output_cells;
   request.cancellation_requested = acquisition.cancellation_requested;
+  request.mga_authority = acquisition.mga_authority;
   return request;
 }
 
@@ -1308,6 +1370,170 @@ void RequireAtomicObjectAdmissionBuildFailure(
               result.admission.evidence.empty() &&
               result.admission.issues.empty(),
           detail);
+}
+
+void ValidateDurableZeroHighWaterHeapGate(Fixture& fixture) {
+  auto owner = Begin(fixture, "qow-heap-zero-high-water-owner");
+  const auto inventory_guard =
+      api::AcquireTransactionInventoryGuard(owner.database_path);
+  const auto loaded =
+      db::LoadLocalTransactionInventoryFromDatabase(owner.database_path);
+  Require(loaded.ok(), "zero-high-water heap inventory load failed");
+  const auto committed_creator = std::ranges::find_if(
+      loaded.inventory.entries, [&](const auto& entry) {
+        return entry.identity.local_id.value != owner.local_transaction_id &&
+               (entry.state == mga::TransactionState::committed ||
+                entry.state == mga::TransactionState::archived);
+      });
+  Require(committed_creator != loaded.inventory.entries.end(),
+          "zero-high-water fixture lacks a durable committed non-owner");
+  const auto committed_non_owner_id =
+      committed_creator->identity.local_id.value;
+  auto isolated = loaded.inventory;
+  std::erase_if(isolated.entries, [&](const auto& entry) {
+    return entry.identity.local_id.value != owner.local_transaction_id;
+  });
+  Require(isolated.entries.size() == 1 &&
+              isolated.entries.front().state == mga::TransactionState::active,
+          "zero-high-water heap inventory did not isolate one active owner");
+  isolated.entries.front().begin_visible_through_local_transaction_id = 0;
+  Require(db::PersistLocalTransactionInventoryToDatabase(owner.database_path,
+                                                          isolated)
+              .ok(),
+          "zero-high-water heap inventory publication failed");
+
+  const auto relation_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 7000);
+  PersistTable(fixture, owner, relation_uuid);
+  InsertRows(fixture, owner, relation_uuid, {Int64Row(701)});
+  api::CrudRowVersionRecord non_owner;
+  non_owner.creator_tx = committed_non_owner_id;
+  non_owner.table_uuid = relation_uuid;
+  non_owner.row_uuid =
+      NewUuidText(platform::UuidKind::row, fixture.salt + 7001);
+  non_owner.version_uuid =
+      NewUuidText(platform::UuidKind::object, fixture.salt + 7002);
+  non_owner.values = {{"value", "702"}};
+  std::uint64_t ignored_sequence = 0;
+  Require(!api::AppendMgaRowVersion(owner, non_owner, &ignored_sequence).error,
+          "zero-high-water non-owner fixture append failed");
+
+  auto query = QueryContext(owner, relation_uuid, fixture.salt + 7010);
+  Require(query.snapshot_visible_through_local_transaction_id == 0,
+          "durable zero-high-water query context was widened");
+  auto request = RequestFor(query, relation_uuid, fixture.salt + 7020);
+  Require(request.physical_dag.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+              exec::PhysicalMgaStatementContextEqual(
+                  request.mga_authority.statement_context,
+                  request.physical_dag.mga_statement_context),
+          "zero-high-water heap request lost its full runtime carrier");
+  const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
+              result.output_batch.rows.front().values.front().encoded_value ==
+                  "701" &&
+              result.counters.invisible_row_version_count >= 1 &&
+              committed_non_owner_id != owner.local_transaction_id &&
+              result.mga_statement_context
+                      .visible_committed_high_watermark == 0 &&
+              exec::PhysicalMgaStatementContextEqual(
+                  result.mga_statement_context,
+                  request.mga_authority.statement_context),
+          "zero high-water did not admit only the owner's row under durable authority");
+  ReleaseRequest(&request);
+  Require(db::PersistLocalTransactionInventoryToDatabase(owner.database_path,
+                                                          loaded.inventory)
+              .ok(),
+          "zero-high-water heap inventory restoration failed");
+  Rollback(owner);
+}
+
+void ValidateDurableCapturedExclusionHeapGate(Fixture& fixture) {
+  auto active_writer = Begin(fixture, "qow-heap-captured-active-writer");
+  InsertRows(fixture, active_writer, fixture.exclusion_table_uuid,
+             {Int64Row(801)});
+
+  auto committed_between =
+      Begin(fixture, "qow-heap-captured-committed-between");
+  InsertRows(fixture, committed_between, fixture.exclusion_table_uuid,
+             {Int64Row(800)});
+  Commit(committed_between);
+
+  auto prepared_writer = Begin(fixture, "qow-heap-captured-prepared-writer");
+  InsertRows(fixture, prepared_writer, fixture.exclusion_table_uuid,
+             {Int64Row(802)});
+  Prepare(prepared_writer);
+
+  auto committed_after =
+      Begin(fixture, "qow-heap-captured-committed-after");
+  Commit(committed_after);
+
+  auto reader = QueryContext(Begin(fixture, "qow-heap-captured-reader"),
+                             fixture.exclusion_table_uuid,
+                             fixture.salt + 7100);
+  auto request = RequestFor(reader, fixture.exclusion_table_uuid,
+                            fixture.salt + 7110);
+  const auto& captured = request.mga_authority.statement_context;
+  Require(captured.visible_committed_high_watermark >=
+                  active_writer.local_transaction_id &&
+              captured.visible_committed_high_watermark >=
+                  prepared_writer.local_transaction_id &&
+              std::ranges::binary_search(
+                  captured.active_excluded_local_transaction_ids,
+                  active_writer.local_transaction_id) &&
+              std::ranges::binary_search(
+                  captured.in_doubt_excluded_local_transaction_ids,
+                  prepared_writer.local_transaction_id),
+          "durable statement vector omitted active/in-doubt creators below high-water");
+
+  Commit(active_writer);
+  {
+    const auto inventory_guard = api::AcquireTransactionInventoryGuard(
+        prepared_writer.database_path);
+    const auto loaded = db::LoadLocalTransactionInventoryFromDatabase(
+        prepared_writer.database_path);
+    Require(loaded.ok(), "prepared heap creator inventory load failed");
+    const auto completed = mga::CompletePreparedLocalTransactionCommit(
+        loaded.inventory,
+        mga::MakeLocalTransactionId(prepared_writer.local_transaction_id),
+        NowMillis());
+    Require(completed.ok() &&
+                completed.entry.state == mga::TransactionState::committed,
+            "prepared heap creator completion failed");
+    Require(db::PersistLocalTransactionInventoryToDatabase(
+                prepared_writer.database_path, completed.inventory)
+                .ok(),
+            "prepared heap creator committed inventory persistence failed");
+  }
+  const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  Require(result.diagnostic.ok && result.output_batch.rows.size() == 1 &&
+              result.output_batch.rows.front().values.front().encoded_value ==
+                  "800" &&
+              result.counters.invisible_row_version_count >= 2 &&
+              exec::PhysicalMgaStatementContextEqual(
+                  result.mga_statement_context, captured),
+          "captured active/in-doubt heap creators became visible");
+  ReleaseRequest(&request);
+  Rollback(reader);
+}
+
+void ValidateRevokedHeapAuthorityHasNoAccess(Fixture& fixture) {
+  auto reader = QueryContext(Begin(fixture, "qow-heap-revoked-reader"),
+                             fixture.main_table_uuid,
+                             fixture.salt + 7200);
+  auto request = RequestFor(reader, fixture.main_table_uuid,
+                            fixture.salt + 7210);
+  Rollback(reader);
+  const auto result = exec::ExecuteCanonicalHeapRelationAcquisition(request);
+  RequireAtomicFailure(result,
+                       "revoked heap statement authority exposed rows");
+  Require(!result.data_access_observed &&
+              result.diagnostic.diagnostic_code ==
+                  "SB_DIAG_MGA_READ_SNAPSHOT_MISSING" &&
+              !exec::PhysicalMgaStatementContextValid(
+                  result.mga_statement_context),
+          "revoked heap statement reached storage or retained a result carrier");
+  ReleaseRequest(&request);
 }
 
 bool SameDescriptor(const api::EngineDescriptor& left,
@@ -3625,6 +3851,9 @@ void ValidateHeapOptimizerAdmissionRefusals(Fixture& fixture) {
 int main() {
   auto fixture = MakeFixture();
   ValidateStatementStableSnapshotAuthority(fixture);
+  ValidateDurableZeroHighWaterHeapGate(fixture);
+  ValidateDurableCapturedExclusionHeapGate(fixture);
+  ValidateRevokedHeapAuthorityHasNoAccess(fixture);
   ValidateHeapOptimizerAdmissionMatrix(fixture);
   ValidateHeapOptimizerAdmissionRefusals(fixture);
   ValidateFullWidthHeapMatrix(fixture);

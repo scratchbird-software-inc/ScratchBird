@@ -41,11 +41,10 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -109,10 +108,14 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
   result.diagnostic = {};
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

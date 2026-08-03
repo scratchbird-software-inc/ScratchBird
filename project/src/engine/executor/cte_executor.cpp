@@ -81,11 +81,11 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -143,12 +143,24 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     ++iteration_ordinal;
 
     DescriptorBatch intermediate;
+    const auto pre_step_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, request.physical_dag);
+    if (!pre_step_authority.ok) {
+      return refuse(pre_step_authority.diagnostic_code + ":" +
+                    pre_step_authority.detail);
+    }
     try {
       intermediate = request.recursive_step(working, iteration_ordinal);
     } catch (const std::exception& error) {
       return refuse(std::string("recursive CTE step failed:") + error.what());
     } catch (...) {
       return refuse("recursive CTE step failed with an unknown exception");
+    }
+    const auto post_step_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, request.physical_dag);
+    if (!post_step_authority.ok) {
+      return refuse(post_step_authority.diagnostic_code + ":" +
+                    post_step_authority.detail);
     }
     const auto intermediate_validation = ValidateCanonicalDescriptorBatch(
         intermediate, recursive_node->output_descriptor_ids);
@@ -178,6 +190,12 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
 
   result.diagnostic = {};
   result.output_batch = std::move(accumulated);
@@ -188,6 +206,7 @@ CanonicalRecursiveCteWorkingResult ExecuteCanonicalRecursiveCteWorking(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -217,11 +236,12 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
       request.union_mode != CanonicalRecursiveCteUnionMode::kDistinct) {
     return refuse("recursive CTE UNION mode is not bound");
   }
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   }
   const auto* selected_node = FindPhysicalNode(
       request.working_request.physical_dag,
@@ -311,9 +331,23 @@ CanonicalRecursiveCteUnionResult ExecuteCanonicalRecursiveCteUnion(
     return refuse(working_result.diagnostic.diagnostic_code + ":" +
                   working_result.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          working_result.mga_statement_context,
+          request.working_request.mga_authority.statement_context)) {
+    return refuse("recursive CTE UNION working result changed MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
   result.working_result = std::move(working_result);
   result.union_mode = request.union_mode;
   result.duplicate_row_count = *duplicate_count;
+  result.mga_statement_context =
+      request.working_request.mga_authority.statement_context;
   return result;
 }
 
@@ -337,11 +371,11 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   }
   const auto* selected_node = FindPhysicalNode(
       request.physical_dag, request.selected_physical_node_id);
@@ -470,6 +504,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     }
     ++iteration;
     CanonicalRecursiveCteGeneratedBatch generated;
+    const auto pre_step_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, request.physical_dag);
+    if (!pre_step_authority.ok) {
+      return refuse(pre_step_authority.diagnostic_code + ":" +
+                    pre_step_authority.detail);
+    }
     try {
       generated = request.recursive_step(working, iteration);
     } catch (const std::exception& error) {
@@ -477,6 +517,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
                     error.what());
     } catch (...) {
       return refuse("recursive CTE SEARCH/CYCLE step failed");
+    }
+    const auto post_step_authority = RevalidateCanonicalExecutionMgaAuthority(
+        request.mga_authority, request.physical_dag);
+    if (!post_step_authority.ok) {
+      return refuse(post_step_authority.diagnostic_code + ":" +
+                    post_step_authority.detail);
     }
     const auto generated_validation = ValidateCanonicalDescriptorBatch(
         generated.batch, recursive_node->output_descriptor_ids);
@@ -541,6 +587,12 @@ ExecuteCanonicalRecursiveCteSearchCycle(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
   result.diagnostic = {};
   result.output_batch = std::move(output);
   result.row_metadata = std::move(metadata);
@@ -550,6 +602,7 @@ ExecuteCanonicalRecursiveCteSearchCycle(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -572,11 +625,12 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   }
   const auto* selected_node = FindPhysicalNode(
       request.working_request.physical_dag,
@@ -656,10 +710,24 @@ CanonicalRecursiveCteResourceResult ExecuteCanonicalRecursiveCteResource(
     return refuse(working_result.diagnostic.diagnostic_code + ":" +
                   working_result.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          working_result.mga_statement_context,
+          request.working_request.mga_authority.statement_context)) {
+    return refuse("recursive CTE resource working result changed MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
   result.working_result = std::move(working_result);
   result.materialized_value_bytes = *materialized_bytes;
   result.working_state_cleaned = true;
   result.memory_grant_evidence_uuid = request.memory_grant_evidence_uuid;
+  result.mga_statement_context =
+      request.working_request.mga_authority.statement_context;
   return result;
 }
 
@@ -690,11 +758,12 @@ ExecuteCanonicalRecursiveCteCancellation(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   }
   const auto* selected_node = FindPhysicalNode(
       request.working_request.physical_dag,
@@ -766,11 +835,25 @@ ExecuteCanonicalRecursiveCteCancellation(
     return refuse(working_result.diagnostic.diagnostic_code + ":" +
                   working_result.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          working_result.mga_statement_context,
+          request.working_request.mga_authority.statement_context)) {
+    return refuse("recursive CTE cancellation working result changed MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.working_request.mga_authority,
+      request.working_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
   result.working_result = std::move(working_result);
   result.cancelled = false;
   result.cancellation_iteration_ordinal = 0;
   result.working_state_cleaned = true;
   result.cancellation_evidence_uuid = request.cancellation_evidence_uuid;
+  result.mga_statement_context =
+      request.working_request.mga_authority.statement_context;
   return result;
 }
 
@@ -791,11 +874,23 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.working_request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.working_request.physical_dag);
+  const auto working_authority_validation =
+      RevalidateCanonicalExecutionMgaAuthority(
+          request.working_request.mga_authority,
+          request.working_request.physical_dag);
+  if (!authority_validation.ok || !working_authority_validation.ok ||
+      !PhysicalMgaStatementContextEqual(
+          request.mga_authority.statement_context,
+          request.working_request.mga_authority.statement_context)) {
+    return refuse(authority_validation.ok && working_authority_validation.ok
+                      ? "recursive CTE working context differs from MGA boundary"
+                      : (!authority_validation.ok
+                             ? authority_validation.diagnostic_code + ":" +
+                                   authority_validation.detail
+                             : working_authority_validation.diagnostic_code +
+                                   ":" + working_authority_validation.detail));
   }
   const auto* selected_node = FindPhysicalNode(
       request.working_request.physical_dag,
@@ -818,12 +913,6 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
                PhysicalAdmissionStage::kMgaStatementBoundary;
       });
   if (request.transaction_inventory_id == 0 ||
-      request.inventory_local_transaction_id == 0 ||
-      request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.working_request.physical_dag.local_transaction_id ||
-      request.inventory_statement_snapshot_id !=
-          request.working_request.physical_dag.statement_snapshot_id ||
       !IsCanonicalCteEvidenceUuid(
           request.transaction_inventory_evidence_uuid) ||
       mga_admission ==
@@ -844,16 +933,19 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
        ++index) {
     const auto& evidence = request.iteration_evidence[index];
     if (evidence.iteration_ordinal != index ||
-        evidence.local_transaction_id !=
-            request.inventory_local_transaction_id ||
-        evidence.statement_snapshot_id !=
-            request.inventory_statement_snapshot_id ||
+        evidence.creator_local_transaction_id == 0 ||
         !IsCanonicalCteEvidenceUuid(evidence.engine_evidence_uuid) ||
         !evidence_uuids.insert(evidence.engine_evidence_uuid).second) {
       return refuse("recursive CTE iteration MGA evidence is not bound");
     }
     if (evidence.visibility != CanonicalMgaVisibilityDecision::kVisible) {
       return refuse("recursive CTE iteration is not MGA-visible");
+    }
+    if (!CanonicalMgaCreatorVisibleToStatement(
+            request.mga_authority.statement_context,
+            evidence.creator_local_transaction_id)) {
+      return refuse(
+          "recursive CTE visible iteration contradicts captured MGA vector");
     }
     if (evidence.security_decision !=
         CanonicalMgaSecurityDecision::kAllowed) {
@@ -862,6 +954,7 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
   }
 
   CanonicalRecursiveCteWorkingRequest working = request.working_request;
+  working.mga_authority = request.mga_authority;
   for (auto& node : working.physical_dag.nodes) {
     if (node.physical_node_id == working.selected_physical_node_id) {
       node.implementation_id = "cte.recursive.working.typed.v1";
@@ -877,12 +970,24 @@ CanonicalRecursiveCteMgaResult ExecuteCanonicalRecursiveCteMgaBoundary(
       working_result.recursive_iteration_count + 1) {
     return refuse("recursive CTE MGA evidence cardinality is not exact");
   }
+  if (!PhysicalMgaStatementContextEqual(
+          working_result.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    return refuse("recursive CTE MGA working result changed MGA statement context");
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.working_request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+  }
 
   result.working_result = std::move(working_result);
   result.iteration_evidence_count = request.iteration_evidence.size();
   result.mga_boundary_proven = true;
   result.transaction_inventory_evidence_uuid =
       request.transaction_inventory_evidence_uuid;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

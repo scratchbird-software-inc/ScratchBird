@@ -45,6 +45,60 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
   return value;
 }
 
+exec::PhysicalMgaStatementContext JoinMgaContext() {
+  return {
+      "019f0000-0000-7200-8000-000000002431",
+      "019f0000-0000-7200-8000-000000002432",
+      "019f0000-0000-7200-8000-000000002414",
+      "019f0000-0000-7200-8000-000000002433",
+      2404,
+      2403,
+      2404,
+      2404,
+      2404,
+      2404,
+      {2404},
+      {},
+      "statement_stable",
+      2407,
+      true,
+      true,
+      true,
+  };
+}
+
+exec::CanonicalExecutionMgaAuthority JoinMgaAuthority(
+    const exec::PhysicalMgaStatementContext& context = JoinMgaContext()) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
+void BindJoinContext(exec::CanonicalJoinMgaRequest* request,
+                     const exec::PhysicalMgaStatementContext& context) {
+  request->mga_authority = JoinMgaAuthority(context);
+  request->strategy_request.residual_request.key_request.mga_authority =
+      request->mga_authority;
+}
+
+bool EmptyJoinFailure(const exec::CanonicalJoinMgaResult& result) {
+  return !result.diagnostic.ok && !result.mga_boundary_proven &&
+         result.output_batch.columns.empty() &&
+         result.output_batch.rows.empty() &&
+         result.candidate_pair_count == 0 &&
+         result.visible_pair_count == 0 && result.selected_plan_uuid.empty() &&
+         result.executed_physical_node_id == 0 &&
+         !exec::PhysicalMgaStatementContextValid(
+             result.mga_statement_context);
+}
+
 exec::CanonicalJoinMgaRequest Request() {
   const auto left_key = Descriptor(
       "019f0000-0000-7200-8000-000000002401",
@@ -133,14 +187,14 @@ exec::CanonicalJoinMgaRequest Request() {
   };
 
   request.transaction_inventory_id = 2406;
-  request.inventory_local_transaction_id = 2404;
-  request.inventory_statement_snapshot_id = 2405;
+  request.mga_authority = JoinMgaAuthority();
+  key.mga_authority = request.mga_authority;
   request.transaction_inventory_evidence_uuid =
       "019f0000-0000-7200-8000-000000002419";
   request.candidate_evidence = {
       {.pair_index = 0,
-       .local_transaction_id = 2404,
-       .statement_snapshot_id = 2405,
+       .left_creator_local_transaction_id = 2404,
+       .right_creator_local_transaction_id = 2404,
        .left_row_version_id = 24101,
        .right_row_version_id = 24201,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
@@ -152,8 +206,8 @@ exec::CanonicalJoinMgaRequest Request() {
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000002421"},
       {.pair_index = 5,
-       .local_transaction_id = 2404,
-       .statement_snapshot_id = 2405,
+       .left_creator_local_transaction_id = 2404,
+       .right_creator_local_transaction_id = 2404,
        .left_row_version_id = 24102,
        .right_row_version_id = 24202,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kInvisible,
@@ -165,8 +219,8 @@ exec::CanonicalJoinMgaRequest Request() {
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000002422"},
       {.pair_index = 7,
-       .local_transaction_id = 2404,
-       .statement_snapshot_id = 2405,
+       .left_creator_local_transaction_id = 2404,
+       .right_creator_local_transaction_id = 2404,
        .left_row_version_id = 24103,
        .right_row_version_id = 24203,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
@@ -186,8 +240,7 @@ exec::CanonicalJoinMgaInputRowEvidence RowEvidence(
     const std::string& evidence_uuid) {
   exec::CanonicalJoinMgaInputRowEvidence evidence;
   evidence.row_index = row_index;
-  evidence.local_transaction_id = 2404;
-  evidence.statement_snapshot_id = 2405;
+  evidence.creator_local_transaction_id = 2404;
   evidence.row_version_id = row_version_id;
   evidence.visibility = exec::CanonicalMgaVisibilityDecision::kVisible;
   evidence.security_decision = exec::CanonicalMgaSecurityDecision::kAllowed;
@@ -258,6 +311,72 @@ void RemovePairFive(exec::CanonicalJoinMgaRequest* request) {
   request->candidate_evidence.erase(request->candidate_evidence.begin() + 1);
 }
 
+bool ValidateJoinCreatorExclusions() {
+  bool passed = true;
+  auto excluded = JoinMgaContext();
+  excluded.oldest_active_transaction_id = 2401;
+  excluded.oldest_interesting_transaction_id = 2401;
+  excluded.oldest_snapshot_transaction_id = 2401;
+  excluded.retention_horizon_transaction_id = 2401;
+  excluded.active_excluded_local_transaction_ids = {2401, 2404};
+  excluded.in_doubt_excluded_local_transaction_ids = {2402};
+
+  auto request = Request();
+  BindJoinContext(&request, excluded);
+  request.candidate_evidence[0].left_creator_local_transaction_id = 2401;
+  auto result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      EmptyJoinFailure(result),
+      "visible pair creator bypassed the captured active exclusion");
+
+  request = Request();
+  BindJoinContext(&request, excluded);
+  request.candidate_evidence[0].right_creator_local_transaction_id = 2402;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      EmptyJoinFailure(result),
+      "visible pair creator bypassed the captured in-doubt exclusion");
+
+  request = InputEvidenceRequest(exec::CanonicalAcceptedJoinKind::kLeftOuter);
+  BindJoinContext(&request, excluded);
+  request.left_row_evidence[0].creator_local_transaction_id = 2401;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      EmptyJoinFailure(result),
+      "visible input-row creator bypassed the captured active exclusion");
+
+  request = InputEvidenceRequest(exec::CanonicalAcceptedJoinKind::kLeftOuter);
+  BindJoinContext(&request, excluded);
+  request.right_row_evidence[0].creator_local_transaction_id = 2402;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      EmptyJoinFailure(result),
+      "visible input-row creator bypassed the captured in-doubt exclusion");
+
+  request = Request();
+  request.candidate_evidence[0].left_creator_local_transaction_id = 2403;
+  request.candidate_evidence[0].right_creator_local_transaction_id = 2403;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      result.diagnostic.ok && result.mga_boundary_proven &&
+          result.visible_pair_count == 1 &&
+          result.output_batch.rows.size() == 1 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context, JoinMgaContext()),
+      "committed non-excluded join creators at high-water were refused");
+
+  auto zero = JoinMgaContext();
+  zero.visible_committed_high_watermark = 0;
+  request = Request();
+  BindJoinContext(&request, zero);
+  request.candidate_evidence[0].left_creator_local_transaction_id = 2403;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(
+      EmptyJoinFailure(result),
+      "zero high-water admitted a non-owner join creator or leaked output");
+  return passed;
+}
+
 // QOW-TEST-QRY-012-MGA-V1
 // QOW-TEST-QRY-012-MGA-V2
 bool ValidateJoinMgaBoundary() {
@@ -304,7 +423,8 @@ bool ValidateJoinMgaBoundary() {
                     "indeterminate security decision was accepted");
 
   request = Request();
-  request.inventory_statement_snapshot_id = 9999;
+  request.mga_authority.statement_context.statement_snapshot_uuid =
+      "019f0000-0000-7200-8000-000000009999";
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);
   passed &= Require(!result.diagnostic.ok,
                     "inventory snapshot drift was accepted");
@@ -431,10 +551,10 @@ bool ValidateJoinMgaBoundary() {
 
   request = InputEvidenceRequest(
       exec::CanonicalAcceptedJoinKind::kLeftOuter);
-  request.left_row_evidence[0].statement_snapshot_id = 9999;
+  request.left_row_evidence[0].creator_local_transaction_id = 9999;
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);
   passed &= Require(!result.diagnostic.ok,
-                    "input-row snapshot drift was accepted");
+                    "input-row creator drift was accepted");
 
   request = InputEvidenceRequest(
       exec::CanonicalAcceptedJoinKind::kLeftOuter);
@@ -503,5 +623,7 @@ bool ValidateJoinMgaBoundary() {
 }  // namespace
 
 int main() {
-  return ValidateJoinMgaBoundary() ? EXIT_SUCCESS : EXIT_FAILURE;
+  return ValidateJoinMgaBoundary() && ValidateJoinCreatorExclusions()
+             ? EXIT_SUCCESS
+             : EXIT_FAILURE;
 }

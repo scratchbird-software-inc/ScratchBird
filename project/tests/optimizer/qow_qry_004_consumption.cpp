@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <ranges>
 #include <stdexcept>
 #include <string>
@@ -34,6 +35,20 @@ std::string Uuid(const std::uint64_t suffix) {
   const auto digits = std::to_string(suffix);
   text.replace(text.size() - digits.size(), digits.size(), digits);
   return text;
+}
+
+exec::CanonicalExecutionMgaAuthority ClosureAuthority(
+    const exec::TypedPhysicalNodeDag& dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = dag.mga_statement_context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
 }
 
 void BindPublishedNodeContexts(exec::TypedPhysicalNodeDag* dag) {
@@ -128,6 +143,7 @@ exec::CanonicalPhysicalDispatchStepResult Step(
   result.result_handle_id = handle;
   result.output_descriptor_ids = node.output_descriptor_ids;
   result.authority.engine_mga_snapshot_bound = true;
+  result.mga_statement_context = dag.mga_statement_context;
   return result;
 }
 
@@ -157,8 +173,7 @@ exec::CanonicalScanAccessRequest ScanRequest(
   request.selected_physical_node_id = 41;
   request.available_implementation_id = "scan.index.v1";
   request.relation_uuid = Uuid(601);
-  request.inventory_local_transaction_id = dag.local_transaction_id;
-  request.inventory_statement_snapshot_id = dag.statement_snapshot_id;
+  request.mga_authority = ClosureAuthority(dag);
   request.selected_descriptor_generation = 9;
   request.current_descriptor_generation = 9;
   exec::CanonicalScanCandidateEvidence candidate;
@@ -166,6 +181,7 @@ exec::CanonicalScanAccessRequest ScanRequest(
   candidate.record_uuid = Uuid(603);
   candidate.relation_uuid = request.relation_uuid;
   candidate.visibility_decision_uuid = Uuid(604);
+  candidate.creator_local_transaction_id = 501;
   candidate.row_version_id = 605;
   candidate.candidate_generation = 3;
   candidate.observed_generation = 3;
@@ -182,8 +198,7 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
     std::vector<std::uint64_t>* invocation_order) {
   exec::CanonicalPhysicalDagDispatchRequest request;
   request.physical_dag = Dag();
-  request.inventory_local_transaction_id = 501;
-  request.inventory_statement_snapshot_id = 502;
+  request.mga_authority = ClosureAuthority(request.physical_dag);
   const auto scan_request = ScanRequest(request.physical_dag);
 
   request.available_executors.push_back(Registration(
@@ -306,8 +321,7 @@ bool ValidateSharedNodeExecutesOnce() {
 
   exec::CanonicalPhysicalDagDispatchRequest request;
   request.physical_dag = dag;
-  request.inventory_local_transaction_id = dag.local_transaction_id;
-  request.inventory_statement_snapshot_id = dag.statement_snapshot_id;
+  request.mga_authority = ClosureAuthority(dag);
   std::vector<std::uint64_t> invocation_order;
   const auto register_executor = [&](const exec::PhysicalNodeKind kind,
                                      const std::string& implementation) {
@@ -354,11 +368,17 @@ bool ValidatePreflightAndSnapshotRefusal() {
 
   invocation_order.clear();
   request = Request(&invocation_order);
-  request.inventory_statement_snapshot_id = 999;
+  auto drifted_current = request.mga_authority.statement_context;
+  drifted_current.statement_snapshot_uuid = Uuid(999);
+  request.mga_authority.resolve_current = [drifted_current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = drifted_current;
+    return resolution;
+  };
   result = exec::ExecuteCanonicalPhysicalDag(request);
   passed &= Require(!result.diagnostic.ok &&
                         result.diagnostic.diagnostic_code ==
-                            "SB_DIAG_MGA_READ_SNAPSHOT_MISSING" &&
+                            "QOW-DIAG-MGA-RUNTIME-CURRENT-V1" &&
                         invocation_order.empty(),
                     "snapshot mismatch reached a physical executor");
 
@@ -422,12 +442,73 @@ bool ValidateEvidenceAndRegistryRefusal() {
   return passed;
 }
 
+bool ValidateFetchFinalRevalidationScrubsOutput() {
+  auto dag = Dag();
+  dag.root_physical_node_id = 62;
+  dag.nodes = {
+      {.physical_node_id = 61,
+       .relational_node_id = 61,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.fetch-input.v1",
+       .output_descriptor_ids = {6101},
+       .causal_counter_id = 61001},
+      {.physical_node_id = 62,
+       .relational_node_id = 62,
+       .node_kind = exec::PhysicalNodeKind::kLimit,
+       .implementation_id = "fetch.native.rows-only.v1",
+       .input_physical_node_ids = {61},
+       .output_descriptor_ids = {6101},
+       .causal_counter_id = 61002},
+  };
+  BindPublishedNodeContexts(&dag);
+
+  auto descriptor = exec::MakeExecutorDescriptor(
+      "int64", "type_uuid=" + Uuid(6102) + ";nullability=non_null");
+  descriptor.descriptor_uuid.canonical = Uuid(6101);
+  descriptor.descriptor_kind = "scalar";
+
+  exec::CanonicalDescriptorFetchProfileRequest request;
+  request.physical_dag = dag;
+  request.selected_physical_node_id = 62;
+  request.input_batch = exec::MakeDescriptorBatch(
+      {{"value", descriptor, false, 6101}},
+      {{{exec::MakeExecutorValue(descriptor, "1")}},
+       {{exec::MakeExecutorValue(descriptor, "2")}}});
+  request.form = exec::CanonicalFetchTopProfileForm::fetch_first_rows_only;
+  request.row_count = 1;
+  request.row_count_is_bound = true;
+  request.mga_authority = ClosureAuthority(dag);
+
+  const auto resolution_count = std::make_shared<std::size_t>(0);
+  const auto current = request.mga_authority.statement_context;
+  request.mga_authority.resolve_current = [resolution_count, current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    ++*resolution_count;
+    if (*resolution_count >= 4) resolution.statement_context.current = false;
+    return resolution;
+  };
+
+  const auto result = exec::ExecuteCanonicalDescriptorFetchProfile(request);
+  return Require(
+      *resolution_count == 4 && !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-MGA-RUNTIME-CURRENT-V1" &&
+          result.output_batch.columns.empty() && result.output_batch.rows.empty() &&
+          result.selected_plan_uuid.empty() &&
+          result.executed_physical_node_id == 0 &&
+          result.causal_counter_id == 0 &&
+          result.mga_statement_context.statement_uuid.empty(),
+      "final FETCH MGA refusal exposed output or execution evidence");
+}
+
 }  // namespace
 
 int main() {
   if (!ValidateCausalDagConsumption() || !ValidateSharedNodeExecutesOnce() ||
       !ValidatePreflightAndSnapshotRefusal() ||
-      !ValidateEvidenceAndRegistryRefusal()) {
+      !ValidateEvidenceAndRegistryRefusal() ||
+      !ValidateFetchFinalRevalidationScrubsOutput()) {
     return 1;
   }
   std::cout << "QOW-TEST-QRY-004-CONSUMPTION-V1: PASS\n";

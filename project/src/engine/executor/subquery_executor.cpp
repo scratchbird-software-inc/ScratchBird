@@ -52,12 +52,11 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -112,6 +111,11 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(materialized);
@@ -119,6 +123,7 @@ CanonicalTableSubqueryResult ExecuteCanonicalTableSubquery(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -150,6 +155,11 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          table.mga_statement_context,
+          request.table_request.mga_authority.statement_context)) {
+    return refuse("scalar table subquery returned a different MGA statement context");
   }
   if (table.output_batch.columns.size() != 1) {
     return refuse("scalar subquery requires exactly one result column");
@@ -200,6 +210,12 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.table_request.mga_authority,
+      request.table_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -207,6 +223,8 @@ CanonicalScalarSubqueryResult ExecuteCanonicalScalarSubquery(
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
+  result.mga_statement_context =
+      request.table_request.mga_authority.statement_context;
   return result;
 }
 
@@ -237,6 +255,11 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          table.mga_statement_context,
+          request.table_request.mga_authority.statement_context)) {
+    return refuse("row table subquery returned a different MGA statement context");
   }
   const auto width = table.output_batch.columns.size();
   if (width == 0 || request.row_expression_descriptor_ids.size() != width ||
@@ -301,6 +324,12 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.table_request.mga_authority,
+      request.table_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -308,6 +337,8 @@ CanonicalRowSubqueryResult ExecuteCanonicalRowSubquery(
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
+  result.mga_statement_context =
+      request.table_request.mga_authority.statement_context;
   return result;
 }
 
@@ -340,6 +371,11 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          table.mga_statement_context,
+          request.table_request.mga_authority.statement_context)) {
+    return refuse("EXISTS table subquery returned a different MGA statement context");
+  }
   if (request.exists_expression_descriptor_id == 0 ||
       request.result_column.descriptor_id !=
           request.exists_expression_descriptor_id ||
@@ -371,6 +407,12 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.table_request.mga_authority,
+      request.table_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -379,6 +421,8 @@ CanonicalExistsSubqueryResult ExecuteCanonicalExistsSubquery(
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
+  result.mga_statement_context =
+      request.table_request.mga_authority.statement_context;
   return result;
 }
 
@@ -409,6 +453,11 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   if (!table.diagnostic.ok) {
     return refuse(table.diagnostic.diagnostic_code + ":" +
                   table.diagnostic.detail);
+  }
+  if (!PhysicalMgaStatementContextEqual(
+          table.mga_statement_context,
+          request.table_request.mga_authority.statement_context)) {
+    return refuse("quantified table subquery returned a different MGA statement context");
   }
   if (table.output_batch.columns.size() != 1) {
     return refuse("quantified subquery requires exactly one result column");
@@ -559,6 +608,12 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.table_request.mga_authority,
+      request.table_request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -567,6 +622,8 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
   result.selected_plan_uuid = std::move(table.selected_plan_uuid);
   result.executed_physical_node_id = table.executed_physical_node_id;
   result.causal_counter_id = table.causal_counter_id;
+  result.mga_statement_context =
+      request.table_request.mga_authority.statement_context;
   return result;
 }
 
@@ -595,11 +652,11 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     return result;
   };
 
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
-  }
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok)
+    return refuse(authority_validation.diagnostic_code + ":" +
+                  authority_validation.detail);
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
           request.physical_dag.root_physical_node_id) {
@@ -745,6 +802,12 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
     scopes.push_back(std::move(scope));
   }
 
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
+
   result.diagnostic = {};
   result.scopes = std::move(scopes);
   result.scope_execution_count = outer_count;
@@ -753,6 +816,7 @@ CanonicalCorrelatedSubqueryResult ExecuteCanonicalCorrelatedSubquery(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 
@@ -784,10 +848,22 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return result;
   };
 
-  const auto dag_validation = ValidateTypedPhysicalNodeDag(request.physical_dag);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(issue.diagnostic_id + ":" + issue.field_id);
+  const auto lateral_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  const auto correlated_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.correlated_request.mga_authority,
+      request.correlated_request.physical_dag);
+  if (!lateral_authority.ok || !correlated_authority.ok ||
+      !PhysicalMgaStatementContextEqual(
+          request.mga_authority.statement_context,
+          request.correlated_request.mga_authority.statement_context)) {
+    return refuse(!lateral_authority.ok
+                      ? lateral_authority.diagnostic_code + ":" +
+                            lateral_authority.detail
+                      : (!correlated_authority.ok
+                             ? correlated_authority.diagnostic_code + ":" +
+                                   correlated_authority.detail
+                             : "LATERAL and correlation MGA statement contexts differ"));
   }
   if (request.selected_physical_node_id == 0 ||
       request.selected_physical_node_id !=
@@ -886,6 +962,11 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return refuse(correlated.diagnostic.diagnostic_code + ":" +
                   correlated.diagnostic.detail);
   }
+  if (!PhysicalMgaStatementContextEqual(
+          correlated.mga_statement_context,
+          request.mga_authority.statement_context)) {
+    return refuse("correlated LATERAL input returned a different MGA statement context");
+  }
   if (correlated.scopes.size() !=
       request.correlated_request.outer_batch.rows.size()) {
     return refuse("correlated scopes do not cover the outer relation");
@@ -959,6 +1040,11 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
     return refuse(output_validation.diagnostic_code + ":" +
                   output_validation.detail);
   }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok)
+    return refuse(result_authority.diagnostic_code + ":" +
+                  result_authority.detail);
 
   result.diagnostic = {};
   result.output_batch = std::move(output);
@@ -971,6 +1057,7 @@ CanonicalLateralSubqueryResult ExecuteCanonicalLateralSubquery(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_physical_node_id = selected_node->physical_node_id;
   result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

@@ -29,6 +29,20 @@ bool Require401(const bool condition, const std::string_view detail) {
   return condition;
 }
 
+exec::CanonicalExecutionMgaAuthority WindowClosureAuthority(
+    const exec::TypedPhysicalNodeDag& dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = dag.mga_statement_context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
 std::string WindowUuid(const unsigned value) {
   char buffer[37]{};
   std::snprintf(buffer, sizeof(buffer),
@@ -266,8 +280,7 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
   request.window_property_uuid = window_property_uuid;
   request.partition_property_uuid = partition_property_uuid;
   request.ordering_property_uuid = ordering_property_uuid;
-  request.inventory_local_transaction_id = dag.local_transaction_id;
-  request.inventory_statement_snapshot_id = dag.statement_snapshot_id;
+  request.mga_authority = WindowClosureAuthority(dag);
   return request;
 }
 

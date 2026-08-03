@@ -35,6 +35,16 @@ plan::CanonicalMgaStatementContext MgaContext() {
       "019f0000-0000-7300-8000-000000015044";
   context.owning_local_transaction_id = 1515;
   context.visible_committed_high_watermark = 1514;
+  context.oldest_active_transaction_id = 1515;
+  context.oldest_interesting_transaction_id = 1515;
+  context.oldest_snapshot_transaction_id = 1515;
+  context.retention_horizon_transaction_id = 1515;
+  context.active_excluded_local_transaction_ids = {1515};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 1516;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
   return context;
 }
 
@@ -43,36 +53,146 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-exec::TypedPhysicalNodeDag PhysicalDag() {
+exec::CanonicalExecutionMgaAuthority ClosureAuthority(
+    const exec::TypedPhysicalNodeDag& dag) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = dag.mga_statement_context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
+exec::PhysicalMgaStatementContext PhysicalContext(
+    const std::uint64_t visible_committed_high_watermark) {
+  exec::PhysicalMgaStatementContext context;
+  context.statement_uuid =
+      "019f0000-0000-7300-8000-000000015041";
+  context.owning_transaction_uuid =
+      "019f0000-0000-7300-8000-000000015042";
+  context.statement_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015043";
+  context.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015044";
+  context.owning_local_transaction_id = 1515;
+  context.visible_committed_high_watermark =
+      visible_committed_high_watermark;
+  context.oldest_active_transaction_id = 1515;
+  context.oldest_interesting_transaction_id = 1515;
+  context.oldest_snapshot_transaction_id = 1515;
+  context.retention_horizon_transaction_id = 1515;
+  context.active_excluded_local_transaction_ids = {1515};
+  context.snapshot_kind = "statement_stable";
+  context.publication_inventory_next_local_transaction_id = 1516;
+  context.inventory_authoritative = true;
+  context.complete = true;
+  context.current = true;
+  return context;
+}
+
+exec::TypedPhysicalNodeDag PhysicalDag(
+    const std::uint64_t visible_committed_high_watermark = 1514) {
   exec::TypedPhysicalNodeDag dag;
+  dag.abi_version = 2;
   dag.selected_plan_uuid = "019f0000-0000-7300-8000-000000015001";
   dag.root_physical_node_id = 2;
   dag.local_transaction_id = 1515;
-  dag.statement_snapshot_id = 1514;
-  for (std::uint8_t stage = 1; stage <= 8; ++stage) {
-    std::string evidence_uuid =
-        "019f0000-0000-7300-8000-00000001500";
-    evidence_uuid.push_back(static_cast<char>('1' + stage));
-    dag.admission_evidence.push_back(
-        {static_cast<exec::PhysicalAdmissionStage>(stage),
-         std::move(evidence_uuid)});
-  }
-  dag.nodes = {
-      {1, 11, exec::PhysicalNodeKind::kValues, "values.literal.v1", {}, {1},
-       false, 15101},
-      {2, 12, exec::PhysicalNodeKind::kAggregate, "aggregate.count.v1", {1},
-       {2}, false, 15102},
+  dag.statement_snapshot_id = visible_committed_high_watermark;
+  dag.mga_statement_context =
+      PhysicalContext(visible_committed_high_watermark);
+  dag.bound_sblr_tree_uuid =
+      "019f0000-0000-7300-8000-000000015011";
+  dag.catalog_epoch_uuid =
+      "019f0000-0000-7300-8000-000000015012";
+  dag.security_context_uuid =
+      "019f0000-0000-7300-8000-000000015013";
+  dag.capability_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015014";
+  dag.resource_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015015";
+  dag.statistics_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015020";
+  dag.route_snapshot_uuid =
+      "019f0000-0000-7300-8000-000000015017";
+  dag.catalog_generation = 31;
+  dag.security_epoch = 32;
+  dag.policy_epoch = 33;
+  dag.resource_epoch = 34;
+  dag.statistics_generation = 35;
+  dag.route_epoch = 36;
+  dag.route_generation = 37;
+  dag.memory_budget_bytes = 1 << 20;
+  dag.spill_allowed = true;
+  dag.optimizer_published = true;
+  dag.immutable_node_identity_validated = true;
+  dag.capability_validated_before_access = true;
+  dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       dag.bound_sblr_tree_uuid},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch, dag.catalog_epoch_uuid},
+      {exec::PhysicalAdmissionStage::kSecurity, dag.security_context_uuid},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       dag.mga_statement_context.statement_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       dag.capability_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kResource, dag.resource_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       dag.statistics_snapshot_uuid},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       dag.route_snapshot_uuid},
   };
+  exec::PhysicalNodeRecord values;
+  values.physical_node_id = 1;
+  values.relational_node_id = 11;
+  values.node_kind = exec::PhysicalNodeKind::kValues;
+  values.implementation_id = "values.literal.v1";
+  values.output_descriptor_ids = {1};
+  values.causal_counter_id = 15101;
+  values.selected_alternative_uuid =
+      "019f0000-0000-7300-8000-000000015051";
+  values.executor_capability_uuid =
+      "019f0000-0000-7300-8000-000000015052";
+  values.executor_capability_abi_version = 1;
+  values.cost_vector_uuid =
+      "019f0000-0000-7300-8000-000000015053";
+  values.memory_bytes_required = 1024;
+  values.engine_capability_validated = true;
+  values.mga_statement_context = dag.mga_statement_context;
+
+  exec::PhysicalNodeRecord aggregate;
+  aggregate.physical_node_id = 2;
+  aggregate.relational_node_id = 12;
+  aggregate.node_kind = exec::PhysicalNodeKind::kAggregate;
+  aggregate.implementation_id = "aggregate.count.v1";
+  aggregate.input_physical_node_ids = {1};
+  aggregate.output_descriptor_ids = {2};
+  aggregate.causal_counter_id = 15102;
+  aggregate.selected_alternative_uuid =
+      "019f0000-0000-7300-8000-000000015061";
+  aggregate.executor_capability_uuid =
+      "019f0000-0000-7300-8000-000000015062";
+  aggregate.executor_capability_abi_version = 1;
+  aggregate.cost_vector_uuid =
+      "019f0000-0000-7300-8000-000000015063";
+  aggregate.memory_bytes_required = 2048;
+  aggregate.engine_capability_validated = true;
+  aggregate.mga_statement_context = dag.mga_statement_context;
+  dag.nodes = {std::move(values), std::move(aggregate)};
   return dag;
 }
 
-api::CanonicalRuntimeOptimizerStatisticsRequest ActualsRequest() {
+api::CanonicalRuntimeOptimizerStatisticsRequest ActualsRequest(
+    const std::uint64_t visible_committed_high_watermark = 1514) {
   api::CanonicalRuntimeOptimizerStatisticsRequest request;
-  request.selected_physical_dag = PhysicalDag();
+  request.selected_physical_dag =
+      PhysicalDag(visible_committed_high_watermark);
   request.pre_access_statistics_snapshot_uuid =
       "019f0000-0000-7300-8000-000000015020";
-  request.inventory_local_transaction_id = 1515;
-  request.inventory_statement_snapshot_id = 1514;
+  request.mga_authority = ClosureAuthority(request.selected_physical_dag);
   request.node_actuals = {
       {1, 11, 15101, 1, 0, 0, 0, 0, 0, true, true, true},
       {2, 12, 15102, 2, 0, 1, 0, 0, 0, true, true, true},
@@ -98,8 +218,27 @@ bool ValidatePostExecutionActuals() {
                      result.selected_plan_uuid ==
                          request.selected_physical_dag.selected_plan_uuid &&
                      result.pre_access_statistics_snapshot_uuid ==
-                         request.pre_access_statistics_snapshot_uuid,
+                         request.pre_access_statistics_snapshot_uuid &&
+                     exec::PhysicalMgaStatementContextEqual(
+                         result.mga_statement_context,
+                         request.mga_authority.statement_context) &&
+                     exec::PhysicalMgaStatementContextEqual(
+                         result.mga_statement_context,
+                         request.selected_physical_dag.mga_statement_context),
                  "valid completed-node actuals were not retained separately");
+}
+
+bool ValidateZeroHighWaterActuals() {
+  const auto request = ActualsRequest(0);
+  const auto result = api::BuildRuntimeOptimizerStatistics(request);
+  return Require(
+      result.accepted && result.issues.empty() &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              request.selected_physical_dag.mga_statement_context) &&
+          result.node_actuals.size() == request.node_actuals.size(),
+      "valid zero-high-water full context was treated as missing");
 }
 
 bool ValidatePhaseAndAuthorityRefusals() {
@@ -235,6 +374,7 @@ bool ValidateLegacyPreAccessPlannerDoesNotReadRows() {
 int main() {
   bool passed = true;
   passed &= ValidatePostExecutionActuals();
+  passed &= ValidateZeroHighWaterActuals();
   passed &= ValidatePhaseAndAuthorityRefusals();
   passed &= ValidateActualsCannotBecomePreAccessEstimates();
   passed &= ValidateLegacyPreAccessPlannerDoesNotReadRows();

@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <functional>
 #include <string>
@@ -38,6 +39,75 @@ bool HasForbiddenAuthority(
 
 }  // namespace
 
+DescriptorRuntimeDiagnostic RevalidateCanonicalExecutionMgaAuthority(
+    const CanonicalExecutionMgaAuthority& authority,
+    const TypedPhysicalNodeDag& physical_dag,
+    const PhysicalNodeAbiLimits& limits) {
+  const auto dag_validation = ValidateTypedPhysicalNodeDag(physical_dag, limits);
+  if (!dag_validation.accepted) {
+    const auto& issue = dag_validation.issues.front();
+    return Refusal(issue.diagnostic_id, issue.field_id);
+  }
+  if (physical_dag.abi_version != 2) {
+    // ABI v1 predates the full immutable statement-context carrier, but its
+    // scalar snapshot admission contract still fails closed on zero.  Keep
+    // that legacy boundary intact while ABI v2 uses only the full carrier
+    // and accepts a valid zero committed high-watermark.
+    if (physical_dag.statement_snapshot_id == 0) {
+      return Refusal("QOW-DIAG-PHYSICAL-NODE-ABI-ADMISSION",
+                     "statement_snapshot_id");
+    }
+    return {};
+  }
+  if (authority.origin == CanonicalMgaAuthorityOrigin::kMissing ||
+      !authority.resolve_current ||
+      !PhysicalMgaStatementContextValid(authority.statement_context) ||
+      !PhysicalMgaStatementContextEqual(authority.statement_context,
+                                        physical_dag.mga_statement_context)) {
+    return Refusal(
+        "QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1",
+        "missing, malformed, or DAG-swapped MGA runtime authority");
+  }
+  auto current = authority.resolve_current();
+  if (!current.diagnostic.ok) {
+    return current.diagnostic;
+  }
+  if (!PhysicalMgaStatementContextValid(current.statement_context) ||
+      !PhysicalMgaStatementContextEqual(current.statement_context,
+                                        authority.statement_context)) {
+    return Refusal(
+        "QOW-DIAG-MGA-RUNTIME-CURRENT-V1",
+        "resolved current MGA statement context differs from the selected "
+        "execution authority");
+  }
+  return {};
+}
+
+bool CanonicalMgaCreatorVisibleToStatement(
+    const PhysicalMgaStatementContext& statement_context,
+    const std::uint64_t creator_local_transaction_id) {
+  if (!PhysicalMgaStatementContextValid(statement_context) ||
+      creator_local_transaction_id == 0) {
+    return false;
+  }
+  if (creator_local_transaction_id ==
+      statement_context.owning_local_transaction_id) {
+    return true;
+  }
+  if (creator_local_transaction_id >
+      statement_context.visible_committed_high_watermark) {
+    return false;
+  }
+  return !std::binary_search(
+             statement_context.active_excluded_local_transaction_ids.begin(),
+             statement_context.active_excluded_local_transaction_ids.end(),
+             creator_local_transaction_id) &&
+         !std::binary_search(
+             statement_context.in_doubt_excluded_local_transaction_ids.begin(),
+             statement_context.in_doubt_excluded_local_transaction_ids.end(),
+             creator_local_transaction_id);
+}
+
 // QOW-SOURCE-QRY-004-CONSUMPTION-V1
 // Validates and consumes one complete selected physical DAG.  Every exact
 // implementation is resolved before execution, inputs run before consumers,
@@ -60,23 +130,10 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     return result;
   };
 
-  const auto dag_validation =
-      ValidateTypedPhysicalNodeDag(request.physical_dag, request.limits);
-  if (!dag_validation.accepted) {
-    const auto& issue = dag_validation.issues.front();
-    return refuse(Refusal(issue.diagnostic_id, issue.field_id));
-  }
-  if (request.inventory_local_transaction_id == 0 ||
-      request.inventory_local_transaction_id !=
-          request.physical_dag.local_transaction_id) {
-    return refuse(Refusal("SB_DIAG_MGA_READ_TRANSACTION_MISSING",
-                          "physical dispatch transaction is not bound"));
-  }
-  if (request.inventory_statement_snapshot_id == 0 ||
-      request.inventory_statement_snapshot_id !=
-          request.physical_dag.statement_snapshot_id) {
-    return refuse(Refusal("SB_DIAG_MGA_READ_SNAPSHOT_MISSING",
-                          "physical dispatch statement snapshot is not bound"));
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag, request.limits);
+  if (!authority_validation.ok) {
+    return refuse(authority_validation);
   }
 
   std::unordered_map<std::string,
@@ -150,10 +207,25 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
                         input_result.causal_counter_id,
                         input_result.result_handle_id,
                         input_result.output_descriptor_ids,
-                        input_result.materialized_output_batch});
+                        input_result.materialized_output_batch,
+                        input_result.mga_statement_context});
+      if (request.physical_dag.abi_version == 2 &&
+          !PhysicalMgaStatementContextEqual(
+              input_result.mga_statement_context,
+              request.mga_authority.statement_context)) {
+        return refuse(Refusal(
+            "QOW-DIAG-MGA-DISPATCH-INPUT-CONTEXT-V1",
+            "physical input batch is not bound to the selected MGA context"));
+      }
     }
 
     CanonicalPhysicalDispatchStepResult step;
+    const auto pre_callback_authority =
+        RevalidateCanonicalExecutionMgaAuthority(
+            request.mga_authority, request.physical_dag, request.limits);
+    if (!pre_callback_authority.ok) {
+      return refuse(pre_callback_authority);
+    }
     execution_started = true;
     try {
       step = executors_by_implementation.at(node.implementation_id)
@@ -179,6 +251,13 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
         (step.data_access_observation_known ? step.data_access_observed
                                             : execution_started);
 
+    const auto post_callback_authority =
+        RevalidateCanonicalExecutionMgaAuthority(
+            request.mga_authority, request.physical_dag, request.limits);
+    if (!post_callback_authority.ok) {
+      return refuse(post_callback_authority);
+    }
+
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));
     }
@@ -192,6 +271,10 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
         step.result_handle_id == 0 ||
         step.output_descriptor_ids != node.output_descriptor_ids ||
         !step.authority.engine_mga_snapshot_bound ||
+        (request.physical_dag.abi_version == 2 &&
+         !PhysicalMgaStatementContextEqual(
+             step.mga_statement_context,
+             request.mga_authority.statement_context)) ||
         HasForbiddenAuthority(step.authority)) {
       return refuse(Refusal(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTION-EVIDENCE-V1",
@@ -207,6 +290,11 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "physical root result is unavailable"));
   }
+  const auto root_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag, request.limits);
+  if (!root_authority.ok) {
+    return refuse(root_authority);
+  }
   const auto& root = result.executed_steps[root_result->second];
   result.diagnostic = {};
   result.root_result_handle_id = root.result_handle_id;
@@ -217,6 +305,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_root_physical_node_id = root.executed_physical_node_id;
   result.root_causal_counter_id = root.causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
   return result;
 }
 

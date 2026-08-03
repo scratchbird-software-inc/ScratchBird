@@ -72,6 +72,7 @@ struct CanonicalWindowRankingRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowRankingResult {
@@ -85,6 +86,7 @@ struct CanonicalWindowRankingResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalWindowValueFunction : std::uint8_t {
@@ -126,6 +128,7 @@ struct CanonicalWindowValueRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowValueResult {
@@ -139,6 +142,7 @@ struct CanonicalWindowValueResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalWindowAggregateFunction : std::uint8_t {
@@ -165,6 +169,7 @@ struct CanonicalWindowAggregateRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowAggregateResult {
@@ -186,6 +191,7 @@ struct CanonicalWindowAggregateResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalRegistryWindowAggregateStateStrategy : std::uint8_t {
@@ -234,6 +240,7 @@ struct CanonicalRegistryWindowAggregateResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 struct CanonicalRegistryWindowAggregateSpillRequest {
@@ -261,6 +268,7 @@ struct CanonicalRegistryWindowAggregateSpillResult {
   bool cleanup_proven = false;
   bool cancellation_observed = false;
   std::vector<std::string> spill_evidence;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalWindowRuntimeFunction : std::uint8_t {
@@ -306,6 +314,7 @@ struct CanonicalWindowRuntimeRequest {
   std::optional<CanonicalRegistryWindowAggregateSpillRequest>
       registry_aggregate_spill;
   std::optional<CanonicalWindowRuntimeStrategy> forced_strategy;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowRuntimeResult {
@@ -338,6 +347,7 @@ struct CanonicalWindowRuntimeResult {
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
 };
 
 enum class CanonicalQueryEvaluationStage : std::uint8_t {
@@ -383,6 +393,7 @@ struct CanonicalWindowCompositionRequest {
   bool parser_execution_authority_claimed = false;
   bool transaction_finality_claimed = false;
   bool recovery_authority_claimed = false;
+  CanonicalExecutionMgaAuthority mga_authority;
 };
 
 struct CanonicalWindowCompositionResult {
@@ -400,8 +411,7 @@ struct CanonicalWindowCompositionResult {
   bool ordinary_physical_nodes_validated = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
   std::string selected_plan_uuid;
-  std::uint64_t inventory_local_transaction_id = 0;
-  std::uint64_t inventory_statement_snapshot_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
 };

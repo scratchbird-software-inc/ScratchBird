@@ -46,6 +46,65 @@ api::EngineTypedValue Value(const api::EngineDescriptor& descriptor,
   return typed;
 }
 
+exec::PhysicalMgaStatementContext RecursiveMgaContext() {
+  return {
+      "019f0000-0000-7200-8000-000000003731",
+      "019f0000-0000-7200-8000-000000003732",
+      "019f0000-0000-7200-8000-000000003714",
+      "019f0000-0000-7200-8000-000000003733",
+      3704,
+      3703,
+      3704,
+      3704,
+      3704,
+      3704,
+      {3704},
+      {},
+      "statement_stable",
+      3707,
+      true,
+      true,
+      true,
+  };
+}
+
+exec::CanonicalExecutionMgaAuthority RecursiveMgaAuthority(
+    const exec::PhysicalMgaStatementContext& context = RecursiveMgaContext()) {
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto current = authority.statement_context;
+  authority.resolve_current = [current] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = current;
+    return resolution;
+  };
+  return authority;
+}
+
+void BindRecursiveContext(
+    exec::CanonicalRecursiveCteMgaRequest* request,
+    const exec::PhysicalMgaStatementContext& context) {
+  request->mga_authority = RecursiveMgaAuthority(context);
+  request->working_request.mga_authority = request->mga_authority;
+}
+
+bool EmptyRecursiveFailure(
+    const exec::CanonicalRecursiveCteMgaResult& result) {
+  return !result.working_result.diagnostic.ok &&
+         !result.mga_boundary_proven && result.iteration_evidence_count == 0 &&
+         result.transaction_inventory_evidence_uuid.empty() &&
+         result.working_result.output_batch.columns.empty() &&
+         result.working_result.output_batch.rows.empty() &&
+         result.working_result.iterations.empty() &&
+         result.working_result.executed_physical_node_id == 0 &&
+         result.working_result.selected_plan_uuid.empty() &&
+         !exec::PhysicalMgaStatementContextValid(
+             result.working_result.mga_statement_context) &&
+         !exec::PhysicalMgaStatementContextValid(
+             result.mga_statement_context);
+}
+
 exec::CanonicalRecursiveCteMgaRequest Request() {
   const auto descriptor = Descriptor();
   exec::CanonicalRecursiveCteMgaRequest request;
@@ -112,48 +171,94 @@ exec::CanonicalRecursiveCteMgaRequest Request() {
   working.maximum_result_row_count = 8;
 
   request.transaction_inventory_id = 3706;
-  request.inventory_local_transaction_id = 3704;
-  request.inventory_statement_snapshot_id = 3705;
+  request.mga_authority = RecursiveMgaAuthority();
+  working.mga_authority = request.mga_authority;
   request.transaction_inventory_evidence_uuid =
       "019f0000-0000-7200-8000-000000003714";
   request.iteration_evidence = {
       {.iteration_ordinal = 0,
-       .local_transaction_id = 3704,
-       .statement_snapshot_id = 3705,
+       .creator_local_transaction_id = 3704,
        .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
        .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000003721"},
       {.iteration_ordinal = 1,
-       .local_transaction_id = 3704,
-       .statement_snapshot_id = 3705,
+       .creator_local_transaction_id = 3704,
        .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
        .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000003722"},
       {.iteration_ordinal = 2,
-       .local_transaction_id = 3704,
-       .statement_snapshot_id = 3705,
+       .creator_local_transaction_id = 3704,
        .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
        .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000003723"},
       {.iteration_ordinal = 3,
-       .local_transaction_id = 3704,
-       .statement_snapshot_id = 3705,
+       .creator_local_transaction_id = 3704,
        .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
        .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000003724"},
       {.iteration_ordinal = 4,
-       .local_transaction_id = 3704,
-       .statement_snapshot_id = 3705,
+       .creator_local_transaction_id = 3704,
        .visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
        .security_decision = exec::CanonicalMgaSecurityDecision::kAllowed,
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000003725"},
   };
   return request;
+}
+
+bool ValidateRecursiveCreatorExclusions() {
+  bool passed = true;
+  auto excluded = RecursiveMgaContext();
+  excluded.oldest_active_transaction_id = 3701;
+  excluded.oldest_interesting_transaction_id = 3701;
+  excluded.oldest_snapshot_transaction_id = 3701;
+  excluded.retention_horizon_transaction_id = 3701;
+  excluded.active_excluded_local_transaction_ids = {3701, 3704};
+  excluded.in_doubt_excluded_local_transaction_ids = {3702};
+
+  auto request = Request();
+  BindRecursiveContext(&request, excluded);
+  request.iteration_evidence[1].creator_local_transaction_id = 3701;
+  auto result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(
+      EmptyRecursiveFailure(result),
+      "visible recursive creator bypassed the captured active exclusion");
+
+  request = Request();
+  BindRecursiveContext(&request, excluded);
+  request.iteration_evidence[2].creator_local_transaction_id = 3702;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(
+      EmptyRecursiveFailure(result),
+      "visible recursive creator bypassed the captured in-doubt exclusion");
+
+  request = Request();
+  request.iteration_evidence[1].creator_local_transaction_id = 3703;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(
+      result.working_result.diagnostic.ok && result.mga_boundary_proven &&
+          result.working_result.output_batch.rows.size() == 4 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context, RecursiveMgaContext()) &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.working_result.mga_statement_context,
+              RecursiveMgaContext()),
+      "committed non-excluded recursive creator at high-water was refused");
+
+  auto zero = RecursiveMgaContext();
+  zero.visible_committed_high_watermark = 0;
+  request = Request();
+  BindRecursiveContext(&request, zero);
+  request.iteration_evidence[1].creator_local_transaction_id = 3703;
+  result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
+  passed &= Require(
+      EmptyRecursiveFailure(result),
+      "zero high-water admitted a non-owner recursive creator or leaked output");
+  return passed;
 }
 
 // QOW-TEST-QRY-014-MGA-V1
@@ -189,7 +294,8 @@ bool ValidateRecursiveCteMgaBoundary() {
                     "security-denied recursive transition published output");
 
   request = Request();
-  request.inventory_statement_snapshot_id = 9999;
+  request.mga_authority.statement_context.statement_snapshot_uuid =
+      "019f0000-0000-7200-8000-000000009999";
   result = exec::ExecuteCanonicalRecursiveCteMgaBoundary(request);
   passed &= Require(!result.working_result.diagnostic.ok,
                     "inventory snapshot drift was accepted");
@@ -249,5 +355,8 @@ bool ValidateRecursiveCteMgaBoundary() {
 }  // namespace
 
 int main() {
-  return ValidateRecursiveCteMgaBoundary() ? EXIT_SUCCESS : EXIT_FAILURE;
+  return ValidateRecursiveCteMgaBoundary() &&
+                 ValidateRecursiveCreatorExclusions()
+             ? EXIT_SUCCESS
+             : EXIT_FAILURE;
 }
