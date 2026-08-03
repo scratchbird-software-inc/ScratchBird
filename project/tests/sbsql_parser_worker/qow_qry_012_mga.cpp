@@ -18,6 +18,17 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-012-MGA-V1: " << detail << '\n';
@@ -51,16 +62,16 @@ exec::PhysicalMgaStatementContext JoinMgaContext() {
       "019f0000-0000-7200-8000-000000002432",
       "019f0000-0000-7200-8000-000000002414",
       "019f0000-0000-7200-8000-000000002433",
-      2404,
-      2403,
-      2404,
-      2404,
-      2404,
-      2404,
-      {2404},
-      {},
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
       "statement_stable",
-      2407,
+      kInventoryNextLocalTransactionId,
       true,
       true,
       true,
@@ -81,8 +92,59 @@ exec::CanonicalExecutionMgaAuthority JoinMgaAuthority(
   return authority;
 }
 
+void SetStatementContext(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context) {
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) node.mga_statement_context = context;
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext& context = JoinMgaContext()) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = context.owning_local_transaction_id;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  SetStatementContext(dag, context);
+  for (auto& node : dag->nodes) {
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000e554";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000e555";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000e556";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  return JoinMgaAuthority(context);
+}
+
 void BindJoinContext(exec::CanonicalJoinMgaRequest* request,
                      const exec::PhysicalMgaStatementContext& context) {
+  auto& dag = request->strategy_request.residual_request.key_request
+                  .physical_dag;
+  SetStatementContext(&dag, context);
+  dag.local_transaction_id = context.owning_local_transaction_id;
+  dag.statement_snapshot_id = context.visible_committed_high_watermark;
   request->mga_authority = JoinMgaAuthority(context);
   request->strategy_request.residual_request.key_request.mga_authority =
       request->mga_authority;
@@ -119,8 +181,6 @@ exec::CanonicalJoinMgaRequest Request() {
   key.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000002409";
   key.physical_dag.root_physical_node_id = 2403;
-  key.physical_dag.local_transaction_id = 2404;
-  key.physical_dag.statement_snapshot_id = 2405;
   key.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000002411"},
@@ -186,15 +246,15 @@ exec::CanonicalJoinMgaRequest Request() {
       Truth::true_value,  Truth::true_value,  Truth::true_value,
   };
 
-  request.transaction_inventory_id = 2406;
-  request.mga_authority = JoinMgaAuthority();
+  request.transaction_inventory_id = kInventoryNextLocalTransactionId;
+  request.mga_authority = BindPhysicalAbiV2(&key.physical_dag);
   key.mga_authority = request.mga_authority;
   request.transaction_inventory_evidence_uuid =
       "019f0000-0000-7200-8000-000000002419";
   request.candidate_evidence = {
       {.pair_index = 0,
-       .left_creator_local_transaction_id = 2404,
-       .right_creator_local_transaction_id = 2404,
+       .left_creator_local_transaction_id = kOwnerLocalTransactionId,
+       .right_creator_local_transaction_id = kOwnerLocalTransactionId,
        .left_row_version_id = 24101,
        .right_row_version_id = 24201,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
@@ -206,8 +266,8 @@ exec::CanonicalJoinMgaRequest Request() {
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000002421"},
       {.pair_index = 5,
-       .left_creator_local_transaction_id = 2404,
-       .right_creator_local_transaction_id = 2404,
+       .left_creator_local_transaction_id = kOwnerLocalTransactionId,
+       .right_creator_local_transaction_id = kOwnerLocalTransactionId,
        .left_row_version_id = 24102,
        .right_row_version_id = 24202,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kInvisible,
@@ -219,8 +279,8 @@ exec::CanonicalJoinMgaRequest Request() {
        .engine_evidence_uuid =
            "019f0000-0000-7200-8000-000000002422"},
       {.pair_index = 7,
-       .left_creator_local_transaction_id = 2404,
-       .right_creator_local_transaction_id = 2404,
+       .left_creator_local_transaction_id = kOwnerLocalTransactionId,
+       .right_creator_local_transaction_id = kOwnerLocalTransactionId,
        .left_row_version_id = 24103,
        .right_row_version_id = 24203,
        .left_visibility = exec::CanonicalMgaVisibilityDecision::kVisible,
@@ -240,7 +300,7 @@ exec::CanonicalJoinMgaInputRowEvidence RowEvidence(
     const std::string& evidence_uuid) {
   exec::CanonicalJoinMgaInputRowEvidence evidence;
   evidence.row_index = row_index;
-  evidence.creator_local_transaction_id = 2404;
+  evidence.creator_local_transaction_id = kOwnerLocalTransactionId;
   evidence.row_version_id = row_version_id;
   evidence.visibility = exec::CanonicalMgaVisibilityDecision::kVisible;
   evidence.security_decision = exec::CanonicalMgaSecurityDecision::kAllowed;
@@ -318,7 +378,8 @@ bool ValidateJoinCreatorExclusions() {
   excluded.oldest_interesting_transaction_id = 2401;
   excluded.oldest_snapshot_transaction_id = 2401;
   excluded.retention_horizon_transaction_id = 2401;
-  excluded.active_excluded_local_transaction_ids = {2401, 2404};
+  excluded.active_excluded_local_transaction_ids = {
+      2401, kOwnerLocalTransactionId};
   excluded.in_doubt_excluded_local_transaction_ids = {2402};
 
   auto request = Request();
@@ -353,7 +414,10 @@ bool ValidateJoinCreatorExclusions() {
       EmptyJoinFailure(result),
       "visible input-row creator bypassed the captured in-doubt exclusion");
 
+  auto committed = JoinMgaContext();
+  committed.visible_committed_high_watermark = 2403;
   request = Request();
+  BindJoinContext(&request, committed);
   request.candidate_evidence[0].left_creator_local_transaction_id = 2403;
   request.candidate_evidence[0].right_creator_local_transaction_id = 2403;
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);
@@ -362,8 +426,9 @@ bool ValidateJoinCreatorExclusions() {
           result.visible_pair_count == 1 &&
           result.output_batch.rows.size() == 1 &&
           exec::PhysicalMgaStatementContextEqual(
-              result.mga_statement_context, JoinMgaContext()),
-      "committed non-excluded join creators at high-water were refused");
+              result.mga_statement_context, committed),
+      "committed non-excluded join creators at high-water were refused: " +
+          result.diagnostic.detail);
 
   auto zero = JoinMgaContext();
   zero.visible_committed_high_watermark = 0;
@@ -390,7 +455,11 @@ bool ValidateJoinMgaBoundary() {
           result.output_batch.rows.size() == 1 &&
           result.output_batch.rows[0].values[1].encoded_value == "10" &&
           result.output_batch.rows[0].values[3].encoded_value == "20" &&
-          result.executed_physical_node_id == 2403,
+          result.executed_physical_node_id == 2403 &&
+          result.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context, JoinMgaContext()),
       "MGA boundary produced the wrong visible and secured join output");
 
   auto request = Request();
@@ -605,8 +674,35 @@ bool ValidateJoinMgaBoundary() {
   request.strategy_request.residual_request.key_request.physical_dag
       .local_transaction_id = 0;
   result = exec::ExecuteCanonicalJoinMgaBoundary(request);
-  passed &= Require(!result.diagnostic.ok,
+  passed &= Require(EmptyJoinFailure(result),
                     "join MGA boundary accepted a missing transaction");
+
+  request = Request();
+  request.strategy_request.residual_request.key_request.physical_dag
+      .mga_statement_context.in_doubt_excluded_local_transaction_ids = {
+      kOldestActiveLocalTransactionId};
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(EmptyJoinFailure(result),
+                    "overlapping MGA exclusions reached boundary access");
+
+  request = Request();
+  request.strategy_request.residual_request.key_request.physical_dag
+      .mga_statement_context.owning_local_transaction_id = 2404;
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(EmptyJoinFailure(result),
+                    "narrowed owner alias reached boundary access");
+
+  request = Request();
+  request.mga_authority.resolve_current = [context = JoinMgaContext()] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    current.statement_context.statement_uuid =
+        "019f0000-0000-7200-8000-00000000e557";
+    return current;
+  };
+  result = exec::ExecuteCanonicalJoinMgaBoundary(request);
+  passed &= Require(EmptyJoinFailure(result),
+                    "cross-statement current resolution reached boundary access");
 
   request = Request();
   request.strategy_request.residual_request.key_request.left_batch.rows.clear();

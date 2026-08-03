@@ -18,11 +18,97 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-013-LATERAL-V1: " << detail << '\n';
   }
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000e661",
+      "019f0000-0000-7200-8000-00000000e662",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000e663",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag,
+    const exec::PhysicalMgaStatementContext* supplied_context = nullptr) {
+  dag->abi_version = 2;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context = supplied_context
+                           ? *supplied_context
+                           : StatementContext(
+                                 dag->admission_evidence.at(3).evidence_uuid);
+  dag->local_transaction_id = context.owning_local_transaction_id;
+  dag->statement_snapshot_id = context.visible_committed_high_watermark;
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) {
+    node.mga_statement_context = context;
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000e664";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000e665";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000e666";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -72,8 +158,6 @@ exec::CanonicalCorrelatedSubqueryRequest CorrelatedRequest() {
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000003109";
   request.physical_dag.root_physical_node_id = 3103;
-  request.physical_dag.local_transaction_id = 3104;
-  request.physical_dag.statement_snapshot_id = 3105;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000003111"},
@@ -135,6 +219,7 @@ exec::CanonicalCorrelatedSubqueryRequest CorrelatedRequest() {
   request.maximum_scope_execution_count = 4;
   request.maximum_comparison_count = 16;
   request.maximum_result_row_count = 5;
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
 }
 
@@ -144,8 +229,6 @@ exec::CanonicalLateralSubqueryRequest Request() {
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000003121";
   request.physical_dag.root_physical_node_id = 3113;
-  request.physical_dag.local_transaction_id = 3104;
-  request.physical_dag.statement_snapshot_id = 3105;
   request.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000003122"},
@@ -164,6 +247,9 @@ exec::CanonicalLateralSubqueryRequest Request() {
       {exec::PhysicalAdmissionStage::kCanonicalRoute,
        "019f0000-0000-7200-8000-000000003129"},
   };
+  request.physical_dag.admission_evidence[3].evidence_uuid =
+      request.correlated_request.mga_authority.statement_context
+          .statement_snapshot_uuid;
   request.physical_dag.nodes = {
       {.physical_node_id = 3111,
        .relational_node_id = 3111,
@@ -187,6 +273,9 @@ exec::CanonicalLateralSubqueryRequest Request() {
   };
   request.selected_physical_node_id = 3113;
   request.maximum_output_row_count = 5;
+  request.mga_authority = BindPhysicalAbiV2(
+      &request.physical_dag,
+      &request.correlated_request.mga_authority.statement_context);
   return request;
 }
 
@@ -241,7 +330,11 @@ bool ValidateLateralSubquery() {
           result.selected_plan_uuid ==
               "019f0000-0000-7200-8000-000000003121" &&
           result.executed_physical_node_id == 3113 &&
-          result.causal_counter_id == 31103,
+          result.causal_counter_id == 31103 &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              Request().mga_authority.statement_context),
       "inner-LATERAL did not flatten correlated scopes in canonical order");
 
   auto request = Request();
@@ -384,8 +477,34 @@ bool ValidateLateralSubquery() {
   request = Request();
   request.physical_dag.local_transaction_id = 0;
   result = exec::ExecuteCanonicalLateralSubquery(request);
-  passed &= Require(!result.diagnostic.ok,
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        result.scope_execution_count == 0 &&
+                        result.output_row_count == 0 &&
+                        result.selected_plan_uuid.empty() &&
+                        result.correlated_plan_uuid.empty() &&
+                        !exec::PhysicalMgaStatementContextValid(
+                            result.mga_statement_context),
                     "missing LATERAL engine MGA transaction was accepted");
+
+  request = Request();
+  request.mga_authority.statement_context.statement_uuid =
+      "019f0000-0000-7200-8000-00000000e667";
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "cross-statement LATERAL authority reached access");
+
+  request = Request();
+  auto drift = request.correlated_request.mga_authority.statement_context;
+  drift.owning_transaction_uuid =
+      "019f0000-0000-7200-8000-00000000e668";
+  request.correlated_request.mga_authority.resolve_current = [drift] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = drift;
+    return current;
+  };
+  result = exec::ExecuteCanonicalLateralSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "current correlated MGA drift reached LATERAL access");
   return passed;
 }
 

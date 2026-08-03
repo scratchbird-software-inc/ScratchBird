@@ -20,6 +20,17 @@ namespace dt = scratchbird::core::datatypes;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 constexpr std::string_view kCollationUuid =
     "019f0000-0000-7400-8000-000000002701";
 
@@ -28,6 +39,78 @@ bool Require(const bool condition, const std::string_view detail) {
     std::cerr << "QOW-TEST-QRY-012-NAMED-V1: " << detail << '\n';
   }
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000e531",
+      "019f0000-0000-7200-8000-00000000e532",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000e533",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context =
+      StatementContext(dag->admission_evidence.at(3).evidence_uuid);
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) {
+    node.mga_statement_context = context;
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000e534";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000e535";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000e536";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -117,8 +200,6 @@ exec::CanonicalNamedJoinRequest Request(
   key.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000002727";
   key.physical_dag.root_physical_node_id = 2713;
-  key.physical_dag.local_transaction_id = 2715;
-  key.physical_dag.statement_snapshot_id = 2716;
   key.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000002731"},
@@ -208,6 +289,7 @@ exec::CanonicalNamedJoinRequest Request(
     };
   }
 
+  key.mga_authority = BindPhysicalAbiV2(&key.physical_dag);
   request.projection_dag = key.physical_dag;
   request.projection_dag.root_physical_node_id = 2714;
   const std::vector<std::uint32_t> projection_ids =
@@ -225,6 +307,7 @@ exec::CanonicalNamedJoinRequest Request(
        .input_physical_node_ids = {2713},
        .output_descriptor_ids = projection_ids,
        .causal_counter_id = 27104});
+  static_cast<void>(BindPhysicalAbiV2(&request.projection_dag));
   request.selected_projection_node_id = 2714;
   return request;
 }
@@ -276,7 +359,13 @@ bool ValidateNamedJoin() {
           Encoded(result.output_batch.rows[1].values[0], "2") &&
           Encoded(result.output_batch.rows[1].values[3], "X") &&
           result.executed_join_node_id == 2713 &&
-          result.executed_projection_node_id == 2714,
+          result.executed_projection_node_id == 2714 &&
+          result.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              Request(exec::CanonicalNamedJoinForm::kUsing)
+                  .key_request.mga_authority.statement_context),
       "USING join did not coalesce its key or retain non-key columns");
 
   auto request = Request(exec::CanonicalNamedJoinForm::kUsing);
@@ -423,6 +512,29 @@ bool ValidateNamedJoin() {
   result = exec::ExecuteCanonicalNamedJoin(request);
   passed &= Require(!result.diagnostic.ok,
                     "CROSS join entered the named-key lowering route");
+
+  request = Request(exec::CanonicalNamedJoinForm::kUsing);
+  request.projection_dag.mga_statement_context.statement_uuid =
+      "019f0000-0000-7200-8000-00000000e537";
+  for (auto& node : request.projection_dag.nodes) {
+    node.mga_statement_context = request.projection_dag.mga_statement_context;
+  }
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        result.selected_plan_uuid.empty() &&
+                        result.executed_join_node_id == 0 &&
+                        result.executed_projection_node_id == 0 &&
+                        !exec::PhysicalMgaStatementContextValid(
+                            result.mga_statement_context),
+                    "cross-statement projection context reached named output");
+
+  request = Request(exec::CanonicalNamedJoinForm::kUsing);
+  request.key_request.physical_dag.mga_statement_context
+      .publication_inventory_next_local_transaction_id =
+      kOwnerLocalTransactionId;
+  result = exec::ExecuteCanonicalNamedJoin(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "truncated inventory boundary reached named access");
   return passed;
 }
 

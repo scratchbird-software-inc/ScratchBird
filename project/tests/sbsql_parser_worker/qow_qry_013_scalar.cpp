@@ -18,11 +18,94 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-013-SCALAR-V1: " << detail << '\n';
   }
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {
+      "019f0000-0000-7200-8000-00000000e611",
+      "019f0000-0000-7200-8000-00000000e612",
+      statement_snapshot_uuid,
+      "019f0000-0000-7200-8000-00000000e613",
+      kOwnerLocalTransactionId,
+      0,
+      kOldestActiveLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      kRetentionHorizonLocalTransactionId,
+      {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+      {kInDoubtLocalTransactionId},
+      "statement_stable",
+      kInventoryNextLocalTransactionId,
+      true,
+      true,
+      true,
+  };
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context =
+      StatementContext(dag->admission_evidence.at(3).evidence_uuid);
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) {
+    node.mga_statement_context = context;
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000e614";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000e615";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000e616";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& descriptor_uuid,
@@ -63,8 +146,6 @@ exec::CanonicalScalarSubqueryRequest Request() {
   table.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000002603";
   table.physical_dag.root_physical_node_id = 2602;
-  table.physical_dag.local_transaction_id = 2603;
-  table.physical_dag.statement_snapshot_id = 2604;
   table.physical_dag.admission_evidence = {
       {exec::PhysicalAdmissionStage::kBoundRequest,
        "019f0000-0000-7200-8000-000000002611"},
@@ -103,6 +184,7 @@ exec::CanonicalScalarSubqueryRequest Request() {
       {{"scalar_source", scalar, true, 2601}},
       {{{Value(scalar, "02")}}});
   table.maximum_materialized_row_count = 2;
+  table.mga_authority = BindPhysicalAbiV2(&table.physical_dag);
   request.value_expression_descriptor_id = 2601;
   request.result_column = {"scalar_result", scalar, true, 2601};
   return request;
@@ -122,7 +204,11 @@ bool ValidateScalarSubquery() {
           result.selected_plan_uuid ==
               "019f0000-0000-7200-8000-000000002603" &&
           result.executed_physical_node_id == 2602 &&
-          result.causal_counter_id == 26002,
+          result.causal_counter_id == 26002 &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              Request().table_request.mga_authority.statement_context),
       "one-row scalar subquery did not preserve its typed value");
 
   auto request = Request();
@@ -200,10 +286,30 @@ bool ValidateScalarSubquery() {
                     "failed table materialization published a scalar");
 
   request = Request();
-  request.table_request.physical_dag.statement_snapshot_id = 0;
+  request.table_request.physical_dag.local_transaction_id = 0;
   result = exec::ExecuteCanonicalScalarSubquery(request);
-  passed &= Require(!result.diagnostic.ok,
-                    "missing engine MGA snapshot was accepted");
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        result.source_row_count == 0 &&
+                        result.selected_plan_uuid.empty() &&
+                        result.executed_physical_node_id == 0 &&
+                        !exec::PhysicalMgaStatementContextValid(
+                            result.mga_statement_context),
+                    "missing engine MGA transaction was accepted");
+
+  request = Request();
+  std::swap(request.table_request.physical_dag.mga_statement_context
+                .statement_snapshot_uuid,
+            request.table_request.physical_dag.mga_statement_context
+                .statement_metadata_snapshot_uuid);
+  result = exec::ExecuteCanonicalScalarSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "swapped MGA snapshot roles reached scalar access");
+
+  request = Request();
+  request.table_request.mga_authority.statement_context.complete = false;
+  result = exec::ExecuteCanonicalScalarSubquery(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "incomplete MGA authority reached scalar access");
   return passed;
 }
 
