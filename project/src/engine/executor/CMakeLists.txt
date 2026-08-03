@@ -164,6 +164,13 @@ add_library(sb_engine_executor STATIC
   window_executor.cpp
 )
 
+if(SB_BUILD_QOW_CLOSURE_TESTS)
+  set_property(SOURCE result_envelope.cpp APPEND PROPERTY
+    COMPILE_DEFINITIONS
+      SCRATCHBIRD_QOW_RESULT_PUBLISHER_CLOSURE_TEST_ONLY=1
+  )
+endif()
+
 target_compile_features(sb_engine_executor PUBLIC cxx_std_20)
 
 target_include_directories(sb_engine_executor PUBLIC

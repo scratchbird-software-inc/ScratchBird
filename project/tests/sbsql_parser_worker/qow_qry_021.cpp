@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <string_view>
 
@@ -112,7 +113,8 @@ api::EngineTypedValue SqlNull(const api::EngineDescriptor& descriptor) {
 }
 
 exec::PhysicalMgaStatementContext StatementContext(
-    const bool zero_high_water = false) {
+    const bool zero_high_water = false,
+    const bool maximum_inventory_local_transaction_number = false) {
   exec::PhysicalMgaStatementContext context;
   context.statement_uuid = "019f0000-0000-7100-8000-000000002101";
   context.owning_transaction_uuid =
@@ -130,7 +132,10 @@ exec::PhysicalMgaStatementContext StatementContext(
   context.active_excluded_local_transaction_ids = {7, 9};
   context.in_doubt_excluded_local_transaction_ids = {8};
   context.snapshot_kind = "statement_stable";
-  context.publication_inventory_next_local_transaction_id = 10;
+  context.publication_inventory_next_local_transaction_id =
+      maximum_inventory_local_transaction_number
+          ? std::numeric_limits<std::uint64_t>::max()
+          : 10;
   context.inventory_authoritative = true;
   context.complete = true;
   context.current = true;
@@ -209,7 +214,8 @@ struct CurrentAuthorityState {
 
 exec::CanonicalResultPublicationRequest RowsRequest(
     std::shared_ptr<CurrentAuthorityState> state = {},
-    const bool zero_high_water = false) {
+    const bool zero_high_water = false,
+    const bool maximum_inventory_local_transaction_number = false) {
   const auto id = Descriptor(
       "019f0000-0000-7200-8000-000000002101",
       "019f0000-0000-7300-8000-000000002101", "int64", "non_null");
@@ -222,7 +228,8 @@ exec::CanonicalResultPublicationRequest RowsRequest(
       ";collation_uuid=019f0000-0000-7400-8000-000000002103");
 
   exec::CanonicalResultPublicationRequest request;
-  const auto statement_context = StatementContext(zero_high_water);
+  const auto statement_context = StatementContext(
+      zero_high_water, maximum_inventory_local_transaction_number);
   request.statement_uuid = statement_context.statement_uuid;
   request.selected_physical_dag = SelectedDag(statement_context);
   request.selected_catalog_epoch_uuid =
@@ -265,6 +272,23 @@ exec::CanonicalResultPublicationRequest RowsRequest(
            "019f0000-0000-7300-8000-000000002103",
            exec::CanonicalResultNullability::kNullable,
            "019f0000-0000-7400-8000-000000002103", std::nullopt}},
+  };
+  return request;
+}
+
+exec::CanonicalResultPublicationRequest ClosureRowsRequest(
+    const bool zero_high_water = false,
+    const bool maximum_inventory_local_transaction_number = false) {
+  auto request = RowsRequest(
+      {}, zero_high_water, maximum_inventory_local_transaction_number);
+  request.mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  const auto immutable_current_context =
+      request.mga_authority.statement_context;
+  request.mga_authority.resolve_current = [immutable_current_context] {
+    exec::CanonicalMgaCurrentResolution resolution;
+    resolution.statement_context = immutable_current_context;
+    return resolution;
   };
   return request;
 }
@@ -584,6 +608,88 @@ bool ValidateStatementAuthorityPublicationBoundary() {
   return passed;
 }
 
+bool ValidateCompileBoundedClosureAuthorityPublicationBoundary() {
+  bool passed = true;
+
+  const auto exact =
+      exec::PublishCanonicalResultEnvelope(ClosureRowsRequest());
+  passed &= Require(
+      exact.diagnostic.ok && exact.published &&
+          exec::PhysicalMgaStatementContextEqual(
+              exact.envelope.mga_statement_context, StatementContext()) &&
+          ContainsExactStatementIdentityBytes(
+              exact.canonical_envelope_bytes, StatementContext(),
+              "019f0000-0000-7100-8000-000000002132"),
+      "exact immutable closure authority did not publish its full context");
+
+  const auto zero =
+      exec::PublishCanonicalResultEnvelope(ClosureRowsRequest(true));
+  passed &= Require(
+      zero.diagnostic.ok && zero.published &&
+          zero.envelope.mga_statement_context
+                  .visible_committed_high_watermark == 0 &&
+          zero.canonical_envelope_bytes.find(
+              "mga.visible_committed_high_watermark=1:0") !=
+              std::string::npos,
+      "exact closure authority narrowed or refused a zero high-watermark");
+
+  const auto maximum = exec::PublishCanonicalResultEnvelope(
+      ClosureRowsRequest(false, true));
+  const auto maximum_local_transaction_number =
+      std::numeric_limits<std::uint64_t>::max();
+  passed &= Require(
+      maximum.diagnostic.ok && maximum.published &&
+          maximum.envelope.mga_statement_context
+                  .publication_inventory_next_local_transaction_id ==
+              maximum_local_transaction_number &&
+          maximum.canonical_envelope_bytes.find(
+              LengthFieldToken(
+                  "mga.publication_inventory_next_local_transaction_id",
+                  std::to_string(maximum_local_transaction_number))) !=
+              std::string::npos,
+      "exact closure authority narrowed or refused UINT64_MAX inventory identity");
+
+  auto request = ClosureRowsRequest();
+  request.mga_authority.resolve_current = {};
+  passed &= Require(RefusedAtomically(request),
+                    "closure origin without a current resolver published output");
+
+  request = ClosureRowsRequest();
+  request.mga_authority.statement_context.statement_metadata_snapshot_uuid =
+      "00000000-0000-0000-0000-000000000000";
+  passed &= Require(RefusedAtomically(request),
+                    "closure origin with a nil context identity published output");
+
+  auto state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  request.mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  state->statement_context.current = false;
+  passed &= Require(RefusedAtomically(request),
+                    "closure authority published after current-state change");
+
+  state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  request.mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  state->statement_context.owning_transaction_uuid =
+      "019f0000-0000-7100-8000-000000002199";
+  passed &= Require(RefusedAtomically(request),
+                    "closure resolver identity mismatch published output");
+
+  state = std::make_shared<CurrentAuthorityState>();
+  request = RowsRequest(state);
+  request.mga_authority.origin =
+      exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  state->diagnostic.ok = false;
+  state->diagnostic.diagnostic_code = "SB_TEST_CLOSURE_RESOLUTION_REFUSED";
+  state->diagnostic.detail = "closure resolver refused current authority";
+  passed &= Require(RefusedAtomically(request),
+                    "closure resolver refusal published output");
+
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-021-V1
@@ -594,5 +700,6 @@ int main() {
   passed &= ValidateDiagnosticAndCancellation();
   passed &= ValidateAtomicRefusals();
   passed &= ValidateStatementAuthorityPublicationBoundary();
+  passed &= ValidateCompileBoundedClosureAuthorityPublicationBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

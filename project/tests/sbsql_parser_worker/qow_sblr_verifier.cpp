@@ -9,6 +9,7 @@
 #include "lowering/lowering.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -342,6 +343,101 @@ bool ValidateAcceptedForms() {
                         shared_expression.maximum_observed_expression_depth ==
                             3,
                     "stable shared-child expression graph was refused");
+  return passed;
+}
+
+bool ValidateCompleteStatementContextMatrix() {
+  struct Field {
+    std::string_view type;
+    std::string_view name;
+    std::size_t index;
+    bool uuid;
+  };
+  constexpr std::array<Field, 7> kFields{{
+      {"uuid", "relational_catalog_epoch_uuid", 2, true},
+      {"uuid", "relational_statement_uuid", 4, true},
+      {"uuid", "relational_owning_transaction_uuid", 5, true},
+      {"uuid", "relational_statement_snapshot_uuid", 6, true},
+      {"uuid", "relational_statement_metadata_snapshot_uuid", 7, true},
+      {"uint64", "relational_local_transaction_id", 8, false},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", 9,
+       false},
+  }};
+  const auto refused = [](const sbsql::SblrEnvelope& envelope) {
+    const auto result = sbsql::VerifySblrEnvelope(envelope);
+    return !result.admitted &&
+           HasDiagnostic(result, "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
+  };
+
+  bool passed = true;
+  const auto canonical = ValuesEnvelope();
+  for (const auto& field : kFields) {
+    passed &= Require(
+        canonical.operands[field.index].type == field.type &&
+            canonical.operands[field.index].name == field.name,
+        std::string("canonical statement-context type/order differs: ") +
+            std::string(field.name));
+
+    auto missing = ValuesEnvelope();
+    RemoveOperand(&missing, field.type, field.name);
+    passed &= Require(
+        refused(missing),
+        std::string("missing statement-context field was admitted: ") +
+            std::string(field.name));
+
+    auto duplicate = ValuesEnvelope();
+    duplicate.operands.push_back(duplicate.operands[field.index]);
+    passed &= Require(
+        refused(duplicate),
+        std::string("duplicate statement-context field was admitted: ") +
+            std::string(field.name));
+
+    auto reordered = ValuesEnvelope();
+    std::swap(reordered.operands[field.index],
+              reordered.operands[field.index + 1]);
+    passed &= Require(
+        refused(reordered),
+        std::string("reordered statement-context field was admitted: ") +
+            std::string(field.name));
+
+    auto wrong_type = ValuesEnvelope();
+    wrong_type.operands[field.index].type = field.uuid ? "text" : "uint32";
+    passed &= Require(
+        refused(wrong_type),
+        std::string("malformed or narrowed statement-context type was admitted: ") +
+            std::string(field.name));
+
+    auto malformed = ValuesEnvelope();
+    malformed.operands[field.index].value = field.uuid ? "not-a-uuid" : "01";
+    passed &= Require(
+        refused(malformed),
+        std::string("malformed statement-context value was admitted: ") +
+            std::string(field.name));
+
+    if (field.uuid) {
+      auto nil = ValuesEnvelope();
+      nil.operands[field.index].value =
+          "00000000-0000-0000-0000-000000000000";
+      passed &= Require(
+          refused(nil),
+          std::string("nil statement-context UUID was admitted: ") +
+              std::string(field.name));
+    }
+  }
+
+  auto maximum_width = ValuesEnvelope();
+  maximum_width.operands[8].value = "18446744073709551615";
+  maximum_width.operands[9].value = "18446744073709551615";
+  const auto maximum_width_result =
+      sbsql::VerifySblrEnvelope(maximum_width);
+  passed &= Require(
+      maximum_width_result.admitted,
+      "UINT64_MAX statement-context values were narrowed by verification");
+  passed &= Require(
+      sbsql::VerifySblrEnvelope(ValuesEnvelope()).admitted &&
+          ValuesEnvelope().operands[9].value == "0",
+      "exact zero visibility high-water was defaulted or refused");
   return passed;
 }
 
@@ -847,6 +943,7 @@ bool ValidateTypedAndLimitRefusals() {
 int main() {
   bool passed = true;
   passed &= ValidateAcceptedForms();
+  passed &= ValidateCompleteStatementContextMatrix();
   passed &= ValidateEnvelopeAndRecordRefusals();
   passed &= ValidateGraphRefusals();
   passed &= ValidateTypedAndLimitRefusals();

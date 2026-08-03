@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -193,6 +194,23 @@ bool ValidateLivePropertyPopulation() {
 }
 
 bool ValidateEngineScopeAndPropertyRefusal() {
+  const auto refuses_context_before_graph = [](api::EngineRequestContext context) {
+    const auto result = sblr::DispatchSblrOperation(
+        {std::move(context), PropertyEnvelope(), {}});
+    return !result.envelope_validated && !result.accepted &&
+           !result.logical_graph_populated &&
+           !result.logical_properties_populated &&
+           !result.optimizer_admitted && !result.optimizer_selected &&
+           !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result,
+                            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
+  };
+
   auto stale_context = Context();
   stale_context.statement_metadata_snapshot_uuid.canonical =
       "019f0000-0000-7100-8000-000000003999";
@@ -216,6 +234,35 @@ bool ValidateEngineScopeAndPropertyRefusal() {
                         HasApiDiagnostic(
                             stale, "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1"),
                     "stale engine metadata scope reached planning");
+
+  auto context = Context();
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000003999";
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "stale statement identity reached property planning");
+  context = Context();
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000003999";
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "stale transaction identity reached property planning");
+  context = Context();
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000003999";
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "stale data snapshot identity reached property planning");
+  context = Context();
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000003999";
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "stale catalog identity reached property planning");
+  context = Context();
+  ++context.local_transaction_id;
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "local transaction mismatch reached property planning");
+  context = Context();
+  ++context.snapshot_visible_through_local_transaction_id;
+  passed &= Require(refuses_context_before_graph(std::move(context)),
+                    "visibility mismatch reached property planning");
   passed &= Require(
       !malformed.accepted && !malformed.logical_properties_populated &&
           HasApiDiagnostic(
@@ -246,7 +293,7 @@ bool ValidateZeroHighwaterTypedCarriage() {
       "019f0000-0000-7140-8000-000000003005";
   dag.statement_metadata_snapshot_uuid =
       "019f0000-0000-7150-8000-000000003006";
-  dag.local_transaction_id = 3001;
+  dag.local_transaction_id = std::numeric_limits<std::uint64_t>::max();
   dag.snapshot_visible_through_local_transaction_id = 0;
   dag.root_node_id = 1;
   dag.descriptors = {
@@ -275,8 +322,12 @@ bool ValidateZeroHighwaterTypedCarriage() {
   const auto validation = api::ValidateTypedRelationalDag(dag);
   return Require(
       validation.accepted &&
+          dag.bound_catalog_epoch_uuid !=
+              dag.statement_metadata_snapshot_uuid &&
+          dag.local_transaction_id ==
+              std::numeric_limits<std::uint64_t>::max() &&
           dag.snapshot_visible_through_local_transaction_id == 0,
-      "zero visibility high-water was refused by typed DAG admission");
+      "typed DAG conflated identities, narrowed local identity, or refused zero visibility high-water");
 }
 
 }  // namespace

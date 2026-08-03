@@ -176,7 +176,9 @@ bool HasExactMgaStatementContext(
              context.statement_metadata_snapshot_uuid &&
          bound.local_transaction_id == context.local_transaction_id &&
          bound.snapshot_visible_through_local_transaction_id ==
-             context.snapshot_visible_through_local_transaction_id;
+             context.snapshot_visible_through_local_transaction_id &&
+         bound.scopes.size() == 1 &&
+         bound.scopes.front().catalog_epoch_uuid == context.catalog_epoch_uuid;
 }
 
 bool HasScrubbedMgaStatementContext(
@@ -856,6 +858,21 @@ bool ValidateMgaStatementContext() {
       "019f0000-0000-7998-8000-000000009998";
   passed &= require_atomic_refusal(
       context, "stale catalog epoch UUID did not refuse atomically");
+
+  for (const std::string_view invalid_catalog_epoch : {
+           std::string_view{}, std::string_view{"not-a-uuid"},
+           std::string_view{"00000000-0000-0000-0000-000000000000"}}) {
+    context = ValuesBindingContext();
+    context.catalog_epoch_uuid = invalid_catalog_epoch;
+    passed &= require_atomic_refusal(
+        context, "missing, malformed, or nil catalog epoch UUID did not refuse atomically");
+  }
+
+  context = ValuesBindingContext();
+  std::swap(context.catalog_epoch_uuid,
+            context.statement_metadata_snapshot_uuid);
+  passed &= require_atomic_refusal(
+      context, "swapped catalog and metadata snapshot UUIDs did not refuse atomically");
 
   context = ValuesBindingContext();
   ++context.engine_statement_authority.local_transaction_id;

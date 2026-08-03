@@ -122,6 +122,58 @@ sblr::SblrOperationEnvelope FinalizeStatementContextEnvelope(
   return sblr::SblrOperationEnvelope(std::move(envelope));
 }
 
+bool HasExactStatementContextHeader(
+    const sblr::SblrOperationEnvelope& envelope) {
+  if (envelope.operands.size() < 10) return false;
+  const std::array<std::array<std::string_view, 3>, 7> expected{{
+      {"uuid", "relational_catalog_epoch_uuid", kCatalogEpochUuid},
+      {"uuid", "relational_statement_uuid",
+       "019f0000-0000-7120-8000-000000008101"},
+      {"uuid", "relational_owning_transaction_uuid",
+       "019f0000-0000-7130-8000-000000008107"},
+      {"uuid", "relational_statement_snapshot_uuid",
+       "019f0000-0000-7140-8000-000000008108"},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       "019f0000-0000-7150-8000-000000008109"},
+      {"uint64", "relational_local_transaction_id", "8101"},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", "8099"},
+  }};
+  const std::array<std::size_t, 7> indexes{2, 4, 5, 6, 7, 8, 9};
+  for (std::size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+    const auto& operand = envelope.operands[indexes[ordinal]];
+    if (operand.type != expected[ordinal][0] ||
+        operand.name != expected[ordinal][1] ||
+        operand.value != expected[ordinal][2]) {
+      return false;
+    }
+    if (std::ranges::count_if(envelope.operands, [&](const auto& candidate) {
+          return candidate.name == expected[ordinal][1];
+        }) != 1) {
+      return false;
+    }
+  }
+  return envelope.operands[3].name == "relational_security_context_uuid" &&
+         envelope.operands[10].name == "relational_root_node_id";
+}
+
+bool RefusedStatementContextAtomically(
+    const sblr::SblrDispatchResult& result) {
+  return !result.envelope_validated && !result.accepted &&
+         !result.logical_graph_populated &&
+         !result.logical_properties_populated &&
+         !result.optimizer_admitted && !result.optimizer_selected &&
+         !result.physical_dag_published && !result.physical_dag_executed &&
+         !result.runtime_actuals_attached &&
+         !result.canonical_result_published && !result.api_result.ok &&
+         result.physical_node_count == 0 &&
+         result.canonical_result_column_count == 0 &&
+         result.canonical_result_row_count == 0 &&
+         result.selected_plan_uuid.empty() &&
+         result.canonical_result_bytes.empty() &&
+         HasApiDiagnostic(result, "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
+}
+
 sblr::SblrOperationEnvelope ValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.spine");
@@ -3460,6 +3512,9 @@ bool ValidateLiveValuesSpine() {
   }
   bool passed = true;
   passed &= Require(
+      HasExactStatementContextHeader(ValuesEnvelope()),
+      "VALUES finalizer changed, reordered, duplicated, or aliased statement context");
+  passed &= Require(
       first.accepted && first.envelope_validated && first.dispatched_to_api &&
           first.logical_graph_populated &&
           first.logical_properties_populated && first.optimizer_admitted &&
@@ -3519,6 +3574,117 @@ bool ValidateLiveValuesPreResultRevocationIsAtomic() {
           sblr::CanonicalQueryContractRevalidationCountForTest() == 8 &&
           HasApiDiagnostic(result, "QOW-DIAG-MGA-RUNTIME-CURRENT-V1"),
       "pre-result MGA revocation exposed an internal route DAG, actual, row, or result");
+}
+
+bool ValidateLiveStatementContextRefusalIsAtomic() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+
+  bool passed = true;
+  const std::array<std::size_t, 7> context_operand_indexes{
+      2, 4, 5, 6, 7, 8, 9};
+  for (const auto index : context_operand_indexes) {
+    auto missing = ValuesEnvelope();
+    missing.operands.erase(missing.operands.begin() + index);
+    passed &= Require(
+        RefusedStatementContextAtomically(dispatch(std::move(missing))),
+        "missing carried context exposed a plan, executor, row, or result");
+
+    auto duplicate = ValuesEnvelope();
+    duplicate.operands.push_back(duplicate.operands[index]);
+    passed &= Require(
+        RefusedStatementContextAtomically(dispatch(std::move(duplicate))),
+        "duplicate carried context exposed a plan, executor, row, or result");
+  }
+
+  for (const auto index : std::array<std::size_t, 5>{2, 4, 5, 6, 7}) {
+    auto malformed = ValuesEnvelope();
+    malformed.operands[index].value = "not-a-uuid";
+    passed &= Require(
+        RefusedStatementContextAtomically(dispatch(std::move(malformed))),
+        "malformed carried UUID exposed a plan, executor, row, or result");
+
+    auto nil = ValuesEnvelope();
+    nil.operands[index].value = "00000000-0000-0000-0000-000000000000";
+    passed &= Require(
+        RefusedStatementContextAtomically(dispatch(std::move(nil))),
+        "nil carried UUID exposed a plan, executor, row, or result");
+  }
+
+  auto reordered = ValuesEnvelope();
+  std::swap(reordered.operands[6], reordered.operands[7]);
+  passed &= Require(
+      RefusedStatementContextAtomically(dispatch(std::move(reordered))),
+      "reordered snapshot identities exposed a plan, executor, row, or result");
+
+  auto narrowed = ValuesEnvelope();
+  narrowed.operands[8].type = "uint32";
+  passed &= Require(
+      RefusedStatementContextAtomically(dispatch(std::move(narrowed))),
+      "narrowed local transaction identity exposed a plan, executor, row, or result");
+
+  auto context = Context();
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000008199";
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "statement mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000008199";
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "transaction mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000008199";
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "data snapshot mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7150-8000-000000008199";
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "metadata snapshot mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000008199";
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "catalog mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  ++context.local_transaction_id;
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "local transaction mismatch exposed a plan, executor, row, or result");
+  context = Context();
+  ++context.snapshot_visible_through_local_transaction_id;
+  passed &= Require(
+      RefusedStatementContextAtomically(
+          dispatch(ValuesEnvelope(), std::move(context))),
+      "visibility mismatch exposed a plan, executor, row, or result");
+
+  auto zero_highwater = ValuesEnvelope();
+  zero_highwater.operands[9].value = "0";
+  context = Context();
+  context.snapshot_visible_through_local_transaction_id = 0;
+  const auto zero_result =
+      dispatch(std::move(zero_highwater), std::move(context));
+  passed &= Require(
+      zero_result.accepted && zero_result.physical_dag_executed &&
+          zero_result.canonical_result_published && zero_result.api_result.ok,
+      "exact zero visibility high-water did not reach canonical publication");
+  return passed;
 }
 
 bool ValidateComposedScalarValuesSpine() {
@@ -8788,6 +8954,7 @@ bool ValidateComposedScalarRefusalIsAtomic() {
 int main() {
   const bool passed = ValidateLiveValuesSpine() &&
                       ValidateLiveValuesPreResultRevocationIsAtomic() &&
+                      ValidateLiveStatementContextRefusalIsAtomic() &&
                       ValidateComposedScalarValuesSpine() &&
                       ValidateUnionAllValuesSpine() &&
                       ValidateUnionAllRefusalIsAtomic() &&

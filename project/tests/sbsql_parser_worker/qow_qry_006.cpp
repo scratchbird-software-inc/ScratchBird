@@ -19,6 +19,11 @@
 #include <string_view>
 #include <vector>
 
+namespace scratchbird::engine::sblr {
+SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
+    SblrDispatchRequest request);
+}
+
 namespace sbsql = scratchbird::parser::sbsql;
 namespace sblr = scratchbird::engine::sblr;
 namespace api = scratchbird::engine::internal_api;
@@ -28,6 +33,20 @@ namespace {
 bool Require(const bool condition, const std::string_view message) {
   if (!condition) std::cerr << message << '\n';
   return condition;
+}
+
+sblr::SblrOperationEnvelope EngineQueryEnvelope(
+    const sbsql::SblrEnvelope& lowered) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      lowered.operation_id, lowered.sblr_opcode, lowered.trace_key);
+  envelope.result_shape = lowered.result_shape_key;
+  envelope.requires_transaction_context = true;
+  envelope.operands.reserve(lowered.operands.size());
+  for (const auto& operand : lowered.operands) {
+    envelope.operands.push_back(
+        {operand.type, operand.name, operand.value});
+  }
+  return envelope;
 }
 
 bool HasParserDiagnostic(const sbsql::MessageVectorSet& messages,
@@ -145,6 +164,49 @@ bool HasOperand(const sbsql::SblrEnvelope& envelope,
   });
 }
 
+api::EngineRequestContext ScalarEngineContext() {
+  api::EngineRequestContext context;
+  context.security_context_present = true;
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000000610";
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000000611";
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000000612";
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000602";
+  context.local_transaction_id = 601;
+  context.snapshot_visible_through_local_transaction_id = 602;
+  context.statement_metadata_snapshot_engine_owned = true;
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7150-8000-000000000613";
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0000-0000-7110-8000-000000000602";
+  context.catalog_generation_id = 602;
+  context.security_epoch = 603;
+  context.resource_epoch = 604;
+  context.optimizer_capability_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006001";
+  context.optimizer_resource_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006002";
+  context.optimizer_route_snapshot_uuid.canonical =
+      "019f0000-0000-7200-8000-000000006003";
+  context.optimizer_route_epoch = 605;
+  context.optimizer_route_generation = 606;
+  context.optimizer_memory_budget_bytes = 64 * 1024 * 1024;
+  context.optimizer_maximum_candidate_count = 131072;
+  context.optimizer_maximum_memo_groups = 131072;
+  context.optimizer_maximum_search_steps = 1048576;
+  context.optimizer_maximum_planning_time_ns = 5'000'000'000;
+  context.optimizer_spill_allowed = true;
+  context.current_monotonic_ns = "602000";
+  context.authorization_context.security_epoch = 603;
+  context.authorization_context.policy_epoch = 604;
+  context.authorization_context.catalog_generation_id = 602;
+  return context;
+}
+
 bool ValidateComposableScalarLowering() {
   const auto cst = sbsql::BuildCst(
       "VALUES (1 + 2, lower('A')), (? IS NULL, -3);");
@@ -188,6 +250,40 @@ bool ValidateComposableScalarLowering() {
           HasOperand(lowered, "relational_node_v1", "1",
                      "13|0|-|1,2|1,2"),
       "typed scalar/operator/row composition records differ");
+  passed &= Require(
+      lowered.operands.size() > 10 &&
+          lowered.operands[2].type == "uuid" &&
+          lowered.operands[2].name == "relational_catalog_epoch_uuid" &&
+          lowered.operands[2].value ==
+              "019f0000-0000-7100-8000-000000000602" &&
+          lowered.operands[4].type == "uuid" &&
+          lowered.operands[4].name == "relational_statement_uuid" &&
+          lowered.operands[4].value ==
+              "019f0000-0000-7120-8000-000000000610" &&
+          lowered.operands[5].type == "uuid" &&
+          lowered.operands[5].name ==
+              "relational_owning_transaction_uuid" &&
+          lowered.operands[5].value ==
+              "019f0000-0000-7130-8000-000000000611" &&
+          lowered.operands[6].type == "uuid" &&
+          lowered.operands[6].name ==
+              "relational_statement_snapshot_uuid" &&
+          lowered.operands[6].value ==
+              "019f0000-0000-7140-8000-000000000612" &&
+          lowered.operands[7].type == "uuid" &&
+          lowered.operands[7].name ==
+              "relational_statement_metadata_snapshot_uuid" &&
+          lowered.operands[7].value ==
+              "019f0000-0000-7150-8000-000000000613" &&
+          lowered.operands[8].type == "uint64" &&
+          lowered.operands[8].name ==
+              "relational_local_transaction_id" &&
+          lowered.operands[8].value == "601" &&
+          lowered.operands[9].type == "uint64" &&
+          lowered.operands[9].name ==
+              "relational_snapshot_visible_through_local_transaction_id" &&
+          lowered.operands[9].value == "602",
+      "scalar lowering changed statement-context type, order, identity, or width");
   passed &= Require(
       lowered.payload.find("VALUES (") == std::string::npos &&
           lowered.payload.find("lower(") == std::string::npos &&
@@ -293,6 +389,69 @@ bool ValidateCompositionRefusal() {
   return passed;
 }
 
+bool ValidateScalarStatementContextRefusal() {
+  const auto cst = sbsql::BuildCst(
+      "VALUES (1 + 2, lower('A')), (? IS NULL, -3);");
+  const auto lowered =
+      sbsql::LowerToSblr(BoundScalarValues(cst), cst, SessionForTest());
+  const auto refused_before_publication = [&](api::EngineRequestContext context) {
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), EngineQueryEnvelope(lowered), {}});
+    return !result.envelope_validated && !result.accepted &&
+           !result.dispatched_to_api && !result.logical_graph_populated &&
+           !result.logical_properties_populated &&
+           result.logical_node_count == 0 &&
+           result.logical_property_count == 0 && !result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed && !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_column_count == 0 &&
+           result.canonical_result_row_count == 0 &&
+           result.selected_plan_uuid.empty() &&
+           result.canonical_result_bytes.empty() &&
+           result.diagnostics.size() == 1 &&
+           HasApiDiagnostic(result,
+                            "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
+  };
+
+  bool passed = true;
+  auto context = ScalarEngineContext();
+  context.statement_uuid.canonical =
+      "019f0000-0000-7120-8000-000000000699";
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "statement mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000000699";
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "transaction mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000000699";
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "data snapshot mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7150-8000-000000000699";
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "metadata snapshot mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000699";
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "catalog mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  ++context.local_transaction_id;
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "local transaction mismatch published scalar query evidence");
+  context = ScalarEngineContext();
+  ++context.snapshot_visible_through_local_transaction_id;
+  passed &= Require(refused_before_publication(std::move(context)),
+                    "visibility mismatch published scalar query evidence");
+  return passed;
+}
+
 bool ValidateTemporalTableSourceRefusal() {
   struct RefusalCase {
     std::string sql;
@@ -383,6 +542,7 @@ int main() {
   bool passed = true;
   passed &= ValidateComposableScalarLowering();
   passed &= ValidateCompositionRefusal();
+  passed &= ValidateScalarStatementContextRefusal();
   passed &= ValidateTemporalTableSourceRefusal();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

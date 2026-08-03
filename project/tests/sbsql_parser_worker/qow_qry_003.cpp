@@ -9,6 +9,7 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_opcode_registry.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -253,9 +254,52 @@ bool ValidateStatementContextDecoderMatrix() {
            !result.logical_graph_populated &&
            !result.logical_properties_populated &&
            !result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
            HasApiDiagnostic(result,
                             "QOW-DIAG-LOGICAL-GRAPH-BOUNDARY-V1");
   };
+
+  bool passed = true;
+  const std::array<std::size_t, 7> context_operand_indexes{
+      2, 4, 5, 6, 7, 8, 9};
+  for (const auto index : context_operand_indexes) {
+    auto missing = QueryEnvelope();
+    const auto field_name = missing.operands[index].name;
+    missing.operands.erase(missing.operands.begin() + index);
+    passed &= Require(
+        refuses_before_logical_graph(dispatch(std::move(missing))),
+        std::string("missing carried context reached planning: ") +
+            field_name);
+
+    auto duplicate = QueryEnvelope();
+    duplicate.operands.push_back(duplicate.operands[index]);
+    passed &= Require(
+        refuses_before_logical_graph(dispatch(std::move(duplicate))),
+        std::string("duplicate carried context reached planning: ") +
+            field_name);
+  }
+
+  const std::array<std::size_t, 5> uuid_operand_indexes{2, 4, 5, 6, 7};
+  for (const auto index : uuid_operand_indexes) {
+    auto malformed = QueryEnvelope();
+    const auto field_name = malformed.operands[index].name;
+    malformed.operands[index].value = "not-a-uuid";
+    passed &= Require(
+        refuses_before_logical_graph(dispatch(std::move(malformed))),
+        std::string("malformed carried UUID reached planning: ") +
+            field_name);
+
+    auto nil = QueryEnvelope();
+    nil.operands[index].value = "00000000-0000-0000-0000-000000000000";
+    passed &= Require(
+        refuses_before_logical_graph(dispatch(std::move(nil))),
+        std::string("nil carried UUID reached planning: ") + field_name);
+  }
 
   auto pre_correction_v2 = QueryEnvelope();
   pre_correction_v2.operands.erase(pre_correction_v2.operands.begin() + 4,
@@ -300,7 +344,6 @@ bool ValidateStatementContextDecoderMatrix() {
   const auto zero_highwater_result = dispatch(
       std::move(zero_highwater), std::move(zero_highwater_context));
 
-  bool passed = true;
   passed &= Require(refuses_before_logical_graph(pre_correction_result),
                     "pre-correction wire v2 reached typed planning");
   passed &= Require(refuses_before_logical_graph(missing_result),
@@ -315,9 +358,59 @@ bool ValidateStatementContextDecoderMatrix() {
                     "nil statement operand reached typed planning");
   passed &= Require(refuses_before_logical_graph(stale_statement_result),
                     "stale carried statement identity reached typed planning");
+
+  auto stale_transaction_context = Context();
+  stale_transaction_context.transaction_uuid.canonical =
+      "019f0000-0000-7130-8000-000000000399";
   passed &= Require(
-      zero_highwater_result.envelope_validated,
-      "zero visibility high-water was refused by the engine decoder");
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(stale_transaction_context))),
+      "stale owning transaction identity reached typed planning");
+
+  auto stale_snapshot_context = Context();
+  stale_snapshot_context.statement_snapshot_uuid.canonical =
+      "019f0000-0000-7140-8000-000000000399";
+  passed &= Require(
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(stale_snapshot_context))),
+      "stale data snapshot identity reached typed planning");
+
+  auto stale_metadata_context = Context();
+  stale_metadata_context.statement_metadata_snapshot_uuid.canonical =
+      "019f0000-0000-7150-8000-000000000399";
+  passed &= Require(
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(stale_metadata_context))),
+      "stale metadata snapshot identity reached typed planning");
+
+  auto stale_catalog_context = Context();
+  stale_catalog_context.catalog_epoch_uuid.canonical =
+      "019f0000-0000-7100-8000-000000000399";
+  passed &= Require(
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(stale_catalog_context))),
+      "stale catalog epoch identity reached typed planning");
+
+  auto local_transaction_mismatch = Context();
+  ++local_transaction_mismatch.local_transaction_id;
+  passed &= Require(
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(local_transaction_mismatch))),
+      "local transaction mismatch reached typed planning");
+
+  auto highwater_mismatch = Context();
+  ++highwater_mismatch.snapshot_visible_through_local_transaction_id;
+  passed &= Require(
+      refuses_before_logical_graph(
+          dispatch(QueryEnvelope(), std::move(highwater_mismatch))),
+      "visibility high-water mismatch reached typed planning");
+  passed &= Require(
+      zero_highwater_result.envelope_validated &&
+          zero_highwater_result.accepted &&
+          zero_highwater_result.optimizer_admitted &&
+          zero_highwater_result.canonical_result_published &&
+          zero_highwater_result.api_result.ok,
+      "zero visibility high-water was not preserved through publication");
   return passed;
 }
 

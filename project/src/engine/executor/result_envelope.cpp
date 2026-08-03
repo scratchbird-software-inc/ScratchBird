@@ -577,10 +577,22 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     return result;
   };
 
+#if defined(SCRATCHBIRD_QOW_RESULT_PUBLISHER_CLOSURE_TEST_ONLY) && \
+    SCRATCHBIRD_QOW_RESULT_PUBLISHER_CLOSURE_TEST_ONLY == 1
+  const bool accepted_mga_authority_origin =
+      request.mga_authority.origin ==
+          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      request.mga_authority.origin ==
+          CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+#else
+  const bool accepted_mga_authority_origin =
+      request.mga_authority.origin ==
+          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory;
+#endif
+
   if (request.abi_version != 1 ||
       !IsCanonicalUuid(request.statement_uuid) ||
-      request.mga_authority.origin !=
-          CanonicalMgaAuthorityOrigin::kEngineTransactionInventory ||
+      !accepted_mga_authority_origin ||
       !IsCanonicalUuid(request.selected_catalog_epoch_uuid) ||
       !IsCanonicalUuid(request.execution_attempt_uuid) ||
       request.statement_uuid == request.execution_attempt_uuid ||
@@ -671,9 +683,11 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     return refuse(Refusal("result shape hides every physical column"));
   }
 
-  // Result publication is a statement use. Re-resolve the durable engine MGA
-  // inventory at this final boundary, after structural validation and
-  // immediately before any result metadata or row is materialized.
+  // Result publication is a statement use. Re-resolve the current MGA
+  // authority at this final boundary, after structural validation and
+  // immediately before any result metadata or row is materialized. Ordinary
+  // builds admit only durable engine inventory; the compile-bounded closure
+  // build may also admit its immutable test resolver through the same check.
   const auto authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.selected_physical_dag);
   if (!authority.ok) return refuse(authority);

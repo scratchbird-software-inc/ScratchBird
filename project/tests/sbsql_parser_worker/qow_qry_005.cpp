@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -928,17 +929,31 @@ bool ValidateCanonicalLoweringAndDispatch() {
                             "relational_bound_sblr_tree_uuid" &&
                         lowered.operands[1].value ==
                             "019f0000-0000-7000-8000-000000000501" &&
+                        lowered.operands[2].type == "uuid" &&
+                        lowered.operands[2].name ==
+                            "relational_catalog_epoch_uuid" &&
+                        lowered.operands[2].value ==
+                            "019f0000-0000-7100-8000-000000000502" &&
                         lowered.operands[4].type == "uuid" &&
                         lowered.operands[4].name ==
                             "relational_statement_uuid" &&
                         lowered.operands[4].value ==
                             "019f0000-0000-7120-8000-000000000510" &&
+                        lowered.operands[5].type == "uuid" &&
                         lowered.operands[5].name ==
                             "relational_owning_transaction_uuid" &&
+                        lowered.operands[5].value ==
+                            "019f0000-0000-7130-8000-000000000511" &&
+                        lowered.operands[6].type == "uuid" &&
                         lowered.operands[6].name ==
                             "relational_statement_snapshot_uuid" &&
+                        lowered.operands[6].value ==
+                            "019f0000-0000-7140-8000-000000000512" &&
+                        lowered.operands[7].type == "uuid" &&
                         lowered.operands[7].name ==
                             "relational_statement_metadata_snapshot_uuid" &&
+                        lowered.operands[7].value ==
+                            "019f0000-0000-7150-8000-000000000513" &&
                         lowered.operands[8].type == "uint64" &&
                         lowered.operands[8].name ==
                             "relational_local_transaction_id" &&
@@ -981,6 +996,27 @@ bool ValidateCanonicalLoweringAndDispatch() {
       "canonical payload is missing typed structure or leaked SQL/legacy root");
   passed &= Require(verified.admitted && !verified.messages.has_errors(),
                     "parser-side canonical envelope verification failed");
+
+  auto edge_bound = BoundValues(cst);
+  edge_bound.native_relational.local_transaction_id =
+      std::numeric_limits<std::uint64_t>::max();
+  edge_bound.native_relational.snapshot_visible_through_local_transaction_id =
+      0;
+  const auto edge_lowered =
+      sbsql::LowerToSblr(edge_bound, cst, SessionForTest());
+  const auto edge_verified = sbsql::VerifySblrEnvelope(edge_lowered);
+  passed &= Require(
+      edge_verified.admitted &&
+          edge_lowered.operands[8].type == "uint64" &&
+          edge_lowered.operands[8].name ==
+              "relational_local_transaction_id" &&
+          edge_lowered.operands[8].value ==
+              std::to_string(std::numeric_limits<std::uint64_t>::max()) &&
+          edge_lowered.operands[9].type == "uint64" &&
+          edge_lowered.operands[9].name ==
+              "relational_snapshot_visible_through_local_transaction_id" &&
+          edge_lowered.operands[9].value == "0",
+      "lowering narrowed UINT64_MAX local identity or defaulted zero visibility high-water");
 
   api::EngineRequestContext engine_context;
   engine_context.security_context_present = true;

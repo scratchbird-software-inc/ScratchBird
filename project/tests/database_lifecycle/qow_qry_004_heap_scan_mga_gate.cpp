@@ -2038,7 +2038,9 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
     const bool physical_nullable,
     const exec::CanonicalResultNullability published_nullability,
     const platform::u64 salt,
-    const bool mismatch_statement_authority = false) {
+    const bool mismatch_statement_authority = false,
+    const exec::CanonicalMgaAuthorityOrigin authority_origin =
+        exec::CanonicalMgaAuthorityOrigin::kEngineTransactionInventory) {
   api::EngineDescriptor descriptor;
   descriptor.descriptor_uuid.canonical =
       NewUuidText(platform::UuidKind::object, salt + 1);
@@ -2049,6 +2051,7 @@ exec::CanonicalResultPublicationResult PublishDescriptorCarrier(
   request.statement_uuid =
       acquisition.mga_authority.statement_context.statement_uuid;
   request.mga_authority = acquisition.mga_authority;
+  request.mga_authority.origin = authority_origin;
   if (mismatch_statement_authority) {
     request.mga_authority.statement_context.owning_transaction_uuid =
         NewUuidText(platform::UuidKind::object, salt + 5);
@@ -2091,6 +2094,27 @@ void ValidateStorageNullabilityCarrierMatrix(Fixture& fixture) {
               result.envelope.catalog_epoch_uuid ==
                   acquisition.physical_dag.catalog_epoch_uuid,
           "direct real-inventory carrier lost statement or catalog identity");
+  result = PublishDescriptorCarrier(
+      acquisition,
+      prefix + "nullable=true", true,
+      exec::CanonicalResultNullability::kNullable, fixture.salt + 405, false,
+      exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam);
+  Require(!result.diagnostic.ok && !result.published &&
+              result.envelope.statement_uuid.empty() &&
+              result.envelope.mga_statement_context.statement_uuid.empty() &&
+              result.envelope.catalog_epoch_uuid.empty() &&
+              result.envelope.execution_attempt_uuid.empty() &&
+              result.envelope.column_descriptors.empty() &&
+              result.envelope.row_stream_format_id.empty() &&
+              !result.envelope.row_count.has_value() &&
+              !result.envelope.command_tag.has_value() &&
+              !result.envelope.cursor_state.has_value() &&
+              result.envelope.diagnostics.empty() &&
+              result.row_stream.columns.empty() &&
+              result.row_stream.rows.empty() &&
+              result.delivery_records.empty() &&
+              result.canonical_envelope_bytes.empty(),
+          "ordinary publisher accepted closure origin or exposed partial output");
   result = PublishDescriptorCarrier(
       acquisition,
       prefix + "nullable=false", false,
