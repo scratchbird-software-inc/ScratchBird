@@ -32,6 +32,7 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryWindowProfile(
   request.aggregate_template = std::move(profile);
   auto& aggregate = request.aggregate_template;
   aggregate.physical_dag = window_dag;
+  aggregate.mga_authority = request.frames.mga_authority;
   aggregate.selected_physical_node_id =
       request.frames.executed_physical_node_id;
   aggregate.input_batch = {};
@@ -92,6 +93,9 @@ bool ValidateEveryRegistryAggregateAsWindow() {
         direct.shared_aggregate_state_authority_used &&
         direct.authority.engine_mga_snapshot_bound &&
         !direct.authority.owns_transaction_finality &&
+        exec::PhysicalMgaStatementContextEqual(
+            direct.mga_statement_context,
+            request.frames.mga_statement_context) &&
         direct.selected_plan_uuid == request.frames.selected_plan_uuid &&
         direct.executed_physical_node_id ==
             request.frames.executed_physical_node_id &&
@@ -132,6 +136,9 @@ bool ValidateEveryRegistryAggregateAsWindow() {
             exec::CanonicalRegistryWindowAggregateStateStrategy::frame_recompute &&
         unified.selected_aggregate_state_implementation_id ==
             "window.aggregate-registry-frame-recompute.v1" &&
+        exec::PhysicalMgaStatementContextEqual(
+            unified.mga_statement_context,
+            request.frames.mga_statement_context) &&
         unified.aggregate_transition_count == direct.transition_count;
 
     passed &= Require401(

@@ -72,6 +72,13 @@ api::TypedRelationalDag GroupingSetDag() {
   dag.bound_sblr_tree_uuid = "019f0000-0000-7000-8000-000000000281";
   dag.bound_catalog_epoch_uuid = "019f0000-0000-7000-8000-000000000282";
   dag.bound_security_context_uuid = "019f0000-0000-7000-8000-000000000283";
+  dag.statement_uuid = "019f0000-0000-7000-8000-000000000284";
+  dag.owning_transaction_uuid = "019f0000-0000-7000-8000-000000000285";
+  dag.statement_snapshot_uuid = "019f0000-0000-7000-8000-000000000286";
+  dag.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000000287";
+  dag.local_transaction_id = 0xffff'ffff'ffff'ff00ULL;
+  dag.snapshot_visible_through_local_transaction_id = 0;
   for (auto& node : dag.nodes) {
     node.semantic_variant_id = "relational.contract-node.v1";
   }

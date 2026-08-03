@@ -54,6 +54,7 @@ bool ValidateOptimizerPeerIdentityCarryThrough() {
 
   mutated = Window401Request();
   mutated.physical_dag.abi_version = 1;
+  mutated.physical_dag.statement_snapshot_id = 1;
   mutated.physical_dag.admission_evidence[3].evidence_uuid = WindowUuid(4998);
   refused = exec::ExecuteCanonicalWindowPartitionOrder(mutated);
   passed &= Require401(
