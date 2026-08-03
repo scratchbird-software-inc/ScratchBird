@@ -23,6 +23,16 @@ namespace {
 
 constexpr std::string_view kWindowCollationUuid =
     "019f0000-0000-7400-8000-000000004001";
+constexpr std::uint64_t kWindowOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kWindowOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kWindowRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kWindowInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kWindowInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
 
 bool Require401(const bool condition, const std::string_view detail) {
   if (!condition) std::cerr << "QOW-TEST-WIN-401-V1: " << detail << '\n';
@@ -129,23 +139,24 @@ exec::CanonicalWindowPartitionOrderRequest Window401Request() {
   dag.abi_version = 2;
   dag.selected_plan_uuid = WindowUuid(4301);
   dag.root_physical_node_id = 2;
-  dag.local_transaction_id = 4011;
-  dag.statement_snapshot_id = 4012;
+  dag.local_transaction_id = kWindowOwnerLocalTransactionId;
+  dag.statement_snapshot_id = 0;
   dag.mga_statement_context = {
       WindowUuid(4310),
       WindowUuid(4311),
       WindowUuid(4312),
       WindowUuid(4313),
-      4011,
-      4012,
-      4011,
-      4011,
-      4011,
-      4011,
-      {4011},
-      {},
+      kWindowOwnerLocalTransactionId,
+      0,
+      kWindowOldestActiveLocalTransactionId,
+      kWindowRetentionHorizonLocalTransactionId,
+      kWindowRetentionHorizonLocalTransactionId,
+      kWindowRetentionHorizonLocalTransactionId,
+      {kWindowOldestActiveLocalTransactionId,
+       kWindowOwnerLocalTransactionId},
+      {kWindowInDoubtLocalTransactionId},
       "statement_stable",
-      4013,
+      kWindowInventoryNextLocalTransactionId,
       true,
       true,
       true,
@@ -306,7 +317,11 @@ bool ValidateTypedCompositePartitions() {
           result.peer_group_count == 7 && result.explicit_peer_metadata &&
           result.weaker_peer_recomputation_forbidden &&
           !result.final_query_order_guaranteed &&
-          result.authority.engine_mga_snapshot_bound,
+          result.authority.engine_mga_snapshot_bound &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              Window401Request().mga_authority.statement_context),
       "typed partition/order/peer construction was not accepted");
   passed &= Require401(
       WindowPayloads(result.ordered_batch) ==
@@ -348,6 +363,41 @@ bool ValidateTypedCompositePartitions() {
           mutated.diagnostic.diagnostic_code == "QOW-DIAG-WINDOW-PEER" &&
           mutated.ordered_batch.rows.empty(),
       "parser authority claim entered the window runtime");
+
+  request = Window401Request();
+  request.physical_dag.local_transaction_id = 0;
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      !mutated.diagnostic.ok && mutated.ordered_batch.rows.empty() &&
+          mutated.row_metadata.empty() && mutated.selected_plan_uuid.empty() &&
+          mutated.executed_physical_node_id == 0 &&
+          !exec::PhysicalMgaStatementContextValid(
+              mutated.mga_statement_context),
+      "missing MGA transaction reached window partition access");
+
+  request = Window401Request();
+  request.mga_authority.resolve_current = {};
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      !mutated.diagnostic.ok && mutated.ordered_batch.rows.empty(),
+      "missing current MGA resolver reached window partition access");
+
+  request = Window401Request();
+  request.physical_dag.catalog_epoch_uuid =
+      request.physical_dag.mga_statement_context
+          .statement_metadata_snapshot_uuid;
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      !mutated.diagnostic.ok && mutated.ordered_batch.rows.empty(),
+      "catalog metadata substitution reached window partition access");
+
+  request = Window401Request();
+  request.physical_dag.local_transaction_id =
+      static_cast<std::uint32_t>(kWindowOwnerLocalTransactionId);
+  mutated = exec::ExecuteCanonicalWindowPartitionOrder(request);
+  passed &= Require401(
+      !mutated.diagnostic.ok && mutated.ordered_batch.rows.empty(),
+      "narrowed MGA identity reached window partition access");
   return passed;
 }
 

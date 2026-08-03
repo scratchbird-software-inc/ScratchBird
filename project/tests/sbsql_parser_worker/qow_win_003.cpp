@@ -270,6 +270,7 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
           exec::PhysicalMgaStatementContextEqual(
               result.mga_statement_context,
               temporal.physical_dag.mga_statement_context) &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
           result.authority.engine_mga_snapshot_bound,
       "temporal RANGE or selected-plan/MGA evidence did not carry through");
   const auto wider = ExecuteFrame(
@@ -283,6 +284,24 @@ bool ValidateTemporalRangeAndCausalCarryThrough() {
       wider.diagnostic.ok &&
           EffectiveReferenceCount(wider) > EffectiveReferenceCount(result),
       "temporal RANGE offset mutation did not change effective frames");
+
+  auto invalid = temporal;
+  invalid.mga_authority.resolve_current = {};
+  const auto refused = ExecuteFrame(
+      invalid,
+      ExplicitFrame(
+          exec::CanonicalWindowFrameUnit::range,
+          FrameBound(exec::CanonicalWindowFrameBoundKind::offset_preceding,
+                     interval),
+          FrameBound(exec::CanonicalWindowFrameBoundKind::current_row)));
+  passed &= Require401(
+      !refused.diagnostic.ok && refused.ordered_batch.rows.empty() &&
+          refused.effective_frames.empty() &&
+          refused.selected_plan_uuid.empty() &&
+          refused.executed_physical_node_id == 0 &&
+          !exec::PhysicalMgaStatementContextValid(
+              refused.mga_statement_context),
+      "missing current MGA resolver reached window frame access");
   return passed;
 }
 

@@ -18,11 +18,92 @@ namespace api = scratchbird::engine::internal_api;
 
 namespace {
 
+constexpr std::uint64_t kOwnerLocalTransactionId =
+    0xffff'ffff'ffff'ff00ULL;
+constexpr std::uint64_t kOldestActiveLocalTransactionId =
+    0xffff'ffff'ffff'fee8ULL;
+constexpr std::uint64_t kRetentionHorizonLocalTransactionId =
+    0xffff'ffff'ffff'fed0ULL;
+constexpr std::uint64_t kInDoubtLocalTransactionId =
+    0xffff'ffff'ffff'fef0ULL;
+constexpr std::uint64_t kInventoryNextLocalTransactionId =
+    0xffff'ffff'ffff'fff0ULL;
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-QRY-016-BY-NAME-V1: " << detail << '\n';
   }
   return condition;
+}
+
+exec::PhysicalMgaStatementContext StatementContext(
+    const std::string& statement_snapshot_uuid) {
+  return {"019f0000-0000-7200-8000-00000000f821",
+          "019f0000-0000-7200-8000-00000000f822",
+          statement_snapshot_uuid,
+          "019f0000-0000-7200-8000-00000000f823",
+          kOwnerLocalTransactionId,
+          0,
+          kOldestActiveLocalTransactionId,
+          kRetentionHorizonLocalTransactionId,
+          kRetentionHorizonLocalTransactionId,
+          kRetentionHorizonLocalTransactionId,
+          {kOldestActiveLocalTransactionId, kOwnerLocalTransactionId},
+          {kInDoubtLocalTransactionId},
+          "statement_stable",
+          kInventoryNextLocalTransactionId,
+          true,
+          true,
+          true};
+}
+
+exec::CanonicalExecutionMgaAuthority BindPhysicalAbiV2(
+    exec::TypedPhysicalNodeDag* dag) {
+  dag->abi_version = 2;
+  dag->local_transaction_id = kOwnerLocalTransactionId;
+  dag->statement_snapshot_id = 0;
+  dag->bound_sblr_tree_uuid = dag->admission_evidence.at(0).evidence_uuid;
+  dag->catalog_epoch_uuid = dag->admission_evidence.at(1).evidence_uuid;
+  dag->security_context_uuid = dag->admission_evidence.at(2).evidence_uuid;
+  dag->capability_snapshot_uuid = dag->admission_evidence.at(4).evidence_uuid;
+  dag->resource_snapshot_uuid = dag->admission_evidence.at(5).evidence_uuid;
+  dag->statistics_snapshot_uuid = dag->admission_evidence.at(6).evidence_uuid;
+  dag->route_snapshot_uuid = dag->admission_evidence.at(7).evidence_uuid;
+  dag->catalog_generation = 1;
+  dag->security_epoch = 1;
+  dag->policy_epoch = 1;
+  dag->resource_epoch = 1;
+  dag->statistics_generation = 1;
+  dag->route_epoch = 1;
+  dag->route_generation = 1;
+  dag->memory_budget_bytes = 4096;
+  dag->optimizer_published = true;
+  dag->immutable_node_identity_validated = true;
+  dag->capability_validated_before_access = true;
+  const auto context =
+      StatementContext(dag->admission_evidence.at(3).evidence_uuid);
+  dag->mga_statement_context = context;
+  for (auto& node : dag->nodes) {
+    node.mga_statement_context = context;
+    node.selected_alternative_uuid =
+        "019f0000-0000-7200-8000-00000000f824";
+    node.executor_capability_uuid =
+        "019f0000-0000-7200-8000-00000000f825";
+    node.executor_capability_abi_version = 1;
+    node.cost_vector_uuid =
+        "019f0000-0000-7200-8000-00000000f826";
+    node.memory_bytes_required = 1;
+    node.engine_capability_validated = true;
+  }
+  exec::CanonicalExecutionMgaAuthority authority;
+  authority.statement_context = context;
+  authority.origin = exec::CanonicalMgaAuthorityOrigin::kClosureTestSeam;
+  authority.resolve_current = [context] {
+    exec::CanonicalMgaCurrentResolution current;
+    current.statement_context = context;
+    return current;
+  };
+  return authority;
 }
 
 api::EngineDescriptor Descriptor(const std::string& uuid,
@@ -136,6 +217,7 @@ exec::CanonicalSetOperationAllRequest Request(
   request.operation = operation;
   request.alignment = exec::CanonicalSetOperationAlignment::kByName;
   request.maximum_output_row_count = 8;
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
   return request;
 }
 
@@ -150,7 +232,12 @@ bool ValidateSetOperationByName() {
           result.output_batch.rows[2].values[1].encoded_value == "beta" &&
           result.right_to_result_column_indices ==
               std::vector<std::size_t>({1, 0}) &&
-          result.implementation_id == "setop.union-all.by-name.typed.v1",
+          result.implementation_id == "setop.union-all.by-name.typed.v1" &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              Request(exec::CanonicalSetOperationKind::kUnion)
+                  .mga_authority.statement_context),
       "UNION ALL BY NAME did not align the reversed bound columns");
 
   result = exec::ExecuteCanonicalSetOperationAll(
@@ -205,6 +292,36 @@ bool ValidateSetOperationByName() {
   result = exec::ExecuteCanonicalSetOperationAll(request);
   passed &= Require(!result.diagnostic.ok,
                     "BY NAME silently degraded to ordinal execution");
+
+  request = Request(exec::CanonicalSetOperationKind::kUnion);
+  request.physical_dag.local_transaction_id = 0;
+  result = exec::ExecuteCanonicalSetOperationAll(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty() &&
+                        result.executed_physical_node_id == 0 &&
+                        !exec::PhysicalMgaStatementContextValid(
+                            result.mga_statement_context),
+                    "missing MGA transaction reached BY NAME access");
+
+  request = Request(exec::CanonicalSetOperationKind::kUnion);
+  request.mga_authority.resolve_current = {};
+  result = exec::ExecuteCanonicalSetOperationAll(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "missing current MGA resolver reached BY NAME access");
+
+  request = Request(exec::CanonicalSetOperationKind::kUnion);
+  request.physical_dag.catalog_epoch_uuid =
+      request.physical_dag.mga_statement_context
+          .statement_metadata_snapshot_uuid;
+  result = exec::ExecuteCanonicalSetOperationAll(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "catalog metadata substitution reached BY NAME access");
+
+  request = Request(exec::CanonicalSetOperationKind::kUnion);
+  request.physical_dag.local_transaction_id =
+      static_cast<std::uint32_t>(kOwnerLocalTransactionId);
+  result = exec::ExecuteCanonicalSetOperationAll(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "narrowed MGA identity reached BY NAME access");
   return passed;
 }
 

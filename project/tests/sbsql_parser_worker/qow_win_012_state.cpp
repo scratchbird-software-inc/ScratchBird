@@ -34,6 +34,7 @@ exec::CanonicalWindowAggregateRequest AggregateWindowRequest(
   request.result_column = request.frames.ordered_batch.columns[4];
   request.result_column.stable_name = "window_sum";
   request.result_column.descriptor_id = 5999;
+  request.mga_authority = request.frames.mga_authority;
   return request;
 }
 
@@ -87,6 +88,7 @@ exec::CanonicalRegistryWindowAggregateRequest RegistryAverageWindowRequest(
           5101, "real64",
           "type_uuid=" + WindowUuid(5201) + ";nullability=nullable"),
       true, 5998};
+  aggregate.mga_authority = request.frames.mga_authority;
   return request;
 }
 
@@ -197,7 +199,11 @@ bool ValidateAggregateWindowState() {
           result.effective_frame_recomputed &&
           result.authority.engine_mga_snapshot_bound &&
           result.selected_plan_uuid == WindowUuid(4301) &&
-          result.causal_counter_id == 40102,
+          result.causal_counter_id == 40102 &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              request.mga_authority.statement_context),
       "SUM window did not reuse canonical state/finalization authority");
 
   request = AggregateWindowRequest(PrefixFrame());
@@ -242,6 +248,17 @@ bool ValidateAggregateWindowStateRefusals() {
       AggregateRefused(exec::ExecuteCanonicalWindowAggregate(request),
                        {"QOW-DIAG-WINDOW-AUTHORITY"}),
       "SUM window claimed engine transaction finality");
+
+  request = AggregateWindowRequest();
+  request.mga_authority.resolve_current = {};
+  const auto missing_current =
+      exec::ExecuteCanonicalWindowAggregate(request);
+  passed &= Require401(
+      AggregateRefused(missing_current,
+                       {"QOW-DIAG-MGA-RUNTIME-AUTHORITY-V1"}) &&
+          !exec::PhysicalMgaStatementContextValid(
+              missing_current.mga_statement_context),
+      "missing current MGA resolver reached aggregate window access");
   return passed;
 }
 
@@ -269,7 +286,11 @@ bool ValidateRegistryAggregateWindowState() {
           result.executed_physical_node_id ==
               request.frames.executed_physical_node_id &&
           result.causal_counter_id == request.frames.causal_counter_id &&
-          result.authority.engine_mga_snapshot_bound,
+          result.authority.engine_mga_snapshot_bound &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              request.frames.mga_statement_context),
       "AVG window did not execute every frame through aggregate registry state");
 
   request = RegistryAverageWindowRequest(PrefixFrame());
@@ -553,6 +574,18 @@ bool ValidateRegistryAggregateWindowRefusals() {
           exec::ExecuteCanonicalRegistryWindowAggregate(request),
           {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-RESOURCE"}),
       "aggregate window published partial output after resource exhaustion");
+
+  request = RegistryAverageWindowRequest();
+  request.aggregate_template.mga_authority.resolve_current = {};
+  const auto missing_current =
+      exec::ExecuteCanonicalRegistryWindowAggregate(request);
+  passed &= Require401(
+      RegistryAggregateRefused(
+          missing_current,
+          {"QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY"}) &&
+          !exec::PhysicalMgaStatementContextValid(
+              missing_current.mga_statement_context),
+      "missing current MGA resolver reached registry window access");
   return passed;
 }
 
@@ -638,6 +671,10 @@ bool ValidateRegistryAggregateWindowSpill(
           HasSpillEvidence(
               result.spill_evidence,
               "orh283.mga_finality_authority=engine_transaction_inventory") &&
+          result.mga_statement_context.visible_committed_high_watermark == 0 &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              result.aggregate_result.mga_statement_context) &&
           !HasWindowSpillArtifact(root) &&
           std::filesystem::exists(sentinel),
       "aggregate window spill did not restore exact frame aggregate state");
