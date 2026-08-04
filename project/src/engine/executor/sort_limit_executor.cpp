@@ -86,6 +86,16 @@ bool TextSeedAbsent(
          !seed.collation_accent_insensitive;
 }
 
+bool TimezoneSeedAbsent(
+    const scratchbird::core::datatypes::TimezoneSeedAuthority& seed) {
+  return !seed.active && seed.seed_pack_name.empty() &&
+         seed.seed_pack_version.empty() && seed.content_hash.empty() &&
+         seed.timezone_records == 0 &&
+         seed.timezone_transition_records == 0 &&
+         seed.timezone_leap_second_records == 0 &&
+         seed.timezone_names.empty();
+}
+
 bool CompareOrderValues(
     const scratchbird::engine::internal_api::EngineTypedValue& left,
     const scratchbird::engine::internal_api::EngineTypedValue& right,
@@ -114,6 +124,38 @@ bool CompareOrderValues(
           scratchbird::engine::internal_api::EngineValueState::sql_null ||
       right.state ==
           scratchbird::engine::internal_api::EngineValueState::sql_null;
+  std::string left_encoded = left.encoded_value;
+  std::string right_encoded = right.encoded_value;
+  const auto timezone_profile = DescriptorField(
+      left.descriptor.encoded_descriptor, "timezone_profile_id");
+  bool timezone_normalized = false;
+  if (!has_null && !timezone_profile.empty()) {
+    const auto normalize = [&](const auto& value,
+                               std::string* normalized_value) {
+      dt::ReferenceTemporalWireProfileRequest request;
+      request.reference_engine = "scratchbird_native";
+      request.reference_type_or_family =
+          value.descriptor.canonical_type_name;
+      request.wire_profile = timezone_profile;
+      request.encoded_value = value.encoded_value;
+      request.timezone_seed = term.timezone_seed;
+      const auto normalized = dt::ValidateReferenceTemporalWireProfile(
+          request);
+      if (!normalized.ok() || normalized.canonical_type_id != type_id) {
+        *refusal_detail = normalized.diagnostic.diagnostic_code.empty()
+                              ? "timezone order normalization refused"
+                              : normalized.diagnostic.diagnostic_code;
+        return false;
+      }
+      *normalized_value = normalized.normalized_value;
+      return true;
+    };
+    if (!normalize(left, &left_encoded) ||
+        !normalize(right, &right_encoded)) {
+      return false;
+    }
+    timezone_normalized = true;
+  }
   if (has_null) {
     dt::DatatypeComparisonRequest request;
     request.left.type_id = type_id;
@@ -143,9 +185,9 @@ bool CompareOrderValues(
       request.operation = dt::DatatypeNumericOperationKind::compare;
       request.type_id = type_id;
       request.left.type_id = type_id;
-      request.left.encoded_value = left.encoded_value;
+      request.left.encoded_value = left_encoded;
       request.right.type_id = type_id;
-      request.right.encoded_value = right.encoded_value;
+      request.right.encoded_value = right_encoded;
       request.context.precision = 38;
       request.context.scale = 0;
       if (type_id == dt::CanonicalTypeId::decimal ||
@@ -178,16 +220,27 @@ bool CompareOrderValues(
       }
       *comparison = numeric.comparison;
     } else {
-      const auto validate = [type_id](const auto& value) {
+      if (timezone_normalized) {
+        *comparison = left_encoded < right_encoded
+                          ? -1
+                          : (left_encoded > right_encoded ? 1 : 0);
+        *comparison = *comparison < 0 ? -1 : (*comparison > 0 ? 1 : 0);
+        if (term.direction ==
+            CanonicalDescriptorOrderDirection::descending) {
+          *comparison = -*comparison;
+        }
+        return true;
+      }
+      const auto validate = [type_id](const std::string& encoded_value) {
         dt::DatatypeCastRequest request;
         request.value.type_id = type_id;
-        request.value.encoded_value = value.encoded_value;
+        request.value.encoded_value = encoded_value;
         request.target_type_id = type_id;
         request.explicit_cast = true;
         return dt::CastDatatypeValue(request);
       };
-      const auto left_checked = validate(left);
-      const auto right_checked = validate(right);
+      const auto left_checked = validate(left_encoded);
+      const auto right_checked = validate(right_encoded);
       if (!left_checked.ok() || !right_checked.ok()) {
         *refusal_detail = "order operand encoding is invalid";
         return false;
@@ -255,10 +308,40 @@ DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
           "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
           "character order lacks bound collation resource authority");
     }
+    if (term.timezone_epoch != 0 ||
+        !TimezoneSeedAbsent(term.timezone_seed)) {
+      return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+                     "character order term carries timezone authority");
+    }
+  } else if ((type_id == dt::CanonicalTypeId::time ||
+              type_id == dt::CanonicalTypeId::timestamp) &&
+             !DescriptorField(column.descriptor.encoded_descriptor,
+                              "timezone_profile_id")
+                  .empty()) {
+    const auto timezone_profile = DescriptorField(
+        column.descriptor.encoded_descriptor, "timezone_profile_id");
+    const bool profile_matches_type =
+        (type_id == dt::CanonicalTypeId::timestamp &&
+         timezone_profile == "timestamp_timezone_profile") ||
+        (type_id == dt::CanonicalTypeId::time &&
+         timezone_profile == "time_timezone_profile");
+    const auto& seed = term.timezone_seed;
+    if (!profile_matches_type || !term.collation_uuid.empty() ||
+        term.resource_epoch == 0 || term.timezone_epoch == 0 ||
+        term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed) ||
+        !seed.active || seed.seed_pack_name.empty() ||
+        seed.seed_pack_version.empty() || seed.content_hash.empty() ||
+        seed.timezone_records == 0 || seed.timezone_names.empty()) {
+      return Refusal(
+          "QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
+          "temporal order lacks bound timezone resource authority");
+    }
   } else if (!term.collation_uuid.empty() || term.resource_epoch != 0 ||
-             term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed)) {
+             term.collation_epoch != 0 || !TextSeedAbsent(term.text_seed) ||
+             term.timezone_epoch != 0 ||
+             !TimezoneSeedAbsent(term.timezone_seed)) {
     return Refusal("QOW-DIAG-QRY-010-ORDER-REFUSAL-V1",
-                   "non-character order term carries text collation authority");
+                   "order term carries authority for a different datatype");
   }
   return {};
 }

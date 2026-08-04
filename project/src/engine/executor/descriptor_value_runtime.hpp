@@ -10,6 +10,7 @@
 
 #include "api_types.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_temporal_wire.hpp"
 #include "physical_node_abi.hpp"
 #include "query/expression_api.hpp"
 
@@ -1543,6 +1544,8 @@ struct CanonicalDescriptorOrderTerm {
   std::uint64_t resource_epoch = 0;
   std::uint64_t collation_epoch = 0;
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
+  std::uint64_t timezone_epoch = 0;
+  scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
 };
 
 enum class CanonicalAggregateFunction : std::uint8_t {

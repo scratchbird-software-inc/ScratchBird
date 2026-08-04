@@ -12,12 +12,9 @@
 #include "query/expression_api.hpp"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <cctype>
-#include <cmath>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <utility>
 
@@ -46,29 +43,229 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
-bool ParseInt64(const std::string& encoded, std::int64_t* value) {
-  if (value == nullptr || encoded.empty()) return false;
-  const auto [end, error] = std::from_chars(
-      encoded.data(), encoded.data() + encoded.size(), *value);
-  return error == std::errc{} && end == encoded.data() + encoded.size();
+bool IsNumericType(const dt::CanonicalTypeId type_id) {
+  switch (type_id) {
+    case dt::CanonicalTypeId::int8:
+    case dt::CanonicalTypeId::int16:
+    case dt::CanonicalTypeId::int32:
+    case dt::CanonicalTypeId::int64:
+    case dt::CanonicalTypeId::int128:
+    case dt::CanonicalTypeId::real32:
+    case dt::CanonicalTypeId::real64:
+    case dt::CanonicalTypeId::real128:
+    case dt::CanonicalTypeId::decimal:
+    case dt::CanonicalTypeId::decimal_float:
+      return true;
+    default:
+      return false;
+  }
 }
 
-bool ParseReal64(const std::string& encoded, double* value) {
-  if (value == nullptr || encoded.empty()) return false;
-  const auto [end, error] = std::from_chars(
-      encoded.data(), encoded.data() + encoded.size(), *value,
-      std::chars_format::general);
-  return error == std::errc{} && end == encoded.data() + encoded.size() &&
-         std::isfinite(*value);
+bool IsTemporalType(const dt::CanonicalTypeId type_id) {
+  return type_id == dt::CanonicalTypeId::date ||
+         type_id == dt::CanonicalTypeId::time ||
+         type_id == dt::CanonicalTypeId::timestamp ||
+         type_id == dt::CanonicalTypeId::interval;
 }
 
-std::string FormatReal64(const double value) {
-  std::array<char, 64> encoded{};
-  const auto [end, error] = std::to_chars(
-      encoded.data(), encoded.data() + encoded.size(), value,
-      std::chars_format::general, std::numeric_limits<double>::max_digits10);
-  if (error != std::errc{}) return {};
-  return std::string(encoded.data(), end);
+bool LiteralKindAdmitsType(const api::RelationalLiteralKind literal_kind,
+                           const std::string_view type_name) {
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      std::string(type_name));
+  switch (literal_kind) {
+    case api::RelationalLiteralKind::kNumeric:
+      return IsNumericType(type_id);
+    case api::RelationalLiteralKind::kString:
+      return type_id == dt::CanonicalTypeId::character;
+    case api::RelationalLiteralKind::kBinary:
+      return type_id == dt::CanonicalTypeId::binary;
+    case api::RelationalLiteralKind::kTemporal:
+      return IsTemporalType(type_id);
+    case api::RelationalLiteralKind::kUuid:
+      return type_id == dt::CanonicalTypeId::uuid;
+    case api::RelationalLiteralKind::kBoolean:
+      return type_id == dt::CanonicalTypeId::boolean;
+    case api::RelationalLiteralKind::kNull:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string BoundLiteralType(
+    const api::RelationalExpressionRecord& expression,
+    const api::RelationalTypeDescriptor& descriptor,
+    const std::optional<std::string_view> expected_type) {
+  if (!expression.literal_kind.has_value() ||
+      !expression.literal_or_parameter_ref.has_value()) {
+    return {};
+  }
+  const auto kind = *expression.literal_kind;
+  if (expected_type.has_value() &&
+      LiteralKindAdmitsType(kind, *expected_type)) {
+    return std::string(*expected_type);
+  }
+  const auto& payload = *expression.literal_or_parameter_ref;
+  switch (kind) {
+    case api::RelationalLiteralKind::kNumeric:
+      if (descriptor.precision.has_value() || descriptor.scale.has_value()) {
+        return descriptor.precision.has_value() && descriptor.scale.has_value()
+                   ? "decimal"
+                   : std::string{};
+      }
+      if (payload.find_first_of(".eE") != std::string::npos) {
+        return "real64";
+      }
+      if (descriptor.width.has_value()) {
+        switch (*descriptor.width) {
+          case 8:
+            return "int8";
+          case 16:
+            return "int16";
+          case 32:
+            return "int32";
+          case 64:
+            return "int64";
+          case 128:
+            return "int128";
+          default:
+            return {};
+        }
+      }
+      return "int64";
+    case api::RelationalLiteralKind::kString:
+      return "text";
+    case api::RelationalLiteralKind::kBinary:
+      return "binary";
+    case api::RelationalLiteralKind::kUuid:
+      return "uuid";
+    case api::RelationalLiteralKind::kBoolean:
+      return "boolean";
+    case api::RelationalLiteralKind::kNull:
+      return "null";
+    case api::RelationalLiteralKind::kTemporal:
+      if (descriptor.timezone_profile_id.has_value()) {
+        if (*descriptor.timezone_profile_id == "time_timezone_profile") {
+          return "time";
+        }
+        if (*descriptor.timezone_profile_id ==
+            "timestamp_timezone_profile") {
+          return "timestamp";
+        }
+        return {};
+      }
+      if (!payload.empty() && payload.front() == 'P') return "interval";
+      if (payload.size() == 10 && payload[4] == '-' && payload[7] == '-') {
+        return "date";
+      }
+      if (payload.find('T') != std::string::npos ||
+          (payload.size() > 10 && payload[4] == '-' &&
+           payload.find(' ') != std::string::npos)) {
+        return "timestamp";
+      }
+      if (payload.find(':') != std::string::npos) return "time";
+      return {};
+    default:
+      return {};
+  }
+}
+
+std::string DescriptorField(const std::string& descriptor,
+                            const std::string& key) {
+  const std::string prefix = key + "=";
+  std::string value;
+  bool found = false;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    if (field.rfind(prefix, 0) == 0) {
+      if (found) return {};
+      value = field.substr(prefix.size());
+      found = true;
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return value;
+}
+
+bool DescriptorU32(const api::EngineDescriptor& descriptor,
+                   const std::string& key,
+                   std::uint32_t* value) {
+  if (value == nullptr) return false;
+  const auto field = DescriptorField(descriptor.encoded_descriptor, key);
+  if (field.empty()) return false;
+  const auto [end, error] = std::from_chars(
+      field.data(), field.data() + field.size(), *value);
+  return error == std::errc{} && end == field.data() + field.size();
+}
+
+bool CanonicalizeLiteralPayload(const std::string_view type_name,
+                                const api::EngineDescriptor& descriptor,
+                                const std::string& payload,
+                                std::string* canonical_payload,
+                                std::string* refusal_detail) {
+  if (canonical_payload == nullptr || refusal_detail == nullptr) return false;
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      std::string(type_name));
+  if (type_id == dt::CanonicalTypeId::unknown) {
+    *refusal_detail = "literal canonical datatype is unknown";
+    return false;
+  }
+  const bool extended_numeric =
+      type_id == dt::CanonicalTypeId::decimal ||
+      type_id == dt::CanonicalTypeId::decimal_float ||
+      type_id == dt::CanonicalTypeId::int128 ||
+      type_id == dt::CanonicalTypeId::real128;
+  if (extended_numeric) {
+    dt::DatatypeNumericOperationRequest request;
+    request.operation = dt::DatatypeNumericOperationKind::canonicalize;
+    request.type_id = type_id;
+    request.left.type_id = type_id;
+    request.left.encoded_value = payload;
+    if (type_id == dt::CanonicalTypeId::decimal ||
+        type_id == dt::CanonicalTypeId::decimal_float) {
+      if (!DescriptorU32(descriptor, "precision", &request.context.precision) ||
+          !DescriptorU32(descriptor, "scale", &request.context.scale)) {
+        *refusal_detail =
+            "numeric literal descriptor precision or scale is unresolved";
+        return false;
+      }
+    } else {
+      std::uint32_t width = 0;
+      if (!DescriptorU32(descriptor, "width", &width) || width != 128) {
+        *refusal_detail = "128-bit numeric literal width is invalid";
+        return false;
+      }
+      request.context.precision = 38;
+      request.context.scale = 0;
+    }
+    const auto canonical = dt::ApplyNumericOperation(request);
+    if (!canonical.ok()) {
+      *refusal_detail = canonical.diagnostic.diagnostic_code.empty()
+                            ? "numeric literal is out of range"
+                            : canonical.diagnostic.diagnostic_code;
+      return false;
+    }
+    *canonical_payload = canonical.value.encoded_value;
+    return true;
+  }
+  dt::DatatypeCastRequest request;
+  request.value.type_id = type_id;
+  request.value.encoded_value = payload;
+  request.target_type_id = type_id;
+  request.explicit_cast = true;
+  const auto canonical = dt::CastDatatypeValue(request);
+  if (!canonical.ok()) {
+    *refusal_detail = canonical.diagnostic.diagnostic_code.empty()
+                          ? "literal payload is invalid for its descriptor"
+                          : canonical.diagnostic.diagnostic_code;
+    return false;
+  }
+  *canonical_payload = canonical.value.encoded_value;
+  return true;
 }
 
 bool TruthFromValue(const api::EngineTypedValue& value,
@@ -408,51 +605,32 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         *refusal_detail = "literal expression payload is incomplete";
         return leave(false);
       }
-      switch (*expression.literal_kind) {
-        case api::RelationalLiteralKind::kNumeric: {
-          if (expected_type.has_value() && *expected_type == "real64") {
-            double decoded = 0.0;
-            if (!ParseReal64(*expression.literal_or_parameter_ref,
-                             &decoded)) {
-              *refusal_detail =
-                  "numeric literal is outside exact real64 admission";
-              return leave(false);
-            }
-            return finish_type("real64");
-          }
-          std::int64_t decoded = 0;
-          if (!ParseInt64(*expression.literal_or_parameter_ref, &decoded)) {
-            *refusal_detail = "numeric literal is outside exact int64 admission";
-            return leave(false);
-          }
-          return finish_type("int64");
-        }
-        case api::RelationalLiteralKind::kString:
-          return finish_type("text");
-        case api::RelationalLiteralKind::kUuid:
-          if (!IsCanonicalUuid(*expression.literal_or_parameter_ref)) {
-            *refusal_detail = "UUID literal is not canonical lowercase text";
-            return leave(false);
-          }
-          return finish_type("uuid");
-        case api::RelationalLiteralKind::kBoolean: {
-          const auto boolean = UpperAscii(*expression.literal_or_parameter_ref);
-          if (boolean != "TRUE" && boolean != "FALSE") {
-            *refusal_detail = "boolean literal payload is invalid";
-            return leave(false);
-          }
-          return finish_type("boolean");
-        }
-        case api::RelationalLiteralKind::kNull:
-          return finish_type("null");
-        case api::RelationalLiteralKind::kTemporal:
-          *refusal_detail =
-              "temporal literal lacks a bound DATE/TIME/TIMESTAMP subtype";
-          return leave(false);
-        default:
-          *refusal_detail = "literal type is outside object-free scalar admission";
-          return leave(false);
+      const auto descriptor = descriptors_.find(
+          expression.result_descriptor_id);
+      if (descriptor == descriptors_.end()) {
+        *refusal_detail = "literal result descriptor is absent";
+        return leave(false);
       }
+      const auto type_name = BoundLiteralType(
+          expression, *descriptor->second, expected_type);
+      if (type_name.empty()) {
+        *refusal_detail =
+            "literal type is outside the bound object-free scalar profile";
+        return leave(false);
+      }
+      if (*expression.literal_kind == api::RelationalLiteralKind::kUuid &&
+          !IsCanonicalUuid(*expression.literal_or_parameter_ref)) {
+        *refusal_detail = "UUID literal is not canonical lowercase text";
+        return leave(false);
+      }
+      if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {
+        const auto boolean = UpperAscii(*expression.literal_or_parameter_ref);
+        if (boolean != "TRUE" && boolean != "FALSE") {
+          *refusal_detail = "boolean literal payload is invalid";
+          return leave(false);
+        }
+      }
+      return finish_type(type_name);
     }
     case api::RelationalExpressionKind::kParenthesized: {
       std::string child_type;
@@ -773,31 +951,14 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
       return finish(std::move(literal));
     }
     literal.setState(api::EngineValueState::value);
-    switch (*expression.literal_kind) {
-      case api::RelationalLiteralKind::kNumeric: {
-        if (inferred_type == "real64") {
-          double decoded = 0.0;
-          if (!ParseReal64(*expression.literal_or_parameter_ref, &decoded)) {
-            return false;
-          }
-          literal.encoded_value = FormatReal64(decoded);
-          if (literal.encoded_value.empty()) return false;
-          break;
-        }
-        std::int64_t decoded = 0;
-        if (!ParseInt64(*expression.literal_or_parameter_ref, &decoded)) return false;
-        literal.encoded_value = std::to_string(decoded);
-        break;
-      }
-      case api::RelationalLiteralKind::kBoolean:
-        literal.encoded_value =
-            UpperAscii(*expression.literal_or_parameter_ref) == "TRUE"
-                ? "true"
-                : "false";
-        break;
-      default:
-        literal.encoded_value = *expression.literal_or_parameter_ref;
-        break;
+    std::string payload = *expression.literal_or_parameter_ref;
+    if (*expression.literal_kind == api::RelationalLiteralKind::kBoolean) {
+      payload = UpperAscii(payload) == "TRUE" ? "true" : "false";
+    }
+    if (!CanonicalizeLiteralPayload(inferred_type, result_descriptor, payload,
+                                    &literal.encoded_value,
+                                    refusal_detail)) {
+      return false;
     }
     return finish(std::move(literal));
   }

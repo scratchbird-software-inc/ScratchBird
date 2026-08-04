@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -54,8 +55,13 @@ std::string LowerAscii(std::string value) {
 
 CanonicalTypeId CanonicalDescriptorTypeId(const EngineDescriptor& descriptor) {
   std::string type = LowerAscii(descriptor.canonical_type_name);
-  if (type == "integer64") { return CanonicalTypeId::int64; }
   if (type.starts_with("sb.")) { type.erase(0, 3); }
+  if (type == "integer64") return CanonicalTypeId::int64;
+  if (type == "bool") return CanonicalTypeId::boolean;
+  if (type == "float8") return CanonicalTypeId::real64;
+  if (type == "timestamp_tz") return CanonicalTypeId::timestamp;
+  if (type == "blob" || type == "bytes") return CanonicalTypeId::binary;
+  if (type == "uuidv7") return CanonicalTypeId::uuid;
   return scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type);
 }
 
@@ -106,8 +112,142 @@ bool IsOpaqueEncodedType(const EngineDescriptor& descriptor) {
 }
 
 bool IsKnownScalarType(const EngineDescriptor& descriptor) {
-  return IsInt64Type(descriptor) || IsBoolType(descriptor) || IsReal64Type(descriptor) || IsTextType(descriptor) ||
-         IsOpaqueEncodedType(descriptor);
+  switch (CanonicalDescriptorTypeId(descriptor)) {
+    case CanonicalTypeId::boolean:
+    case CanonicalTypeId::int8:
+    case CanonicalTypeId::int16:
+    case CanonicalTypeId::int32:
+    case CanonicalTypeId::int64:
+    case CanonicalTypeId::int128:
+    case CanonicalTypeId::real32:
+    case CanonicalTypeId::real64:
+    case CanonicalTypeId::real128:
+    case CanonicalTypeId::decimal:
+    case CanonicalTypeId::decimal_float:
+    case CanonicalTypeId::uuid:
+    case CanonicalTypeId::character:
+    case CanonicalTypeId::binary:
+    case CanonicalTypeId::date:
+    case CanonicalTypeId::time:
+    case CanonicalTypeId::timestamp:
+    case CanonicalTypeId::interval:
+      return true;
+    default:
+      return IsOpaqueEncodedType(descriptor);
+  }
+}
+
+bool RequiresExpandedScalarValidation(const EngineDescriptor& descriptor) {
+  switch (CanonicalDescriptorTypeId(descriptor)) {
+    case CanonicalTypeId::int128:
+    case CanonicalTypeId::real32:
+    case CanonicalTypeId::real128:
+    case CanonicalTypeId::decimal:
+    case CanonicalTypeId::decimal_float:
+    case CanonicalTypeId::uuid:
+    case CanonicalTypeId::character:
+    case CanonicalTypeId::binary:
+    case CanonicalTypeId::date:
+    case CanonicalTypeId::time:
+    case CanonicalTypeId::timestamp:
+    case CanonicalTypeId::interval:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::string DescriptorField(const std::string& descriptor,
+                            const std::string& key) {
+  const std::string prefix = key + "=";
+  std::string value;
+  bool found = false;
+  std::size_t start = 0;
+  while (start <= descriptor.size()) {
+    const auto end = descriptor.find(';', start);
+    const auto field = descriptor.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    if (field.rfind(prefix, 0) == 0) {
+      if (found) return {};
+      value = field.substr(prefix.size());
+      found = true;
+    }
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return value;
+}
+
+bool DescriptorU32(const EngineDescriptor& descriptor,
+                   const std::string& key,
+                   std::uint32_t* value) {
+  if (value == nullptr) return false;
+  const auto field = DescriptorField(descriptor.encoded_descriptor, key);
+  if (field.empty() || (field.size() > 1 && field.front() == '0')) {
+    return false;
+  }
+  std::uint64_t parsed = 0;
+  for (const auto ch : field) {
+    if (ch < '0' || ch > '9') return false;
+    parsed = parsed * 10u + static_cast<unsigned>(ch - '0');
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) return false;
+  }
+  *value = static_cast<std::uint32_t>(parsed);
+  return true;
+}
+
+bool ValidateExpandedScalarEncoding(const EngineDescriptor& descriptor,
+                                    const std::string& encoded_value,
+                                    std::string* detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (detail == nullptr) return false;
+  detail->clear();
+  const auto type_id = CanonicalDescriptorTypeId(descriptor);
+  const bool extended_numeric =
+      type_id == CanonicalTypeId::decimal ||
+      type_id == CanonicalTypeId::decimal_float ||
+      type_id == CanonicalTypeId::int128 ||
+      type_id == CanonicalTypeId::real128;
+  if (extended_numeric) {
+    dt::DatatypeNumericOperationRequest request;
+    request.operation = dt::DatatypeNumericOperationKind::canonicalize;
+    request.type_id = type_id;
+    request.left.type_id = type_id;
+    request.left.encoded_value = encoded_value;
+    if (type_id == CanonicalTypeId::decimal ||
+        type_id == CanonicalTypeId::decimal_float) {
+      if (!DescriptorU32(descriptor, "precision", &request.context.precision) ||
+          !DescriptorU32(descriptor, "scale", &request.context.scale)) {
+        *detail = "numeric descriptor precision or scale is unresolved";
+        return false;
+      }
+    } else {
+      std::uint32_t width = 0;
+      if (!DescriptorU32(descriptor, "width", &width) || width != 128) {
+        *detail = "128-bit numeric descriptor width is invalid";
+        return false;
+      }
+      request.context.precision = 38;
+      request.context.scale = 0;
+    }
+    const auto canonical = dt::ApplyNumericOperation(request);
+    if (!canonical.ok()) {
+      *detail = canonical.diagnostic.diagnostic_code;
+      return false;
+    }
+    return true;
+  }
+  dt::DatatypeCastRequest request;
+  request.value.type_id = type_id;
+  request.value.encoded_value = encoded_value;
+  request.target_type_id = type_id;
+  request.explicit_cast = true;
+  const auto canonical = dt::CastDatatypeValue(request);
+  if (!canonical.ok()) {
+    *detail = canonical.diagnostic.diagnostic_code;
+    return false;
+  }
+  return true;
 }
 
 bool IsCanonicalUuid(const std::string_view value) {
@@ -402,6 +542,15 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
         double ignored = 0.0;
         if (!ParseReal64Strict(value.encoded_value, &ignored)) {
           return ErrorDiagnostic("SB_EXECUTOR_REAL64_DECODE_FAILED", value.encoded_value, row, column);
+        }
+      } else if (RequiresExpandedScalarValidation(expected.descriptor)) {
+        std::string detail;
+        if (!ValidateExpandedScalarEncoding(expected.descriptor,
+                                            value.encoded_value, &detail)) {
+          return ErrorDiagnostic(
+              "QOW-DIAG-QRY-008-RUNTIME-BREADTH-REFUSAL-V1",
+              detail.empty() ? value.encoded_value : std::move(detail), row,
+              column);
         }
       }
     }

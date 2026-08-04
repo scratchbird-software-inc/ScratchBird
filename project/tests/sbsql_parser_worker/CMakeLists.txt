@@ -298,6 +298,19 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-008-OVERFLOW;development_candidate"
   )
 
+  # RCP-021-CMAKE-RUNTIME-BREADTH-V1
+  add_executable(qow_qry_008_runtime_breadth_test_v1
+    qow_qry_008_runtime_breadth.cpp)
+  target_compile_features(qow_qry_008_runtime_breadth_test_v1
+    PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_008_runtime_breadth_test_v1 PRIVATE
+    sb_engine_executor)
+  add_test(NAME qow_qry_008_runtime_breadth_v1
+    COMMAND qow_qry_008_runtime_breadth_test_v1)
+  set_tests_properties(qow_qry_008_runtime_breadth_v1 PROPERTIES
+    LABELS "qow_closure;QOW-202;RCP-021-RUNTIME-BREADTH;development_candidate"
+  )
+
   # QOW-ROUTE-STAGE-QRY-009-V1
   add_executable(qow_qry_009_test_v1 qow_qry_009.cpp)
   target_compile_features(qow_qry_009_test_v1 PRIVATE cxx_std_20)

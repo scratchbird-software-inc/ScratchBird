@@ -2964,6 +2964,44 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   return result;
 }
 
+bool BindTimezoneOrderAuthority(
+    const api::EngineRequestContext& context,
+    exec::CanonicalDescriptorOrderTerm* term,
+    std::string* detail) {
+  if (term == nullptr || detail == nullptr) return false;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  (void)context;
+  *detail =
+      "temporal ordering requires the production engine timezone catalog";
+  return false;
+#else
+  const auto resolved = api::LookupEngineTimezoneSeedAuthority(context);
+  if (!resolved.ok || !resolved.authority.active ||
+      resolved.authority.resource_epoch == 0 ||
+      resolved.authority.timezone_epoch == 0) {
+    *detail = resolved.diagnostic.code.empty()
+                  ? "temporal ordering lacks current engine timezone authority"
+                  : resolved.diagnostic.code;
+    return false;
+  }
+  term->resource_epoch = resolved.authority.resource_epoch;
+  term->timezone_epoch = resolved.authority.timezone_epoch;
+  term->timezone_seed.active = resolved.authority.active;
+  term->timezone_seed.seed_pack_name = resolved.authority.seed_pack_name;
+  term->timezone_seed.seed_pack_version =
+      resolved.authority.seed_pack_version;
+  term->timezone_seed.content_hash = resolved.authority.content_hash;
+  term->timezone_seed.timezone_records =
+      resolved.authority.timezone_records;
+  term->timezone_seed.timezone_transition_records =
+      resolved.authority.timezone_transition_records;
+  term->timezone_seed.timezone_leap_second_records =
+      resolved.authority.timezone_leap_second_records;
+  term->timezone_seed.timezone_names = resolved.authority.timezone_names;
+  return true;
+#endif
+}
+
 PreparedSortRoot PrepareSortRoot(
     const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
@@ -3098,6 +3136,14 @@ PreparedSortRoot PrepareSortRoot(
       term.text_seed.collation_accent_insensitive =
           resolved.resource_descriptor.accent_insensitive;
 #endif
+    } else if ((column.descriptor.canonical_type_name == "time" ||
+                column.descriptor.canonical_type_name == "timestamp") &&
+               column.descriptor.encoded_descriptor.find(
+                   "timezone_profile_id=") != std::string::npos) {
+      if (!BindTimezoneOrderAuthority(context, &term, &result.detail)) {
+        result.order_terms.clear();
+        return result;
+      }
     }
     const auto validation =
         exec::ValidateCanonicalDescriptorOrderTerm(term, column);
@@ -3226,6 +3272,16 @@ PreparedDistinctRoot PrepareQueryDistinctRoot(
       term.text_seed.collation_accent_insensitive =
           resolved.resource_descriptor.accent_insensitive;
 #endif
+    } else if ((input.batch.columns[column].descriptor.canonical_type_name ==
+                    "time" ||
+                input.batch.columns[column].descriptor.canonical_type_name ==
+                    "timestamp") &&
+               input.batch.columns[column].descriptor.encoded_descriptor.find(
+                   "timezone_profile_id=") != std::string::npos) {
+      if (!BindTimezoneOrderAuthority(context, &term, &result.detail)) {
+        result.equality_terms.clear();
+        return result;
+      }
     }
     const auto validation = exec::ValidateCanonicalDescriptorOrderTerm(
         term, input.batch.columns[column]);

@@ -210,6 +210,87 @@ sblr::SblrOperationEnvelope ValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+sblr::SblrOperationEnvelope RuntimeBreadthValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.type-breadth");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000008250"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "1"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000008251|"
+       "019f0000-0000-7400-8000-000000008252|1|-|-|8|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000008253|"
+       "019f0000-0000-7400-8000-000000008254|1|-|-|64|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000008255|"
+       "019f0000-0000-7400-8000-000000008256|1|-|-|-|6|2"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-000000008257|"
+       "019f0000-0000-7400-8000-000000008258|1|-|-|16|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-000000008259|"
+       "019f0000-0000-7400-8000-000000008260|1|-|-|128|-|-"},
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-000000008261|"
+       "019f0000-0000-7400-8000-000000008262|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "7",
+       "019f0000-0000-7300-8000-000000008263|"
+       "019f0000-0000-7400-8000-000000008264|1|-|"
+       "74696d657374616d705f74696d657a6f6e655f70726f66696c65|-|6|-"},
+      {"relational_descriptor_v1", "8",
+       "019f0000-0000-7300-8000-000000008265|"
+       "019f0000-0000-7400-8000-000000008266|2|"
+       "019f0000-0000-7400-8000-000000008267|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|2d313238"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|312e3235"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|1|-|31322e3334"},
+      {"relational_expression_v1", "4", "1|-|4|-|-|3|-|61"},
+      {"relational_expression_v1", "5",
+       "1|-|5|-|-|5|-|30313966303030302d303030302d373230302d383030302d"
+       "303030303030303038323031"},
+      {"relational_expression_v1", "6",
+       "1|-|6|-|-|4|-|323032362d30382d3033"},
+      {"relational_expression_v1", "7",
+       "1|-|7|-|-|4|-|323032362d30382d30335430393a30303a30302d30343a3030"},
+      {"relational_expression_v1", "8", "1|-|8|-|-|2|-|416c706861"},
+      {"relational_expression_v1", "9", "1|-|1|-|-|1|-|2d313238"},
+      {"relational_expression_v1", "10", "1|-|2|-|-|1|-|312e3235"},
+      {"relational_expression_v1", "11", "1|-|3|-|-|1|-|31322e3334"},
+      {"relational_expression_v1", "12", "1|-|4|-|-|3|-|61"},
+      {"relational_expression_v1", "13",
+       "1|-|5|-|-|5|-|30313966303030302d303030302d373230302d383030302d"
+       "303030303030303038323031"},
+      {"relational_expression_v1", "14",
+       "1|-|6|-|-|4|-|323032362d30382d3033"},
+      {"relational_expression_v1", "15",
+       "1|-|7|-|-|4|-|323032362d30382d30335430393a30303a30302d30343a3030"},
+      {"relational_expression_v1", "16", "1|-|8|-|-|7|-|2d"},
+      {"relational_output_v1", "1", "1|1|1|1|0|74696e79"},
+      {"relational_output_v1", "2", "1|2|2|1|1|726174696f"},
+      {"relational_output_v1", "3", "1|3|3|1|2|616d6f756e74"},
+      {"relational_output_v1", "4", "1|4|4|1|3|7061796c6f6164"},
+      {"relational_output_v1", "5", "1|5|5|1|4|6964656e74697479"},
+      {"relational_output_v1", "6", "1|6|6|1|5|6f6e5f64617465"},
+      {"relational_output_v1", "7", "1|7|7|1|6|6f627365727665645f6174"},
+      {"relational_output_v1", "8", "1|8|8|1|7|6c6162656c"},
+      {"relational_values_row_v1", "1", "1,2,3,4,5,6,7,8"},
+      {"relational_values_row_v1", "2", "9,10,11,12,13,14,15,16"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3,4,5,6,7,8|1,2"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope ComposedValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.composed");
@@ -3629,6 +3710,59 @@ bool ValidateLiveValuesSpine() {
           repeated.selected_plan_uuid == first.selected_plan_uuid &&
           repeated.canonical_result_bytes == first.canonical_result_bytes,
       "identical admitted VALUES input changed canonical plan/result bytes");
+  return passed;
+}
+
+bool ValidateRuntimeBreadthValuesSpine() {
+  const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), RuntimeBreadthValuesEnvelope(), {}});
+  const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), RuntimeBreadthValuesEnvelope(), {}});
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.logical_node_count == 1 && first.physical_node_count == 1 &&
+          first.canonical_result_column_count == 8 &&
+          first.canonical_result_row_count == 2,
+      "expanded descriptor VALUES did not traverse the canonical result route");
+  const auto& columns = first.api_result.result_shape.columns;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      columns.size() == 8 && rows.size() == 2 &&
+          columns[0].canonical_type_name == "int8" &&
+          columns[1].canonical_type_name == "real64" &&
+          columns[2].canonical_type_name == "decimal" &&
+          columns[3].canonical_type_name == "binary" &&
+          columns[4].canonical_type_name == "uuid" &&
+          columns[5].canonical_type_name == "date" &&
+          columns[6].canonical_type_name == "timestamp" &&
+          columns[7].canonical_type_name == "text" &&
+          rows[0].fields[0].second.encoded_value == "-128" &&
+          rows[0].fields[1].second.encoded_value == "1.25" &&
+          rows[0].fields[2].second.encoded_value == "12.34" &&
+          rows[0].fields[3].second.encoded_value == "a" &&
+          rows[0].fields[4].second.encoded_value ==
+              "019f0000-0000-7200-8000-000000008201" &&
+          rows[0].fields[5].second.encoded_value == "2026-08-03" &&
+          rows[0].fields[6].second.encoded_value ==
+              "2026-08-03T09:00:00-04:00" &&
+          rows[1].fields[7].second.state ==
+              api::EngineValueState::sql_null &&
+          rows[1].fields[7].second.encoded_value.empty(),
+      "expanded descriptor values or SQL NULL lost canonical type/value state");
+  passed &= Require(
+      repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "expanded descriptor route changed plan/result bytes on replay");
   return passed;
 }
 
@@ -9066,9 +9200,21 @@ bool ValidatePayloadRefusalIsAtomic() {
   malformed.operands[13].value = "1|-|1|-|-|1|-|6e6f74";
   auto invalid_uuid = ValuesEnvelope();
   invalid_uuid.operands[13].value = "1|-|1|-|-|5|-|6e6f74";
-  auto ambiguous_temporal = ValuesEnvelope();
-  ambiguous_temporal.operands[13].value =
-      "1|-|1|-|-|4|-|323032362d30372d32365430303a30303a30305a";
+  auto invalid_temporal = ValuesEnvelope();
+  invalid_temporal.operands[13].value =
+      "1|-|1|-|-|4|-|323032362d39392d39395430303a30303a30305a";
+  auto int8_overflow = RuntimeBreadthValuesEnvelope();
+  auto decimal_overflow = RuntimeBreadthValuesEnvelope();
+  for (auto& operand : int8_overflow.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "1") {
+      operand.value = "1|-|1|-|-|1|-|313238";
+    }
+  }
+  for (auto& operand : decimal_overflow.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "3") {
+      operand.value = "1|-|3|-|-|1|-|31323334352e3637";
+    }
+  }
   const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
     const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
         {Context(), std::move(envelope), {}});
@@ -9085,8 +9231,11 @@ bool ValidatePayloadRefusalIsAtomic() {
   return Require(
       refused_atomically(std::move(malformed)) &&
           refused_atomically(std::move(invalid_uuid)) &&
-          refused_atomically(std::move(ambiguous_temporal)),
-      "invalid or type-ambiguous VALUES payload published partial evidence");
+          refused_atomically(std::move(invalid_temporal)) &&
+          refused_atomically(std::move(int8_overflow)) &&
+          refused_atomically(std::move(decimal_overflow)),
+      "invalid, width-overflow, or precision-overflow VALUES payload "
+      "published partial evidence");
 }
 
 bool ValidateComposedScalarRefusalIsAtomic() {
@@ -9129,6 +9278,7 @@ bool ValidateComposedScalarRefusalIsAtomic() {
 // QOW-TEST-INTEGRATION-306-211-LIVE-VALUES-V1
 int main() {
   const bool passed = ValidateLiveValuesSpine() &&
+                      ValidateRuntimeBreadthValuesSpine() &&
                       ValidateLiveValuesPreResultRevocationIsAtomic() &&
                       ValidateLiveStatementContextRefusalIsAtomic() &&
                       ValidateComposedScalarValuesSpine() &&
