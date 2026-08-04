@@ -34,6 +34,7 @@
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
 namespace exec = scratchbird::engine::executor;
 namespace opt = scratchbird::engine::optimizer;
 namespace plan = scratchbird::engine::planner;
@@ -3729,7 +3730,8 @@ bool EvaluateNonNegativeRowBound(
 
 MaterializedValues MaterializeValues(
     const api::TypedRelationalDag& dag,
-    const plan::CanonicalLogicalRelationalNode& logical_node) {
+    const plan::CanonicalLogicalRelationalNode& logical_node,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services) {
   MaterializedValues result;
   const auto node_it = std::ranges::find_if(
       dag.nodes, [&](const auto& node) {
@@ -3755,7 +3757,8 @@ MaterializedValues MaterializeValues(
     expressions.emplace(expression.expression_id, &expression);
   }
   for (const auto& row : dag.values_rows) rows.emplace(row.row_id, &row);
-  CanonicalRelationalExpressionRuntime expression_runtime(dag);
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      dag, expression_services);
 
   std::vector<const api::RelationalOutputRecord*> outputs;
   for (const auto& output : dag.outputs) {
@@ -3791,7 +3794,9 @@ MaterializedValues MaterializeValues(
         return result;
       }
       if (type_name == "null") continue;
-      if (!type_names[column].empty() && type_names[column] != type_name) {
+      if (!type_names[column].empty() &&
+          dt::CanonicalTypeIdFromStableName(type_names[column]) !=
+              dt::CanonicalTypeIdFromStableName(type_name)) {
         result.detail = "live VALUES column has unreconciled literal types";
         return result;
       }
@@ -3823,7 +3828,8 @@ MaterializedValues MaterializeValues(
         descriptor->second->nullability ==
             api::RelationalNullability::kUnknown ||
         (descriptor->second->collation_uuid.has_value() &&
-         type_names[column] != "text") ||
+         dt::CanonicalTypeIdFromStableName(type_names[column]) !=
+             dt::CanonicalTypeId::character) ||
         (descriptor->second->timezone_profile_id.has_value() &&
          type_names[column] != "timestamp") ||
         outputs[column]->ordinal != column ||
@@ -4467,12 +4473,14 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
                   "live UNION ALL execution lacks optimizer admission");
   }
 
-  auto left = MaterializeValues(request.relational_dag, *left_node);
+  auto left = MaterializeValues(request.relational_dag, *left_node,
+                                request.expression_services);
   if (!left.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
                   "left VALUES: " + left.detail);
   }
-  auto right = MaterializeValues(request.relational_dag, *right_node);
+  auto right = MaterializeValues(request.relational_dag, *right_node,
+                                 request.expression_services);
   if (!right.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
                   "right VALUES: " + right.detail);
@@ -4749,12 +4757,14 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
                   "live INNER JOIN execution lacks optimizer admission");
   }
 
-  auto left = MaterializeValues(request.relational_dag, *left_node);
+  auto left = MaterializeValues(request.relational_dag, *left_node,
+                                request.expression_services);
   if (!left.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
                   "left VALUES: " + left.detail);
   }
-  auto right = MaterializeValues(request.relational_dag, *right_node);
+  auto right = MaterializeValues(request.relational_dag, *right_node,
+                                 request.expression_services);
   if (!right.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
                   "right VALUES: " + right.detail);
@@ -4770,7 +4780,7 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
       api::EngineSqlTruthValue::unknown;
   std::string predicate_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag);
+      request.relational_dag, request.expression_services);
   if (!expression_runtime.EvaluatePredicateForConsumer(
           root->bound_expression_ids.front(),
           api::EngineCanonicalExpressionConsumer::join, &predicate_truth,
@@ -5071,7 +5081,8 @@ ExecuteCanonicalObjectFreeFilterQuery(
                   "live FILTER execution lacks optimizer admission");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-FILTER-PAYLOAD-V1",
                   "FILTER input VALUES: " + input.detail);
@@ -5087,7 +5098,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
       api::EngineSqlTruthValue::unknown;
   std::string predicate_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag);
+      request.relational_dag, request.expression_services);
   if (!expression_runtime.EvaluatePredicateForConsumer(
           root->bound_expression_ids.front(),
           api::EngineCanonicalExpressionConsumer::filter, &predicate_truth,
@@ -5345,7 +5356,8 @@ ExecuteCanonicalObjectFreeProjectQuery(
                   "descriptor-direct PROJECT does not admit bound expressions");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1",
                   "PROJECT input VALUES: " + input.detail);
@@ -5651,7 +5663,8 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
         "live grouped COUNT/SUM execution lacks optimizer admission");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-GROUPED-AGGREGATE-PAYLOAD-V1",
                   "grouped COUNT/SUM input VALUES: " + input.detail);
@@ -6082,6 +6095,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
     having_registration.execute =
         [prepared_having, maximum_output_rows,
          relational_dag = request.relational_dag,
+         expression_services = request.expression_services,
          mga_context = request.context](
             const exec::TypedPhysicalNodeDag& dag,
             const exec::PhysicalNodeRecord& node,
@@ -6128,7 +6142,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
           }
 
           CanonicalRelationalExpressionRuntime expression_runtime(
-              relational_dag);
+              relational_dag, expression_services);
           std::vector<api::EngineSqlTruthValue> row_truth_values;
           row_truth_values.reserve(input_batch.rows.size());
           for (const auto& row : input_batch.rows) {
@@ -6416,7 +6430,8 @@ ExecuteCanonicalObjectFreeGlobalAggregateQuery(
                   "live global aggregate execution lacks optimizer admission");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-PAYLOAD-V1",
                   "global aggregate input VALUES: " + input.detail);
@@ -6906,7 +6921,8 @@ ExecuteCanonicalObjectFreeLimitQuery(
                   "bound-count LIMIT requires exactly one expression");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-LIMIT-PAYLOAD-V1",
                   "LIMIT input VALUES: " + input.detail);
@@ -6920,7 +6936,7 @@ ExecuteCanonicalObjectFreeLimitQuery(
   std::uint64_t row_limit = 0;
   std::string bound_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag);
+      request.relational_dag, request.expression_services);
   if (!EvaluateNonNegativeRowBound(
           &expression_runtime, root->bound_expression_ids.front(),
           &row_limit, &bound_detail)) {
@@ -7165,7 +7181,8 @@ ExecuteCanonicalObjectFreeSortQuery(
                   "live SORT execution lacks optimizer admission");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *input_node);
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SORT-PAYLOAD-V1",
                   "SORT input VALUES: " + input.detail);
@@ -7464,7 +7481,8 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
                   "DISTINCT/ORDER/LIMIT composition lacks optimizer admission");
   }
 
-  auto input = MaterializeValues(request.relational_dag, *values_node);
+  auto input = MaterializeValues(request.relational_dag, *values_node,
+                                 request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
                   "composition input VALUES: " + input.detail);
@@ -7492,7 +7510,7 @@ ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
   }
 
   CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag);
+      request.relational_dag, request.expression_services);
   std::uint64_t row_limit = 0;
   std::uint64_t row_offset = 0;
   std::string bound_detail;
@@ -7833,7 +7851,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   }
 
   auto materialized = MaterializeValues(request.relational_dag,
-                                        graph.nodes.front());
+                                        graph.nodes.front(),
+                                        request.expression_services);
   if (!materialized.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-VALUES-PAYLOAD-V1",
                   materialized.detail);

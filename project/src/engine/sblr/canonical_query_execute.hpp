@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "canonical_relational_expression.hpp"
 #include "engine/optimizer/optimizer_catalog_backed_planning.hpp"
 #include "query/plan_api.hpp"
 
@@ -23,6 +24,7 @@ struct CanonicalObjectFreeValuesExecutionRequest {
       optimizer_request;
   scratchbird::engine::optimizer::CanonicalOptimizerAdmissionResult
       optimizer_admission;
+  CanonicalRelationalExpressionRuntimeServices expression_services;
 };
 
 struct CanonicalObjectFreeValuesExecutionResult {

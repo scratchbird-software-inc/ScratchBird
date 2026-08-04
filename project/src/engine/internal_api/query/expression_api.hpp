@@ -91,6 +91,17 @@ enum class EngineCanonicalExpressionOperation : std::uint8_t {
   logical_not,
   logical_and,
   logical_or,
+  // RCP-024 appends operations so the RCP-023 ordinal contract remains
+  // stable for every pre-existing consumer.
+  explicit_cast,
+  implicit_cast,
+  numeric_modulo,
+  like,
+  ilike,
+  is_distinct_from,
+  is_not_distinct_from,
+  logical_xor,
+  scalar_function,
 };
 
 struct EngineCanonicalExpressionEvaluationRequest {
@@ -104,6 +115,8 @@ struct EngineCanonicalExpressionEvaluationRequest {
   EngineSqlTruthValue input_truth = EngineSqlTruthValue::unspecified;
   scratchbird::core::datatypes::DatatypeNumericContext numeric_context;
   std::optional<int> precomputed_comparison;
+  std::optional<EngineTypedValue> precomputed_value;
+  bool bound_text_authority = false;
 };
 
 struct EngineCanonicalExpressionEvaluationResult {
@@ -111,6 +124,9 @@ struct EngineCanonicalExpressionEvaluationResult {
   EngineSqlTruthValue truth = EngineSqlTruthValue::unspecified;
   int comparison = 0;
   bool passes_consumer = false;
+  // Stable refusal identity for the selected canonical operation. This is
+  // populated before evaluation so all failure exits remain deterministic.
+  std::string diagnostic_id;
 };
 
 // Descriptor/scalar primitives are implemented by the lower expression
@@ -173,6 +189,11 @@ bool QowBindCanonicalExpressionReferenceV1(
 bool QowCanonicalTruthFromTypedValueV1(
     const EngineTypedValue& value,
     EngineSqlTruthValue* truth,
+    std::string* refusal_detail);
+bool QowCompareCanonicalNonCollatedScalarsV1(
+    const EngineTypedValue& left_value,
+    const EngineTypedValue& right_value,
+    int* comparison,
     std::string* refusal_detail);
 bool QowEvaluateCanonicalTypedExpressionV1(
     const EngineCanonicalExpressionEvaluationRequest& request,

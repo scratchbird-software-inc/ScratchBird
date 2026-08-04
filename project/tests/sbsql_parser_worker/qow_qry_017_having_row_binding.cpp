@@ -476,7 +476,7 @@ bool ValidateMalformedGraphRefusals() {
   passed &= Refuses(malformed, 7, binding, Row(malformed, 2, "7"),
                     "missing binary operator was admitted");
   malformed = Dag();
-  FindExpression(malformed, 7).operator_name = "XOR";
+  FindExpression(malformed, 7).operator_name = "NOR";
   passed &= Refuses(malformed, 7, binding, Row(malformed, 2, "7"),
                     "unsupported boolean operator was admitted");
   malformed = Dag();

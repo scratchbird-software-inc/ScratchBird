@@ -8,6 +8,7 @@
 
 #include "canonical_relational_expression.hpp"
 
+#include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
 #include "query/expression_api.hpp"
 
@@ -15,6 +16,8 @@
 #include <charconv>
 #include <cctype>
 #include <cstdint>
+#include <iomanip>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -202,6 +205,40 @@ bool DescriptorU32(const api::EngineDescriptor& descriptor,
   return error == std::errc{} && end == field.data() + field.size();
 }
 
+bool NumericContextForDescriptor(
+    const api::EngineDescriptor& descriptor,
+    dt::DatatypeNumericContext* context,
+    std::string* refusal_detail) {
+  if (context == nullptr || refusal_detail == nullptr) return false;
+  *context = {};
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      descriptor.canonical_type_name);
+  if (!IsNumericType(type_id)) {
+    *refusal_detail = "arithmetic descriptor is not a canonical numeric type";
+    return false;
+  }
+  context->rounding = dt::DatatypeRoundingMode::half_even;
+  context->allow_special_values =
+      type_id == dt::CanonicalTypeId::decimal_float;
+  if (type_id == dt::CanonicalTypeId::decimal ||
+      type_id == dt::CanonicalTypeId::decimal_float) {
+    if (!DescriptorU32(descriptor, "precision", &context->precision) ||
+        !DescriptorU32(descriptor, "scale", &context->scale)) {
+      *refusal_detail =
+          "arithmetic descriptor precision or scale is unresolved";
+      return false;
+    }
+    return true;
+  }
+  context->precision =
+      type_id == dt::CanonicalTypeId::int128 ||
+              type_id == dt::CanonicalTypeId::real128
+          ? 38
+          : 19;
+  context->scale = 0;
+  return true;
+}
+
 bool CanonicalizeLiteralPayload(const std::string_view type_name,
                                 const api::EngineDescriptor& descriptor,
                                 const std::string& payload,
@@ -278,12 +315,59 @@ bool TruthFromValue(const api::EngineTypedValue& value,
 bool IsComparisonOperator(const std::string_view operation) {
   return operation == "=" || operation == "<>" || operation == "!=" ||
          operation == "<" || operation == "<=" || operation == ">" ||
-         operation == ">=";
+         operation == ">=" || operation == "IS DISTINCT FROM" ||
+         operation == "IS NOT DISTINCT FROM";
 }
 
 bool IsAdmittedComparisonType(const std::string_view type_name) {
-  // Character comparison requires catalog-bound collation authority.
-  return type_name == "int64" || type_name == "boolean";
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      std::string(type_name));
+  return type_id == dt::CanonicalTypeId::boolean ||
+         (type_id >= dt::CanonicalTypeId::int8 &&
+          type_id <= dt::CanonicalTypeId::int128) ||
+         (type_id >= dt::CanonicalTypeId::uint8 &&
+          type_id <= dt::CanonicalTypeId::uint128) ||
+         (type_id >= dt::CanonicalTypeId::bfloat16 &&
+          type_id <= dt::CanonicalTypeId::decimal_float) ||
+         type_id == dt::CanonicalTypeId::uuid ||
+         type_id == dt::CanonicalTypeId::ip_address ||
+         type_id == dt::CanonicalTypeId::network_prefix ||
+         type_id == dt::CanonicalTypeId::mac_address ||
+         type_id == dt::CanonicalTypeId::character ||
+         type_id == dt::CanonicalTypeId::binary ||
+         type_id == dt::CanonicalTypeId::bit_string ||
+         type_id == dt::CanonicalTypeId::date ||
+         type_id == dt::CanonicalTypeId::time ||
+         type_id == dt::CanonicalTypeId::timestamp ||
+         type_id == dt::CanonicalTypeId::interval;
+}
+
+bool SameCanonicalType(const std::string_view left,
+                       const std::string_view right) {
+  const auto left_id = dt::CanonicalTypeIdFromStableName(std::string(left));
+  return left_id != dt::CanonicalTypeId::unknown &&
+         left_id == dt::CanonicalTypeIdFromStableName(std::string(right));
+}
+
+bool IsBoundedSignedIntegerType(const std::string_view type_name) {
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      std::string(type_name));
+  return type_id == dt::CanonicalTypeId::int8 ||
+         type_id == dt::CanonicalTypeId::int16 ||
+         type_id == dt::CanonicalTypeId::int32 ||
+         type_id == dt::CanonicalTypeId::int64;
+}
+
+std::string TypedUuidText(const scratchbird::core::platform::TypedUuid& uuid) {
+  if (!uuid.valid()) return {};
+  std::ostringstream out;
+  out << std::hex << std::setfill('0');
+  for (std::size_t index = 0; index < uuid.value.bytes.size(); ++index) {
+    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
+    out << std::setw(2)
+        << static_cast<unsigned>(uuid.value.bytes[index]);
+  }
+  return out.str();
 }
 
 bool SameDescriptor(const api::EngineDescriptor& left,
@@ -297,7 +381,9 @@ bool SameDescriptor(const api::EngineDescriptor& left,
 }  // namespace
 
 CanonicalRelationalExpressionRuntime::CanonicalRelationalExpressionRuntime(
-    const api::TypedRelationalDag& dag) {
+    const api::TypedRelationalDag& dag,
+    CanonicalRelationalExpressionRuntimeServices services)
+    : services_(std::move(services)) {
   for (const auto& descriptor : dag.descriptors) {
     descriptors_.emplace(descriptor.descriptor_id, &descriptor);
   }
@@ -499,11 +585,57 @@ bool CanonicalRelationalExpressionRuntime::BindDescriptorType(
   }
   const auto [entry, inserted] = descriptor_type_names_.emplace(
       descriptor_id, std::string(type_name));
-  if (!inserted && entry->second != type_name) {
+  if (!inserted && !SameCanonicalType(entry->second, type_name)) {
     *refusal_detail = "expression descriptor has incompatible inferred types";
     return false;
   }
   return true;
+}
+
+bool CanonicalRelationalExpressionRuntime::ResolveDescriptorType(
+    const api::RelationalTypeDescriptor& descriptor,
+    std::string* canonical_type_name,
+    std::string* refusal_detail) const {
+  if (canonical_type_name == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  canonical_type_name->clear();
+  if (!IsCanonicalUuid(descriptor.type_uuid)) {
+    *refusal_detail = "expression descriptor type UUID is not canonical";
+    return false;
+  }
+  static const auto core_manifest =
+      dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (core_manifest.ok()) {
+    const auto row = std::ranges::find_if(
+        core_manifest.manifest.descriptor_rows, [&](const auto& candidate) {
+          return TypedUuidText(candidate.descriptor_uuid) ==
+                 descriptor.type_uuid;
+        });
+    if (row != core_manifest.manifest.descriptor_rows.end()) {
+      *canonical_type_name = row->stable_name;
+      return true;
+    }
+  }
+  if (services_.descriptor_type_resolver) {
+    std::string diagnostic_id;
+    if (services_.descriptor_type_resolver(
+            descriptor.type_uuid, canonical_type_name, &diagnostic_id,
+            refusal_detail) &&
+        !canonical_type_name->empty() &&
+        dt::CanonicalTypeIdFromStableName(*canonical_type_name) !=
+            dt::CanonicalTypeId::unknown) {
+      return true;
+    }
+    if (!diagnostic_id.empty()) {
+      *refusal_detail = diagnostic_id + ":" + *refusal_detail;
+    }
+  }
+  if (refusal_detail->empty()) {
+    *refusal_detail =
+        "expression descriptor type UUID has no current engine binding";
+  }
+  return false;
 }
 
 bool CanonicalRelationalExpressionRuntime::InferType(
@@ -541,10 +673,12 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
     if (type_name == "null" && expected_type.has_value()) {
       type_name = std::string(*expected_type);
     }
-    if (expected_type.has_value() && type_name != *expected_type) {
+    if (expected_type.has_value() &&
+        !SameCanonicalType(type_name, *expected_type)) {
       *refusal_detail = "expression type contradicts its bound consumer type";
       return leave(false);
     }
+    if (expected_type.has_value()) type_name = std::string(*expected_type);
     if (type_name != "null" &&
         !BindDescriptorType(expression.result_descriptor_id, type_name,
                             refusal_detail)) {
@@ -577,8 +711,16 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         *refusal_detail = "literal result descriptor is absent";
         return leave(false);
       }
-      const auto type_name = BoundLiteralType(
+      auto type_name = BoundLiteralType(
           expression, *descriptor->second, expected_type);
+      if (type_name == "null" && !expected_type.has_value()) {
+        std::string descriptor_type;
+        std::string descriptor_detail;
+        if (ResolveDescriptorType(*descriptor->second, &descriptor_type,
+                                  &descriptor_detail)) {
+          type_name = std::move(descriptor_type);
+        }
+      }
       if (type_name.empty()) {
         *refusal_detail =
             "literal type is outside the bound object-free scalar profile";
@@ -608,35 +750,73 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
     }
     case api::RelationalExpressionKind::kUnary: {
       const auto operation = UpperAscii(*expression.operator_name);
-      const std::string_view operand_type =
-          operation == "NOT" ? std::string_view("boolean")
-                             : std::string_view("int64");
       if (operation != "NOT" && operation != "+" && operation != "-") {
         *refusal_detail = "unary scalar operator is not admitted";
         return leave(false);
       }
       std::string child_type;
-      if (!InferTypeInternal(expression.child_expression_ids.front(), operand_type,
-                             &child_type, refusal_detail)) {
+      const auto child_expected =
+          operation == "NOT"
+              ? std::optional<std::string_view>("boolean")
+              : expected_type;
+      if (!InferTypeInternal(expression.child_expression_ids.front(),
+                             child_expected, &child_type, refusal_detail)) {
         return leave(false);
       }
-      return finish_type(std::string(operand_type));
+      if (operation != "NOT" &&
+          !IsNumericType(dt::CanonicalTypeIdFromStableName(child_type))) {
+        *refusal_detail = "unary arithmetic operand is not numeric";
+        return leave(false);
+      }
+      return finish_type(operation == "NOT" ? "boolean" : child_type);
     }
     case api::RelationalExpressionKind::kBinary: {
       const auto operation = UpperAscii(*expression.operator_name);
       if (operation == "+" || operation == "-" || operation == "*" ||
-          operation == "/") {
+          operation == "/" || operation == "%") {
         std::string left_type;
         std::string right_type;
-        if (!InferTypeInternal(expression.child_expression_ids[0], "int64",
-                               &left_type, refusal_detail) ||
-            !InferTypeInternal(expression.child_expression_ids[1], "int64",
-                               &right_type, refusal_detail)) {
+        if (!InferTypeInternal(expression.child_expression_ids[0],
+                               std::nullopt, &left_type, refusal_detail) ||
+            !InferTypeInternal(expression.child_expression_ids[1],
+                               std::nullopt, &right_type, refusal_detail)) {
           return leave(false);
         }
-        return finish_type("int64");
+        if (left_type == "null" && right_type == "null") {
+          if (!expected_type.has_value() ||
+              !IsNumericType(dt::CanonicalTypeIdFromStableName(
+                  std::string(*expected_type)))) {
+            *refusal_detail =
+                "arithmetic operand descriptors have no bound numeric type";
+            return leave(false);
+          }
+          left_type = std::string(*expected_type);
+          right_type = left_type;
+        } else {
+          const std::string operand_type =
+              left_type == "null" ? right_type : left_type;
+          if (left_type == "null" &&
+              !InferTypeInternal(expression.child_expression_ids[0],
+                                 operand_type, &left_type, refusal_detail)) {
+            return leave(false);
+          }
+          if (right_type == "null" &&
+              !InferTypeInternal(expression.child_expression_ids[1],
+                                 operand_type, &right_type, refusal_detail)) {
+            return leave(false);
+          }
+        }
+        if (!SameCanonicalType(left_type, right_type) ||
+            !IsNumericType(dt::CanonicalTypeIdFromStableName(left_type)) ||
+            (operation == "%" &&
+             !IsBoundedSignedIntegerType(left_type))) {
+          *refusal_detail =
+              "arithmetic operands have incompatible or unsupported types";
+          return leave(false);
+        }
+        return finish_type(left_type);
       }
-      if (operation == "AND" || operation == "OR") {
+      if (operation == "AND" || operation == "OR" || operation == "XOR") {
         std::string left_type;
         std::string right_type;
         if (!InferTypeInternal(expression.child_expression_ids[0], "boolean",
@@ -657,6 +837,17 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
           return leave(false);
         }
         return finish_type("text");
+      }
+      if (operation == "LIKE" || operation == "ILIKE") {
+        std::string left_type;
+        std::string right_type;
+        if (!InferTypeInternal(expression.child_expression_ids[0], "text",
+                               &left_type, refusal_detail) ||
+            !InferTypeInternal(expression.child_expression_ids[1], "text",
+                               &right_type, refusal_detail)) {
+          return leave(false);
+        }
+        return finish_type("boolean");
       }
       if (operation == "IS") {
         bool negate = false;
@@ -690,15 +881,14 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
         }
         const std::string operand_type =
             left_type == "null" ? right_type : left_type;
-        if (right_type != "null" && right_type != operand_type) {
+        if (right_type != "null" &&
+            !SameCanonicalType(right_type, operand_type)) {
           *refusal_detail = "comparison operands have incompatible types";
           return leave(false);
         }
         if (!IsAdmittedComparisonType(operand_type)) {
           *refusal_detail =
-              operand_type == "text"
-                  ? "character comparison requires catalog-bound collation authority"
-                  : "comparison type is outside object-free scalar admission";
+              "comparison type is outside canonical scalar admission";
           return leave(false);
         }
         if (left_type == "null" &&
@@ -722,9 +912,44 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
     case api::RelationalExpressionKind::kIdentifier:
       *refusal_detail = "identifier expression requires an input row binding";
       return leave(false);
-    case api::RelationalExpressionKind::kFunctionCall:
-      *refusal_detail = "function expression requires a bound function runtime";
-      return leave(false);
+    case api::RelationalExpressionKind::kFunctionCall: {
+      if (!expression.function_uuid.has_value() ||
+          !IsCanonicalUuid(*expression.function_uuid) ||
+          expression.bound_name_uuid.has_value() ||
+          expression.literal_kind.has_value() ||
+          expression.operator_name.has_value() ||
+          expression.literal_or_parameter_ref.has_value()) {
+        *refusal_detail =
+            "function expression identity or payload shape is invalid";
+        return leave(false);
+      }
+      for (const auto child_expression_id :
+           expression.child_expression_ids) {
+        std::string child_type;
+        if (!InferTypeInternal(child_expression_id, std::nullopt, &child_type,
+                               refusal_detail) ||
+            child_type.empty() || child_type == "null") {
+          if (refusal_detail->empty()) {
+            *refusal_detail =
+                "function argument descriptor type is unresolved";
+          }
+          return leave(false);
+        }
+      }
+      std::string result_type;
+      if (expected_type.has_value()) {
+        result_type = std::string(*expected_type);
+      } else {
+        const auto descriptor = descriptors_.find(
+            expression.result_descriptor_id);
+        if (descriptor == descriptors_.end() ||
+            !ResolveDescriptorType(*descriptor->second, &result_type,
+                                   refusal_detail)) {
+          return leave(false);
+        }
+      }
+      return finish_type(std::move(result_type));
+    }
   }
   *refusal_detail = "expression kind is outside scalar runtime admission";
   return leave(false);
@@ -947,6 +1172,18 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     return FinishValue(expression.result_descriptor_id, std::move(computed),
                        value, refusal_detail);
   };
+  const auto evaluate_scalar = [&](const auto& scalar_request,
+                                   auto* scalar_result) {
+    if (api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, scalar_result, refusal_detail)) {
+      return true;
+    }
+    if (!scalar_result->diagnostic_id.empty()) {
+      *refusal_detail = scalar_result->diagnostic_id + ":" +
+                        *refusal_detail;
+    }
+    return false;
+  };
 
   if (active_row_binding_ != nullptr) {
     const auto materialized =
@@ -992,7 +1229,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     api::EngineTypedValue child;
     const std::string_view child_type =
         operation == "NOT" ? std::string_view("boolean")
-                           : std::string_view("int64");
+                           : std::string_view(inferred_type);
     if (!EvaluateInternal(expression.child_expression_ids.front(), child_type,
                           &child, refusal_detail)) {
       return false;
@@ -1014,14 +1251,73 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
           api::EngineCanonicalExpressionOperation::numeric_subtract;
       scalar_request.left_value = std::move(zero);
       scalar_request.right_value = child;
-      scalar_request.numeric_context.precision = 19;
-      scalar_request.numeric_context.scale = 0;
+      if (!NumericContextForDescriptor(
+              result_descriptor, &scalar_request.numeric_context,
+              refusal_detail)) {
+        return false;
+      }
     } else {
       scalar_request.operation =
           api::EngineCanonicalExpressionOperation::logical_not;
     }
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
+      return false;
+    }
+    return finish(std::move(scalar_result.value));
+  }
+
+  if (expression.expression_kind ==
+      api::RelationalExpressionKind::kFunctionCall) {
+    if (!services_.function_evaluator) {
+      *refusal_detail =
+          "QOW-DIAG-RCP024-FUNCTION-AUTHORITY-REFUSAL-V1:bound function "
+          "runtime is unavailable";
+      return false;
+    }
+    std::vector<api::EngineTypedValue> arguments;
+    arguments.reserve(expression.child_expression_ids.size());
+    for (const auto child_expression_id : expression.child_expression_ids) {
+      std::string child_type;
+      if (!InferTypeInternal(child_expression_id, std::nullopt, &child_type,
+                             refusal_detail)) {
+        return false;
+      }
+      api::EngineTypedValue argument;
+      if (!EvaluateInternal(child_expression_id, child_type, &argument,
+                            refusal_detail)) {
+        return false;
+      }
+      arguments.push_back(std::move(argument));
+    }
+    api::EngineTypedValue computed;
+    std::string diagnostic_id;
+    if (!services_.function_evaluator(
+            *expression.function_uuid, arguments, &computed, &diagnostic_id,
+            refusal_detail)) {
+      *refusal_detail =
+          (diagnostic_id.empty()
+               ? "QOW-DIAG-RCP024-FUNCTION-DISPATCH-REFUSAL-V1"
+               : diagnostic_id) +
+          ":" + *refusal_detail;
+      return false;
+    }
+    if (computed.isSqlNull()) {
+      if (!computed.encoded_value.empty() || !computed.binary_value.empty()) {
+        *refusal_detail =
+            "QOW-DIAG-RCP024-FUNCTION-RESULT-REFUSAL-V1:function SQL NULL "
+            "carries substitute payload";
+        return false;
+      }
+      computed.setState(api::EngineValueState::sql_null);
+    }
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation =
+        api::EngineCanonicalExpressionOperation::scalar_function;
+    scalar_request.result_descriptor = result_descriptor;
+    scalar_request.precomputed_value = std::move(computed);
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));
@@ -1033,13 +1329,13 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
   }
   const auto operation = UpperAscii(*expression.operator_name);
   if (operation == "+" || operation == "-" || operation == "*" ||
-      operation == "/") {
+      operation == "/" || operation == "%") {
     api::EngineTypedValue left;
     api::EngineTypedValue right;
-    if (!EvaluateInternal(expression.child_expression_ids[0], "int64", &left,
-                          refusal_detail) ||
-        !EvaluateInternal(expression.child_expression_ids[1], "int64", &right,
-                          refusal_detail)) {
+    if (!EvaluateInternal(expression.child_expression_ids[0], inferred_type,
+                          &left, refusal_detail) ||
+        !EvaluateInternal(expression.child_expression_ids[1], inferred_type,
+                          &right, refusal_detail)) {
       return false;
     }
     api::EngineCanonicalExpressionOperation numeric_operation =
@@ -1053,6 +1349,9 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     } else if (operation == "/") {
       numeric_operation =
           api::EngineCanonicalExpressionOperation::numeric_divide;
+    } else if (operation == "%") {
+      numeric_operation =
+          api::EngineCanonicalExpressionOperation::numeric_modulo;
     }
     api::EngineCanonicalExpressionEvaluationRequest scalar_request;
     scalar_request.consumer = active_consumer_;
@@ -1060,17 +1359,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.left_value = std::move(left);
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
-    scalar_request.numeric_context.precision = 19;
-    scalar_request.numeric_context.scale = 0;
+    if (!NumericContextForDescriptor(
+            result_descriptor, &scalar_request.numeric_context,
+            refusal_detail)) {
+      return false;
+    }
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));
   }
 
-  if (operation == "AND" || operation == "OR") {
+  if (operation == "AND" || operation == "OR" || operation == "XOR") {
     api::EngineTypedValue left;
     api::EngineTypedValue right;
     if (!EvaluateInternal(expression.child_expression_ids[0], "boolean", &left,
@@ -1084,13 +1385,14 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.operation =
         operation == "AND"
             ? api::EngineCanonicalExpressionOperation::logical_and
-            : api::EngineCanonicalExpressionOperation::logical_or;
+            : operation == "OR"
+                  ? api::EngineCanonicalExpressionOperation::logical_or
+                  : api::EngineCanonicalExpressionOperation::logical_xor;
     scalar_request.left_value = std::move(left);
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));
@@ -1113,8 +1415,63 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
+      return false;
+    }
+    return finish(std::move(scalar_result.value));
+  }
+
+  if (operation == "LIKE" || operation == "ILIKE") {
+    api::EngineTypedValue left;
+    api::EngineTypedValue right;
+    if (!EvaluateInternal(expression.child_expression_ids[0], "text", &left,
+                          refusal_detail) ||
+        !EvaluateInternal(expression.child_expression_ids[1], "text", &right,
+                          refusal_detail)) {
+      return false;
+    }
+    if (!services_.comparison_evaluator) {
+      *refusal_detail =
+          "QOW-DIAG-RCP024-COLLATION-AUTHORITY-REFUSAL-V1:LIKE requires "
+          "engine-owned collation authority";
+      return false;
+    }
+    auto authority_left = left;
+    auto authority_right = right;
+    if (authority_left.isSqlNull()) {
+      authority_left.encoded_value.clear();
+      authority_left.is_null = false;
+      authority_left.setState(api::EngineValueState::value);
+    }
+    if (authority_right.isSqlNull()) {
+      authority_right.encoded_value.clear();
+      authority_right.is_null = false;
+      authority_right.setState(api::EngineValueState::value);
+    }
+    int ignored_comparison = 0;
+    std::string diagnostic_id;
+    if (!services_.comparison_evaluator(
+            authority_left, authority_right, &ignored_comparison,
+            &diagnostic_id, refusal_detail)) {
+      *refusal_detail =
+          (diagnostic_id.empty()
+               ? "QOW-DIAG-RCP024-COLLATION-AUTHORITY-REFUSAL-V1"
+               : diagnostic_id) +
+          ":" + *refusal_detail;
+      return false;
+    }
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation =
+        operation == "LIKE"
+            ? api::EngineCanonicalExpressionOperation::like
+            : api::EngineCanonicalExpressionOperation::ilike;
+    scalar_request.left_value = std::move(left);
+    scalar_request.right_value = std::move(right);
+    scalar_request.result_descriptor = result_descriptor;
+    scalar_request.bound_text_authority = true;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));
@@ -1144,8 +1501,7 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.left_value = std::move(left);
     scalar_request.result_descriptor = result_descriptor;
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));
@@ -1186,6 +1542,12 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     } else if (operation == ">=") {
       scalar_operation =
           api::EngineCanonicalExpressionOperation::greater_than_or_equal;
+    } else if (operation == "IS DISTINCT FROM") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::is_distinct_from;
+    } else if (operation == "IS NOT DISTINCT FROM") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::is_not_distinct_from;
     }
     api::EngineCanonicalExpressionEvaluationRequest scalar_request;
     scalar_request.consumer = active_consumer_;
@@ -1193,9 +1555,36 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
     scalar_request.left_value = std::move(left);
     scalar_request.right_value = std::move(right);
     scalar_request.result_descriptor = result_descriptor;
+    const bool descriptor_bound_comparison =
+        dt::CanonicalTypeIdFromStableName(operand_type) ==
+            dt::CanonicalTypeId::character ||
+        scalar_request.left_value.descriptor.encoded_descriptor.find(
+            "timezone_profile_id=") != std::string::npos;
+    if (descriptor_bound_comparison &&
+        !scalar_request.left_value.isSqlNull() &&
+        !scalar_request.right_value.isSqlNull()) {
+      if (!services_.comparison_evaluator) {
+        *refusal_detail =
+            "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1:descriptor-bound "
+            "comparison authority is unavailable";
+        return false;
+      }
+      int comparison = 0;
+      std::string diagnostic_id;
+      if (!services_.comparison_evaluator(
+              scalar_request.left_value, scalar_request.right_value,
+              &comparison, &diagnostic_id, refusal_detail)) {
+        *refusal_detail =
+            (diagnostic_id.empty()
+                 ? "QOW-DIAG-RCP024-COMPARISON-AUTHORITY-REFUSAL-V1"
+                 : diagnostic_id) +
+            ":" + *refusal_detail;
+        return false;
+      }
+      scalar_request.precomputed_comparison = comparison;
+    }
     api::EngineCanonicalExpressionEvaluationResult scalar_result;
-    if (!api::QowEvaluateCanonicalTypedExpressionV1(
-            scalar_request, &scalar_result, refusal_detail)) {
+    if (!evaluate_scalar(scalar_request, &scalar_result)) {
       return false;
     }
     return finish(std::move(scalar_result.value));

@@ -19,6 +19,8 @@
 #include "sblr_context_variables.hpp"
 #include "sblr_operator_runtime.hpp"
 #include "sblr_procedural_block_runtime.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "uuid.hpp"
 
 #include "agents/agent_action_hooks_api.hpp"
 #include "agents/agent_management_api.hpp"
@@ -133,6 +135,7 @@
 
 namespace scratchbird::engine::sblr {
 namespace api = scratchbird::engine::internal_api;
+namespace dt = scratchbird::core::datatypes;
 namespace opt = scratchbird::engine::optimizer;
 namespace planner = scratchbird::engine::planner;
 
@@ -1072,6 +1075,12 @@ api::EngineApiResult QueryRouteFailure(
   return result;
 }
 
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+CanonicalRelationalExpressionRuntimeServices
+BuildCanonicalRelationalExpressionRuntimeServices(
+    const api::EngineRequestContext& context);
+#endif
+
 CanonicalQueryRouteResult DispatchTypedPlanOperation(
     const SblrDispatchRequest& request) {
   CanonicalQueryRouteResult routed;
@@ -1306,9 +1315,15 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
       optimizer_admission.admission.benchmark_clean_ready;
   routed.optimizer_admission_stage_count =
       optimizer_admission.admission.evidence.size();
-  const auto values_execution = ExecuteCanonicalObjectFreeValuesQuery(
-      {request.context, decoded.request.relational_dag,
-       optimizer_admission.request, optimizer_admission.admission});
+  CanonicalObjectFreeValuesExecutionRequest execution_request{
+      request.context, decoded.request.relational_dag,
+      optimizer_admission.request, optimizer_admission.admission};
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+  execution_request.expression_services =
+      BuildCanonicalRelationalExpressionRuntimeServices(request.context);
+#endif
+  const auto values_execution =
+      ExecuteCanonicalObjectFreeValuesQuery(execution_request);
   if (values_execution.profile_matched) {
     routed.optimizer_selected = values_execution.optimizer_selected;
     routed.physical_dag_published =
@@ -7231,13 +7246,58 @@ api::EngineProjectionFunctionResult EvaluateUserFunction(
                              request.function_id);
 }
 
+const functions::FunctionSeedPackage& StandardFunctionSeedPackage() {
+  static const auto package = functions::BuildStandardFunctionSeedPackage();
+  return package;
+}
+
+bool EnrichCanonicalFunctionResultDescriptor(
+    api::EngineTypedValue* value,
+    std::string* refusal_detail) {
+  if (value == nullptr || refusal_detail == nullptr) return false;
+  if (api::QowCanonicalDescriptorIdentityV1(value->descriptor) &&
+      value->descriptor.descriptor_kind == "scalar") {
+    return true;
+  }
+  const auto type_id = dt::CanonicalTypeIdFromStableName(
+      value->descriptor.canonical_type_name);
+  if (type_id == dt::CanonicalTypeId::unknown) {
+    *refusal_detail =
+        "function result has no canonical core descriptor type";
+    return false;
+  }
+  static const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!manifest.ok()) {
+    *refusal_detail =
+        "current core datatype manifest is unavailable for function result";
+    return false;
+  }
+  const auto row = std::ranges::find_if(
+      manifest.manifest.descriptor_rows,
+      [&](const auto& candidate) { return candidate.type_id == type_id; });
+  if (row == manifest.manifest.descriptor_rows.end() ||
+      !row->descriptor_uuid.valid()) {
+    *refusal_detail =
+        "function result type is absent from the current core manifest";
+    return false;
+  }
+  const auto descriptor_uuid =
+      scratchbird::core::uuid::UuidToString(row->descriptor_uuid.value);
+  value->descriptor.descriptor_uuid.canonical = descriptor_uuid;
+  value->descriptor.descriptor_kind = "scalar";
+  value->descriptor.canonical_type_name = row->stable_name;
+  value->descriptor.encoded_descriptor =
+      "type_uuid=" + descriptor_uuid + ";nullability=unknown";
+  return true;
+}
+
 api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     const api::EngineProjectionFunctionRequest& request) {
   if (StartsWith(request.function_id, "sbsql.user_function:")) {
     return EvaluateUserFunction(request);
   }
 
-  static const auto package = functions::BuildStandardFunctionSeedPackage();
+  const auto& package = StandardFunctionSeedPackage();
   functions::FunctionCallRequest function_request;
   function_request.context.function_id = request.function_id;
   function_request.context.security_allowed = request.context.security_context_present;
@@ -7319,6 +7379,153 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     }
   }
   return out;
+}
+
+CanonicalRelationalExpressionRuntimeServices
+BuildCanonicalRelationalExpressionRuntimeServices(
+    const api::EngineRequestContext& context) {
+  CanonicalRelationalExpressionRuntimeServices services;
+  services.function_evaluator =
+      [context](const std::string_view function_uuid,
+                const std::vector<api::EngineTypedValue>& arguments,
+                api::EngineTypedValue* value,
+                std::string* diagnostic_id,
+                std::string* refusal_detail) {
+        if (value == nullptr || diagnostic_id == nullptr ||
+            refusal_detail == nullptr) {
+          return false;
+        }
+        *value = api::EngineTypedValue{};
+        diagnostic_id->clear();
+        refusal_detail->clear();
+        const auto& package = StandardFunctionSeedPackage();
+        const auto* entry = package.registry.LookupByUuid(function_uuid);
+        api::EngineProjectionFunctionRequest request;
+        request.context = context;
+        request.function_id =
+            entry != nullptr
+                ? entry->function_id
+                : "sbsql.user_function:" + std::string(function_uuid);
+        request.arguments.reserve(arguments.size());
+        for (std::size_t index = 0; index < arguments.size(); ++index) {
+          const auto& argument_value = arguments[index];
+          api::EngineProjectionFunctionArgument argument;
+          argument.name = "arg" + std::to_string(index);
+          argument.type_name =
+              argument_value.descriptor.canonical_type_name;
+          argument.encoded_value = argument_value.encoded_value;
+          argument.is_null = argument_value.isSqlNull();
+          request.arguments.push_back(std::move(argument));
+        }
+        const auto evaluated = EvaluateProjectionFunction(request);
+        if (!evaluated.ok) {
+          if (!evaluated.diagnostics.empty()) {
+            *diagnostic_id = evaluated.diagnostics.front().code;
+            *refusal_detail = evaluated.diagnostics.front().detail;
+          } else {
+            *diagnostic_id =
+                "QOW-DIAG-RCP024-FUNCTION-DISPATCH-REFUSAL-V1";
+            *refusal_detail =
+                "bound function runtime returned no scalar result";
+          }
+          return false;
+        }
+        *value = evaluated.value;
+        if (value->isSqlNull()) {
+          value->encoded_value.clear();
+          value->binary_value.clear();
+          value->setState(api::EngineValueState::sql_null);
+        } else {
+          value->setState(api::EngineValueState::value);
+        }
+        if (!EnrichCanonicalFunctionResultDescriptor(value,
+                                                      refusal_detail)) {
+          *diagnostic_id =
+              "QOW-DIAG-RCP024-FUNCTION-RESULT-DESCRIPTOR-REFUSAL-V1";
+          return false;
+        }
+        return true;
+      };
+  services.comparison_evaluator =
+      [context](const api::EngineTypedValue& left,
+                const api::EngineTypedValue& right,
+                int* comparison,
+                std::string* diagnostic_id,
+                std::string* refusal_detail) {
+        if (comparison == nullptr || diagnostic_id == nullptr ||
+            refusal_detail == nullptr) {
+          return false;
+        }
+        *comparison = 0;
+        diagnostic_id->clear();
+        refusal_detail->clear();
+        if (dt::CanonicalTypeIdFromStableName(
+                left.descriptor.canonical_type_name) ==
+            dt::CanonicalTypeId::character) {
+          api::EngineCompareScalarValuesRequest request;
+          request.context = context;
+          request.left_value = left;
+          request.right_value = right;
+          const auto compared = api::EngineCompareScalarValues(request);
+          if (!compared.ok) {
+            if (!compared.diagnostics.empty()) {
+              *diagnostic_id = compared.diagnostics.front().code;
+              *refusal_detail = compared.diagnostics.front().detail;
+            } else {
+              *diagnostic_id =
+                  "QOW-DIAG-RCP024-COLLATION-AUTHORITY-REFUSAL-V1";
+              *refusal_detail = "collation comparison was refused";
+            }
+            return false;
+          }
+          *comparison = compared.comparison < 0
+                            ? -1
+                            : (compared.comparison > 0 ? 1 : 0);
+          return true;
+        }
+
+        auto normalized_left = left;
+        auto normalized_right = right;
+        const bool timezone_bound =
+            left.descriptor.encoded_descriptor.find(
+                "timezone_profile_id=") != std::string::npos;
+        if (timezone_bound) {
+          api::EngineNormalizeTimezoneScalarRequest left_request;
+          left_request.context = context;
+          left_request.input_value = left;
+          const auto left_result =
+              api::EngineNormalizeTimezoneScalar(left_request);
+          api::EngineNormalizeTimezoneScalarRequest right_request;
+          right_request.context = context;
+          right_request.input_value = right;
+          const auto right_result =
+              api::EngineNormalizeTimezoneScalar(right_request);
+          if (!left_result.ok || !right_result.ok) {
+            const auto* failed = !left_result.ok ? &left_result : &right_result;
+            if (!failed->diagnostics.empty()) {
+              *diagnostic_id = failed->diagnostics.front().code;
+              *refusal_detail = failed->diagnostics.front().detail;
+            } else {
+              *diagnostic_id =
+                  "QOW-DIAG-RCP024-TIMEZONE-AUTHORITY-REFUSAL-V1";
+              *refusal_detail = "timezone normalization was refused";
+            }
+            return false;
+          }
+          normalized_left = left_result.value;
+          normalized_right = right_result.value;
+        }
+        if (!api::QowCompareCanonicalNonCollatedScalarsV1(
+                normalized_left, normalized_right, comparison,
+                refusal_detail)) {
+          *diagnostic_id = timezone_bound
+                               ? "QOW-DIAG-RCP024-TIMEZONE-COMPARISON-REFUSAL-V1"
+                               : "QOW-DIAG-RCP024-COMPARISON-REFUSAL-V1";
+          return false;
+        }
+        return true;
+      };
+  return services;
 }
 
 api::EngineEvaluateProjectionRequest TypedEvaluateProjectionRequest(

@@ -24,18 +24,34 @@ bool FunctionRegistry::Register(FunctionRegistryEntry entry, std::string* error)
     if (error) *error = "function_uuid is required for " + entry.function_id;
     return false;
   }
+  if (function_id_by_uuid_.contains(entry.function_uuid)) {
+    if (error) *error = "duplicate function_uuid";
+    return false;
+  }
   if (entry.semantic_version.empty()) entry.semantic_version = "function_semantics_v1";
   PopulateDefaultFunctionOptimizerMetadata(&entry);
   PopulateFunctionHardeningDefaults(&entry);
   entry.refusal_diagnostic = RefusalDiagnosticForState(entry.implementation_state);
-  const auto [_, inserted] = entries_.emplace(entry.function_id, std::move(entry));
+  const auto function_id = entry.function_id;
+  const auto function_uuid = entry.function_uuid;
+  const auto [_, inserted] = entries_.emplace(function_id, std::move(entry));
   if (!inserted && error) *error = "duplicate function_id";
+  if (inserted) {
+    function_id_by_uuid_.emplace(function_uuid, function_id);
+  }
   return inserted;
 }
 
 const FunctionRegistryEntry* FunctionRegistry::Lookup(std::string_view function_id) const {
   const auto it = entries_.find(std::string(function_id));
   return it == entries_.end() ? nullptr : &it->second;
+}
+
+const FunctionRegistryEntry* FunctionRegistry::LookupByUuid(
+    const std::string_view function_uuid) const {
+  const auto by_uuid = function_id_by_uuid_.find(std::string(function_uuid));
+  if (by_uuid == function_id_by_uuid_.end()) return nullptr;
+  return Lookup(by_uuid->second);
 }
 
 std::vector<FunctionRegistryEntry> FunctionRegistry::Entries() const {

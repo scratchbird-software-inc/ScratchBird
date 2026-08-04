@@ -224,6 +224,19 @@ int main() {
   std::vector<std::string> failures;
 
   for (const auto& entry : entries) {
+    const auto* resolved = package.registry.LookupByUuid(entry.function_uuid);
+    Require(resolved != nullptr,
+            entry.function_id + ": function UUID did not resolve");
+    Require(resolved->function_uuid == entry.function_uuid,
+            entry.function_id + ": function UUID resolved to another identity");
+  }
+  const auto* upper_by_uuid = package.registry.LookupByUuid(
+      "019de5fc-2400-7f4f-a75a-97f18565ad84");
+  Require(upper_by_uuid != nullptr &&
+              upper_by_uuid->function_id == "sb.scalar.upper",
+          "canonical upper function UUID did not resolve exactly");
+
+  for (const auto& entry : entries) {
     if (!functions::IsFinalFunctionImplementationState(entry.implementation_state)) continue;
     ++final_rows;
 

@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -38,13 +39,40 @@ struct CanonicalRelationalExpressionRowBinding {
   std::vector<CanonicalRelationalExpressionRowSlotBinding> slots;
 };
 
+// RCP-024 catalog/runtime handoff. The expression evaluator retains ownership
+// of descriptor, NULL, cast, comparison, and consumer semantics; these
+// callbacks provide only engine-owned identities or calculated scalar values
+// that cannot be derived from the object-free relational graph.
+struct CanonicalRelationalExpressionRuntimeServices {
+  std::function<bool(std::string_view type_uuid,
+                     std::string* canonical_type_name,
+                     std::string* diagnostic_id,
+                     std::string* refusal_detail)>
+      descriptor_type_resolver;
+  std::function<bool(
+      std::string_view function_uuid,
+      const std::vector<internal_api::EngineTypedValue>& arguments,
+      internal_api::EngineTypedValue* value,
+      std::string* diagnostic_id,
+      std::string* refusal_detail)>
+      function_evaluator;
+  std::function<bool(const internal_api::EngineTypedValue& left,
+                     const internal_api::EngineTypedValue& right,
+                     int* comparison,
+                     std::string* diagnostic_id,
+                     std::string* refusal_detail)>
+      comparison_evaluator;
+};
+
 // Object-free first consumer of the canonical relational expression graph.
-// Catalog names, parameters, functions, collations, and temporal profiles are
-// deliberately refused until their engine-owned bindings are supplied.
+// Parameters remain refused until an engine-owned value binding exists;
+// functions, collations, temporal profiles, and non-core descriptor types are
+// accepted only through the engine-owned services above.
 class CanonicalRelationalExpressionRuntime {
  public:
   explicit CanonicalRelationalExpressionRuntime(
-      const internal_api::TypedRelationalDag& dag);
+      const internal_api::TypedRelationalDag& dag,
+      CanonicalRelationalExpressionRuntimeServices services = {});
 
   bool InferType(std::uint32_t expression_id,
                  std::optional<std::string_view> expected_type,
@@ -129,6 +157,10 @@ class CanonicalRelationalExpressionRuntime {
                    internal_api::EngineTypedValue* output,
                    std::string* refusal_detail) const;
   bool IsNullPredicateRight(std::uint32_t expression_id, bool* negate) const;
+  bool ResolveDescriptorType(
+      const internal_api::RelationalTypeDescriptor& descriptor,
+      std::string* canonical_type_name,
+      std::string* refusal_detail) const;
 
   std::unordered_map<
       std::uint32_t, const internal_api::RelationalTypeDescriptor*>
@@ -138,6 +170,7 @@ class CanonicalRelationalExpressionRuntime {
       expressions_;
   std::unordered_map<std::uint32_t, std::string> descriptor_type_names_;
   std::unordered_set<std::uint32_t> inference_stack_;
+  CanonicalRelationalExpressionRuntimeServices services_;
   const ActiveRowBinding* active_row_binding_{nullptr};
   internal_api::EngineCanonicalExpressionConsumer active_consumer_{
       internal_api::EngineCanonicalExpressionConsumer::projection};

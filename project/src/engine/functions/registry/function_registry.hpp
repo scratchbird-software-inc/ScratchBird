@@ -46,11 +46,14 @@ class FunctionRegistry {
  public:
   bool Register(FunctionRegistryEntry entry, std::string* error = nullptr);
   [[nodiscard]] const FunctionRegistryEntry* Lookup(std::string_view function_id) const;
+  [[nodiscard]] const FunctionRegistryEntry* LookupByUuid(
+      std::string_view function_uuid) const;
   [[nodiscard]] std::vector<FunctionRegistryEntry> Entries() const;
   [[nodiscard]] bool empty() const { return entries_.empty(); }
 
  private:
   std::unordered_map<std::string, FunctionRegistryEntry> entries_;
+  std::unordered_map<std::string, std::string> function_id_by_uuid_;
 };
 
 FunctionRegistry MakeEmptyFunctionRegistry();
