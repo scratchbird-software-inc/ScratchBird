@@ -252,6 +252,13 @@ struct PreparedSortRoot {
   std::string detail;
 };
 
+struct PreparedDistinctRoot {
+  bool ok{false};
+  std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms;
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  std::string detail;
+};
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
@@ -3108,6 +3115,133 @@ PreparedSortRoot PrepareSortRoot(
   return result;
 }
 
+PreparedDistinctRoot PrepareQueryDistinctRoot(
+    const api::EngineRequestContext& context,
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& distinct_node,
+    const plan::CanonicalLogicalRelationalNode& input_node,
+    const MaterializedValues& input) {
+  PreparedDistinctRoot result;
+  if (distinct_node.output_descriptor_ids.empty() ||
+      distinct_node.output_descriptor_ids != input_node.output_descriptor_ids ||
+      distinct_node.bound_expression_ids.size() !=
+          distinct_node.output_descriptor_ids.size() ||
+      input.result_bindings.size() != input.batch.columns.size() ||
+      input_node.output_descriptor_ids.size() != input.batch.columns.size()) {
+    result.detail =
+        "query DISTINCT does not cover and preserve its projected schema";
+    return result;
+  }
+  if (std::ranges::any_of(dag.outputs, [&](const auto& output) {
+        return output.relation_node_id == distinct_node.logical_node_id;
+      })) {
+    result.detail =
+        "query DISTINCT output lineage is not admitted by this profile";
+    return result;
+  }
+
+  std::unordered_map<std::uint32_t, const api::RelationalExpressionRecord*>
+      expressions;
+  std::unordered_map<std::uint32_t, const api::RelationalTypeDescriptor*>
+      descriptors;
+  for (const auto& expression : dag.expressions) {
+    expressions.emplace(expression.expression_id, &expression);
+  }
+  for (const auto& descriptor : dag.descriptors) {
+    descriptors.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  std::unordered_set<std::uint32_t> covered_descriptors;
+  for (const auto expression_id : distinct_node.bound_expression_ids) {
+    const auto expression = expressions.find(expression_id);
+    if (expression == expressions.end() ||
+        std::ranges::find(input_node.bound_expression_ids, expression_id) ==
+            input_node.bound_expression_ids.end() ||
+        std::ranges::find(distinct_node.output_descriptor_ids,
+                          expression->second->result_descriptor_id) ==
+            distinct_node.output_descriptor_ids.end() ||
+        !covered_descriptors
+             .insert(expression->second->result_descriptor_id)
+             .second) {
+      result.detail =
+          "query DISTINCT expression coverage is unresolved or duplicated";
+      return result;
+    }
+  }
+
+  for (std::size_t column = 0; column < input.batch.columns.size(); ++column) {
+    const auto descriptor_id = distinct_node.output_descriptor_ids[column];
+    const auto descriptor = descriptors.find(descriptor_id);
+    if (descriptor == descriptors.end() ||
+        !covered_descriptors.contains(descriptor_id)) {
+      result.equality_terms.clear();
+      result.detail = "query DISTINCT descriptor coverage is incomplete";
+      return result;
+    }
+    exec::CanonicalDescriptorOrderTerm term;
+    term.column = column;
+    term.expression_descriptor_id = descriptor_id;
+    term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
+    term.null_placement = exec::CanonicalDescriptorNullPlacement::first;
+    if (input.batch.columns[column].descriptor.canonical_type_name == "text") {
+      if (!descriptor->second->collation_uuid.has_value()) {
+        result.equality_terms.clear();
+        result.detail =
+            "query DISTINCT character equality lacks a bound collation";
+        return result;
+      }
+      term.collation_uuid = *descriptor->second->collation_uuid;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+      result.equality_terms.clear();
+      result.detail =
+          "query DISTINCT character equality requires the production engine "
+          "resource catalog";
+      return result;
+#else
+      api::EngineUuid collation_uuid;
+      collation_uuid.canonical = term.collation_uuid;
+      const auto resolved = api::LookupEngineResourceDescriptorByUuid(
+          context, collation_uuid, "collation");
+      if (!resolved.ok || !resolved.resource_descriptor.present ||
+          resolved.resource_descriptor.resource_uuid.canonical !=
+              term.collation_uuid) {
+        result.equality_terms.clear();
+        result.detail =
+            "query DISTINCT character equality lacks current engine "
+            "collation authority";
+        return result;
+      }
+      term.resource_epoch = resolved.resource_descriptor.resource_epoch;
+      term.collation_epoch = resolved.resource_descriptor.family_epoch;
+      term.text_seed.active = true;
+      term.text_seed.seed_pack_name =
+          resolved.resource_descriptor.seed_pack_name;
+      term.text_seed.seed_pack_version =
+          resolved.resource_descriptor.seed_pack_version;
+      term.text_seed.charset_name =
+          resolved.resource_descriptor.parent_canonical_name;
+      term.text_seed.collation_name =
+          resolved.resource_descriptor.canonical_name;
+      term.text_seed.collation_case_insensitive =
+          resolved.resource_descriptor.case_insensitive;
+      term.text_seed.collation_accent_insensitive =
+          resolved.resource_descriptor.accent_insensitive;
+#endif
+    }
+    const auto validation = exec::ValidateCanonicalDescriptorOrderTerm(
+        term, input.batch.columns[column]);
+    if (!validation.ok) {
+      result.equality_terms.clear();
+      result.detail = validation.detail;
+      return result;
+    }
+    result.equality_terms.push_back(std::move(term));
+  }
+
+  result.result_bindings = input.result_bindings;
+  result.ok = true;
+  return result;
+}
+
 PreparedLimitRoot PrepareLimitRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
@@ -3880,6 +4014,229 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
         step.output_row_count = batch->second.rows.size();
         step.rows_examined = batch->second.rows.size();
         step.materialized_output_batch = batch->second;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveQueryDistinctRegistration(
+    std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_value_comparisons,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kAggregate;
+  registration.implementation_id =
+      "aggregate.query-distinct.typed.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [equality_terms = std::move(equality_terms), maximum_input_row_count,
+       maximum_value_comparisons, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-DISTINCT-INPUT-V1";
+          step.diagnostic.detail =
+              "query DISTINCT did not receive its bounded typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        exec::CanonicalDescriptorDistinctRequest distinct_request;
+        distinct_request.physical_dag = dag;
+        distinct_request.selected_physical_node_id = node.physical_node_id;
+        distinct_request.input_batch = input_batch;
+        distinct_request.equality_terms = equality_terms;
+        distinct_request.maximum_value_comparisons =
+            maximum_value_comparisons;
+        distinct_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto distinct_result =
+            exec::ExecuteCanonicalDescriptorDistinct(distinct_request);
+        if (!distinct_result.diagnostic.ok) {
+          step.diagnostic = distinct_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = distinct_result.output_batch.rows.size();
+        step.materialized_output_batch = distinct_result.output_batch;
+        step.mga_statement_context = distinct_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
+    std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
+    std::string deterministic_tie_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_pair_comparisons,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSort;
+  registration.implementation_id = "sort.typed.terms.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [order_terms = std::move(order_terms),
+       deterministic_tie_evidence_uuid =
+           std::move(deterministic_tie_evidence_uuid),
+       maximum_input_row_count, maximum_pair_comparisons,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
+          step.diagnostic.detail =
+              "SORT did not receive its bounded typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        exec::CanonicalDescriptorSortRequest sort_request;
+        sort_request.physical_dag = dag;
+        sort_request.selected_physical_node_id = node.physical_node_id;
+        sort_request.input_batch = input_batch;
+        sort_request.order_terms = order_terms;
+        sort_request.deterministic_tie_evidence_uuid =
+            deterministic_tie_evidence_uuid;
+        sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
+        sort_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto sort_result =
+            exec::ExecuteCanonicalDescriptorSort(sort_request);
+        if (!sort_result.diagnostic.ok) {
+          step.diagnostic = sort_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = sort_result.output_batch.rows.size();
+        step.materialized_output_batch = sort_result.output_batch;
+        step.mga_statement_context = sort_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
+    std::string implementation_id,
+    std::string capability_uuid,
+    const std::uint64_t row_limit,
+    const std::uint64_t row_offset,
+    const bool fetch_first_rows_only,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kLimit;
+  registration.implementation_id = std::move(implementation_id);
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [row_limit, row_offset, fetch_first_rows_only,
+       maximum_input_row_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-LIMIT-INPUT-V1";
+          step.diagnostic.detail =
+              "LIMIT/FETCH did not receive its bounded typed input batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        exec::CanonicalDescriptorLimitResult limited;
+        if (fetch_first_rows_only) {
+          exec::CanonicalDescriptorFetchProfileRequest fetch_request;
+          fetch_request.physical_dag = dag;
+          fetch_request.selected_physical_node_id = node.physical_node_id;
+          fetch_request.input_batch = input_batch;
+          fetch_request.form =
+              exec::CanonicalFetchTopProfileForm::fetch_first_rows_only;
+          fetch_request.row_count = row_limit;
+          fetch_request.offset = row_offset;
+          fetch_request.row_count_is_bound = true;
+          fetch_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          const auto fetched =
+              exec::ExecuteCanonicalDescriptorFetchProfile(fetch_request);
+          limited.diagnostic = fetched.diagnostic;
+          limited.output_batch = fetched.output_batch;
+          limited.selected_plan_uuid = fetched.selected_plan_uuid;
+          limited.executed_physical_node_id =
+              fetched.executed_physical_node_id;
+          limited.causal_counter_id = fetched.causal_counter_id;
+          limited.mga_statement_context = fetched.mga_statement_context;
+        } else {
+          exec::CanonicalDescriptorLimitRequest limit_request;
+          limit_request.physical_dag = dag;
+          limit_request.selected_physical_node_id = node.physical_node_id;
+          limit_request.input_batch = input_batch;
+          limit_request.limit = row_limit;
+          limit_request.offset = row_offset;
+          limit_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          limited = exec::ExecuteCanonicalDescriptorLimit(limit_request);
+        }
+        if (!limited.diagnostic.ok) {
+          step.diagnostic = limited.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = limited.output_batch.rows.size();
+        step.materialized_output_batch = limited.output_batch;
+        step.mga_statement_context = limited.mga_statement_context;
         return step;
       };
   return registration;
@@ -6858,6 +7215,348 @@ ExecuteCanonicalObjectFreeSortQuery(
   return result;
 }
 
+// QOW-SOURCE-RCP-020-ORDER-LIMIT-DISTINCT-COMPOSITION-V1
+// Execute the canonical SQL evaluation tail as one selected physical DAG:
+// projected VALUES -> query DISTINCT -> ORDER BY -> OFFSET plus either LIMIT
+// or the one signed native FETCH FIRST ROWS ONLY profile. TOP and WITH TIES
+// remain the exact QRY-010 profile refusals and are not promoted here.
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeDistinctSortLimitQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 4 || root == graph.nodes.end() ||
+      root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kLimit ||
+      (root->semantic_variant_id != "limit.bound-count-offset.v1" &&
+       root->semantic_variant_id !=
+           "fetch.first-rows-only-offset.v1") ||
+      root->input_logical_node_ids.size() != 1 ||
+      root->bound_expression_ids.size() != 2) {
+    return result;
+  }
+  const bool fetch_first_rows_only =
+      root->semantic_variant_id == "fetch.first-rows-only-offset.v1";
+  const auto sort_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (sort_node == graph.nodes.end() || sort_node == root ||
+      sort_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kSort ||
+      sort_node->semantic_variant_id != "sort.required-order.v1" ||
+      sort_node->input_logical_node_ids.size() != 1) {
+    return result;
+  }
+  const auto distinct_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id ==
+               sort_node->input_logical_node_ids.front();
+      });
+  if (distinct_node == graph.nodes.end() || distinct_node == root ||
+      distinct_node == sort_node ||
+      distinct_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
+      distinct_node->semantic_variant_id != "aggregate.query-distinct.v1" ||
+      distinct_node->input_logical_node_ids.size() != 1) {
+    return result;
+  }
+  const auto values_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id ==
+               distinct_node->input_logical_node_ids.front();
+      });
+  if (values_node == graph.nodes.end() || values_node == root ||
+      values_node == sort_node || values_node == distinct_node ||
+      values_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      values_node->semantic_variant_id != "values.literal-table.v1" ||
+      !values_node->input_logical_node_ids.empty()) {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty()) return result;
+  }
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-ADMISSION-V1",
+                  "DISTINCT/ORDER/LIMIT composition lacks optimizer admission");
+  }
+
+  auto input = MaterializeValues(request.relational_dag, *values_node);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
+                  "composition input VALUES: " + input.detail);
+  }
+  auto prepared_distinct = PrepareQueryDistinctRoot(
+      request.context, request.relational_dag, *distinct_node, *values_node,
+      input);
+  if (!prepared_distinct.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
+                  prepared_distinct.detail);
+  }
+  auto prepared_sort = PrepareSortRoot(
+      request.context, request.relational_dag,
+      request.optimizer_request.logical_properties, *sort_node,
+      *distinct_node, input);
+  if (!prepared_sort.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
+                  prepared_sort.detail);
+  }
+  auto prepared_limit = PrepareLimitRoot(
+      request.relational_dag, *root, *sort_node, input);
+  if (!prepared_limit.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
+                  prepared_limit.detail);
+  }
+
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag);
+  std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
+  std::string bound_detail;
+  if (!EvaluateNonNegativeRowBound(
+          &expression_runtime, root->bound_expression_ids[0], &row_limit,
+          &bound_detail) ||
+      !EvaluateNonNegativeRowBound(
+          &expression_runtime, root->bound_expression_ids[1], &row_offset,
+          &bound_detail)) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1",
+                  "LIMIT/FETCH bound: " + bound_detail);
+  }
+
+  const auto input_row_count = input.batch.rows.size();
+  const auto offset_bound =
+      row_offset > input_row_count
+          ? input_row_count
+          : static_cast<std::size_t>(row_offset);
+  const auto remaining_bound = input_row_count - offset_bound;
+  const auto output_row_bound =
+      row_limit > remaining_bound
+          ? remaining_bound
+          : static_cast<std::size_t>(row_limit);
+  std::uint64_t input_memory = 1;
+  std::uint64_t distinct_memory = 0;
+  std::uint64_t distinct_comparison_count = 0;
+  std::uint64_t distinct_self_comparison_count = 0;
+  std::uint64_t sort_comparison_count = 0;
+  std::uint64_t row_order_memory = 0;
+  std::uint64_t sort_memory = 0;
+  std::uint64_t limit_memory = 0;
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedAdd(input_memory, input_memory, &distinct_memory) ||
+      !CheckedMultiply(input_row_count, input_row_count,
+                       &distinct_comparison_count) ||
+      !CheckedMultiply(distinct_comparison_count,
+                       input.batch.columns.size(),
+                       &distinct_comparison_count) ||
+      !CheckedMultiply(input_row_count, input.batch.columns.size(),
+                       &distinct_self_comparison_count) ||
+      !CheckedAdd(distinct_comparison_count,
+                  distinct_self_comparison_count,
+                  &distinct_comparison_count) ||
+      !CheckedMultiply(input_row_count, input_row_count,
+                       &sort_comparison_count) ||
+      !CheckedMultiply(input_row_count, sizeof(std::size_t),
+                       &row_order_memory) ||
+      !CheckedAdd(distinct_memory, input_memory, &sort_memory) ||
+      !CheckedAdd(sort_memory, sort_comparison_count, &sort_memory) ||
+      !CheckedAdd(sort_memory, row_order_memory, &sort_memory) ||
+      !CheckedAdd(sort_memory, input_memory, &limit_memory) ||
+      distinct_comparison_count > std::numeric_limits<std::size_t>::max() ||
+      sort_comparison_count > std::numeric_limits<std::size_t>::max()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition comparison or materialization size overflowed");
+  }
+  if (limit_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "composition exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" +
+      request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto distinct_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "query-distinct.capability");
+  const auto sort_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "sort.capability");
+  const auto limit_capability_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      fetch_first_rows_only ? "fetch.capability" : "limit.capability");
+  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" + prepared_sort.ordering_property_uuid,
+      "sort.deterministic-tie");
+  const std::string limit_implementation_id =
+      fetch_first_rows_only ? "fetch.native.rows-only.v1"
+                            : "limit.typed.v1";
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {values_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       input_row_count,
+       input_memory,
+       0,
+       0},
+      {distinct_node->logical_node_id,
+       "aggregate.query-distinct.typed.v1",
+       distinct_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kAggregate,
+       exec::PhysicalNodeKind::kAggregate,
+       "canonical.aggregate.query-distinct.v1",
+       input_row_count,
+       distinct_memory,
+       1,
+       1},
+      {sort_node->logical_node_id,
+       "sort.typed.terms.v1",
+       sort_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kSort,
+       exec::PhysicalNodeKind::kSort,
+       "canonical.sort.typed.terms.v1",
+       input_row_count,
+       sort_memory,
+       1,
+       1,
+       {},
+       {prepared_sort.ordering_property_uuid},
+       {plan::CanonicalLogicalPropertyKind::kOrdering}},
+      {root->logical_node_id,
+       limit_implementation_id,
+       limit_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kLimit,
+       exec::PhysicalNodeKind::kLimit,
+       fetch_first_rows_only
+           ? "canonical.fetch.first-rows-only-offset.v1"
+           : "canonical.limit.bound-count-offset.v1",
+       output_row_bound,
+       limit_memory,
+       1,
+       1}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles,
+      fetch_first_rows_only ? "fetch-distinct-sort.selected-plan"
+                            : "limit-distinct-sort.selected-plan",
+      "DISTINCT/ORDER/LIMIT");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(values_node->logical_node_id,
+                          std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-VALUES-V1",
+      "DISTINCT/ORDER/LIMIT");
+  auto distinct_registration = MakeLiveQueryDistinctRegistration(
+      std::move(prepared_distinct.equality_terms),
+      distinct_capability_uuid, input_row_count,
+      std::max<std::size_t>(
+          1, static_cast<std::size_t>(distinct_comparison_count)),
+      request.context);
+  auto sort_registration = MakeLiveSortRegistration(
+      std::move(prepared_sort.order_terms),
+      deterministic_tie_evidence_uuid, sort_capability_uuid,
+      input_row_count,
+      std::max<std::size_t>(1,
+                            static_cast<std::size_t>(sort_comparison_count)),
+      request.context);
+  auto limit_registration = MakeLiveLimitRegistration(
+      limit_implementation_id, limit_capability_uuid, row_limit, row_offset,
+      fetch_first_rows_only, input_row_count, request.context);
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      request.context, planning.physical_dag);
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(distinct_registration));
+  execution_request.available_executors.push_back(
+      std::move(sort_registration));
+  execution_request.available_executors.push_back(
+      std::move(limit_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "distinct-sort-limit.execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      "distinct-sort-limit.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(prepared_limit.result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, output_row_bound);
+
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "DISTINCT/ORDER/LIMIT selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
 }  // namespace
 
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
@@ -6911,6 +7610,9 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (grouped_aggregate.profile_matched) return grouped_aggregate;
   auto aggregate = ExecuteCanonicalObjectFreeGlobalAggregateQuery(request);
   if (aggregate.profile_matched) return aggregate;
+  auto composition =
+      ExecuteCanonicalObjectFreeDistinctSortLimitQuery(request);
+  if (composition.profile_matched) return composition;
   auto sort = ExecuteCanonicalObjectFreeSortQuery(request);
   if (sort.profile_matched) return sort;
   auto limit = ExecuteCanonicalObjectFreeLimitQuery(request);

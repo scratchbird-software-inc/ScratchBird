@@ -252,6 +252,92 @@ exec::CanonicalDescriptorSortRequest Request() {
   return request;
 }
 
+exec::CanonicalDescriptorDistinctRequest DistinctRequest() {
+  const auto text_descriptor = Descriptor(
+      "019f0000-0000-7200-8000-000000001102", "text",
+      "type_uuid=019f0000-0000-7300-8000-000000001103;"
+      "nullability=non_null;collation_uuid=" +
+          std::string(kCollationUuid));
+  const auto decimal_descriptor = Descriptor(
+      "019f0000-0000-7200-8000-000000001104", "decimal",
+      "type_uuid=019f0000-0000-7300-8000-000000001105;"
+      "nullability=nullable;precision=12;scale=2");
+
+  exec::CanonicalDescriptorDistinctRequest request;
+  request.physical_dag.selected_plan_uuid =
+      "019f0000-0000-7200-8000-000000001108";
+  request.physical_dag.root_physical_node_id = 1113;
+  request.physical_dag.admission_evidence = {
+      {exec::PhysicalAdmissionStage::kBoundRequest,
+       "019f0000-0000-7200-8000-000000001111"},
+      {exec::PhysicalAdmissionStage::kCatalogEpoch,
+       "019f0000-0000-7200-8000-000000001112"},
+      {exec::PhysicalAdmissionStage::kSecurity,
+       "019f0000-0000-7200-8000-000000001113"},
+      {exec::PhysicalAdmissionStage::kMgaStatementBoundary,
+       "019f0000-0000-7200-8000-000000001114"},
+      {exec::PhysicalAdmissionStage::kPolicyCapability,
+       "019f0000-0000-7200-8000-000000001115"},
+      {exec::PhysicalAdmissionStage::kResource,
+       "019f0000-0000-7200-8000-000000001116"},
+      {exec::PhysicalAdmissionStage::kStatisticsProvenance,
+       "019f0000-0000-7200-8000-000000001117"},
+      {exec::PhysicalAdmissionStage::kCanonicalRoute,
+       "019f0000-0000-7200-8000-000000001118"},
+  };
+  request.physical_dag.nodes = {
+      {.physical_node_id = 1111,
+       .relational_node_id = 1111,
+       .node_kind = exec::PhysicalNodeKind::kValues,
+       .implementation_id = "values.typed.v1",
+       .output_descriptor_ids = {1101, 1102},
+       .causal_counter_id = 11101},
+      {.physical_node_id = 1112,
+       .relational_node_id = 1112,
+       .node_kind = exec::PhysicalNodeKind::kAggregate,
+       .implementation_id = "aggregate.query-distinct.typed.v1",
+       .input_physical_node_ids = {1111},
+       .output_descriptor_ids = {1101, 1102},
+       .causal_counter_id = 11102},
+      {.physical_node_id = 1113,
+       .relational_node_id = 1113,
+       .node_kind = exec::PhysicalNodeKind::kSort,
+       .implementation_id = "sort.typed.terms.v1",
+       .input_physical_node_ids = {1112},
+       .output_descriptor_ids = {1101, 1102},
+       .causal_counter_id = 11103},
+  };
+  request.selected_physical_node_id = 1112;
+  request.input_batch = exec::MakeDescriptorBatch(
+      {{"label", text_descriptor, false, 1101},
+       {"amount", decimal_descriptor, true, 1102}},
+      {{{Value(text_descriptor, "A"), Value(decimal_descriptor, "2.00")}},
+       {{Value(text_descriptor, "a"), Value(decimal_descriptor, "2.00")}},
+       {{Value(text_descriptor, "B"), Null(decimal_descriptor)}},
+       {{Value(text_descriptor, "b"), Null(decimal_descriptor)}},
+       {{Value(text_descriptor, "c"), Value(decimal_descriptor, "3.00")}}});
+
+  exec::CanonicalDescriptorOrderTerm label_term;
+  label_term.column = 0;
+  label_term.expression_descriptor_id = 1101;
+  label_term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
+  label_term.null_placement = exec::CanonicalDescriptorNullPlacement::first;
+  label_term.collation_uuid = kCollationUuid;
+  label_term.resource_epoch = 41;
+  label_term.collation_epoch = 42;
+  label_term.text_seed = CollationSeed();
+
+  exec::CanonicalDescriptorOrderTerm amount_term;
+  amount_term.column = 1;
+  amount_term.expression_descriptor_id = 1102;
+  amount_term.direction = exec::CanonicalDescriptorOrderDirection::ascending;
+  amount_term.null_placement = exec::CanonicalDescriptorNullPlacement::first;
+  request.equality_terms = {label_term, amount_term};
+  request.maximum_value_comparisons = 128;
+  request.mga_authority = BindPhysicalAbiV2(&request.physical_dag);
+  return request;
+}
+
 std::vector<std::string> RowIds(const exec::DescriptorBatch& batch) {
   std::vector<std::string> ids;
   for (const auto& row : batch.rows) {
@@ -358,8 +444,59 @@ bool ValidateTypedPhysicalOrdering() {
   return passed;
 }
 
+bool ValidateTypedQueryDistinct() {
+  bool passed = true;
+  auto request = DistinctRequest();
+  auto result = exec::ExecuteCanonicalDescriptorDistinct(request);
+  passed &= Require(
+      result.diagnostic.ok && result.output_batch.rows.size() == 3 &&
+          result.eliminated_duplicate_row_count == 2 &&
+          result.value_comparison_count != 0 &&
+          result.executed_physical_node_id == 1112 &&
+          result.causal_counter_id == 11102 &&
+          result.output_batch.rows[0].values[0].encoded_value == "A" &&
+          result.output_batch.rows[1].values[0].encoded_value == "B" &&
+          result.output_batch.rows[1].values[1].state ==
+              api::EngineValueState::sql_null &&
+          result.output_batch.rows[2].values[0].encoded_value == "c" &&
+          exec::PhysicalMgaStatementContextEqual(
+              result.mga_statement_context,
+              request.mga_authority.statement_context),
+      "query DISTINCT did not execute as an interior typed distinct-aggregate "
+      "with NULL and bound-collation equality");
+
+  request = DistinctRequest();
+  request.maximum_value_comparisons = 1;
+  result = exec::ExecuteCanonicalDescriptorDistinct(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "DISTINCT comparison excess published partial rows");
+
+  request = DistinctRequest();
+  request.equality_terms.pop_back();
+  result = exec::ExecuteCanonicalDescriptorDistinct(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "incomplete DISTINCT descriptor coverage was accepted");
+
+  request = DistinctRequest();
+  request.input_batch.rows[1].values[1].encoded_value = "malformed";
+  result = exec::ExecuteCanonicalDescriptorDistinct(request);
+  passed &= Require(
+      !result.diagnostic.ok && result.output_batch.rows.empty(),
+      "duplicate position hid malformed DISTINCT typed input");
+
+  request = DistinctRequest();
+  request.physical_dag.nodes[1].implementation_id =
+      "aggregate.grouped.typed.v1";
+  result = exec::ExecuteCanonicalDescriptorDistinct(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "non-DISTINCT aggregate entered query duplicate removal");
+  return passed;
+}
+
 }  // namespace
 
 int main() {
-  return ValidateTypedPhysicalOrdering() ? EXIT_SUCCESS : EXIT_FAILURE;
+  return ValidateTypedPhysicalOrdering() && ValidateTypedQueryDistinct()
+             ? EXIT_SUCCESS
+             : EXIT_FAILURE;
 }

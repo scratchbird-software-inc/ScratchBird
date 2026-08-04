@@ -294,12 +294,6 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
-  if (request.selected_physical_node_id == 0 ||
-      request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected limit node is not the root"));
-  }
 
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
@@ -362,6 +356,169 @@ CanonicalDescriptorLimitResult ExecuteCanonicalDescriptorLimit(
   return result;
 }
 
+// QOW-SOURCE-QRY-010-DISTINCT-COMPOSITION-V1
+// Query DISTINCT is the optimizer's distinct-aggregate physical operation.
+// Equality is evaluated over every projected descriptor using the same typed
+// comparator, SQL NULL equality, and catalog-bound collation authority as
+// canonical ordering. Every value validates before duplicate representatives
+// are materialized, so a later duplicate cannot hide malformed input.
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request) {
+  CanonicalDescriptorDistinctResult result;
+  const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    result = {};
+    result.diagnostic = std::move(diagnostic);
+    return result;
+  };
+  const auto distinct_refusal = [&](std::string detail) {
+    return refuse(Refusal("QOW-DIAG-QRY-010-DISTINCT-REFUSAL-V1",
+                          std::move(detail)));
+  };
+
+  const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority_validation.ok) return refuse(authority_validation);
+
+  const PhysicalNodeRecord* selected_node = nullptr;
+  const PhysicalNodeRecord* input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      selected_node = &node;
+    }
+  }
+  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
+      selected_node->node_kind != PhysicalNodeKind::kAggregate ||
+      selected_node->implementation_id !=
+          "aggregate.query-distinct.typed.v1" ||
+      selected_node->input_physical_node_ids.size() != 1) {
+    return distinct_refusal(
+        "query DISTINCT requires one selected distinct-aggregate node");
+  }
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id ==
+        selected_node->input_physical_node_ids.front()) {
+      input_node = &node;
+      break;
+    }
+  }
+  if (input_node == nullptr ||
+      selected_node->output_descriptor_ids !=
+          input_node->output_descriptor_ids) {
+    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
+                          "query DISTINCT does not preserve its input schema"));
+  }
+  auto validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch, input_node->output_descriptor_ids);
+  if (!validation.ok) return refuse(std::move(validation));
+  if (request.equality_terms.size() != request.input_batch.columns.size() ||
+      request.equality_terms.empty() ||
+      request.maximum_value_comparisons == 0) {
+    return distinct_refusal(
+        "query DISTINCT requires one bounded equality term per output column");
+  }
+
+  std::vector<bool> covered(request.input_batch.columns.size(), false);
+  for (const auto& term : request.equality_terms) {
+    if (term.column >= request.input_batch.columns.size() ||
+        covered[term.column] ||
+        term.direction != CanonicalDescriptorOrderDirection::ascending ||
+        term.null_placement != CanonicalDescriptorNullPlacement::first) {
+      return distinct_refusal(
+          "query DISTINCT equality term coverage or canonical form is invalid");
+    }
+    const auto term_validation = ValidateCanonicalDescriptorOrderTerm(
+        term, request.input_batch.columns[term.column]);
+    if (!term_validation.ok) return distinct_refusal(term_validation.detail);
+    covered[term.column] = true;
+  }
+
+  std::size_t comparison_count = 0;
+  const auto equal_rows = [&](const DescriptorTuple& left,
+                              const DescriptorTuple& right,
+                              bool* equal,
+                              std::string* detail) {
+    if (equal == nullptr || detail == nullptr) return false;
+    *equal = true;
+    for (const auto& term : request.equality_terms) {
+      if (comparison_count >= request.maximum_value_comparisons) {
+        *detail = "query DISTINCT value comparison bound was exceeded";
+        return false;
+      }
+      ++comparison_count;
+      const auto compared = CompareCanonicalDescriptorOrderValues(
+          left.values[term.column], right.values[term.column], term);
+      if (!compared.diagnostic.ok) {
+        *detail = compared.diagnostic.detail;
+        return false;
+      }
+      if (compared.comparison != 0) {
+        *equal = false;
+        return true;
+      }
+    }
+    return true;
+  };
+
+  // Validate every typed value independently before deciding membership.
+  for (const auto& row : request.input_batch.rows) {
+    bool equal = false;
+    std::string detail;
+    if (!equal_rows(row, row, &equal, &detail) || !equal) {
+      return distinct_refusal(detail.empty()
+                                  ? "query DISTINCT self comparison failed"
+                                  : std::move(detail));
+    }
+  }
+
+  std::vector<std::size_t> representative_rows;
+  representative_rows.reserve(request.input_batch.rows.size());
+  std::size_t eliminated = 0;
+  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+    bool duplicate = false;
+    for (const auto representative : representative_rows) {
+      bool equal = false;
+      std::string detail;
+      if (!equal_rows(request.input_batch.rows[row],
+                      request.input_batch.rows[representative], &equal,
+                      &detail)) {
+        return distinct_refusal(std::move(detail));
+      }
+      if (equal) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) {
+      ++eliminated;
+    } else {
+      representative_rows.push_back(row);
+    }
+  }
+
+  DescriptorBatch output;
+  output.columns = request.input_batch.columns;
+  output.rows.reserve(representative_rows.size());
+  for (const auto row : representative_rows) {
+    output.rows.push_back(request.input_batch.rows[row]);
+  }
+  validation = ValidateCanonicalDescriptorBatch(
+      output, selected_node->output_descriptor_ids);
+  if (!validation.ok) return refuse(std::move(validation));
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) return refuse(result_authority);
+
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.eliminated_duplicate_row_count = eliminated;
+  result.value_comparison_count = comparison_count;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = selected_node->physical_node_id;
+  result.causal_counter_id = selected_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+
 // QOW-SOURCE-QRY-010-V1
 // Execute an already-bound physical ORDER BY node.  Every descriptor handle,
 // collation authority, operand encoding, and row-pair comparison is validated
@@ -383,12 +540,6 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       request.mga_authority, request.physical_dag);
   if (!authority_validation.ok) {
     return refuse(authority_validation);
-  }
-  if (request.selected_physical_node_id == 0 ||
-      request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected sort node is not the root"));
   }
 
   const PhysicalNodeRecord* selected_node = nullptr;

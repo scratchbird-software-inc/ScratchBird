@@ -567,6 +567,82 @@ sblr::SblrOperationEnvelope SortValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
+    const bool fetch_first_rows_only) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      fetch_first_rows_only ? "qow.live.values.distinct-sort-fetch"
+                            : "qow.live.values.distinct-sort-limit");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000009000"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "4"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000009001|"
+       "019f0000-0000-7400-8000-000000009002|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000009003|"
+       "019f0000-0000-7400-8000-000000009004|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|3230"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|1|-|3130"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "6", "1|-|2|-|-|1|-|3230"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|3131"},
+      {"relational_expression_v1", "9", "1|-|1|-|-|1|-|33"},
+      {"relational_expression_v1", "10", "1|-|2|-|-|1|-|3330"},
+      {"relational_expression_v1", "11", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "12", "1|-|2|-|-|1|-|3130"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "14", "1|-|2|-|-|1|-|3939"},
+      {"relational_expression_v1", "15", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "16", "1|-|2|-|-|1|-|3939"},
+      {"relational_expression_v1", "17", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "18", "1|-|2|-|-|1|-|31"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6b6579"},
+      {"relational_output_v1", "2", "1|2|2|1|1|746965"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_values_row_v1", "5", "9,10"},
+      {"relational_values_row_v1", "6", "11,12"},
+      {"relational_values_row_v1", "7", "13,14"},
+      {"relational_values_row_v1", "8", "15,16"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2,3,4,5,6,7,8"},
+      {"relational_node_v1", "2", "5|0|1|1,2|-"},
+      {"relational_node_v1", "3", "6|0|2|1,2|-"},
+      {"relational_node_v1", "4", "7|0|3|1,2|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "6167677265676174652e71756572792d64697374696e63742e7631|"
+       "1,2|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       "736f72742e72657175697265642d6f726465722e7631|1,2|-|"
+       "019f0000-0000-7200-8000-000000009007|"
+       "019f0000-0000-7200-8000-000000009007"},
+      {"relational_node_binding_v1", "4",
+       (fetch_first_rows_only
+            ? "66657463682e66697273742d726f77732d6f6e6c792d6f66667365742e7631"
+            : "6c696d69742e626f756e642d636f756e742d6f66667365742e7631") +
+           std::string("|17,18|-|-|-")},
+      {"relational_property_v1",
+       "019f0000-0000-7200-8000-000000009007",
+       "1|3|-|1:1:2:-,2:2:2:-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope GlobalCountStarValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.count-star");
@@ -8885,6 +8961,106 @@ bool ValidateSortRefusalIsAtomic() {
       "schema-drifted or invalid-collation SORT published partial evidence");
 }
 
+bool ValidateDistinctSortLimitValuesSpine() {
+  bool passed = true;
+  std::string limit_selected_plan;
+  std::string fetch_selected_plan;
+  for (const bool fetch_first_rows_only : {false, true}) {
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(),
+         DistinctSortLimitValuesEnvelope(fetch_first_rows_only), {}});
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(),
+         DistinctSortLimitValuesEnvelope(fetch_first_rows_only), {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed &&
+            first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 4 &&
+            first.logical_property_count == 1 &&
+            first.physical_node_count == 4 &&
+            first.canonical_result_column_count == 2 &&
+            first.canonical_result_row_count == 2,
+        std::string(fetch_first_rows_only ? "FETCH" : "LIMIT") +
+            " DISTINCT/ORDER/OFFSET composition did not traverse its exact "
+            "four-node selected DAG");
+    const auto& columns = first.api_result.result_shape.columns;
+    const auto& rows = first.api_result.result_shape.rows;
+    passed &= Require(
+        columns.size() == 2 && rows.size() == 2 &&
+            rows[0].fields.size() == 2 && rows[1].fields.size() == 2 &&
+            rows[0].fields[0].second.encoded_value == "1" &&
+            rows[0].fields[1].second.encoded_value == "10" &&
+            rows[1].fields[0].second.encoded_value == "2" &&
+            rows[1].fields[1].second.encoded_value == "20",
+        std::string(fetch_first_rows_only ? "FETCH" : "LIMIT") +
+            " composition did not eliminate complete-row duplicates before "
+            "typed ordering and offset/count application");
+    passed &= Require(
+        repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        std::string(fetch_first_rows_only ? "FETCH" : "LIMIT") +
+            " composition changed canonical plan/result bytes on replay");
+    if (fetch_first_rows_only) {
+      fetch_selected_plan = first.selected_plan_uuid;
+    } else {
+      limit_selected_plan = first.selected_plan_uuid;
+    }
+  }
+  passed &= Require(!limit_selected_plan.empty() &&
+                        !fetch_selected_plan.empty() &&
+                        limit_selected_plan != fetch_selected_plan,
+                    "LIMIT and FETCH profiles collapsed to one selected-plan "
+                    "identity");
+  return passed;
+}
+
+bool ValidateDistinctSortLimitRefusalIsAtomic() {
+  auto incomplete_distinct = DistinctSortLimitValuesEnvelope(false);
+  auto negative_offset = DistinctSortLimitValuesEnvelope(true);
+  for (auto& operand : incomplete_distinct.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "2") {
+      operand.value =
+          "6167677265676174652e71756572792d64697374696e63742e7631|"
+          "1|-|-|-";
+    }
+  }
+  for (auto& operand : negative_offset.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "18") {
+      operand.value = "1|-|2|-|-|1|-|2d31";
+    }
+  }
+  const auto refused_atomically = [](sblr::SblrOperationEnvelope envelope) {
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), std::move(envelope), {}});
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result,
+               "QOW-DIAG-RELATIONAL-LIVE-COMPOSITION-PAYLOAD-V1");
+  };
+  return Require(
+      refused_atomically(std::move(incomplete_distinct)) &&
+          refused_atomically(std::move(negative_offset)),
+      "incomplete DISTINCT coverage or negative OFFSET published partial "
+      "composition evidence");
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[13].value = "1|-|1|-|-|1|-|6e6f74";
@@ -9041,6 +9217,8 @@ int main() {
                       ValidateOrderedJsonObjectAggModifierRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
+                      ValidateDistinctSortLimitValuesSpine() &&
+                      ValidateDistinctSortLimitRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
                       ValidateComposedScalarRefusalIsAtomic();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

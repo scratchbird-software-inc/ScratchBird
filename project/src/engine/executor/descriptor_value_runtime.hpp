@@ -1894,6 +1894,26 @@ struct CanonicalDescriptorOrderComparisonResult {
   int comparison = 0;
 };
 
+struct CanonicalDescriptorDistinctRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<CanonicalDescriptorOrderTerm> equality_terms;
+  std::size_t maximum_value_comparisons = 1048576;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalDescriptorDistinctResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t eliminated_duplicate_row_count = 0;
+  std::size_t value_comparison_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 struct CanonicalDescriptorSortRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
@@ -2266,6 +2286,8 @@ CanonicalJoinMgaResult ExecuteCanonicalJoinMgaBoundary(
     const CanonicalJoinMgaRequest& request);
 CanonicalDescriptorRowNumberResult ExecuteCanonicalDescriptorRowNumber(
     const CanonicalDescriptorRowNumberRequest& request);
+CanonicalDescriptorDistinctResult ExecuteCanonicalDescriptorDistinct(
+    const CanonicalDescriptorDistinctRequest& request);
 CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
     const CanonicalDescriptorSortRequest& request);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorOrderTerm(
