@@ -43,6 +43,28 @@ if(NOT TARGET sb_engine_gpu_acceleration)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../gpu_acceleration ${CMAKE_CURRENT_BINARY_DIR}/engine_gpu_acceleration)
 endif()
 
+# RCP-023-CMAKE-CANONICAL-TYPED-EXPRESSION-RUNTIME-V1
+# This lower contract is shared by executor consumers and the higher internal
+# API. Keeping it below both targets prevents a circular static-archive link.
+if(NOT TARGET sb_engine_typed_scalar_descriptor_contract)
+  add_library(sb_engine_typed_scalar_descriptor_contract STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api/query/expression_api.cpp
+  )
+  target_compile_features(sb_engine_typed_scalar_descriptor_contract PUBLIC
+    cxx_std_20
+  )
+  target_compile_definitions(sb_engine_typed_scalar_descriptor_contract PRIVATE
+    SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_engine_typed_scalar_descriptor_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../internal_api
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
+  )
+  target_link_libraries(sb_engine_typed_scalar_descriptor_contract PUBLIC
+    sb_core_datatypes
+  )
+endif()
+
 add_library(sb_engine_executor STATIC
   physical_node_abi.hpp
   # QOW-CMAKE-QRY-007-AGGREGATE-V1
@@ -187,3 +209,5 @@ target_link_libraries(sb_engine_executor PUBLIC sb_core_memory)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_bulk_load)
 target_link_libraries(sb_engine_executor PUBLIC sb_core_resource_governance)
 target_link_libraries(sb_engine_executor PUBLIC sb_engine_gpu_acceleration)
+target_link_libraries(sb_engine_executor PUBLIC
+  sb_engine_typed_scalar_descriptor_contract)

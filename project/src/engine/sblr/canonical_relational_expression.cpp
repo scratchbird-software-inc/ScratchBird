@@ -271,48 +271,14 @@ bool CanonicalizeLiteralPayload(const std::string_view type_name,
 bool TruthFromValue(const api::EngineTypedValue& value,
                     api::EngineSqlTruthValue* truth,
                     std::string* refusal_detail) {
-  if (truth == nullptr || refusal_detail == nullptr) return false;
-  if (value.descriptor.canonical_type_name != "boolean") {
-    *refusal_detail = "logical operand is not canonical boolean";
-    return false;
-  }
-  if (value.isSqlNull()) {
-    *truth = api::EngineSqlTruthValue::unknown;
-    return true;
-  }
-  if (value.state != api::EngineValueState::value || value.is_null ||
-      (value.encoded_value != "true" && value.encoded_value != "false")) {
-    *refusal_detail = "logical operand has a noncanonical boolean payload";
-    return false;
-  }
-  *truth = value.encoded_value == "true"
-               ? api::EngineSqlTruthValue::true_value
-               : api::EngineSqlTruthValue::false_value;
-  return true;
+  return api::QowCanonicalTruthFromTypedValueV1(
+      value, truth, refusal_detail);
 }
 
 bool IsComparisonOperator(const std::string_view operation) {
   return operation == "=" || operation == "<>" || operation == "!=" ||
          operation == "<" || operation == "<=" || operation == ">" ||
          operation == ">=";
-}
-
-api::EngineComparisonPredicateOperator ComparisonOperator(
-    const std::string_view operation) {
-  if (operation == "=") return api::EngineComparisonPredicateOperator::equal;
-  if (operation == "<>" || operation == "!=") {
-    return api::EngineComparisonPredicateOperator::not_equal;
-  }
-  if (operation == "<") {
-    return api::EngineComparisonPredicateOperator::less_than;
-  }
-  if (operation == "<=") {
-    return api::EngineComparisonPredicateOperator::less_than_or_equal;
-  }
-  if (operation == ">") {
-    return api::EngineComparisonPredicateOperator::greater_than;
-  }
-  return api::EngineComparisonPredicateOperator::greater_than_or_equal;
 }
 
 bool IsAdmittedComparisonType(const std::string_view type_name) {
@@ -863,26 +829,61 @@ bool CanonicalRelationalExpressionRuntime::Evaluate(
     const std::string_view expected_type,
     api::EngineTypedValue* value,
     std::string* refusal_detail) {
+  return EvaluateForConsumer(
+      expression_id, expected_type,
+      api::EngineCanonicalExpressionConsumer::projection, value,
+      refusal_detail);
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
+    const std::uint32_t expression_id,
+    const std::string_view expected_type,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    api::EngineTypedValue* value,
+    std::string* refusal_detail) {
   if (value == nullptr || refusal_detail == nullptr || expected_type.empty()) {
     return false;
   }
   *value = {};
   value->state = api::EngineValueState::error;
   refusal_detail->clear();
+  if (consumer == api::EngineCanonicalExpressionConsumer::unspecified ||
+      static_cast<std::uint8_t>(consumer) >
+          static_cast<std::uint8_t>(
+              api::EngineCanonicalExpressionConsumer::subquery)) {
+    *refusal_detail = "canonical expression consumer is not bound";
+    return false;
+  }
   std::string inferred_type;
   if (!InferType(expression_id, expected_type, &inferred_type, refusal_detail)) {
     return false;
   }
-  return EvaluateInternal(expression_id, expected_type, value, refusal_detail);
+  const auto previous_consumer = active_consumer_;
+  active_consumer_ = consumer;
+  const bool evaluated =
+      EvaluateInternal(expression_id, expected_type, value, refusal_detail);
+  active_consumer_ = previous_consumer;
+  return evaluated;
 }
 
 bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
     const std::uint32_t expression_id,
     api::EngineSqlTruthValue* truth,
     std::string* refusal_detail) {
+  return EvaluatePredicateForConsumer(
+      expression_id, api::EngineCanonicalExpressionConsumer::filter, truth,
+      refusal_detail);
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
+    const std::uint32_t expression_id,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    api::EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
   if (truth == nullptr || refusal_detail == nullptr) return false;
   api::EngineTypedValue value;
-  if (!Evaluate(expression_id, "boolean", &value, refusal_detail)) {
+  if (!EvaluateForConsumer(expression_id, "boolean", consumer, &value,
+                           refusal_detail)) {
     return false;
   }
   return TruthFromValue(value, truth, refusal_detail);
@@ -892,6 +893,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
     const std::uint32_t expression_id,
     const CanonicalRelationalExpressionRowBinding& row_binding,
     const std::vector<api::EngineTypedValue>& row_values,
+    api::EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
+  return EvaluatePredicateForConsumer(
+      expression_id, row_binding, row_values,
+      api::EngineCanonicalExpressionConsumer::aggregate, truth,
+      refusal_detail);
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
+    const std::uint32_t expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<api::EngineTypedValue>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
     api::EngineSqlTruthValue* truth,
     std::string* refusal_detail) {
   if (truth == nullptr || refusal_detail == nullptr) return false;
@@ -906,8 +920,8 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
     return false;
   }
   active_row_binding_ = &prepared;
-  const bool evaluated = EvaluatePredicate(expression_id, truth,
-                                           refusal_detail);
+  const bool evaluated = EvaluatePredicateForConsumer(
+      expression_id, consumer, truth, refusal_detail);
   active_row_binding_ = nullptr;
   return evaluated;
 }
@@ -983,33 +997,34 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           &child, refusal_detail)) {
       return false;
     }
-    if (operation == "+") return finish(std::move(child));
-    if (operation == "-") {
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.left_value = child;
+    scalar_request.result_descriptor = result_descriptor;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (operation == "+") {
+      scalar_request.operation =
+          api::EngineCanonicalExpressionOperation::identity;
+    } else if (operation == "-") {
       api::EngineTypedValue zero;
       zero.descriptor = child.descriptor;
       zero.encoded_value = "0";
       zero.setState(api::EngineValueState::value);
-      dt::DatatypeNumericContext context;
-      context.precision = 19;
-      context.scale = 0;
-      api::EngineTypedValue computed;
-      if (!api::QowApplyCanonicalNumericScalarV1(
-              zero, child, result_descriptor,
-              dt::DatatypeNumericOperationKind::subtract, context, &computed,
-              refusal_detail)) {
-        return false;
-      }
-      return finish(std::move(computed));
+      scalar_request.operation =
+          api::EngineCanonicalExpressionOperation::numeric_subtract;
+      scalar_request.left_value = std::move(zero);
+      scalar_request.right_value = child;
+      scalar_request.numeric_context.precision = 19;
+      scalar_request.numeric_context.scale = 0;
+    } else {
+      scalar_request.operation =
+          api::EngineCanonicalExpressionOperation::logical_not;
     }
-    api::EngineSqlTruthValue child_truth;
-    if (!TruthFromValue(child, &child_truth, refusal_detail)) return false;
-    api::EngineTypedValue computed;
-    if (!api::QowMaterializeCanonicalTruthValueV1(
-            api::QowSqlNotV1(child_truth), result_descriptor, &computed,
-            refusal_detail)) {
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
       return false;
     }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   if (expression.expression_kind != api::RelationalExpressionKind::kBinary) {
@@ -1027,25 +1042,32 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           refusal_detail)) {
       return false;
     }
-    dt::DatatypeNumericOperationKind numeric_operation =
-        dt::DatatypeNumericOperationKind::add;
+    api::EngineCanonicalExpressionOperation numeric_operation =
+        api::EngineCanonicalExpressionOperation::numeric_add;
     if (operation == "-") {
-      numeric_operation = dt::DatatypeNumericOperationKind::subtract;
+      numeric_operation =
+          api::EngineCanonicalExpressionOperation::numeric_subtract;
     } else if (operation == "*") {
-      numeric_operation = dt::DatatypeNumericOperationKind::multiply;
+      numeric_operation =
+          api::EngineCanonicalExpressionOperation::numeric_multiply;
     } else if (operation == "/") {
-      numeric_operation = dt::DatatypeNumericOperationKind::divide;
+      numeric_operation =
+          api::EngineCanonicalExpressionOperation::numeric_divide;
     }
-    dt::DatatypeNumericContext context;
-    context.precision = 19;
-    context.scale = 0;
-    api::EngineTypedValue computed;
-    if (!api::QowApplyCanonicalNumericScalarV1(
-            left, right, result_descriptor, numeric_operation, context, &computed,
-            refusal_detail)) {
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation = numeric_operation;
+    scalar_request.left_value = std::move(left);
+    scalar_request.right_value = std::move(right);
+    scalar_request.result_descriptor = result_descriptor;
+    scalar_request.numeric_context.precision = 19;
+    scalar_request.numeric_context.scale = 0;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
       return false;
     }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   if (operation == "AND" || operation == "OR") {
@@ -1057,21 +1079,21 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           refusal_detail)) {
       return false;
     }
-    api::EngineSqlTruthValue left_truth;
-    api::EngineSqlTruthValue right_truth;
-    if (!TruthFromValue(left, &left_truth, refusal_detail) ||
-        !TruthFromValue(right, &right_truth, refusal_detail)) {
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation =
+        operation == "AND"
+            ? api::EngineCanonicalExpressionOperation::logical_and
+            : api::EngineCanonicalExpressionOperation::logical_or;
+    scalar_request.left_value = std::move(left);
+    scalar_request.right_value = std::move(right);
+    scalar_request.result_descriptor = result_descriptor;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
       return false;
     }
-    const auto result_truth = operation == "AND"
-                                  ? api::QowSqlAndV1(left_truth, right_truth)
-                                  : api::QowSqlOrV1(left_truth, right_truth);
-    api::EngineTypedValue computed;
-    if (!api::QowMaterializeCanonicalTruthValueV1(
-            result_truth, result_descriptor, &computed, refusal_detail)) {
-      return false;
-    }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   if (operation == "||") {
@@ -1083,14 +1105,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           refusal_detail)) {
       return false;
     }
-    api::EngineTypedValue computed;
-    if (left.isSqlNull() || right.isSqlNull()) {
-      computed.setState(api::EngineValueState::sql_null);
-    } else {
-      computed.encoded_value = left.encoded_value + right.encoded_value;
-      computed.setState(api::EngineValueState::value);
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation =
+        api::EngineCanonicalExpressionOperation::text_concat;
+    scalar_request.left_value = std::move(left);
+    scalar_request.right_value = std::move(right);
+    scalar_request.result_descriptor = result_descriptor;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
+      return false;
     }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   if (operation == "IS") {
@@ -1109,17 +1136,19 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           refusal_detail)) {
       return false;
     }
-    api::EngineSqlTruthValue truth;
-    if (!api::QowEvaluateCanonicalNullPredicateV1(
-            left, negate, &truth, refusal_detail)) {
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation =
+        negate ? api::EngineCanonicalExpressionOperation::is_not_null
+               : api::EngineCanonicalExpressionOperation::is_null;
+    scalar_request.left_value = std::move(left);
+    scalar_request.result_descriptor = result_descriptor;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
       return false;
     }
-    api::EngineTypedValue computed;
-    if (!api::QowMaterializeCanonicalTruthValueV1(
-            truth, result_descriptor, &computed, refusal_detail)) {
-      return false;
-    }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   if (IsComparisonOperator(operation)) {
@@ -1141,24 +1170,35 @@ bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
                           refusal_detail)) {
       return false;
     }
-    int comparison = 0;
-    if (!left.isSqlNull() && !right.isSqlNull() &&
-        !api::QowCompareCanonicalNonCollatedScalarsV1(
-            left, right, &comparison, refusal_detail)) {
+    api::EngineCanonicalExpressionOperation scalar_operation =
+        api::EngineCanonicalExpressionOperation::equal;
+    if (operation == "<>" || operation == "!=") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::not_equal;
+    } else if (operation == "<") {
+      scalar_operation = api::EngineCanonicalExpressionOperation::less_than;
+    } else if (operation == "<=") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::less_than_or_equal;
+    } else if (operation == ">") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::greater_than;
+    } else if (operation == ">=") {
+      scalar_operation =
+          api::EngineCanonicalExpressionOperation::greater_than_or_equal;
+    }
+    api::EngineCanonicalExpressionEvaluationRequest scalar_request;
+    scalar_request.consumer = active_consumer_;
+    scalar_request.operation = scalar_operation;
+    scalar_request.left_value = std::move(left);
+    scalar_request.right_value = std::move(right);
+    scalar_request.result_descriptor = result_descriptor;
+    api::EngineCanonicalExpressionEvaluationResult scalar_result;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            scalar_request, &scalar_result, refusal_detail)) {
       return false;
     }
-    api::EngineSqlTruthValue truth;
-    if (!api::QowEvaluateCanonicalComparisonTruthV1(
-            left, right, comparison, ComparisonOperator(operation), &truth,
-            refusal_detail)) {
-      return false;
-    }
-    api::EngineTypedValue computed;
-    if (!api::QowMaterializeCanonicalTruthValueV1(
-            truth, result_descriptor, &computed, refusal_detail)) {
-      return false;
-    }
-    return finish(std::move(computed));
+    return finish(std::move(scalar_result.value));
   }
 
   *refusal_detail = "binary scalar operator has no object-free evaluator";

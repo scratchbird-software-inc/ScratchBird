@@ -56,11 +56,24 @@ class CanonicalRelationalExpressionRuntime {
                 internal_api::EngineTypedValue* value,
                 std::string* refusal_detail);
 
+  bool EvaluateForConsumer(
+      std::uint32_t expression_id,
+      std::string_view expected_type,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
+      internal_api::EngineTypedValue* value,
+      std::string* refusal_detail);
+
   // Shared object-free predicate seam for FILTER/JOIN/HAVING/QUALIFY
   // consumers. SQL NULL is returned as UNKNOWN; callers retain authority for
   // the consumer-specific TRUE/FALSE/UNKNOWN decision.
   bool EvaluatePredicate(
       std::uint32_t expression_id,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* refusal_detail);
+
+  bool EvaluatePredicateForConsumer(
+      std::uint32_t expression_id,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
       internal_api::EngineSqlTruthValue* truth,
       std::string* refusal_detail);
 
@@ -72,6 +85,14 @@ class CanonicalRelationalExpressionRuntime {
       std::uint32_t expression_id,
       const CanonicalRelationalExpressionRowBinding& row_binding,
       const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineSqlTruthValue* truth,
+      std::string* refusal_detail);
+
+  bool EvaluatePredicateForConsumer(
+      std::uint32_t expression_id,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
       internal_api::EngineSqlTruthValue* truth,
       std::string* refusal_detail);
 
@@ -118,6 +139,8 @@ class CanonicalRelationalExpressionRuntime {
   std::unordered_map<std::uint32_t, std::string> descriptor_type_names_;
   std::unordered_set<std::uint32_t> inference_stack_;
   const ActiveRowBinding* active_row_binding_{nullptr};
+  internal_api::EngineCanonicalExpressionConsumer active_consumer_{
+      internal_api::EngineCanonicalExpressionConsumer::projection};
 };
 
 }  // namespace scratchbird::engine::sblr

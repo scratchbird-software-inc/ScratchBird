@@ -19,7 +19,8 @@
 #include <string_view>
 #include <utility>
 
-#ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
+#if !defined(SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY) && \
+    !defined(SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY)
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -30,6 +31,8 @@
 
 #include <sstream>
 #endif
+
+#ifndef SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_EXTERNAL
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -68,6 +71,8 @@ std::string QowCanonicalDescriptorFieldV1(const std::string& descriptor,
   return value;
 }
 
+}  // namespace
+
 bool QowCanonicalDescriptorU32FieldV1(const std::string& descriptor,
                                       const std::string& key,
                                       std::uint32_t* value) {
@@ -83,8 +88,6 @@ bool QowCanonicalDescriptorU32FieldV1(const std::string& descriptor,
   *value = static_cast<std::uint32_t>(parsed);
   return true;
 }
-
-}  // namespace
 
 // QOW-SOURCE-QRY-008-DESC-V1
 bool QowCanonicalDescriptorIdentityV1(const EngineDescriptor& descriptor) {
@@ -938,6 +941,276 @@ bool QowMaterializeCanonicalTruthValueV1(
   return true;
 }
 
+bool QowCanonicalTruthFromTypedValueV1(
+    const EngineTypedValue& value,
+    EngineSqlTruthValue* truth,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (truth == nullptr || refusal_detail == nullptr) return false;
+  *truth = EngineSqlTruthValue::unspecified;
+  refusal_detail->clear();
+  if (!QowCanonicalDescriptorIdentityV1(value.descriptor) ||
+      value.descriptor.descriptor_kind != "scalar" ||
+      dt::CanonicalTypeIdFromStableName(
+          value.descriptor.canonical_type_name) !=
+          dt::CanonicalTypeId::boolean) {
+    *refusal_detail = "expression truth operand is not canonical boolean";
+    return false;
+  }
+  if (value.isSqlNull()) {
+    if (!QowCanonicalSqlNullStateV1(value)) {
+      *refusal_detail = "SQL NULL boolean carries substitute payload";
+      return false;
+    }
+    *truth = EngineSqlTruthValue::unknown;
+    return true;
+  }
+  if (value.state != EngineValueState::value || value.is_null ||
+      !value.binary_value.empty() ||
+      (value.encoded_value != "true" && value.encoded_value != "false")) {
+    *refusal_detail = "expression truth operand has a noncanonical payload";
+    return false;
+  }
+  *truth = value.encoded_value == "true"
+               ? EngineSqlTruthValue::true_value
+               : EngineSqlTruthValue::false_value;
+  return true;
+}
+
+bool QowCanonicalExpressionConsumerPassesV1(
+    const EngineCanonicalExpressionConsumer consumer,
+    const EngineSqlTruthValue truth_value,
+    bool* passes,
+    std::string* refusal_detail) {
+  if (passes == nullptr || refusal_detail == nullptr) return false;
+  *passes = false;
+  refusal_detail->clear();
+  const bool canonical_consumer =
+      consumer == EngineCanonicalExpressionConsumer::filter ||
+      consumer == EngineCanonicalExpressionConsumer::projection ||
+      consumer == EngineCanonicalExpressionConsumer::join ||
+      consumer == EngineCanonicalExpressionConsumer::aggregate ||
+      consumer == EngineCanonicalExpressionConsumer::window ||
+      consumer == EngineCanonicalExpressionConsumer::subquery;
+  if (!canonical_consumer || !QowCanonicalTruthValueV1(truth_value)) {
+    *refusal_detail = "canonical expression consumer or truth value is not bound";
+    return false;
+  }
+  *passes = truth_value == EngineSqlTruthValue::true_value;
+  return true;
+}
+
+// RCP-023-SOURCE-CANONICAL-TYPED-EXPRESSION-RUNTIME-V1
+bool QowEvaluateCanonicalTypedExpressionV1(
+    const EngineCanonicalExpressionEvaluationRequest& request,
+    EngineCanonicalExpressionEvaluationResult* result,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (result == nullptr || refusal_detail == nullptr) return false;
+  *result = EngineCanonicalExpressionEvaluationResult{};
+  result->value.state = EngineValueState::error;
+  refusal_detail->clear();
+  const bool canonical_consumer =
+      request.consumer == EngineCanonicalExpressionConsumer::filter ||
+      request.consumer == EngineCanonicalExpressionConsumer::projection ||
+      request.consumer == EngineCanonicalExpressionConsumer::join ||
+      request.consumer == EngineCanonicalExpressionConsumer::aggregate ||
+      request.consumer == EngineCanonicalExpressionConsumer::window ||
+      request.consumer == EngineCanonicalExpressionConsumer::subquery;
+  if (!canonical_consumer) {
+    *refusal_detail = "canonical expression consumer is not bound";
+    return false;
+  }
+
+  const auto materialize_truth = [&](const EngineSqlTruthValue truth) {
+    result->truth = truth;
+    if (!QowCanonicalExpressionConsumerPassesV1(
+            request.consumer, truth, &result->passes_consumer,
+            refusal_detail)) {
+      return false;
+    }
+    return QowMaterializeCanonicalTruthValueV1(
+        truth, request.result_descriptor, &result->value, refusal_detail);
+  };
+  const auto canonical_value_state = [](const EngineTypedValue& value) {
+    return (value.state == EngineValueState::value && !value.is_null) ||
+           (value.state == EngineValueState::sql_null && value.is_null &&
+            value.encoded_value.empty() && value.binary_value.empty());
+  };
+
+  switch (request.operation) {
+    case EngineCanonicalExpressionOperation::identity: {
+      if (!QowCanonicalDescriptorIdentityV1(request.left_value.descriptor) ||
+          !QowCanonicalDescriptorIdentityV1(request.result_descriptor) ||
+          request.left_value.descriptor.descriptor_kind != "scalar" ||
+          request.result_descriptor.descriptor_kind != "scalar" ||
+          request.left_value.descriptor.canonical_type_name !=
+              request.result_descriptor.canonical_type_name ||
+          !canonical_value_state(request.left_value)) {
+        *refusal_detail =
+            "identity expression requires one descriptor-compatible canonical value";
+        return false;
+      }
+      if (request.left_value.isSqlNull() &&
+          QowCanonicalDescriptorFieldV1(
+              request.result_descriptor.encoded_descriptor,
+              "nullability") == "non_null") {
+        *refusal_detail =
+            "identity expression SQL NULL contradicts result nullability";
+        return false;
+      }
+      result->value = request.left_value;
+      result->value.descriptor = request.result_descriptor;
+      result->value = QowPropagateSqlNullAfterScalarV1(
+          request.result_descriptor, std::move(result->value));
+      return true;
+    }
+    case EngineCanonicalExpressionOperation::consume_truth:
+      if (!QowCanonicalTruthValueV1(request.input_truth)) {
+        *refusal_detail = "canonical expression truth input is not bound";
+        return false;
+      }
+      return materialize_truth(request.input_truth);
+    case EngineCanonicalExpressionOperation::numeric_add:
+    case EngineCanonicalExpressionOperation::numeric_subtract:
+    case EngineCanonicalExpressionOperation::numeric_multiply:
+    case EngineCanonicalExpressionOperation::numeric_divide: {
+      auto operation = dt::DatatypeNumericOperationKind::add;
+      if (request.operation ==
+          EngineCanonicalExpressionOperation::numeric_subtract) {
+        operation = dt::DatatypeNumericOperationKind::subtract;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::numeric_multiply) {
+        operation = dt::DatatypeNumericOperationKind::multiply;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::numeric_divide) {
+        operation = dt::DatatypeNumericOperationKind::divide;
+      }
+      return QowApplyCanonicalNumericScalarV1(
+          request.left_value, request.right_value, request.result_descriptor,
+          operation, request.numeric_context, &result->value,
+          refusal_detail);
+    }
+    case EngineCanonicalExpressionOperation::text_concat: {
+      if (!QowCanonicalDescriptorIdentityV1(request.left_value.descriptor) ||
+          !QowCanonicalDescriptorIdentityV1(request.right_value.descriptor) ||
+          !QowCanonicalDescriptorIdentityV1(request.result_descriptor) ||
+          request.left_value.descriptor.canonical_type_name != "text" ||
+          request.right_value.descriptor.canonical_type_name != "text" ||
+          request.result_descriptor.canonical_type_name != "text" ||
+          !canonical_value_state(request.left_value) ||
+          !canonical_value_state(request.right_value)) {
+        *refusal_detail =
+            "text concatenation operands or result descriptor are invalid";
+        return false;
+      }
+      result->value.descriptor = request.result_descriptor;
+      if (request.left_value.isSqlNull() ||
+          request.right_value.isSqlNull()) {
+        result->value.setState(EngineValueState::sql_null);
+        result->value = QowPropagateSqlNullAfterScalarV1(
+            request.result_descriptor, std::move(result->value));
+      } else {
+        result->value.encoded_value =
+            request.left_value.encoded_value +
+            request.right_value.encoded_value;
+        result->value.setState(EngineValueState::value);
+      }
+      return true;
+    }
+    case EngineCanonicalExpressionOperation::is_null:
+    case EngineCanonicalExpressionOperation::is_not_null: {
+      EngineSqlTruthValue truth = EngineSqlTruthValue::unspecified;
+      if (!QowEvaluateCanonicalNullPredicateV1(
+              request.left_value,
+              request.operation ==
+                  EngineCanonicalExpressionOperation::is_not_null,
+              &truth, refusal_detail)) {
+        return false;
+      }
+      return materialize_truth(truth);
+    }
+    case EngineCanonicalExpressionOperation::logical_not:
+    case EngineCanonicalExpressionOperation::logical_and:
+    case EngineCanonicalExpressionOperation::logical_or: {
+      EngineSqlTruthValue left = EngineSqlTruthValue::unspecified;
+      if (!QowCanonicalTruthFromTypedValueV1(
+              request.left_value, &left, refusal_detail)) {
+        return false;
+      }
+      EngineSqlTruthValue truth = left;
+      if (request.operation ==
+          EngineCanonicalExpressionOperation::logical_not) {
+        truth = QowSqlNotV1(left);
+      } else {
+        EngineSqlTruthValue right = EngineSqlTruthValue::unspecified;
+        if (!QowCanonicalTruthFromTypedValueV1(
+                request.right_value, &right, refusal_detail)) {
+          return false;
+        }
+        truth = request.operation ==
+                        EngineCanonicalExpressionOperation::logical_and
+                    ? QowSqlAndV1(left, right)
+                    : QowSqlOrV1(left, right);
+      }
+      return materialize_truth(truth);
+    }
+    case EngineCanonicalExpressionOperation::equal:
+    case EngineCanonicalExpressionOperation::not_equal:
+    case EngineCanonicalExpressionOperation::less_than:
+    case EngineCanonicalExpressionOperation::less_than_or_equal:
+    case EngineCanonicalExpressionOperation::greater_than:
+    case EngineCanonicalExpressionOperation::greater_than_or_equal: {
+      int comparison = 0;
+      if (request.precomputed_comparison.has_value()) {
+        comparison = *request.precomputed_comparison;
+        if (comparison < -1 || comparison > 1) {
+          *refusal_detail =
+              "precomputed expression comparison is noncanonical";
+          return false;
+        }
+      } else if (!request.left_value.isSqlNull() &&
+                 !request.right_value.isSqlNull() &&
+                 !QowCompareCanonicalNonCollatedScalarsV1(
+                     request.left_value, request.right_value, &comparison,
+                     refusal_detail)) {
+        return false;
+      }
+      EngineComparisonPredicateOperator predicate =
+          EngineComparisonPredicateOperator::equal;
+      if (request.operation ==
+          EngineCanonicalExpressionOperation::not_equal) {
+        predicate = EngineComparisonPredicateOperator::not_equal;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::less_than) {
+        predicate = EngineComparisonPredicateOperator::less_than;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::less_than_or_equal) {
+        predicate = EngineComparisonPredicateOperator::less_than_or_equal;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::greater_than) {
+        predicate = EngineComparisonPredicateOperator::greater_than;
+      } else if (request.operation ==
+                 EngineCanonicalExpressionOperation::greater_than_or_equal) {
+        predicate = EngineComparisonPredicateOperator::greater_than_or_equal;
+      }
+      EngineSqlTruthValue truth = EngineSqlTruthValue::unspecified;
+      if (!QowEvaluateCanonicalComparisonTruthV1(
+              request.left_value, request.right_value, comparison, predicate,
+              &truth, refusal_detail)) {
+        return false;
+      }
+      result->comparison = comparison;
+      return materialize_truth(truth);
+    }
+    case EngineCanonicalExpressionOperation::unspecified:
+      *refusal_detail = "canonical expression operation is not bound";
+      return false;
+  }
+  *refusal_detail = "canonical expression operation is invalid";
+  return false;
+}
+
 // QOW-SOURCE-QRY-025-V1
 bool QowBindCanonicalExpressionReferenceV1(
     const EngineBindExpressionRequest& request,
@@ -1065,7 +1338,10 @@ bool QowBindCanonicalExpressionReferenceV1(
 
 }  // namespace scratchbird::engine::internal_api
 
-#ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
+#endif  // SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_EXTERNAL
+
+#if !defined(SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY) && \
+    !defined(SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY)
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -2192,4 +2468,4 @@ EngineInvokeDomainMethodResult EngineInvokeDomainMethod(const EngineInvokeDomain
 
 }  // namespace scratchbird::engine::internal_api
 
-#endif  // SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
+#endif  // full internal API implementation

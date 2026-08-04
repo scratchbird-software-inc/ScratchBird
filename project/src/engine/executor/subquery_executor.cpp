@@ -494,6 +494,15 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
       table.materialized_row_count > request.maximum_comparison_count) {
     return refuse("quantified comparison resource bound was exceeded");
   }
+  if (request.result_expression_descriptor_id == 0 ||
+      request.result_column.descriptor_id !=
+          request.result_expression_descriptor_id ||
+      request.result_column.stable_name.empty() ||
+      !request.result_column.nullable ||
+      request.result_column.descriptor.descriptor_kind != "scalar" ||
+      request.result_column.descriptor.canonical_type_name != "boolean") {
+    return refuse("quantified result is not a bound nullable boolean");
+  }
 
   DescriptorBatch left_batch;
   left_batch.columns = {request.left_operand_column};
@@ -504,59 +513,47 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     return refuse(left_validation.diagnostic_code + ":" +
                   left_validation.detail);
   }
-  std::int64_t decoded_left = 0;
-  const bool left_is_null = request.left_value.state ==
-                            api::EngineValueState::sql_null;
-  if (!left_is_null) {
-    const auto decoded = DecodeInt64Value(request.left_value);
-    if (!decoded.ok()) {
-      return refuse(decoded.diagnostic.diagnostic_code + ":" +
-                    decoded.diagnostic.detail);
-    }
-    decoded_left = decoded.value;
+
+  api::EngineCanonicalExpressionOperation expression_operation =
+      api::EngineCanonicalExpressionOperation::equal;
+  if (request.comparison_operator == Operation::not_equal) {
+    expression_operation =
+        api::EngineCanonicalExpressionOperation::not_equal;
+  } else if (request.comparison_operator == Operation::less_than) {
+    expression_operation =
+        api::EngineCanonicalExpressionOperation::less_than;
+  } else if (request.comparison_operator == Operation::less_than_or_equal) {
+    expression_operation =
+        api::EngineCanonicalExpressionOperation::less_than_or_equal;
+  } else if (request.comparison_operator == Operation::greater_than) {
+    expression_operation =
+        api::EngineCanonicalExpressionOperation::greater_than;
+  } else if (request.comparison_operator ==
+             Operation::greater_than_or_equal) {
+    expression_operation =
+        api::EngineCanonicalExpressionOperation::greater_than_or_equal;
   }
 
   std::vector<api::EngineSqlTruthValue> comparison_truths;
   comparison_truths.reserve(table.materialized_row_count);
   for (const auto& row : table.output_batch.rows) {
     const auto& right_value = row.values.front();
-    if (left_is_null ||
-        right_value.state == api::EngineValueState::sql_null) {
-      comparison_truths.push_back(api::EngineSqlTruthValue::unknown);
-      continue;
+    api::EngineCanonicalExpressionEvaluationRequest expression_request;
+    expression_request.consumer =
+        api::EngineCanonicalExpressionConsumer::subquery;
+    expression_request.operation = expression_operation;
+    expression_request.left_value = request.left_value;
+    expression_request.right_value = right_value;
+    expression_request.result_descriptor =
+        request.result_column.descriptor;
+    api::EngineCanonicalExpressionEvaluationResult expression_result;
+    std::string expression_detail;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            expression_request, &expression_result, &expression_detail)) {
+      return refuse("canonical quantified comparison refused: " +
+                    expression_detail);
     }
-    const auto decoded_right = DecodeInt64Value(right_value);
-    if (!decoded_right.ok()) {
-      return refuse(decoded_right.diagnostic.diagnostic_code + ":" +
-                    decoded_right.diagnostic.detail);
-    }
-    const auto right = decoded_right.value;
-    bool predicate = false;
-    switch (request.comparison_operator) {
-      case Operation::equal:
-        predicate = decoded_left == right;
-        break;
-      case Operation::not_equal:
-        predicate = decoded_left != right;
-        break;
-      case Operation::less_than:
-        predicate = decoded_left < right;
-        break;
-      case Operation::less_than_or_equal:
-        predicate = decoded_left <= right;
-        break;
-      case Operation::greater_than:
-        predicate = decoded_left > right;
-        break;
-      case Operation::greater_than_or_equal:
-        predicate = decoded_left >= right;
-        break;
-      default:
-        return refuse("quantified comparison operator changed after binding");
-    }
-    comparison_truths.push_back(
-        predicate ? api::EngineSqlTruthValue::true_value
-                  : api::EngineSqlTruthValue::false_value);
+    comparison_truths.push_back(expression_result.truth);
   }
 
   auto truth = any ? api::EngineSqlTruthValue::false_value
@@ -579,29 +576,23 @@ CanonicalQuantifiedSubqueryResult ExecuteCanonicalQuantifiedSubquery(
     }
   }
 
-  if (request.result_expression_descriptor_id == 0 ||
-      request.result_column.descriptor_id !=
-          request.result_expression_descriptor_id ||
-      request.result_column.stable_name.empty() ||
-      !request.result_column.nullable ||
-      request.result_column.descriptor.descriptor_kind != "scalar" ||
-      request.result_column.descriptor.canonical_type_name != "boolean") {
-    return refuse("quantified result is not a bound nullable boolean");
-  }
   DescriptorBatch output;
   output.columns = {request.result_column};
-  api::EngineTypedValue value;
-  value.descriptor = request.result_column.descriptor;
-  if (truth == api::EngineSqlTruthValue::unknown) {
-    value.is_null = true;
-    value.state = api::EngineValueState::sql_null;
-  } else {
-    value.encoded_value = truth == api::EngineSqlTruthValue::true_value
-                              ? "true"
-                              : "false";
-    value.state = api::EngineValueState::value;
+  api::EngineCanonicalExpressionEvaluationRequest truth_request;
+  truth_request.consumer =
+      api::EngineCanonicalExpressionConsumer::subquery;
+  truth_request.operation =
+      api::EngineCanonicalExpressionOperation::consume_truth;
+  truth_request.input_truth = truth;
+  truth_request.result_descriptor = request.result_column.descriptor;
+  api::EngineCanonicalExpressionEvaluationResult truth_result;
+  std::string truth_detail;
+  if (!api::QowEvaluateCanonicalTypedExpressionV1(
+          truth_request, &truth_result, &truth_detail)) {
+    return refuse("canonical quantified truth publication refused: " +
+                  truth_detail);
   }
-  output.rows = {{{std::move(value)}}};
+  output.rows = {{{std::move(truth_result.value)}}};
   auto output_validation = ValidateCanonicalDescriptorBatch(
       output, {request.result_column.descriptor_id});
   if (!output_validation.ok) {

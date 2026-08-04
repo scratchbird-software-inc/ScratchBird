@@ -61,22 +61,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   # QOW-CMAKE-QRY-008-TIMEZONE-V1
   # QOW-CMAKE-QRY-008-OVERFLOW-V1
   # QOW-CMAKE-QRY-017-V1
-  add_library(sb_qow_typed_scalar_descriptor_contract STATIC
-    query/expression_api.cpp
-  )
-  target_compile_features(sb_qow_typed_scalar_descriptor_contract PUBLIC
-    cxx_std_20
-  )
-  target_compile_definitions(sb_qow_typed_scalar_descriptor_contract PRIVATE
-    SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY=1
-  )
-  target_include_directories(sb_qow_typed_scalar_descriptor_contract PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/datatypes
-  )
-  target_link_libraries(sb_qow_typed_scalar_descriptor_contract PUBLIC
-    sb_core_datatypes
-  )
+  add_library(sb_qow_typed_scalar_descriptor_contract ALIAS
+    sb_engine_typed_scalar_descriptor_contract)
   # Focused projection contract library shared by the QRY-026/QRY-027 proofs.
   add_library(sb_qow_typed_parameter_contract STATIC
     query/projection_api.cpp
@@ -218,6 +204,11 @@ endif()
 if(NOT TARGET sb_udr_runtime)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../udr/runtime ${CMAKE_CURRENT_BINARY_DIR}/udr_runtime)
 endif()
+
+set_source_files_properties(query/expression_api.cpp PROPERTIES
+  COMPILE_DEFINITIONS
+    SCRATCHBIRD_TYPED_SCALAR_DESCRIPTOR_CONTRACT_EXTERNAL=1
+)
 
 add_library(sb_engine_internal_api
   artifacts/artifact_api.cpp
@@ -433,6 +424,7 @@ target_link_libraries(sb_engine_internal_api PUBLIC
   sb_storage_filespace
   sb_storage_page
   sb_storage_database
+  sb_engine_typed_scalar_descriptor_contract
   sb_engine_executor
   sb_engine_native_compile
   sb_engine_gpu_acceleration

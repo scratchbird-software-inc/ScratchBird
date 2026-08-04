@@ -166,24 +166,35 @@ EngineEvaluatePredicateResult EngineEvaluatePredicate(
       return refuse("typed predicate operator is not bound");
   }
 
-  EngineTypedValue materialized;
-  if (!QowMaterializeCanonicalTruthValueV1(
-          truth, request.result_descriptor, &materialized,
-          &refusal_detail)) {
-    return refuse(std::move(refusal_detail));
+  EngineCanonicalExpressionConsumer expression_consumer =
+      EngineCanonicalExpressionConsumer::unspecified;
+  if (request.consumer == EnginePredicateConsumer::filter) {
+    expression_consumer = EngineCanonicalExpressionConsumer::filter;
+  } else if (request.consumer == EnginePredicateConsumer::join_on) {
+    expression_consumer = EngineCanonicalExpressionConsumer::join;
+  } else if (request.consumer == EnginePredicateConsumer::having) {
+    expression_consumer = EngineCanonicalExpressionConsumer::aggregate;
+  } else if (request.consumer == EnginePredicateConsumer::qualify) {
+    expression_consumer = EngineCanonicalExpressionConsumer::window;
   }
-  bool passes = false;
-  if (!QowPredicateConsumerPassesV1(
-          truth, request.consumer, &passes, &refusal_detail)) {
+  EngineCanonicalExpressionEvaluationRequest expression_request;
+  expression_request.consumer = expression_consumer;
+  expression_request.operation =
+      EngineCanonicalExpressionOperation::consume_truth;
+  expression_request.input_truth = truth;
+  expression_request.result_descriptor = request.result_descriptor;
+  EngineCanonicalExpressionEvaluationResult expression_result;
+  if (!QowEvaluateCanonicalTypedExpressionV1(
+          expression_request, &expression_result, &refusal_detail)) {
     return refuse(std::move(refusal_detail));
   }
 
   auto result = MakeApiBehaviorSuccess<EngineEvaluatePredicateResult>(
       request.context, kOperation);
   result.truth_value = truth;
-  result.value = std::move(materialized);
+  result.value = std::move(expression_result.value);
   result.comparison = comparison;
-  result.passes_consumer = passes;
+  result.passes_consumer = expression_result.passes_consumer;
   result.result_shape.result_kind = "typed_value";
   result.result_shape.columns.push_back(result.value.descriptor);
   AddApiBehaviorEvidence(&result, "three_valued_runtime",

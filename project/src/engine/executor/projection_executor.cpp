@@ -98,6 +98,33 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
 
   result.output_batch =
       ProjectDescriptorBatch(request.input_batch, request.projected_columns);
+  for (std::size_t row = 0; row < result.output_batch.rows.size(); ++row) {
+    for (std::size_t column = 0;
+         column < result.output_batch.columns.size(); ++column) {
+      internal_api::EngineCanonicalExpressionEvaluationRequest
+          expression_request;
+      expression_request.consumer =
+          internal_api::EngineCanonicalExpressionConsumer::projection;
+      expression_request.operation =
+          internal_api::EngineCanonicalExpressionOperation::identity;
+      expression_request.left_value =
+          result.output_batch.rows[row].values[column];
+      expression_request.result_descriptor =
+          result.output_batch.columns[column].descriptor;
+      internal_api::EngineCanonicalExpressionEvaluationResult
+          expression_result;
+      std::string expression_detail;
+      if (!internal_api::QowEvaluateCanonicalTypedExpressionV1(
+              expression_request, &expression_result,
+              &expression_detail)) {
+        return refuse(Refusal(
+            "QOW-DIAG-QRY-008-CANONICAL-EXPRESSION-RUNTIME-V1",
+            std::move(expression_detail), row, column));
+      }
+      result.output_batch.rows[row].values[column] =
+          std::move(expression_result.value);
+    }
+  }
   auto output_validation = ValidateCanonicalDescriptorBatch(
       result.output_batch, selected_node->output_descriptor_ids);
   if (!output_validation.ok) return refuse(std::move(output_validation));

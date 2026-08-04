@@ -924,23 +924,26 @@ bool MaterializeAggregateFilterTruthValues(
       return false;
     }
     const auto& value = row.values[filter_column];
-    if (value.state == api::EngineValueState::sql_null && value.is_null &&
-        value.encoded_value.empty() && value.binary_value.empty()) {
-      filter_truth_values->push_back(api::EngineSqlTruthValue::unknown);
-    } else if (value.state == api::EngineValueState::value && !value.is_null &&
-               value.binary_value.empty() &&
-               (value.encoded_value == "true" ||
-                value.encoded_value == "false")) {
-      filter_truth_values->push_back(
-          value.encoded_value == "true"
-              ? api::EngineSqlTruthValue::true_value
-              : api::EngineSqlTruthValue::false_value);
-    } else {
+    api::EngineCanonicalExpressionEvaluationRequest expression_request;
+    expression_request.consumer =
+        api::EngineCanonicalExpressionConsumer::aggregate;
+    expression_request.operation =
+        api::EngineCanonicalExpressionOperation::identity;
+    expression_request.left_value = value;
+    expression_request.result_descriptor = value.descriptor;
+    api::EngineCanonicalExpressionEvaluationResult expression_result;
+    api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unspecified;
+    if (!api::QowEvaluateCanonicalTypedExpressionV1(
+            expression_request, &expression_result, detail) ||
+        !api::QowCanonicalTruthFromTypedValueV1(
+            expression_result.value, &truth, detail)) {
+      const std::string expression_detail = *detail;
       *detail =
           "global aggregate FILTER input is not exact SQL boolean "
-          "three-valued state";
+          "three-valued state: " + expression_detail;
       return false;
     }
+    filter_truth_values->push_back(truth);
   }
   return true;
 }
@@ -1227,8 +1230,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             (is_exact_percentile || is_approx_percentile)
                 ? std::string_view("real64")
                 : std::string_view("int64");
-        if (!expression_runtime.Evaluate(child_expression_id, direct_type,
-                                         &direct_argument, &direct_detail) ||
+        if (!expression_runtime.EvaluateForConsumer(
+                child_expression_id, direct_type,
+                api::EngineCanonicalExpressionConsumer::aggregate,
+                &direct_argument, &direct_detail) ||
             direct_argument.state != api::EngineValueState::value ||
             direct_argument.is_null ||
             direct_argument.descriptor.canonical_type_name != direct_type) {
@@ -1282,8 +1287,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
             std::ranges::find(input_node.output_descriptor_ids,
                               argument->result_descriptor_id) !=
                 input_node.output_descriptor_ids.end() ||
-            !expression_runtime.Evaluate(child_expression_id, "text",
-                                         &separator, &separator_detail) ||
+            !expression_runtime.EvaluateForConsumer(
+                child_expression_id, "text",
+                api::EngineCanonicalExpressionConsumer::aggregate,
+                &separator, &separator_detail) ||
             separator.state != api::EngineValueState::value ||
             separator.is_null ||
             separator.descriptor.canonical_type_name != "text") {
@@ -1337,8 +1344,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
         api::EngineTypedValue option;
         std::string option_detail;
         if (argument_ordinal == 3) {
-          if (!expression_runtime.Evaluate(child_expression_id, "int64",
-                                           &option, &option_detail) ||
+          if (!expression_runtime.EvaluateForConsumer(
+                  child_expression_id, "int64",
+                  api::EngineCanonicalExpressionConsumer::aggregate,
+                  &option, &option_detail) ||
               option.state != api::EngineValueState::value || option.is_null ||
               option.descriptor.canonical_type_name != "int64") {
             result.detail =
@@ -1367,8 +1376,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           continue;
         }
         if (argument_ordinal == 4) {
-          if (!expression_runtime.Evaluate(child_expression_id, "text", &option,
-                                           &option_detail) ||
+          if (!expression_runtime.EvaluateForConsumer(
+                  child_expression_id, "text",
+                  api::EngineCanonicalExpressionConsumer::aggregate,
+                  &option, &option_detail) ||
               option.state != api::EngineValueState::value || option.is_null ||
               option.descriptor.canonical_type_name != "text") {
             result.detail =
@@ -1381,8 +1392,10 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
           continue;
         }
         if (argument_ordinal == 5) {
-          if (!expression_runtime.Evaluate(child_expression_id, "boolean",
-                                           &option, &option_detail) ||
+          if (!expression_runtime.EvaluateForConsumer(
+                  child_expression_id, "boolean",
+                  api::EngineCanonicalExpressionConsumer::aggregate,
+                  &option, &option_detail) ||
               option.state != api::EngineValueState::value || option.is_null ||
               option.descriptor.canonical_type_name != "boolean" ||
               (option.encoded_value != "true" &&
@@ -2968,8 +2981,10 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
         }
         CanonicalRelationalExpressionRuntime expression_runtime(dag);
         api::EngineTypedValue value;
-        if (!expression_runtime.Evaluate(threshold->expression_id, "int64",
-                                         &value, &result.detail) ||
+        if (!expression_runtime.EvaluateForConsumer(
+                threshold->expression_id, "int64",
+                api::EngineCanonicalExpressionConsumer::aggregate, &value,
+                &result.detail) ||
             value.state != api::EngineValueState::value || value.is_null ||
             value.descriptor.canonical_type_name != "int64") {
           if (result.detail.empty()) {
@@ -3686,7 +3701,10 @@ bool EvaluateNonNegativeRowBound(
     return false;
   }
   api::EngineTypedValue value;
-  if (!runtime->Evaluate(expression_id, "int64", &value, refusal_detail)) {
+  if (!runtime->EvaluateForConsumer(
+          expression_id, "int64",
+          api::EngineCanonicalExpressionConsumer::projection, &value,
+          refusal_detail)) {
     return false;
   }
   if (value.state != api::EngineValueState::value || value.is_null ||
@@ -3875,9 +3893,10 @@ MaterializedValues MaterializeValues(
     tuple.values.reserve(row->expression_ids.size());
     for (std::size_t column = 0; column < row->expression_ids.size(); ++column) {
       api::EngineTypedValue value;
-      if (!expression_runtime.Evaluate(row->expression_ids[column],
-                                       type_names[column], &value,
-                                       &result.detail)) {
+      if (!expression_runtime.EvaluateForConsumer(
+              row->expression_ids[column], type_names[column],
+              api::EngineCanonicalExpressionConsumer::projection, &value,
+              &result.detail)) {
         result.batch = {};
         result.result_bindings.clear();
         return result;
@@ -4752,9 +4771,10 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   std::string predicate_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag);
-  if (!expression_runtime.EvaluatePredicate(root->bound_expression_ids.front(),
-                                            &predicate_truth,
-                                            &predicate_detail)) {
+  if (!expression_runtime.EvaluatePredicateForConsumer(
+          root->bound_expression_ids.front(),
+          api::EngineCanonicalExpressionConsumer::join, &predicate_truth,
+          &predicate_detail)) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
                   "INNER JOIN predicate: " + predicate_detail);
   }
@@ -5068,9 +5088,10 @@ ExecuteCanonicalObjectFreeFilterQuery(
   std::string predicate_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag);
-  if (!expression_runtime.EvaluatePredicate(root->bound_expression_ids.front(),
-                                            &predicate_truth,
-                                            &predicate_detail)) {
+  if (!expression_runtime.EvaluatePredicateForConsumer(
+          root->bound_expression_ids.front(),
+          api::EngineCanonicalExpressionConsumer::filter, &predicate_truth,
+          &predicate_detail)) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-FILTER-PAYLOAD-V1",
                   "FILTER predicate: " + predicate_detail);
   }
@@ -6114,9 +6135,10 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
             api::EngineSqlTruthValue predicate_truth =
                 api::EngineSqlTruthValue::unknown;
             std::string predicate_detail;
-            if (!expression_runtime.EvaluatePredicate(
+            if (!expression_runtime.EvaluatePredicateForConsumer(
                     prepared_having.predicate_expression_id,
                     prepared_having.row_binding, row.values,
+                    api::EngineCanonicalExpressionConsumer::aggregate,
                     &predicate_truth, &predicate_detail)) {
               step.diagnostic.ok = false;
               step.diagnostic.diagnostic_code =
