@@ -42,6 +42,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_link_libraries(sb_qow_relational_dag_contract PUBLIC
     sb_engine_executor
   )
+  # QOW-CMAKE-OPT-004-V1
+  add_executable(qow_opt_004_test_v1
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/optimizer/qow_opt_004.cpp
+  )
+  target_compile_features(qow_opt_004_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_opt_004_test_v1 PRIVATE
+    sb_qow_relational_dag_contract
+  )
+  add_test(NAME qow_opt_004_v1 COMMAND qow_opt_004_test_v1)
+  set_tests_properties(qow_opt_004_v1 PROPERTIES
+    LABELS "qow_closure;QOW-306;QOW-LEAF-OPT-004;development_candidate"
+  )
   # QOW-CMAKE-QRY-008-DESC-V1
   # QOW-CMAKE-QRY-008-NULL-V1
   # QOW-CMAKE-QRY-008-COERCE-V1
