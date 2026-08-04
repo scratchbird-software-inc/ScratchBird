@@ -3338,6 +3338,9 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
     const auto& output = request.group_result_columns[index];
     if (output.descriptor_id == 0 ||
         aggregate_node->output_descriptor_ids[index] != output.descriptor_id ||
+        output.descriptor.descriptor_kind !=
+            aggregate.input_batch.columns[term.column]
+                .descriptor.descriptor_kind ||
         output.descriptor.canonical_type_name !=
             aggregate.input_batch.columns[term.column]
                 .descriptor.canonical_type_name) {
@@ -3376,12 +3379,17 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   }
   for (std::size_t index = 0; index < request.group_result_columns.size();
        ++index) {
-    const auto input_nullable = aggregate.input_batch.columns[
-        request.group_key_terms[index].column].nullable;
-    if ((input_nullable || key_can_be_omitted[index]) &&
-        !request.group_result_columns[index].nullable) {
+    const auto& input_column = aggregate.input_batch.columns[
+        request.group_key_terms[index].column];
+    const bool expected_output_nullable =
+        input_column.nullable || key_can_be_omitted[index];
+    const auto& output_column = request.group_result_columns[index];
+    if (output_column.nullable != expected_output_nullable ||
+        !CanonicalDerivedDescriptorTypeMatches(
+            input_column.descriptor, input_column.nullable,
+            output_column.descriptor, expected_output_nullable)) {
       return grouped_refusal(
-          "group result nullability does not cover data or grouping NULL");
+          "group result descriptor does not exactly preserve key type and required nullability");
     }
   }
 

@@ -24,14 +24,22 @@ namespace scratchbird::engine::sblr {
 
 // QOW-SOURCE-QRY-017-HAVING-ROW-BINDING-V1
 // A materialized row slot is an engine-owned execution binding. It names the
-// exact materialized function expression whose already-computed value occupies
-// one descriptor-exact physical row ordinal. It does not authorize evaluating
-// an identifier or a function that was not explicitly prepared by its
-// relational operator as an aggregate-result slot.
+// exact grouping-key identifier or materialized function expression whose
+// already-computed value occupies one descriptor-exact physical row ordinal.
+// The explicit kind prevents an identifier from being admitted as an
+// aggregate-result slot (or vice versa); no unprepared expression gains row
+// authority merely because its descriptor happens to match.
+enum class CanonicalRelationalExpressionRowSlotKind : std::uint8_t {
+  materialized_function = 0,
+  grouping_key = 1,
+};
+
 struct CanonicalRelationalExpressionRowSlotBinding {
   std::uint32_t expression_id{0};
   std::uint32_t descriptor_id{0};
   std::size_t row_ordinal{0};
+  CanonicalRelationalExpressionRowSlotKind slot_kind{
+      CanonicalRelationalExpressionRowSlotKind::materialized_function};
 };
 
 struct CanonicalRelationalExpressionRowBinding {
@@ -135,6 +143,7 @@ class CanonicalRelationalExpressionRuntime {
       std::uint32_t root_expression_id,
       const CanonicalRelationalExpressionRowBinding& row_binding,
       const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
       ActiveRowBinding* prepared,
       std::string* refusal_detail) const;
   bool InferTypeInternal(std::uint32_t expression_id,

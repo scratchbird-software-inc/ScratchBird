@@ -396,6 +396,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     const std::uint32_t root_expression_id,
     const CanonicalRelationalExpressionRowBinding& row_binding,
     const std::vector<api::EngineTypedValue>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
     ActiveRowBinding* prepared,
     std::string* refusal_detail) const {
   if (prepared == nullptr || refusal_detail == nullptr) return false;
@@ -491,10 +492,28 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         !bound_expression.literal_kind.has_value() &&
         !bound_expression.operator_name.has_value() &&
         !bound_expression.literal_or_parameter_ref.has_value();
-    if (!exact_materialized_function) {
+    const bool exact_grouping_key =
+        consumer == api::EngineCanonicalExpressionConsumer::aggregate &&
+        bound_expression.expression_kind ==
+            api::RelationalExpressionKind::kIdentifier &&
+        bound_expression.child_expression_ids.empty() &&
+        bound_expression.bound_name_uuid.has_value() &&
+        IsCanonicalUuid(*bound_expression.bound_name_uuid) &&
+        !bound_expression.function_uuid.has_value() &&
+        !bound_expression.literal_kind.has_value() &&
+        !bound_expression.operator_name.has_value() &&
+        !bound_expression.literal_or_parameter_ref.has_value();
+    const bool exact_slot_kind =
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::materialized_function &&
+         exact_materialized_function) ||
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::grouping_key &&
+         exact_grouping_key);
+    if (!exact_slot_kind) {
       prepared->values_by_expression.clear();
       *refusal_detail =
-          "materialized row slot target is not an exact materialized function";
+          "materialized row slot kind does not match its exact bound expression";
       return false;
     }
     prepared->values_by_expression.emplace(slot.expression_id,
@@ -1140,8 +1159,8 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
   }
   ActiveRowBinding prepared;
   refusal_detail->clear();
-  if (!PrepareRowBinding(expression_id, row_binding, row_values, &prepared,
-                         refusal_detail)) {
+  if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
+                         &prepared, refusal_detail)) {
     return false;
   }
   active_row_binding_ = &prepared;

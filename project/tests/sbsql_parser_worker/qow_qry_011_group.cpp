@@ -155,7 +155,7 @@ exec::CanonicalInt64SumGroupRequest Request() {
       "019f0000-0000-7300-8000-000000001404", "nullable");
   const auto key_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001405",
-      "019f0000-0000-7300-8000-000000001406", "nullable");
+      "019f0000-0000-7300-8000-000000001402", "nullable");
   const auto sum_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001407",
       "019f0000-0000-7300-8000-000000001408", "nullable");
@@ -232,10 +232,10 @@ exec::CanonicalGroupedAggregateRuntimeRequest GroupedRegistryRequest() {
       "019f0000-0000-7300-8000-000000001426", "nullable");
   const auto result_a = Descriptor(
       "019f0000-0000-7200-8000-000000001427",
-      "019f0000-0000-7300-8000-000000001428", "nullable");
+      "019f0000-0000-7300-8000-000000001422", "nullable");
   const auto result_b = Descriptor(
       "019f0000-0000-7200-8000-000000001429",
-      "019f0000-0000-7300-8000-000000001430", "nullable");
+      "019f0000-0000-7300-8000-000000001424", "nullable");
   const auto average = Descriptor(
       "019f0000-0000-7200-8000-000000001431",
       "019f0000-0000-7300-8000-000000001432", "nullable", "real64");
@@ -502,6 +502,71 @@ bool ValidateGroupedRegistryState() {
   return passed;
 }
 
+// RCP-026-TEST-ORDINARY-GROUP-BY-IDENTITY-V1
+bool ValidateOrdinaryGroupByIdentity() {
+  bool passed = true;
+  auto request = GroupedRegistryRequest();
+  request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
+  const auto rows = request.aggregate_request.input_batch.rows;
+  auto null_peer = rows[4];
+  null_peer.values[2] = Value(
+      request.aggregate_request.input_batch.columns[2].descriptor, "4");
+  request.aggregate_request.input_batch.rows = {
+      rows[0], rows[2], rows[4], std::move(null_peer)};
+
+  auto result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(
+      result.diagnostic.ok && result.grouping_set_count == 1 &&
+          result.grouping_set_transition_count == 4 &&
+          result.groups.size() == 2 && result.output_batch.rows.size() == 2 &&
+          result.groups[0].source_row_count == 2 &&
+          result.output_batch.rows[0].values[0].encoded_value == "1" &&
+          result.output_batch.rows[0].values[1].encoded_value == "10" &&
+          result.output_batch.rows[0].values[2].encoded_value == "4" &&
+          result.groups[1].source_row_count == 2 &&
+          result.output_batch.rows[1].values[0].state ==
+              api::EngineValueState::sql_null &&
+          result.output_batch.rows[1].values[1].encoded_value == "30" &&
+          result.output_batch.rows[1].values[2].encoded_value == "6",
+      "ordinary composite GROUP BY did not use decoded or SQL NULL equality");
+
+  request = GroupedRegistryRequest();
+  request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
+  request.aggregate_request.input_batch.rows.clear();
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "empty ordinary GROUP BY invented a group");
+
+  request = GroupedRegistryRequest();
+  request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
+  request.group_result_columns[0].descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001499;nullability=nullable";
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "group output type UUID drift was accepted");
+
+  request = GroupedRegistryRequest();
+  request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
+  request.group_result_columns[0].nullable = false;
+  request.group_result_columns[0].descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001422;nullability=non_null";
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "nullable group key was published as non-nullable");
+
+  request = GroupedRegistryRequest();
+  request.grouping_sets = {{.key_term_ordinals = {0, 1}}};
+  request.group_result_columns[0].descriptor.descriptor_kind = "tuple";
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "group output descriptor-kind drift was accepted");
+  return passed;
+}
+
 bool ValidateGroupedAggregateSetState() {
   bool passed = true;
   auto request = GroupedAggregateSetRequest();
@@ -611,6 +676,26 @@ bool ValidateTypedGroupingState() {
                     "empty ordinary GROUP BY invented a group");
 
   request = Request();
+  request.grouping_set_rule = exec::CanonicalInt64GroupingSetRule::key_only;
+  request.input_batch.columns[0].nullable = false;
+  request.input_batch.columns[0].descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001402;nullability=non_null";
+  request.input_batch.rows.erase(request.input_batch.rows.begin() + 3);
+  for (auto& row : request.input_batch.rows) {
+    row.values[0].descriptor = request.input_batch.columns[0].descriptor;
+  }
+  request.key_result_column.nullable = false;
+  request.key_result_column.descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001402;nullability=non_null";
+  result = exec::ExecuteCanonicalInt64SumGroups(request);
+  passed &= Require(result.diagnostic.ok && result.groups.size() == 2,
+                    "non-null ordinary GROUP BY did not derive a non-null key output" +
+                        (result.diagnostic.ok
+                             ? std::string{}
+                             : ": " + result.diagnostic.diagnostic_code +
+                                   ": " + result.diagnostic.detail));
+
+  request = Request();
   request.maximum_group_count = 3;
   result = exec::ExecuteCanonicalInt64SumGroups(request);
   passed &= Require(!result.diagnostic.ok && result.groups.empty(),
@@ -654,6 +739,27 @@ bool ValidateTypedGroupingState() {
                     "mismatched grouped output handle was accepted");
 
   request = Request();
+  request.key_result_column.descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001499;nullability=nullable";
+  result = exec::ExecuteCanonicalInt64SumGroups(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "specialized group output type UUID drift was accepted");
+
+  request = Request();
+  request.key_result_column.nullable = false;
+  request.key_result_column.descriptor.encoded_descriptor =
+      "type_uuid=019f0000-0000-7300-8000-000000001402;nullability=non_null";
+  result = exec::ExecuteCanonicalInt64SumGroups(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "specialized group output nullability drift was accepted");
+
+  request = Request();
+  request.key_result_column.descriptor.descriptor_kind = "tuple";
+  result = exec::ExecuteCanonicalInt64SumGroups(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty(),
+                    "specialized group output descriptor kind drift was accepted");
+
+  request = Request();
   request.mga_authority.origin = exec::CanonicalMgaAuthorityOrigin::kMissing;
   result = exec::ExecuteCanonicalInt64SumGroups(request);
   passed &= Require(!result.diagnostic.ok && result.groups.empty(),
@@ -666,7 +772,8 @@ bool ValidateTypedGroupingState() {
 #ifndef QOW_QRY_011_GROUP_FIXTURE_ONLY
 int main() {
   return ValidateTypedGroupingState() && ValidateGroupedRegistryState() &&
-                 ValidateGroupedAggregateSetState()
+                 ValidateGroupedAggregateSetState() &&
+                 ValidateOrdinaryGroupByIdentity()
              ? EXIT_SUCCESS
              : EXIT_FAILURE;
 }

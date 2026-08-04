@@ -2131,6 +2131,15 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
 std::string DescriptorFingerprint(const std::vector<ExecutorColumnDescriptor>& columns);
 bool DescriptorMatches(const scratchbird::engine::internal_api::EngineDescriptor& expected,
                        const scratchbird::engine::internal_api::EngineDescriptor& actual);
+// RCP-026-SOURCE-GROUP-DERIVED-DESCRIPTOR-IDENTITY-V1
+// A derived relational field owns a distinct descriptor UUID, but its type
+// shape must preserve every canonical encoded field except the nullability
+// value that the operator is explicitly required to derive.
+bool CanonicalDerivedDescriptorTypeMatches(
+    const scratchbird::engine::internal_api::EngineDescriptor& input,
+    bool input_nullable,
+    const scratchbird::engine::internal_api::EngineDescriptor& output,
+    bool expected_output_nullable);
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch);
 DescriptorRuntimeDiagnostic ValidateCanonicalDescriptorBatch(
     const DescriptorBatch& batch,

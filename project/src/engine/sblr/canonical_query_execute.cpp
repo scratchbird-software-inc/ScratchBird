@@ -3058,12 +3058,14 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
   if (having_sum != nullptr) {
     result.row_binding.slots.push_back(
         {having_sum->expression_id, having_sum->result_descriptor_id,
-         key_count + 1});
+         key_count + 1,
+         CanonicalRelationalExpressionRowSlotKind::materialized_function});
   }
   if (having_count != nullptr) {
     result.row_binding.slots.push_back(
         {having_count->expression_id, having_count->result_descriptor_id,
-         key_count});
+         key_count,
+         CanonicalRelationalExpressionRowSlotKind::materialized_function});
   }
   result.output_column_count = expected_output_count;
   result.ok = true;

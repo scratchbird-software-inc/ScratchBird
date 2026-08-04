@@ -444,6 +444,46 @@ bool DescriptorValueGreaterThan(const EngineTypedValue& value,
   return false;
 }
 
+struct CanonicalDerivedDescriptorIdentity {
+  std::string shape_without_nullability;
+  bool nullable = false;
+};
+
+std::optional<CanonicalDerivedDescriptorIdentity>
+ParseCanonicalDerivedDescriptorIdentity(const std::string_view encoded) {
+  CanonicalDerivedDescriptorIdentity identity;
+  bool found_nullability = false;
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const auto end = encoded.find(';', start);
+    auto field = encoded.substr(
+        start, end == std::string_view::npos ? std::string_view::npos
+                                             : end - start);
+    if (field.empty()) return std::nullopt;
+    if (field.starts_with("nullability=")) {
+      if (found_nullability) return std::nullopt;
+      found_nullability = true;
+      const auto value = field.substr(std::string_view("nullability=").size());
+      if (value == "nullable") {
+        identity.nullable = true;
+      } else if (value == "non_null") {
+        identity.nullable = false;
+      } else {
+        return std::nullopt;
+      }
+      field = "nullability=*";
+    }
+    if (!identity.shape_without_nullability.empty()) {
+      identity.shape_without_nullability.push_back(';');
+    }
+    identity.shape_without_nullability.append(field);
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  if (!found_nullability) return std::nullopt;
+  return identity;
+}
+
 }  // namespace
 
 EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name, std::string encoded_descriptor) {
@@ -495,6 +535,22 @@ bool DescriptorMatches(const EngineDescriptor& expected, const EngineDescriptor&
     return expected.encoded_descriptor == actual.encoded_descriptor;
   }
   return LowerAscii(expected.canonical_type_name) == LowerAscii(actual.canonical_type_name);
+}
+
+bool CanonicalDerivedDescriptorTypeMatches(
+    const EngineDescriptor& input, const bool input_nullable,
+    const EngineDescriptor& output, const bool expected_output_nullable) {
+  const auto input_identity = ParseCanonicalDerivedDescriptorIdentity(
+      input.encoded_descriptor);
+  const auto output_identity = ParseCanonicalDerivedDescriptorIdentity(
+      output.encoded_descriptor);
+  return input_identity.has_value() && output_identity.has_value() &&
+         input.descriptor_kind == output.descriptor_kind &&
+         input.canonical_type_name == output.canonical_type_name &&
+         input_identity->shape_without_nullability ==
+             output_identity->shape_without_nullability &&
+         input_nullable == input_identity->nullable &&
+         expected_output_nullable == output_identity->nullable;
 }
 
 DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch) {

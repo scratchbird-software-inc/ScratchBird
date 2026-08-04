@@ -113,9 +113,12 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
                  api::RelationalNullability::kNullable),
       Descriptor(5, "019f3300-0000-7100-8000-000000000105",
                  "019f3300-0000-7200-8000-000000000203",
-                 api::RelationalNullability::kNonNull),
+                 api::RelationalNullability::kNullable),
+      Descriptor(6, "019f3300-0000-7100-8000-000000000106",
+                 "019f3300-0000-7200-8000-000000000201",
+                 api::RelationalNullability::kNullable),
   };
-  auto& decorated = dag.descriptors.back();
+  auto& decorated = dag.descriptors[4];
   decorated.collation_uuid = "019f3300-0000-7300-8000-000000000301";
   decorated.timezone_profile_id = "tz-profile-qow-017";
   decorated.width = 64;
@@ -125,7 +128,7 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
   api::RelationalExpressionRecord identifier;
   identifier.expression_id = 11;
   identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
-  identifier.result_descriptor_id = 1;
+  identifier.result_descriptor_id = 6;
   identifier.bound_name_uuid =
       "019f3300-0000-7400-8000-000000000401";
 
@@ -143,6 +146,9 @@ api::TypedRelationalDag Dag(const std::string& count_threshold = "1",
       std::move(identifier),
       Function(12, 1, "019f3300-0000-7500-8000-000000000501"),
       Function(13, 5, "019f3300-0000-7500-8000-000000000502"),
+      Binary(16, 4, ">", 11, 18),
+      Binary(17, 4, "AND", 16, 6),
+      Literal(18, 6, "1"),
   };
   api::RelationalExpressionRecord sum_argument;
   sum_argument.expression_id = 14;
@@ -229,7 +235,8 @@ std::vector<api::EngineTypedValue> Row(const api::TypedRelationalDag& dag,
                                        const std::string& sum) {
   return {Value(dag, 1, "int64", std::to_string(count)),
           Value(dag, 2, "int64", sum),
-          Value(dag, 5, "int64", "99")};
+          Value(dag, 5, "int64", "99"),
+          Value(dag, 6, "int64", "99")};
 }
 
 std::vector<api::EngineTypedValue> NullSumRow(
@@ -241,12 +248,35 @@ std::vector<api::EngineTypedValue> NullSumRow(
   return row;
 }
 
+std::vector<api::EngineTypedValue> NullGroupKeyRow(
+    const api::TypedRelationalDag& dag, const std::int64_t count,
+    const std::string& sum) {
+  auto row = Row(dag, count, sum);
+  row[3].encoded_value.clear();
+  row[3].binary_value.clear();
+  row[3].setState(api::EngineValueState::sql_null);
+  return row;
+}
+
 sblr::CanonicalRelationalExpressionRowBinding BooleanBinding() {
-  return {{1, 2, 5}, {{1, 1, 0}, {2, 2, 1}}};
+  return {{1, 2, 5, 6}, {{1, 1, 0}, {2, 2, 1}}};
 }
 
 sblr::CanonicalRelationalExpressionRowBinding SumBinding() {
-  return {{1, 2, 5}, {{2, 2, 1}}};
+  return {{1, 2, 5, 6}, {{2, 2, 1}}};
+}
+
+sblr::CanonicalRelationalExpressionRowBinding GroupingKeyBinding() {
+  return {{1, 2, 5, 6},
+          {{11, 6, 3,
+            sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
+}
+
+sblr::CanonicalRelationalExpressionRowBinding GroupedHavingBinding() {
+  return {{1, 2, 5, 6},
+          {{2, 2, 1},
+           {11, 6, 3,
+            sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
 }
 
 bool Evaluate(const api::TypedRelationalDag& dag, const std::uint32_t root,
@@ -256,10 +286,12 @@ bool Evaluate(const api::TypedRelationalDag& dag, const std::uint32_t root,
   sblr::CanonicalRelationalExpressionRuntime runtime(dag);
   api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unspecified;
   std::string refusal;
-  return Require(runtime.EvaluatePredicate(root, binding, row, &truth,
-                                           &refusal) &&
-                     truth == expected && refusal.empty(),
-                 "materialized HAVING predicate truth drifted");
+  const bool evaluated =
+      runtime.EvaluatePredicate(root, binding, row, &truth, &refusal);
+  return Require(evaluated && truth == expected && refusal.empty(),
+                 "materialized HAVING predicate truth drifted" +
+                     (refusal.empty() ? std::string{}
+                                      : ": " + refusal));
 }
 
 bool Refuses(const api::TypedRelationalDag& dag, const std::uint32_t root,
@@ -315,6 +347,20 @@ bool ValidateFiveProfilesAndThreeValuedLogic() {
                      Truth::true_value);
   passed &= Evaluate(shifted, 10, BooleanBinding(), Row(shifted, 1, "5"),
                      Truth::false_value);
+
+  // RCP-026-TEST-GROUPING-KEY-HAVING-ROW-BINDING-V1
+  passed &= Evaluate(dag, 16, GroupingKeyBinding(), Row(dag, 2, "7"),
+                     Truth::true_value);
+  auto false_key = Row(dag, 2, "7");
+  false_key[3].encoded_value = "0";
+  passed &= Evaluate(dag, 16, GroupingKeyBinding(), false_key,
+                     Truth::false_value);
+  passed &= Evaluate(dag, 16, GroupingKeyBinding(),
+                     NullGroupKeyRow(dag, 2, "7"), Truth::unknown);
+  passed &= Evaluate(dag, 17, GroupedHavingBinding(), Row(dag, 2, "7"),
+                     Truth::true_value);
+  passed &= Evaluate(dag, 17, GroupedHavingBinding(),
+                     NullGroupKeyRow(dag, 2, "7"), Truth::unknown);
   return passed;
 }
 
@@ -374,7 +420,7 @@ bool ValidateBindingRefusals() {
   binding.slots.push_back({13, 5, 2});
   passed &= Refuses(dag, 6, binding, row, "unreachable extra slot was admitted");
 
-  binding = {{1, 2, 5}, {}};
+  binding = {{1, 2, 5, 6}, {}};
   passed &= Refuses(dag, 11, binding, row,
                     "unbound reachable identifier was admitted");
   passed &= Refuses(dag, 12, binding, row,
@@ -384,6 +430,33 @@ bool ValidateBindingRefusals() {
   binding.slots.push_back({11, 1, 0});
   passed &= Refuses(dag, 11, binding, row,
                     "identifier was admitted as a materialized function slot");
+  binding = {{1, 2, 5, 6},
+             {{1, 1, 0,
+               sblr::CanonicalRelationalExpressionRowSlotKind::grouping_key}}};
+  passed &= Refuses(dag, 1, binding, row,
+                    "aggregate function was admitted as a grouping-key slot");
+  binding = GroupingKeyBinding();
+  binding.slots[0].descriptor_id = 1;
+  passed &= Refuses(dag, 16, binding, row,
+                    "grouping-key slot descriptor drift was admitted");
+  binding = GroupingKeyBinding();
+  binding.slots[0].slot_kind =
+      static_cast<sblr::CanonicalRelationalExpressionRowSlotKind>(255);
+  passed &= Refuses(dag, 16, binding, row,
+                    "unknown materialized row slot kind was admitted");
+  binding = GroupingKeyBinding();
+  {
+    sblr::CanonicalRelationalExpressionRuntime runtime(dag);
+    api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unspecified;
+    std::string refusal;
+    passed &= Require(
+        !runtime.EvaluatePredicateForConsumer(
+            16, binding, row,
+            api::EngineCanonicalExpressionConsumer::filter, &truth,
+            &refusal) &&
+            !refusal.empty(),
+        "grouping-key row slot escaped the aggregate/HAVING consumer");
+  }
 
   binding = BooleanBinding();
   binding.row_descriptor_ids[2] = 2;
@@ -437,7 +510,7 @@ bool ValidateFullDescriptorIdentity() {
   passed &= mutate("type_uuid=019f3300-0000-7200-8000-000000000203",
                    "type_uuid=019f3300-0000-7200-8000-000000000999",
                    "encoded type UUID drift was admitted");
-  passed &= mutate("nullability=non_null", "nullability=nullable",
+  passed &= mutate("nullability=nullable", "nullability=non_null",
                    "encoded nullability drift was admitted");
   passed &= mutate("collation_uuid=019f3300-0000-7300-8000-000000000301",
                    "collation_uuid=019f3300-0000-7300-8000-000000000399",

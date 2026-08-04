@@ -519,6 +519,7 @@ CanonicalInt64SumFinalizeResult ExecuteCanonicalInt64SumFinalize(
 }
 
 // QOW-SOURCE-QRY-011-GROUP-V1
+// RCP-026-SOURCE-SPECIALIZED-GROUP-DERIVED-DESCRIPTOR-IDENTITY-V1
 // Construct deterministic typed SUM states for one int64 grouping key.  The
 // admitted grouping-set rule is either (key) or the exact {(key), ()} set;
 // an actual SQL NULL key remains distinct from the synthetic grand total.
@@ -589,15 +590,29 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
       value_column.descriptor.canonical_type_name != "int64") {
     return refuse("group key or SUM value expression is not bound int64");
   }
+  const bool valid_grouping_set_rule =
+      request.grouping_set_rule == CanonicalInt64GroupingSetRule::key_only ||
+      request.grouping_set_rule ==
+          CanonicalInt64GroupingSetRule::key_and_grand_total;
+  if (!valid_grouping_set_rule) {
+    return refuse("grouping-set or aggregate resource contract is invalid");
+  }
+  const bool expected_key_nullable =
+      key_column.nullable ||
+      request.grouping_set_rule ==
+          CanonicalInt64GroupingSetRule::key_and_grand_total;
   if (request.key_result_column.descriptor_id !=
           selected_node->output_descriptor_ids[0] ||
       request.sum_result_column.descriptor_id !=
           selected_node->output_descriptor_ids[1] ||
-      !request.key_result_column.nullable ||
+      request.key_result_column.nullable != expected_key_nullable ||
       !request.sum_result_column.nullable ||
-      request.key_result_column.descriptor.canonical_type_name != "int64" ||
+      !CanonicalDerivedDescriptorTypeMatches(
+          key_column.descriptor, key_column.nullable,
+          request.key_result_column.descriptor, expected_key_nullable) ||
       request.sum_result_column.descriptor.canonical_type_name != "int64") {
-    return refuse("grouped SUM result descriptors are not bound nullable int64");
+    return refuse(
+        "grouped SUM result descriptors do not preserve exact key type and required nullability");
   }
   DescriptorBatch result_schema;
   result_schema.columns = {request.key_result_column,
@@ -608,11 +623,7 @@ CanonicalInt64SumGroupResult ExecuteCanonicalInt64SumGroups(
     return refuse(schema_validation.diagnostic_code + ":" +
                   schema_validation.detail);
   }
-  if ((request.grouping_set_rule !=
-           CanonicalInt64GroupingSetRule::key_only &&
-       request.grouping_set_rule !=
-           CanonicalInt64GroupingSetRule::key_and_grand_total) ||
-      request.maximum_group_count == 0 ||
+  if (request.maximum_group_count == 0 ||
       request.maximum_transition_count == 0) {
     return refuse("grouping-set or aggregate resource contract is invalid");
   }

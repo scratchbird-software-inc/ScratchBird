@@ -118,7 +118,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   )
   add_test(NAME qow_qry_005_v1 COMMAND qow_qry_005_test_v1)
   set_tests_properties(qow_qry_005_v1 PROPERTIES
-    LABELS "qow_closure;QOW-101;QOW-102;QOW-104;QOW-LEAF-QRY-001-AST;QOW-LEAF-QRY-001-BINDING;QOW-LEAF-QRY-005;development_candidate"
+    LABELS "qow_closure;QOW-101;QOW-102;QOW-104;QOW-LEAF-QRY-001-AST;QOW-LEAF-QRY-001-BINDING;QOW-LEAF-QRY-005;RCP-026-GROUP-BY-HAVING;development_candidate"
   )
 
   # QOW-ROUTE-STAGE-QRY-006-V1
@@ -157,7 +157,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_test(NAME qow_live_values_spine_v1
     COMMAND qow_live_values_spine_test_v1)
   set_tests_properties(qow_live_values_spine_v1 PROPERTIES
-    LABELS "qow_closure;QOW-201;QOW-202;QOW-204;QOW-205;QOW-206;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;RCP-022-GENERAL-SELECT-BOUNDARY;development_candidate"
+    LABELS "qow_closure;QOW-201;QOW-202;QOW-204;QOW-205;QOW-206;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;RCP-022-GENERAL-SELECT-BOUNDARY;RCP-026-GROUP-BY-HAVING;development_candidate"
   )
 
   # QOW-CMAKE-QRY-007-AGGREGATE-V1
@@ -402,7 +402,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_qry_011_group_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_qry_011_group_v1 COMMAND qow_qry_011_group_test_v1)
   set_tests_properties(qow_qry_011_group_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-GROUP;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-GROUP;RCP-026-GROUP-BY-HAVING;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-FILTER-V1
@@ -744,7 +744,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_test(NAME qow_qry_017_having_row_binding_v1
     COMMAND qow_qry_017_having_row_binding_test_v1)
   set_tests_properties(qow_qry_017_having_row_binding_v1 PROPERTIES
-    LABELS "qow_closure;QOW-202;QOW-LEAF-QRY-017;development_candidate"
+    LABELS "qow_closure;QOW-202;QOW-205;QOW-LEAF-QRY-011-GROUP;QOW-LEAF-QRY-017;RCP-026-GROUP-BY-HAVING;development_candidate"
   )
 
   # QOW-CMAKE-IAS-014-V1

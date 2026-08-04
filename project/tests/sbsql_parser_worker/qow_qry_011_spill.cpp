@@ -167,10 +167,10 @@ exec::CanonicalInt64SumSpillRequest Request(
       "019f0000-0000-7300-8000-000000001805");
   const auto key_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001806",
-      "019f0000-0000-7300-8000-000000001807");
+      "019f0000-0000-7300-8000-000000001803");
   const auto sum_result_descriptor = Descriptor(
       "019f0000-0000-7200-8000-000000001808",
-      "019f0000-0000-7300-8000-000000001809");
+      "019f0000-0000-7300-8000-000000001805");
 
   exec::CanonicalInt64SumSpillRequest request;
   auto& aggregate = request.aggregate_request;
