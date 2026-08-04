@@ -13,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace exec = scratchbird::engine::executor;
 namespace api = scratchbird::engine::internal_api;
@@ -212,6 +213,11 @@ struct CurrentAuthorityState {
   exec::PhysicalMgaStatementContext statement_context;
 };
 
+struct CursorLifecycleState {
+  bool cancelled = false;
+  std::vector<exec::CanonicalResultCursorReleaseReason> release_reasons;
+};
+
 exec::CanonicalResultPublicationRequest RowsRequest(
     std::shared_ptr<CurrentAuthorityState> state = {},
     const bool zero_high_water = false,
@@ -249,6 +255,7 @@ exec::CanonicalResultPublicationRequest RowsRequest(
       "019f0000-0000-7110-8000-000000002101";
   request.transaction_effect_evidence_uuid =
       "019f0000-0000-7120-8000-000000002101";
+  request.maximum_rows_per_batch = 1;
   request.result_kind = exec::CanonicalResultKind::kRows;
   request.physical_output_batch = exec::MakeDescriptorBatch(
       {{"dup", id, false, 2101},
@@ -273,6 +280,57 @@ exec::CanonicalResultPublicationRequest RowsRequest(
            exec::CanonicalResultNullability::kNullable,
            "019f0000-0000-7400-8000-000000002103", std::nullopt}},
   };
+  return request;
+}
+
+exec::CanonicalResultDiagnosticRecord CursorCancellationDiagnostic() {
+  return {
+      "QOW-DIAGNOSTIC-INSTANCE-21C1",
+      "SB_EXECUTION_CANCELLED",
+      exec::CanonicalResultDiagnosticSeverity::kError,
+      "57014",
+      "query.cursor.delivery.cancelled",
+      {},
+      exec::CanonicalResultDiagnosticPhase::kFinalize,
+      "result.cursor",
+      "cancellation_probe",
+      1,
+      exec::CanonicalResultTransactionEffect::
+          kStatementFailedTransactionUsable,
+      exec::CanonicalResultRetryability::kNotRetryable,
+  };
+}
+
+void ConfigureInitialCursor(
+    exec::CanonicalResultPublicationRequest* request,
+    const std::shared_ptr<CursorLifecycleState>& lifecycle,
+    const exec::CanonicalResultCursorState state =
+        exec::CanonicalResultCursorState::kOpen) {
+  request->result_kind = exec::CanonicalResultKind::kCursor;
+  request->cursor_state = state;
+  request->cursor_uuid = "019f0000-0000-7140-8000-000000002101";
+  request->cursor_cancellation_requested = [lifecycle] {
+    return lifecycle->cancelled;
+  };
+  request->cursor_cancellation_diagnostic = CursorCancellationDiagnostic();
+  request->cursor_release = [lifecycle](const auto reason) {
+    lifecycle->release_reasons.push_back(reason);
+  };
+}
+
+exec::CanonicalResultPublicationRequest CursorContinuation(
+    const exec::CanonicalResultPublicationResult& previous,
+    const exec::CanonicalResultCursorState state,
+    const std::size_t source_row) {
+  auto request = RowsRequest();
+  request.result_kind = exec::CanonicalResultKind::kCursor;
+  request.cursor_state = state;
+  request.cursor_uuid = previous.cursor_uuid;
+  request.cursor_session = previous.cursor_session;
+  request.cursor_batch_ordinal = previous.cursor_next_batch_ordinal;
+  request.cursor_first_row_ordinal = previous.cursor_next_row_ordinal;
+  const auto row = request.physical_output_batch.rows.at(source_row);
+  request.physical_output_batch.rows = {row};
   return request;
 }
 
@@ -324,7 +382,16 @@ bool ValidateRowsEmptyCursorAndParity() {
           direct.delivery_records.front().kind ==
               exec::CanonicalResultDeliveryKind::kMetadata &&
           direct.delivery_records[1].kind ==
-              exec::CanonicalResultDeliveryKind::kRow,
+              exec::CanonicalResultDeliveryKind::kRow &&
+          direct.delivery_records[2].kind ==
+              exec::CanonicalResultDeliveryKind::kRow &&
+          direct.delivery_batches.size() == 2 &&
+          direct.delivery_batches[0].batch_ordinal == 0 &&
+          direct.delivery_batches[0].first_row_ordinal == 0 &&
+          direct.delivery_batches[0].row_count == 1 &&
+          direct.delivery_batches[1].batch_ordinal == 1 &&
+          direct.delivery_batches[1].first_row_ordinal == 1 &&
+          direct.delivery_batches[1].row_count == 1,
       "hidden projection, typed NULL, or metadata-before-row delivery differs");
   passed &= Require(
       direct.canonical_envelope_bytes.find("internal_sort_key") ==
@@ -360,17 +427,58 @@ bool ValidateRowsEmptyCursorAndParity() {
               exec::CanonicalResultDeliveryKind::kMetadata,
       "empty result lost metadata or published a row");
 
+  auto lifecycle = std::make_shared<CursorLifecycleState>();
   auto cursor_request = RowsRequest();
-  cursor_request.result_kind = exec::CanonicalResultKind::kCursor;
-  cursor_request.cursor_state = exec::CanonicalResultCursorState::kOpen;
+  cursor_request.physical_output_batch.rows.resize(1);
+  ConfigureInitialCursor(&cursor_request, lifecycle);
   const auto cursor = exec::PublishCanonicalResultEnvelope(cursor_request);
   passed &= Require(
       cursor.diagnostic.ok && cursor.published &&
           !cursor.envelope.row_count.has_value() &&
           cursor.envelope.cursor_state ==
               exec::CanonicalResultCursorState::kOpen &&
-          cursor.row_stream.rows.size() == 2,
-      "cursor result lost state, metadata, or its typed row chunk");
+          cursor.row_stream.rows.size() == 1 && cursor.cursor_session &&
+          cursor.cursor_metadata_delivered &&
+          cursor.cursor_batch_ordinal == 0 &&
+          cursor.cursor_first_row_ordinal == 0 &&
+          cursor.cursor_next_batch_ordinal == 1 &&
+          cursor.cursor_next_row_ordinal == 1 &&
+          !cursor.cursor_end_of_stream &&
+          lifecycle->release_reasons.empty(),
+      "first cursor page lost state, metadata, sequence, or its typed row");
+
+  auto final_cursor_request = CursorContinuation(
+      cursor, exec::CanonicalResultCursorState::kClosed, 1);
+  const auto final_cursor =
+      exec::PublishCanonicalResultEnvelope(final_cursor_request);
+  passed &= Require(
+      final_cursor.diagnostic.ok && final_cursor.published &&
+          final_cursor.envelope.column_descriptors.size() == 2 &&
+          final_cursor.envelope.column_descriptors[0].descriptor_uuid ==
+              cursor.envelope.column_descriptors[0].descriptor_uuid &&
+          final_cursor.envelope.column_descriptors[1].descriptor_uuid ==
+              cursor.envelope.column_descriptors[1].descriptor_uuid &&
+          !final_cursor.cursor_metadata_delivered &&
+          final_cursor.cursor_batch_ordinal == 1 &&
+          final_cursor.cursor_first_row_ordinal == 1 &&
+          final_cursor.cursor_next_batch_ordinal == 2 &&
+          final_cursor.cursor_next_row_ordinal == 2 &&
+          final_cursor.cursor_end_of_stream &&
+          final_cursor.cursor_resource_released &&
+          final_cursor.cursor_release_reason ==
+              exec::CanonicalResultCursorReleaseReason::kCompleted &&
+          final_cursor.delivery_records.front().kind ==
+              exec::CanonicalResultDeliveryKind::kRow &&
+          final_cursor.delivery_records.back().kind ==
+              exec::CanonicalResultDeliveryKind::kResourceRelease &&
+          final_cursor.delivery_batches.size() == 1 &&
+          final_cursor.delivery_batches.front().batch_ordinal == 1 &&
+          final_cursor.delivery_batches.front().first_row_ordinal == 1 &&
+          final_cursor.delivery_batches.front().row_count == 1 &&
+          lifecycle->release_reasons ==
+              std::vector<exec::CanonicalResultCursorReleaseReason>{
+                  exec::CanonicalResultCursorReleaseReason::kCompleted},
+      "cursor continuation repeated metadata, drifted sequence, or failed release");
 
   auto command_request = RowsRequest();
   command_request.result_kind = exec::CanonicalResultKind::kCommand;
@@ -448,7 +556,109 @@ bool RefusedAtomically(const exec::CanonicalResultPublicationRequest& request) {
          !result.envelope.cursor_state.has_value() &&
          result.envelope.diagnostics.empty() &&
          result.row_stream.columns.empty() && result.row_stream.rows.empty() &&
-         result.delivery_records.empty() && result.canonical_envelope_bytes.empty();
+         result.delivery_records.empty() && result.delivery_batches.empty() &&
+         result.canonical_envelope_bytes.empty() &&
+         !result.cursor_session && result.cursor_uuid.empty() &&
+         result.cursor_batch_ordinal == 0 &&
+         result.cursor_first_row_ordinal == 0 &&
+         result.cursor_next_batch_ordinal == 0 &&
+         result.cursor_next_row_ordinal == 0 &&
+         !result.cursor_metadata_delivered && !result.cursor_end_of_stream &&
+         !result.cursor_resource_released &&
+         !result.cursor_release_reason.has_value();
+}
+
+bool ValidateCursorCancellationAndCleanup() {
+  bool passed = true;
+
+  auto cancelled_lifecycle = std::make_shared<CursorLifecycleState>();
+  auto initial = RowsRequest();
+  initial.physical_output_batch.rows.resize(1);
+  ConfigureInitialCursor(&initial, cancelled_lifecycle);
+  const auto first = exec::PublishCanonicalResultEnvelope(initial);
+  passed &= Require(first.diagnostic.ok && first.published &&
+                        first.cursor_session &&
+                        cancelled_lifecycle->release_reasons.empty(),
+                    "cancellation proof could not open its cursor");
+
+  cancelled_lifecycle->cancelled = true;
+  auto cancelled_request = CursorContinuation(
+      first, exec::CanonicalResultCursorState::kOpen, 1);
+  const auto cancelled =
+      exec::PublishCanonicalResultEnvelope(cancelled_request);
+  passed &= Require(
+      cancelled.diagnostic.ok && cancelled.published &&
+          cancelled.row_stream.rows.empty() &&
+          !cancelled.cursor_metadata_delivered &&
+          cancelled.cursor_end_of_stream &&
+          cancelled.cursor_resource_released &&
+          cancelled.cursor_next_batch_ordinal == 1 &&
+          cancelled.cursor_next_row_ordinal == 1 &&
+          cancelled.envelope.cursor_state ==
+              exec::CanonicalResultCursorState::kClosed &&
+          cancelled.envelope.diagnostics.size() == 1 &&
+          cancelled.envelope.diagnostics.front().stable_code ==
+              "SB_EXECUTION_CANCELLED" &&
+          cancelled.delivery_records.size() == 2 &&
+          cancelled.delivery_records.front().kind ==
+              exec::CanonicalResultDeliveryKind::kDiagnostics &&
+          cancelled.delivery_records.back().kind ==
+              exec::CanonicalResultDeliveryKind::kResourceRelease &&
+          cancelled_lifecycle->release_reasons ==
+              std::vector<exec::CanonicalResultCursorReleaseReason>{
+                  exec::CanonicalResultCursorReleaseReason::kCancelled},
+      "cursor cancellation exposed rows, repeated metadata, or missed release");
+
+  auto drift_lifecycle = std::make_shared<CursorLifecycleState>();
+  initial = RowsRequest();
+  initial.physical_output_batch.rows.resize(1);
+  ConfigureInitialCursor(&initial, drift_lifecycle);
+  const auto stable = exec::PublishCanonicalResultEnvelope(initial);
+  auto drift = CursorContinuation(
+      stable, exec::CanonicalResultCursorState::kClosed, 1);
+  drift.physical_output_batch.columns[0].stable_name = "drifted";
+  drift.column_bindings[0].published_descriptor->name_utf8 = "drifted";
+  passed &= Require(
+      RefusedAtomically(drift) &&
+          drift_lifecycle->release_reasons ==
+              std::vector<exec::CanonicalResultCursorReleaseReason>{
+                  exec::CanonicalResultCursorReleaseReason::kError},
+      "cursor descriptor drift did not refuse atomically and release once");
+
+  auto plan_drift_lifecycle = std::make_shared<CursorLifecycleState>();
+  initial = RowsRequest();
+  initial.physical_output_batch.rows.resize(1);
+  ConfigureInitialCursor(&initial, plan_drift_lifecycle);
+  const auto plan_stable = exec::PublishCanonicalResultEnvelope(initial);
+  auto plan_drift = CursorContinuation(
+      plan_stable, exec::CanonicalResultCursorState::kClosed, 1);
+  plan_drift.selected_physical_dag.selected_plan_uuid =
+      "019f0000-0000-7100-8000-000000002199";
+  passed &= Require(
+      RefusedAtomically(plan_drift) &&
+          plan_drift_lifecycle->release_reasons ==
+              std::vector<exec::CanonicalResultCursorReleaseReason>{
+                  exec::CanonicalResultCursorReleaseReason::kError},
+      "cursor physical-plan drift did not refuse atomically and release once");
+
+  auto abandoned_lifecycle = std::make_shared<CursorLifecycleState>();
+  {
+    auto abandoned_request = RowsRequest();
+    abandoned_request.physical_output_batch.rows.resize(1);
+    ConfigureInitialCursor(&abandoned_request, abandoned_lifecycle);
+    const auto abandoned =
+        exec::PublishCanonicalResultEnvelope(abandoned_request);
+    passed &= Require(abandoned.diagnostic.ok && abandoned.published &&
+                          abandoned.cursor_session,
+                      "abandonment proof could not open its cursor");
+  }
+  passed &= Require(
+      abandoned_lifecycle->release_reasons ==
+          std::vector<exec::CanonicalResultCursorReleaseReason>{
+              exec::CanonicalResultCursorReleaseReason::kAbandoned},
+      "last cursor owner did not perform exactly-once abandonment cleanup");
+
+  return passed;
 }
 
 bool ValidateAtomicRefusals() {
@@ -698,6 +908,7 @@ int main() {
   bool passed = true;
   passed &= ValidateRowsEmptyCursorAndParity();
   passed &= ValidateDiagnosticAndCancellation();
+  passed &= ValidateCursorCancellationAndCleanup();
   passed &= ValidateAtomicRefusals();
   passed &= ValidateStatementAuthorityPublicationBoundary();
   passed &= ValidateCompileBoundedClosureAuthorityPublicationBoundary();

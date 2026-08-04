@@ -8,14 +8,65 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string_view>
 #include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::executor {
+
+struct CanonicalResultCursorSession::State {
+  std::mutex mutex;
+  std::string cursor_uuid;
+  std::string statement_uuid;
+  PhysicalMgaStatementContext mga_statement_context;
+  std::string catalog_epoch_uuid;
+  std::string execution_attempt_uuid;
+  TypedPhysicalNodeDag selected_physical_dag;
+  CanonicalResultInvocationMode invocation_mode =
+      CanonicalResultInvocationMode::kDirect;
+  std::string row_stream_format_id;
+  std::vector<CanonicalResultColumnDescriptor> column_descriptors;
+  std::vector<ExecutorColumnDescriptor> physical_columns;
+  std::size_t maximum_rows_per_batch = 0;
+  std::uint64_t next_batch_ordinal = 0;
+  std::uint64_t next_row_ordinal = 0;
+  bool metadata_delivered = false;
+  bool released = false;
+  CanonicalResultCursorCancellationProbe cancellation_requested;
+  CanonicalResultDiagnosticRecord cancellation_diagnostic;
+  CanonicalResultCursorReleaseCallback release;
+};
+
+CanonicalResultCursorSession::CanonicalResultCursorSession(
+    std::unique_ptr<State> state)
+    : state_(std::move(state)) {}
+
+CanonicalResultCursorSession::~CanonicalResultCursorSession() {
+  Release(CanonicalResultCursorReleaseReason::kAbandoned);
+}
+
+bool CanonicalResultCursorSession::Release(
+    const CanonicalResultCursorReleaseReason reason) noexcept {
+  CanonicalResultCursorReleaseCallback release;
+  {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    if (state_->released) return true;
+    state_->released = true;
+    release = state_->release;
+  }
+  try {
+    release(reason);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 namespace {
 
 using scratchbird::engine::internal_api::EngineTypedValue;
@@ -125,6 +176,130 @@ bool IsValidRetryability(const CanonicalResultRetryability retryability) {
     case CanonicalResultRetryability::kRetryNewSnapshot: return true;
   }
   return false;
+}
+
+bool ResultDescriptorEqual(const CanonicalResultColumnDescriptor& left,
+                           const CanonicalResultColumnDescriptor& right) {
+  return left.ordinal == right.ordinal &&
+         left.name_utf8 == right.name_utf8 &&
+         left.descriptor_uuid == right.descriptor_uuid &&
+         left.type_uuid == right.type_uuid &&
+         left.nullability == right.nullability &&
+         left.collation_uuid == right.collation_uuid &&
+         left.timezone_profile_id == right.timezone_profile_id;
+}
+
+bool ResultDescriptorVectorsEqual(
+    const std::vector<CanonicalResultColumnDescriptor>& left,
+    const std::vector<CanonicalResultColumnDescriptor>& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (!ResultDescriptorEqual(left[index], right[index])) return false;
+  }
+  return true;
+}
+
+bool ExecutorColumnDescriptorEqual(const ExecutorColumnDescriptor& left,
+                                   const ExecutorColumnDescriptor& right) {
+  return left.stable_name == right.stable_name &&
+         left.nullable == right.nullable &&
+         left.descriptor_id == right.descriptor_id &&
+         left.descriptor.descriptor_uuid.canonical ==
+             right.descriptor.descriptor_uuid.canonical &&
+         left.descriptor.descriptor_kind == right.descriptor.descriptor_kind &&
+         left.descriptor.canonical_type_name ==
+             right.descriptor.canonical_type_name &&
+         left.descriptor.encoded_descriptor ==
+             right.descriptor.encoded_descriptor;
+}
+
+bool ExecutorColumnDescriptorVectorsEqual(
+    const std::vector<ExecutorColumnDescriptor>& left,
+    const std::vector<ExecutorColumnDescriptor>& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (!ExecutorColumnDescriptorEqual(left[index], right[index])) return false;
+  }
+  return true;
+}
+
+bool PhysicalNodeRecordEqual(const PhysicalNodeRecord& left,
+                             const PhysicalNodeRecord& right) {
+  return left.physical_node_id == right.physical_node_id &&
+         left.relational_node_id == right.relational_node_id &&
+         left.node_kind == right.node_kind &&
+         left.implementation_id == right.implementation_id &&
+         left.input_physical_node_ids == right.input_physical_node_ids &&
+         left.output_descriptor_ids == right.output_descriptor_ids &&
+         left.shareable == right.shareable &&
+         left.causal_counter_id == right.causal_counter_id &&
+         left.selected_alternative_uuid == right.selected_alternative_uuid &&
+         left.executor_capability_uuid == right.executor_capability_uuid &&
+         left.executor_capability_abi_version ==
+             right.executor_capability_abi_version &&
+         left.cost_vector_uuid == right.cost_vector_uuid &&
+         left.required_property_uuids == right.required_property_uuids &&
+         left.delivered_property_uuids == right.delivered_property_uuids &&
+         left.memory_bytes_required == right.memory_bytes_required &&
+         left.spill_bytes_expected == right.spill_bytes_expected &&
+         left.engine_capability_validated == right.engine_capability_validated &&
+         PhysicalMgaStatementContextEqual(left.mga_statement_context,
+                                          right.mga_statement_context);
+}
+
+bool PhysicalDagIdentityEqual(const TypedPhysicalNodeDag& left,
+                              const TypedPhysicalNodeDag& right) {
+  if (left.abi_version != right.abi_version ||
+      left.selected_plan_uuid != right.selected_plan_uuid ||
+      left.root_physical_node_id != right.root_physical_node_id ||
+      left.local_transaction_id != right.local_transaction_id ||
+      left.statement_snapshot_id != right.statement_snapshot_id ||
+      !PhysicalMgaStatementContextEqual(left.mga_statement_context,
+                                        right.mga_statement_context) ||
+      left.bound_sblr_tree_uuid != right.bound_sblr_tree_uuid ||
+      left.catalog_epoch_uuid != right.catalog_epoch_uuid ||
+      left.security_context_uuid != right.security_context_uuid ||
+      left.capability_snapshot_uuid != right.capability_snapshot_uuid ||
+      left.resource_snapshot_uuid != right.resource_snapshot_uuid ||
+      left.statistics_snapshot_uuid != right.statistics_snapshot_uuid ||
+      left.route_snapshot_uuid != right.route_snapshot_uuid ||
+      left.catalog_generation != right.catalog_generation ||
+      left.security_epoch != right.security_epoch ||
+      left.policy_epoch != right.policy_epoch ||
+      left.resource_epoch != right.resource_epoch ||
+      left.statistics_generation != right.statistics_generation ||
+      left.route_epoch != right.route_epoch ||
+      left.route_generation != right.route_generation ||
+      left.memory_budget_bytes != right.memory_budget_bytes ||
+      left.spill_allowed != right.spill_allowed ||
+      left.optimizer_published != right.optimizer_published ||
+      left.immutable_node_identity_validated !=
+          right.immutable_node_identity_validated ||
+      left.capability_validated_before_access !=
+          right.capability_validated_before_access ||
+      left.data_access_observed != right.data_access_observed ||
+      left.parser_execution_authority_claimed !=
+          right.parser_execution_authority_claimed ||
+      left.transaction_finality_authority_claimed !=
+          right.transaction_finality_authority_claimed ||
+      left.admission_evidence.size() != right.admission_evidence.size() ||
+      left.nodes.size() != right.nodes.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.admission_evidence.size(); ++index) {
+    if (left.admission_evidence[index].stage !=
+            right.admission_evidence[index].stage ||
+        left.admission_evidence[index].evidence_uuid !=
+            right.admission_evidence[index].evidence_uuid) {
+      return false;
+    }
+  }
+  for (std::size_t index = 0; index < left.nodes.size(); ++index) {
+    if (!PhysicalNodeRecordEqual(left.nodes[index], right.nodes[index])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 std::string ResultKindName(const CanonicalResultKind kind) {
@@ -572,6 +747,10 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     const CanonicalResultPublicationRequest& request) {
   CanonicalResultPublicationResult result;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    if (request.cursor_session) {
+      request.cursor_session->Release(
+          CanonicalResultCursorReleaseReason::kError);
+    }
     result = {};
     result.diagnostic = std::move(diagnostic);
     return result;
@@ -600,7 +779,8 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
       !IsValidResultKind(request.result_kind) ||
       !IsValidInvocationMode(request.invocation_mode) ||
       request.row_stream_format_id.empty() ||
-      request.maximum_row_count == 0) {
+      request.maximum_row_count == 0 ||
+      request.maximum_rows_per_batch == 0) {
     return refuse(Refusal("result envelope identity or version is invalid"));
   }
   if (request.physical_output_batch.rows.size() > request.maximum_row_count) {
@@ -609,6 +789,11 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
 
   const auto diagnostics = ValidateDiagnostics(request.diagnostics);
   if (!diagnostics.ok) return refuse(diagnostics);
+  if (request.cursor_cancellation_diagnostic.has_value()) {
+    const auto cancellation_diagnostic = ValidateDiagnostics(
+        {*request.cursor_cancellation_diagnostic});
+    if (!cancellation_diagnostic.ok) return refuse(cancellation_diagnostic);
+  }
 
   const bool command = request.result_kind == CanonicalResultKind::kCommand;
   const bool cursor = request.result_kind == CanonicalResultKind::kCursor;
@@ -622,11 +807,61 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     }
   } else if (cursor) {
     if (request.command_tag.has_value() || !request.cursor_state.has_value() ||
-        !IsValidCursorState(*request.cursor_state)) {
+        !IsValidCursorState(*request.cursor_state) ||
+        !IsCanonicalUuid(request.cursor_uuid)) {
       return refuse(Refusal("cursor result requires one canonical cursor state"));
+    }
+    if (request.cursor_session) {
+      if (request.cursor_cancellation_requested ||
+          request.cursor_cancellation_diagnostic.has_value() ||
+          request.cursor_release) {
+        return refuse(Refusal(
+            "cursor continuation cannot replace its lifecycle controls"));
+      }
+    } else if (!request.cursor_cancellation_requested ||
+               !request.cursor_cancellation_diagnostic.has_value() ||
+               !request.cursor_release || request.cursor_batch_ordinal != 0 ||
+               request.cursor_first_row_ordinal != 0) {
+      return refuse(Refusal(
+          "initial cursor result lacks canonical lifecycle controls"));
+    }
+    if (*request.cursor_state == CanonicalResultCursorState::kOpen &&
+        request.physical_output_batch.rows.empty()) {
+      return refuse(Refusal("open cursor page cannot make zero-row progress"));
     }
   } else if (request.command_tag.has_value() || request.cursor_state.has_value()) {
     return refuse(Refusal("non-command/non-cursor result carries route fields"));
+  }
+  if (!cursor && (!request.cursor_uuid.empty() || request.cursor_session ||
+                  request.cursor_batch_ordinal != 0 ||
+                  request.cursor_first_row_ordinal != 0 ||
+                  request.cursor_cancellation_requested ||
+                  request.cursor_cancellation_diagnostic.has_value() ||
+                  request.cursor_release)) {
+    return refuse(Refusal("non-cursor result carries cursor lifecycle state"));
+  }
+  if (cursor && request.physical_output_batch.rows.size() >
+                    request.maximum_rows_per_batch) {
+    return refuse(Refusal("cursor page exceeds its fixed batch bound"));
+  }
+  const bool terminal_diagnostic = std::any_of(
+      request.diagnostics.begin(), request.diagnostics.end(),
+      [](const CanonicalResultDiagnosticRecord& diagnostic) {
+        return diagnostic.severity == CanonicalResultDiagnosticSeverity::kError ||
+               diagnostic.severity == CanonicalResultDiagnosticSeverity::kFatal;
+      });
+  if (terminal_diagnostic &&
+      (!request.physical_output_batch.rows.empty() ||
+       (cursor && *request.cursor_state != CanonicalResultCursorState::kClosed))) {
+    return refuse(Refusal(
+        "terminal result diagnostic must be row-free and close its cursor"));
+  }
+  if (request.cursor_cancellation_diagnostic.has_value() &&
+      request.cursor_cancellation_diagnostic->severity !=
+          CanonicalResultDiagnosticSeverity::kError &&
+      request.cursor_cancellation_diagnostic->severity !=
+          CanonicalResultDiagnosticSeverity::kFatal) {
+    return refuse(Refusal("cursor cancellation diagnostic is not terminal"));
   }
   if (empty && !request.physical_output_batch.rows.empty()) {
     return refuse(Refusal("empty result carries physical rows"));
@@ -708,13 +943,16 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
   }
 
   DescriptorBatch visible_batch;
+  std::vector<CanonicalResultColumnDescriptor> published_descriptors;
   visible_batch.columns.reserve(visible_ordinal);
+  published_descriptors.reserve(visible_ordinal);
   for (std::size_t index = 0; index < request.column_bindings.size(); ++index) {
     const auto& binding = request.column_bindings[index];
     if (!binding.visible) continue;
     visible_batch.columns.push_back(request.physical_output_batch.columns[index]);
     visible_batch.columns.back().stable_name =
         binding.published_descriptor->name_utf8;
+    published_descriptors.push_back(*binding.published_descriptor);
   }
   visible_batch.rows.reserve(request.physical_output_batch.rows.size());
   for (const auto& physical_row : request.physical_output_batch.rows) {
@@ -728,18 +966,137 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
     visible_batch.rows.push_back(std::move(visible_row));
   }
 
+  std::shared_ptr<CanonicalResultCursorSession> cursor_session;
+  bool publish_metadata = true;
+  bool cursor_cancelled = false;
+  bool release_cursor = false;
+  CanonicalResultCursorReleaseReason release_reason =
+      CanonicalResultCursorReleaseReason::kCompleted;
+  std::uint64_t delivery_batch_ordinal = 0;
+  std::uint64_t delivery_first_row_ordinal = 0;
+
+  if (cursor) {
+    cursor_session = request.cursor_session;
+    if (!cursor_session) {
+      auto state = std::make_unique<CanonicalResultCursorSession::State>();
+      state->cursor_uuid = request.cursor_uuid;
+      state->statement_uuid = request.statement_uuid;
+      state->mga_statement_context = statement_context;
+      state->catalog_epoch_uuid = request.selected_catalog_epoch_uuid;
+      state->execution_attempt_uuid = request.execution_attempt_uuid;
+      state->selected_physical_dag = request.selected_physical_dag;
+      state->invocation_mode = request.invocation_mode;
+      state->row_stream_format_id = request.row_stream_format_id;
+      state->column_descriptors = published_descriptors;
+      state->physical_columns = request.physical_output_batch.columns;
+      state->maximum_rows_per_batch = request.maximum_rows_per_batch;
+      state->cancellation_requested = request.cursor_cancellation_requested;
+      state->cancellation_diagnostic =
+          *request.cursor_cancellation_diagnostic;
+      state->release = request.cursor_release;
+      cursor_session = std::shared_ptr<CanonicalResultCursorSession>(
+          new CanonicalResultCursorSession(std::move(state)));
+    }
+
+    const auto refuse_cursor = [&](DescriptorRuntimeDiagnostic diagnostic) {
+      cursor_session->Release(CanonicalResultCursorReleaseReason::kError);
+      result = {};
+      result.diagnostic = std::move(diagnostic);
+      return result;
+    };
+
+    try {
+      if (cursor_session->state_->cancellation_requested()) {
+        cursor_cancelled = true;
+      }
+      for (std::size_t row = 0;
+           !cursor_cancelled && row < visible_batch.rows.size(); ++row) {
+        if (cursor_session->state_->cancellation_requested()) {
+          cursor_cancelled = true;
+        }
+      }
+      if (!cursor_cancelled &&
+          cursor_session->state_->cancellation_requested()) {
+        cursor_cancelled = true;
+      }
+    } catch (...) {
+      return refuse_cursor(
+          Refusal("cursor cancellation probe raised an exception"));
+    }
+
+    std::unique_lock<std::mutex> lock(cursor_session->state_->mutex);
+    auto& state = *cursor_session->state_;
+    if (state.released || state.cursor_uuid != request.cursor_uuid ||
+        state.statement_uuid != request.statement_uuid ||
+        !PhysicalMgaStatementContextEqual(state.mga_statement_context,
+                                          statement_context) ||
+        state.catalog_epoch_uuid != request.selected_catalog_epoch_uuid ||
+        state.execution_attempt_uuid != request.execution_attempt_uuid ||
+        !PhysicalDagIdentityEqual(state.selected_physical_dag,
+                                  request.selected_physical_dag) ||
+        state.invocation_mode != request.invocation_mode ||
+        state.row_stream_format_id != request.row_stream_format_id ||
+        state.maximum_rows_per_batch != request.maximum_rows_per_batch ||
+        !ResultDescriptorVectorsEqual(state.column_descriptors,
+                                      published_descriptors) ||
+        !ExecutorColumnDescriptorVectorsEqual(
+            state.physical_columns, request.physical_output_batch.columns) ||
+        state.next_batch_ordinal != request.cursor_batch_ordinal ||
+        state.next_row_ordinal != request.cursor_first_row_ordinal) {
+      lock.unlock();
+      return refuse_cursor(Refusal(
+          "cursor continuation identity, descriptor, or sequence drifted"));
+    }
+
+    publish_metadata = !state.metadata_delivered;
+    delivery_batch_ordinal = state.next_batch_ordinal;
+    delivery_first_row_ordinal = state.next_row_ordinal;
+    if (cursor_cancelled) {
+      visible_batch.rows.clear();
+      result.envelope.diagnostics = request.diagnostics;
+      result.envelope.diagnostics.push_back(state.cancellation_diagnostic);
+      const auto cancellation_diagnostics =
+          ValidateDiagnostics(result.envelope.diagnostics);
+      if (!cancellation_diagnostics.ok) {
+        lock.unlock();
+        return refuse_cursor(cancellation_diagnostics);
+      }
+      release_cursor = true;
+      release_reason = CanonicalResultCursorReleaseReason::kCancelled;
+    } else {
+      result.envelope.diagnostics = request.diagnostics;
+      state.next_row_ordinal +=
+          static_cast<std::uint64_t>(visible_batch.rows.size());
+      if (!visible_batch.rows.empty()) ++state.next_batch_ordinal;
+      if (*request.cursor_state == CanonicalResultCursorState::kClosed) {
+        release_cursor = true;
+        release_reason = terminal_diagnostic
+                             ? CanonicalResultCursorReleaseReason::kError
+                             : CanonicalResultCursorReleaseReason::kCompleted;
+      }
+    }
+    state.metadata_delivered = true;
+
+    result.cursor_session = cursor_session;
+    result.cursor_uuid = state.cursor_uuid;
+    result.cursor_batch_ordinal = delivery_batch_ordinal;
+    result.cursor_first_row_ordinal = delivery_first_row_ordinal;
+    result.cursor_next_batch_ordinal = state.next_batch_ordinal;
+    result.cursor_next_row_ordinal = state.next_row_ordinal;
+    result.cursor_metadata_delivered = publish_metadata;
+    result.cursor_end_of_stream = release_cursor;
+    lock.unlock();
+  } else {
+    result.envelope.diagnostics = request.diagnostics;
+  }
+
   result.envelope.abi_version = 1;
   result.envelope.statement_uuid = request.statement_uuid;
   result.envelope.mga_statement_context = statement_context;
   result.envelope.catalog_epoch_uuid = request.selected_catalog_epoch_uuid;
   result.envelope.execution_attempt_uuid = request.execution_attempt_uuid;
   result.envelope.result_kind = request.result_kind;
-  for (const auto& binding : request.column_bindings) {
-    if (binding.visible) {
-      result.envelope.column_descriptors.push_back(
-          *binding.published_descriptor);
-    }
-  }
+  result.envelope.column_descriptors = published_descriptors;
   result.envelope.row_stream_format_id = request.row_stream_format_id;
   if (request.result_kind == CanonicalResultKind::kRows || empty ||
       request.result_kind == CanonicalResultKind::kExplain) {
@@ -747,20 +1104,63 @@ CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
         static_cast<std::uint64_t>(visible_batch.rows.size());
   }
   result.envelope.command_tag = request.command_tag;
-  result.envelope.cursor_state = request.cursor_state;
-  result.envelope.diagnostics = request.diagnostics;
+  result.envelope.cursor_state = cursor_cancelled
+                                     ? CanonicalResultCursorState::kClosed
+                                     : request.cursor_state;
   result.row_stream = std::move(visible_batch);
   result.canonical_envelope_bytes = EncodeEnvelope(result.envelope);
 
-  result.delivery_records.push_back(
-      {CanonicalResultDeliveryKind::kMetadata, std::nullopt});
-  for (std::size_t row = 0; row < result.row_stream.rows.size(); ++row) {
+  if (publish_metadata) {
     result.delivery_records.push_back(
-        {CanonicalResultDeliveryKind::kRow, row});
+        {CanonicalResultDeliveryKind::kMetadata, std::nullopt, std::nullopt});
+  }
+  const auto append_batch = [&](const std::uint64_t batch_ordinal,
+                                const std::uint64_t first_row_ordinal,
+                                const std::size_t row_count) {
+    result.delivery_batches.push_back(
+        {batch_ordinal, first_row_ordinal, row_count});
+    for (std::size_t row = 0; row < row_count; ++row) {
+      result.delivery_records.push_back(
+          {CanonicalResultDeliveryKind::kRow,
+           static_cast<std::size_t>(first_row_ordinal + row), batch_ordinal});
+    }
+  };
+  if (cursor) {
+    if (!result.row_stream.rows.empty()) {
+      append_batch(delivery_batch_ordinal, delivery_first_row_ordinal,
+                   result.row_stream.rows.size());
+    }
+  } else {
+    std::size_t local_first_row = 0;
+    std::uint64_t batch_ordinal = 0;
+    while (local_first_row < result.row_stream.rows.size()) {
+      const auto row_count = std::min(
+          request.maximum_rows_per_batch,
+          result.row_stream.rows.size() - local_first_row);
+      append_batch(batch_ordinal,
+                   static_cast<std::uint64_t>(local_first_row),
+                   row_count);
+      local_first_row += row_count;
+      ++batch_ordinal;
+    }
   }
   if (!result.envelope.diagnostics.empty()) {
     result.delivery_records.push_back(
-        {CanonicalResultDeliveryKind::kDiagnostics, std::nullopt});
+        {CanonicalResultDeliveryKind::kDiagnostics, std::nullopt,
+         std::nullopt});
+  }
+  if (release_cursor) {
+    if (!cursor_session->Release(release_reason)) {
+      result = {};
+      result.diagnostic =
+          Refusal("cursor resource release callback raised an exception");
+      return result;
+    }
+    result.cursor_resource_released = true;
+    result.cursor_release_reason = release_reason;
+    result.delivery_records.push_back(
+        {CanonicalResultDeliveryKind::kResourceRelease, std::nullopt,
+         delivery_batch_ordinal});
   }
   result.diagnostic = {};
   result.published = true;

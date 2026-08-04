@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -144,6 +145,42 @@ enum class CanonicalResultDeliveryKind : std::uint8_t {
   kMetadata = 1,
   kRow,
   kDiagnostics,
+  kResourceRelease,
+};
+
+enum class CanonicalResultCursorReleaseReason : std::uint8_t {
+  kCompleted = 1,
+  kCancelled,
+  kError,
+  kAbandoned,
+};
+
+using CanonicalResultCursorCancellationProbe = std::function<bool()>;
+using CanonicalResultCursorReleaseCallback =
+    std::function<void(CanonicalResultCursorReleaseReason)>;
+
+struct CanonicalResultPublicationRequest;
+struct CanonicalResultPublicationResult;
+
+class CanonicalResultCursorSession {
+ public:
+  ~CanonicalResultCursorSession();
+
+  CanonicalResultCursorSession(const CanonicalResultCursorSession&) = delete;
+  CanonicalResultCursorSession& operator=(
+      const CanonicalResultCursorSession&) = delete;
+
+ private:
+  struct State;
+
+  explicit CanonicalResultCursorSession(std::unique_ptr<State> state);
+  bool Release(CanonicalResultCursorReleaseReason reason) noexcept;
+
+  std::unique_ptr<State> state_;
+
+  friend struct CanonicalResultPublicationResult;
+  friend CanonicalResultPublicationResult PublishCanonicalResultEnvelope(
+      const CanonicalResultPublicationRequest& request);
 };
 
 struct CanonicalResultColumnDescriptor {
@@ -201,6 +238,13 @@ struct CanonicalResultEnvelopeV1 {
 struct CanonicalResultDeliveryRecord {
   CanonicalResultDeliveryKind kind = CanonicalResultDeliveryKind::kMetadata;
   std::optional<std::size_t> row_ordinal;
+  std::optional<std::uint64_t> batch_ordinal;
+};
+
+struct CanonicalResultDeliveryBatch {
+  std::uint64_t batch_ordinal = 0;
+  std::uint64_t first_row_ordinal = 0;
+  std::size_t row_count = 0;
 };
 
 struct CanonicalResultPublicationRequest {
@@ -221,6 +265,17 @@ struct CanonicalResultPublicationRequest {
   std::vector<CanonicalResultDiagnosticRecord> diagnostics;
   std::string transaction_effect_evidence_uuid;
   std::size_t maximum_row_count = 1048576;
+  std::size_t maximum_rows_per_batch = 1024;
+
+  // Cursor continuation is an internal delivery contract. These fields do not
+  // alter QOW-RESULT-DIAGNOSTIC-ABI-V1 or add fields to its frozen envelope.
+  std::string cursor_uuid;
+  std::shared_ptr<CanonicalResultCursorSession> cursor_session;
+  std::uint64_t cursor_batch_ordinal = 0;
+  std::uint64_t cursor_first_row_ordinal = 0;
+  CanonicalResultCursorCancellationProbe cursor_cancellation_requested;
+  std::optional<CanonicalResultDiagnosticRecord> cursor_cancellation_diagnostic;
+  CanonicalResultCursorReleaseCallback cursor_release;
 };
 
 struct CanonicalResultPublicationResult {
@@ -229,7 +284,20 @@ struct CanonicalResultPublicationResult {
   CanonicalResultEnvelopeV1 envelope;
   DescriptorBatch row_stream;
   std::vector<CanonicalResultDeliveryRecord> delivery_records;
+  std::vector<CanonicalResultDeliveryBatch> delivery_batches;
   std::string canonical_envelope_bytes;
+
+  // Cursor delivery receipts remain outside the frozen V1 envelope bytes.
+  std::shared_ptr<CanonicalResultCursorSession> cursor_session;
+  std::string cursor_uuid;
+  std::uint64_t cursor_batch_ordinal = 0;
+  std::uint64_t cursor_first_row_ordinal = 0;
+  std::uint64_t cursor_next_batch_ordinal = 0;
+  std::uint64_t cursor_next_row_ordinal = 0;
+  bool cursor_metadata_delivered = false;
+  bool cursor_end_of_stream = false;
+  bool cursor_resource_released = false;
+  std::optional<CanonicalResultCursorReleaseReason> cursor_release_reason;
 };
 
 struct CanonicalDescriptorProjectionRequest {
