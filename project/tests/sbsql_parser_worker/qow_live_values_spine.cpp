@@ -22,6 +22,8 @@ namespace scratchbird::engine::sblr {
 SblrDispatchResult DispatchTextualRelationalQueryForContractTest(
     SblrDispatchRequest request);
 void ArmCanonicalQueryPreResultRevocationForContractTest();
+void ArmCanonicalQuerySecurityBoundaryDriftForContractTest();
+void ArmCanonicalQueryResourceBoundaryDriftForContractTest();
 std::size_t CanonicalQueryContractRevalidationCountForTest();
 }
 
@@ -47,6 +49,17 @@ bool HasApiDiagnostic(const sblr::SblrDispatchResult& result,
                       const std::string_view code) {
   for (const auto& diagnostic : result.api_result.diagnostics) {
     if (diagnostic.code == code) return true;
+  }
+  return false;
+}
+
+bool HasApiDiagnosticToken(const sblr::SblrDispatchResult& result,
+                           const std::string_view token) {
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    if (diagnostic.code == token || diagnostic.detail.find(token) !=
+                                        std::string::npos) {
+      return true;
+    }
   }
   return false;
 }
@@ -3784,6 +3797,111 @@ bool ValidateLiveValuesPreResultRevocationIsAtomic() {
           sblr::CanonicalQueryContractRevalidationCountForTest() == 8 &&
           HasApiDiagnostic(result, "QOW-DIAG-MGA-RUNTIME-CURRENT-V1"),
       "pre-result MGA revocation exposed an internal route DAG, actual, row, or result");
+}
+
+// RCP-022-TEST-GENERAL-SELECT-EXECUTION-BOUNDARY-V1
+bool ValidateGeneralSelectExecutionBoundary() {
+  const auto refused_atomically = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_column_count == 0 &&
+           result.canonical_result_row_count == 0 &&
+           result.selected_plan_uuid.empty() &&
+           result.canonical_result_bytes.empty();
+  };
+
+  bool passed = true;
+  const std::array<sblr::SblrOperationEnvelope, 9> live_shapes{
+      ValuesEnvelope(),
+      FilterValuesEnvelope(),
+      ProjectValuesEnvelope(),
+      LimitValuesEnvelope(),
+      SortValuesEnvelope(),
+      GlobalCountStarValuesEnvelope(),
+      UnionAllValuesEnvelope(),
+      InnerJoinValuesEnvelope(),
+      DistinctSortLimitValuesEnvelope(false),
+  };
+  for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
+    const auto& envelope = live_shapes[shape];
+    auto context = Context();
+    context.query_cancellation_requested = [] { return true; };
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), envelope, {}});
+    passed &= Require(
+        refused_atomically(result) &&
+            HasApiDiagnostic(
+                result,
+                "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1"),
+        std::string("general SELECT shape bypassed the engine cancellation boundary: ") +
+            std::to_string(shape));
+  }
+
+  for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
+    const auto& envelope = live_shapes[shape];
+    sblr::ArmCanonicalQueryPreResultRevocationForContractTest();
+    const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), envelope, {}});
+    const bool shape_refused =
+        refused_atomically(result) &&
+        sblr::CanonicalQueryContractRevalidationCountForTest() >= 8 &&
+        HasApiDiagnosticToken(result, "QOW-DIAG-MGA-RUNTIME-CURRENT-V1");
+    if (!shape_refused) {
+      std::cerr << "RCP-022 MGA shape=" << shape
+                << " revalidations="
+                << sblr::CanonicalQueryContractRevalidationCountForTest()
+                << '\n';
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        shape_refused,
+        std::string("general SELECT shape bypassed current MGA visibility revalidation: ") +
+            std::to_string(shape));
+  }
+
+  std::size_t cancellation_probe_count = 0;
+  auto mid_dag_context = Context();
+  mid_dag_context.query_cancellation_requested =
+      [&cancellation_probe_count] {
+        return ++cancellation_probe_count == 3;
+      };
+  const auto mid_dag = sblr::DispatchTextualRelationalQueryForContractTest(
+      {std::move(mid_dag_context), UnionAllValuesEnvelope(), {}});
+  passed &= Require(
+      refused_atomically(mid_dag) && cancellation_probe_count == 3 &&
+          HasApiDiagnostic(
+              mid_dag,
+              "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1"),
+      "mid-DAG cancellation exposed a completed internal SELECT batch");
+
+  sblr::ArmCanonicalQuerySecurityBoundaryDriftForContractTest();
+  const auto security_drift =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), ValuesEnvelope(), {}});
+  passed &= Require(
+      refused_atomically(security_drift) &&
+          HasApiDiagnostic(
+              security_drift,
+              "QOW-DIAG-QRY-004-SELECT-EXECUTION-BOUNDARY-V1"),
+      "stale selected-plan security authority reached SELECT execution");
+
+  sblr::ArmCanonicalQueryResourceBoundaryDriftForContractTest();
+  const auto resource_drift =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), ValuesEnvelope(), {}});
+  passed &= Require(
+      refused_atomically(resource_drift) &&
+          HasApiDiagnostic(
+              resource_drift,
+              "QOW-DIAG-QRY-004-SELECT-EXECUTION-BOUNDARY-V1"),
+      "stale selected-plan resource authority reached SELECT execution");
+  return passed;
 }
 
 bool ValidateLiveStatementContextRefusalIsAtomic() {
@@ -9280,6 +9398,7 @@ int main() {
   const bool passed = ValidateLiveValuesSpine() &&
                       ValidateRuntimeBreadthValuesSpine() &&
                       ValidateLiveValuesPreResultRevocationIsAtomic() &&
+                      ValidateGeneralSelectExecutionBoundary() &&
                       ValidateLiveStatementContextRefusalIsAtomic() &&
                       ValidateComposedScalarValuesSpine() &&
                       ValidateUnionAllValuesSpine() &&

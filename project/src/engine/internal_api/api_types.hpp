@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -386,6 +387,10 @@ struct EngineRequestContext {
   bool last_row_count_present = false;
   EngineMaterializedAuthorizationContext authorization_context;
   std::vector<std::string> trace_tags;
+  // Engine-owned asynchronous query cancellation source. Parsers, dialect
+  // adapters, and SBLR operands cannot populate this authority. A missing
+  // probe means no cancellation has been requested for this bounded request.
+  std::function<bool()> query_cancellation_requested;
 };
 
 struct EngineApiDiagnosticField {

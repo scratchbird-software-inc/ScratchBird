@@ -50,6 +50,8 @@ constexpr std::string_view kValuesImplementationId =
 // transaction inventory below.
 thread_local bool g_contract_pre_result_revocation_armed = false;
 thread_local std::size_t g_contract_revalidation_resolution_count = 0;
+thread_local bool g_contract_security_boundary_drift_armed = false;
+thread_local bool g_contract_resource_boundary_drift_armed = false;
 #endif
 
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
@@ -135,12 +137,94 @@ exec::CanonicalExecutionMgaAuthority BuildCanonicalExecutionMgaAuthority(
 api::CanonicalOptimizerSelectedExecutionResult ExecuteSelectedWithMgaGuard(
     const api::EngineRequestContext& context,
     const api::CanonicalOptimizerSelectedExecutionRequest& request) {
+  auto bounded_request = request;
 #if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
-  return api::ExecuteCanonicalOptimizerSelectedDag(request);
+  // Deterministic closure seams model a selected plan becoming stale between
+  // publication and execution. Production has no mutable selected-plan seam.
+  if (g_contract_security_boundary_drift_armed) {
+    ++bounded_request.selected_physical_dag.security_epoch;
+    g_contract_security_boundary_drift_armed = false;
+  }
+  if (g_contract_resource_boundary_drift_armed) {
+    ++bounded_request.selected_physical_dag.resource_epoch;
+    g_contract_resource_boundary_drift_armed = false;
+  }
+#endif
+
+  const auto refuse_boundary = [](std::string field_id) {
+    api::CanonicalOptimizerSelectedExecutionResult result;
+    result.issues.push_back(
+        {"QOW-DIAG-QRY-004-SELECT-EXECUTION-BOUNDARY-V1", 0,
+         std::move(field_id)});
+    return result;
+  };
+  const auto& dag = bounded_request.selected_physical_dag;
+  const auto& authorization = context.authorization_context;
+  if (!context.security_context_present || !authorization.present ||
+      authorization.authority_uuid.canonical.empty() ||
+      dag.security_context_uuid != authorization.authority_uuid.canonical ||
+      context.principal_uuid.canonical !=
+          authorization.principal_uuid.canonical ||
+      context.security_epoch == 0 ||
+      dag.security_epoch != context.security_epoch ||
+      authorization.security_epoch != context.security_epoch ||
+      authorization.policy_epoch == 0 ||
+      dag.policy_epoch != authorization.policy_epoch ||
+      context.catalog_generation_id == 0 ||
+      dag.catalog_generation != context.catalog_generation_id ||
+      authorization.catalog_generation_id != context.catalog_generation_id) {
+    return refuse_boundary("security_authorization_binding");
+  }
+  if (context.resource_epoch == 0 ||
+      dag.resource_epoch != context.resource_epoch ||
+      context.optimizer_resource_snapshot_uuid.canonical.empty() ||
+      dag.resource_snapshot_uuid !=
+          context.optimizer_resource_snapshot_uuid.canonical ||
+      context.optimizer_memory_budget_bytes == 0 ||
+      dag.memory_budget_bytes != context.optimizer_memory_budget_bytes) {
+    return refuse_boundary("resource_budget_binding");
+  }
+
+  std::size_t maximum_output_width = 0;
+  for (const auto& node : dag.nodes) {
+    maximum_output_width =
+        std::max(maximum_output_width, node.output_descriptor_ids.size());
+  }
+  const auto bounded_budget = static_cast<std::size_t>(
+      std::min<std::uint64_t>(context.optimizer_memory_budget_bytes,
+                              std::numeric_limits<std::size_t>::max()));
+  if (maximum_output_width == 0 || bounded_budget < maximum_output_width) {
+    return refuse_boundary("runtime_materialization_budget");
+  }
+  auto& runtime_limits = bounded_request.runtime_limits;
+  runtime_limits.maximum_columns_per_batch =
+      std::min(runtime_limits.maximum_columns_per_batch, maximum_output_width);
+  runtime_limits.maximum_cells_per_batch =
+      std::min(runtime_limits.maximum_cells_per_batch, bounded_budget);
+  runtime_limits.maximum_rows_per_batch = std::min(
+      runtime_limits.maximum_rows_per_batch,
+      runtime_limits.maximum_cells_per_batch / maximum_output_width);
+  runtime_limits.maximum_total_materialized_cells = std::min(
+      runtime_limits.maximum_total_materialized_cells, bounded_budget);
+  runtime_limits.maximum_total_materialized_rows = std::min(
+      runtime_limits.maximum_total_materialized_rows, bounded_budget);
+  if (runtime_limits.maximum_columns_per_batch == 0 ||
+      runtime_limits.maximum_cells_per_batch == 0 ||
+      runtime_limits.maximum_rows_per_batch == 0 ||
+      runtime_limits.maximum_total_materialized_cells == 0 ||
+      runtime_limits.maximum_total_materialized_rows == 0) {
+    return refuse_boundary("runtime_materialization_budget");
+  }
+  bounded_request.cancellation_requested =
+      context.query_cancellation_requested
+          ? context.query_cancellation_requested
+          : std::function<bool()>([] { return false; });
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  return api::ExecuteCanonicalOptimizerSelectedDag(bounded_request);
 #else
   const auto inventory_guard =
       api::AcquireTransactionInventoryGuard(context.database_path);
-  return api::ExecuteCanonicalOptimizerSelectedDag(request);
+  return api::ExecuteCanonicalOptimizerSelectedDag(bounded_request);
 #endif
 }
 
@@ -7621,6 +7705,14 @@ void ArmCanonicalQueryPreResultRevocationForContractTest() {
   g_contract_pre_result_revocation_armed = true;
 }
 
+void ArmCanonicalQuerySecurityBoundaryDriftForContractTest() {
+  g_contract_security_boundary_drift_armed = true;
+}
+
+void ArmCanonicalQueryResourceBoundaryDriftForContractTest() {
+  g_contract_resource_boundary_drift_armed = true;
+}
+
 std::size_t CanonicalQueryContractRevalidationCountForTest() {
   return g_contract_revalidation_resolution_count;
 }
@@ -8073,7 +8165,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   execution_request.maximum_output_columns = maximum_output_columns;
   execution_request.maximum_output_cells =
       maximum_output_rows * maximum_output_columns;
-  execution_request.cancellation_requested = [] { return false; };
+  execution_request.cancellation_requested =
+      input.context.query_cancellation_requested
+          ? input.context.query_cancellation_requested
+          : std::function<bool()>([] { return false; });
   execution_request.execution_attempt_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + input.context.current_monotonic_ns,
       "heap-scan.execution-attempt");
