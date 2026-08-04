@@ -5772,8 +5772,8 @@ CanonicalWindowValueResult ExecuteCanonicalWindowValue(
 CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
     const CanonicalWindowAggregateRequest& request) {
   namespace api = scratchbird::engine::internal_api;
-  constexpr std::string_view kInt64SumUuid =
-      "019de5fc-2400-72e4-8549-82b2eef5a777";
+  const auto* sum_registry_entry = LookupCanonicalAggregateByFunctionV1(
+      CanonicalAggregateFunction::sum);
 
   CanonicalWindowAggregateResult result;
   const auto refuse = [&](std::string code, std::string detail) {
@@ -5792,7 +5792,9 @@ CanonicalWindowAggregateResult ExecuteCanonicalWindowAggregate(
   const auto& execution_authority = CanonicalWindowFrameExecutionAuthority(
       request.mga_authority, request.frames);
   if (request.function != CanonicalWindowAggregateFunction::int64_sum ||
-      request.function_uuid != kInt64SumUuid ||
+      sum_registry_entry == nullptr || !sum_registry_entry->executable ||
+      !sum_registry_entry->aggregate_as_window ||
+      request.function_uuid != sum_registry_entry->function_uuid ||
       !IsCanonicalUuid(request.function_uuid)) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE",
                   "aggregate-window function kind and registry UUID do not match");
@@ -6138,15 +6140,12 @@ ExecuteCanonicalRegistryWindowAggregateSelected(
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-AUTHORITY",
                   aggregate_template_authority.detail);
   }
-  const auto aggregate_registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto aggregate_registry_row = std::ranges::find_if(
-      aggregate_registry, [&](const CanonicalAggregateRegistryEntry& row) {
-        return row.abi_version == aggregate_template.descriptor.abi_version &&
-               row.function == aggregate_template.descriptor.function &&
-               row.builtin_id == aggregate_template.descriptor.builtin_id &&
-               row.function_uuid == aggregate_template.descriptor.function_uuid;
-      });
-  if (aggregate_registry_row == aggregate_registry.end() ||
+  const auto* aggregate_registry_row = LookupCanonicalAggregateExactV1(
+      aggregate_template.descriptor.abi_version,
+      aggregate_template.descriptor.function,
+      aggregate_template.descriptor.builtin_id,
+      aggregate_template.descriptor.function_uuid);
+  if (aggregate_registry_row == nullptr ||
       !aggregate_registry_row->executable ||
       !aggregate_registry_row->aggregate_as_window) {
     return refuse("QOW-DIAG-WINDOW-AGGREGATE-REGISTRY-DESCRIPTOR",
@@ -6715,8 +6714,6 @@ CanonicalWindowRuntimeRegistryV1() {
        "sb.window.last_value", "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec"},
       {1, CanonicalWindowRuntimeFunction::nth_value,
        "sb.window.nth_value", "019de5fc-2400-7dc9-80e6-9f2ccf08076f"},
-      {1, CanonicalWindowRuntimeFunction::int64_sum,
-       "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777"},
   };
 }
 
@@ -6748,17 +6745,14 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
                   "window runtime descriptor is missing or malformed");
   }
   if (aggregate_registry_identity) {
-    const auto aggregate_registry = CanonicalAggregateRuntimeRegistryV1();
-    const auto aggregate_row = std::ranges::find_if(
-        aggregate_registry, [&](const CanonicalAggregateRegistryEntry& row) {
-          return row.abi_version == request.descriptor.abi_version &&
-                 row.function == *request.descriptor.aggregate_function &&
-                 row.builtin_id == request.descriptor.builtin_id &&
-                 row.function_uuid == request.descriptor.function_uuid;
-        });
+    const auto* aggregate_row = LookupCanonicalAggregateExactV1(
+        request.descriptor.abi_version,
+        *request.descriptor.aggregate_function,
+        request.descriptor.builtin_id,
+        request.descriptor.function_uuid);
     if (request.descriptor.function !=
             CanonicalWindowRuntimeFunction::unknown ||
-        aggregate_row == aggregate_registry.end() ||
+        aggregate_row == nullptr ||
         !aggregate_row->executable || !aggregate_row->aggregate_as_window) {
       return refuse(
           "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR",
@@ -6835,10 +6829,6 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
       case CanonicalWindowRuntimeFunction::nth_value:
         expected_strategy = CanonicalWindowRuntimeStrategy::value;
         expected_value = CanonicalWindowValueFunction::nth_value;
-        break;
-      case CanonicalWindowRuntimeFunction::int64_sum:
-        expected_strategy = CanonicalWindowRuntimeStrategy::aggregate;
-        expected_aggregate = CanonicalAggregateFunction::sum;
         break;
       case CanonicalWindowRuntimeFunction::unknown:
         break;
@@ -6946,20 +6936,6 @@ CanonicalWindowRuntimeResult ExecuteCanonicalWindowRuntime(
             request.descriptor.function_uuid) {
       return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
                     "aggregate-registry payload does not match the runtime descriptor");
-    }
-    if (!aggregate_registry_identity &&
-        request.descriptor.function ==
-            CanonicalWindowRuntimeFunction::int64_sum &&
-        (aggregate.aggregate_template.value_columns.size() != 1 ||
-         aggregate.aggregate_template.value_columns.front() >=
-             aggregate.frames.ordered_batch.columns.size() ||
-         aggregate.frames.ordered_batch
-                 .columns[aggregate.aggregate_template.value_columns.front()]
-                 .descriptor.canonical_type_name != "int64" ||
-         aggregate.aggregate_template.result_column.descriptor
-                 .canonical_type_name != "int64")) {
-      return refuse("QOW-DIAG-WINDOW-RUNTIME-PAYLOAD",
-                    "retained int64 SUM seed received a broader SUM profile");
     }
     CanonicalRegistryWindowAggregateResult aggregate_result;
     if (request.registry_aggregate_spill.has_value()) {

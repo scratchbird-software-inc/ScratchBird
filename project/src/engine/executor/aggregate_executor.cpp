@@ -2060,10 +2060,10 @@ CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
 // the row is routed through the bounded canonical state below.  Every accepted
 // aggregate is eligible for the canonical OVER bridge; descriptor,
 // direct-argument, ordering, type, and resource profiles still fail closed.
-std::vector<CanonicalAggregateRegistryEntry>
+const std::vector<CanonicalAggregateRegistryEntry>&
 CanonicalAggregateRuntimeRegistryV1() {
   using Function = CanonicalAggregateFunction;
-  return {
+  static const std::vector<CanonicalAggregateRegistryEntry> registry = {
       {1, Function::count, "sb.aggregate.count", "019de5fc-2400-784a-9aec-371f8b95b7ea", true, true, true},
       {1, Function::sum, "sb.aggregate.sum", "019de5fc-2400-72e4-8549-82b2eef5a777", true, true, true},
       {1, Function::avg, "sb.aggregate.avg", "019de5fc-2400-78ac-b50c-45b832831004", true, true, true},
@@ -2108,6 +2108,81 @@ CanonicalAggregateRuntimeRegistryV1() {
       {1, Function::regr_sxy, "sb.aggregate.regr_sxy", "019dffbb-f000-788b-a249-866547a43ebe", true, true},
       {1, Function::regr_syy, "sb.aggregate.regr_syy", "019dffbb-f000-74f7-98ba-c24ead6d30df", true, true},
   };
+  return registry;
+}
+
+const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByFunctionV1(
+    const CanonicalAggregateFunction function) {
+  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
+  const auto found = std::ranges::find_if(
+      registry, [&](const auto& entry) { return entry.function == function; });
+  return found == registry.end() ? nullptr : &*found;
+}
+
+const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByBuiltinIdV1(
+    const std::string_view builtin_id) {
+  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
+  const auto found = std::ranges::find_if(registry, [&](const auto& entry) {
+    return entry.builtin_id == builtin_id;
+  });
+  return found == registry.end() ? nullptr : &*found;
+}
+
+const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateByUuidV1(
+    const std::string_view function_uuid) {
+  const auto& registry = CanonicalAggregateRuntimeRegistryV1();
+  const auto found = std::ranges::find_if(registry, [&](const auto& entry) {
+    return entry.function_uuid == function_uuid;
+  });
+  return found == registry.end() ? nullptr : &*found;
+}
+
+const CanonicalAggregateRegistryEntry* LookupCanonicalAggregateExactV1(
+    const std::uint16_t abi_version,
+    const CanonicalAggregateFunction function,
+    const std::string_view builtin_id,
+    const std::string_view function_uuid) {
+  const auto* entry = LookupCanonicalAggregateByFunctionV1(function);
+  return entry != nullptr && entry->abi_version == abi_version &&
+                 entry->builtin_id == builtin_id &&
+                 entry->function_uuid == function_uuid
+             ? entry
+             : nullptr;
+}
+
+std::vector<std::string> ValidateCanonicalAggregateRuntimeRegistryV1() {
+  std::vector<std::string> errors;
+  std::set<CanonicalAggregateFunction> functions;
+  std::set<std::string> builtin_ids;
+  std::set<std::string> function_uuids;
+  for (const auto& entry : CanonicalAggregateRuntimeRegistryV1()) {
+    if (entry.abi_version != 1 ||
+        entry.function == CanonicalAggregateFunction::unknown ||
+        entry.builtin_id.empty() || entry.function_uuid.empty()) {
+      errors.push_back("incomplete aggregate registry row");
+      continue;
+    }
+    if (!functions.insert(entry.function).second) {
+      errors.push_back("duplicate aggregate function enum");
+    }
+    if (!builtin_ids.insert(entry.builtin_id).second) {
+      errors.push_back("duplicate aggregate builtin id: " + entry.builtin_id);
+    }
+    if (!function_uuids.insert(entry.function_uuid).second) {
+      errors.push_back("duplicate aggregate function UUID: " +
+                       entry.function_uuid);
+    }
+    if (LookupCanonicalAggregateByFunctionV1(entry.function) != &entry ||
+        LookupCanonicalAggregateByBuiltinIdV1(entry.builtin_id) != &entry ||
+        LookupCanonicalAggregateByUuidV1(entry.function_uuid) != &entry ||
+        LookupCanonicalAggregateExactV1(entry.abi_version, entry.function,
+                                        entry.builtin_id,
+                                        entry.function_uuid) != &entry) {
+      errors.push_back("aggregate registry lookup drift: " +
+                       entry.builtin_id);
+    }
+  }
+  return errors;
 }
 
 static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
@@ -2123,15 +2198,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     return result;
   };
 
-  const auto registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto entry = std::find_if(
-      registry.begin(), registry.end(), [&](const auto& candidate) {
-        return candidate.abi_version == request.descriptor.abi_version &&
-               candidate.function == request.descriptor.function &&
-               candidate.builtin_id == request.descriptor.builtin_id &&
-               candidate.function_uuid == request.descriptor.function_uuid;
-      });
-  if (request.descriptor.abi_version != 1 || entry == registry.end()) {
+  const auto* entry = LookupCanonicalAggregateExactV1(
+      request.descriptor.abi_version, request.descriptor.function,
+      request.descriptor.builtin_id, request.descriptor.function_uuid);
+  if (request.descriptor.abi_version != 1 || entry == nullptr) {
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DESCRIPTOR-V1",
                           "aggregate ABI, enum, id, and UUID must match one exact registry row"));
   }
@@ -2943,15 +3013,11 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   const auto entry_authority = RevalidateCanonicalExecutionMgaAuthority(
       aggregate.mga_authority, aggregate.physical_dag);
   if (!entry_authority.ok) return refuse(entry_authority);
-  const auto registry = CanonicalAggregateRuntimeRegistryV1();
-  const auto entry = std::find_if(
-      registry.begin(), registry.end(), [&](const auto& candidate) {
-        return candidate.abi_version == aggregate.descriptor.abi_version &&
-               candidate.function == aggregate.descriptor.function &&
-               candidate.builtin_id == aggregate.descriptor.builtin_id &&
-               candidate.function_uuid == aggregate.descriptor.function_uuid;
-      });
-  if (entry == registry.end() || !entry->executable ||
+  const auto* entry = LookupCanonicalAggregateExactV1(
+      aggregate.descriptor.abi_version, aggregate.descriptor.function,
+      aggregate.descriptor.builtin_id,
+      aggregate.descriptor.function_uuid);
+  if (entry == nullptr || !entry->executable ||
       !entry->aggregate_as_window || !entry->moving_window_inverse) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-011-REGISTRY-INVERSE-UNAVAILABLE-V1",

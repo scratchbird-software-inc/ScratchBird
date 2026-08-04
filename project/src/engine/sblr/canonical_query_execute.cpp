@@ -1123,11 +1123,8 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       dag.descriptors, [&](const auto& candidate) {
         return candidate.descriptor_id == root.output_descriptor_ids.front();
       });
-  const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
-  const auto aggregate = std::ranges::find_if(
-      registry, [&](const auto& candidate) {
-        return candidate.function == function;
-      });
+  const auto* aggregate =
+      exec::LookupCanonicalAggregateByFunctionV1(function);
   std::size_t expected_argument_count = 1;
   if (count_star) {
     expected_argument_count = 0;
@@ -1160,7 +1157,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
     expected_argument_count = 2;
   }
   if (expression == dag.expressions.end() ||
-      descriptor == dag.descriptors.end() || aggregate == registry.end() ||
+      descriptor == dag.descriptors.end() || aggregate == nullptr ||
       !aggregate->executable ||
       expression->expression_kind !=
           api::RelationalExpressionKind::kFunctionCall ||
@@ -2107,6 +2104,17 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     const plan::CanonicalLogicalRelationalNode& values_node,
     const PreparedGroupedCountSumRoot& prepared_aggregate) {
   PreparedGroupedHavingRoot result;
+  const auto* sum_registry_entry =
+      exec::LookupCanonicalAggregateByFunctionV1(
+          exec::CanonicalAggregateFunction::sum);
+  const auto* count_registry_entry =
+      exec::LookupCanonicalAggregateByFunctionV1(
+          exec::CanonicalAggregateFunction::count);
+  if (sum_registry_entry == nullptr || count_registry_entry == nullptr ||
+      !sum_registry_entry->executable || !count_registry_entry->executable) {
+    result.detail = "canonical COUNT/SUM aggregate registry is unavailable";
+    return result;
+  }
   const bool simple_sum_profile =
       filter_root.semantic_variant_id ==
       "filter.having-sum-gt-int64-literal.v1";
@@ -2908,8 +2916,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
         projected_sum == nullptr ||
         having_sum->expression_kind !=
             api::RelationalExpressionKind::kFunctionCall ||
-        having_sum->function_uuid !=
-            "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+        having_sum->function_uuid != sum_registry_entry->function_uuid ||
         having_sum->child_expression_ids.size() != 1 ||
         having_sum->result_descriptor_id !=
             aggregate_root.output_descriptor_ids[key_count + 1] ||
@@ -3023,8 +3030,7 @@ PreparedGroupedHavingRoot PrepareGroupedHavingRoot(
     if (having_count == nullptr || projected_count == nullptr ||
         having_count->expression_kind !=
             api::RelationalExpressionKind::kFunctionCall ||
-        having_count->function_uuid !=
-            "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+        having_count->function_uuid != count_registry_entry->function_uuid ||
         !having_count->child_expression_ids.empty() ||
         having_count->result_descriptor_id !=
             aggregate_root.output_descriptor_ids[key_count] ||

@@ -11,8 +11,6 @@
 #include "common/function_result_helpers.hpp"
 #include "sblr/sblr_aggregate_window_runtime.hpp"
 
-#include <algorithm>
-#include <cctype>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,16 +19,11 @@
 namespace scratchbird::engine::functions {
 namespace {
 
-std::string Lower(std::string_view input) {
-  std::string out(input);
-  std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return out;
-}
-
 std::string AggregateResultDescriptor(std::string_view function_id) {
-  const std::string id = Lower(function_id);
+  const std::string id(
+      scratchbird::engine::sblr::ResolveSblrCanonicalAggregateBuiltinId(
+          function_id));
+  if (id.empty()) return {};
   if (id.find("top_k") != std::string::npos || id.find("json") != std::string::npos) return "json";
   if (id.find("listagg") != std::string::npos ||
       id.find("string_agg") != std::string::npos ||

@@ -8,6 +8,7 @@
 
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr_envelope.hpp"
+#include "canonical_aggregate_registry.hpp"
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
 #include "hash_digest.hpp"
@@ -2335,8 +2336,25 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // Canonical aggregate function identity is catalog authority, not a
   // per-statement handle.  Publish the exact engine-owned registry rows so
   // repeated projected/HAVING references bind the same immutable functions.
-  view.count_function_uuid = "019de5fc-2400-784a-9aec-371f8b95b7ea";
-  view.sum_function_uuid = "019de5fc-2400-72e4-8549-82b2eef5a777";
+  const auto* count_registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::count);
+  const auto* sum_registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::sum);
+  if (count_registry_entry == nullptr || sum_registry_entry == nullptr ||
+      !count_registry_entry->executable || !sum_registry_entry->executable) {
+    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+        snapshot.snapshot_uuid);
+    return fail_result(
+        SB_ENGINE_STATUS_INTERNAL_ERROR,
+        out_result,
+        4044,
+        "ENGINE.STATEMENT_CONTEXT.AGGREGATE_REGISTRY_UNAVAILABLE",
+        "engine.statement_context.aggregate_registry_unavailable");
+  }
+  view.count_function_uuid = count_registry_entry->function_uuid;
+  view.sum_function_uuid = sum_registry_entry->function_uuid;
 
   std::string numeric_type_uuid;
   std::string text_type_uuid;

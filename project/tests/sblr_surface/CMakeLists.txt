@@ -232,7 +232,7 @@ if(TARGET sb_engine_functions)
     COMMAND sblr_surface_function_registry_dispatch_conformance
   )
   set_tests_properties(sblr_surface_function_registry_dispatch_conformance PROPERTIES
-    LABELS "ELER-074;ELER-079;ELER-104;ELER-GATE-104;final_function_registry_dispatch;no_missing_function_handler;sblr_surface;release_proof_substrate;sblr_parser_authority_property"
+    LABELS "ELER-074;ELER-079;ELER-104;ELER-GATE-104;final_function_registry_dispatch;no_missing_function_handler;RCP-025-CANONICAL-AGGREGATE-REGISTRY;sblr_surface;release_proof_substrate;sblr_parser_authority_property"
   )
 endif()
 add_test(

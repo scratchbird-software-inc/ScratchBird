@@ -150,10 +150,8 @@ api::EngineTypedValue Null(const api::EngineDescriptor& descriptor) {
 
 const exec::CanonicalAggregateRegistryEntry& Entry(
     const exec::CanonicalAggregateFunction function) {
-  static const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
-  for (const auto& entry : registry) {
-    if (entry.function == function) return entry;
-  }
+  const auto* entry = exec::LookupCanonicalAggregateByFunctionV1(function);
+  if (entry != nullptr) return *entry;
   std::abort();
 }
 
@@ -399,7 +397,10 @@ bool NearScalar(const exec::CanonicalAggregateRuntimeResult& result,
 // QOW-TEST-QRY-011-REGISTRY-V1
 bool ValidateCanonicalAggregateRegistry() {
   bool passed = true;
-  const auto registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  const auto& registry = exec::CanonicalAggregateRuntimeRegistryV1();
+  passed &= Require(
+      exec::ValidateCanonicalAggregateRuntimeRegistryV1().empty(),
+      "canonical global aggregate registry self-validation failed");
   std::set<std::string> ids;
   std::set<std::string> uuids;
   std::set<exec::CanonicalAggregateFunction> functions;
@@ -417,6 +418,17 @@ bool ValidateCanonicalAggregateRegistry() {
     if (entry.executable) ++executable_count;
     if (entry.aggregate_as_window) ++aggregate_window_count;
     if (entry.moving_window_inverse) ++moving_inverse_count;
+    passed &= Require(
+        exec::LookupCanonicalAggregateByFunctionV1(entry.function) ==
+                &entry &&
+            exec::LookupCanonicalAggregateByBuiltinIdV1(entry.builtin_id) ==
+                &entry &&
+            exec::LookupCanonicalAggregateByUuidV1(entry.function_uuid) ==
+                &entry &&
+            exec::LookupCanonicalAggregateExactV1(
+                entry.abi_version, entry.function, entry.builtin_id,
+                entry.function_uuid) == &entry,
+        "canonical aggregate lookup did not return the sole stable row");
   }
   passed &= Require(registry.size() == 43 && executable_count == 43 &&
                         aggregate_window_count == registry.size() &&
@@ -438,6 +450,19 @@ bool ValidateCanonicalAggregateRegistry() {
                                 .function_uuid ==
                             "019dffbb-f000-74f7-98ba-c24ead6d30df",
                     "registry endpoints do not match seed authority");
+  passed &= Require(
+      exec::LookupCanonicalAggregateByFunctionV1(
+          exec::CanonicalAggregateFunction::unknown) == nullptr &&
+          exec::LookupCanonicalAggregateByBuiltinIdV1(
+              "sb.aggregate.registry_bypass") == nullptr &&
+          exec::LookupCanonicalAggregateByUuidV1(
+              "019f0000-0000-7000-8000-00000000ffff") == nullptr &&
+          exec::LookupCanonicalAggregateExactV1(
+              1, exec::CanonicalAggregateFunction::sum,
+              "sb.aggregate.sum",
+              Entry(exec::CanonicalAggregateFunction::avg).function_uuid) ==
+              nullptr,
+      "unknown or cross-row aggregate identity did not refuse");
 
   struct Case {
     exec::CanonicalAggregateFunction function;

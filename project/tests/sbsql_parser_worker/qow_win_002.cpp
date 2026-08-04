@@ -126,7 +126,7 @@ bool ValidateRuntimeRegistry() {
   std::set<exec::CanonicalWindowRuntimeFunction> functions;
   std::set<std::string> builtin_ids;
   std::set<std::string> uuids;
-  bool passed = Require401(registry.size() == 12,
+  bool passed = Require401(registry.size() == 11,
                            "canonical runtime registry row count drifted");
   for (const auto& row : registry) {
     passed &= Require401(
@@ -238,7 +238,7 @@ bool ValidateAggregateStrategyAndRefusals() {
       exec::ExecuteCanonicalRegistryWindowAggregate(aggregate);
   exec::CanonicalWindowRuntimeRequest request;
   request.descriptor =
-      RuntimeDescriptor(exec::CanonicalWindowRuntimeFunction::int64_sum);
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::sum);
   request.registry_aggregate = aggregate;
   request.forced_strategy = exec::CanonicalWindowRuntimeStrategy::aggregate;
   auto runtime = exec::ExecuteCanonicalWindowRuntime(request);
@@ -286,14 +286,17 @@ bool ValidateAggregateStrategyAndRefusals() {
       "generic SUM identity did not admit its broader result profile");
 
   request.descriptor =
-      RuntimeDescriptor(exec::CanonicalWindowRuntimeFunction::int64_sum);
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::sum);
+  request.descriptor.function_uuid =
+      RuntimeAggregateDescriptor(exec::CanonicalAggregateFunction::avg)
+          .function_uuid;
   auto refused = exec::ExecuteCanonicalWindowRuntime(request);
   passed &= Require401(
       !refused.diagnostic.ok &&
           refused.diagnostic.diagnostic_code ==
-              "QOW-DIAG-WINDOW-RUNTIME-PAYLOAD" &&
+              "QOW-DIAG-WINDOW-FUNCTION-DESCRIPTOR" &&
           refused.values.empty(),
-      "retained int64 SUM seed admitted a broader SUM result profile");
+      "aggregate window admitted a cross-row registry identity");
 
   aggregate = RegistryAverageWindowRequest(PrefixFrame());
   SelectRegistryWindowStateStrategy(

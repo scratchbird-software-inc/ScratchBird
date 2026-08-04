@@ -384,7 +384,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_test(NAME qow_qry_011_registry_v1
     COMMAND qow_qry_011_registry_test_v1)
   set_tests_properties(qow_qry_011_registry_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;RCP-025-CANONICAL-AGGREGATE-REGISTRY;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-EMPTY-V1
@@ -994,7 +994,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_win_002_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_win_002_v1 COMMAND qow_win_002_test_v1)
   set_tests_properties(qow_win_002_v1 PROPERTIES
-    LABELS "qow_closure;QOW-406;QOW-LEAF-WIN-002;development_candidate"
+    LABELS "qow_closure;QOW-406;QOW-LEAF-WIN-002;RCP-025-CANONICAL-AGGREGATE-REGISTRY;development_candidate"
   )
 
   # QOW-CMAKE-IAS-005-V1
@@ -1836,6 +1836,20 @@ if(TARGET sb_engine_sblr)
   )
   set_tests_properties(sbsql_sbsfc_015_aggregate_window_runtime_conformance PROPERTIES
     LABELS "sbsql_sbsfc_015_aggregate_window_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
+  )
+
+  add_executable(
+    rcp025_canonical_aggregate_registry_conformance
+    rcp025_canonical_aggregate_registry_conformance.cpp
+  )
+  target_compile_features(rcp025_canonical_aggregate_registry_conformance PRIVATE cxx_std_20)
+  target_link_libraries(rcp025_canonical_aggregate_registry_conformance PRIVATE sb_engine_sblr)
+  add_test(
+    NAME rcp025_canonical_aggregate_registry_conformance
+    COMMAND rcp025_canonical_aggregate_registry_conformance
+  )
+  set_tests_properties(rcp025_canonical_aggregate_registry_conformance PROPERTIES
+    LABELS "RCP-025-CANONICAL-AGGREGATE-REGISTRY;canonical_aggregate_registry;sbsql_parser_worker"
   )
 endif()
 

@@ -106,9 +106,8 @@ struct EngineGlobalAggregateExecutionResult {
 // ABI does not mint or select a public builtin identity.
 EngineDescriptor EngineGlobalAggregateCountResultDescriptor();
 
-// Canonical data.aggregate registry identity for COUNT.  Neither the retired
-// conflicting `count` UUID nor the legacy `sb.aggregate.count` surface UUID is
-// admitted by this ABI.
+// Canonical global aggregate-registry identity for COUNT. No independently
+// copied or retired COUNT UUID is admitted by this ABI.
 std::string_view EngineGlobalAggregateCountFunctionUuid();
 
 // Stable nullable result descriptors for direct-relation AVG. Integer inputs
@@ -124,8 +123,8 @@ EngineDescriptor EngineGlobalAggregateAvgRealResultDescriptor();
 EngineDescriptor EngineGlobalAggregateExpressionInt32LiteralDescriptor();
 EngineDescriptor EngineGlobalAggregateExpressionInt64ResultDescriptor();
 
-// Canonical data.aggregate registry identity for AVG. Retired/surface AVG UUIDs
-// are deliberately not aliases and are rejected by the envelope validator.
+// Canonical global aggregate-registry identity for AVG. Independently copied
+// or retired AVG UUIDs are rejected by the envelope validator.
 std::string_view EngineGlobalAggregateAvgFunctionUuid();
 
 // Performs operation/alias/result-descriptor validation without consulting

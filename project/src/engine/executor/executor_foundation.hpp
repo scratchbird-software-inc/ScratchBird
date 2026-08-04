@@ -284,7 +284,6 @@ enum class CanonicalWindowRuntimeFunction : std::uint8_t {
   first_value,
   last_value,
   nth_value,
-  int64_sum,
 };
 
 enum class CanonicalWindowRuntimeStrategy : std::uint8_t {

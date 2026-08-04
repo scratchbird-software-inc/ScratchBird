@@ -8,7 +8,9 @@
 
 #include "dispatch/function_dispatch.hpp"
 #include "common/function_result_helpers.hpp"
+#include "canonical_aggregate_registry.hpp"
 #include "registry/function_seed_registry.hpp"
+#include "sblr/sblr_aggregate_window_runtime.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -21,6 +23,7 @@
 namespace {
 
 namespace functions = scratchbird::engine::functions;
+namespace exec = scratchbird::engine::executor;
 namespace sblr = scratchbird::engine::sblr;
 
 [[noreturn]] void Fail(const std::string& message) {
@@ -229,7 +232,24 @@ int main() {
             entry.function_id + ": function UUID did not resolve");
     Require(resolved->function_uuid == entry.function_uuid,
             entry.function_id + ": function UUID resolved to another identity");
+    if (entry.family == "data.aggregate" &&
+        entry.function_id.rfind("sb.aggregate.", 0) == 0) {
+      const auto* aggregate =
+          exec::LookupCanonicalAggregateByBuiltinIdV1(entry.function_id);
+      Require(aggregate != nullptr,
+              entry.function_id +
+                  ": data.aggregate seed bypassed the global aggregate registry");
+      Require(aggregate->function_uuid == entry.function_uuid &&
+                  sblr::ResolveSblrCanonicalAggregateBuiltinId(
+                      entry.function_id) == entry.function_id &&
+                  sblr::ResolveSblrCanonicalAggregateFunctionUuid(
+                      entry.function_id) == entry.function_uuid,
+              entry.function_id +
+                  ": function, aggregate, and SBLR registry identities drifted");
+    }
   }
+  Require(exec::ValidateCanonicalAggregateRuntimeRegistryV1().empty(),
+          "canonical global aggregate registry self-validation failed");
   const auto* upper_by_uuid = package.registry.LookupByUuid(
       "019de5fc-2400-7f4f-a75a-97f18565ad84");
   Require(upper_by_uuid != nullptr &&

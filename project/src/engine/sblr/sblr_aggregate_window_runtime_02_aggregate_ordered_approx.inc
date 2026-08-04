@@ -242,15 +242,6 @@ SblrAggregateFunctionKind ResolveSblrAggregateFunctionKind(std::string_view func
       id == "data.aggregate.regr_syy" || id == "sb.aggregate.regr_syy") {
     return SblrAggregateFunctionKind::regr_syy;
   }
-  if (id == "bit_and" || id == "data.aggregate.bit_and") {
-    return SblrAggregateFunctionKind::bit_and;
-  }
-  if (id == "bit_or" || id == "data.aggregate.bit_or") {
-    return SblrAggregateFunctionKind::bit_or;
-  }
-  if (id == "bit_xor" || id == "data.aggregate.bit_xor") {
-    return SblrAggregateFunctionKind::bit_xor;
-  }
   if (id == "string_agg" || id == "group_concat" || id == "listagg" ||
       id == "listagg(expr[,sep][onoverflow...])withingroup(orderby...)" ||
       id == "data.aggregate.string_agg" || id == "data.aggregate.group_concat" ||
@@ -261,9 +252,6 @@ SblrAggregateFunctionKind ResolveSblrAggregateFunctionKind(std::string_view func
       id == "data.aggregate.array_agg" || id == "data.aggregate.list_agg" ||
       id == "sb.aggregate.array_agg") {
     return SblrAggregateFunctionKind::list_agg;
-  }
-  if (id == "binary_agg" || id == "bytea_agg" || id == "data.aggregate.binary_agg") {
-    return SblrAggregateFunctionKind::binary_agg;
   }
   if (id == "json_agg" || id == "json_agg(expr[orderby...])" ||
       id == "json_arrayagg" || id == "json_array_agg" ||
@@ -307,8 +295,202 @@ SblrAggregateFunctionKind ResolveSblrAggregateFunctionKind(std::string_view func
   return SblrAggregateFunctionKind::unknown;
 }
 
+scratchbird::engine::executor::CanonicalAggregateFunction
+CanonicalAggregateFunctionForSblrAlias(const std::string_view function_id) {
+  namespace exec = scratchbird::engine::executor;
+  const std::string id = Lower(function_id);
+  if (id.rfind("sb.aggregate.", 0) == 0) {
+    const auto* exact = exec::LookupCanonicalAggregateByBuiltinIdV1(id);
+    return exact == nullptr ? exec::CanonicalAggregateFunction::unknown
+                            : exact->function;
+  }
+
+  switch (ResolveSblrAggregateFunctionKind(id)) {
+    case SblrAggregateFunctionKind::count:
+      return exec::CanonicalAggregateFunction::count;
+    case SblrAggregateFunctionKind::sum:
+      return exec::CanonicalAggregateFunction::sum;
+    case SblrAggregateFunctionKind::avg:
+      return exec::CanonicalAggregateFunction::avg;
+    case SblrAggregateFunctionKind::min:
+      return exec::CanonicalAggregateFunction::min;
+    case SblrAggregateFunctionKind::max:
+      return exec::CanonicalAggregateFunction::max;
+    case SblrAggregateFunctionKind::every:
+      return id.find("bool_and") != std::string::npos ||
+                     id.find("boolean_and") != std::string::npos
+                 ? exec::CanonicalAggregateFunction::bool_and
+                 : exec::CanonicalAggregateFunction::every;
+    case SblrAggregateFunctionKind::any:
+      return exec::CanonicalAggregateFunction::bool_or;
+    case SblrAggregateFunctionKind::variance_sample:
+      return id.find("variance_samp") != std::string::npos ||
+                     id.find("var_samp") != std::string::npos
+                 ? exec::CanonicalAggregateFunction::variance_samp
+                 : exec::CanonicalAggregateFunction::variance;
+    case SblrAggregateFunctionKind::variance_population:
+      return exec::CanonicalAggregateFunction::variance_pop;
+    case SblrAggregateFunctionKind::stddev_sample:
+      return id.find("stddev_samp") != std::string::npos
+                 ? exec::CanonicalAggregateFunction::stddev_samp
+                 : exec::CanonicalAggregateFunction::stddev;
+    case SblrAggregateFunctionKind::stddev_population:
+      return exec::CanonicalAggregateFunction::stddev_pop;
+    case SblrAggregateFunctionKind::corr:
+      return exec::CanonicalAggregateFunction::corr;
+    case SblrAggregateFunctionKind::covariance_population:
+      return exec::CanonicalAggregateFunction::covar_pop;
+    case SblrAggregateFunctionKind::covariance_sample:
+      return exec::CanonicalAggregateFunction::covar_samp;
+    case SblrAggregateFunctionKind::regr_avgx:
+      return exec::CanonicalAggregateFunction::regr_avgx;
+    case SblrAggregateFunctionKind::regr_avgy:
+      return exec::CanonicalAggregateFunction::regr_avgy;
+    case SblrAggregateFunctionKind::regr_count:
+      return exec::CanonicalAggregateFunction::regr_count;
+    case SblrAggregateFunctionKind::regr_intercept:
+      return exec::CanonicalAggregateFunction::regr_intercept;
+    case SblrAggregateFunctionKind::regr_r2:
+      return exec::CanonicalAggregateFunction::regr_r2;
+    case SblrAggregateFunctionKind::regr_slope:
+      return exec::CanonicalAggregateFunction::regr_slope;
+    case SblrAggregateFunctionKind::regr_sxx:
+      return exec::CanonicalAggregateFunction::regr_sxx;
+    case SblrAggregateFunctionKind::regr_sxy:
+      return exec::CanonicalAggregateFunction::regr_sxy;
+    case SblrAggregateFunctionKind::regr_syy:
+      return exec::CanonicalAggregateFunction::regr_syy;
+    case SblrAggregateFunctionKind::string_agg:
+      return id.find("listagg") != std::string::npos
+                 ? exec::CanonicalAggregateFunction::listagg
+                 : exec::CanonicalAggregateFunction::string_agg;
+    case SblrAggregateFunctionKind::list_agg:
+      return exec::CanonicalAggregateFunction::array_agg;
+    case SblrAggregateFunctionKind::json_array_agg:
+      return exec::CanonicalAggregateFunction::json_agg;
+    case SblrAggregateFunctionKind::json_object_agg:
+      return exec::CanonicalAggregateFunction::json_object_agg;
+    case SblrAggregateFunctionKind::approx_count_distinct:
+      return exec::CanonicalAggregateFunction::approx_count_distinct;
+    case SblrAggregateFunctionKind::approx_quantile:
+      if (id.find("approx_median") != std::string::npos) {
+        return exec::CanonicalAggregateFunction::approx_median;
+      }
+      if (id.find("approx_percentile_disc") != std::string::npos) {
+        return exec::CanonicalAggregateFunction::approx_percentile_disc;
+      }
+      if (id.find("approx_percentile_cont") != std::string::npos ||
+          id.find("approx_quantile") != std::string::npos ||
+          id == "quantile" || id == "percentile_approx" ||
+          id == "data.aggregate.approx_quantile") {
+        return exec::CanonicalAggregateFunction::approx_percentile_cont;
+      }
+      if (id.find("percentile_disc") != std::string::npos) {
+        return exec::CanonicalAggregateFunction::percentile_disc;
+      }
+      return exec::CanonicalAggregateFunction::percentile_cont;
+    case SblrAggregateFunctionKind::top_k:
+      return IsModeAggregateId(id)
+                 ? exec::CanonicalAggregateFunction::mode
+                 : exec::CanonicalAggregateFunction::approx_top_k;
+    case SblrAggregateFunctionKind::bit_and:
+    case SblrAggregateFunctionKind::bit_or:
+    case SblrAggregateFunctionKind::bit_xor:
+    case SblrAggregateFunctionKind::binary_agg:
+    case SblrAggregateFunctionKind::unknown:
+      return exec::CanonicalAggregateFunction::unknown;
+  }
+  return exec::CanonicalAggregateFunction::unknown;
+}
+
+SblrAggregateFunctionKind SblrAggregateKindForCanonicalFunction(
+    const scratchbird::engine::executor::CanonicalAggregateFunction function) {
+  using Function =
+      scratchbird::engine::executor::CanonicalAggregateFunction;
+  switch (function) {
+    case Function::count: return SblrAggregateFunctionKind::count;
+    case Function::sum: return SblrAggregateFunctionKind::sum;
+    case Function::avg: return SblrAggregateFunctionKind::avg;
+    case Function::min: return SblrAggregateFunctionKind::min;
+    case Function::max: return SblrAggregateFunctionKind::max;
+    case Function::bool_and:
+    case Function::every: return SblrAggregateFunctionKind::every;
+    case Function::bool_or: return SblrAggregateFunctionKind::any;
+    case Function::variance:
+    case Function::variance_samp:
+      return SblrAggregateFunctionKind::variance_sample;
+    case Function::variance_pop:
+      return SblrAggregateFunctionKind::variance_population;
+    case Function::stddev:
+    case Function::stddev_samp:
+      return SblrAggregateFunctionKind::stddev_sample;
+    case Function::stddev_pop:
+      return SblrAggregateFunctionKind::stddev_population;
+    case Function::corr: return SblrAggregateFunctionKind::corr;
+    case Function::covar_pop:
+      return SblrAggregateFunctionKind::covariance_population;
+    case Function::covar_samp:
+      return SblrAggregateFunctionKind::covariance_sample;
+    case Function::regr_avgx: return SblrAggregateFunctionKind::regr_avgx;
+    case Function::regr_avgy: return SblrAggregateFunctionKind::regr_avgy;
+    case Function::regr_count: return SblrAggregateFunctionKind::regr_count;
+    case Function::regr_intercept:
+      return SblrAggregateFunctionKind::regr_intercept;
+    case Function::regr_r2: return SblrAggregateFunctionKind::regr_r2;
+    case Function::regr_slope: return SblrAggregateFunctionKind::regr_slope;
+    case Function::regr_sxx: return SblrAggregateFunctionKind::regr_sxx;
+    case Function::regr_sxy: return SblrAggregateFunctionKind::regr_sxy;
+    case Function::regr_syy: return SblrAggregateFunctionKind::regr_syy;
+    case Function::string_agg:
+    case Function::listagg: return SblrAggregateFunctionKind::string_agg;
+    case Function::array_agg: return SblrAggregateFunctionKind::list_agg;
+    case Function::json_agg: return SblrAggregateFunctionKind::json_array_agg;
+    case Function::json_object_agg:
+      return SblrAggregateFunctionKind::json_object_agg;
+    case Function::approx_count_distinct:
+      return SblrAggregateFunctionKind::approx_count_distinct;
+    case Function::approx_median:
+    case Function::percentile_cont:
+    case Function::percentile_disc:
+    case Function::approx_percentile_cont:
+    case Function::approx_percentile_disc:
+      return SblrAggregateFunctionKind::approx_quantile;
+    case Function::mode:
+    case Function::approx_top_k: return SblrAggregateFunctionKind::top_k;
+    case Function::rank:
+    case Function::dense_rank:
+    case Function::percent_rank:
+    case Function::cume_dist:
+    case Function::unknown:
+      return SblrAggregateFunctionKind::unknown;
+  }
+  return SblrAggregateFunctionKind::unknown;
+}
+
 bool IsSblrAggregateFunctionSupported(std::string_view function_id) {
-  return ResolveSblrAggregateFunctionKind(function_id) != SblrAggregateFunctionKind::unknown;
+  const auto function = CanonicalAggregateFunctionForSblrAlias(function_id);
+  const auto* entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          function);
+  return entry != nullptr && entry->executable &&
+         SblrAggregateKindForCanonicalFunction(entry->function) !=
+             SblrAggregateFunctionKind::unknown;
+}
+
+std::string_view ResolveSblrCanonicalAggregateBuiltinId(
+    const std::string_view function_id) {
+  const auto* entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          CanonicalAggregateFunctionForSblrAlias(function_id));
+  return entry == nullptr ? std::string_view{} : entry->builtin_id;
+}
+
+std::string_view ResolveSblrCanonicalAggregateFunctionUuid(
+    const std::string_view function_id) {
+  const auto* entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          CanonicalAggregateFunctionForSblrAlias(function_id));
+  return entry == nullptr ? std::string_view{} : entry->function_uuid;
 }
 
 SblrWindowFunctionKind ResolveSblrWindowFunctionKind(std::string_view function_id) {
@@ -394,8 +576,17 @@ SblrResult InitializeSblrAggregateState(std::string_view function_id,
                                                 "aggregate state pointer is required");
     return MakeSblrFailure(SblrStatusCode::execution_failed, std::string(function_id), std::move(diagnostic));
   }
-  const auto kind = ResolveSblrAggregateFunctionKind(function_id);
-  if (kind == SblrAggregateFunctionKind::unknown) {
+  const auto canonical_function =
+      CanonicalAggregateFunctionForSblrAlias(function_id);
+  const auto* registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          canonical_function);
+  const auto kind = registry_entry == nullptr
+                        ? SblrAggregateFunctionKind::unknown
+                        : SblrAggregateKindForCanonicalFunction(
+                              registry_entry->function);
+  if (registry_entry == nullptr || !registry_entry->executable ||
+      kind == SblrAggregateFunctionKind::unknown) {
     SblrAggregateWindowState diagnostic_state;
     diagnostic_state.function_id = std::string(function_id);
     diagnostic_state.function_uuid = function_uuid;
@@ -406,9 +597,23 @@ SblrResult InitializeSblrAggregateState(std::string_view function_id,
                                                 &diagnostic_state,
                                                 "aggregate function id is not supported by the aggregate ABI"));
   }
+  if (function_uuid != registry_entry->function_uuid) {
+    SblrAggregateWindowState diagnostic_state;
+    diagnostic_state.function_id = std::string(function_id);
+    diagnostic_state.function_uuid = std::move(function_uuid);
+    return AggregateFailure(
+        SblrStatusCode::execution_failed,
+        std::string(function_id),
+        AggregateDiagnostic(
+            "SB_DIAG_AGGREGATE_REGISTRY_IDENTITY_MISMATCH",
+            context,
+            &diagnostic_state,
+            "aggregate alias, canonical builtin id, and function UUID do not "
+            "resolve to one global aggregate registry row"));
+  }
   *state = SblrAggregateWindowState{};
-  state->function_id = std::string(function_id);
-  state->function_uuid = std::move(function_uuid);
+  state->function_id = registry_entry->builtin_id;
+  state->function_uuid = registry_entry->function_uuid;
   state->result_descriptor_id = std::move(result_descriptor_id);
   state->aggregate_kind = kind;
   state->initialized = true;

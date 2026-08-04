@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "canonical_aggregate_registry.hpp"
 #include "datatype_operations.hpp"
 #include "datatype_temporal_wire.hpp"
 #include "physical_node_abi.hpp"
@@ -1548,53 +1549,6 @@ struct CanonicalDescriptorOrderTerm {
   scratchbird::core::datatypes::TimezoneSeedAuthority timezone_seed;
 };
 
-enum class CanonicalAggregateFunction : std::uint8_t {
-  unknown = 0,
-  count,
-  sum,
-  avg,
-  min,
-  max,
-  bool_and,
-  bool_or,
-  array_agg,
-  string_agg,
-  json_agg,
-  json_object_agg,
-  stddev_pop,
-  variance_pop,
-  every,
-  listagg,
-  rank,
-  dense_rank,
-  percent_rank,
-  cume_dist,
-  mode,
-  percentile_cont,
-  percentile_disc,
-  approx_count_distinct,
-  approx_median,
-  approx_percentile_cont,
-  approx_percentile_disc,
-  approx_top_k,
-  stddev,
-  variance,
-  stddev_samp,
-  variance_samp,
-  corr,
-  covar_pop,
-  covar_samp,
-  regr_count,
-  regr_avgx,
-  regr_avgy,
-  regr_intercept,
-  regr_r2,
-  regr_slope,
-  regr_sxx,
-  regr_sxy,
-  regr_syy,
-};
-
 enum class CanonicalAggregateExecutionStrategy : std::uint8_t {
   unknown = 0,
   serial,
@@ -1605,16 +1559,6 @@ enum class CanonicalListaggOverflowMode : std::uint8_t {
   none = 0,
   error,
   truncate,
-};
-
-struct CanonicalAggregateRegistryEntry {
-  std::uint16_t abi_version = 0;
-  CanonicalAggregateFunction function = CanonicalAggregateFunction::unknown;
-  std::string builtin_id;
-  std::string function_uuid;
-  bool executable = false;
-  bool aggregate_as_window = false;
-  bool moving_window_inverse = false;
 };
 
 struct CanonicalAggregateDescriptor {
@@ -2235,8 +2179,6 @@ CanonicalDescriptorFetchProfileResult ExecuteCanonicalDescriptorFetchProfile(
     const CanonicalDescriptorFetchProfileRequest& request);
 CanonicalDescriptorCountResult ExecuteCanonicalDescriptorCountStar(
     const CanonicalDescriptorCountRequest& request);
-std::vector<CanonicalAggregateRegistryEntry>
-CanonicalAggregateRuntimeRegistryV1();
 CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntime(
     const CanonicalAggregateRuntimeRequest& request);
 CanonicalAggregateStateSpillResult ExecuteCanonicalAggregateStateSpill(

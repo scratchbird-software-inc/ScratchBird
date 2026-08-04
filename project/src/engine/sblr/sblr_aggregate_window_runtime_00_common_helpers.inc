@@ -9,6 +9,7 @@
 // SBSQL source-layout fragment. Included only by sblr_aggregate_window_runtime.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
 #include "sblr_aggregate_window_runtime.hpp"
+#include "canonical_aggregate_registry.hpp"
 
 #include <algorithm>
 #include <cctype>

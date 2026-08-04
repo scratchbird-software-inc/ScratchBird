@@ -9,6 +9,7 @@
 #include "dml/global_aggregate_projection.hpp"
 
 #include "api_diagnostics.hpp"
+#include "canonical_aggregate_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "datatype_operations.hpp"
 #include "mga_relation_store/mga_relation_descriptor.hpp"
@@ -37,10 +38,6 @@ namespace dt = scratchbird::core::datatypes;
 
 constexpr std::string_view kOperation = "dml.global_aggregate_projection";
 constexpr std::size_t kMaximumProjectionCount = 4096;
-constexpr std::string_view kCountFunctionUuid =
-    "019de5fc-2400-784a-9aec-371f8b95b7ea";
-constexpr std::string_view kAvgFunctionUuid =
-    "019de5fc-2400-78ac-b50c-45b832831004";
 
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic(
@@ -512,7 +509,10 @@ EngineDescriptor EngineGlobalAggregateCountResultDescriptor() {
 }
 
 std::string_view EngineGlobalAggregateCountFunctionUuid() {
-  return kCountFunctionUuid;
+  const auto* entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::count);
+  return entry == nullptr ? std::string_view{} : entry->function_uuid;
 }
 
 EngineDescriptor EngineGlobalAggregateAvgIntegerResultDescriptor() {
@@ -552,7 +552,10 @@ EngineDescriptor EngineGlobalAggregateExpressionInt64ResultDescriptor() {
 }
 
 std::string_view EngineGlobalAggregateAvgFunctionUuid() {
-  return kAvgFunctionUuid;
+  const auto* entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::avg);
+  return entry == nullptr ? std::string_view{} : entry->function_uuid;
 }
 
 EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
@@ -577,8 +580,15 @@ EngineApiDiagnostic ValidateGlobalAggregateProjectionEnvelope(
 
   const std::string& envelope_function_uuid =
       envelope.outputs.front().aggregate_function_uuid.canonical;
-  const bool count_envelope = envelope_function_uuid == kCountFunctionUuid;
-  const bool avg_envelope = envelope_function_uuid == kAvgFunctionUuid;
+  const std::string_view count_function_uuid =
+      EngineGlobalAggregateCountFunctionUuid();
+  const std::string_view avg_function_uuid =
+      EngineGlobalAggregateAvgFunctionUuid();
+  if (count_function_uuid.empty() || avg_function_uuid.empty()) {
+    return AggregateDiagnostic("global_aggregate_registry_unavailable");
+  }
+  const bool count_envelope = envelope_function_uuid == count_function_uuid;
+  const bool avg_envelope = envelope_function_uuid == avg_function_uuid;
   if (!count_envelope && !avg_envelope) {
     return AggregateDiagnostic("global_aggregate_function_uuid_invalid");
   }
@@ -773,8 +783,17 @@ EngineGlobalAggregateExecutionResult ExecuteGlobalAggregateProjection(
 
   const std::string& aggregate_function_uuid =
       outputs.front().aggregate_function_uuid.canonical;
-  const bool count_envelope = aggregate_function_uuid == kCountFunctionUuid;
-  const bool avg_envelope = aggregate_function_uuid == kAvgFunctionUuid;
+  const std::string_view count_function_uuid =
+      EngineGlobalAggregateCountFunctionUuid();
+  const std::string_view avg_function_uuid =
+      EngineGlobalAggregateAvgFunctionUuid();
+  if (count_function_uuid.empty() || avg_function_uuid.empty()) {
+    result.diagnostic =
+        AggregateDiagnostic("bound_global_aggregate_registry_unavailable");
+    return result;
+  }
+  const bool count_envelope = aggregate_function_uuid == count_function_uuid;
+  const bool avg_envelope = aggregate_function_uuid == avg_function_uuid;
   if (!count_envelope && !avg_envelope) {
     result.diagnostic = AggregateDiagnostic(
         "bound_global_aggregate_function_uuid_invalid");

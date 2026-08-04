@@ -167,6 +167,10 @@ struct LegacySblrWindowFunctionRequest {
 
 SblrAggregateFunctionKind ResolveSblrAggregateFunctionKind(std::string_view function_id);
 bool IsSblrAggregateFunctionSupported(std::string_view function_id);
+std::string_view ResolveSblrCanonicalAggregateBuiltinId(
+    std::string_view function_id);
+std::string_view ResolveSblrCanonicalAggregateFunctionUuid(
+    std::string_view function_id);
 SblrWindowFunctionKind ResolveSblrWindowFunctionKind(std::string_view function_id);
 bool IsSblrWindowFunctionSupported(std::string_view function_id);
 SblrResult InitializeSblrAggregateState(std::string_view function_id,
