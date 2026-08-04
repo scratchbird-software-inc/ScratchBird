@@ -65,6 +65,53 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_link_libraries(sb_qow_typed_scalar_descriptor_contract PUBLIC
     sb_core_datatypes
   )
+  # Focused typed-parameter contract library shared by the QRY-026 proof.
+  add_library(sb_qow_typed_parameter_contract STATIC
+    query/projection_api.cpp
+  )
+  target_compile_features(sb_qow_typed_parameter_contract PUBLIC cxx_std_20)
+  target_compile_definitions(sb_qow_typed_parameter_contract PRIVATE
+    SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY=1
+  )
+  target_include_directories(sb_qow_typed_parameter_contract PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  # QOW-CMAKE-QRY-025-V1
+  add_executable(qow_qry_025_test_v1
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_parser_worker/qow_qry_025.cpp
+  )
+  target_compile_features(qow_qry_025_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_025_test_v1 PRIVATE
+    sb_qow_typed_scalar_descriptor_contract
+  )
+  add_test(NAME qow_qry_025_v1 COMMAND qow_qry_025_test_v1)
+  set_tests_properties(qow_qry_025_v1 PROPERTIES
+    LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-025;development_candidate"
+  )
+  # QOW-CMAKE-QRY-026-V1
+  add_executable(qow_qry_026_test_v1
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_parser_worker/qow_qry_026.cpp
+  )
+  target_compile_features(qow_qry_026_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_026_test_v1 PRIVATE
+    sb_qow_typed_parameter_contract
+  )
+  add_test(NAME qow_qry_026_v1 COMMAND qow_qry_026_test_v1)
+  set_tests_properties(qow_qry_026_v1 PROPERTIES
+    LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-026;development_candidate"
+  )
+  # QOW-CMAKE-QRY-028-V1
+  add_executable(qow_qry_028_test_v1
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_parser_worker/qow_qry_028.cpp
+  )
+  target_compile_features(qow_qry_028_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_028_test_v1 PRIVATE
+    sb_qow_typed_scalar_descriptor_contract
+  )
+  add_test(NAME qow_qry_028_v1 COMMAND qow_qry_028_test_v1)
+  set_tests_properties(qow_qry_028_v1 PROPERTIES
+    LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-028;development_candidate"
+  )
   set(SB_QOW_INTERNAL_API_TESTS_ENROLLED TRUE PARENT_SCOPE)
   return()
 endif()

@@ -182,6 +182,69 @@ bool QowApplyCanonicalDescriptorCoercionV1(
   return true;
 }
 
+// QOW-SOURCE-QRY-028-V1
+bool QowPreserveInvalidDescriptorStateAndCoerceV1(
+    const EngineTypedValue& input_value,
+    const EngineDescriptor& target_descriptor,
+    const bool explicit_cast,
+    EngineTypedValue* output_value,
+    std::string* cast_category,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  if (output_value == nullptr || cast_category == nullptr ||
+      refusal_reason == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  *output_value = input_value;
+  cast_category->clear();
+  refusal_reason->clear();
+  refusal_detail->clear();
+  const auto refuse = [&](std::string reason, std::string detail) {
+    *output_value = input_value;
+    cast_category->clear();
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+
+  const bool canonical_value_state =
+      (input_value.state == EngineValueState::value && !input_value.is_null) ||
+      (input_value.state == EngineValueState::sql_null && input_value.is_null &&
+       input_value.encoded_value.empty() && input_value.binary_value.empty());
+  if (!canonical_value_state) {
+    return refuse("invalid_descriptor_state",
+                  "descriptor coercion cannot replace an invalid value state");
+  }
+  if (!QowCanonicalDescriptorIdentityV1(input_value.descriptor) ||
+      !QowCanonicalDescriptorIdentityV1(target_descriptor) ||
+      input_value.descriptor.descriptor_kind != "scalar" ||
+      target_descriptor.descriptor_kind != "scalar") {
+    return refuse("descriptor_invalid",
+                  "descriptor coercion requires canonical scalar descriptors");
+  }
+  if (input_value.state == EngineValueState::sql_null &&
+      QowCanonicalDescriptorFieldV1(
+          target_descriptor.encoded_descriptor, "nullability") ==
+          "non_null") {
+    return refuse("unsupported_descriptor_coercion",
+                  "SQL NULL cannot be coerced to a non-NULL descriptor");
+  }
+
+  EngineTypedValue coerced;
+  std::string category;
+  std::string detail;
+  if (!QowApplyCanonicalDescriptorCoercionV1(
+          input_value, target_descriptor, explicit_cast, &coerced, &category,
+          &detail)) {
+    return refuse("unsupported_descriptor_coercion",
+                  detail.empty() ? "descriptor coercion is unsupported"
+                                 : std::move(detail));
+  }
+  *output_value = std::move(coerced);
+  *cast_category = std::move(category);
+  return true;
+}
+
 // QOW-SOURCE-QRY-008-COLLATION-V1
 bool QowCompareCanonicalCollatedScalarsV1(
     const EngineTypedValue& left_value,
@@ -875,6 +938,131 @@ bool QowMaterializeCanonicalTruthValueV1(
   return true;
 }
 
+// QOW-SOURCE-QRY-025-V1
+bool QowBindCanonicalExpressionReferenceV1(
+    const EngineBindExpressionRequest& request,
+    EngineObjectReference* bound_reference,
+    EngineDescriptor* bound_descriptor,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  namespace dt = scratchbird::core::datatypes;
+  if (bound_reference == nullptr || bound_descriptor == nullptr ||
+      refusal_reason == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  *bound_reference = EngineObjectReference{};
+  *bound_descriptor = EngineDescriptor{};
+  refusal_reason->clear();
+  refusal_detail->clear();
+  const auto refuse = [&](std::string reason, std::string detail) {
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+
+  const auto& reference = request.sql_object_reference;
+  const auto& identity = request.bound_object_identity;
+  const auto& context = request.context;
+  if (reference.expected_object_type.empty() ||
+      reference.object_name.raw_text.empty() ||
+      (reference.object_name.normalized_lookup_key.empty() &&
+       reference.object_name.exact_lookup_key.empty()) ||
+      reference.object_name.source_span.empty()) {
+    return refuse("malformed_reference",
+                  "typed expression reference is incomplete");
+  }
+  if (!request.related_objects.empty()) {
+    return refuse("ambiguous_reference",
+                  "typed expression reference has multiple resolution candidates");
+  }
+  if (!QowCanonicalUuidV1(identity.object_uuid.canonical) ||
+      identity.resolved_object_type.empty() ||
+      !QowCanonicalUuidV1(identity.resolved_schema_uuid.canonical)) {
+    return refuse("unresolved_reference",
+                  "typed expression reference has no canonical object binding");
+  }
+  if (identity.resolved_object_type != reference.expected_object_type) {
+    return refuse("ill_typed_reference",
+                  "resolved object kind does not match the bound reference kind");
+  }
+  if (!context.statement_metadata_snapshot_engine_owned ||
+      !QowCanonicalUuidV1(context.statement_metadata_snapshot_uuid.canonical) ||
+      context.catalog_generation_id == 0 || context.security_epoch == 0 ||
+      context.resource_epoch == 0 || identity.catalog_generation_id == 0 ||
+      identity.security_epoch == 0 || identity.resource_epoch == 0 ||
+      identity.catalog_generation_id != context.catalog_generation_id ||
+      identity.security_epoch != context.security_epoch ||
+      identity.resource_epoch != context.resource_epoch) {
+    return refuse("stale_reference",
+                  "resolved expression reference is outside the engine statement metadata snapshot");
+  }
+  if (request.descriptors.size() != 1 ||
+      !QowCanonicalDescriptorIdentityV1(request.descriptors.front()) ||
+      dt::CanonicalTypeIdFromStableName(
+          request.descriptors.front().canonical_type_name) ==
+          dt::CanonicalTypeId::unknown) {
+    return refuse("ill_typed_reference",
+                  "typed expression reference requires one canonical descriptor");
+  }
+
+  const auto& authorization = context.authorization_context;
+  if (!context.security_context_present || !authorization.present ||
+      authorization.principal_uuid.canonical !=
+          context.principal_uuid.canonical ||
+      authorization.security_epoch != context.security_epoch ||
+      authorization.catalog_generation_id != context.catalog_generation_id ||
+      authorization.policy_epoch == 0) {
+    return refuse("unauthorized_reference",
+                  "engine-owned authorization context is required");
+  }
+  const auto effective_subject = [&](const EngineUuid& subject_uuid,
+                                     const std::string& subject_kind) {
+    for (const auto& subject : authorization.effective_subjects) {
+      if (subject.subject_uuid.canonical == subject_uuid.canonical &&
+          subject.subject_kind == subject_kind) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const auto target_matches = [&](const EngineUuid& target_uuid) {
+    return target_uuid.canonical.empty() ||
+           target_uuid.canonical == identity.object_uuid.canonical;
+  };
+  bool select_allowed = false;
+  for (const auto& grant : authorization.grants) {
+    if (grant.right != "SELECT" || !target_matches(grant.target_uuid) ||
+        !effective_subject(grant.subject_uuid, grant.subject_kind)) {
+      continue;
+    }
+    if (grant.deny) {
+      return refuse("unauthorized_reference",
+                    "SELECT authorization is explicitly denied");
+    }
+    select_allowed = true;
+  }
+  for (const auto& policy : authorization.policies) {
+    if ((!policy.right.empty() && policy.right != "SELECT") ||
+        !target_matches(policy.target_uuid) ||
+        !effective_subject(policy.subject_uuid, policy.subject_kind)) {
+      continue;
+    }
+    if (policy.deny) {
+      return refuse("unauthorized_reference",
+                    "SELECT authorization is denied by bound policy");
+    }
+  }
+  if (!select_allowed) {
+    return refuse("unauthorized_reference",
+                  "SELECT authorization was not materialized for the resolved object");
+  }
+
+  bound_reference->uuid = identity.object_uuid;
+  bound_reference->object_kind = identity.resolved_object_type;
+  *bound_descriptor = request.descriptors.front();
+  return true;
+}
+
 }  // namespace scratchbird::engine::internal_api
 
 #ifndef SCRATCHBIRD_QOW_TYPED_SCALAR_DESCRIPTOR_CONTRACT_ONLY
@@ -1213,6 +1401,56 @@ bool AdvancedIndexKind(const std::string& index, dt::AdvancedDatatypeIndexKind* 
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_EXPRESSION_API_BEHAVIOR
 EngineBindExpressionResult EngineBindExpression(const EngineBindExpressionRequest& request) {
+  const bool canonical_reference_requested =
+      !request.sql_object_reference.expected_object_type.empty() ||
+      !request.sql_object_reference.object_name.raw_text.empty() ||
+      !request.sql_object_reference.object_name.normalized_lookup_key.empty() ||
+      !request.bound_object_identity.object_uuid.canonical.empty() ||
+      !request.related_objects.empty();
+  if (canonical_reference_requested) {
+    const auto refuse = [&](std::string reason,
+                            std::string detail) {
+      auto diagnostic = MakeEngineApiDiagnostic(
+          "QOW-DIAG-QRY-025-REFUSAL-V1",
+          "engine.query.expression_reference_binding_refused",
+          std::move(detail));
+      diagnostic.fields.push_back({"reason", std::move(reason)});
+      return ApiFailure<EngineBindExpressionResult>(
+          request.context, "query.bind_expression", std::move(diagnostic));
+    };
+
+    const auto& context = request.context;
+    EngineObjectReference bound_reference;
+    EngineDescriptor bound_descriptor;
+    std::string refusal_reason;
+    std::string refusal_detail;
+    if (!QowBindCanonicalExpressionReferenceV1(
+            request, &bound_reference, &bound_descriptor, &refusal_reason,
+            &refusal_detail)) {
+      return refuse(std::move(refusal_reason), std::move(refusal_detail));
+    }
+    const auto authorization = EvaluateMaterializedAuthorization(
+        context, context.authorization_context, "SELECT",
+        bound_reference.uuid.canonical);
+    if (!authorization.authorized) {
+      return refuse("unauthorized_reference",
+                    "SELECT authorization was not materialized for the resolved object");
+    }
+
+    auto result = ApiSuccess<EngineBindExpressionResult>(
+        context, "query.bind_expression");
+    result.primary_object = std::move(bound_reference);
+    result.result_shape.result_kind = "bound_expression_reference";
+    result.result_shape.columns.push_back(std::move(bound_descriptor));
+    result.evidence.push_back(
+        {"query_binding", "canonical_expression_reference"});
+    result.evidence.push_back(
+        {"statement_metadata_snapshot",
+         context.statement_metadata_snapshot_uuid.canonical});
+    result.evidence.push_back(
+        {"bound_object_uuid", result.primary_object.uuid.canonical});
+    return result;
+  }
   auto result = MakeApiBehaviorSuccess<EngineBindExpressionResult>(request.context, "query.bind_expression");
   AddApiBehaviorEvidence(&result, "query_binding", "expression");
   AddApiBehaviorRow(&result, {{"binding_kind", "expression"}, {"payload", ApiBehaviorPayloadFromRequest(request)}, {"descriptor_count", std::to_string(request.descriptors.size())}});

@@ -8,15 +8,133 @@
 
 #include "query/projection_api.hpp"
 
+#ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 #include "behavior_support/api_behavior_store.hpp"
 #include "api_diagnostics.hpp"
 #include "security/security_model.hpp"
+#endif
 
+#include <algorithm>
 #include <cctype>
+#include <cstddef>
 #include <string>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
+
+// QOW-SOURCE-QRY-026-V1
+bool QowBindCanonicalParameterSlotsV1(
+    const std::vector<EngineDescriptor>& parameter_descriptors,
+    const std::vector<std::pair<std::string, EngineTypedValue>>& supplied_parameters,
+    std::vector<EngineTypedValue>* bound_values,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  if (bound_values == nullptr || refusal_reason == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  bound_values->clear();
+  refusal_reason->clear();
+  refusal_detail->clear();
+  const auto refuse = [&](std::string reason, std::string detail) {
+    bound_values->clear();
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+  const auto canonical_uuid = [](const std::string& value) {
+    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
+        value[18] != '-' || value[23] != '-') {
+      return false;
+    }
+    for (std::size_t index = 0; index < value.size(); ++index) {
+      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
+      const auto ch = static_cast<unsigned char>(value[index]);
+      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
+    }
+    return true;
+  };
+  const auto descriptor_field = [](const std::string& encoded,
+                                   const std::string& key) {
+    const std::string prefix = key + "=";
+    std::string value;
+    bool found = false;
+    std::size_t start = 0;
+    while (start <= encoded.size()) {
+      const auto end = encoded.find(';', start);
+      const auto field = encoded.substr(
+          start, end == std::string::npos ? std::string::npos : end - start);
+      if (field.rfind(prefix, 0) == 0) {
+        if (found) return std::string{};
+        value = field.substr(prefix.size());
+        found = true;
+      }
+      if (end == std::string::npos) break;
+      start = end + 1;
+    }
+    return value;
+  };
+
+  if (parameter_descriptors.empty()) {
+    return refuse("parameter_slots_missing",
+                  "typed parameter binding requires declared parameter slots");
+  }
+  if (supplied_parameters.size() < parameter_descriptors.size()) {
+    return refuse("parameter_missing",
+                  "one or more typed parameter values are missing");
+  }
+  if (supplied_parameters.size() > parameter_descriptors.size()) {
+    return refuse("parameter_extra",
+                  "typed parameter input contains an undeclared value");
+  }
+
+  std::vector<std::string> names;
+  names.reserve(supplied_parameters.size());
+  bound_values->reserve(parameter_descriptors.size());
+  for (std::size_t index = 0; index < parameter_descriptors.size(); ++index) {
+    const auto& slot = parameter_descriptors[index];
+    const auto& supplied = supplied_parameters[index];
+    const auto nullability =
+        descriptor_field(slot.encoded_descriptor, "nullability");
+    if (!canonical_uuid(slot.descriptor_uuid.canonical) ||
+        slot.descriptor_kind != "scalar" || slot.canonical_type_name.empty() ||
+        slot.canonical_type_name == "unknown" ||
+        slot.encoded_descriptor.empty() ||
+        (nullability != "nullable" && nullability != "non_null")) {
+      return refuse("parameter_descriptor_invalid",
+                    "declared parameter slot descriptor is not canonical");
+    }
+    if (supplied.first.empty() ||
+        std::find(names.begin(), names.end(), supplied.first) != names.end()) {
+      return refuse("parameter_name_invalid",
+                    "typed parameter names must be nonempty and unique");
+    }
+    names.push_back(supplied.first);
+    const auto& value = supplied.second;
+    if (value.descriptor.descriptor_uuid.canonical !=
+            slot.descriptor_uuid.canonical ||
+        value.descriptor.descriptor_kind != slot.descriptor_kind ||
+        value.descriptor.canonical_type_name != slot.canonical_type_name ||
+        value.descriptor.encoded_descriptor != slot.encoded_descriptor) {
+      return refuse("parameter_wrong_type",
+                    "typed parameter value does not match its declared descriptor");
+    }
+    if (value.state == EngineValueState::sql_null) {
+      if (!value.is_null || !value.encoded_value.empty() ||
+          !value.binary_value.empty() || nullability != "nullable") {
+        return refuse("parameter_null_invalid",
+                      "SQL NULL is invalid for the declared parameter slot");
+      }
+    } else if (value.state != EngineValueState::value || value.is_null) {
+      return refuse("parameter_value_state_invalid",
+                    "typed parameter value state is not executable");
+    }
+    bound_values->push_back(value);
+  }
+  return true;
+}
+
+#ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 namespace {
 
 std::uint64_t ParseU64(std::string value) {
@@ -118,6 +236,53 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
   }
 
   if (expression.expression_kind == "parameter") {
+    if (!request.descriptors.empty() || !request.assignments.empty()) {
+      std::vector<EngineTypedValue> bound_values;
+      std::string refusal_reason;
+      std::string refusal_detail;
+      if (!QowBindCanonicalParameterSlotsV1(
+              request.descriptors, request.assignments, &bound_values,
+              &refusal_reason, &refusal_detail)) {
+        EngineProjectionFunctionResult out;
+        out.ok = false;
+        auto diagnostic = MakeEngineApiDiagnostic(
+            "QOW-DIAG-QRY-026-REFUSAL-V1",
+            "engine.query.typed_parameter_binding_refused",
+            std::move(refusal_detail));
+        diagnostic.fields.push_back(
+            {"reason", std::move(refusal_reason)});
+        out.diagnostics.push_back(std::move(diagnostic));
+        return out;
+      }
+      for (std::size_t index = 0; index < request.assignments.size(); ++index) {
+        if (request.assignments[index].first != expression.name) continue;
+        EngineProjectionFunctionResult out;
+        out.ok = true;
+        out.value = std::move(bound_values[index]);
+        if (!expression.type_name.empty() &&
+            expression.type_name != out.value.descriptor.canonical_type_name) {
+          out.ok = false;
+          out.value = EngineTypedValue{};
+          out.diagnostics.push_back(MakeEngineApiDiagnostic(
+              "QOW-DIAG-QRY-026-REFUSAL-V1",
+              "engine.query.typed_parameter_binding_refused",
+              "projection parameter type does not match the bound slot"));
+          return out;
+        }
+        out.evidence.push_back(
+            {"query_parameter_value_execution", "true"});
+        out.evidence.push_back(
+            {"query_parameter_name", expression.name});
+        return out;
+      }
+      EngineProjectionFunctionResult out;
+      out.ok = false;
+      out.diagnostics.push_back(MakeEngineApiDiagnostic(
+          "QOW-DIAG-QRY-026-REFUSAL-V1",
+          "engine.query.typed_parameter_binding_refused",
+          "projection parameter name does not resolve to a bound slot"));
+      return out;
+    }
     EngineProjectionFunctionResult out;
     out.ok = true;
     out.value.descriptor.descriptor_kind = "parameter";
@@ -254,5 +419,7 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
   AddApiBehaviorEvidence(&result, "query_binding", "evaluate_projection");
   return result;
 }
+
+#endif  // SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 
 }  // namespace scratchbird::engine::internal_api
