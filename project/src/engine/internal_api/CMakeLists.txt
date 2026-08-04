@@ -65,7 +65,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   target_link_libraries(sb_qow_typed_scalar_descriptor_contract PUBLIC
     sb_core_datatypes
   )
-  # Focused typed-parameter contract library shared by the QRY-026 proof.
+  # Focused projection contract library shared by the QRY-026/QRY-027 proofs.
   add_library(sb_qow_typed_parameter_contract STATIC
     query/projection_api.cpp
   )
@@ -99,6 +99,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
   add_test(NAME qow_qry_026_v1 COMMAND qow_qry_026_test_v1)
   set_tests_properties(qow_qry_026_v1 PROPERTIES
     LABELS "qow_closure;QOW-102;QOW-LEAF-QRY-026;development_candidate"
+  )
+  # QOW-CMAKE-QRY-027-V1
+  add_executable(qow_qry_027_test_v1
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_parser_worker/qow_qry_027.cpp
+  )
+  target_compile_features(qow_qry_027_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_027_test_v1 PRIVATE
+    sb_qow_typed_parameter_contract
+  )
+  add_test(NAME qow_qry_027_v1 COMMAND qow_qry_027_test_v1)
+  set_tests_properties(qow_qry_027_v1 PROPERTIES
+    LABELS "qow_closure;QOW-103;QOW-LEAF-QRY-027;development_candidate"
   )
   # QOW-CMAKE-QRY-028-V1
   add_executable(qow_qry_028_test_v1

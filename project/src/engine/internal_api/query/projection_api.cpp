@@ -17,10 +17,376 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <limits>
+#include <queue>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
+
+namespace {
+
+constexpr std::size_t kQowMaximumProjectionExpressionNodesV1 = 131072;
+constexpr std::size_t kQowMaximumProjectionExpressionDepthV1 = 256;
+constexpr std::size_t kQowMaximumProjectionExpressionFanoutV1 = 1024;
+constexpr std::size_t kQowMaximumProjectionExpressionReferencesV1 = 1048576;
+
+std::string QowProjectionOptionValueV1(const EngineApiRequest& request,
+                                       const std::string& prefix) {
+  for (const auto& option : request.option_envelopes) {
+    if (option.rfind(prefix, 0) == 0) return option.substr(prefix.size());
+  }
+  return {};
+}
+
+bool QowParseProjectionU64V1(const std::string& encoded,
+                             const std::uint64_t maximum,
+                             std::uint64_t* value) {
+  if (value == nullptr || encoded.empty()) return false;
+  std::uint64_t parsed = 0;
+  for (const char ch : encoded) {
+    if (ch < '0' || ch > '9') return false;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (parsed > (maximum - digit) / 10) return false;
+    parsed = parsed * 10 + digit;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool QowProjectionResourceLimitReasonV1(const std::string& reason) {
+  return reason == "node_count" || reason == "reference_count" ||
+         reason == "maximum_fanout" || reason == "maximum_depth";
+}
+
+}  // namespace
+
+// QOW-SOURCE-QRY-027-V1
+bool QowValidateCanonicalExpressionGraphV1(
+    const std::vector<std::uint32_t>& expression_ids,
+    const std::vector<std::vector<std::uint32_t>>& child_expression_ids,
+    const std::vector<bool>& shareable,
+    const std::vector<std::uint32_t>& root_expression_ids,
+    std::size_t* validated_node_count,
+    std::size_t* maximum_observed_depth,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  if (validated_node_count == nullptr || maximum_observed_depth == nullptr ||
+      refusal_reason == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  *validated_node_count = 0;
+  *maximum_observed_depth = 0;
+  refusal_reason->clear();
+  refusal_detail->clear();
+  const auto refuse = [&](std::string reason, std::string detail) {
+    *validated_node_count = 0;
+    *maximum_observed_depth = 0;
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+
+  if (expression_ids.empty() || root_expression_ids.empty()) {
+    return refuse("root_expression_missing",
+                  "canonical expression graph requires at least one root");
+  }
+  if (expression_ids.size() != child_expression_ids.size() ||
+      expression_ids.size() != shareable.size()) {
+    return refuse("graph_shape",
+                  "expression graph node vectors have different cardinalities");
+  }
+  if (expression_ids.size() > kQowMaximumProjectionExpressionNodesV1 ||
+      root_expression_ids.size() > kQowMaximumProjectionExpressionNodesV1) {
+    return refuse("node_count",
+                  "canonical expression graph exceeds the node limit");
+  }
+
+  std::unordered_map<std::uint32_t, std::size_t> node_indexes;
+  node_indexes.reserve(expression_ids.size());
+  for (std::size_t index = 0; index < expression_ids.size(); ++index) {
+    if (expression_ids[index] == 0 ||
+        !node_indexes.emplace(expression_ids[index], index).second) {
+      return refuse("node_identity",
+                    "expression identifiers must be nonzero and unique");
+    }
+  }
+
+  std::vector<std::size_t> incoming_references(expression_ids.size(), 0);
+  std::size_t reference_count = 0;
+  for (std::size_t index = 0; index < expression_ids.size(); ++index) {
+    if (child_expression_ids[index].size() >
+        kQowMaximumProjectionExpressionFanoutV1) {
+      return refuse("maximum_fanout",
+                    "canonical expression node exceeds the fanout limit");
+    }
+    if (child_expression_ids[index].size() >
+        kQowMaximumProjectionExpressionReferencesV1 - reference_count) {
+      return refuse("reference_count",
+                    "canonical expression graph exceeds the reference limit");
+    }
+    reference_count += child_expression_ids[index].size();
+    for (const auto child_id : child_expression_ids[index]) {
+      const auto child = node_indexes.find(child_id);
+      if (child_id == 0 || child == node_indexes.end()) {
+        return refuse("dangling_reference",
+                      "expression child identifier does not resolve");
+      }
+      ++incoming_references[child->second];
+    }
+  }
+
+  std::vector<bool> root_seen(expression_ids.size(), false);
+  for (const auto root_id : root_expression_ids) {
+    const auto root = node_indexes.find(root_id);
+    if (root_id == 0 || root == node_indexes.end() || root_seen[root->second]) {
+      return refuse("root_identity",
+                    "expression root identifiers must resolve uniquely");
+    }
+    root_seen[root->second] = true;
+    ++incoming_references[root->second];
+  }
+  for (std::size_t index = 0; index < expression_ids.size(); ++index) {
+    if (incoming_references[index] > 1 && !shareable[index]) {
+      return refuse("unshareable_reference",
+                    "multiply referenced expression is not declared shareable");
+    }
+  }
+
+  std::vector<bool> reachable(expression_ids.size(), false);
+  std::vector<std::size_t> pending;
+  pending.reserve(expression_ids.size());
+  for (const auto root_id : root_expression_ids) {
+    pending.push_back(node_indexes.at(root_id));
+  }
+  while (!pending.empty()) {
+    const auto index = pending.back();
+    pending.pop_back();
+    if (reachable[index]) continue;
+    reachable[index] = true;
+    for (const auto child_id : child_expression_ids[index]) {
+      pending.push_back(node_indexes.at(child_id));
+    }
+  }
+  if (std::find(reachable.begin(), reachable.end(), false) != reachable.end()) {
+    return refuse("orphan_node",
+                  "canonical expression graph contains an unreachable node");
+  }
+
+  std::vector<std::size_t> indegree(expression_ids.size(), 0);
+  for (const auto& children : child_expression_ids) {
+    for (const auto child_id : children) {
+      ++indegree[node_indexes.at(child_id)];
+    }
+  }
+  std::queue<std::size_t> ready;
+  for (std::size_t index = 0; index < indegree.size(); ++index) {
+    if (indegree[index] == 0) ready.push(index);
+  }
+  std::vector<std::size_t> depth(expression_ids.size(), 0);
+  for (const auto root_id : root_expression_ids) {
+    depth[node_indexes.at(root_id)] = 1;
+  }
+  std::size_t visited = 0;
+  while (!ready.empty()) {
+    const auto index = ready.front();
+    ready.pop();
+    ++visited;
+    for (const auto child_id : child_expression_ids[index]) {
+      const auto child_index = node_indexes.at(child_id);
+      if (depth[index] != 0) {
+        depth[child_index] =
+            std::max(depth[child_index], depth[index] + 1);
+      }
+      if (--indegree[child_index] == 0) ready.push(child_index);
+    }
+  }
+  if (visited != expression_ids.size()) {
+    return refuse("cycle",
+                  "canonical expression graph contains a cycle");
+  }
+  const auto observed_depth =
+      *std::max_element(depth.begin(), depth.end());
+  if (observed_depth > kQowMaximumProjectionExpressionDepthV1) {
+    return refuse("maximum_depth",
+                  "canonical expression graph exceeds the depth limit");
+  }
+
+  *validated_node_count = expression_ids.size();
+  *maximum_observed_depth = observed_depth;
+  return true;
+}
+
+namespace {
+
+struct QowProjectionExpressionBuildStateV1 {
+  std::vector<std::uint32_t> expression_ids;
+  std::vector<std::vector<std::uint32_t>> child_expression_ids;
+  std::vector<bool> shareable;
+  std::vector<std::uint32_t> root_expression_ids;
+};
+
+bool QowReadProjectionExpressionV1(
+    const EngineApiRequest& request,
+    const std::string& prefix,
+    const std::size_t depth,
+    QowProjectionExpressionBuildStateV1* graph,
+    EngineProjectionExpression* expression,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  if (graph == nullptr || expression == nullptr || refusal_reason == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  const auto refuse = [&](std::string reason, std::string detail) {
+    *expression = EngineProjectionExpression{};
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+  if (depth > kQowMaximumProjectionExpressionDepthV1) {
+    return refuse("maximum_depth",
+                  "projection expression exceeds the canonical depth limit");
+  }
+  if (graph->expression_ids.size() >=
+      kQowMaximumProjectionExpressionNodesV1) {
+    return refuse("node_count",
+                  "projection expression exceeds the canonical node limit");
+  }
+
+  const auto node_index = graph->expression_ids.size();
+  const auto expression_id = static_cast<std::uint32_t>(node_index + 1);
+  graph->expression_ids.push_back(expression_id);
+  graph->child_expression_ids.emplace_back();
+  graph->shareable.push_back(false);
+
+  expression->name = QowProjectionOptionValueV1(request, prefix + "name:");
+  expression->expression_kind =
+      QowProjectionOptionValueV1(request, prefix + "expr_kind:");
+  if (expression->expression_kind.empty()) expression->expression_kind = "literal";
+  expression->type_name = QowProjectionOptionValueV1(request, prefix + "type:");
+  expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
+  const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
+  expression->is_null = is_null == "true" || is_null == "1";
+  expression->function_id =
+      QowProjectionOptionValueV1(request, prefix + "function_id:");
+  expression->operator_id =
+      QowProjectionOptionValueV1(request, prefix + "operator_id:");
+  expression->canonical_operator_id =
+      QowProjectionOptionValueV1(request, prefix + "canonical_operator_id:");
+  expression->special_form_id =
+      QowProjectionOptionValueV1(request, prefix + "special_form_id:");
+  expression->sblr_binding =
+      QowProjectionOptionValueV1(request, prefix + "sblr_binding:");
+
+  std::uint64_t argument_count = 0;
+  for (const auto& count_key : {std::string("function_arg_count:"),
+                                std::string("operator_arg_count:"),
+                                std::string("special_form_arg_count:")}) {
+    const auto encoded_count =
+        QowProjectionOptionValueV1(request, prefix + count_key);
+    if (encoded_count.empty()) continue;
+    std::uint64_t parsed_count = 0;
+    if (!QowParseProjectionU64V1(
+            encoded_count, std::numeric_limits<std::uint64_t>::max(),
+            &parsed_count)) {
+      return refuse("argument_count",
+                    "projection expression argument count is malformed");
+    }
+    argument_count = std::max(argument_count, parsed_count);
+  }
+  if (argument_count > kQowMaximumProjectionExpressionFanoutV1) {
+    return refuse("maximum_fanout",
+                  "projection expression exceeds the canonical fanout limit");
+  }
+
+  expression->arguments.reserve(static_cast<std::size_t>(argument_count));
+  graph->child_expression_ids[node_index].reserve(
+      static_cast<std::size_t>(argument_count));
+  for (std::uint64_t index = 0; index < argument_count; ++index) {
+    EngineProjectionExpression child;
+    const auto child_id =
+        static_cast<std::uint32_t>(graph->expression_ids.size() + 1);
+    if (!QowReadProjectionExpressionV1(
+            request, prefix + "arg_" + std::to_string(index) + "_", depth + 1,
+            graph, &child, refusal_reason, refusal_detail)) {
+      *expression = EngineProjectionExpression{};
+      return false;
+    }
+    graph->child_expression_ids[node_index].push_back(child_id);
+    expression->arguments.push_back(std::move(child));
+  }
+  return true;
+}
+
+}  // namespace
+
+bool QowReadCanonicalProjectionExpressionsV1(
+    const EngineApiRequest& request,
+    const std::uint64_t projection_count,
+    std::vector<EngineProjectionExpression>* expressions,
+    std::size_t* validated_node_count,
+    std::size_t* maximum_observed_depth,
+    std::string* refusal_reason,
+    std::string* refusal_detail) {
+  if (expressions == nullptr || validated_node_count == nullptr ||
+      maximum_observed_depth == nullptr || refusal_reason == nullptr ||
+      refusal_detail == nullptr) {
+    return false;
+  }
+  expressions->clear();
+  *validated_node_count = 0;
+  *maximum_observed_depth = 0;
+  refusal_reason->clear();
+  refusal_detail->clear();
+  const auto refuse = [&](std::string reason, std::string detail) {
+    expressions->clear();
+    *validated_node_count = 0;
+    *maximum_observed_depth = 0;
+    *refusal_reason = std::move(reason);
+    *refusal_detail = std::move(detail);
+    return false;
+  };
+  if (projection_count == 0) {
+    return refuse("root_expression_missing",
+                  "projection expression graph requires at least one root");
+  }
+  if (projection_count > kQowMaximumProjectionExpressionNodesV1) {
+    return refuse("node_count",
+                  "projection count exceeds the canonical expression node limit");
+  }
+
+  QowProjectionExpressionBuildStateV1 graph;
+  graph.expression_ids.reserve(static_cast<std::size_t>(projection_count));
+  graph.child_expression_ids.reserve(static_cast<std::size_t>(projection_count));
+  graph.shareable.reserve(static_cast<std::size_t>(projection_count));
+  graph.root_expression_ids.reserve(static_cast<std::size_t>(projection_count));
+  expressions->reserve(static_cast<std::size_t>(projection_count));
+  for (std::uint64_t index = 0; index < projection_count; ++index) {
+    EngineProjectionExpression expression;
+    const auto root_id =
+        static_cast<std::uint32_t>(graph.expression_ids.size() + 1);
+    if (!QowReadProjectionExpressionV1(
+            request, "projection_" + std::to_string(index) + "_", 1, &graph,
+            &expression, refusal_reason, refusal_detail)) {
+      expressions->clear();
+      *validated_node_count = 0;
+      *maximum_observed_depth = 0;
+      return false;
+    }
+    graph.root_expression_ids.push_back(root_id);
+    expressions->push_back(std::move(expression));
+  }
+  if (!QowValidateCanonicalExpressionGraphV1(
+          graph.expression_ids, graph.child_expression_ids, graph.shareable,
+          graph.root_expression_ids, validated_node_count,
+          maximum_observed_depth, refusal_reason, refusal_detail)) {
+    expressions->clear();
+    return false;
+  }
+  return true;
+}
 
 // QOW-SOURCE-QRY-026-V1
 bool QowBindCanonicalParameterSlotsV1(
@@ -137,16 +503,6 @@ bool QowBindCanonicalParameterSlotsV1(
 #ifndef SCRATCHBIRD_QOW_TYPED_PARAMETER_CONTRACT_ONLY
 namespace {
 
-std::uint64_t ParseU64(std::string value) {
-  if (value.empty()) return 0;
-  std::uint64_t parsed = 0;
-  for (char ch : value) {
-    if (!std::isdigit(static_cast<unsigned char>(ch))) return 0;
-    parsed = (parsed * 10) + static_cast<unsigned>(ch - '0');
-  }
-  return parsed;
-}
-
 EngineDescriptor ProjectionDescriptor(const std::string& type_name) {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
@@ -171,56 +527,6 @@ EngineEvaluateProjectionResult ProjectionFailure(const EngineEvaluateProjectionR
   return ProjectionFailure(request,
                            MakeInvalidRequestDiagnostic("query.evaluate_projection",
                                                         std::move(detail)));
-}
-
-std::string ProjectionOptionValue(const EngineApiRequest& request, const std::string& prefix) {
-  return SecurityOptionValue(request, prefix);
-}
-
-bool ProjectionOptionIsTrue(const EngineApiRequest& request, const std::string& prefix) {
-  const std::string value = ProjectionOptionValue(request, prefix);
-  return value == "true" || value == "1";
-}
-
-EngineTypedValue LiteralProjectionValue(const EngineApiRequest& request,
-                                        const std::string& prefix) {
-  EngineTypedValue value;
-  const std::string type = ProjectionOptionValue(request, prefix + "type:");
-  value.descriptor = ProjectionDescriptor(type);
-  value.encoded_value = ProjectionOptionValue(request, prefix + "value:");
-  value.is_null = ProjectionOptionIsTrue(request, prefix + "is_null:");
-  return value;
-}
-
-EngineProjectionExpression ReadProjectionExpression(const EngineApiRequest& request,
-                                                    const std::string& prefix,
-                                                    std::uint32_t depth = 0) {
-  EngineProjectionExpression expression;
-  expression.name = ProjectionOptionValue(request, prefix + "name:");
-  expression.expression_kind = ProjectionOptionValue(request, prefix + "expr_kind:");
-  if (expression.expression_kind.empty()) expression.expression_kind = "literal";
-  expression.type_name = ProjectionOptionValue(request, prefix + "type:");
-  expression.encoded_value = ProjectionOptionValue(request, prefix + "value:");
-  expression.is_null = ProjectionOptionIsTrue(request, prefix + "is_null:");
-  expression.function_id = ProjectionOptionValue(request, prefix + "function_id:");
-  expression.operator_id = ProjectionOptionValue(request, prefix + "operator_id:");
-  expression.canonical_operator_id = ProjectionOptionValue(request, prefix + "canonical_operator_id:");
-  expression.special_form_id = ProjectionOptionValue(request, prefix + "special_form_id:");
-  expression.sblr_binding = ProjectionOptionValue(request, prefix + "sblr_binding:");
-  if (depth > 4) return expression;
-
-  std::uint64_t arg_count = ParseU64(ProjectionOptionValue(request, prefix + "function_arg_count:"));
-  const std::uint64_t operator_arg_count =
-      ParseU64(ProjectionOptionValue(request, prefix + "operator_arg_count:"));
-  if (operator_arg_count > arg_count) arg_count = operator_arg_count;
-  const std::uint64_t special_form_arg_count =
-      ParseU64(ProjectionOptionValue(request, prefix + "special_form_arg_count:"));
-  if (special_form_arg_count > arg_count) arg_count = special_form_arg_count;
-  for (std::uint64_t arg_index = 0; arg_index < arg_count; ++arg_index) {
-    expression.arguments.push_back(ReadProjectionExpression(
-        request, prefix + "arg_" + std::to_string(arg_index) + "_", depth + 1));
-  }
-  return expression;
 }
 
 EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
@@ -362,27 +668,130 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
   return out;
 }
 
+EngineApiDiagnostic ProjectionGraphDiagnostic(std::string reason,
+                                              std::string detail) {
+  const auto resource_limit = QowProjectionResourceLimitReasonV1(reason);
+  auto diagnostic = MakeEngineApiDiagnostic(
+      resource_limit ? "SBLR.PLAN_TREE.RESOURCE_LIMIT"
+                     : "SBLR.PLAN_TREE.INVALID_HANDLE",
+      resource_limit ? "engine.query.expression_graph_resource_limit"
+                     : "engine.query.expression_graph_invalid_handle",
+      std::move(detail));
+  diagnostic.fields.push_back({"reason", std::move(reason)});
+  return diagnostic;
+}
+
+EngineBindProjectionResult BindProjectionGraphFailure(
+    const EngineBindProjectionRequest& request,
+    std::string reason,
+    std::string detail) {
+  EngineBindProjectionResult result;
+  result.ok = false;
+  result.operation_id = "query.bind_projection";
+  result.embedded_trust_mode_observed =
+      request.context.trust_mode == EngineTrustMode::embedded_in_process;
+  result.diagnostics.push_back(
+      ProjectionGraphDiagnostic(std::move(reason), std::move(detail)));
+  return result;
+}
+
 }  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_QUERY_PROJECTION_API_BEHAVIOR
 EngineBindProjectionResult EngineBindProjection(const EngineBindProjectionRequest& request) {
+  std::size_t validated_node_count = 0;
+  std::size_t maximum_observed_depth = 0;
+  std::string refusal_reason;
+  std::string refusal_detail;
+  const auto encoded_projection_count =
+      QowProjectionOptionValueV1(request, "projection_count:");
+  if (!encoded_projection_count.empty()) {
+    std::uint64_t projection_count = 0;
+    if (!QowParseProjectionU64V1(
+            encoded_projection_count, std::numeric_limits<std::uint64_t>::max(),
+            &projection_count)) {
+      return BindProjectionGraphFailure(
+          request, "root_count",
+          "projection root count is malformed");
+    }
+    std::vector<EngineProjectionExpression> expressions;
+    if (!QowReadCanonicalProjectionExpressionsV1(
+            request, projection_count, &expressions, &validated_node_count,
+            &maximum_observed_depth, &refusal_reason, &refusal_detail)) {
+      return BindProjectionGraphFailure(
+          request, std::move(refusal_reason), std::move(refusal_detail));
+    }
+  } else if (!request.projection.canonical_projection_envelopes.empty()) {
+    const auto projection_count =
+        request.projection.canonical_projection_envelopes.size();
+    if (projection_count > kQowMaximumProjectionExpressionNodesV1) {
+      return BindProjectionGraphFailure(
+          request, "node_count",
+          "canonical projection envelope count exceeds the expression node limit");
+    }
+    std::vector<std::uint32_t> expression_ids;
+    std::vector<std::vector<std::uint32_t>> child_expression_ids(
+        projection_count);
+    std::vector<bool> shareable(projection_count, false);
+    std::vector<std::uint32_t> root_expression_ids;
+    expression_ids.reserve(projection_count);
+    root_expression_ids.reserve(projection_count);
+    for (std::size_t index = 0; index < projection_count; ++index) {
+      const auto expression_id = static_cast<std::uint32_t>(index + 1);
+      expression_ids.push_back(expression_id);
+      root_expression_ids.push_back(expression_id);
+    }
+    if (!QowValidateCanonicalExpressionGraphV1(
+            expression_ids, child_expression_ids, shareable,
+            root_expression_ids, &validated_node_count,
+            &maximum_observed_depth, &refusal_reason, &refusal_detail)) {
+      return BindProjectionGraphFailure(
+          request, std::move(refusal_reason), std::move(refusal_detail));
+    }
+  }
   auto result = MakeApiBehaviorSuccess<EngineBindProjectionResult>(request.context, "query.bind_projection");
   AddApiBehaviorEvidence(&result, "query_binding", "projection");
+  if (validated_node_count != 0) {
+    AddApiBehaviorEvidence(
+        &result, "query_expression_graph_validated_nodes",
+        std::to_string(validated_node_count));
+    AddApiBehaviorEvidence(
+        &result, "query_expression_graph_maximum_depth",
+        std::to_string(maximum_observed_depth));
+  }
   AddApiBehaviorRow(&result, {{"projection_count", std::to_string(request.projection.canonical_projection_envelopes.size())}, {"payload", ApiBehaviorPayloadFromRequest(request)}});
   return result;
 }
 
 EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProjectionRequest& request) {
-  const std::uint64_t projection_count = ParseU64(SecurityOptionValue(request, "projection_count:"));
-  if (projection_count == 0) {
-    EngineEvaluateProjectionResult result;
-    result.ok = false;
-    result.operation_id = "query.evaluate_projection";
-    result.embedded_trust_mode_observed =
-        request.context.trust_mode == EngineTrustMode::embedded_in_process;
-    result.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
-                                                              "projection_operand_required"));
-    return result;
+  const auto encoded_projection_count =
+      QowProjectionOptionValueV1(request, "projection_count:");
+  std::uint64_t projection_count = 0;
+  if (!QowParseProjectionU64V1(
+          encoded_projection_count, std::numeric_limits<std::uint64_t>::max(),
+          &projection_count) ||
+      projection_count == 0) {
+    return ProjectionFailure(
+        request,
+        ProjectionGraphDiagnostic(
+            encoded_projection_count.empty() ? "root_expression_missing"
+                                             : "root_count",
+            encoded_projection_count.empty()
+                ? "projection operand is required"
+                : "projection root count is malformed"));
+  }
+
+  std::vector<EngineProjectionExpression> expressions;
+  std::size_t validated_node_count = 0;
+  std::size_t maximum_observed_depth = 0;
+  std::string refusal_reason;
+  std::string refusal_detail;
+  if (!QowReadCanonicalProjectionExpressionsV1(
+          request, projection_count, &expressions, &validated_node_count,
+          &maximum_observed_depth, &refusal_reason, &refusal_detail)) {
+    return ProjectionFailure(
+        request, ProjectionGraphDiagnostic(
+                     std::move(refusal_reason), std::move(refusal_detail)));
   }
 
   EngineEvaluateProjectionResult result;
@@ -399,7 +808,7 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
     std::string name = SecurityOptionValue(request, prefix + "name:");
     EngineTypedValue value;
     auto expression_result = EvaluateProjectionExpressionTree(
-        request, ReadProjectionExpression(request, prefix));
+        request, expressions[static_cast<std::size_t>(index)]);
     if (!expression_result.ok) {
       if (expression_result.diagnostics.empty()) {
         return ProjectionFailure(request, "projection_expression_execution_failed");
@@ -415,6 +824,12 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
     result.result_shape.columns.push_back(row.fields.back().second.descriptor);
   }
   result.result_shape.rows.push_back(std::move(row));
+  result.evidence.push_back(
+      {"query_expression_graph_validated_nodes",
+       std::to_string(validated_node_count)});
+  result.evidence.push_back(
+      {"query_expression_graph_maximum_depth",
+       std::to_string(maximum_observed_depth)});
   result.evidence.push_back({"query_projection", "constant_projection_engine_evaluated"});
   AddApiBehaviorEvidence(&result, "query_binding", "evaluate_projection");
   return result;
