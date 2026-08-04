@@ -46,13 +46,6 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
-  if (request.selected_physical_node_id == 0 ||
-      request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected physical node is not the root"));
-  }
-
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
   for (const auto& node : request.physical_dag.nodes) {
@@ -60,7 +53,7 @@ CanonicalDescriptorProjectionResult ExecuteCanonicalDescriptorProjection(
       selected_node = &node;
     }
   }
-  if (selected_node == nullptr) {
+  if (request.selected_physical_node_id == 0 || selected_node == nullptr) {
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "selected physical node is unresolved"));
   }

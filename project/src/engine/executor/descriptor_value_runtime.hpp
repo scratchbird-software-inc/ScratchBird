@@ -1193,10 +1193,23 @@ struct CanonicalPhysicalExecutorRegistration {
   bool accepts_optimizer_publication_v2 = false;
 };
 
+struct CanonicalPhysicalDagRuntimeLimits {
+  std::size_t maximum_rows_per_batch = 1048576;
+  std::size_t maximum_columns_per_batch = 65536;
+  std::size_t maximum_cells_per_batch = 16777216;
+  std::size_t maximum_total_materialized_rows = 16777216;
+  std::size_t maximum_total_materialized_cells = 67108864;
+};
+
 struct CanonicalPhysicalDagDispatchRequest {
   TypedPhysicalNodeDag physical_dag;
   CanonicalExecutionMgaAuthority mga_authority;
   PhysicalNodeAbiLimits limits;
+  CanonicalPhysicalDagRuntimeLimits runtime_limits;
+  // A missing probe means that this bounded caller has no asynchronous
+  // cancellation source. When supplied, the dispatcher polls it before and
+  // after every selected node and before root publication.
+  std::function<bool()> cancellation_requested;
   std::vector<CanonicalPhysicalExecutorRegistration> available_executors;
 };
 
@@ -1209,6 +1222,7 @@ struct CanonicalPhysicalDagDispatchResult {
   bool replan_required = false;
   bool execution_started = false;
   bool data_access_observed = false;
+  bool cancellation_observed = false;
   std::string selected_plan_uuid;
   std::uint64_t executed_root_physical_node_id = 0;
   std::uint64_t root_causal_counter_id = 0;

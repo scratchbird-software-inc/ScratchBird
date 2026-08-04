@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,6 +36,59 @@ bool HasForbiddenAuthority(
          authority.owns_parser_execution ||
          authority.owns_visibility_outside_engine_mga ||
          authority.wal_is_transaction_or_recovery_authority;
+}
+
+bool CheckedAdd(const std::size_t left,
+                const std::size_t right,
+                std::size_t* output) {
+  if (output == nullptr ||
+      right > std::numeric_limits<std::size_t>::max() - left) {
+    return false;
+  }
+  *output = left + right;
+  return true;
+}
+
+DescriptorRuntimeDiagnostic ValidateRuntimeLimits(
+    const CanonicalPhysicalDagRuntimeLimits& limits) {
+  if (limits.maximum_rows_per_batch == 0 ||
+      limits.maximum_columns_per_batch == 0 ||
+      limits.maximum_cells_per_batch == 0 ||
+      limits.maximum_total_materialized_rows == 0 ||
+      limits.maximum_total_materialized_cells == 0) {
+    return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "physical typed-batch runtime limits must be nonzero");
+  }
+  return {};
+}
+
+DescriptorRuntimeDiagnostic ValidateMaterializedBatch(
+    const DescriptorBatch& batch,
+    const std::vector<std::uint32_t>& descriptor_ids,
+    const CanonicalPhysicalDagRuntimeLimits& limits,
+    const std::size_t total_rows,
+    const std::size_t total_cells,
+    std::size_t* next_total_rows,
+    std::size_t* next_total_cells) {
+  const auto row_count = batch.rows.size();
+  const auto column_count = batch.columns.size();
+  if (row_count > limits.maximum_rows_per_batch ||
+      column_count > limits.maximum_columns_per_batch ||
+      (column_count != 0 &&
+       row_count > limits.maximum_cells_per_batch / column_count)) {
+    return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "physical typed batch exceeds its row, column, or cell "
+                   "bound");
+  }
+  const auto batch_cells = row_count * column_count;
+  if (!CheckedAdd(total_rows, row_count, next_total_rows) ||
+      !CheckedAdd(total_cells, batch_cells, next_total_cells) ||
+      *next_total_rows > limits.maximum_total_materialized_rows ||
+      *next_total_cells > limits.maximum_total_materialized_cells) {
+    return Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                   "physical typed DAG exceeds its cumulative batch bound");
+  }
+  return ValidateCanonicalDescriptorBatch(batch, descriptor_ids);
 }
 
 }  // namespace
@@ -120,6 +174,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   CanonicalPhysicalDagDispatchResult result;
   bool execution_started = false;
   bool data_access_observed = false;
+  bool cancellation_observed = false;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic,
                           const bool replan = false) {
     result = {};
@@ -127,7 +182,29 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     result.replan_required = replan;
     result.execution_started = execution_started;
     result.data_access_observed = data_access_observed;
+    result.cancellation_observed = cancellation_observed;
     return result;
+  };
+
+  const auto cancellation_diagnostic = [&](const char* phase) {
+    DescriptorRuntimeDiagnostic diagnostic;
+    if (!request.cancellation_requested) return diagnostic;
+    try {
+      if (!request.cancellation_requested()) return diagnostic;
+      cancellation_observed = true;
+      return Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
+          std::string("physical DAG cancellation observed ") + phase);
+    } catch (const std::exception& exception) {
+      return Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1",
+          std::string("physical cancellation probe threw: ") +
+              exception.what());
+    } catch (...) {
+      return Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CANCELLATION-PROBE-V1",
+          "physical cancellation probe threw a non-standard exception");
+    }
   };
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -135,6 +212,14 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
+  const auto runtime_limits_validation =
+      ValidateRuntimeLimits(request.runtime_limits);
+  if (!runtime_limits_validation.ok) {
+    return refuse(runtime_limits_validation);
+  }
+  const auto entry_cancellation =
+      cancellation_diagnostic("before selected-node dispatch");
+  if (!entry_cancellation.ok) return refuse(entry_cancellation);
 
   std::unordered_map<std::string,
                      const CanonicalPhysicalExecutorRegistration*>
@@ -191,11 +276,17 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   }
 
   std::unordered_map<std::uint64_t, std::size_t> result_index_by_node;
+  std::size_t total_materialized_rows = 0;
+  std::size_t total_materialized_cells = 0;
   result.executed_steps.reserve(dispatch_order.size());
   for (const auto node_id : dispatch_order) {
+    const auto node_cancellation =
+        cancellation_diagnostic("before a selected node");
+    if (!node_cancellation.ok) return refuse(node_cancellation);
     const auto& node = *nodes_by_id.at(node_id);
     std::vector<CanonicalPhysicalDispatchInput> inputs;
     inputs.reserve(node.input_physical_node_ids.size());
+    std::size_t materialized_input_rows = 0;
     for (const auto input_id : node.input_physical_node_ids) {
       const auto prior = result_index_by_node.find(input_id);
       if (prior == result_index_by_node.end()) {
@@ -209,6 +300,19 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
                         input_result.output_descriptor_ids,
                         input_result.materialized_output_batch,
                         input_result.mga_statement_context});
+      if (!input_result.materialized_output_batch.has_value()) {
+        return refuse(Refusal(
+            "QOW-DIAG-QRY-004-PHYSICAL-TYPED-BATCH-REQUIRED-V1",
+            "selected physical input did not produce a typed batch"));
+      }
+      if (input_result.materialized_output_batch.has_value() &&
+          !CheckedAdd(materialized_input_rows,
+                      input_result.materialized_output_batch->rows.size(),
+                      &materialized_input_rows)) {
+        return refuse(Refusal(
+            "SBLR.PLAN_TREE.RESOURCE_LIMIT",
+            "physical input row count overflowed"));
+      }
       if (request.physical_dag.abi_version == 2 &&
           !PhysicalMgaStatementContextEqual(
               input_result.mga_statement_context,
@@ -261,6 +365,9 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     if (!step.diagnostic.ok) {
       return refuse(std::move(step.diagnostic));
     }
+    const auto post_step_cancellation =
+        cancellation_diagnostic("after a selected node");
+    if (!post_step_cancellation.ok) return refuse(post_step_cancellation);
     step.execution_ordinal = result.executed_steps.size() + 1;
     step.execution_started = true;
     step.execution_finished = true;
@@ -280,6 +387,52 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
           "QOW-DIAG-QRY-004-PHYSICAL-EXECUTION-EVIDENCE-V1",
           "physical executor result does not match admitted node evidence"));
     }
+    if (!step.materialized_output_batch.has_value()) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-TYPED-BATCH-REQUIRED-V1",
+          "selected physical node returned only an opaque result handle"));
+    }
+    if (step.materialized_output_batch.has_value()) {
+      std::size_t next_total_rows = 0;
+      std::size_t next_total_cells = 0;
+      const auto batch_validation = ValidateMaterializedBatch(
+          *step.materialized_output_batch, node.output_descriptor_ids,
+          request.runtime_limits, total_materialized_rows,
+          total_materialized_cells, &next_total_rows, &next_total_cells);
+      if (!batch_validation.ok) return refuse(batch_validation);
+      if (step.output_row_count !=
+          step.materialized_output_batch->rows.size()) {
+        return refuse(Refusal(
+            "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
+            "physical output-row counter differs from the typed batch"));
+      }
+      total_materialized_rows = next_total_rows;
+      total_materialized_cells = next_total_cells;
+    }
+    if (step.input_row_count != materialized_input_rows) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
+          "physical input-row counter differs from causal input batches"));
+    }
+    if ((node.node_kind == PhysicalNodeKind::kFilter ||
+         node.node_kind == PhysicalNodeKind::kProject) &&
+        step.rows_examined != materialized_input_rows) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
+          "row operator examination counter differs from its typed input"));
+    }
+    if (node.node_kind == PhysicalNodeKind::kFilter &&
+        step.output_row_count > materialized_input_rows) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
+          "filter output exceeds its causal typed input"));
+    }
+    if (node.node_kind == PhysicalNodeKind::kProject &&
+        step.output_row_count != materialized_input_rows) {
+      return refuse(Refusal(
+          "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1",
+          "project output cardinality differs from its causal typed input"));
+    }
     result_index_by_node.emplace(node_id, result.executed_steps.size());
     result.executed_steps.push_back(std::move(step));
   }
@@ -290,6 +443,9 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
                           "physical root result is unavailable"));
   }
+  const auto publication_cancellation =
+      cancellation_diagnostic("before root publication");
+  if (!publication_cancellation.ok) return refuse(publication_cancellation);
   const auto root_authority = RevalidateCanonicalExecutionMgaAuthority(
       request.mga_authority, request.physical_dag, request.limits);
   if (!root_authority.ok) {
@@ -302,6 +458,7 @@ CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
   result.authority.engine_mga_snapshot_bound = true;
   result.execution_started = true;
   result.data_access_observed = data_access_observed;
+  result.cancellation_observed = false;
   result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
   result.executed_root_physical_node_id = root.executed_physical_node_id;
   result.root_causal_counter_id = root.causal_counter_id;

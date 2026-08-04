@@ -126,6 +126,34 @@ exec::CanonicalResultPublicationRequest ResultPublicationRequest() {
   return request;
 }
 
+exec::DescriptorBatch NodeBatch008(
+    const exec::PhysicalNodeRecord& node,
+    const std::size_t row_count) {
+  std::vector<exec::ExecutorColumnDescriptor> columns;
+  columns.reserve(node.output_descriptor_ids.size());
+  for (const auto descriptor_id : node.output_descriptor_ids) {
+    auto descriptor = exec::MakeExecutorDescriptor(
+        "int64", "type_uuid=" + Uuid(8400 + descriptor_id) +
+                     ";nullability=non_null");
+    descriptor.descriptor_uuid.canonical = Uuid(8500 + descriptor_id);
+    descriptor.descriptor_kind = "scalar";
+    columns.push_back({"node_value_" + std::to_string(descriptor_id),
+                       descriptor, false, descriptor_id});
+  }
+  std::vector<exec::DescriptorTuple> rows;
+  rows.reserve(row_count);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    exec::DescriptorTuple tuple;
+    tuple.values.reserve(columns.size());
+    for (const auto& column : columns) {
+      tuple.values.push_back(
+          exec::MakeExecutorValue(column.descriptor, std::to_string(row + 1)));
+    }
+    rows.push_back(std::move(tuple));
+  }
+  return exec::MakeDescriptorBatch(std::move(columns), std::move(rows));
+}
+
 exec::CanonicalPhysicalDispatchStepResult Step008(
     const exec::TypedPhysicalNodeDag& dag,
     const exec::PhysicalNodeRecord& node, const std::uint64_t result_handle,
@@ -145,6 +173,9 @@ exec::CanonicalPhysicalDispatchStepResult Step008(
   result.rows_examined = rows_examined;
   result.pages_read = pages_read;
   result.spill_bytes = spill_bytes;
+  if (result_handle != 0) {
+    result.materialized_output_batch = NodeBatch008(node, output_rows);
+  }
   return result;
 }
 
@@ -550,6 +581,39 @@ bool ValidatePostStartFailureIsTruthful() {
       "post-start executor failure falsely reported a pre-read refusal");
 }
 
+bool ValidateSelectedCancellationPropagation() {
+  bool passed = true;
+  std::vector<std::uint64_t> invocation_order;
+  auto request = SelectedExecutionRequest(&invocation_order);
+  request.cancellation_requested = [] { return true; };
+  auto result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  passed &= Require008(
+      !result.accepted && result.cancellation_observed &&
+          !result.data_access_observed && invocation_order.empty() &&
+          result.dispatch.executed_steps.empty() &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
+      "pre-dispatch cancellation did not cross the selected execution API");
+
+  invocation_order.clear();
+  request = SelectedExecutionRequest(&invocation_order);
+  request.cancellation_requested = [&invocation_order] {
+    return !invocation_order.empty();
+  };
+  result = api::ExecuteCanonicalOptimizerSelectedDag(request);
+  passed &= Require008(
+      !result.accepted && result.cancellation_observed &&
+          result.data_access_observed &&
+          invocation_order == std::vector<std::uint64_t>{1} &&
+          result.dispatch.executed_steps.empty() &&
+          result.issues.size() == 1 &&
+          result.issues.front().diagnostic_id ==
+              "QOW-DIAG-QRY-004-PHYSICAL-DISPATCH-CANCELLED-V1",
+      "mid-DAG cancellation exposed a selected step or hid the scan read");
+  return passed;
+}
+
 // Packet 4 resolves the selected statement authority at these exact execution
 // boundaries: selected-entry, dispatch-entry, pre/post each node, dispatch
 // root acceptance, runtime-actuals entry/result, immediate pre-result, and the
@@ -694,6 +758,7 @@ int main() {
   passed &= ValidateAuthorityAndAbiRefusal();
   passed &= ValidateCompletePreAccessMgaRefusals();
   passed &= ValidatePostStartFailureIsTruthful();
+  passed &= ValidateSelectedCancellationPropagation();
   passed &= ValidatePhaseSpecificStaleRefusals();
   passed &= ValidateResultPublicationRefusalIsTruthful();
   passed &= ValidateNestedPublicationAuthorityCannotOverrideSelection();

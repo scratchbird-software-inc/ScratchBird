@@ -281,10 +281,11 @@ bool ValidateFailClosedRoute() {
   auto request = Request("project.typed.row.v1");
   request.selected_physical_node_id = 10;
   auto result = exec::ExecuteCanonicalDescriptorProjection(request);
-  passed &= Require(!result.diagnostic.ok &&
-                        result.diagnostic.diagnostic_code ==
-                            "SBLR.PLAN_TREE.INVALID_HANDLE",
-                    "non-root physical node reached the helper");
+  passed &= Require(
+      !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-QRY-029-CANONICAL-PHYSICAL-ROUTE-V1",
+      "non-project physical operator reached the projection helper");
 
   request = Request("project.typed.row.v1");
   request.physical_dag.nodes.back().output_descriptor_ids[1] = 999;

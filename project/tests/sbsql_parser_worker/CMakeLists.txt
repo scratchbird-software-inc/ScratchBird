@@ -202,6 +202,15 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     LABELS "qow_closure;QOW-201;QOW-LEAF-QRY-007-PROJECTION;development_candidate"
   )
 
+  # QOW-CMAKE-QRY-007-SCAN-V1
+  add_executable(qow_qry_007_scan_test_v1 qow_qry_007_scan.cpp)
+  target_compile_features(qow_qry_007_scan_test_v1 PRIVATE cxx_std_20)
+  target_link_libraries(qow_qry_007_scan_test_v1 PRIVATE sb_engine_executor)
+  add_test(NAME qow_qry_007_scan_v1 COMMAND qow_qry_007_scan_test_v1)
+  set_tests_properties(qow_qry_007_scan_v1 PROPERTIES
+    LABELS "qow_closure;QOW-201;QOW-LEAF-QRY-007-SCAN;development_candidate"
+  )
+
   # QOW-CMAKE-QRY-007-SORT-LIMIT-V1
   add_executable(qow_qry_007_sort_limit_test_v1 qow_qry_007_sort_limit.cpp)
   target_compile_features(qow_qry_007_sort_limit_test_v1 PRIVATE cxx_std_20)

@@ -298,7 +298,7 @@ api::EngineDescriptor Descriptor() {
 exec::TypedPhysicalNodeDag Dag() {
   exec::TypedPhysicalNodeDag dag;
   dag.selected_plan_uuid = "019f0000-0000-7200-8000-000000007103";
-  dag.root_physical_node_id = 712;
+  dag.root_physical_node_id = 713;
   dag.local_transaction_id = 713;
   dag.statement_snapshot_id = 714;
   dag.admission_evidence = {
@@ -333,6 +333,13 @@ exec::TypedPhysicalNodeDag Dag() {
        .input_physical_node_ids = {711},
        .output_descriptor_ids = {711},
        .causal_counter_id = 7102},
+      {.physical_node_id = 713,
+       .relational_node_id = 713,
+       .node_kind = exec::PhysicalNodeKind::kProject,
+       .implementation_id = "project.typed.row.v1",
+       .input_physical_node_ids = {712},
+       .output_descriptor_ids = {711},
+       .causal_counter_id = 7103},
   };
   UpgradeToCanonicalStatementContext(&dag, 7100);
   return dag;
@@ -367,7 +374,7 @@ bool ValidatePhysicalFilter() {
   bool passed = true;
   const auto result = exec::ExecuteCanonicalDescriptorFilter(Request());
   passed &= Require(result.diagnostic.ok,
-                    "typed physical filter node was not executable");
+                    "typed interior physical filter node was not executable");
   passed &= Require(
       result.executed_physical_node_id == 712 &&
           result.causal_counter_id == 7102 &&

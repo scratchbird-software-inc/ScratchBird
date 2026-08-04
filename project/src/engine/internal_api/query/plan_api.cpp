@@ -1511,10 +1511,12 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
                           const std::uint64_t physical_node_id,
                           std::string field_id,
                           const bool replan_required = false,
-                          const bool data_access_observed = false) {
+                          const bool data_access_observed = false,
+                          const bool cancellation_observed = false) {
     result = {};
     result.replan_required = replan_required;
     result.data_access_observed = data_access_observed;
+    result.cancellation_observed = cancellation_observed;
     result.issues.push_back({std::move(diagnostic_id), physical_node_id,
                              std::move(field_id)});
     return result;
@@ -1564,12 +1566,15 @@ CanonicalOptimizerSelectedExecutionResult ExecuteCanonicalOptimizerSelectedDag(
   dispatch_request.physical_dag = request.selected_physical_dag;
   dispatch_request.mga_authority = request.mga_authority;
   dispatch_request.limits = request.limits;
+  dispatch_request.runtime_limits = request.runtime_limits;
+  dispatch_request.cancellation_requested = request.cancellation_requested;
   dispatch_request.available_executors = request.available_executors;
   auto dispatch = executor::ExecuteCanonicalPhysicalDag(dispatch_request);
   if (!dispatch.diagnostic.ok) {
     return refuse(dispatch.diagnostic.diagnostic_code, 0,
                   dispatch.diagnostic.detail, dispatch.replan_required,
-                  dispatch.data_access_observed);
+                  dispatch.data_access_observed,
+                  dispatch.cancellation_observed);
   }
   if (dispatch.executed_steps.size() !=
           request.selected_physical_dag.nodes.size() ||

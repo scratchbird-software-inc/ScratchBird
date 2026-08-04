@@ -109,12 +109,12 @@ exec::TypedPhysicalNodeDag Dag() {
        .node_kind = exec::PhysicalNodeKind::kProject,
        .implementation_id = "project.typed.v1",
        .input_physical_node_ids = {42},
-       .output_descriptor_ids = {433},
+       .output_descriptor_ids = {412},
        .causal_counter_id = 4301},
       {.physical_node_id = 41,
        .relational_node_id = 41,
        .node_kind = exec::PhysicalNodeKind::kScan,
-       .implementation_id = "scan.index.v1",
+       .implementation_id = "scan.index.btree.v1",
        .output_descriptor_ids = {411, 412},
        .causal_counter_id = 4101},
       {.physical_node_id = 42,
@@ -179,27 +179,76 @@ exec::CanonicalScanAccessRequest ScanRequest(
   exec::CanonicalScanAccessRequest request;
   request.physical_dag = dag;
   request.selected_physical_node_id = 41;
-  request.available_implementation_id = "scan.index.v1";
+  request.available_implementation_id = "scan.index.btree.v1";
   request.relation_uuid = Uuid(601);
   request.mga_authority = ClosureAuthority(dag);
   request.selected_descriptor_generation = 9;
   request.current_descriptor_generation = 9;
-  exec::CanonicalScanCandidateEvidence candidate;
-  candidate.candidate_uuid = Uuid(602);
-  candidate.record_uuid = Uuid(603);
-  candidate.relation_uuid = request.relation_uuid;
-  candidate.visibility_decision_uuid = Uuid(604);
-  candidate.creator_local_transaction_id = kOwner;
-  candidate.row_version_id = 605;
-  candidate.candidate_generation = 3;
-  candidate.observed_generation = 3;
-  candidate.source = exec::CanonicalScanCandidateSource::kIndexEntry;
-  candidate.visibility = exec::CanonicalMgaVisibilityDecision::kVisible;
-  candidate.security_decision = exec::CanonicalMgaSecurityDecision::kAllowed;
-  candidate.residual_truth = api::EngineSqlTruthValue::true_value;
-  candidate.locator_identity_matches = true;
-  request.candidates = {std::move(candidate)};
+  const auto candidate = [&](const std::uint64_t seed) {
+    exec::CanonicalScanCandidateEvidence value;
+    value.candidate_uuid = Uuid(seed);
+    value.record_uuid = Uuid(seed + 1);
+    value.relation_uuid = request.relation_uuid;
+    value.visibility_decision_uuid = Uuid(seed + 2);
+    value.creator_local_transaction_id = kOwner;
+    value.row_version_id = seed + 3;
+    value.candidate_generation = 3;
+    value.observed_generation = 3;
+    value.source = exec::CanonicalScanCandidateSource::kIndexEntry;
+    value.visibility = exec::CanonicalMgaVisibilityDecision::kVisible;
+    value.security_decision = exec::CanonicalMgaSecurityDecision::kAllowed;
+    value.residual_truth = api::EngineSqlTruthValue::true_value;
+    value.locator_identity_matches = true;
+    return value;
+  };
+  request.candidates = {candidate(602), candidate(612), candidate(622)};
   return request;
+}
+
+exec::DescriptorBatch ScanBatch() {
+  auto key = exec::MakeExecutorDescriptor(
+      "int64", "type_uuid=" + Uuid(641) + ";nullability=non_null");
+  key.descriptor_uuid.canonical = Uuid(642);
+  key.descriptor_kind = "scalar";
+  auto label = exec::MakeExecutorDescriptor(
+      "text", "type_uuid=" + Uuid(643) + ";nullability=non_null");
+  label.descriptor_uuid.canonical = Uuid(644);
+  label.descriptor_kind = "scalar";
+  return exec::MakeDescriptorBatch(
+      {{"key", key, false, 411}, {"label", label, false, 412}},
+      {{{exec::MakeExecutorValue(key, "1"),
+         exec::MakeExecutorValue(label, "discard")}},
+       {{exec::MakeExecutorValue(key, "2"),
+         exec::MakeExecutorValue(label, "keep")}},
+       {{exec::MakeExecutorValue(key, "3"),
+         exec::MakeExecutorValue(label, "unknown")}}});
+}
+
+exec::DescriptorBatch BatchForNode(const exec::PhysicalNodeRecord& node,
+                                   const std::size_t row_count) {
+  std::vector<exec::ExecutorColumnDescriptor> columns;
+  columns.reserve(node.output_descriptor_ids.size());
+  for (const auto descriptor_id : node.output_descriptor_ids) {
+    auto descriptor = exec::MakeExecutorDescriptor(
+        "int64", "type_uuid=" + Uuid(10000 + descriptor_id) +
+                     ";nullability=non_null");
+    descriptor.descriptor_uuid.canonical = Uuid(20000 + descriptor_id);
+    descriptor.descriptor_kind = "scalar";
+    columns.push_back({"value_" + std::to_string(descriptor_id), descriptor,
+                       false, descriptor_id});
+  }
+  std::vector<exec::DescriptorTuple> rows;
+  rows.reserve(row_count);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    exec::DescriptorTuple tuple;
+    tuple.values.reserve(columns.size());
+    for (const auto& column : columns) {
+      tuple.values.push_back(
+          exec::MakeExecutorValue(column.descriptor, std::to_string(row + 1)));
+    }
+    rows.push_back(std::move(tuple));
+  }
+  return exec::MakeDescriptorBatch(std::move(columns), std::move(rows));
 }
 
 exec::CanonicalPhysicalDagDispatchRequest Request(
@@ -208,11 +257,19 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
   request.physical_dag = Dag();
   request.mga_authority = ClosureAuthority(request.physical_dag);
   const auto scan_request = ScanRequest(request.physical_dag);
+  const auto scan_batch = ScanBatch();
+  request.runtime_limits.maximum_rows_per_batch = 16;
+  request.runtime_limits.maximum_columns_per_batch = 8;
+  request.runtime_limits.maximum_cells_per_batch = 64;
+  request.runtime_limits.maximum_total_materialized_rows = 32;
+  request.runtime_limits.maximum_total_materialized_cells = 128;
+  request.cancellation_requested = [] { return false; };
 
   request.available_executors.push_back(Registration(
       request.physical_dag, 41,
-       [invocation_order, scan_request](const auto& dag, const auto& node,
-                                        const auto& inputs) {
+       [invocation_order, scan_request, scan_batch](const auto& dag,
+                                                    const auto& node,
+                                                    const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
          if (!inputs.empty()) {
            auto result = Step(dag, node, 0);
@@ -223,12 +280,18 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
          }
          const auto scan =
              exec::ExecuteCanonicalSelectedScanAccess(scan_request);
-         if (!scan.diagnostic.ok || scan.accepted_row_version_ids.size() != 1) {
+         if (!scan.diagnostic.ok || scan.accepted_row_version_ids.size() != 3) {
            auto result = Step(dag, node, 0);
            result.diagnostic = scan.diagnostic;
            return result;
          }
-         return Step(dag, node, 9001);
+         auto result = Step(dag, node, 9001);
+         result.output_row_count = scan_batch.rows.size();
+         result.rows_examined = scan.counters.candidate_count;
+         result.materialized_output_batch = scan_batch;
+         result.data_access_observation_known = true;
+         result.data_access_observed = true;
+         return result;
        }));
   request.available_executors.push_back(Registration(
       request.physical_dag, 42,
@@ -236,14 +299,37 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
                           const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
          if (inputs.size() != 1 || inputs[0].physical_node_id != 41 ||
-             inputs[0].result_handle_id != 9001) {
+             inputs[0].result_handle_id != 9001 ||
+             !inputs[0].materialized_output_batch.has_value()) {
            auto result = Step(dag, node, 0);
            result.diagnostic.ok = false;
            result.diagnostic.diagnostic_code =
                "TEST_FILTER_INPUT_IDENTITY";
            return result;
          }
-         return Step(dag, node, 9002);
+         exec::CanonicalDescriptorFilterRequest filter_request;
+         filter_request.physical_dag = dag;
+         filter_request.selected_physical_node_id = node.physical_node_id;
+         filter_request.input_batch = *inputs[0].materialized_output_batch;
+         filter_request.row_truth_values = {
+             api::EngineSqlTruthValue::false_value,
+             api::EngineSqlTruthValue::true_value,
+             api::EngineSqlTruthValue::unknown};
+         filter_request.consumer = api::EnginePredicateConsumer::filter;
+         filter_request.mga_authority = ClosureAuthority(dag);
+         const auto filter =
+             exec::ExecuteCanonicalDescriptorFilter(filter_request);
+         if (!filter.diagnostic.ok) {
+           auto result = Step(dag, node, 0);
+           result.diagnostic = filter.diagnostic;
+           return result;
+         }
+         auto result = Step(dag, node, 9002);
+         result.input_row_count = filter_request.input_batch.rows.size();
+         result.output_row_count = filter.output_batch.rows.size();
+         result.rows_examined = filter_request.input_batch.rows.size();
+         result.materialized_output_batch = filter.output_batch;
+         return result;
        }));
   request.available_executors.push_back(Registration(
       request.physical_dag, 43,
@@ -251,14 +337,33 @@ exec::CanonicalPhysicalDagDispatchRequest Request(
                           const auto& inputs) {
          invocation_order->push_back(node.physical_node_id);
          if (inputs.size() != 1 || inputs[0].physical_node_id != 42 ||
-             inputs[0].result_handle_id != 9002) {
+             inputs[0].result_handle_id != 9002 ||
+             !inputs[0].materialized_output_batch.has_value()) {
            auto result = Step(dag, node, 0);
            result.diagnostic.ok = false;
            result.diagnostic.diagnostic_code =
                "TEST_PROJECT_INPUT_IDENTITY";
            return result;
          }
-         return Step(dag, node, 9003);
+         exec::CanonicalDescriptorProjectionRequest project_request;
+         project_request.physical_dag = dag;
+         project_request.selected_physical_node_id = node.physical_node_id;
+         project_request.input_batch = *inputs[0].materialized_output_batch;
+         project_request.projected_columns = {1};
+         project_request.mga_authority = ClosureAuthority(dag);
+         const auto project =
+             exec::ExecuteCanonicalDescriptorProjection(project_request);
+         if (!project.diagnostic.ok) {
+           auto result = Step(dag, node, 0);
+           result.diagnostic = project.diagnostic;
+           return result;
+         }
+         auto result = Step(dag, node, 9003);
+         result.input_row_count = project_request.input_batch.rows.size();
+         result.output_row_count = project.output_batch.rows.size();
+         result.rows_examined = project_request.input_batch.rows.size();
+         result.materialized_output_batch = project.output_batch;
+         return result;
        }));
   return request;
 }
@@ -277,7 +382,7 @@ bool ValidateCausalDagConsumption() {
                     "physical nodes did not execute in dependency order");
   passed &= Require(result.root_result_handle_id == 9003 &&
                         result.root_output_descriptor_ids ==
-                            std::vector<std::uint32_t>{433} &&
+                            std::vector<std::uint32_t>{412} &&
                         result.selected_plan_uuid == Uuid(401) &&
                         result.executed_root_physical_node_id == 43 &&
                         result.root_causal_counter_id == 4301 &&
@@ -295,6 +400,22 @@ bool ValidateCausalDagConsumption() {
                                   result.mga_statement_context);
                             }),
                     "dispatch root lost result or causal evidence");
+  passed &= Require(
+      result.data_access_observed && !result.cancellation_observed &&
+          result.executed_steps[0].output_row_count == 3 &&
+          result.executed_steps[1].input_row_count == 3 &&
+          result.executed_steps[1].output_row_count == 1 &&
+          result.executed_steps[2].input_row_count == 1 &&
+          result.executed_steps[2].output_row_count == 1 &&
+          result.executed_steps[2].materialized_output_batch.has_value() &&
+          result.executed_steps[2].materialized_output_batch->columns.size() ==
+              1 &&
+          result.executed_steps[2].materialized_output_batch->rows.size() == 1 &&
+          result.executed_steps[2]
+                  .materialized_output_batch->rows[0]
+                  .values[0]
+                  .encoded_value == "keep",
+      "typed SCAN/FILTER/PROJECT batches or causal counters were not consumed");
   passed &= Require(result.authority.engine_mga_snapshot_bound &&
                         !result.authority.owns_transaction_finality &&
                         !result.authority.owns_recovery &&
@@ -354,9 +475,26 @@ bool ValidateSharedNodeExecutesOnce() {
     request.available_executors.push_back(Registration(
         dag, node->physical_node_id,
          [&invocation_order](const auto& selected_dag, const auto& node,
-                             const auto&) {
+                             const auto& inputs) {
            invocation_order.push_back(node.physical_node_id);
-           return Step(selected_dag, node, 9100 + node.physical_node_id);
+           std::uint64_t input_rows = 0;
+           for (const auto& input : inputs) {
+             if (!input.materialized_output_batch.has_value()) {
+               auto result = Step(selected_dag, node, 0);
+               result.diagnostic.ok = false;
+               result.diagnostic.diagnostic_code =
+                   "TEST_SHARED_TYPED_INPUT";
+               return result;
+             }
+             input_rows += input.materialized_output_batch->rows.size();
+           }
+           auto result =
+               Step(selected_dag, node, 9100 + node.physical_node_id);
+           result.input_row_count = input_rows;
+           result.output_row_count = 1;
+           result.rows_examined = inputs.empty() ? 1 : input_rows;
+           result.materialized_output_batch = BatchForNode(node, 1);
+           return result;
          }));
   };
   register_executor(exec::PhysicalNodeKind::kValues, "values.literal.v1");
@@ -563,6 +701,97 @@ bool ValidateEvidenceAndRegistryRefusal() {
   return passed;
 }
 
+bool ValidateTypedBatchCancellationAndResourceAtomicity() {
+  bool passed = true;
+
+  std::vector<std::uint64_t> invocation_order;
+  auto request = Request(&invocation_order);
+  request.cancellation_requested = [] { return true; };
+  auto result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok && result.cancellation_observed &&
+          !result.execution_started && !result.data_access_observed &&
+          invocation_order.empty() && result.executed_steps.empty() &&
+          result.root_result_handle_id == 0,
+      "pre-dispatch cancellation exposed execution or typed output");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  request.cancellation_requested = [&invocation_order] {
+    return !invocation_order.empty();
+  };
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok && result.cancellation_observed &&
+          result.execution_started && result.data_access_observed &&
+          invocation_order == std::vector<std::uint64_t>{41} &&
+          result.executed_steps.empty() && result.root_result_handle_id == 0 &&
+          result.root_output_descriptor_ids.empty(),
+      "mid-DAG cancellation published the completed scan batch");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  request.runtime_limits.maximum_rows_per_batch = 2;
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+          result.execution_started && result.data_access_observed &&
+          !result.cancellation_observed &&
+          invocation_order == std::vector<std::uint64_t>{41} &&
+          result.executed_steps.empty(),
+      "post-read typed-batch resource overflow exposed partial output");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  auto scan_executor = request.available_executors.front().execute;
+  request.available_executors.front().execute =
+      [scan_executor](const auto& dag, const auto& node, const auto& inputs) {
+        auto step = scan_executor(dag, node, inputs);
+        step.materialized_output_batch.reset();
+        return step;
+      };
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-QRY-004-PHYSICAL-TYPED-BATCH-REQUIRED-V1" &&
+          result.execution_started && result.data_access_observed &&
+          invocation_order == std::vector<std::uint64_t>{41} &&
+          result.executed_steps.empty(),
+      "opaque-handle-only scan bypassed the typed batch route");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  scan_executor = request.available_executors.front().execute;
+  request.available_executors.front().execute =
+      [scan_executor](const auto& dag, const auto& node, const auto& inputs) {
+        auto step = scan_executor(dag, node, inputs);
+        ++step.output_row_count;
+        return step;
+      };
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok &&
+          result.diagnostic.diagnostic_code ==
+              "QOW-DIAG-QRY-004-PHYSICAL-CAUSAL-COUNTER-V1" &&
+          result.execution_started && result.data_access_observed &&
+          invocation_order == std::vector<std::uint64_t>{41} &&
+          result.executed_steps.empty(),
+      "typed batch and output counter mismatch reached a consumer");
+
+  invocation_order.clear();
+  request = Request(&invocation_order);
+  request.runtime_limits.maximum_total_materialized_cells = 0;
+  result = exec::ExecuteCanonicalPhysicalDag(request);
+  passed &= Require(
+      !result.diagnostic.ok && !result.execution_started &&
+          !result.data_access_observed && invocation_order.empty(),
+      "zero cumulative resource bound reached physical execution");
+  return passed;
+}
+
 bool ValidateFetchFinalRevalidationScrubsOutput() {
   auto dag = Dag();
   dag.root_physical_node_id = 62;
@@ -630,6 +859,7 @@ int main() {
       !ValidatePreflightAndSnapshotRefusal() ||
       !ValidateCompletePreflightMgaRefusalMatrix() ||
       !ValidateEvidenceAndRegistryRefusal() ||
+      !ValidateTypedBatchCancellationAndResourceAtomicity() ||
       !ValidateFetchFinalRevalidationScrubsOutput()) {
     return 1;
   }

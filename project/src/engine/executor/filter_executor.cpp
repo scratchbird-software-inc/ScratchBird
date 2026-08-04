@@ -47,13 +47,6 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
   if (!authority_validation.ok) {
     return refuse(authority_validation);
   }
-  if (request.selected_physical_node_id == 0 ||
-      request.selected_physical_node_id !=
-          request.physical_dag.root_physical_node_id) {
-    return refuse(Refusal("SBLR.PLAN_TREE.INVALID_HANDLE",
-                          "selected filter node is not the root"));
-  }
-
   const PhysicalNodeRecord* selected_node = nullptr;
   const PhysicalNodeRecord* input_node = nullptr;
   for (const auto& node : request.physical_dag.nodes) {
@@ -61,12 +54,12 @@ CanonicalDescriptorFilterResult ExecuteCanonicalDescriptorFilter(
       selected_node = &node;
     }
   }
-  if (selected_node == nullptr ||
+  if (request.selected_physical_node_id == 0 || selected_node == nullptr ||
       selected_node->node_kind != PhysicalNodeKind::kFilter ||
       selected_node->input_physical_node_ids.size() != 1) {
     return refuse(Refusal(
         "QOW-DIAG-QRY-007-FILTER-PHYSICAL-ROUTE-V1",
-        "descriptor filter requires one selected filter node"));
+        "descriptor filter requires one selected reachable filter node"));
   }
   for (const auto& node : request.physical_dag.nodes) {
     if (node.physical_node_id ==

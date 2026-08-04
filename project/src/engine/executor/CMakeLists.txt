@@ -134,6 +134,7 @@ add_library(sb_engine_executor STATIC
   row_ordinal_locator.cpp
   runtime_filter_executor.cpp
   # QOW-CMAKE-QRY-004-ACCESS-V1
+  # QOW-CMAKE-QRY-007-SCAN-V1
   scan_executor.cpp
   scoring_kernel_executor.cpp
   security_barrier_executor.cpp

@@ -313,7 +313,7 @@ exec::CanonicalDescriptorProjectionRequest Request() {
   exec::CanonicalDescriptorProjectionRequest request;
   request.physical_dag.selected_plan_uuid =
       "019f0000-0000-7200-8000-000000007001";
-  request.physical_dag.root_physical_node_id = 702;
+  request.physical_dag.root_physical_node_id = 703;
   request.physical_dag.local_transaction_id = 703;
   request.physical_dag.statement_snapshot_id = 704;
   request.physical_dag.admission_evidence = {
@@ -348,6 +348,13 @@ exec::CanonicalDescriptorProjectionRequest Request() {
        .input_physical_node_ids = {701},
        .output_descriptor_ids = {72, 71},
        .causal_counter_id = 7002},
+      {.physical_node_id = 703,
+       .relational_node_id = 73,
+       .node_kind = exec::PhysicalNodeKind::kLimit,
+       .implementation_id = "limit.typed.v1",
+       .input_physical_node_ids = {702},
+       .output_descriptor_ids = {72, 71},
+       .causal_counter_id = 7003},
   };
   UpgradeToCanonicalStatementContext(&request.physical_dag, 7000);
   request.selected_physical_node_id = 702;
@@ -365,7 +372,7 @@ bool ValidatePhysicalProjection() {
   bool passed = true;
   const auto result = exec::ExecuteCanonicalDescriptorProjection(Request());
   passed &= Require(result.diagnostic.ok,
-                    "typed physical project node was not executable");
+                    "typed interior physical project node was not executable");
   passed &= Require(result.executed_physical_node_id == 702 &&
                         result.causal_counter_id == 7002 &&
                         exec::PhysicalMgaStatementContextEqual(
@@ -385,9 +392,14 @@ bool ValidatePhysicalProjection() {
       "typed NULL or scalar value changed during projection");
 
   auto invalid = Request();
-  invalid.physical_dag.nodes.back().node_kind =
+  invalid.physical_dag.nodes[1].node_kind =
       exec::PhysicalNodeKind::kSort;
   const auto refused = exec::ExecuteCanonicalDescriptorProjection(invalid);
+  if (!AtomicStatementContextRefusal(refused)) {
+    std::cerr << "QOW-TEST-QRY-007-PROJECTION-V1: refusal diagnostic="
+              << refused.diagnostic.diagnostic_code
+              << " detail=" << refused.diagnostic.detail << '\n';
+  }
   passed &= Require(AtomicStatementContextRefusal(refused),
                     "source-layout-only non-project route produced data");
   passed &= ValidateStatementContextMatrix(

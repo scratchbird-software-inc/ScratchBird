@@ -147,6 +147,7 @@ bool IsCanonicalIndexImplementation(const std::string_view implementation_id) {
 }  // namespace
 
 // QOW-SOURCE-QRY-004-ACCESS-V1
+// QOW-SOURCE-QRY-007-SCAN-V1
 // Executes exactly one causally selected scan access node.  Index and relation
 // access produce candidates only: engine-owned MGA visibility, security, exact
 // locator identity, and residual SQL truth are rechecked before publication.

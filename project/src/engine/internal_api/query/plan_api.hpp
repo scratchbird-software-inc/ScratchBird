@@ -286,6 +286,9 @@ struct CanonicalOptimizerSelectedExecutionRequest {
   std::string pre_access_statistics_snapshot_uuid;
   scratchbird::engine::executor::CanonicalExecutionMgaAuthority mga_authority;
   scratchbird::engine::executor::PhysicalNodeAbiLimits limits;
+  scratchbird::engine::executor::CanonicalPhysicalDagRuntimeLimits
+      runtime_limits;
+  std::function<bool()> cancellation_requested;
   std::vector<
       scratchbird::engine::executor::CanonicalPhysicalExecutorRegistration>
       available_executors;
@@ -309,6 +312,7 @@ struct CanonicalOptimizerSelectedExecutionResult {
   bool causal_counters_attached{false};
   bool canonical_result_published{false};
   bool data_access_observed{false};
+  bool cancellation_observed{false};
   bool replan_required{false};
   scratchbird::engine::executor::CanonicalPhysicalDagDispatchResult dispatch;
   scratchbird::engine::executor::CanonicalResultPublicationResult
