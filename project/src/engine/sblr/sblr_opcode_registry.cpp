@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 380> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 382> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -71,6 +71,8 @@ constexpr std::array<CanonicalOpcodeCodeRow, 380> kCanonicalOpcodeCodes{{
     {"SBLR_SEQUENCE_NEXTVAL", 0x0409u},
     {"SBLR_SEQUENCE_CURRVAL", 0x040Au},
     {"SBLR_SEQUENCE_SETVAL", 0x040Bu},
+    {"SBLR_QUERY_APPLY_NUMERIC_OPERATION", 0x040Cu},
+    {"SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", 0x040Du},
     {"SBLR_PROJECT", 0x0500u},
     {"SBLR_AGGREGATE", 0x0501u},
     {"SBLR_GROUP", 0x0502u},
@@ -912,9 +914,9 @@ const std::vector<SblrOpcodeEntry>& StaticSblrOpcodeRegistry() {
       Entry("query.cast_value", "SBLR_QUERY_CAST_VALUE", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.set_operation", "SBLR_QUERY_SET_OPERATION", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
-      Entry("query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
+      CanonicalEntry("query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "expression-eval", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, false),
       Entry("query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
-      Entry("query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
+      CanonicalEntry("query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "expression-eval", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, SblrOpcodeTransactionEffect::read, SblrOpcodeSecurityClass::object_authorized, false),
       Entry("query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, false),
       Entry("query.evaluate_projection", "SBLR_QUERY_EVALUATE_PROJECTION", SblrOpcodeCategory::query, SblrOpcodeSupport::implemented, true, true),

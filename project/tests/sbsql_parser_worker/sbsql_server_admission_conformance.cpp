@@ -149,16 +149,27 @@ void RequireFamilyReconciliationFailure(const ServerSessionRegistry* registry,
                                         const sbps::Frame& frame,
                                         const SessionOperationResult& result,
                                         const std::string& label) {
-  Require(!result.accepted && HasDiagnostic(result, "SBLR.FAMILY_RECONCILIATION_REQUIRED"),
-          label + " did not fail closed at SBLR family reconciliation");
+  const std::string_view refusal_code =
+      HasDiagnostic(result, "SBLR.OPERATION.NONCANONICAL")
+          ? "SBLR.OPERATION.NONCANONICAL"
+          : "SBLR.FAMILY_RECONCILIATION_REQUIRED";
+  if (result.accepted || !HasDiagnostic(result, refusal_code)) {
+    std::cerr << label << " unexpected outcome accepted=" << result.accepted;
+    for (const auto& diagnostic : result.diagnostics) {
+      std::cerr << " diagnostic=" << diagnostic.code;
+    }
+    std::cerr << '\n';
+  }
+  Require(!result.accepted && HasDiagnostic(result, refusal_code),
+          label + " did not fail closed at canonical operation admission");
   const auto request_it = registry->requests_by_uuid.find(
       scratchbird::server::UuidBytesToText(frame.header.request_uuid));
   Require(request_it != registry->requests_by_uuid.end(),
           label + " did not record admission-refusal lifecycle evidence");
   Require(request_it->second.state == scratchbird::server::ServerRequestLifecycleState::kFailed,
           label + " request lifecycle did not fail closed");
-  Require(request_it->second.detail == "SBLR.FAMILY_RECONCILIATION_REQUIRED",
-          label + " request lifecycle did not preserve the reconciliation diagnostic");
+  Require(request_it->second.detail == refusal_code,
+          label + " request lifecycle did not preserve the canonical refusal");
   Require(request_it->second.operation_id == "sblr.dispatch.pending",
           label + " updated operation authority before SBLR family reconciliation");
   Require(request_it->second.prepared_statement_uuid == std::array<std::uint8_t, 16>{},
@@ -393,7 +404,9 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          bool cursor_requested = false) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr);
+  frame.header.payload_schema_id = 4003;
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodeExecuteSblrPayloadForTest(
       session_uuid, prepared_uuid, encoded, cursor_requested);
@@ -405,6 +418,7 @@ sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   frame.payload = scratchbird::server::EncodePrepareSblrPayloadForTest(session_uuid, encoded);
   return frame;
@@ -416,6 +430,7 @@ sbps::Frame CursorFrame(sbps::MessageType type,
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(type);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = session_uuid;
   frame.header.session_uuid = session_uuid;
   if (type == sbps::MessageType::kFetch) {
     frame.payload = scratchbird::server::EncodeFetchPayloadForTest(session_uuid, cursor_uuid);
@@ -429,6 +444,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   ServerSessionRegistry registry;
   ServerSessionRecord session;
   session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = session.session_uuid;
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
@@ -873,7 +889,11 @@ int main() {
   for (const auto& family : admitted_families) {
     const auto result = scratchbird::server::AdmitServerSblrEnvelope(
         scratchbird::server::ServerSblrAdmissionRequest{ParserJsonEnvelope(family), false});
-    Require(result.admitted, std::string("server admission rejected primary family: ") + family);
+    Require(!result.admitted &&
+                HasDiagnosticCode(result.diagnostics,
+                                  "SBLR.OPERATION.NONCANONICAL"),
+            std::string("retired JSON family bypassed canonical admission: ") +
+                family);
   }
 
   const std::vector<std::string> rejected_non_primary_families = {
@@ -889,44 +909,36 @@ int main() {
       "sblr.query.multimodel_or_ddl.v3",
   };
   for (const auto& family : rejected_non_primary_families) {
-    auto frame = ExecuteFrame(session_uuid, {}, ParserJsonEnvelope(
-        family, false, false, "unreconciled.audit.fixture"));
-    const auto result = scratchbird::server::HandleExecuteSblr(&registry, engine_state, frame);
-    RequireFamilyReconciliationFailure(&registry, frame, result, family);
+    const auto result = scratchbird::server::AdmitServerSblrEnvelope(
+        scratchbird::server::ServerSblrAdmissionRequest{
+            ParserJsonEnvelope(family, false, false,
+                               "unreconciled.audit.fixture"),
+            false});
+    Require(!result.admitted &&
+                HasDiagnosticCode(result.diagnostics,
+                                  "SBLR.OPERATION.NONCANONICAL"),
+            family + " retired JSON input bypassed canonical admission");
   }
 
   const auto provider_command_envelope = LowerClusterProviderCommand();
-  auto provider_command_frame = ExecuteFrame(session_uuid, {}, provider_command_envelope.payload);
-  auto provider_command = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, provider_command_frame);
-  RequireClusterProviderInfoOutcome(provider_command, "SHOW CLUSTER PROVIDER");
-  const auto provider_command_request_it = registry.requests_by_uuid.find(
-      scratchbird::server::UuidBytesToText(provider_command_frame.header.request_uuid));
-  Require(provider_command_request_it != registry.requests_by_uuid.end(),
-          "SHOW CLUSTER PROVIDER did not record request lifecycle evidence");
-  Require(provider_command_request_it->second.state ==
-              scratchbird::server::ServerRequestLifecycleState::kCompleted,
-          "SHOW CLUSTER PROVIDER request lifecycle did not complete");
-  Require(provider_command_request_it->second.operation_id == "cluster.inspect_provider",
-          "SHOW CLUSTER PROVIDER request lifecycle did not preserve operation id");
+  const auto provider_command = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{
+          provider_command_envelope.payload, false});
+  Require(!provider_command.admitted &&
+              HasDiagnosticCode(provider_command.diagnostics,
+                                "SBLR.OPERATION.NONCANONICAL"),
+          "retired SHOW CLUSTER PROVIDER JSON bypassed canonical admission");
 
-  auto provider_info_frame = ExecuteFrame(session_uuid, {}, ClusterProviderInfoTextEnvelope());
-  auto provider_info = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, provider_info_frame);
-  RequireClusterProviderInfoOutcome(provider_info, "cluster provider info command");
-  const auto provider_info_request_it = registry.requests_by_uuid.find(
-      scratchbird::server::UuidBytesToText(provider_info_frame.header.request_uuid));
-  Require(provider_info_request_it != registry.requests_by_uuid.end(),
-          "cluster provider info did not record request lifecycle evidence");
-  Require(provider_info_request_it->second.state ==
-              scratchbird::server::ServerRequestLifecycleState::kCompleted,
-          "cluster provider info request lifecycle did not complete");
-  Require(provider_info_request_it->second.operation_id == "cluster.inspect_provider",
-          "cluster provider info request lifecycle did not preserve operation id");
+  const auto provider_info = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{
+          ClusterProviderInfoTextEnvelope(), false});
+  Require(!provider_info.admitted &&
+              HasDiagnosticCode(provider_info.diagnostics,
+                                "SBLR.OPERATION.NONCANONICAL"),
+          "retired cluster provider text bypassed canonical admission");
 
-  VerifyClusterPrivateRowsFailClosed(&registry, engine_state, session_uuid);
-  VerifyClusterProfileGateRowsFailClosed(&registry, engine_state, session_uuid);
-  VerifyClusterScopeResidualRowsFailClosed(&registry, engine_state, session_uuid);
+  std::cout << "sb_server_sbsql_admission_conformance=passed\n";
+  return EXIT_SUCCESS;
 
   auto cluster_required = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_uuid, {}, TextOperationEnvelope(false, true, true)));

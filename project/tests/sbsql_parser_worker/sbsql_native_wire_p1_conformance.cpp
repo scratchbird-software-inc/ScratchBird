@@ -784,20 +784,15 @@ void CheckScriptIngestQueryMetadata() {
   const auto responses = ExchangeAuthenticatedQueryConversation(
       EncodeFrame(kQuery, QueryScriptPayload(script, 4)));
   std::size_t command_completes = 0;
-  bool saw_ready = false;
   bool saw_error = false;
   for (const auto& response : responses) {
     if (response.type == kCommandComplete) ++command_completes;
-    if (response.type == kReady) saw_ready = true;
-    if (response.type == kError) {
-      saw_error = true;
-      Require(false, "script-ingest query returned Error instead of grouped completion");
-    }
+    if (response.type == kError) saw_error = true;
   }
-  Require(!saw_error, "script-ingest query produced an error");
-  Require(saw_ready, "script-ingest query did not finish with Ready");
-  Require(command_completes == 2,
-          "script-ingest query did not collapse insert statements into one grouped completion");
+  Require(saw_error,
+          "embedded script-ingest bypassed the private statement-context route");
+  Require(command_completes == 0,
+          "script-ingest published completion before private-route refusal");
 }
 
 void CheckScriptIngestPartialQueryFrames() {
@@ -816,16 +811,15 @@ void CheckScriptIngestPartialQueryFrames() {
       kFeatureStreaming,
       kFeatureStreaming);
   std::size_t command_completes = 0;
-  bool saw_ready = false;
+  bool saw_error = false;
   for (const auto& response : responses) {
     if (response.type == kCommandComplete) ++command_completes;
-    if (response.type == kReady) saw_ready = true;
-    Require(response.type != kError,
-            "partial script-ingest query returned Error instead of grouped completion");
+    if (response.type == kError) saw_error = true;
   }
-  Require(saw_ready, "partial script-ingest query did not finish with Ready");
-  Require(command_completes == 2,
-          "partial script-ingest query did not collapse insert statements into one grouped completion");
+  Require(saw_error,
+          "partial embedded script-ingest bypassed private statement authority");
+  Require(command_completes == 0,
+          "partial script-ingest published completion before private-route refusal");
 }
 
 }  // namespace

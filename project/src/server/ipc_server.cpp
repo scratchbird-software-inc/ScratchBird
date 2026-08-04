@@ -1283,7 +1283,7 @@ struct PsNameResolveRequest {
 
 constexpr std::uint8_t kPsNameProjectionRelationDescriptorV1 = 0x01u;
 constexpr std::uint8_t kPsRelationDescriptorExtensionKind = 0x02u;
-constexpr std::uint8_t kPsRelationDescriptorExtensionVersion = 0x01u;
+constexpr std::uint8_t kPsRelationDescriptorExtensionVersion = 0x02u;
 constexpr std::size_t kMaxPsRelationProjectionBytes = 512u * 1024u;
 constexpr std::uint32_t kMaxPsRelationProjectionColumns = 4096;
 constexpr std::size_t kMaxPsRelationMetadataTextBytes = 4096;
@@ -1852,6 +1852,7 @@ struct PsPublicRelationColumnProjection {
 struct PsPublicRelationProjection {
   std::array<std::uint8_t, 16> descriptor_uuid{};
   std::array<std::uint8_t, 16> relation_uuid{};
+  std::array<std::uint8_t, 16> schema_uuid{};
   std::uint64_t descriptor_generation = 0;
   std::uint64_t validated_resource_epoch = 0;
   std::vector<PsPublicRelationColumnProjection> columns;
@@ -1944,7 +1945,9 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
       loaded.descriptor.descriptor_uuid.canonical);
   const auto relation_uuid = PsNameUuidFromText(
       loaded.descriptor.relation_uuid.canonical);
-  if (!descriptor_uuid || !relation_uuid ||
+  const auto schema_uuid = PsNameUuidFromText(
+      loaded.descriptor.schema_uuid.canonical);
+  if (!descriptor_uuid || !relation_uuid || !schema_uuid ||
       loaded.descriptor.relation_uuid.canonical != resolved_relation_uuid ||
       loaded.descriptor.descriptor_generation == 0 ||
       loaded.descriptor.columns.empty()) {
@@ -1970,6 +1973,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
   }
   result.projection.descriptor_uuid = *descriptor_uuid;
   result.projection.relation_uuid = *relation_uuid;
+  result.projection.schema_uuid = *schema_uuid;
   result.projection.descriptor_generation =
       loaded.descriptor.descriptor_generation;
   result.projection.validated_resource_epoch = context.resource_epoch;
@@ -2153,6 +2157,7 @@ EncodePsNameResolvePayloadV3(
   std::vector<std::uint8_t> extension;
   PsNamePutUuid(&extension, relation_projection->descriptor_uuid);
   PsNamePutUuid(&extension, relation_projection->relation_uuid);
+  PsNamePutUuid(&extension, relation_projection->schema_uuid);
   PsNamePutU64(&extension, relation_projection->descriptor_generation);
   PsNamePutU64(&extension, relation_projection->validated_resource_epoch);
   PsNamePutU32(
@@ -3314,6 +3319,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   const bool session_bound_message =
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidRequest) ||
+      frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kAcquireStatementContextRequest) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kExecuteSblr) ||
       frame.header.message_type == static_cast<std::uint16_t>(sbps::MessageType::kFetch) ||
@@ -3591,6 +3597,20 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
     session_registry->negotiated_capabilities_by_connection_uuid
         .insert_or_assign(connection_key,
                           negotiation_state->accepted_capability_bitmap);
+    const auto admitted_hello = sbps::DecodeHelloRequest(
+        negotiation_state->admitted_hello_payload);
+    if (admitted_hello.has_value()) {
+      ServerAdmittedParserChannelIdentity identity;
+      identity.parser_package_uuid = admitted_hello->parser_package_uuid;
+      identity.dialect_profile_uuid = admitted_hello->dialect_profile_uuid;
+      identity.parser_package_version_major =
+          admitted_hello->parser_api_major;
+      identity.parser_package_version_minor =
+          admitted_hello->parser_api_minor;
+      identity.parser_package_version_patch = 0;
+      session_registry->admitted_parser_identity_by_connection_uuid
+          .insert_or_assign(connection_key, identity);
+    }
     const auto result = HandleAuthHandoff(session_registry, engine_state, frame);
     if (result.accepted && negotiation_state != nullptr) {
       negotiation_state->connection_authenticated = true;
@@ -3604,6 +3624,8 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
           owner->second == negotiation_state->server_channel_uuid) {
         session_registry->physical_channel_by_connection_uuid.erase(owner);
         session_registry->negotiated_capabilities_by_connection_uuid.erase(
+            connection_key);
+        session_registry->admitted_parser_identity_by_connection_uuid.erase(
             connection_key);
       }
     }
@@ -3698,6 +3720,15 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameRequest)) {
     WriteAll(client_fd, ResolveNamePublicFrame(frame, engine_state, session_registry));
+    return true;
+  }
+  if (frame.header.message_type == static_cast<std::uint16_t>(
+          sbps::MessageType::kAcquireStatementContextRequest)) {
+    WriteAll(client_fd,
+             SessionOperationFrame(
+                 frame,
+                 HandleAcquireStatementContext(
+                     session_registry, engine_state, frame)));
     return true;
   }
   if (frame.header.message_type ==
@@ -3895,6 +3926,8 @@ std::vector<SessionOperationResult> HandleUnexpectedParserChannelClose(
        it != session_registry->physical_channel_by_connection_uuid.end();) {
     if (it->second == server_channel_uuid) {
       session_registry->negotiated_capabilities_by_connection_uuid.erase(
+          it->first);
+      session_registry->admitted_parser_identity_by_connection_uuid.erase(
           it->first);
       it = session_registry->physical_channel_by_connection_uuid.erase(it);
     } else {

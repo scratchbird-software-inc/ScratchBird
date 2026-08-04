@@ -461,15 +461,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
   if (has_catalog_relation_ast || !ast.catalog_relation_sources.empty()) {
+    const bool expanded_projection =
+        !context.expressions.empty() || !context.outputs.empty();
     if (!has_catalog_relation_ast || ast.relations.size() != 1 ||
         ast.catalog_relation_sources.size() != 1 ||
         ast.root_relation_id == 0 || !ast.values_rows.empty() ||
         !ast.grouping_sets.empty() || ast.expressions.size() != 1 ||
-        !context.expressions.empty() || !context.outputs.empty() ||
-        !context.relations.empty() || context.catalog_relations.size() != 1) {
+        !context.relations.empty() || context.catalog_relations.size() != 1 ||
+        (expanded_projection &&
+         (context.expressions.empty() || context.outputs.empty()))) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-RELATION",
-          "catalog relation binding requires one source and no projection expansion");
+          "catalog relation binding requires one source and a complete projection");
       return RefusedBoundAst(std::move(bound));
     }
 
@@ -576,11 +579,76 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       return RefusedBoundAst(std::move(bound));
     }
 
+    std::vector<std::uint32_t> expanded_expression_ids;
+    std::vector<std::uint32_t> expanded_output_ids;
+    if (expanded_projection) {
+      const auto column_count = relation_binding.columns.size();
+      if (context.expressions.size() != column_count ||
+          context.outputs.size() != column_count) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+            "catalog projection must cover every persisted column exactly once");
+        return RefusedBoundAst(std::move(bound));
+      }
+      bound.expressions.reserve(column_count);
+      bound.outputs.reserve(column_count);
+      expanded_expression_ids.reserve(column_count);
+      expanded_output_ids.reserve(column_count);
+      for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
+        const auto expected_id = static_cast<std::uint32_t>(ordinal + 1);
+        const auto& column = relation_binding.columns[ordinal];
+        const auto& expression = context.expressions[ordinal];
+        const auto& output = context.outputs[ordinal];
+        if (expression.expression_id != expected_id ||
+            expression.descriptor_id != column.descriptor_id ||
+            expression.function_uuid.has_value() ||
+            !expression.bound_name_uuid.has_value() ||
+            *expression.bound_name_uuid != column.column_uuid) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog projection expression does not match its persisted column");
+          return RefusedBoundAst(std::move(bound));
+        }
+        if (output.output_id != expected_id ||
+            output.relation_id != relation.relation_id ||
+            output.expression_id != expression.expression_id ||
+            output.output_name_utf8 != column.canonical_name_key ||
+            output.descriptor_id != column.descriptor_id || !output.visible ||
+            output.ordinal != ordinal) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "catalog projection output does not match its persisted column");
+          return RefusedBoundAst(std::move(bound));
+        }
+
+        BoundExpressionAstRecord bound_expression;
+        bound_expression.expression_id = expression.expression_id;
+        bound_expression.expression_kind = NativeExpressionAstKind::kIdentifier;
+        bound_expression.result_descriptor_id = expression.descriptor_id;
+        bound_expression.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(bound_expression));
+
+        BoundOutputAstRecord bound_output;
+        bound_output.output_id = output.output_id;
+        bound_output.relation_id = output.relation_id;
+        bound_output.expression_id = output.expression_id;
+        bound_output.output_name_utf8 = output.output_name_utf8;
+        bound_output.descriptor_id = output.descriptor_id;
+        bound_output.visible = output.visible;
+        bound_output.ordinal = output.ordinal;
+        bound.outputs.push_back(std::move(bound_output));
+        expanded_expression_ids.push_back(expression.expression_id);
+        expanded_output_ids.push_back(output.output_id);
+      }
+    }
+
     BoundRelationAstRecord bound_relation;
     bound_relation.relation_id = relation.relation_id;
     bound_relation.relation_kind = relation.relation_kind;
     bound_relation.semantic_variant_id = "catalog.relation-source.v1";
     bound_relation.bound_object_uuid = relation_binding.object_uuid;
+    bound_relation.output_expression_ids = expanded_expression_ids;
+    bound_relation.bound_expression_ids = std::move(expanded_expression_ids);
     bound.relations.push_back(std::move(bound_relation));
     bound.catalog_relation_sources.push_back(std::move(bound_source));
 
@@ -605,6 +673,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     scope.scope_id = 1;
     scope.parent_scope_id = std::nullopt;
     scope.visible_relation_ids = {ast.root_relation_id};
+    scope.visible_projection_ids = std::move(expanded_output_ids);
     scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
     bound.scopes.push_back(std::move(scope));
 

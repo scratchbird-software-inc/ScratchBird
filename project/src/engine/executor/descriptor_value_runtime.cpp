@@ -26,6 +26,7 @@ namespace {
 
 using scratchbird::engine::internal_api::EngineDescriptor;
 using scratchbird::engine::internal_api::EngineTypedValue;
+using scratchbird::core::datatypes::CanonicalTypeId;
 
 DescriptorRuntimeDiagnostic OkDiagnostic() {
   return {};
@@ -51,9 +52,25 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
+CanonicalTypeId CanonicalDescriptorTypeId(const EngineDescriptor& descriptor) {
+  std::string type = LowerAscii(descriptor.canonical_type_name);
+  if (type == "integer64") { return CanonicalTypeId::int64; }
+  if (type.starts_with("sb.")) { type.erase(0, 3); }
+  return scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type);
+}
+
+bool IsBoundedSignedIntegerTypeId(const CanonicalTypeId type_id) {
+  return type_id == CanonicalTypeId::int8 ||
+         type_id == CanonicalTypeId::int16 ||
+         type_id == CanonicalTypeId::int32 ||
+         type_id == CanonicalTypeId::int64;
+}
+
 bool IsInt64Type(const EngineDescriptor& descriptor) {
-  const std::string type = LowerAscii(descriptor.canonical_type_name);
-  return type == "int64" || type == "bigint" || type == "integer64" || type == "sb.int64";
+  // QOW-SOURCE-PACKET7-RANGE-SAFE-SIGNED-INTEGER-DESCRIPTOR-V1
+  // The descriptor runtime carries bounded signed integers in int64_t, but
+  // canonical family and width authority remain with sb_core_datatypes.
+  return IsBoundedSignedIntegerTypeId(CanonicalDescriptorTypeId(descriptor));
 }
 
 bool IsBoolType(const EngineDescriptor& descriptor) {
@@ -127,6 +144,23 @@ bool ParseInt64Strict(const std::string& text, std::int64_t* out) {
   }
 }
 
+bool ParseBoundedSignedIntegerStrict(const EngineDescriptor& descriptor,
+                                     const std::string& text,
+                                     std::int64_t* out) {
+  const auto type_id = CanonicalDescriptorTypeId(descriptor);
+  if (!IsBoundedSignedIntegerTypeId(type_id)) { return false; }
+
+  scratchbird::core::datatypes::DatatypeCastRequest request;
+  request.value.type_id = type_id;
+  request.value.encoded_value = text;
+  request.value.is_null = false;
+  request.target_type_id = type_id;
+  request.explicit_cast = true;
+  const auto validated = scratchbird::core::datatypes::CastDatatypeValue(request);
+  return validated.ok() &&
+         ParseInt64Strict(validated.value.encoded_value, out);
+}
+
 bool ParseReal64Strict(const std::string& text, double* out) {
   if (out == nullptr || text.empty()) { return false; }
   char* end = nullptr;
@@ -196,7 +230,9 @@ std::optional<std::string> EqualityKeyForValue(const EngineTypedValue& value,
   if (value.is_null) { return std::nullopt; }
   if (IsInt64Type(descriptor)) {
     std::int64_t parsed = 0;
-    if (!ParseInt64Strict(value.encoded_value, &parsed)) {
+    if (!ParseBoundedSignedIntegerStrict(descriptor,
+                                         value.encoded_value,
+                                         &parsed)) {
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column));
       return std::nullopt;
     }
@@ -238,8 +274,12 @@ bool DescriptorValueGreaterThan(const EngineTypedValue& value,
   if (IsInt64Type(descriptor)) {
     std::int64_t lhs = 0;
     std::int64_t rhs = 0;
-    if (!ParseInt64Strict(value.encoded_value, &lhs) ||
-        !ParseInt64Strict(bound.encoded_value, &rhs)) {
+    if (!ParseBoundedSignedIntegerStrict(descriptor,
+                                         value.encoded_value,
+                                         &lhs) ||
+        !ParseBoundedSignedIntegerStrict(descriptor,
+                                         bound.encoded_value,
+                                         &rhs)) {
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column));
       return false;
     }
@@ -348,7 +388,9 @@ DescriptorRuntimeDiagnostic ValidateDescriptorBatch(const DescriptorBatch& batch
       }
       if (IsInt64Type(expected.descriptor)) {
         std::int64_t ignored = 0;
-        if (!ParseInt64Strict(value.encoded_value, &ignored)) {
+        if (!ParseBoundedSignedIntegerStrict(expected.descriptor,
+                                             value.encoded_value,
+                                             &ignored)) {
           return ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value, row, column);
         }
       } else if (IsBoolType(expected.descriptor)) {
@@ -1061,6 +1103,17 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
     return {};
   }
   if (DescriptorMatches(target_descriptor, value.descriptor)) {
+    if (IsInt64Type(target_descriptor)) {
+      std::int64_t parsed = 0;
+      if (!ParseBoundedSignedIntegerStrict(target_descriptor,
+                                           value.encoded_value,
+                                           &parsed)) {
+        SetDiagnostic(diagnostic,
+                      ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED",
+                                      value.encoded_value));
+        return {};
+      }
+    }
     SetDiagnostic(diagnostic, OkDiagnostic());
     return MakeExecutorValue(target_descriptor, value.encoded_value, false);
   }
@@ -1070,8 +1123,17 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
       SetDiagnostic(diagnostic, decoded.diagnostic);
       return {};
     }
+    std::int64_t target_value = 0;
+    if (!ParseBoundedSignedIntegerStrict(target_descriptor,
+                                         std::to_string(decoded.value),
+                                         &target_value)) {
+      SetDiagnostic(diagnostic,
+                    ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED",
+                                    value.encoded_value));
+      return {};
+    }
     SetDiagnostic(diagnostic, OkDiagnostic());
-    return MakeExecutorValue(target_descriptor, std::to_string(decoded.value), false);
+    return MakeExecutorValue(target_descriptor, std::to_string(target_value), false);
   }
   if (IsBoolType(target_descriptor) && IsBoolType(value.descriptor)) {
     const auto decoded = DecodeBoolValue(value);
@@ -1132,7 +1194,9 @@ EngineTypedValue CastDescriptorValue(const EngineTypedValue& value,
   }
   if (IsInt64Type(target_descriptor) && IsTextType(value.descriptor)) {
     std::int64_t parsed = 0;
-    if (!ParseInt64Strict(value.encoded_value, &parsed)) {
+    if (!ParseBoundedSignedIntegerStrict(target_descriptor,
+                                         value.encoded_value,
+                                         &parsed)) {
       SetDiagnostic(diagnostic, ErrorDiagnostic("SB_EXECUTOR_CAST_FAILED", value.encoded_value));
       return {};
     }
@@ -1371,7 +1435,9 @@ Int64DecodeResult DecodeInt64Value(const EngineTypedValue& value) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_VALUE_DESCRIPTOR_MISMATCH", value.descriptor.canonical_type_name);
     return result;
   }
-  if (!ParseInt64Strict(value.encoded_value, &result.value)) {
+  if (!ParseBoundedSignedIntegerStrict(value.descriptor,
+                                       value.encoded_value,
+                                       &result.value)) {
     result.diagnostic = ErrorDiagnostic("SB_EXECUTOR_INT64_DECODE_FAILED", value.encoded_value);
     return result;
   }

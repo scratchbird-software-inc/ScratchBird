@@ -13,6 +13,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "engine/optimizer/optimizer_contract.hpp"
 #if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+#include "query/canonical_heap_optimizer_admission.hpp"
 #include "transaction/transaction_api.hpp"
 #endif
 
@@ -3672,6 +3673,10 @@ struct LivePhysicalNodeProfile {
   std::vector<std::string> required_property_uuids;
   std::vector<std::string> delivered_property_uuids;
   std::vector<plan::CanonicalLogicalPropertyKind> supported_property_kinds;
+  std::uint64_t page_read_sequential_units{0};
+  std::uint64_t mga_visibility_checks_expected{0};
+  bool storage_read_capable{false};
+  bool mga_visibility_capable{false};
 };
 
 struct LivePhysicalPlanningResult {
@@ -3760,8 +3765,12 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
     candidate.cost_terms.calibration_profile_uuid = calibration_uuid;
     candidate.cost_terms.cpu_units =
         std::max<std::uint64_t>(1, profile.estimated_rows);
+    candidate.cost_terms.page_read_sequential_units =
+        profile.page_read_sequential_units;
     candidate.cost_terms.memory_bytes_required =
         profile.memory_bytes_required;
+    candidate.cost_terms.mga_visibility_checks_expected =
+        profile.mga_visibility_checks_expected;
     candidate.cost_terms.confidence = opt::CostConfidence::kHigh;
     candidate.semantic_preserving = true;
     candidate.derived_from_admitted_statistics = true;
@@ -3782,6 +3791,8 @@ LivePhysicalPlanningResult PlanAndPublishLivePhysicalDag(
       capability.supported_property_kinds =
           profile.supported_property_kinds;
       capability.spill_supported = false;
+      capability.storage_read_capable = profile.storage_read_capable;
+      capability.mga_visibility_capable = profile.mga_visibility_capable;
       capability.available = true;
       capability.engine_owned = true;
       capabilities.capabilities.push_back(std::move(capability));
@@ -7172,6 +7183,174 @@ ExecuteCanonicalObjectFreeValuesQuery(
       execution.result_publication.canonical_envelope_bytes;
   result.api_result = SuccessfulApiResult(request, execution);
   return result;
+}
+
+// QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
+CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
+    const CanonicalCurrentHeapExecutionRequest& input) {
+  CanonicalObjectFreeValuesExecutionResult result;
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+  (void)input;
+  return result;
+#else
+  const auto& dag = input.relational_dag;
+  if (dag.wire_version != 2 || dag.nodes.size() != 1 ||
+      dag.root_node_id != dag.nodes.front().node_id ||
+      dag.nodes.front().node_kind != api::RelationalDagNodeKind::kScan ||
+      dag.nodes.front().semantic_variant_id != "relation.source.v1" ||
+      !dag.nodes.front().input_node_ids.empty() ||
+      dag.nodes.front().required_object_uuids.size() != 1) {
+    return result;
+  }
+  result.profile_matched = true;
+
+  CanonicalObjectFreeValuesExecutionRequest response_context;
+  response_context.context = input.context;
+  response_context.relational_dag = input.relational_dag;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(response_context, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+
+  const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
+      {input.context, input.relational_dag});
+  if (!admission.built || !admission.admission.admitted ||
+      !admission.admission.planning_allowed ||
+      admission.admission.data_access_allowed) {
+    return refuse(
+        admission.issue.diagnostic_id.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-ADMISSION-V1"
+            : admission.issue.diagnostic_id,
+        admission.issue.field_id.empty()
+            ? "current object-backed heap optimizer admission failed"
+            : admission.issue.field_id);
+  }
+  result.optimizer_admitted = true;
+  result.optimizer_admission_degraded =
+      admission.admission.degraded_for_unknown_statistics;
+  result.optimizer_benchmark_clean_ready =
+      admission.admission.benchmark_clean_ready;
+  result.optimizer_admission_stage_count =
+      admission.admission.evidence.size();
+
+  CanonicalObjectFreeValuesExecutionRequest planning_request{
+      input.context, input.relational_dag, admission.request,
+      admission.admission};
+  const auto& graph = admission.request.logical_graph;
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  LivePhysicalNodeProfile profile;
+  profile.logical_node_id = graph.root_logical_node_id;
+  profile.implementation_id = "scan.heap.v1";
+  profile.capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "heap-scan.capability");
+  profile.logical_node_kind =
+      plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
+  profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
+  profile.transformation_rule_id = "canonical.heap.scan.v1";
+  profile.estimated_rows = 1;
+  profile.memory_bytes_required = 1024;
+  profile.minimum_input_count = 0;
+  profile.maximum_input_count = 0;
+  profile.page_read_sequential_units = 1;
+  profile.mga_visibility_checks_expected = 1;
+  profile.storage_read_capable = true;
+  profile.mga_visibility_capable = true;
+  const auto physical = PlanAndPublishLivePhysicalDag(
+      planning_request, {profile}, "heap-scan.selected-plan",
+      "object-backed heap scan");
+  if (!physical.ok) {
+    return refuse(
+        physical.diagnostic_id.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-PLANNING-V1"
+            : physical.diagnostic_id,
+        physical.detail.empty()
+            ? "object-backed heap physical DAG was not published"
+            : physical.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = physical.physical_dag.nodes.size();
+  result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
+
+  const auto bounded_size = [](const std::uint64_t value) {
+    return static_cast<std::size_t>(std::min<std::uint64_t>(
+        value, std::numeric_limits<std::size_t>::max()));
+  };
+  const std::size_t maximum_scanned_row_versions =
+      bounded_size(std::min(input.context.optimizer_maximum_search_steps,
+                            input.context.optimizer_maximum_candidate_count));
+  const std::size_t maximum_decoded_bytes =
+      bounded_size(input.context.optimizer_memory_budget_bytes);
+  const std::size_t maximum_output_rows =
+      bounded_size(input.context.optimizer_maximum_candidate_count);
+  const std::size_t maximum_output_columns = dag.outputs.size();
+  if (maximum_scanned_row_versions == 0 || maximum_decoded_bytes == 0 ||
+      maximum_output_rows == 0 || maximum_output_columns == 0 ||
+      maximum_output_rows >
+          std::numeric_limits<std::size_t>::max() / maximum_output_columns) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "object-backed heap execution bounds are absent or overflow");
+  }
+
+  api::CanonicalHeapOptimizerSelectedExecutionRequest execution_request;
+  execution_request.context = input.context;
+  execution_request.relational_dag = input.relational_dag;
+  execution_request.selected_physical_dag = physical.physical_dag;
+  execution_request.maximum_scanned_row_versions =
+      maximum_scanned_row_versions;
+  execution_request.maximum_decoded_bytes = maximum_decoded_bytes;
+  execution_request.maximum_output_rows = maximum_output_rows;
+  execution_request.maximum_output_columns = maximum_output_columns;
+  execution_request.maximum_output_cells =
+      maximum_output_rows * maximum_output_columns;
+  execution_request.cancellation_requested = [] { return false; };
+  execution_request.execution_attempt_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" + input.context.current_monotonic_ns,
+      "heap-scan.execution-attempt");
+  execution_request.transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(input.context.local_transaction_id) + ":" +
+          std::to_string(
+              input.context.snapshot_visible_through_local_transaction_id),
+      "heap-scan.transaction-effect-unchanged");
+
+  const auto execution =
+      api::ExecuteCanonicalHeapOptimizerSelectedDag(execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "object-backed heap selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(planning_request, execution);
+  return result;
+#endif
 }
 
 }  // namespace scratchbird::engine::sblr

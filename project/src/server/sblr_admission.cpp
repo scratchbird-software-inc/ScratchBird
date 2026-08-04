@@ -1859,7 +1859,8 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
 
   ServerSblrAdmissionResult result;
   result.admitted = true;
-  result.requires_public_abi_dispatch = false;
+  result.requires_public_abi_dispatch =
+      operation.envelope.operation_id == "query.execute";
   result.operation_family = opcode->family;
   result.operation_id = opcode->operation_id;
   result.admission_token = std::move(token);

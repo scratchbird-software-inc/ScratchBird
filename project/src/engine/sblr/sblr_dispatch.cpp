@@ -1200,6 +1200,39 @@ CanonicalQueryRouteResult DispatchTypedPlanOperation(
   routed.logical_properties_populated = true;
   routed.logical_node_count = logical.logical_graph.nodes.size();
   routed.logical_property_count = logical.property_catalog.properties.size();
+#ifndef SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY
+  // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
+  // Object evidence is derived by the existing engine-owned current heap
+  // admission path. Never populate the object-free admission context from a
+  // parser/server claim merely to make an object-backed graph pass.
+  const auto heap_execution = ExecuteCanonicalCurrentHeapQuery(
+      {request.context, decoded.request.relational_dag});
+  if (heap_execution.profile_matched) {
+    routed.optimizer_admitted = heap_execution.optimizer_admitted;
+    routed.optimizer_admission_degraded =
+        heap_execution.optimizer_admission_degraded;
+    routed.optimizer_benchmark_clean_ready =
+        heap_execution.optimizer_benchmark_clean_ready;
+    routed.optimizer_admission_stage_count =
+        heap_execution.optimizer_admission_stage_count;
+    routed.optimizer_selected = heap_execution.optimizer_selected;
+    routed.physical_dag_published = heap_execution.physical_dag_published;
+    routed.physical_dag_executed = heap_execution.physical_dag_executed;
+    routed.runtime_actuals_attached =
+        heap_execution.runtime_actuals_attached;
+    routed.canonical_result_published =
+        heap_execution.canonical_result_published;
+    routed.physical_node_count = heap_execution.physical_node_count;
+    routed.canonical_result_column_count =
+        heap_execution.canonical_result_column_count;
+    routed.canonical_result_row_count =
+        heap_execution.canonical_result_row_count;
+    routed.selected_plan_uuid = heap_execution.selected_plan_uuid;
+    routed.canonical_result_bytes = heap_execution.canonical_result_bytes;
+    routed.api_result = heap_execution.api_result;
+    return routed;
+  }
+#endif
   std::uint64_t admitted_at_monotonic_ns = 0;
   if (!ParseCanonicalUnsigned(request.context.current_monotonic_ns,
                               std::numeric_limits<std::uint64_t>::max(),
@@ -8011,6 +8044,68 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                                       "engine.sblr.dispatch.envelope_rejected",
                                       "SBLR envelope failed engine validation");
     return result;
+  }
+
+  // QOW-SOURCE-PACKET7-POST-VALIDATION-OPERAND-MATERIALIZATION-V1
+  // Canonical SBOP validation owns the serialized typed value body.  The
+  // existing query decoders consume private string views, so derive those
+  // execution-only views only after the canonical envelope has passed every
+  // structural and recursive value check above.  The two typed option routes
+  // are an explicit bounded extension; no other operation is admitted here.
+  const bool materialize_query_slots =
+      request.envelope.operation_id == "query.execute";
+  const bool materialize_typed_options =
+      request.envelope.operation_id == "query.apply_numeric_operation" ||
+      request.envelope.operation_id ==
+          "query.evaluate_advanced_datatype_family";
+  if (materialize_query_slots || materialize_typed_options) {
+    for (auto& operand : request.envelope.operands) {
+      if (operand.value_kind != SblrValueKind::literal_typed ||
+          operand.value_body.size() < 24) {
+        const std::string detail =
+            request.envelope.operation_id +
+            " operands must use canonical literal_typed bodies";
+        result.diagnostics.push_back(DispatchDiagnostic(
+            "SBLR.OPERATION.OPERAND_INVALID", detail));
+        result.api_result = FailureResult(
+            request.context,
+            request.envelope.operation_id,
+            "SBLR.OPERATION.OPERAND_INVALID",
+            "engine.sblr.dispatch.operand_invalid",
+            detail);
+        return result;
+      }
+      std::uint64_t value_size = 0;
+      for (unsigned byte = 0; byte < 8; ++byte) {
+        value_size |= static_cast<std::uint64_t>(
+                          operand.value_body[16 + byte])
+                      << (byte * 8);
+      }
+      if (value_size != operand.value_body.size() - 24) {
+        constexpr std::string_view detail =
+            "typed operand byte count differs";
+        result.diagnostics.push_back(DispatchDiagnostic(
+            "SBLR.OPERATION.OPERAND_INVALID", std::string(detail)));
+        result.api_result = FailureResult(
+            request.context,
+            request.envelope.operation_id,
+            "SBLR.OPERATION.OPERAND_INVALID",
+            "engine.sblr.dispatch.operand_invalid",
+            std::string(detail));
+        return result;
+      }
+      operand.value.assign(
+          reinterpret_cast<const char*>(operand.value_body.data() + 24),
+          static_cast<std::size_t>(value_size));
+      if (materialize_query_slots && operand.name.rfind("slot_", 0) == 0 &&
+          operand.name.size() > 5 &&
+          std::all_of(operand.name.begin() + 5, operand.name.end(),
+                      [](unsigned char ch) {
+                        return ch >= '0' && ch <= '9';
+                      })) {
+        operand.name.erase(0, 5);
+      }
+    }
   }
 
   if (request.envelope.operation_id == "query.execute" ||

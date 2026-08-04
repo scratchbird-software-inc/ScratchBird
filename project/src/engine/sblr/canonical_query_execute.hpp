@@ -27,11 +27,15 @@ struct CanonicalObjectFreeValuesExecutionRequest {
 
 struct CanonicalObjectFreeValuesExecutionResult {
   bool profile_matched{false};
+  bool optimizer_admitted{false};
+  bool optimizer_admission_degraded{false};
+  bool optimizer_benchmark_clean_ready{false};
   bool optimizer_selected{false};
   bool physical_dag_published{false};
   bool physical_dag_executed{false};
   bool runtime_actuals_attached{false};
   bool canonical_result_published{false};
+  std::size_t optimizer_admission_stage_count{0};
   std::size_t physical_node_count{0};
   std::size_t canonical_result_column_count{0};
   std::size_t canonical_result_row_count{0};
@@ -65,5 +69,18 @@ struct CanonicalObjectFreeValuesExecutionResult {
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeValuesQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request);
+
+struct CanonicalCurrentHeapExecutionRequest {
+  scratchbird::engine::internal_api::EngineRequestContext context;
+  scratchbird::engine::internal_api::TypedRelationalDag relational_dag;
+};
+
+// QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
+// Accepts only the exact one-leaf current relation.source.v1 profile. Catalog,
+// authorization, descriptor, optimizer, physical-plan, and MGA evidence are
+// derived and revalidated by existing engine-owned components; the caller
+// supplies no object snapshot, physical DAG, or visibility authority.
+CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
+    const CanonicalCurrentHeapExecutionRequest& request);
 
 }  // namespace scratchbird::engine::sblr

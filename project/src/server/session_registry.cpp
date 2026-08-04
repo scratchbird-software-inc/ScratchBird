@@ -197,6 +197,15 @@ void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
   }
 }
 
+std::uint64_t GetU64(const std::vector<std::uint8_t>& data,
+                     std::size_t offset) {
+  std::uint64_t value = 0;
+  for (int shift = 0; shift < 64; shift += 8) {
+    value |= static_cast<std::uint64_t>(data[offset++]) << shift;
+  }
+  return value;
+}
+
 std::uint16_t GetU16(const std::vector<std::uint8_t>& data, std::size_t offset) {
   return static_cast<std::uint16_t>(data[offset]) |
          static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[offset + 1]) << 8u);
@@ -2536,11 +2545,8 @@ bool ReleaseAndClearServerCursorResources(
     ServerSessionRegistry* registry,
     ServerCursorRecord* cursor) {
   if (cursor == nullptr) return false;
-  const bool released_engine_result = cursor->engine_result != nullptr;
-  if (cursor->engine_result != nullptr) {
-    (void)sb_engine_result_release(cursor->engine_result);
-    cursor->engine_result = nullptr;
-  }
+  const bool released_engine_result =
+      ReleaseServerCursorExecutionAuthority(registry, cursor);
   cursor->row_packet.clear();
   cursor->bulk_stream_kind.clear();
   cursor->bulk_reject_records.clear();
@@ -2555,6 +2561,25 @@ bool ReleaseAndClearServerCursorResources(
   cursor->total_row_count = 0;
   cursor->next_row_index = 0;
   cursor->fetch_count = 0;
+  return released_engine_result;
+}
+
+bool ReleaseServerCursorExecutionAuthority(
+    ServerSessionRegistry* registry,
+    ServerCursorRecord* cursor) {
+  if (cursor == nullptr) return false;
+  const bool released_engine_result = cursor->engine_result != nullptr;
+  if (cursor->engine_result != nullptr) {
+    (void)sb_engine_result_release(cursor->engine_result);
+    cursor->engine_result = nullptr;
+  }
+
+  if (registry != nullptr &&
+      !cursor->statement_context_statement_uuid.empty()) {
+    (void)ReleaseServerStatementContext(
+        registry, cursor->statement_context_statement_uuid);
+    cursor->statement_context_statement_uuid.clear();
+  }
 
   if (registry != nullptr && !sbps::IsZeroUuid(cursor->cursor_uuid)) {
     for (auto& [_, request] : registry->requests_by_uuid) {
@@ -2663,11 +2688,70 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
   return summary;
 }
 
+std::uint64_t ReleaseServerStatementContextsForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid) {
+  if (registry == nullptr || registry->statement_context_mutex == nullptr) {
+    return 0;
+  }
+  std::vector<engine_bridge::StatementContextReceiptHandle> receipts;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    for (auto it = registry->statement_contexts_by_statement_uuid.begin();
+         it != registry->statement_contexts_by_statement_uuid.end();) {
+      if (it->second.session_uuid != session_uuid) {
+        ++it;
+        continue;
+      }
+      if (!it->second.released && it->second.receipt) {
+        receipts.push_back(it->second.receipt);
+      }
+      it = registry->statement_contexts_by_statement_uuid.erase(it);
+    }
+  }
+  std::uint64_t released = 0;
+  for (const auto receipt : receipts) {
+    const auto status = engine_bridge::ReleaseStatementContextReceipt(receipt);
+    if (status == SB_ENGINE_STATUS_OK ||
+        status == SB_ENGINE_STATUS_ALREADY_RELEASED) {
+      ++released;
+    }
+  }
+  return released;
+}
+
+bool ReleaseServerStatementContext(
+    ServerSessionRegistry* registry,
+    std::string_view statement_uuid) {
+  if (registry == nullptr || registry->statement_context_mutex == nullptr ||
+      statement_uuid.empty()) {
+    return false;
+  }
+  engine_bridge::StatementContextReceiptHandle receipt;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    const auto found = registry->statement_contexts_by_statement_uuid.find(
+        std::string(statement_uuid));
+    if (found == registry->statement_contexts_by_statement_uuid.end()) {
+      return false;
+    }
+    if (!found->second.released && found->second.receipt) {
+      receipt = found->second.receipt;
+    }
+    registry->statement_contexts_by_statement_uuid.erase(found);
+  }
+  if (!receipt) return false;
+  const auto status = engine_bridge::ReleaseStatementContextReceipt(receipt);
+  return status == SB_ENGINE_STATUS_OK ||
+         status == SB_ENGINE_STATUS_ALREADY_RELEASED;
+}
+
 void CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string) {
   if (registry == nullptr) return;
+  (void)ReleaseServerStatementContextsForSession(registry, session_uuid);
   const auto key = UuidBytesToText(session_uuid);
   auto it = registry->public_abi_sessions_by_session_uuid.find(key);
   if (it == registry->public_abi_sessions_by_session_uuid.end()) {
@@ -2698,6 +2782,271 @@ void CloseServerPublicAbiSessionForSession(
     context.engine = nullptr;
   }
   registry->public_abi_sessions_by_session_uuid.erase(it);
+}
+
+ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string* diagnostic_detail) {
+  if (registry == nullptr) {
+    if (diagnostic_detail != nullptr) {
+      *diagnostic_detail = "session_registry_missing";
+    }
+    return nullptr;
+  }
+
+  const std::string session_key = UuidBytesToText(session.session_uuid);
+  auto cached_it =
+      registry->public_abi_sessions_by_session_uuid.find(session_key);
+  if (cached_it != registry->public_abi_sessions_by_session_uuid.end()) {
+    const auto& cached = cached_it->second;
+    const bool cache_matches =
+        cached.engine != nullptr && cached.engine_session != nullptr &&
+        cached.database_path == session.database_path &&
+        cached.session_uuid == session.session_uuid &&
+        cached.effective_user_uuid == session.effective_user_uuid &&
+        cached.embedded_in_process == session.embedded_in_process;
+    if (!cache_matches) {
+      CloseServerPublicAbiSessionForSession(
+          registry,
+          session.session_uuid,
+          "public_abi_context_authority_changed");
+      cached_it = registry->public_abi_sessions_by_session_uuid.end();
+    }
+  }
+
+  if (cached_it == registry->public_abi_sessions_by_session_uuid.end()) {
+    sb_engine_open_params_v1_t open_params{};
+    open_params.struct_size = sizeof(open_params);
+    open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    open_params.database_path_utf8 = session.database_path.data();
+    open_params.database_path_size =
+        static_cast<std::uint64_t>(session.database_path.size());
+    open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    sb_engine_handle_t engine = nullptr;
+    if (sb_engine_open(&open_params, &engine, nullptr) !=
+            SB_ENGINE_STATUS_OK ||
+        engine == nullptr) {
+      if (diagnostic_detail != nullptr) {
+        *diagnostic_detail = "engine_open_failed";
+      }
+      return nullptr;
+    }
+
+    sb_engine_session_params_v1_t session_params{};
+    session_params.struct_size = sizeof(session_params);
+    session_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    std::memcpy(session_params.effective_user_uuid.bytes,
+                session.effective_user_uuid.data(),
+                16);
+    std::memcpy(session_params.session_uuid.bytes,
+                session.session_uuid.data(),
+                16);
+    session_params.trust_mode =
+        session.embedded_in_process ? SB_ENGINE_TRUST_EMBEDDED_TRUSTED
+                                    : SB_ENGINE_TRUST_SERVER_ISOLATED;
+    session_params.default_language_utf8 = "en";
+    session_params.default_language_size = 2;
+    sb_engine_session_t engine_session = nullptr;
+    if (sb_engine_session_begin(engine,
+                                &session_params,
+                                &engine_session,
+                                nullptr) != SB_ENGINE_STATUS_OK ||
+        engine_session == nullptr) {
+      (void)sb_engine_close(engine, nullptr);
+      if (diagnostic_detail != nullptr) {
+        *diagnostic_detail = "engine_session_begin_failed";
+      }
+      return nullptr;
+    }
+
+    ServerPublicAbiSessionContext cached_context;
+    cached_context.engine = engine;
+    cached_context.engine_session = engine_session;
+    cached_context.database_path = session.database_path;
+    cached_context.session_uuid = session.session_uuid;
+    cached_context.effective_user_uuid = session.effective_user_uuid;
+    cached_context.embedded_in_process = session.embedded_in_process;
+    cached_it = registry->public_abi_sessions_by_session_uuid
+                    .emplace(session_key, std::move(cached_context))
+                    .first;
+  }
+  return &cached_it->second;
+}
+
+SessionOperationResult HandleAcquireStatementContext(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request) {
+  SessionOperationResult result;
+  result.response_message_type = static_cast<std::uint16_t>(
+      sbps::MessageType::kAcquireStatementContextResult);
+  const bool native_projection =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV2;
+  result.response_schema_id = native_projection
+                                  ? sbps::kSchemaAcquireStatementContextResultV2
+                                  : sbps::kSchemaAcquireStatementContextResultV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = request.header.session_uuid;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.accepted = false;
+    result.frame_flags |= sbps::kFlagError;
+    result.diagnostics.push_back(sbps::IpcDiagnostic(
+        std::move(code),
+        "parser_server_ipc.statement_context_acquire_refused",
+        "The server refused statement-context acquisition.",
+        {{"detail", std::move(detail)}}));
+    return result;
+  };
+
+  constexpr std::size_t kRequestBytes = 2 + 16 + 8 + 16;
+  if (registry == nullptr ||
+      (request.header.payload_schema_id !=
+           sbps::kSchemaAcquireStatementContextRequestV1 &&
+       !native_projection) ||
+      request.payload.size() != kRequestBytes ||
+      GetU16(request.payload, 0) != (native_projection ? 2 : 1)) {
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
+                  "schema_version_or_size_invalid");
+  }
+  const auto payload_session_uuid = GetUuid(request.payload, 2);
+  const auto local_transaction_id = GetU64(request.payload, 18);
+  const auto transaction_uuid_bytes = GetUuid(request.payload, 26);
+  if (payload_session_uuid != request.header.session_uuid ||
+      local_transaction_id == 0 ||
+      sbps::IsZeroUuid(transaction_uuid_bytes)) {
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_SELECTOR_INVALID",
+                  "exact_session_and_transaction_selector_required");
+  }
+
+  const auto session_it = registry->sessions_by_uuid.find(
+      UuidBytesToText(request.header.session_uuid));
+  if (session_it == registry->sessions_by_uuid.end()) {
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_SESSION_NOT_FOUND",
+                  "session_not_found");
+  }
+  auto& session = session_it->second;
+  ServerTransactionState transaction;
+  {
+    if (session.transaction_mutex == nullptr) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_TRANSACTION_INVALID",
+                    "transaction_mutex_missing");
+    }
+    std::lock_guard<std::mutex> guard(*session.transaction_mutex);
+    const auto transaction_it =
+        session.transactions_by_local_id.find(local_transaction_id);
+    const auto transaction_uuid = UuidBytesToText(transaction_uuid_bytes);
+    if (transaction_it == session.transactions_by_local_id.end() ||
+        transaction_it->second.lifecycle_state !=
+            ServerTransactionLifecycleState::kActive ||
+        transaction_it->second.transaction_uuid != transaction_uuid) {
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_TRANSACTION_INVALID",
+                    "exact_active_transaction_not_owned_by_session");
+    }
+    transaction = transaction_it->second;
+  }
+
+  std::string ensure_detail;
+  auto* public_context = EnsureServerPublicAbiSessionForContext(
+      registry, session, &ensure_detail);
+  if (public_context == nullptr || public_context->engine_session == nullptr) {
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_SESSION_MISSING",
+                  ensure_detail.empty() ? "engine_session_missing"
+                                        : std::move(ensure_detail));
+  }
+
+  auto engine_context = EngineContextForSession(session, engine_state, request);
+  // The SBPS request UUID identifies transport work only. Statement identity
+  // and every statement-stable authority value are issued by the engine as
+  // part of this acquisition and therefore must enter the private bridge
+  // empty.
+  engine_context.statement_uuid.canonical.clear();
+  engine_context.statement_snapshot_uuid.canonical.clear();
+  engine_context.statement_metadata_snapshot_engine_owned = false;
+  engine_context.statement_metadata_snapshot_uuid.canonical.clear();
+  engine_context.catalog_epoch_uuid.canonical.clear();
+  engine_context.optimizer_capability_snapshot_uuid.canonical.clear();
+  engine_context.optimizer_resource_snapshot_uuid.canonical.clear();
+  engine_context.optimizer_route_snapshot_uuid.canonical.clear();
+  engine_context.local_transaction_id = transaction.local_transaction_id;
+  engine_context.transaction_uuid.canonical = transaction.transaction_uuid;
+  engine_context.snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  engine_context.transaction_timestamp = transaction.transaction_timestamp;
+  engine_bridge::StatementContextAcquireRequest acquire_request;
+  acquire_request.engine_context = &engine_context;
+  acquire_request.exact_transaction_uuid = transaction.transaction_uuid;
+  engine_bridge::StatementContextReceiptHandle receipt;
+  engine_bridge::StatementContextReceiptView view;
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::AcquireStatementContextReceipt(
+      public_context->engine_session,
+      &acquire_request,
+      &receipt,
+      &view,
+      &engine_result);
+  if (engine_result != nullptr) {
+    (void)sb_engine_result_release(engine_result);
+  }
+  if (status != SB_ENGINE_STATUS_OK || !receipt ||
+      view.statement_uuid.empty()) {
+    return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
+                  std::string("engine_status=") +
+                      sb_engine_status_name(status));
+  }
+
+  ServerStatementContextRecord record;
+  record.session_uuid = session.session_uuid;
+  record.statement_uuid = view.statement_uuid;
+  record.owning_local_transaction_id = transaction.local_transaction_id;
+  record.owning_transaction_uuid = transaction.transaction_uuid;
+  record.receipt = receipt;
+  record.view = view;
+  {
+    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
+    if (!registry->statement_contexts_by_statement_uuid
+             .emplace(record.statement_uuid, std::move(record))
+             .second) {
+      (void)engine_bridge::ReleaseStatementContextReceipt(receipt);
+      return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_COLLISION",
+                    "statement_identity_already_owned");
+    }
+  }
+
+  PutU16(&result.payload, native_projection ? 2 : 1);
+  result.payload.push_back(1);
+  PutUuid(&result.payload, TextToUuid(view.statement_uuid));
+  PutU64(&result.payload, view.owning_local_transaction_id);
+  PutUuid(&result.payload, TextToUuid(view.owning_transaction_uuid));
+  PutUuid(&result.payload, TextToUuid(view.statement_snapshot_uuid));
+  PutUuid(&result.payload,
+          TextToUuid(view.statement_metadata_snapshot_uuid));
+  PutUuid(&result.payload, TextToUuid(view.catalog_epoch_uuid));
+  PutUuid(&result.payload, TextToUuid(view.security_context_uuid));
+  PutU64(&result.payload, view.visible_committed_high_watermark);
+  if (native_projection) {
+    PutUuid(&result.payload, TextToUuid(view.bound_ast_uuid));
+    PutUuid(&result.payload, TextToUuid(view.count_function_uuid));
+    PutUuid(&result.payload, TextToUuid(view.sum_function_uuid));
+    PutU16(&result.payload,
+           static_cast<std::uint16_t>(view.descriptor_profiles.size()));
+    for (const auto& profile : view.descriptor_profiles) {
+      result.payload.push_back(
+          static_cast<std::uint8_t>(profile.profile_kind));
+      PutU16(&result.payload, profile.slot);
+      PutUuid(&result.payload, TextToUuid(profile.descriptor_uuid));
+      PutUuid(&result.payload, TextToUuid(profile.type_uuid));
+      PutUuid(&result.payload, TextToUuid(profile.collation_uuid));
+      result.payload.push_back(profile.nullable ? 1 : 0);
+      PutU32(&result.payload, profile.width);
+      PutU32(&result.payload, profile.precision);
+      PutU32(&result.payload, profile.scale);
+    }
+  }
+  result.accepted = true;
+  ++public_context->reuse_count;
+  return result;
 }
 
 namespace {
@@ -3338,6 +3687,22 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   const auto negotiated =
       registry->negotiated_capabilities_by_connection_uuid.find(
           UuidBytesToText(session.connection_uuid));
+  const auto admitted_parser =
+      registry->admitted_parser_identity_by_connection_uuid.find(
+          UuidBytesToText(session.connection_uuid));
+  if (admitted_parser !=
+      registry->admitted_parser_identity_by_connection_uuid.end()) {
+    session.admitted_parser_package_uuid =
+        admitted_parser->second.parser_package_uuid;
+    session.admitted_dialect_profile_uuid =
+        admitted_parser->second.dialect_profile_uuid;
+    session.admitted_parser_package_version_major =
+        admitted_parser->second.parser_package_version_major;
+    session.admitted_parser_package_version_minor =
+        admitted_parser->second.parser_package_version_minor;
+    session.admitted_parser_package_version_patch =
+        admitted_parser->second.parser_package_version_patch;
+  }
   session.transaction_routing_v2_negotiated =
       negotiated !=
           registry->negotiated_capabilities_by_connection_uuid.end() &&
@@ -4201,6 +4566,8 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       const auto connection_key = UuidBytesToText(connection_uuid);
       registry->physical_channel_by_connection_uuid.erase(connection_key);
       registry->negotiated_capabilities_by_connection_uuid.erase(
+          connection_key);
+      registry->admitted_parser_identity_by_connection_uuid.erase(
           connection_key);
     }
   }

@@ -46,6 +46,11 @@ constexpr std::uint32_t kSchemaResolveNameRequestV2 = 7005;
 constexpr std::uint32_t kSchemaResolveNameResultV2 = 7006;
 constexpr std::uint32_t kSchemaResolveNameRequestV3 = 7007;
 constexpr std::uint32_t kSchemaResolveNameResultV3 = 7008;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV1 = 7011;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV1 = 7012;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV2 = 7013;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV2 = 7014;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrV1 = 4015;
 
 constexpr std::uint8_t kCapabilityBaseline = 0x01u;
 constexpr std::uint8_t kCapabilityTransactionRoutingV2 = 0x02u;
@@ -81,6 +86,8 @@ enum class MessageType : std::uint16_t {
   kResolveNameResult = 33,
   kRenderUuidRequest = 34,
   kRenderUuidResult = 35,
+  kAcquireStatementContextRequest = 36,
+  kAcquireStatementContextResult = 37,
   kPrepareSblr = 40,
   kPrepareResult = 41,
   kExecuteSblr = 42,

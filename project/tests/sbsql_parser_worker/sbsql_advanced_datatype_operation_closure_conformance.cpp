@@ -7,12 +7,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "crud_support/crud_store.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "query/expression_api.hpp"
 #include "sblr_dispatch.hpp"
+#include "sblr_opcode_registry.hpp"
 #include "sblr_operator_runtime.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -31,6 +33,7 @@ namespace {
 
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
+namespace dt = scratchbird::core::datatypes;
 namespace exec = scratchbird::engine::executor;
 namespace sblr = scratchbird::engine::sblr;
 namespace uuid = scratchbird::core::uuid;
@@ -39,6 +42,8 @@ using scratchbird::core::platform::UuidKind;
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000080801";
 constexpr std::string_view kTableUuid = "019f0000-0000-7000-8000-000000080802";
 constexpr std::string_view kInlineIndexUuid = "019f0000-0000-7000-8000-000000080803";
+constexpr std::string_view kSblrProducerUuid = "019f0000-0000-7000-8000-000000080821";
+constexpr std::string_view kSblrRegistryUuid = "019f0000-0000-7000-8000-000000080822";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -175,22 +180,56 @@ std::string FirstDetail(const api::EngineApiResult& result) {
   return result.diagnostics.empty() ? std::string{} : result.diagnostics.front().detail;
 }
 
+const std::vector<std::uint8_t>& CanonicalOptionDescriptorIdentity() {
+  static const std::vector<std::uint8_t> descriptor_identity = [] {
+    const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
+    Require(manifest.ok(), "canonical datatype manifest did not load");
+    const auto row =
+        dt::LookupDatatypeCatalogRow(manifest.manifest,
+                                     dt::CanonicalTypeId::character);
+    Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
+            "canonical character datatype row did not resolve");
+    const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid;
+    Require(descriptor.valid(), "canonical character descriptor UUID was nil");
+    return std::vector<std::uint8_t>(descriptor.value.bytes.begin(),
+                                     descriptor.value.bytes.end());
+  }();
+  return descriptor_identity;
+}
+
+void AppendLittleU64(std::vector<std::uint8_t>* output,
+                     std::uint64_t value) {
+  for (unsigned byte = 0; byte < 8; ++byte) {
+    output->push_back(
+        static_cast<std::uint8_t>((value >> (byte * 8)) & 0xffu));
+  }
+}
+
 void AddOptionOperand(sblr::SblrOperationEnvelope* envelope,
                       std::string name,
                       std::string value) {
   sblr::SblrOperand operand;
+  operand.ordinal = static_cast<std::uint32_t>(envelope->operands.size() + 1);
   operand.type = "option";
   operand.name = std::move(name);
-  operand.value = std::move(value);
+  operand.value_kind = sblr::SblrValueKind::literal_typed;
+  operand.value_body = CanonicalOptionDescriptorIdentity();
+  AppendLittleU64(&operand.value_body, value.size());
+  operand.value_body.insert(operand.value_body.end(), value.begin(), value.end());
   envelope->operands.push_back(std::move(operand));
 }
 
 sblr::SblrOperationEnvelope QueryEnvelope(std::string operation_id,
-                                          std::string opcode,
                                           std::string trace_key) {
+  const auto* registry_entry = sblr::LookupSblrOperation(operation_id);
+  Require(registry_entry != nullptr && registry_entry->code != 0,
+          "canonical SBLR operation identity did not resolve");
   auto envelope = sblr::MakeSblrEnvelope(std::move(operation_id),
-                                         std::move(opcode),
+                                         registry_entry->opcode,
                                          std::move(trace_key));
+  envelope.opcode_code = registry_entry->code;
+  envelope.parser_package_uuid = std::string(kSblrProducerUuid);
+  envelope.registry_snapshot_uuid = std::string(kSblrRegistryUuid);
   envelope.requires_security_context = true;
   envelope.requires_transaction_context = false;
   envelope.requires_cluster_authority = false;
@@ -316,7 +355,6 @@ void RequireAdvancedFamilies(const api::EngineRequestContext& context) {
 
 void RequireSblrApiDispatchRoutes(const api::EngineRequestContext& context) {
   auto numeric = QueryEnvelope("query.apply_numeric_operation",
-                               "SBLR_QUERY_APPLY_NUMERIC_OPERATION",
                                "trace.cbq008.query.apply_numeric_operation");
   AddOptionOperand(&numeric, "numeric_operation", "add");
   AddOptionOperand(&numeric, "rounding_mode", "half_even");
@@ -338,7 +376,6 @@ void RequireSblrApiDispatchRoutes(const api::EngineRequestContext& context) {
           "numeric SBLR/API route evidence drifted");
 
   auto advanced = QueryEnvelope("query.evaluate_advanced_datatype_family",
-                                "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY",
                                 "trace.cbq008.query.evaluate_advanced_datatype_family");
   AddOptionOperand(&advanced, "descriptor_type", "graph_path");
   AddOptionOperand(&advanced, "operation_kind", "graph.traverse");
@@ -617,6 +654,93 @@ void RequireDescriptorRuntimeDatatypeSlice() {
               result.descriptor.canonical_type_name == "int64",
           "descriptor text to int64 cast failed");
 
+  const auto require_bounded_signed_integer =
+      [&](const std::string& type,
+          const std::string& minimum,
+          const std::string& maximum,
+          const std::string& underflow,
+          const std::string& overflow) {
+        const auto descriptor = exec::MakeExecutorDescriptor(type);
+        for (const auto& accepted : {minimum, maximum}) {
+          const auto value =
+              exec::MakeExecutorValue(descriptor, accepted, false);
+          const auto decoded = exec::DecodeInt64Value(value);
+          Require(decoded.ok() && std::to_string(decoded.value) == accepted,
+                  "bounded signed integer endpoint decode failed");
+
+          exec::DescriptorBatch batch;
+          batch.columns.push_back({"value", descriptor, false, 0});
+          batch.rows.push_back({{value}});
+          Require(exec::ValidateDescriptorBatch(batch).ok,
+                  "bounded signed integer endpoint batch validation failed");
+
+          const auto cast = exec::CastDescriptorValue(
+              exec::EncodeTextValue(accepted), descriptor, &diagnostic);
+          Require(diagnostic.ok && cast.encoded_value == accepted,
+                  "bounded signed integer endpoint cast failed");
+        }
+
+        for (const auto& refused : {underflow, overflow}) {
+          const auto value =
+              exec::MakeExecutorValue(descriptor, refused, false);
+          Require(!exec::DecodeInt64Value(value).ok(),
+                  "bounded signed integer overflow decode was accepted");
+
+          exec::DescriptorBatch batch;
+          batch.columns.push_back({"value", descriptor, false, 0});
+          batch.rows.push_back({{value}});
+          const auto batch_diagnostic = exec::ValidateDescriptorBatch(batch);
+          Require(!batch_diagnostic.ok &&
+                      batch_diagnostic.diagnostic_code ==
+                          "SB_EXECUTOR_INT64_DECODE_FAILED",
+                  "bounded signed integer overflow batch was accepted");
+
+          const auto cast = exec::CastDescriptorValue(
+              exec::EncodeTextValue(refused), descriptor, &diagnostic);
+          Require(!diagnostic.ok && cast.descriptor.canonical_type_name.empty(),
+                  "bounded signed integer overflow cast was accepted");
+        }
+      };
+
+  require_bounded_signed_integer("int8", "-128", "127", "-129", "128");
+  require_bounded_signed_integer(
+      "int16", "-32768", "32767", "-32769", "32768");
+  require_bounded_signed_integer(
+      "smallint", "-32768", "32767", "-32769", "32768");
+  require_bounded_signed_integer("int32",
+                                 "-2147483648",
+                                 "2147483647",
+                                 "-2147483649",
+                                 "2147483648");
+  require_bounded_signed_integer("integer",
+                                 "-2147483648",
+                                 "2147483647",
+                                 "-2147483649",
+                                 "2147483648");
+  require_bounded_signed_integer("int64",
+                                 "-9223372036854775808",
+                                 "9223372036854775807",
+                                 "-9223372036854775809",
+                                 "9223372036854775808");
+  require_bounded_signed_integer("bigint",
+                                 "-9223372036854775808",
+                                 "9223372036854775807",
+                                 "-9223372036854775809",
+                                 "9223372036854775808");
+
+  exec::DescriptorBatch empty_integer_batch;
+  empty_integer_batch.columns.push_back(
+      {"integer_value", exec::MakeExecutorDescriptor("integer"), true, 0});
+  Require(exec::ValidateDescriptorBatch(empty_integer_batch).ok,
+          "empty ordinary integer descriptor batch was rejected");
+
+  const auto int64_two_hundred = exec::MakeExecutorValue(
+      exec::MakeExecutorDescriptor("int64"), "200", false);
+  result = exec::CastDescriptorValue(
+      int64_two_hundred, exec::MakeExecutorDescriptor("int8"), &diagnostic);
+  Require(!diagnostic.ok && result.descriptor.canonical_type_name.empty(),
+          "narrow signed integer cast accepted out-of-range source value");
+
   result = exec::ExtractDescriptorField(exec::EncodeTextValue("hello"), "length", &diagnostic);
   Require(diagnostic.ok && result.descriptor.canonical_type_name == "uint64" &&
               result.encoded_value == "5",
@@ -642,7 +766,15 @@ void RequireDescriptorRuntimeDatatypeSlice() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 &&
+      std::string_view(argv[1]) ==
+          "--bounded-signed-integer-descriptor-only") {
+    RequireDescriptorRuntimeDatatypeSlice();
+    std::cout << "bounded_signed_integer_descriptor_execution=passed\n";
+    return EXIT_SUCCESS;
+  }
+
   api::EngineRequestContext api_context;
   api_context.request_id = "sbsql-advanced-datatype-operation-api";
   api_context.security_context_present = true;

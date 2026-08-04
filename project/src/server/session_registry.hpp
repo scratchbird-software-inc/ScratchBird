@@ -18,6 +18,7 @@
 
 #include "scratchbird/engine/engine.h"
 #include "prepared_metadata_binding.hpp"
+#include "statement_context.hpp"
 
 #include <array>
 #include <deque>
@@ -211,6 +212,13 @@ struct ServerSessionRecord {
   // Server-owned admission evidence for neutral persisted relation
   // projection.  A schema-7007 payload cannot self-enable this capability.
   bool relation_descriptor_projection_v3_negotiated = false;
+  // Exact parser identity admitted by HELLO on the owning physical channel.
+  // Execute payloads cannot replace or self-assert these values.
+  std::array<std::uint8_t, 16> admitted_parser_package_uuid{};
+  std::array<std::uint8_t, 16> admitted_dialect_profile_uuid{};
+  std::uint32_t admitted_parser_package_version_major = 0;
+  std::uint32_t admitted_parser_package_version_minor = 0;
+  std::uint32_t admitted_parser_package_version_patch = 0;
   bool detached_recovery_quarantined = false;
   bool session_binding_present = false;
   std::array<std::uint8_t, 16> attachment_id{};
@@ -492,6 +500,11 @@ struct ServerCursorRecord {
   std::string owning_transaction_uuid;
   bool holdable_after_commit = false;
   sb_engine_result_t engine_result = nullptr;
+  // Non-empty only while this cursor owns the live private engine statement
+  // receipt associated with its canonical execution. The receipt itself
+  // remains in the server-owned statement-context registry and never crosses
+  // the protocol boundary.
+  std::string statement_context_statement_uuid;
   std::uint64_t bulk_total_rows = 0;
   std::uint64_t bulk_rejected_rows = 0;
   std::uint64_t multi_result_count = 0;
@@ -539,12 +552,35 @@ struct ServerPublicAbiSessionContext {
   std::uint64_t reuse_count = 0;
 };
 
+// Server-owned association between a parser-visible statement identity and
+// the private engine receipt. The opaque handle and complete MGA vector never
+// cross SBPS; only the bounded immutable projection is returned to the parser.
+struct ServerStatementContextRecord {
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::string statement_uuid;
+  std::uint64_t owning_local_transaction_id = 0;
+  std::string owning_transaction_uuid;
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt;
+  scratchbird::server_engine_bridge::StatementContextReceiptView view;
+  bool released = false;
+};
+
+struct ServerAdmittedParserChannelIdentity {
+  std::array<std::uint8_t, 16> parser_package_uuid{};
+  std::array<std::uint8_t, 16> dialect_profile_uuid{};
+  std::uint32_t parser_package_version_major = 0;
+  std::uint32_t parser_package_version_minor = 0;
+  std::uint32_t parser_package_version_patch = 0;
+};
+
 struct ServerSessionRegistry {
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
   std::map<std::string, ServerSessionRecord> sessions_by_uuid;
   std::map<std::string, ServerSessionRecord> auth_contexts_by_uuid;
   std::map<std::string, std::array<std::uint8_t, 32>>
       negotiated_capabilities_by_connection_uuid;
+  std::map<std::string, ServerAdmittedParserChannelIdentity>
+      admitted_parser_identity_by_connection_uuid;
   std::map<std::string, std::array<std::uint8_t, 16>>
       physical_channel_by_connection_uuid;
   std::map<std::string, ServerFinalityRecord> finality_by_request_uuid;
@@ -563,6 +599,10 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerPublicAbiSessionContext>
       public_abi_sessions_by_session_uuid;
+  std::map<std::string, ServerStatementContextRecord>
+      statement_contexts_by_statement_uuid;
+  std::shared_ptr<std::mutex> statement_context_mutex =
+      std::make_shared<std::mutex>();
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, ServerLanguageResourceDirectoryRecord>
       language_resource_directories_by_id;
@@ -865,6 +905,9 @@ void CloseSessionObjectHandlesForSession(
 bool ReleaseAndClearServerCursorResources(
     ServerSessionRegistry* registry,
     ServerCursorRecord* cursor);
+bool ReleaseServerCursorExecutionAuthority(
+    ServerSessionRegistry* registry,
+    ServerCursorRecord* cursor);
 ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -874,6 +917,20 @@ void CloseServerPublicAbiSessionForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
     std::string detail = "session_closed");
+ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
+    ServerSessionRegistry* registry,
+    const ServerSessionRecord& session,
+    std::string* diagnostic_detail);
+SessionOperationResult HandleAcquireStatementContext(
+    ServerSessionRegistry* registry,
+    const HostedEngineState& engine_state,
+    const sbps::Frame& request);
+std::uint64_t ReleaseServerStatementContextsForSession(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& session_uuid);
+bool ReleaseServerStatementContext(
+    ServerSessionRegistry* registry,
+    std::string_view statement_uuid);
 std::string ServerAuthorityCacheKey(const std::string& cache_kind,
                                     const ServerSessionRecord& session,
                                     const std::string& operation_id,

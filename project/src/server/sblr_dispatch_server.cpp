@@ -70,6 +70,7 @@ constexpr std::uint32_t kSchemaExecuteSblrTestV2 = 4011;
 constexpr std::uint32_t kSchemaExecuteResultTestV2 = 4012;
 constexpr std::uint32_t kSchemaClosePreparedSblrTestV1 = 4013;
 constexpr std::uint32_t kSchemaClosePreparedSblrResultTestV1 = 4014;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrTestV1 = 4015;
 constexpr std::uint32_t kCursorCloseFlagCancel = 1u << 0;
 constexpr std::uint16_t kLongStringSentinel = 0xffff;
 
@@ -857,6 +858,10 @@ struct ExecutePayload {
       ExecuteTransactionRoute::kLegacyDefault;
   std::uint64_t local_transaction_id = 0;
   std::string transaction_uuid;
+  bool canonical_ingress = false;
+  std::string statement_uuid;
+  std::string encoded_sblr_container;
+  std::string encoded_execution_envelope;
 };
 
 struct CursorPayload {
@@ -909,7 +914,43 @@ std::optional<ExecutePayload> DecodeExecutePayload(
   out.session_uuid = GetUuid(payload, offset); offset += 16;
   out.prepared_statement_uuid = GetUuid(payload, offset); offset += 16;
   out.cursor_requested = payload[offset++] != 0;
-  if (schema_id == kSchemaExecuteSblrTestV2) {
+  if (schema_id == kSchemaExecuteCanonicalSblrTestV1) {
+    if (offset + 1 + 8 + 16 + 16 > payload.size() ||
+        !sbps::IsZeroUuid(out.prepared_statement_uuid)) {
+      return std::nullopt;
+    }
+    out.canonical_ingress = true;
+    out.transaction_routed = true;
+    const auto route = payload[offset++];
+    if (route != static_cast<std::uint8_t>(
+                     ExecuteTransactionRoute::kSelected)) {
+      return std::nullopt;
+    }
+    out.transaction_route = ExecuteTransactionRoute::kSelected;
+    out.local_transaction_id = GetU64(payload, offset);
+    offset += 8;
+    const auto transaction_uuid = GetUuid(payload, offset);
+    offset += 16;
+    const auto statement_uuid = GetUuid(payload, offset);
+    offset += 16;
+    if (out.local_transaction_id == 0 ||
+        sbps::IsZeroUuid(transaction_uuid) ||
+        sbps::IsZeroUuid(statement_uuid)) {
+      return std::nullopt;
+    }
+    out.transaction_uuid = UuidBytesToText(transaction_uuid);
+    out.statement_uuid = UuidBytesToText(statement_uuid);
+    std::vector<std::uint8_t> container;
+    std::vector<std::uint8_t> execution;
+    if (!ReadBytes(payload, &offset, &container) ||
+        !ReadBytes(payload, &offset, &execution) ||
+        !ReadBytes(payload, &offset, &out.data_packet) ||
+        container.empty() || execution.empty()) {
+      return std::nullopt;
+    }
+    out.encoded_sblr_container.assign(container.begin(), container.end());
+    out.encoded_execution_envelope.assign(execution.begin(), execution.end());
+  } else if (schema_id == kSchemaExecuteSblrTestV2) {
     if (offset + 1 + 8 > payload.size()) return std::nullopt;
     out.transaction_routed = true;
     const auto route = payload[offset++];
@@ -934,7 +975,10 @@ std::optional<ExecutePayload> DecodeExecutePayload(
   } else if (schema_id != kSchemaExecuteSblrTestV1) {
     return std::nullopt;
   }
-  if (!ReadString(payload, &offset, &out.encoded_sblr_envelope)) return std::nullopt;
+  if (schema_id != kSchemaExecuteCanonicalSblrTestV1 &&
+      !ReadString(payload, &offset, &out.encoded_sblr_envelope)) {
+    return std::nullopt;
+  }
   if (schema_id == kSchemaExecuteSblrTestV2) {
     if (!ReadBytes(payload, &offset, &out.data_packet)) return std::nullopt;
   } else if (offset < payload.size() &&
@@ -1432,6 +1476,7 @@ void CloseOpenCursorsByName(ServerSessionRegistry* registry,
   for (auto& [_, cursor] : registry->cursors_by_uuid) {
     if (!cursor.closed && cursor.session_uuid == session_uuid &&
         cursor.cursor_name == cursor_name) {
+      (void)ReleaseAndClearServerCursorResources(registry, &cursor);
       cursor.finality_state = "closed";
       cursor.finality_reason = "name_redeclared";
       cursor.closed = true;
@@ -7801,89 +7846,8 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSession(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
     std::string* diagnostic_detail) {
-  if (registry == nullptr) {
-    if (diagnostic_detail != nullptr) {
-      *diagnostic_detail = "session_registry_missing";
-    }
-    return nullptr;
-  }
-
-  const std::string session_key = UuidBytesToText(session.session_uuid);
-  auto cached_it =
-      registry->public_abi_sessions_by_session_uuid.find(session_key);
-  if (cached_it != registry->public_abi_sessions_by_session_uuid.end()) {
-    const auto& cached = cached_it->second;
-    const bool cache_matches =
-        cached.engine != nullptr && cached.engine_session != nullptr &&
-        cached.database_path == session.database_path &&
-        cached.session_uuid == session.session_uuid &&
-        cached.effective_user_uuid == session.effective_user_uuid &&
-        cached.embedded_in_process == session.embedded_in_process;
-    if (!cache_matches) {
-      CloseServerPublicAbiSessionForSession(
-          registry,
-          session.session_uuid,
-          "public_abi_context_authority_changed");
-      cached_it = registry->public_abi_sessions_by_session_uuid.end();
-    }
-  }
-
-  if (cached_it == registry->public_abi_sessions_by_session_uuid.end()) {
-    sb_engine_open_params_v1_t open_params{};
-    open_params.struct_size = sizeof(open_params);
-    open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    open_params.database_path_utf8 = session.database_path.data();
-    open_params.database_path_size =
-        static_cast<std::uint64_t>(session.database_path.size());
-    open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    sb_engine_handle_t engine = nullptr;
-    const auto open_status =
-        sb_engine_open(&open_params, &engine, nullptr);
-    if (open_status != SB_ENGINE_STATUS_OK || engine == nullptr) {
-      if (diagnostic_detail != nullptr) {
-        *diagnostic_detail = "engine_open_failed";
-      }
-      return nullptr;
-    }
-
-    sb_engine_session_params_v1_t session_params{};
-    session_params.struct_size = sizeof(session_params);
-    session_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
-    std::memcpy(session_params.effective_user_uuid.bytes,
-                session.effective_user_uuid.data(),
-                16);
-    std::memcpy(session_params.session_uuid.bytes,
-                session.session_uuid.data(),
-                16);
-    session_params.trust_mode =
-        session.embedded_in_process ? SB_ENGINE_TRUST_EMBEDDED_TRUSTED
-                                    : SB_ENGINE_TRUST_SERVER_ISOLATED;
-    session_params.default_language_utf8 = "en";
-    session_params.default_language_size = 2;
-    sb_engine_session_t engine_session = nullptr;
-    const auto session_status = sb_engine_session_begin(
-        engine, &session_params, &engine_session, nullptr);
-    if (session_status != SB_ENGINE_STATUS_OK || engine_session == nullptr) {
-      (void)sb_engine_close(engine, nullptr);
-      if (diagnostic_detail != nullptr) {
-        *diagnostic_detail = "engine_session_begin_failed";
-      }
-      return nullptr;
-    }
-
-    ServerPublicAbiSessionContext cached_context;
-    cached_context.engine = engine;
-    cached_context.engine_session = engine_session;
-    cached_context.database_path = session.database_path;
-    cached_context.session_uuid = session.session_uuid;
-    cached_context.effective_user_uuid = session.effective_user_uuid;
-    cached_context.embedded_in_process = session.embedded_in_process;
-    cached_it = registry->public_abi_sessions_by_session_uuid
-                    .emplace(session_key, std::move(cached_context))
-                    .first;
-  }
-
-  return &cached_it->second;
+  return EnsureServerPublicAbiSessionForContext(
+      registry, session, diagnostic_detail);
 }
 
 struct PreparedMetadataBindingCreateResult {
@@ -8124,6 +8088,90 @@ PublicAbiDispatchResult DispatchThroughPublicAbi(ServerSessionRegistry* registry
   return dispatch_result;
 }
 
+PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
+    const ServerStatementContextRecord& statement_context,
+    const ServerSblrAdmissionToken& admission_token,
+    const std::vector<std::uint8_t>& data_packet,
+    bool retain_result_handle) {
+  PublicAbiDispatchResult dispatch_result;
+  dispatch_result.attempted = true;
+  if (!statement_context.receipt || admission_token == nullptr) {
+    dispatch_result.diagnostic_code =
+        "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RECEIPT_REQUIRED";
+    dispatch_result.diagnostic_detail = "live_receipt_or_admission_token_missing";
+    return dispatch_result;
+  }
+  engine_bridge::StatementContextDispatchRequest request;
+  request.receipt = statement_context.receipt;
+  request.canonical_container_bytes =
+      admission_token->canonical_container_bytes;
+  request.canonical_execution_envelope_bytes =
+      admission_token->canonical_execution_envelope_bytes;
+  request.canonical_operation_bytes =
+      admission_token->canonical_operation_bytes;
+  request.container_sha256 = admission_token->container_sha256;
+  request.execution_envelope_sha256 =
+      admission_token->execution_envelope_sha256;
+  request.operation_sha256 = admission_token->operation_sha256;
+  request.admission_binding_sha256 =
+      admission_token->admission_binding_sha256;
+  request.authenticated_principal_uuid =
+      admission_token->authenticated_principal_uuid;
+  request.catalog_snapshot_uuid = admission_token->catalog_snapshot_uuid;
+  request.engine_mga_statement_uuid =
+      admission_token->engine_mga_statement_uuid;
+  request.engine_mga_snapshot_uuid =
+      admission_token->engine_mga_snapshot_uuid;
+  request.catalog_epoch = admission_token->catalog_epoch;
+  request.security_epoch = admission_token->security_epoch;
+  request.resource_epoch = admission_token->resource_epoch;
+  request.data_packet = data_packet;
+
+  sb_engine_result_t engine_result = nullptr;
+  const auto status = engine_bridge::DispatchStatementContextReceipt(
+      &request, &engine_result);
+  dispatch_result.ok = status == SB_ENGINE_STATUS_OK;
+  if (engine_result != nullptr) {
+    sb_engine_execution_summary_view_v1_t summary{};
+    if (sb_engine_result_summary(engine_result, &summary) ==
+        SB_ENGINE_STATUS_OK) {
+      dispatch_result.row_count = summary.rows_produced;
+    }
+    sb_engine_command_completion_view_v1_t completion{};
+    if (sb_engine_result_completion(engine_result, &completion) ==
+        SB_ENGINE_STATUS_OK) {
+      dispatch_result.affected_rows = completion.affected_rows;
+    }
+    if (!dispatch_result.ok || !retain_result_handle) {
+      sb_engine_string_view_t payload{};
+      if (sb_engine_result_payload(engine_result, &payload) ==
+          SB_ENGINE_STATUS_OK) {
+        dispatch_result.payload = StringViewToString(payload);
+      }
+    }
+    if (!dispatch_result.ok) {
+      dispatch_result.diagnostic_code =
+          FirstEngineDiagnosticCode(engine_result);
+      dispatch_result.diagnostic_detail =
+          FirstEngineDiagnosticDetail(engine_result);
+      dispatch_result.diagnostic_fields =
+          FirstRegisteredEngineDiagnosticFields(
+              engine_result, dispatch_result.diagnostic_code);
+    }
+    if (dispatch_result.ok && retain_result_handle) {
+      dispatch_result.result_handle = engine_result;
+    } else {
+      (void)sb_engine_result_release(engine_result);
+    }
+  }
+  if (!dispatch_result.ok && dispatch_result.diagnostic_code.empty()) {
+    dispatch_result.diagnostic_code =
+        "PARSER_SERVER_IPC.ENGINE_DISPATCH_FAILED";
+    dispatch_result.diagnostic_detail = sb_engine_status_name(status);
+  }
+  return dispatch_result;
+}
+
 struct EngineCursorBatch {
   bool ok = false;
   std::uint64_t row_count = 0;
@@ -8255,6 +8303,34 @@ void MarkCursorFinality(ServerSessionRegistry* registry,
   cursor->exhausted = true;
   (void)ReleaseAndClearServerCursorResources(registry, cursor);
 }
+
+class StatementContextReleaseGuard final {
+ public:
+  explicit StatementContextReleaseGuard(ServerSessionRegistry* registry)
+      : registry_(registry) {}
+  StatementContextReleaseGuard(const StatementContextReleaseGuard&) = delete;
+  StatementContextReleaseGuard& operator=(const StatementContextReleaseGuard&) =
+      delete;
+  ~StatementContextReleaseGuard() {
+    if (!statement_uuid_.empty()) {
+      (void)ReleaseServerStatementContext(registry_, statement_uuid_);
+    }
+  }
+
+  void Arm(std::string statement_uuid) {
+    statement_uuid_ = std::move(statement_uuid);
+  }
+
+  void TransferToCursor(ServerCursorRecord* cursor) {
+    if (cursor == nullptr || statement_uuid_.empty()) return;
+    cursor->statement_context_statement_uuid = std::move(statement_uuid_);
+    statement_uuid_.clear();
+  }
+
+ private:
+  ServerSessionRegistry* registry_ = nullptr;
+  std::string statement_uuid_;
+};
 
 SessionOperationResult AcceptedFetchFinality(const std::array<std::uint8_t, 16>& session_uuid,
                                              const std::array<std::uint8_t, 16>& cursor_uuid,
@@ -8647,7 +8723,11 @@ SessionOperationResult HandleExecuteSblrImpl(
         {std::move(phase), ServerElapsedMicros(execute_phase_last, now)});
     execute_phase_last = now;
   };
-  const bool v2 = request.header.payload_schema_id == kSchemaExecuteSblrTestV2;
+  const bool canonical_ingress =
+      request.header.payload_schema_id == kSchemaExecuteCanonicalSblrTestV1;
+  const bool v2 =
+      request.header.payload_schema_id == kSchemaExecuteSblrTestV2 ||
+      canonical_ingress;
   const std::uint32_t response_schema =
       v2 ? kSchemaExecuteResultTestV2 : kSchemaExecuteResultTestV1;
   auto decoded = DecodeExecutePayload(request.payload,
@@ -8744,6 +8824,47 @@ SessionOperationResult HandleExecuteSblrImpl(
     }
     selected_transaction = *active_default;
   }
+  std::optional<ServerStatementContextRecord> live_statement_context;
+  StatementContextReleaseGuard statement_context_release(registry);
+  if (canonical_ingress) {
+    if (!selected_transaction.has_value() ||
+        registry->statement_context_mutex == nullptr) {
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema,
+          decoded->session_uuid,
+          "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RECEIPT_REQUIRED",
+          "Canonical native execution requires a live engine statement receipt.",
+          "statement_context_receipt_missing");
+    }
+    std::lock_guard<std::mutex> statement_guard(
+        *registry->statement_context_mutex);
+    const auto found = registry->statement_contexts_by_statement_uuid.find(
+        decoded->statement_uuid);
+    if (found == registry->statement_contexts_by_statement_uuid.end() ||
+        found->second.released ||
+        found->second.session_uuid != decoded->session_uuid ||
+        found->second.statement_uuid != decoded->statement_uuid ||
+        found->second.owning_local_transaction_id !=
+            selected_transaction->local_transaction_id ||
+        found->second.owning_transaction_uuid !=
+            selected_transaction->transaction_uuid ||
+        found->second.view.statement_uuid != decoded->statement_uuid ||
+        found->second.view.owning_local_transaction_id !=
+            selected_transaction->local_transaction_id ||
+        found->second.view.owning_transaction_uuid !=
+            selected_transaction->transaction_uuid) {
+      return Failure(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema,
+          decoded->session_uuid,
+          "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RECEIPT_MISMATCH",
+          "Canonical native execution requires the exact live statement receipt owned by this session and transaction.",
+          "statement_context_receipt_mismatch");
+    }
+    live_statement_context = found->second;
+    statement_context_release.Arm(decoded->statement_uuid);
+  }
   ServerSessionRecord dispatch_session = *session;
   if (selected_transaction.has_value()) {
     dispatch_session.local_transaction_id =
@@ -8834,7 +8955,8 @@ SessionOperationResult HandleExecuteSblrImpl(
           "prepared_transaction_selector_mismatch");
     }
   }
-  if (encoded.empty() && prepared_statement == nullptr) {
+  if (encoded.empty() && prepared_statement == nullptr &&
+      !canonical_ingress) {
     CompleteServerRequestLifecycle(registry,
                                    request_record.request_uuid,
                                    ServerRequestLifecycleState::kFailed,
@@ -9041,6 +9163,55 @@ SessionOperationResult HandleExecuteSblrImpl(
     admission.row_count_hint =
         TextLineU64(encoded, "estimated_row_count").value_or(prepared_statement->row_count_hint);
     mark_execute_phase("prepared_admission_reuse");
+  } else if (canonical_ingress) {
+    ServerSblrAdmissionRequest canonical_request;
+    canonical_request.encoded_sblr_container =
+        decoded->encoded_sblr_container;
+    canonical_request.encoded_execution_envelope =
+        decoded->encoded_execution_envelope;
+    canonical_request.admitted_parser_package_uuid =
+        UuidBytesToText(session->admitted_parser_package_uuid);
+    canonical_request.admitted_parser_package_version_major =
+        session->admitted_parser_package_version_major;
+    canonical_request.admitted_parser_package_version_minor =
+        session->admitted_parser_package_version_minor;
+    canonical_request.admitted_parser_package_version_patch =
+        session->admitted_parser_package_version_patch;
+    canonical_request.admitted_registry_snapshot_uuid =
+        live_statement_context->view.catalog_epoch_uuid;
+    canonical_request.authenticated_principal_uuid =
+        UuidBytesToText(session->effective_user_uuid);
+    canonical_request.catalog_snapshot_uuid =
+        live_statement_context->view.statement_metadata_snapshot_uuid;
+    canonical_request.engine_mga_statement_uuid =
+        live_statement_context->view.statement_uuid;
+    canonical_request.engine_mga_snapshot_uuid =
+        live_statement_context->view.statement_snapshot_uuid;
+    canonical_request.catalog_epoch =
+        live_statement_context->view.catalog_generation_id;
+    canonical_request.security_epoch =
+        live_statement_context->view.security_epoch;
+    canonical_request.resource_epoch =
+        live_statement_context->view.resource_epoch;
+    admission = AdmitServerSblrEnvelope(canonical_request);
+    mark_execute_phase("admit_canonical_server_sblr_envelope");
+    if (!admission.admitted) {
+      CompleteServerRequestLifecycle(
+          registry,
+          request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed,
+          admission.diagnostics.empty()
+              ? "canonical_sblr_admission_rejected"
+              : admission.diagnostics.front().code);
+      return FailureWithDiagnostics(
+          static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          response_schema,
+          decoded->session_uuid,
+          admission.diagnostics,
+          admission.diagnostics.empty()
+              ? "canonical_sblr_admission_rejected"
+              : admission.diagnostics.front().code);
+    }
   } else {
     const auto admission_phase_start = ServerSteadyClock::now();
     admission = AdmitServerSblrEnvelope(ServerSblrAdmissionRequest{encoded, false});
@@ -9646,6 +9817,12 @@ SessionOperationResult HandleExecuteSblrImpl(
     cursor.total_row_count = row_count;
     cursor.next_row_index = 0;
     cursor.exhausted = row_count == 0;
+    if (canonical_ingress) {
+      statement_context_release.TransferToCursor(&cursor);
+    }
+    if (cursor.exhausted) {
+      (void)ReleaseServerCursorExecutionAuthority(registry, &cursor);
+    }
     registry->cursors_by_uuid[UuidBytesToText(cursor_uuid)] = cursor;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
@@ -9717,6 +9894,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                       cursor->cursor_uuid,
                                       ServerRequestLifecycleState::kCompleted,
                                       "cursor_exhausted");
+      (void)ReleaseServerCursorExecutionAuthority(registry, cursor);
     }
     SessionOperationResult result;
     result.accepted = true;
@@ -10264,6 +10442,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                         cursor.cursor_uuid,
                                         ServerRequestLifecycleState::kCompleted,
                                         "cursor_exhausted");
+        (void)ReleaseServerCursorExecutionAuthority(registry, &cursor);
       }
     } else {
       return fail_routine_cursor(
@@ -10925,7 +11104,13 @@ SessionOperationResult HandleExecuteSblrImpl(
         mark_execute_phase("server_live_catalog_projection:" + live_catalog_projection_path);
       }
       mark_execute_phase("pre_public_abi_dispatch");
-      auto public_abi = use_server_live_catalog_projection
+      auto public_abi = canonical_ingress
+                            ? DispatchThroughStatementContextReceipt(
+                                  *live_statement_context,
+                                  admission.admission_token,
+                                  decoded->data_packet,
+                                  retain_engine_result)
+                        : use_server_live_catalog_projection
                             ? DispatchServerLiveIparCatalogProjection(dispatch_session,
                                                                       encoded,
                                                                       live_ipar_sources)
@@ -11197,6 +11382,12 @@ SessionOperationResult HandleExecuteSblrImpl(
       cursor.max_chunk_bytes = std::min<std::uint64_t>(requested_cursor_max_chunk_bytes, 4u * 1024u * 1024u);
     }
     cursor.exhausted = row_count == 0;
+    if (canonical_ingress) {
+      // QOW-SOURCE-PACKET7-CANONICAL-CURSOR-RECEIPT-TRANSFER-V1
+      // Cursor execution becomes the sole owner of the private statement
+      // receipt until EOS, close, cancellation, disconnect, or failure.
+      statement_context_release.TransferToCursor(&cursor);
+    }
     registry->cursors_by_uuid[UuidBytesToText(cursor_uuid)] = cursor;
     LinkServerRequestCursor(registry,
                             request_record.request_uuid,
@@ -11616,10 +11807,23 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                    batch.end_of_stream ? "fetch_completed_end_of_cursor"
                                                        : "fetch_completed");
     if (batch.end_of_stream) {
+      const bool owns_canonical_statement_context =
+          !cursor.statement_context_statement_uuid.empty();
       MarkServerRequestClosedByCursor(registry,
                                       decoded->cursor_uuid,
                                       ServerRequestLifecycleState::kCompleted,
                                       "cursor_exhausted");
+      (void)ReleaseServerCursorExecutionAuthority(registry, &cursor);
+      if (owns_canonical_statement_context) {
+        // QOW-SOURCE-PACKET7-CANONICAL-CURSOR-EXACTLY-ONCE-CLEANUP-V1
+        // A canonical cursor's engine result and private statement receipt
+        // have one owner. Preserve the cursor record only as a closed
+        // finality tombstone after EOS so close/cancel cannot claim a second
+        // successful cleanup.
+        cursor.finality_state = "exhausted";
+        cursor.finality_reason = "cursor_exhausted";
+        cursor.closed = true;
+      }
     }
     SessionOperationResult result;
     result.accepted = true;
@@ -11679,6 +11883,7 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                     decoded->cursor_uuid,
                                     ServerRequestLifecycleState::kCompleted,
                                     "cursor_exhausted");
+    (void)ReleaseServerCursorExecutionAuthority(registry, &cursor);
   }
   SessionOperationResult result;
   result.accepted = true;
@@ -11821,7 +12026,8 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
   auto it = registry->cursors_by_uuid.find(UuidBytesToText(decoded->cursor_uuid));
   std::string detail;
   if (it != registry->cursors_by_uuid.end()) {
-    if (it->second.session_uuid != decoded->session_uuid) {
+    if (it->second.session_uuid != decoded->session_uuid ||
+        it->second.closed) {
       return Failure(static_cast<std::uint16_t>(sbps::MessageType::kCloseCursorResult),
                      kSchemaCloseCursorResultTestV1,
                      decoded->session_uuid,

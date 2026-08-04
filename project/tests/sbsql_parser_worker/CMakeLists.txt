@@ -964,6 +964,37 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   return()
 endif()
 
+if(TARGET sb_engine AND TARGET sb_engine_internal_api AND
+   TARGET sb_storage_database AND TARGET sb_core_uuid AND
+   TARGET sb_server_core AND TARGET sbl_parser_server_ipc_client)
+  # QOW-CMAKE-LIVE-SERVER-STATEMENT-CONTEXT-REGRESSION-V1
+  add_executable(qow_live_server_statement_context_regression
+    qow_live_server_statement_context.cpp)
+  target_compile_features(qow_live_server_statement_context_regression PRIVATE
+    cxx_std_20)
+  target_include_directories(qow_live_server_statement_context_regression PRIVATE
+    "${PROJECT_SOURCE_DIR}/src")
+  target_compile_definitions(
+    qow_live_server_statement_context_regression
+    PRIVATE
+      SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+  )
+  target_link_libraries(qow_live_server_statement_context_regression PRIVATE
+    sb_engine
+    sb_engine_internal_api
+    sb_storage_database
+    sb_core_uuid
+    sb_server_core
+    sbl_parser_server_ipc_client
+    sbl_sbsql_parser_worker_core
+  )
+  add_test(NAME qow_live_server_statement_context_regression
+    COMMAND qow_live_server_statement_context_regression)
+  set_tests_properties(qow_live_server_statement_context_regression PROPERTIES
+    LABELS "qow_closure;QOW-214;QOW-CT-007;canonical_mga_statement_context;sbsql_parser_worker;mga_transaction_regression"
+  )
+endif()
+
 add_executable(sbp_sbsql_pipeline_probe parser_pipeline_probe.cpp)
 target_compile_features(sbp_sbsql_pipeline_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE sbl_sbsql_parser_pipeline)

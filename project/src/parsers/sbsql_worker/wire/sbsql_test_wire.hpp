@@ -93,6 +93,7 @@ class SbsqlTestWireSession {
   SessionContext session_;
   std::string last_cursor_uuid_;
   std::unique_ptr<EmbeddedEngineClient> embedded_client_;
+  std::unique_ptr<SbpsClient> server_client_;
   std::map<std::string, CachedPublicNameResolution> name_resolution_cache_;
   std::deque<std::string> name_resolution_lru_;
   std::map<std::string, StableCachedPublicNameResolution>

@@ -74,6 +74,56 @@ struct ParserTransactionRouting {
   ParserTransactionSelector selector;
 };
 
+// Bounded parser projection of one engine-issued statement context. The
+// private receipt, complete visibility vector, resource policy, and optimizer
+// state remain server/engine-owned and are intentionally absent.
+struct ParserStatementContext {
+  struct DescriptorProfile {
+    std::uint8_t profile_kind{0};
+    std::uint16_t slot{0};
+    std::string descriptor_uuid;
+    std::string type_uuid;
+    std::string collation_uuid;
+    bool nullable{false};
+    std::uint32_t width{0};
+    std::uint32_t precision{0};
+    std::uint32_t scale{0};
+  };
+
+  bool acquired{false};
+  std::string statement_uuid;
+  ParserTransactionSelector transaction;
+  std::string statement_snapshot_uuid;
+  std::string statement_metadata_snapshot_uuid;
+  std::string catalog_epoch_uuid;
+  std::string security_context_uuid;
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  std::string bound_ast_uuid;
+  std::string count_function_uuid;
+  std::string sum_function_uuid;
+  std::vector<DescriptorProfile> descriptor_profiles;
+
+  [[nodiscard]] bool complete() const {
+    return acquired && transaction.present() && !statement_uuid.empty() &&
+           !statement_snapshot_uuid.empty() &&
+           !statement_metadata_snapshot_uuid.empty() &&
+           !catalog_epoch_uuid.empty() && !security_context_uuid.empty();
+  }
+};
+
+// Exact canonical ingress bytes for one engine-issued statement identity.
+// The private receipt never crosses SBPS and is intentionally absent here.
+struct ParserCanonicalSblrSubmission {
+  std::string statement_uuid;
+  std::vector<std::uint8_t> canonical_container_bytes;
+  std::vector<std::uint8_t> canonical_execution_envelope_bytes;
+
+  [[nodiscard]] bool complete() const {
+    return !statement_uuid.empty() && !canonical_container_bytes.empty() &&
+           !canonical_execution_envelope_bytes.empty();
+  }
+};
+
 enum class ParserTransactionFinality : std::uint8_t {
   kNotApplicable = 0,
   kKnownApplied = 1,
@@ -95,6 +145,14 @@ struct ParserSessionContext {
   bool transaction_routing_v2_negotiated{false};
   bool prepared_metadata_transfer_v1_negotiated{false};
   bool relation_descriptor_projection_v3_negotiated{false};
+  // Copied from the exact HELLO bytes used on this physical parser channel.
+  // These fields are identity evidence only; the server independently keeps
+  // and cross-checks the admitted values.
+  std::string admitted_parser_package_uuid;
+  std::string admitted_dialect_profile_uuid;
+  std::uint32_t admitted_parser_package_version_major{0};
+  std::uint32_t admitted_parser_package_version_minor{0};
+  std::uint32_t admitted_parser_package_version_patch{0};
   std::string session_uuid;
   std::string connection_uuid;
   std::string database_uuid;

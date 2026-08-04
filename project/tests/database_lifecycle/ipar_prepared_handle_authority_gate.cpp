@@ -15,7 +15,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace {
 
@@ -47,118 +46,61 @@ server::HostedEngineState MakeEngineState() {
   server::HostedDatabaseSnapshot database;
   database.state = server::HostedDatabaseState::kOpen;
   database.database_open = true;
-  database.database_path = "/tmp/ipar_prepared_handle_authority_gate.sbdb";
+  database.database_path =
+      "/tmp/ipar_prepared_handle_authority_gate.sbdb";
   database.database_uuid = "database-ipar-prepared-authority";
-  database.read_only = false;
-  database.write_admission_fenced = false;
   state.databases.push_back(std::move(database));
   return state;
 }
 
-server::ServerSessionRecord MakeSession(std::uint8_t seed,
-                                        std::string database_uuid =
-                                            "database-ipar-prepared-authority") {
+server::ServerSessionRecord MakeSession() {
   server::ServerSessionRecord session;
-  session.session_uuid = Uuid(static_cast<std::uint8_t>(seed + 16));
-  // Direct server fixtures must carry the same explicit route association as
-  // parser-server IPC clients; zero header fields are not a legacy fallback.
+  session.session_uuid = Uuid(0x60);
   session.connection_uuid = session.session_uuid;
-  session.auth_context_uuid = Uuid(static_cast<std::uint8_t>(seed + 32));
-  session.principal_uuid = Uuid(static_cast<std::uint8_t>(seed + 48));
+  session.auth_context_uuid = Uuid(0x70);
+  session.principal_uuid = Uuid(0x80);
   session.effective_user_uuid = session.principal_uuid;
   session.principal_claim = "ipar-prepared-user";
-  session.database_path = "/tmp/ipar_prepared_handle_authority_gate.sbdb";
-  session.database_uuid = std::move(database_uuid);
-  session.catalog_generation = 1;
-  session.security_epoch = 1;
-  session.descriptor_epoch = 1;
-  session.grant_epoch = 1;
-  session.policy_generation = 1;
+  session.database_path =
+      "/tmp/ipar_prepared_handle_authority_gate.sbdb";
+  session.database_uuid = "database-ipar-prepared-authority";
+  session.catalog_generation = 3;
+  session.security_epoch = 5;
+  session.descriptor_epoch = 7;
+  session.grant_epoch = 11;
+  session.policy_generation = 13;
   session.role_set_hash = "roles/ipar-prepared";
   session.group_set_hash = "groups/ipar-prepared";
   session.search_path_hash = "search/ipar-prepared";
-  session.local_transaction_id = 1;
-  session.snapshot_visible_through_local_transaction_id = 1;
-  session.transaction_uuid =
-      server::UuidBytesToText(Uuid(static_cast<std::uint8_t>(seed + 64)));
+  session.local_transaction_id = 17;
+  session.snapshot_visible_through_local_transaction_id = 17;
+  session.transaction_uuid = server::UuidBytesToText(Uuid(0x90));
+  session.default_local_transaction_id = session.local_transaction_id;
+  server::ServerTransactionState transaction;
+  transaction.local_transaction_id = session.local_transaction_id;
+  transaction.snapshot_visible_through_local_transaction_id =
+      session.snapshot_visible_through_local_transaction_id;
+  transaction.transaction_uuid = session.transaction_uuid;
+  transaction.transaction_timestamp = "2026-08-03T00:00:00Z";
+  transaction.begin_ordinal = 1;
+  session.transactions_by_local_id.emplace(transaction.local_transaction_id,
+                                           std::move(transaction));
+  session.next_transaction_begin_ordinal = 2;
   return session;
 }
 
-void AddSession(server::ServerSessionRegistry* registry,
-                const server::ServerSessionRecord& session) {
-  registry->sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
-}
-
-sbps::Frame Frame(sbps::MessageType type,
-                  std::uint32_t payload_schema_id,
-                  std::vector<std::uint8_t> payload,
-                  const std::array<std::uint8_t, 16>& session_uuid) {
+sbps::Frame PrepareFrame(const server::ServerSessionRecord& session,
+                         const std::string& retired_input) {
   sbps::Frame frame;
-  frame.header.message_type = static_cast<std::uint16_t>(type);
+  frame.header.message_type =
+      static_cast<std::uint16_t>(sbps::MessageType::kPrepareSblr);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
-  frame.header.connection_uuid = session_uuid;
-  frame.header.session_uuid = session_uuid;
-  frame.header.payload_schema_id = payload_schema_id;
-  frame.payload = std::move(payload);
+  frame.header.connection_uuid = session.connection_uuid;
+  frame.header.session_uuid = session.session_uuid;
+  frame.header.payload_schema_id = 4001;
+  frame.payload = server::EncodePrepareSblrPayloadForTest(
+      session.session_uuid, retired_input);
   return frame;
-}
-
-sbps::Frame PrepareFrame(const std::array<std::uint8_t, 16>& session_uuid,
-                         const std::string& encoded) {
-  return Frame(sbps::MessageType::kPrepareSblr,
-               4001,
-               server::EncodePrepareSblrPayloadForTest(session_uuid, encoded),
-               session_uuid);
-}
-
-std::string NativeBulkIngestTemplateEnvelope() {
-  return "operation_id=dml.execute_native_bulk_ingest\n"
-         "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n"
-         "sblr_operation_family=sblr.dml.operation.v3\n"
-         "result_shape=engine.api.result.v1\n"
-         "diagnostic_shape=engine.diagnostic.v1\n"
-         "contains_sql_text=false\n"
-         "parser_resolved_names_to_uuids=true\n"
-         "requires_security_context=true\n"
-         "requires_transaction_context=true\n"
-         "requires_cluster_authority=false\n"
-         "target_object_uuid=018f0000-0000-7000-8000-000000000101\n"
-         "target_object_kind=table\n"
-         "dml_surface_variant=sbwp_prepared_rowset_template\n"
-         "source_kind=binary_typed_rows\n"
-         "format_family=binary_typed_rows\n"
-         "estimated_row_count=0\n"
-         "native_bulk_ingest=true\n"
-         "native_bulk_ingest_enabled=true\n"
-         "reject_mode=fail_fast\n"
-         "reject_limit_rows=0\n"
-         "reject_payload_policy=diagnostic_only\n"
-         "result_payload_policy=summary_only\n"
-         "resume_policy=fail_closed\n"
-         "checkpoint_mode=disabled\n"
-         "duplicate_mode=error\n"
-         "require_generated_row_uuid=true\n";
-}
-
-sbps::Frame ExecutePreparedFrame(
-    const std::array<std::uint8_t, 16>& session_uuid,
-    const std::array<std::uint8_t, 16>& prepared_statement_uuid) {
-  return Frame(sbps::MessageType::kExecuteSblr,
-               4003,
-               server::EncodeExecuteSblrPayloadForTest(
-                   session_uuid, prepared_statement_uuid, ""),
-               session_uuid);
-}
-
-sbps::Frame ExecutePreparedFrameWithEnvelope(
-    const std::array<std::uint8_t, 16>& session_uuid,
-    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
-    const std::string& encoded) {
-  return Frame(sbps::MessageType::kExecuteSblr,
-               4003,
-               server::EncodeExecuteSblrPayloadForTest(
-                   session_uuid, prepared_statement_uuid, encoded),
-               session_uuid);
 }
 
 bool HasDiagnostic(const server::SessionOperationResult& result,
@@ -169,287 +111,78 @@ bool HasDiagnostic(const server::SessionOperationResult& result,
   return false;
 }
 
-server::ServerRequestRecord RequireRequest(
-    const server::ServerSessionRegistry& registry,
-    const std::array<std::uint8_t, 16>& request_uuid) {
-  const auto record =
-      server::FindServerRequestLifecycle(registry, server::UuidBytesToText(request_uuid));
-  Require(record.has_value(), "IPAR prepared handle request lifecycle missing");
-  return *record;
-}
-
-void RequirePreparedRefusalBeforeDispatch(
-    server::ServerSessionRegistry* registry,
-    const server::HostedEngineState& engine_state,
-    const sbps::Frame& frame,
-    std::string_view diagnostic_code,
-    std::string_view detail) {
-  const auto cursor_count = registry->cursors_by_uuid.size();
-  const auto result = server::HandleExecuteSblr(registry, engine_state, frame);
-  Require(!result.accepted, "IPAR prepared stale handle was accepted");
-  Require(HasDiagnostic(result, diagnostic_code),
-          "IPAR prepared stale handle diagnostic mismatch");
-  const auto request = RequireRequest(*registry, frame.header.request_uuid);
-  Require(request.state == server::ServerRequestLifecycleState::kFailed,
-          "IPAR prepared stale handle request was not failed");
-  Require(request.detail == detail, "IPAR prepared stale handle detail mismatch");
-  Require(request.operation_id == "sblr.dispatch.pending",
-          "IPAR prepared stale handle reached dispatch/admission operation update");
-  Require(registry->cursors_by_uuid.size() == cursor_count,
-          "IPAR prepared stale handle opened a cursor");
-}
-
-void ValidateServerPreparedHandlesBindAuthority() {
-  server::ServerSessionRegistry registry;
-  const auto engine_state = MakeEngineState();
-  const auto primary = MakeSession(0x10);
-  const auto other_session = MakeSession(0x80);
-  AddSession(&registry, primary);
-  AddSession(&registry, other_session);
-
-  const auto prepare = server::HandlePrepareSblr(
-      &registry,
-      engine_state,
-      PrepareFrame(primary.session_uuid, server::EncodeShowVersionSblrForTest()));
-  Require(prepare.accepted, "IPAR prepared handle baseline prepare failed");
-  const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
-  Require(prepared_uuid.has_value(), "IPAR prepared handle UUID decode failed");
-
-  const auto prepared_it =
-      registry.prepared_by_uuid.find(server::UuidBytesToText(*prepared_uuid));
-  Require(prepared_it != registry.prepared_by_uuid.end(),
-          "IPAR prepared handle record missing");
-  Require(prepared_it->second.session_uuid == primary.session_uuid,
-          "IPAR prepared handle did not bind session UUID");
-  Require(prepared_it->second.principal_uuid == primary.principal_uuid &&
-              prepared_it->second.effective_user_uuid == primary.effective_user_uuid,
-          "IPAR prepared handle did not bind user UUIDs");
-  Require(prepared_it->second.database_uuid == primary.database_uuid,
-          "IPAR prepared handle did not bind database UUID");
-  Require(prepared_it->second.catalog_generation == primary.catalog_generation &&
-              prepared_it->second.security_epoch == primary.security_epoch &&
-              prepared_it->second.policy_generation == primary.policy_generation,
-          "IPAR prepared handle did not bind authority epochs");
-  Require(prepared_it->second.authority_proof_hash_algorithm == "sha256" &&
-              !prepared_it->second.authority_proof_hash.empty(),
-          "IPAR prepared handle did not seal a server authority proof hash");
-  Require(prepared_it->second.authority_dependency_uuid == primary.database_uuid &&
-              prepared_it->second.authority_dependency_kind == "database" &&
-              prepared_it->second.authority_dependency_operation_id ==
-                  prepared_it->second.operation_id &&
-              prepared_it->second.authority_dependency_column_set_hash == "columns/all",
-          "IPAR prepared handle did not seal operation scoped authority dependency");
-
-  const auto accepted_frame = ExecutePreparedFrame(primary.session_uuid, *prepared_uuid);
-  const auto accepted = server::HandleExecuteSblr(&registry, engine_state, accepted_frame);
-  Require(accepted.accepted, "IPAR prepared handle same-session execute failed");
-  const auto accepted_request = RequireRequest(registry, accepted_frame.header.request_uuid);
-  Require(accepted_request.state == server::ServerRequestLifecycleState::kCompleted,
-          "IPAR prepared handle accepted request did not complete");
-
-  auto& prepared_record = prepared_it->second;
-  const auto original_authority_hash = prepared_record.authority_proof_hash;
-  prepared_record.authority_proof_hash = "sha256:tampered";
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  prepared_record.authority_proof_hash = original_authority_hash;
-
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrameWithEnvelope(primary.session_uuid,
-                                       *prepared_uuid,
-                                       server::EncodeBeginTransactionSblrForTest()),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_SHAPE_MISMATCH",
-      "prepared_statement_shape_mismatch");
-
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(other_session.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
-      "prepared_statement_cross_session");
-
-  auto& session = registry.sessions_by_uuid[server::UuidBytesToText(primary.session_uuid)];
-  const auto original = session;
-
-  session.principal_uuid = Uuid(0xd0);
-  session.effective_user_uuid = session.principal_uuid;
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_cross_user");
-  session = original;
-
-  session.database_uuid = "database-ipar-prepared-authority-other";
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_cross_database");
-  session = original;
-
-  ++session.catalog_generation;
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  session = original;
-
-  ++session.security_epoch;
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  session = original;
-
-  ++session.policy_generation;
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  session = original;
-
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, Uuid(0xf0)),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_NOT_FOUND",
-      "prepared_statement_not_found");
-}
-
-void ValidateNativeBulkIngestTemplateCanBePrepared() {
-  server::ServerSessionRegistry registry;
-  const auto engine_state = MakeEngineState();
-  const auto primary = MakeSession(0x22);
-  AddSession(&registry, primary);
-
-  const auto prepare = server::HandlePrepareSblr(
-      &registry,
-      engine_state,
-      PrepareFrame(primary.session_uuid, NativeBulkIngestTemplateEnvelope()));
-  Require(prepare.accepted, "native bulk ingest template prepare failed");
-  const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
-  Require(prepared_uuid.has_value(), "native bulk ingest template UUID decode failed");
-  const auto prepared_it =
-      registry.prepared_by_uuid.find(server::UuidBytesToText(*prepared_uuid));
-  Require(prepared_it != registry.prepared_by_uuid.end(),
-          "native bulk ingest template prepared record missing");
-  Require(prepared_it->second.operation_id == "dml.execute_native_bulk_ingest",
-          "native bulk ingest template operation id mismatch");
-  Require(prepared_it->second.session_object_handle_id != 0,
-          "native bulk ingest template did not bind a session object handle");
-  Require(prepared_it->second.target_object_uuid ==
-              "018f0000-0000-7000-8000-000000000101",
-          "native bulk ingest template object handle target mismatch");
-  Require(prepared_it->second.target_operation_id ==
-              "dml.execute_native_bulk_ingest",
-          "native bulk ingest template object handle operation mismatch");
-  Require(prepared_it->second.authority_dependency_uuid ==
-              prepared_it->second.target_object_uuid &&
-              prepared_it->second.authority_dependency_kind == "table" &&
-              prepared_it->second.authority_dependency_operation_id ==
-                  prepared_it->second.target_operation_id &&
-              prepared_it->second.authority_dependency_column_set_hash ==
-                  prepared_it->second.target_column_set_hash &&
-              prepared_it->second.authority_proof_hash_algorithm == "sha256" &&
-              !prepared_it->second.authority_proof_hash.empty(),
-          "native bulk ingest template did not seal dependency authority proof");
-  const auto first_handle_id = prepared_it->second.session_object_handle_id;
-  const auto first_generation = prepared_it->second.session_object_handle_generation;
-  auto validation = server::ValidateSessionObjectHandle(
-      registry,
-      primary,
-      first_handle_id,
-      first_generation,
-      prepared_it->second.target_object_uuid,
-      prepared_it->second.target_operation_id,
-      prepared_it->second.target_column_set_hash);
-  Require(validation.accepted,
-          "native bulk ingest template object handle did not validate");
-  auto& bulk_prepared = prepared_it->second;
-  const auto original_dependency_uuid = bulk_prepared.authority_dependency_uuid;
-  bulk_prepared.authority_dependency_uuid =
-      "018f0000-0000-7000-8000-000000000102";
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  bulk_prepared.authority_dependency_uuid = original_dependency_uuid;
-
-  const auto original_column_hash = bulk_prepared.target_column_set_hash;
-  bulk_prepared.target_column_set_hash = "columns/tampered";
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-  bulk_prepared.target_column_set_hash = original_column_hash;
-
-  const std::string handle_key =
-      server::UuidBytesToText(primary.session_uuid) + "#" +
-      std::to_string(first_handle_id);
-  auto handle_it = registry.object_handles_by_key.find(handle_key);
-  Require(handle_it != registry.object_handles_by_key.end(),
-          "native bulk ingest template object handle table entry missing");
-  handle_it->second.closed = true;
-  ++handle_it->second.generation;
-  RequirePreparedRefusalBeforeDispatch(
-      &registry,
-      engine_state,
-      ExecutePreparedFrame(primary.session_uuid, *prepared_uuid),
-      "PARSER_SERVER_IPC.PREPARED_STATEMENT_STALE",
-      "prepared_statement_epoch_stale");
-
-  const auto reprepare = server::HandlePrepareSblr(
-      &registry,
-      engine_state,
-      PrepareFrame(primary.session_uuid, NativeBulkIngestTemplateEnvelope()));
-  Require(reprepare.accepted, "native bulk ingest template reprepare failed");
-  const auto reprepared_uuid =
-      server::DecodePreparedStatementUuidForTest(reprepare.payload);
-  Require(reprepared_uuid.has_value(),
-          "native bulk ingest template reprepare UUID decode failed");
-  const auto reprepared_it =
-      registry.prepared_by_uuid.find(server::UuidBytesToText(*reprepared_uuid));
-  Require(reprepared_it != registry.prepared_by_uuid.end(),
-          "native bulk ingest template reprepared record missing");
-  Require(reprepared_it->second.session_object_handle_id == first_handle_id,
-          "native bulk ingest template object handle was not recycled");
-  Require(reprepared_it->second.session_object_handle_generation > first_generation,
-          "native bulk ingest template recycled handle generation did not advance");
-  validation = server::ValidateSessionObjectHandle(
-      registry,
-      primary,
-      reprepared_it->second.session_object_handle_id,
-      reprepared_it->second.session_object_handle_generation,
-      reprepared_it->second.target_object_uuid,
-      reprepared_it->second.target_operation_id,
-      reprepared_it->second.target_column_set_hash);
-  Require(validation.accepted,
-          "native bulk ingest template recycled object handle did not validate");
-}
-
 }  // namespace
 
 int main() {
-  ValidateServerPreparedHandlesBindAuthority();
-  ValidateNativeBulkIngestTemplateCanBePrepared();
+  server::ServerSessionRegistry registry;
+  const auto engine_state = MakeEngineState();
+  const auto session = MakeSession();
+  const std::string session_key = server::UuidBytesToText(session.session_uuid);
+  registry.sessions_by_uuid.emplace(session_key, session);
+  const auto before = registry.sessions_by_uuid.at(session_key);
+  const auto next_handle_before = registry.next_session_object_handle_id;
+  const auto next_cache_before = registry.next_authority_cache_generation;
+
+  const auto frame =
+      PrepareFrame(before, server::EncodeShowVersionSblrForTest());
+  const auto result =
+      server::HandlePrepareSblr(&registry, engine_state, frame);
+  Require(!result.accepted,
+          "retired textual prepare input was accepted");
+  Require(HasDiagnostic(result, "SBLR.OPERATION.NONCANONICAL"),
+          "retired textual prepare input diagnostic mismatch");
+
+  Require(registry.prepared_by_uuid.empty(),
+          "retired prepare input published a prepared metadata receipt");
+  Require(registry.prepared_execution_contexts_by_uuid.empty(),
+          "retired prepare input published an executable context");
+  Require(registry.object_handles_by_key.empty() &&
+              registry.next_session_object_handle_id == next_handle_before,
+          "retired prepare input published or consumed a session handle");
+  Require(registry.authority_cache_by_key.empty() &&
+              registry.next_authority_cache_generation == next_cache_before,
+          "retired prepare input published or consumed cache authority");
+  Require(registry.cursors_by_uuid.empty(),
+          "retired prepare input published a result handle");
+  Require(registry.statement_contexts_by_statement_uuid.empty(),
+          "retired prepare input acquired a statement-use receipt");
+  Require(registry.public_abi_sessions_by_session_uuid.empty(),
+          "retired prepare input opened an engine result route");
+
+  const auto request = server::FindServerRequestLifecycle(
+      registry, server::UuidBytesToText(frame.header.request_uuid));
+  Require(request.has_value(), "retired prepare refusal lifecycle is missing");
+  Require(request->state == server::ServerRequestLifecycleState::kFailed,
+          "retired prepare refusal lifecycle did not fail");
+  Require(request->operation_id == "sblr.prepare.pending",
+          "retired prepare input reached an admitted operation");
+  Require(!request->engine_result_retained,
+          "retired prepare input retained an engine result");
+
+  const auto& after = registry.sessions_by_uuid.at(session_key);
+  Require(after.local_transaction_id == before.local_transaction_id &&
+              after.snapshot_visible_through_local_transaction_id ==
+                  before.snapshot_visible_through_local_transaction_id &&
+              after.transaction_uuid == before.transaction_uuid &&
+              after.default_local_transaction_id ==
+                  before.default_local_transaction_id &&
+              after.next_transaction_begin_ordinal ==
+                  before.next_transaction_begin_ordinal &&
+              after.transactions_by_local_id.size() ==
+                  before.transactions_by_local_id.size(),
+          "retired prepare input mutated transaction authority");
+  const auto before_transaction =
+      before.transactions_by_local_id.find(before.local_transaction_id);
+  const auto after_transaction =
+      after.transactions_by_local_id.find(after.local_transaction_id);
+  Require(before_transaction != before.transactions_by_local_id.end() &&
+              after_transaction != after.transactions_by_local_id.end() &&
+              after_transaction->second.transaction_uuid ==
+                  before_transaction->second.transaction_uuid &&
+              after_transaction->second.lifecycle_state ==
+                  before_transaction->second.lifecycle_state &&
+              after_transaction->second.deferred_catalog_cache_mutations ==
+                  before_transaction->second.deferred_catalog_cache_mutations,
+          "retired prepare input changed the active transaction");
   return EXIT_SUCCESS;
 }

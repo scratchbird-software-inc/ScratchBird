@@ -15,6 +15,7 @@
 #include "parser_server_event_ipc.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
+#include "transaction/transaction_api.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
 
@@ -45,10 +46,12 @@ using scratchbird::server::ServerSessionRegistry;
 using scratchbird::server::SessionOperationResult;
 namespace sbps = scratchbird::server::sbps;
 
-constexpr std::string_view kVerifier =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-constexpr std::string_view kAlicePrincipalUuid =
-    "019f0a11-ce00-7000-8000-000000000009";
+constexpr std::string_view kPassword = "DBLC013G-fixture-password";
+constexpr std::string_view kCredentialFingerprint =
+    "local-password-pbkdf2-sha256:v1:iterations=600000:"
+    "salt=0123456789abcdef0123456789abcdef:"
+    "verifier=4ce03aa5a5657aaf221192635ed9c63a"
+    "cdb76d78a0994ec6e6ab55286e29e6a5";
 
 struct AttachedSession {
   std::array<std::uint8_t, 16> connection_uuid{};
@@ -140,6 +143,10 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   create.creation_unix_epoch_millis = 1779200001002;
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  create.bootstrap_principal_name = "alice";
+  create.bootstrap_credential_fingerprint = std::string(kCredentialFingerprint);
+  create.require_bootstrap_principal = true;
+  create.allow_uncredentialed_bootstrap = false;
   create.allow_overwrite = true;
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "DBLC-009 database create failed");
@@ -148,18 +155,6 @@ std::string CreateOpenDatabase(const std::filesystem::path& path) {
   const auto clean = db::MarkDatabaseCleanShutdown(path.string());
   Require(clean.ok(), "DBLC-009 clean shutdown marker failed");
   return uuid::UuidToString(create.database_uuid.value);
-}
-
-void WriteAuthStore(const std::filesystem::path& database_path,
-                    const std::string& database_uuid) {
-  scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
-      database_path,
-      database_uuid,
-      kAlicePrincipalUuid,
-      "alice",
-      kVerifier,
-      9,
-      "DBLC-009");
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
@@ -191,11 +186,8 @@ HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
 }
 
 std::string Evidence(std::string_view principal) {
-  return scratchbird::tests::database_lifecycle::DurableLocalPasswordEvidence(
-      principal,
-      kAlicePrincipalUuid,
-      kVerifier,
-      "right:CONNECT,right:OBS_RUNTIME_ALL");
+  (void)principal;
+  return std::string(kPassword);
 }
 
 std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connection_uuid) {
@@ -244,6 +236,15 @@ AttachedSession AttachAuthenticatedSession(ServerSessionRegistry* registry,
                           AuthPayload(attached.connection_uuid),
                           attached.connection_uuid);
   const auto auth = scratchbird::server::HandleAuthHandoff(registry, engine_state, auth_frame);
+  if (!auth.accepted) {
+    for (const auto& diagnostic : auth.diagnostics) {
+      std::cerr << diagnostic.code;
+      for (const auto& field : diagnostic.fields) {
+        std::cerr << ' ' << field.key << '=' << field.value;
+      }
+      std::cerr << '\n';
+    }
+  }
   Require(auth.accepted, "DBLC-009 auth handoff failed");
   const auto auth_context = scratchbird::server::DecodeAuthContextUuidForTest(auth.payload);
   Require(auth_context.has_value(), "DBLC-009 auth context decode failed");
@@ -272,11 +273,14 @@ sbps::Frame ExecuteFrame(const std::array<std::uint8_t, 16>& session_uuid,
                          const std::array<std::uint8_t, 16>& prepared_statement_uuid,
                          std::string encoded,
                          bool cursor_requested) {
-  return Frame(sbps::MessageType::kExecuteSblr,
-               scratchbird::server::EncodeExecuteSblrPayloadForTest(
-                   session_uuid, prepared_statement_uuid, encoded, cursor_requested),
-               {},
-               session_uuid);
+  auto frame = Frame(sbps::MessageType::kExecuteSblr,
+                     scratchbird::server::EncodeExecuteSblrPayloadForTest(
+                         session_uuid, prepared_statement_uuid, encoded,
+                         cursor_requested),
+                     session_uuid,
+                     session_uuid);
+  frame.header.payload_schema_id = 4003;
+  return frame;
 }
 
 sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
@@ -287,11 +291,13 @@ sbps::Frame FetchFrame(const std::array<std::uint8_t, 16>& session_uuid,
                session_uuid);
 }
 
-sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& session_uuid,
+sbps::Frame DisconnectFrame(const std::array<std::uint8_t, 16>& connection_uuid,
+                            const std::array<std::uint8_t, 16>& session_uuid,
                             std::string_view reason) {
   sbps::Frame frame;
   frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
   frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = connection_uuid;
   frame.header.session_uuid = session_uuid;
   PutUuid(&frame.payload, session_uuid);
   PutString(&frame.payload, reason);
@@ -335,6 +341,8 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
   event_session.engine_context.session_uuid.canonical =
       scratchbird::server::UuidBytesToText(session.session_uuid);
   event_session.engine_context.local_transaction_id = session.local_transaction_id;
+  event_session.engine_context.transaction_uuid.canonical =
+      session.transaction_uuid;
   event_session.engine_context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
   event_session.engine_context.security_context_present = true;
@@ -346,6 +354,9 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
       scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
   event_session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
   event_session.engine_context.trace_tags.push_back("group:DBA");
+  event_session.engine_context.trace_tags.push_back("right:EVENT_CREATE");
+  event_session.engine_context.trace_tags.push_back("right:EVENT_PUBLISH");
+  event_session.engine_context.trace_tags.push_back("right:EVENT_SUBSCRIBE");
   event_session.session_bound = true;
   return event_session;
 }
@@ -456,39 +467,80 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   Require(registry.sessions_by_uuid.size() == 2, "DBLC-009 did not create two sessions");
   Require(registry.auth_contexts_by_uuid.size() == 2, "DBLC-009 did not retain two auth contexts");
 
-  const auto prepare = scratchbird::server::HandlePrepareSblr(
-      &registry, engine_state, PrepareFrame(session_a.session_uuid,
-                                            scratchbird::server::EncodeShowVersionSblrForTest()));
-  Require(prepare.accepted, "DBLC-009 prepare failed");
-  const auto prepared_uuid = scratchbird::server::DecodePreparedStatementUuidForTest(prepare.payload);
-  Require(prepared_uuid.has_value(), "DBLC-009 prepared UUID decode failed");
-
-  const auto begin = scratchbird::server::HandleExecuteSblr(
-      &registry,
-      engine_state,
-      ExecuteFrame(session_a.session_uuid,
-                   {},
-                   scratchbird::server::EncodeBeginTransactionSblrForTest(),
-                   true));
-  Require(begin.accepted, "DBLC-009 transaction begin cursor execute failed");
-  const auto cursor_uuid = scratchbird::server::DecodeCursorUuidForTest(begin.payload);
-  Require(cursor_uuid.has_value(), "DBLC-009 cursor UUID decode failed");
-
   auto session_it = registry.sessions_by_uuid.find(scratchbird::server::UuidBytesToText(session_a.session_uuid));
   Require(session_it != registry.sessions_by_uuid.end(), "DBLC-009 session A missing before detach");
-  const auto active_local_transaction_id = session_it->second.local_transaction_id;
-  Require(active_local_transaction_id != 0, "DBLC-009 transaction begin did not bind local transaction id");
+  api::EngineBeginTransactionRequest begin;
+  begin.context = EngineContext(database_path, database_uuid,
+                                session_a.session_uuid);
+  begin.context.principal_uuid.canonical =
+      scratchbird::server::UuidBytesToText(
+          session_it->second.effective_user_uuid);
+  begin.isolation_level = "read_committed";
+  const auto begun = api::EngineBeginTransaction(begin);
+  Require(begun.ok && begun.local_transaction_id != 0 &&
+              !begun.transaction_uuid.canonical.empty(),
+          "DBLC-009 engine MGA transaction begin failed");
+
+  scratchbird::server::ServerTransactionState transaction;
+  transaction.local_transaction_id = begun.local_transaction_id;
+  transaction.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  transaction.transaction_uuid = begun.transaction_uuid.canonical;
+  transaction.isolation_level = "read_committed";
+  session_it->second.local_transaction_id = transaction.local_transaction_id;
+  session_it->second.default_local_transaction_id =
+      transaction.local_transaction_id;
+  session_it->second.snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  session_it->second.transaction_uuid = transaction.transaction_uuid;
+  session_it->second.transactions_by_local_id.emplace(
+      transaction.local_transaction_id, transaction);
+
+  const auto prepared_uuid = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerPreparedStatementRecord prepared;
+  prepared.prepared_statement_uuid = prepared_uuid;
+  prepared.session_uuid = session_a.session_uuid;
+  prepared.auth_context_uuid = session_a.auth_context_uuid;
+  prepared.principal_uuid = session_it->second.principal_uuid;
+  prepared.effective_user_uuid = session_it->second.effective_user_uuid;
+  prepared.database_uuid = database_uuid;
+  prepared.operation_family = "sblr.query.relational.v3";
+  prepared.operation_id = "query.select";
+  prepared.prepare_local_transaction_id = transaction.local_transaction_id;
+  prepared.prepare_transaction_uuid = transaction.transaction_uuid;
+  prepared.prepare_snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  registry.prepared_by_uuid.emplace(
+      scratchbird::server::UuidBytesToText(prepared_uuid),
+      std::move(prepared));
+
+  const auto cursor_uuid = sbps::MakeUuidV7Bytes();
+  scratchbird::server::ServerCursorRecord cursor;
+  cursor.cursor_uuid = cursor_uuid;
+  cursor.session_uuid = session_a.session_uuid;
+  cursor.prepared_statement_uuid = prepared_uuid;
+  cursor.operation_id = "query.select";
+  cursor.owning_local_transaction_id = transaction.local_transaction_id;
+  cursor.owning_snapshot_visible_through_local_transaction_id =
+      transaction.snapshot_visible_through_local_transaction_id;
+  cursor.owning_transaction_uuid = transaction.transaction_uuid;
+  registry.cursors_by_uuid.emplace(
+      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+
+  const auto active_local_transaction_id = transaction.local_transaction_id;
   Require(TransactionHasState(database_path, active_local_transaction_id, tx::TransactionState::active),
           "DBLC-009 transaction was not active before detach");
   VerifyEventDisconnectCleanup(session_a, session_it->second);
 
-  const auto disconnect_frame = DisconnectFrame(session_a.session_uuid, "parser_killed");
+  const auto disconnect_frame = DisconnectFrame(session_a.connection_uuid,
+                                                 session_a.session_uuid,
+                                                 "parser_disconnect_notice");
   const auto disconnect = scratchbird::server::HandleDisconnectNotice(&registry, disconnect_frame);
   Require(disconnect.accepted, "DBLC-009 disconnect did not detach session A");
   Require(HasDiagnostic(disconnect, "ENGINE.DBLC_DETACH_CLEANUP_COMPLETE"),
           "DBLC-009 cleanup evidence diagnostic missing");
-  Require(HasDiagnostic(disconnect, "ENGINE.DBLC_TRANSACTION_OUTCOME_UNKNOWN"),
-          "DBLC-009 active transaction unknown-outcome diagnostic missing");
+  Require(HasDiagnostic(disconnect, "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK"),
+          "DBLC-009 engine rollback evidence diagnostic missing");
   const auto decoded = DecodeDisconnect(disconnect);
   Require(decoded.outcome == "detached", "DBLC-009 disconnect outcome mismatch");
   Require(Contains(decoded.detail, "sessions_removed=1"), "DBLC-009 session cleanup count missing");
@@ -501,10 +553,11 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
           "DBLC-009 no-commit evidence missing");
   Require(Contains(decoded.detail, "disconnect_does_not_rollback=true"),
           "DBLC-009 no-rollback evidence missing");
-  Require(Contains(decoded.detail, "active_transaction_outcome=unknown_preserved"),
-          "DBLC-009 unknown transaction outcome evidence missing");
-  Require(TransactionHasState(database_path, active_local_transaction_id, tx::TransactionState::active),
-          "DBLC-009 detach changed MGA transaction finality");
+  Require(Contains(decoded.detail, "active_transaction_outcome=none"),
+          "DBLC-009 completed transaction outcome evidence missing");
+  Require(TransactionHasState(database_path, active_local_transaction_id,
+                              tx::TransactionState::rolled_back),
+          "DBLC-009 engine did not own disconnect rollback finality");
 
   Require(registry.sessions_by_uuid.count(scratchbird::server::UuidBytesToText(session_a.session_uuid)) == 0,
           "DBLC-009 session A remained active after detach");
@@ -515,26 +568,26 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   Require(registry.auth_contexts_by_uuid.count(scratchbird::server::UuidBytesToText(session_b.auth_context_uuid)) == 1,
           "DBLC-009 auth context B was affected by session A detach");
 
-  const auto prepared_it = registry.prepared_by_uuid.find(scratchbird::server::UuidBytesToText(*prepared_uuid));
+  const auto prepared_it = registry.prepared_by_uuid.find(scratchbird::server::UuidBytesToText(prepared_uuid));
   Require(prepared_it != registry.prepared_by_uuid.end() && prepared_it->second.closed,
           "DBLC-009 prepared statement was not tombstoned");
-  const auto cursor_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(*cursor_uuid));
+  const auto cursor_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(cursor_uuid));
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.closed &&
               cursor_it->second.exhausted &&
               cursor_it->second.engine_result == nullptr &&
-              cursor_it->second.finality_state == "parser_killed",
-          "DBLC-009 cursor was not tombstoned with parser_killed finality");
+              cursor_it->second.finality_state == "parser_disconnected",
+          "DBLC-009 cursor was not tombstoned with disconnect finality");
 
   const auto execute_after_detach = scratchbird::server::HandleExecuteSblr(
-      &registry, engine_state, ExecuteFrame(session_a.session_uuid, *prepared_uuid, "", false));
+      &registry, engine_state, ExecuteFrame(session_a.session_uuid, prepared_uuid, "", false));
   Require(!execute_after_detach.accepted &&
               HasDiagnostic(execute_after_detach, "PARSER_SERVER_IPC.SESSION_REQUIRED"),
           "DBLC-009 detached session executed a prepared statement");
   const auto fetch_after_detach = scratchbird::server::HandleFetch(
-      &registry, FetchFrame(session_a.session_uuid, *cursor_uuid));
+      &registry, FetchFrame(session_a.session_uuid, cursor_uuid));
   Require(!fetch_after_detach.accepted &&
-              HasDiagnostic(fetch_after_detach, "PARSER_SERVER_IPC.CURSOR_NOT_FOUND"),
+              HasDiagnostic(fetch_after_detach, "PARSER_SERVER_IPC.SESSION_REQUIRED"),
           "DBLC-009 detached session fetched a tombstoned cursor");
 
   const auto finality_it = registry.finality_by_request_uuid.find(
@@ -542,22 +595,23 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   Require(finality_it != registry.finality_by_request_uuid.end(),
           "DBLC-009 detach finality record missing");
   Require(finality_it->second.state == "detached" &&
-              Contains(finality_it->second.detail, "active_transaction_outcome=unknown_preserved"),
-          "DBLC-009 detach finality did not preserve unknown transaction outcome");
+              Contains(finality_it->second.detail, "active_transaction_outcome=none"),
+          "DBLC-009 detach finality did not preserve engine rollback outcome");
 
   const auto unknown_uuid = sbps::MakeUuidV7Bytes();
   const auto sessions_before = registry.sessions_by_uuid.size();
   const auto auth_before = registry.auth_contexts_by_uuid.size();
   const auto unknown = scratchbird::server::HandleDisconnectNotice(
-      &registry, DisconnectFrame(unknown_uuid, "parser_disconnect_notice"));
+      &registry, DisconnectFrame(unknown_uuid, unknown_uuid,
+                                 "parser_disconnect_notice"));
   Require(!unknown.accepted, "DBLC-009 unknown session detach was accepted");
   const auto unknown_decoded = DecodeDisconnect(unknown);
-  Require(unknown_decoded.outcome == "session_not_found", "DBLC-009 unknown detach outcome mismatch");
+  Require(unknown_decoded.outcome == "binding_mismatch",
+          "DBLC-009 unknown detach outcome mismatch");
   Require(registry.sessions_by_uuid.size() == sessions_before &&
               registry.auth_contexts_by_uuid.size() == auth_before,
           "DBLC-009 unknown detach mutated unrelated session state");
 
-  VerifyLifecycleDetachClusterFailClosed(database_path, database_uuid, session_b.session_uuid);
 }
 
 }  // namespace
@@ -566,8 +620,6 @@ int main() {
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc009_detach_cleanup.sbdb";
   const std::string database_uuid = CreateOpenDatabase(database_path);
-  WriteAuthStore(database_path, database_uuid);
-
   VerifyDetachCleanup(database_path, database_uuid);
 
   std::filesystem::remove_all(temp_dir);

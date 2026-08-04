@@ -101,6 +101,12 @@ struct ServerClosePreparedSblrResult {
   MessageVectorSet messages;
 };
 
+struct ServerStatementContextResult {
+  bool accepted{false};
+  ParserStatementContext context;
+  MessageVectorSet messages;
+};
+
 // Deterministic protocol-conformance hook.  Production callers receive the
 // same validation through the routed execute APIs.
 bool DecodeExecuteResultPayloadV2ForTest(
@@ -114,6 +120,19 @@ bool DecodePrepareResultPayloadV2ForTest(
 bool DecodeDiagnosticFrameForTest(
     const std::vector<std::uint8_t>& encoded_frame,
     MessageVectorSet* messages);
+bool DecodeAcquireStatementContextResultPayloadV1ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
+std::vector<std::uint8_t>
+EncodeAcquireStatementContextRequestPayloadV1ForTest(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction);
+std::vector<std::uint8_t> EncodeCanonicalExecutePayloadV1ForTest(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested);
 bool V2RequestMayRetryAfterWriteForTest(std::uint32_t schema_id);
 bool SessionBoundRequestMayRetryAfterWriteForTest(std::uint32_t schema_id);
 
@@ -166,6 +185,7 @@ struct PublicRelationDescriptor {
   bool present{false};
   std::string descriptor_uuid;
   std::string relation_uuid;
+  std::string schema_uuid;
   std::uint64_t descriptor_generation{0};
   // Exact current resource catalog epoch under which every projected
   // resource UUID was revalidated.  This is not represented as a claim that
@@ -288,6 +308,12 @@ class SbpsClient {
       const ParserTransactionSelector& transaction) const;
   PublicNameResolutionResult RenderUuidPublic(const ParserSessionContext& session,
                                               std::string_view object_uuid) const;
+  ServerStatementContextResult AcquireStatementContext(
+      const ParserSessionContext& session,
+      const ParserTransactionSelector& transaction) const;
+  ServerStatementContextResult AcquireNativeStatementContext(
+      const ParserSessionContext& session,
+      const ParserTransactionSelector& transaction) const;
   ServerExecutionResult ExecuteSblr(const ParserSessionContext& session,
                                     std::string_view encoded_sblr_envelope,
                                     bool cursor_requested = false) const;
@@ -306,6 +332,12 @@ class SbpsClient {
       std::string_view encoded_sblr_envelope,
       const std::vector<std::uint8_t>& data_packet,
       const ParserTransactionRouting& transaction,
+      bool cursor_requested = false) const;
+  ServerExecutionResult ExecuteCanonicalSblrWithDataPacket(
+      const ParserSessionContext& session,
+      const ParserStatementContext& statement_context,
+      const ParserCanonicalSblrSubmission& submission,
+      const std::vector<std::uint8_t>& data_packet,
       bool cursor_requested = false) const;
   ServerPrepareSblrResult PrepareSblr(const ParserSessionContext& session,
                                       std::string_view encoded_sblr_envelope) const;

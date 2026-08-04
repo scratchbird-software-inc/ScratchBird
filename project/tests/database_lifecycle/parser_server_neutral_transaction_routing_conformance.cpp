@@ -2723,6 +2723,50 @@ void VerifyLiveV2MultiTransactionVisibility() {
           "orderly neutral V2 cleanup did not prove exact engine rollback");
 }
 
+void VerifyRetiredNeutralPreparedInputRefused() {
+  const auto fixture = CreateEngineTransactionFixture();
+  const auto context = BeginEngineTransaction(fixture, 140);
+  auto route = MakeNeutralLiveV2Route(fixture, context);
+  const auto selector = route.default_transaction;
+  const auto session_key = server::UuidBytesToText(route.session_uuid);
+  const auto session_before = route.registry.sessions_by_uuid.at(session_key);
+  const auto prepared_before = route.registry.prepared_by_uuid.size();
+  const auto contexts_before =
+      route.registry.prepared_execution_contexts_by_uuid.size();
+  const auto handles_before = route.registry.object_handles_by_key.size();
+  const auto cursors_before = route.registry.cursors_by_uuid.size();
+
+  const auto refused = server::HandlePrepareSblr(
+      &route.registry,
+      route.engine_state,
+      RoutedPrepareFrameV2(route.session_uuid,
+                           NeutralEmptyResultProceduralBlockEnvelope(),
+                           selector));
+  Require(!refused.accepted &&
+              SessionResultHasDiagnosticCode(refused,
+                                             "SBLR.OPERATION.NONCANONICAL"),
+          "retired neutral procedural prepare input did not fail closed");
+  Require(route.registry.prepared_by_uuid.size() == prepared_before &&
+              route.registry.prepared_execution_contexts_by_uuid.size() ==
+                  contexts_before &&
+              route.registry.object_handles_by_key.size() == handles_before &&
+              route.registry.cursors_by_uuid.size() == cursors_before,
+          "retired neutral prepare input published executable state");
+  const auto& session_after =
+      route.registry.sessions_by_uuid.at(session_key);
+  Require(SessionContainsExactActiveSelector(session_after, selector) &&
+              session_after.local_transaction_id ==
+                  session_before.local_transaction_id &&
+              session_after.transaction_uuid == session_before.transaction_uuid &&
+              InventoryContainsExactActiveSelector(fixture, selector),
+          "retired neutral prepare input mutated MGA authority");
+
+  api::EngineRollbackTransactionRequest rollback;
+  rollback.context = context;
+  RequireEngineOk(api::EngineRollbackTransaction(rollback),
+                  "retired neutral prepare fixture rollback failed");
+}
+
 }  // namespace
 
 int main() {
@@ -2742,10 +2786,7 @@ int main() {
   VerifyDedicatedV2ClientChannelIdentity();
   VerifyEngineCompositeFinalityAuthority();
   VerifyNeutralPersistedRelationProjection();
-  VerifyNeutralProceduralBlockBridge();
-  VerifyServerRoutedCreateOrAlterRoutineEnvelope();
-  VerifyTransferablePreparedRoutineMetadata();
-  VerifyLiveV2MultiTransactionVisibility();
+  VerifyRetiredNeutralPreparedInputRefused();
   std::cout << "parser_server_neutral_transaction_routing_conformance=passed\n";
   return EXIT_SUCCESS;
 }

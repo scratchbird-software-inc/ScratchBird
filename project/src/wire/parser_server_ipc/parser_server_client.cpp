@@ -72,6 +72,7 @@ constexpr std::uint32_t kSchemaPrepareSblrV2 = 4009;
 constexpr std::uint32_t kSchemaPrepareResultV2 = 4010;
 constexpr std::uint32_t kSchemaExecuteSblrV2 = 4011;
 constexpr std::uint32_t kSchemaExecuteResultV2 = 4012;
+constexpr std::uint32_t kSchemaExecuteCanonicalSblrV1 = 4015;
 constexpr std::uint32_t kSchemaClosePreparedSblrV1 = 4013;
 constexpr std::uint32_t kSchemaClosePreparedSblrResultV1 = 4014;
 constexpr std::uint32_t kSchemaManagementRequestV1 = 6001;
@@ -82,6 +83,10 @@ constexpr std::uint32_t kSchemaResolveNameResultV2 = 7006;
 constexpr std::uint32_t kSchemaResolveNameRequestV3 = 7007;
 constexpr std::uint32_t kSchemaResolveNameResultV3 = 7008;
 constexpr std::uint32_t kSchemaRenderUuidRequestV1 = 7003;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV1 = 7011;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV1 = 7012;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV2 = 7013;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV2 = 7014;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -94,6 +99,8 @@ constexpr std::uint16_t kMessageResolveNameRequest = 32;
 constexpr std::uint16_t kMessageResolveNameResult = 33;
 constexpr std::uint16_t kMessageRenderUuidRequest = 34;
 constexpr std::uint16_t kMessageRenderUuidResult = 35;
+constexpr std::uint16_t kMessageAcquireStatementContextRequest = 36;
+constexpr std::uint16_t kMessageAcquireStatementContextResult = 37;
 constexpr std::uint16_t kMessagePrepareSblr = 40;
 constexpr std::uint16_t kMessagePrepareResult = 41;
 constexpr std::uint16_t kMessageExecuteSblr = 42;
@@ -116,6 +123,7 @@ constexpr std::size_t kMaxSbpsClientPublicResolutionCacheEntries = 8192;
 constexpr std::uint8_t kResolveNameProjectionRelationDescriptorV1 = 0x01u;
 constexpr std::uint8_t kRelationDescriptorExtensionKind = 0x02u;
 constexpr std::uint8_t kRelationDescriptorExtensionVersion = 0x01u;
+constexpr std::uint8_t kRelationDescriptorExtensionVersionV2 = 0x02u;
 constexpr std::size_t kMaxPublicRelationProjectionBytes = 512u * 1024u;
 constexpr std::uint32_t kMaxPublicRelationProjectionColumns = 4096;
 constexpr std::size_t kMaxPublicRelationMetadataTextBytes = 4096;
@@ -828,6 +836,156 @@ std::array<std::uint8_t, 16> TextToUuid(std::string_view text) {
     ++nibble;
   }
   return nibble == 32 ? out : std::array<std::uint8_t, 16>{};
+}
+
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV1(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  std::vector<std::uint8_t> out;
+  out.reserve(2 + 16 + 8 + 16);
+  PutU16(&out, 1);
+  PutUuid(&out, TextToUuid(session.session_uuid));
+  PutU64(&out, transaction.local_transaction_id);
+  PutUuid(&out, TextToUuid(transaction.transaction_uuid));
+  return out;
+}
+
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV2(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 2;
+  return out;
+}
+
+bool DecodeAcquireStatementContextPayloadV1(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  constexpr std::size_t kResultBytes = 2 + 1 + (6 * 16) + (2 * 8);
+  if (context == nullptr || payload.size() != kResultBytes ||
+      GetU16(payload, 0) != 1 || payload[2] != 1) {
+    return false;
+  }
+  std::size_t offset = 3;
+  const auto statement_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto local_transaction_id = GetU64(payload, offset);
+  offset += 8;
+  const auto transaction_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto statement_snapshot_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto statement_metadata_snapshot_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto catalog_epoch_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto security_context_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto high_watermark = GetU64(payload, offset);
+  if (!UuidPresent(statement_uuid) || local_transaction_id == 0 ||
+      !UuidPresent(transaction_uuid) ||
+      !UuidPresent(statement_snapshot_uuid) ||
+      !UuidPresent(statement_metadata_snapshot_uuid) ||
+      !UuidPresent(catalog_epoch_uuid) ||
+      !UuidPresent(security_context_uuid)) {
+    return false;
+  }
+  ParserStatementContext decoded;
+  decoded.acquired = true;
+  decoded.statement_uuid = UuidToText(statement_uuid);
+  decoded.transaction.local_transaction_id = local_transaction_id;
+  decoded.transaction.transaction_uuid = UuidToText(transaction_uuid);
+  decoded.statement_snapshot_uuid = UuidToText(statement_snapshot_uuid);
+  decoded.statement_metadata_snapshot_uuid =
+      UuidToText(statement_metadata_snapshot_uuid);
+  decoded.catalog_epoch_uuid = UuidToText(catalog_epoch_uuid);
+  decoded.security_context_uuid = UuidToText(security_context_uuid);
+  decoded.snapshot_visible_through_local_transaction_id = high_watermark;
+  if (!decoded.complete()) return false;
+  *context = std::move(decoded);
+  return true;
+}
+
+bool DecodeAcquireStatementContextPayloadV2(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
+  constexpr std::size_t kNativePrefixBytes = 3 * 16 + 2;
+  constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
+  if (context == nullptr || payload.size() < kBaseBytes + kNativePrefixBytes ||
+      GetU16(payload, 0) != 2 || payload[2] != 1) {
+    return false;
+  }
+
+  std::vector<std::uint8_t> base(payload.begin(),
+                                 payload.begin() + kBaseBytes);
+  base[0] = 1;
+  ParserStatementContext decoded;
+  if (!DecodeAcquireStatementContextPayloadV1(base, &decoded)) return false;
+
+  std::size_t offset = kBaseBytes;
+  const auto bound_ast_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto count_function_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto sum_function_uuid = GetUuid(payload, offset);
+  offset += 16;
+  const auto profile_count = GetU16(payload, offset);
+  offset += 2;
+  if (!UuidPresent(bound_ast_uuid) || !UuidPresent(count_function_uuid) ||
+      !UuidPresent(sum_function_uuid) || profile_count == 0 ||
+      profile_count > 192 ||
+      payload.size() != offset +
+                            static_cast<std::size_t>(profile_count) *
+                                kProfileBytes) {
+    return false;
+  }
+
+  std::array<std::uint16_t, 7> expected_slots{};
+  std::set<std::string> descriptor_uuids;
+  decoded.descriptor_profiles.reserve(profile_count);
+  for (std::uint16_t index = 0; index < profile_count; ++index) {
+    ParserStatementContext::DescriptorProfile profile;
+    profile.profile_kind = payload[offset++];
+    profile.slot = GetU16(payload, offset);
+    offset += 2;
+    const auto descriptor_uuid = GetUuid(payload, offset);
+    offset += 16;
+    const auto type_uuid = GetUuid(payload, offset);
+    offset += 16;
+    const auto collation_uuid = GetUuid(payload, offset);
+    offset += 16;
+    const auto nullable = payload[offset++];
+    profile.width = GetU32(payload, offset);
+    offset += 4;
+    profile.precision = GetU32(payload, offset);
+    offset += 4;
+    profile.scale = GetU32(payload, offset);
+    offset += 4;
+    if (profile.profile_kind < 1 || profile.profile_kind > 6 ||
+        profile.slot != expected_slots[profile.profile_kind]++ ||
+        !UuidPresent(descriptor_uuid) || !UuidPresent(type_uuid) ||
+        nullable > 1 ||
+        (profile.profile_kind % 2 == 0) != (nullable == 1) ||
+        profile.scale > profile.precision) {
+      return false;
+    }
+    profile.descriptor_uuid = UuidToText(descriptor_uuid);
+    profile.type_uuid = UuidToText(type_uuid);
+    profile.collation_uuid = OptionalUuidToText(collation_uuid);
+    profile.nullable = nullable == 1;
+    if (!descriptor_uuids.insert(profile.descriptor_uuid).second) return false;
+    decoded.descriptor_profiles.push_back(std::move(profile));
+  }
+  if (offset != payload.size()) return false;
+  for (std::size_t kind = 1; kind < expected_slots.size(); ++kind) {
+    if (expected_slots[kind] == 0) return false;
+  }
+  decoded.bound_ast_uuid = UuidToText(bound_ast_uuid);
+  decoded.count_function_uuid = UuidToText(count_function_uuid);
+  decoded.sum_function_uuid = UuidToText(sum_function_uuid);
+  *context = std::move(decoded);
+  return true;
 }
 
 bool IsCanonicalNonzeroUuidText(std::string_view text) {
@@ -1631,6 +1789,7 @@ bool ReadExpectedResponse(SbpsSocketHandle fd,
 bool V2RequestIsNonReplayableAfterWrite(std::uint32_t schema_id) {
   return schema_id == kSchemaPrepareSblrV2 ||
          schema_id == kSchemaExecuteSblrV2 ||
+         schema_id == kSchemaExecuteCanonicalSblrV1 ||
          schema_id == kSchemaResolveNameRequestV2 ||
          schema_id == kSchemaResolveNameRequestV3;
 }
@@ -2203,6 +2362,26 @@ std::vector<std::uint8_t> EncodeExecutePayloadV2(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeCanonicalExecutePayloadV1(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, TextToUuid(session.session_uuid));
+  PutUuid(&out, {});  // Prepared reuse is outside the Packet 7 live route.
+  PutU8(&out, cursor_requested ? 1 : 0);
+  PutU8(&out, static_cast<std::uint8_t>(ParserTransactionRoute::kSelected));
+  PutU64(&out, statement_context.transaction.local_transaction_id);
+  PutUuid(&out, TextToUuid(statement_context.transaction.transaction_uuid));
+  PutUuid(&out, TextToUuid(statement_context.statement_uuid));
+  PutBytes(&out, submission.canonical_container_bytes);
+  PutBytes(&out, submission.canonical_execution_envelope_bytes);
+  PutBytes(&out, data_packet);
+  return out;
+}
+
 std::vector<std::uint8_t> EncodePreparePayload(const ParserSessionContext& session,
                                                const std::array<std::uint8_t, 16>& session_uuid,
                                                std::string_view encoded_sblr_envelope) {
@@ -2611,7 +2790,8 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
     const std::uint32_t extension_bytes = GetU32(response.payload, offset);
     offset += 4;
     if (extension_kind != kRelationDescriptorExtensionKind ||
-        extension_version != kRelationDescriptorExtensionVersion ||
+        (extension_version != kRelationDescriptorExtensionVersion &&
+         extension_version != kRelationDescriptorExtensionVersionV2) ||
         extension_bytes > kMaxPublicRelationProjectionBytes ||
         extension_bytes > response.payload.size() - offset) {
       invalid(extension_bytes > kMaxPublicRelationProjectionBytes
@@ -2630,7 +2810,9 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
                               max_bytes);
     };
     auto& descriptor = result.relation_descriptor;
-    if (offset + 48 > extension_end) {
+    if (offset + (extension_version == kRelationDescriptorExtensionVersionV2
+                      ? 64
+                      : 48) > extension_end) {
       invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
               "The V3 relation descriptor identity is truncated.");
       return result;
@@ -2639,6 +2821,11 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
     offset += 16;
     const auto relation_uuid = GetUuid(response.payload, offset);
     offset += 16;
+    std::array<std::uint8_t, 16> schema_uuid{};
+    if (extension_version == kRelationDescriptorExtensionVersionV2) {
+      schema_uuid = GetUuid(response.payload, offset);
+      offset += 16;
+    }
     descriptor.descriptor_generation = GetU64(response.payload, offset);
     offset += 8;
     descriptor.validated_resource_epoch = GetU64(response.payload, offset);
@@ -2651,6 +2838,8 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
     const std::uint32_t column_count = GetU32(response.payload, offset);
     offset += 4;
     if (!UuidPresent(descriptor_uuid) || !UuidPresent(relation_uuid) ||
+        (extension_version == kRelationDescriptorExtensionVersionV2 &&
+         !UuidPresent(schema_uuid)) ||
         descriptor.descriptor_generation == 0 ||
         descriptor.validated_resource_epoch == 0 || column_count == 0 ||
         column_count > kMaxPublicRelationProjectionColumns) {
@@ -2662,6 +2851,7 @@ PublicNameResolutionResult DecodePublicNameResultPayloadV3(
     }
     descriptor.descriptor_uuid = UuidToText(descriptor_uuid);
     descriptor.relation_uuid = UuidToText(relation_uuid);
+    descriptor.schema_uuid = OptionalUuidToText(schema_uuid);
     if (descriptor.relation_uuid != result.object_uuid) {
       invalid("PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RELATION_MISMATCH",
               "The projected descriptor does not identify the resolved relation.");
@@ -2840,6 +3030,32 @@ bool DecodeDiagnosticFrameForTest(
   return messages->diagnostics.size() > diagnostic_count;
 }
 
+bool DecodeAcquireStatementContextResultPayloadV1ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV1(payload, context);
+}
+
+std::vector<std::uint8_t>
+EncodeAcquireStatementContextRequestPayloadV1ForTest(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  return EncodeAcquireStatementContextPayloadV1(session, transaction);
+}
+
+std::vector<std::uint8_t> EncodeCanonicalExecutePayloadV1ForTest(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) {
+  return EncodeCanonicalExecutePayloadV1(session,
+                                         statement_context,
+                                         submission,
+                                         data_packet,
+                                         cursor_requested);
+}
+
 std::vector<std::uint8_t> EncodeResolveNameRequestPayloadV2ForTest(
     const ParserSessionContext& session,
     std::string_view presented_name,
@@ -2887,6 +3103,7 @@ bool DecodeResolveNameResultPayloadV3ForTest(
 struct SbpsClientChannelState {
   bool dedicated_v2_channel_enabled{false};
   std::string dedicated_v2_socket_cache_key;
+  std::vector<std::uint8_t> stable_baseline_hello_payload;
   std::vector<std::uint8_t> stable_v2_hello_payload;
   std::vector<std::uint8_t> stable_prepared_metadata_transfer_v1_hello_payload;
   std::vector<std::uint8_t> stable_relation_descriptor_v3_hello_payload;
@@ -2940,6 +3157,8 @@ SbpsClient::SbpsClient(std::string endpoint)
       channel_state_(std::make_unique<SbpsClientChannelState>()) {
   channel_state_->dedicated_v2_socket_cache_key =
       endpoint_ + "|sbps-v2-client|" + UuidToText(MakeUuidV7Bytes());
+  channel_state_->stable_baseline_hello_payload =
+      EncodeBuiltInHelloPayload();
   channel_state_->stable_v2_hello_payload = EncodeBuiltInHelloPayload(true);
   channel_state_->stable_prepared_metadata_transfer_v1_hello_payload =
       EncodeBuiltInHelloPayload(true, true);
@@ -3064,7 +3283,6 @@ bool SbpsClient::SendHelloWithRequirements(
       require_relation_descriptor_projection_v3) {
     EnableDedicatedV2Channel();
   }
-  std::vector<std::uint8_t> baseline_hello_payload;
   const std::vector<std::uint8_t>* hello_payload = nullptr;
   if (require_prepared_metadata_transfer_v1 &&
       require_relation_descriptor_projection_v3) {
@@ -3077,8 +3295,15 @@ bool SbpsClient::SendHelloWithRequirements(
   } else if (require_transaction_routing_v2) {
     hello_payload = &StableV2HelloPayload();
   } else {
-    baseline_hello_payload = EncodeBuiltInHelloPayload();
-    hello_payload = &baseline_hello_payload;
+    hello_payload = channel_state_ == nullptr
+                        ? nullptr
+                        : &channel_state_->stable_baseline_hello_payload;
+  }
+  if (hello_payload == nullptr || hello_payload->empty()) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.HELLO_IDENTITY_INVALID",
+                  "The stable parser HELLO identity is unavailable.");
+    return false;
   }
   Frame response;
   if (!SendRequest(endpoint_,
@@ -3169,6 +3394,43 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
       config.require_transaction_routing_v2 ||
       config.require_prepared_metadata_transfer_v1 ||
       config.require_relation_descriptor_projection_v3;
+  const std::vector<std::uint8_t>* admitted_hello_payload = nullptr;
+  if (config.require_prepared_metadata_transfer_v1 &&
+      config.require_relation_descriptor_projection_v3) {
+    admitted_hello_payload =
+        &StablePreparedMetadataTransferRelationDescriptorV3HelloPayload();
+  } else if (config.require_prepared_metadata_transfer_v1) {
+    admitted_hello_payload = &StablePreparedMetadataTransferV1HelloPayload();
+  } else if (config.require_relation_descriptor_projection_v3) {
+    admitted_hello_payload = &StableRelationDescriptorV3HelloPayload();
+  } else if (require_transaction_routing_v2) {
+    admitted_hello_payload = &StableV2HelloPayload();
+  } else if (channel_state_ != nullptr) {
+    admitted_hello_payload =
+        &channel_state_->stable_baseline_hello_payload;
+  }
+  if (admitted_hello_payload == nullptr || admitted_hello_payload->size() < 72) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.HELLO_IDENTITY_INVALID",
+                  "The stable parser HELLO identity is unavailable.");
+    return false;
+  }
+  const auto admitted_parser_package_uuid =
+      GetUuid(*admitted_hello_payload, 16);
+  const auto admitted_dialect_profile_uuid =
+      GetUuid(*admitted_hello_payload, 48);
+  const auto admitted_parser_api_major =
+      GetU32(*admitted_hello_payload, 64);
+  const auto admitted_parser_api_minor =
+      GetU32(*admitted_hello_payload, 68);
+  if (!UuidPresent(admitted_parser_package_uuid) ||
+      !UuidPresent(admitted_dialect_profile_uuid) ||
+      admitted_parser_api_major == 0) {
+    AddDiagnostic(messages,
+                  "PARSER_SERVER_IPC.HELLO_IDENTITY_INVALID",
+                  "The stable parser HELLO did not contain canonical package and dialect identities.");
+    return false;
+  }
   if (!SendHelloWithRequirements(require_transaction_routing_v2,
                                  &transaction_routing_v2_accepted,
                                  config.require_prepared_metadata_transfer_v1,
@@ -3362,6 +3624,15 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   }
 
   session->authenticated = true;
+  session->admitted_parser_package_uuid =
+      UuidToText(admitted_parser_package_uuid);
+  session->admitted_dialect_profile_uuid =
+      UuidToText(admitted_dialect_profile_uuid);
+  session->admitted_parser_package_version_major =
+      admitted_parser_api_major;
+  session->admitted_parser_package_version_minor =
+      admitted_parser_api_minor;
+  session->admitted_parser_package_version_patch = 0;
   session->session_uuid = UuidToText(session_uuid);
   session->connection_uuid = UuidToText(connection_uuid);
   session->database_uuid = database_uuid;
@@ -3377,6 +3648,9 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
                            descriptor_epoch == 0 ? name_resolution_epoch
                                                  : descriptor_epoch,
                            name_resolution_epoch);
+  // The admitted dialect UUID identifies the negotiated parser package and
+  // is carried separately in canonical SBLR/SBEE binding. Public name
+  // resolution uses the parser family's semantic identifier profile.
   session->dialect_profile_uuid = config.dialect_profile_uuid;
   session->search_path = config.default_search_path;
   session->transaction_context = "always_active";
@@ -3723,6 +3997,152 @@ PublicNameResolutionResult SbpsClient::RenderUuidPublic(const ParserSessionConte
   return result;
 }
 
+ServerStatementContextResult SbpsClient::AcquireStatementContext(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) const {
+  ServerStatementContextResult result;
+  if (!session.authenticated) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.AUTH.REQUIRED",
+                  "statement-context acquisition requires an authenticated server session");
+    return result;
+  }
+  if (!transaction.present()) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.TRANSACTION_SELECTOR_REQUIRED",
+                  "statement-context acquisition requires an engine-issued selector");
+    return result;
+  }
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!UuidPresent(session_uuid) || !UuidPresent(connection_uuid) ||
+      !UuidPresent(TextToUuid(transaction.transaction_uuid))) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_IDENTITY_INVALID",
+                  "statement-context acquisition requires canonical nonzero UUID identities");
+    return result;
+  }
+  MessageVectorSet messages;
+  Frame response;
+  if (!SendRequest(
+          endpoint_,
+          BaseHeader(kMessageAcquireStatementContextRequest,
+                     kSchemaAcquireStatementContextRequestV1,
+                     session_uuid,
+                     connection_uuid),
+          EncodeAcquireStatementContextPayloadV1(session, transaction),
+          &response,
+          &messages,
+          ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageAcquireStatementContextResult ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV1 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    if (!IsErrorFrame(response)) {
+      AddDiagnostic(
+          &messages,
+          "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
+          "The server did not return the statement-context V1 result schema.");
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeAcquireStatementContextPayloadV1(response.payload,
+                                               &result.context) ||
+      result.context.transaction.local_transaction_id !=
+          transaction.local_transaction_id ||
+      result.context.transaction.transaction_uuid !=
+          transaction.transaction_uuid) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+                  "The engine-issued statement context did not match the requested transaction.");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
+ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) const {
+  ServerStatementContextResult result;
+  if (!session.authenticated) {
+    AddDiagnostic(&result.messages,
+                  "PARSER_SERVER_IPC.AUTH.REQUIRED",
+                  "native statement-context acquisition requires an authenticated server session");
+    return result;
+  }
+  if (!session.transaction_routing_v2_negotiated ||
+      !session.relation_descriptor_projection_v3_negotiated ||
+      !transaction.present()) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.NATIVE_STATEMENT_CONTEXT_CAPABILITY_REQUIRED",
+        "native statement-context acquisition requires the negotiated exact-transaction and relation-descriptor capabilities");
+    return result;
+  }
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!UuidPresent(session_uuid) || !UuidPresent(connection_uuid) ||
+      !UuidPresent(TextToUuid(transaction.transaction_uuid))) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.STATEMENT_CONTEXT_IDENTITY_INVALID",
+        "native statement-context acquisition requires canonical nonzero UUID identities");
+    return result;
+  }
+
+  MessageVectorSet messages;
+  Frame response;
+  if (!SendRequest(
+          endpoint_,
+          BaseHeader(kMessageAcquireStatementContextRequest,
+                     kSchemaAcquireStatementContextRequestV2,
+                     session_uuid,
+                     connection_uuid),
+          EncodeAcquireStatementContextPayloadV2(session, transaction),
+          &response,
+          &messages,
+          ActiveSocketCacheKey())) {
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type !=
+          kMessageAcquireStatementContextResult ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV2 ||
+      IsErrorFrame(response)) {
+    AddFrameDiagnostics(response, &messages);
+    if (!IsErrorFrame(response)) {
+      AddDiagnostic(
+          &messages,
+          "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
+          "The server did not return the native statement-context V2 result schema.");
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeAcquireStatementContextPayloadV2(response.payload,
+                                               &result.context) ||
+      result.context.transaction.local_transaction_id !=
+          transaction.local_transaction_id ||
+      result.context.transaction.transaction_uuid !=
+          transaction.transaction_uuid) {
+    AddDiagnostic(
+        &result.messages,
+        "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_INVALID",
+        "The engine-issued native statement context was malformed or did not match the requested transaction.");
+    result.context = {};
+    return result;
+  }
+  result.accepted = true;
+  return result;
+}
+
 ServerExecutionResult SbpsClient::ExecuteSblr(const ParserSessionContext& session,
                                              std::string_view encoded_sblr_envelope,
                                              bool cursor_requested) const {
@@ -3872,6 +4292,74 @@ ServerExecutionResult SbpsClient::ExecuteSblrWithDataPacketRouted(
        ExecutionInvalidatesPublicResolutionCache(result.operation_id))) {
     ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
   }
+  return result;
+}
+
+ServerExecutionResult SbpsClient::ExecuteCanonicalSblrWithDataPacket(
+    const ParserSessionContext& session,
+    const ParserStatementContext& statement_context,
+    const ParserCanonicalSblrSubmission& submission,
+    const std::vector<std::uint8_t>& data_packet,
+    bool cursor_requested) const {
+  ServerExecutionResult result;
+  MessageVectorSet messages;
+  if (!RequireTransactionRoutingV2(session, &messages) ||
+      !statement_context.complete() || !submission.complete() ||
+      submission.statement_uuid != statement_context.statement_uuid) {
+    if (messages.diagnostics.empty()) {
+      AddDiagnostic(&messages,
+                    "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
+                    "Canonical execution requires the exact acquired statement and active transaction context.");
+    }
+    result.messages = std::move(messages);
+    return result;
+  }
+  const auto session_uuid = TextToUuid(session.session_uuid);
+  const auto connection_uuid = TextToUuid(session.connection_uuid);
+  if (!UuidPresent(session_uuid) || !UuidPresent(connection_uuid) ||
+      !UuidPresent(TextToUuid(statement_context.statement_uuid)) ||
+      !UuidPresent(TextToUuid(statement_context.transaction.transaction_uuid))) {
+    AddDiagnostic(&messages,
+                  "PARSER_SERVER_IPC.CANONICAL_STATEMENT_CONTEXT_INVALID",
+                  "Canonical execution identities must be canonical nonzero UUIDs.");
+    result.messages = std::move(messages);
+    return result;
+  }
+  Frame response;
+  if (!SendRequest(
+          endpoint_,
+          BaseHeader(kMessageExecuteSblr,
+                     kSchemaExecuteCanonicalSblrV1,
+                     session_uuid,
+                     connection_uuid),
+          EncodeCanonicalExecutePayloadV1(session,
+                                          statement_context,
+                                          submission,
+                                          data_packet,
+                                          cursor_requested),
+          &response,
+          &messages,
+          ActiveSocketCacheKey())) {
+    ProjectV2TransportOutcomeUnknown(messages, &result);
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (response.header.message_type != kMessageExecuteResult ||
+      response.header.schema_id != kSchemaExecuteResultV2) {
+    AddFrameDiagnostics(response, &messages);
+    AddDiagnostic(&messages,
+                  "PARSER_SERVER_IPC.EXECUTE_RESULT_SCHEMA_MISMATCH",
+                  "The server did not return the canonical-route execute result schema.");
+    ProjectV2ResponseOutcomeUnknown(
+        &messages, &result, "unexpected_canonical_response");
+    result.messages = std::move(messages);
+    return result;
+  }
+  if (!DecodeExecuteResultPayloadV2(response, &result, &messages)) {
+    ProjectV2ResponseOutcomeUnknown(
+        &messages, &result, "malformed_canonical_response");
+  }
+  result.messages = std::move(messages);
   return result;
 }
 

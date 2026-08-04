@@ -17,9 +17,11 @@
 #include "rendering/rendering.hpp"
 
 #include "scratchbird/engine/sblr/lowering.hpp"
+#include "scratchbird/engine/sblr_envelope.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -31,7 +33,10 @@
 #include <optional>
 #include <sstream>
 #include <utility>
+#include <unordered_map>
 #include <vector>
+
+#include <openssl/evp.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -54,10 +59,16 @@ namespace {
 
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
+using ipc::ParserCanonicalSblrSubmission;
+using ipc::ParserStatementContext;
+using ipc::ParserTransactionSelector;
 
 constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
 constexpr std::size_t kMaxSharedNameResolutionCacheEntries = 16384;
 constexpr std::size_t kMaxStableRelationNameResolutionCacheEntries = 4096;
+
+std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
+    std::string_view text);
 
 std::uint64_t CurrentUnixMillis() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -246,6 +257,911 @@ struct ResolvedObjectReferenceSeed {
   ObjectReference ref;
   PublicNameResolutionResult resolved;
 };
+
+std::string_view NativeAggregateSemantic(
+    NativeAggregateGroupingForm grouping,
+    NativeAggregateProjectionForm projection) {
+  if (grouping == NativeAggregateGroupingForm::kSimple) {
+    if (projection == NativeAggregateProjectionForm::kKeyCountSum) {
+      return "aggregate.grouped-int64-key-count-sum.v1";
+    }
+    if (projection == NativeAggregateProjectionForm::kKeysCountSum) {
+      return "aggregate.grouped-int64-keys-count-sum.v1";
+    }
+    return {};
+  }
+  const bool metadata =
+      projection == NativeAggregateProjectionForm::kKeysCountSumGrouping;
+  if (projection != NativeAggregateProjectionForm::kKeysCountSum &&
+      !metadata) {
+    return {};
+  }
+  switch (grouping) {
+    case NativeAggregateGroupingForm::kGroupingSets:
+      return metadata
+                 ? "aggregate.grouping-sets-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.grouping-sets-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kRollup:
+      return metadata
+                 ? "aggregate.rollup-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.rollup-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kCube:
+      return metadata
+                 ? "aggregate.cube-int64-keys-count-sum-grouping.v1"
+                 : "aggregate.cube-int64-keys-count-sum.v1";
+    case NativeAggregateGroupingForm::kNone:
+    case NativeAggregateGroupingForm::kSimple:
+      return {};
+  }
+  return {};
+}
+
+std::string NativeFilterSemantic(
+    const NativeRelationalAstDocument& ast,
+    const NativeRelationAstNode& relation) {
+  if (relation.predicate_expression_ids.size() != 1) return {};
+  std::unordered_map<std::uint32_t, const NativeExpressionAstNode*> expressions;
+  for (const auto& expression : ast.expressions) {
+    expressions.emplace(expression.expression_id, &expression);
+  }
+  const auto find = [&](std::uint32_t id) -> const NativeExpressionAstNode* {
+    const auto iterator = expressions.find(id);
+    return iterator == expressions.end() ? nullptr : iterator->second;
+  };
+  const NativeExpressionAstNode* root =
+      find(relation.predicate_expression_ids.front());
+  if (root == nullptr) return {};
+  unsigned not_count = 0;
+  while (root->expression_kind == NativeExpressionAstKind::kUnary &&
+         root->operator_name == "NOT" &&
+         root->child_expression_ids.size() == 1 && not_count < 2) {
+    root = find(root->child_expression_ids.front());
+    if (root == nullptr) return {};
+    ++not_count;
+  }
+
+  const auto comparison_function = [&](const NativeExpressionAstNode* value) {
+    if (value == nullptr ||
+        value->expression_kind != NativeExpressionAstKind::kBinary ||
+        value->operator_name != ">" ||
+        value->child_expression_ids.size() != 2) {
+      return std::string{};
+    }
+    const auto* function = find(value->child_expression_ids.front());
+    return function != nullptr &&
+                   function->expression_kind ==
+                       NativeExpressionAstKind::kFunctionCall
+               ? ToUpperAscii(function->operator_name)
+               : std::string{};
+  };
+
+  std::string core;
+  if (root->expression_kind == NativeExpressionAstKind::kBinary &&
+      (root->operator_name == "AND" || root->operator_name == "OR") &&
+      root->child_expression_ids.size() == 2) {
+    const auto left = comparison_function(find(root->child_expression_ids[0]));
+    const auto right = comparison_function(find(root->child_expression_ids[1]));
+    if (left == "COUNT" && right == "SUM") {
+      core = "count-sum-" +
+             std::string(root->operator_name == "OR" ? "or" : "and") +
+             "-gt-int64-literals";
+    } else if (left == "SUM" && right == "COUNT" &&
+               root->operator_name == "OR" && not_count == 2) {
+      core = "sum-count-or-gt-int64-literals";
+    } else {
+      return {};
+    }
+  } else {
+    const auto function = comparison_function(root);
+    if (function == "COUNT") {
+      core = "count-gt-int64-literal";
+    } else if (function == "SUM") {
+      core = "sum-gt-int64-literal";
+    } else {
+      return {};
+    }
+  }
+  return "filter.having-" +
+         std::string(not_count == 2 ? "not-not-" :
+                     not_count == 1 ? "not-" : "") +
+         core + ".v1";
+}
+
+std::optional<NativeRelationalBindingContext>
+BuildEngineProjectedNativeBindingContext(
+    const NativeRelationalAstDocument& ast,
+    const ParserStatementContext& statement_context,
+    const std::vector<ResolvedObjectReferenceSeed>& resolved_object_reference_seeds,
+    MessageVectorSet* messages) {
+  const auto fail = [&](std::string detail)
+      -> std::optional<NativeRelationalBindingContext> {
+    messages->diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.NATIVE_BINDING.CONTEXT_INVALID", "ERROR",
+        "The engine-issued native binding cohort cannot cover this typed AST.",
+        "sbp_sbsql.wire", {{"detail", std::move(detail)}}));
+    return std::nullopt;
+  };
+  if (!ast.accepted() || !statement_context.complete() ||
+      statement_context.bound_ast_uuid.empty() ||
+      statement_context.count_function_uuid.empty() ||
+      statement_context.sum_function_uuid.empty() ||
+      statement_context.descriptor_profiles.empty()) {
+    return fail("incomplete_statement_context");
+  }
+  NativeRelationalBindingContext context;
+  context.bound_ast_uuid = statement_context.bound_ast_uuid;
+  context.catalog_epoch_uuid = statement_context.catalog_epoch_uuid;
+  context.security_context_uuid = statement_context.security_context_uuid;
+  context.statement_uuid = statement_context.statement_uuid;
+  context.owning_transaction_uuid =
+      statement_context.transaction.transaction_uuid;
+  context.statement_snapshot_uuid =
+      statement_context.statement_snapshot_uuid;
+  context.statement_metadata_snapshot_uuid =
+      statement_context.statement_metadata_snapshot_uuid;
+  context.local_transaction_id =
+      statement_context.transaction.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      statement_context.snapshot_visible_through_local_transaction_id;
+  context.engine_statement_authority = {
+      context.statement_uuid,
+      context.owning_transaction_uuid,
+      context.statement_snapshot_uuid,
+      context.statement_metadata_snapshot_uuid,
+      context.catalog_epoch_uuid,
+      context.local_transaction_id,
+      context.snapshot_visible_through_local_transaction_id};
+
+  if (!ast.catalog_relation_sources.empty()) {
+    if (ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+        ast.root_relation_id == 0 ||
+        resolved_object_reference_seeds.size() != 1) {
+      return fail("catalog_source_projection_cardinality_invalid");
+    }
+    const auto& source = ast.catalog_relation_sources.front();
+    const auto& relation = ast.relations.front();
+    const auto& resolved = resolved_object_reference_seeds.front().resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const bool relation_object_class =
+        resolved.object_class == "relation" || resolved.object_class == "table" ||
+        resolved.object_class == "view" ||
+        resolved.object_class == "materialized_view" ||
+        resolved.object_class == "external_table" ||
+        resolved.object_class == "foreign_table";
+    if (relation.relation_id != ast.root_relation_id ||
+        relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
+        relation.relation_source_ids !=
+            std::vector<std::uint32_t>{source.source_id} ||
+        !resolved.resolved || !projection.present || !relation_object_class ||
+        resolved.object_uuid.empty() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        projection.columns.empty()) {
+      return fail("catalog_source_projection_authority_incomplete");
+    }
+
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = source.source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = resolved.object_class;
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+    catalog_relation.columns.reserve(projection.columns.size());
+    context.descriptors.reserve(projection.columns.size());
+    context.expressions.reserve(projection.columns.size());
+    context.outputs.reserve(projection.columns.size());
+    // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
+    // type identities are distinct engine-owned values. Decode only the exact
+    // persisted descriptor fields transported by the selected-transaction
+    // relation projection; never map canonical type names or use descriptor
+    // UUIDs as type fallbacks.
+    struct ExactProjectedDescriptorFields {
+      std::string type_uuid;
+      std::optional<std::string> collation_uuid;
+      std::optional<std::string> timezone_profile_id;
+      bool nullable{false};
+    };
+    const auto parse_exact_descriptor_fields =
+        [](std::string_view encoded,
+           std::string_view projected_collation_uuid,
+           bool projected_nullable)
+        -> std::optional<ExactProjectedDescriptorFields> {
+      ExactProjectedDescriptorFields fields;
+      std::optional<bool> canonical_nullable;
+      std::optional<bool> storage_nullable;
+      bool type_seen = false;
+      bool collation_seen = false;
+      bool timezone_seen = false;
+      std::size_t offset = 0;
+      while (offset <= encoded.size()) {
+        const auto delimiter = encoded.find(';', offset);
+        const auto end = delimiter == std::string_view::npos
+                             ? encoded.size()
+                             : delimiter;
+        const auto field = encoded.substr(offset, end - offset);
+        const auto assign_text = [&](std::string_view prefix,
+                                     bool* seen,
+                                     std::string* value) {
+          if (!field.starts_with(prefix)) return true;
+          if (*seen || field.size() == prefix.size()) return false;
+          *seen = true;
+          value->assign(field.substr(prefix.size()));
+          return true;
+        };
+        if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
+          return std::nullopt;
+        }
+        std::string collation_uuid;
+        if (field.starts_with("collation_uuid=")) {
+          if (!assign_text("collation_uuid=", &collation_seen,
+                           &collation_uuid)) {
+            return std::nullopt;
+          }
+          fields.collation_uuid = std::move(collation_uuid);
+        }
+        std::string timezone_profile_id;
+        if (field.starts_with("timezone_profile_id=")) {
+          if (!assign_text("timezone_profile_id=", &timezone_seen,
+                           &timezone_profile_id)) {
+            return std::nullopt;
+          }
+          fields.timezone_profile_id = std::move(timezone_profile_id);
+        }
+        if (field.starts_with("nullability=")) {
+          if (canonical_nullable.has_value()) return std::nullopt;
+          const auto value = field.substr(std::string_view("nullability=").size());
+          if (value == "nullable") {
+            canonical_nullable = true;
+          } else if (value == "non_null") {
+            canonical_nullable = false;
+          } else {
+            return std::nullopt;
+          }
+        } else if (field.starts_with("nullable=")) {
+          if (storage_nullable.has_value()) return std::nullopt;
+          const auto value = field.substr(std::string_view("nullable=").size());
+          if (value == "true") {
+            storage_nullable = true;
+          } else if (value == "false") {
+            storage_nullable = false;
+          } else {
+            return std::nullopt;
+          }
+        }
+        if (delimiter == std::string_view::npos) break;
+        offset = delimiter + 1;
+      }
+      if (!type_seen || !CanonicalUuidBytes(fields.type_uuid).has_value() ||
+          (!canonical_nullable.has_value() && !storage_nullable.has_value()) ||
+          (canonical_nullable.has_value() && storage_nullable.has_value() &&
+           *canonical_nullable != *storage_nullable)) {
+        return std::nullopt;
+      }
+      fields.nullable = canonical_nullable.has_value()
+                            ? *canonical_nullable
+                            : *storage_nullable;
+      if (fields.nullable != projected_nullable ||
+          fields.collation_uuid.has_value() !=
+              !projected_collation_uuid.empty() ||
+          (fields.collation_uuid.has_value() &&
+           (*fields.collation_uuid != projected_collation_uuid ||
+            !CanonicalUuidBytes(*fields.collation_uuid).has_value()))) {
+        return std::nullopt;
+      }
+      return fields;
+    };
+    for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
+      const auto& column = projection.columns[ordinal];
+      const auto expected_ordinal = static_cast<std::uint32_t>(ordinal);
+      const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
+      if (column.ordinal != expected_ordinal || column.column_uuid.empty() ||
+          column.canonical_name_key.empty() ||
+          !CanonicalUuidBytes(column.type_descriptor_uuid).has_value()) {
+        return fail("catalog_source_column_projection_incomplete");
+      }
+      const auto descriptor_fields = parse_exact_descriptor_fields(
+          column.encoded_type_descriptor, column.collation_uuid,
+          column.nullable);
+      if (!descriptor_fields.has_value()) {
+        return fail("catalog_source_column_descriptor_carrier_invalid");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id = binding_id;
+      descriptor.descriptor_uuid = column.type_descriptor_uuid;
+      descriptor.type_uuid = descriptor_fields->type_uuid;
+      descriptor.nullability = descriptor_fields->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      descriptor.collation_uuid = descriptor_fields->collation_uuid;
+      descriptor.timezone_profile_id =
+          descriptor_fields->timezone_profile_id;
+      if (column.character_length != 0) {
+        descriptor.width_precision_scale.width = column.character_length;
+      }
+      context.descriptors.push_back(std::move(descriptor));
+      context.expressions.push_back(
+          {binding_id, binding_id, std::nullopt, column.column_uuid});
+      context.outputs.push_back(
+          {binding_id, binding_id, column.canonical_name_key, binding_id, true,
+           expected_ordinal, relation.relation_id});
+      catalog_relation.columns.push_back(
+          {expected_ordinal, column.column_uuid, binding_id,
+           column.canonical_name_key});
+    }
+    context.catalog_relations.push_back(std::move(catalog_relation));
+    return context;
+  }
+
+  std::array<std::uint16_t, 7> next_profile_slot{};
+  const auto allocate_descriptor =
+      [&](std::uint8_t kind) -> std::optional<std::uint32_t> {
+    const auto slot = next_profile_slot[kind]++;
+    const auto profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [&](const auto& candidate) {
+          return candidate.profile_kind == kind && candidate.slot == slot;
+        });
+    if (profile == statement_context.descriptor_profiles.end()) {
+      return std::nullopt;
+    }
+    NativeDescriptorBindingInput descriptor;
+    descriptor.descriptor_id =
+        static_cast<std::uint32_t>(context.descriptors.size() + 1);
+    descriptor.descriptor_uuid = profile->descriptor_uuid;
+    descriptor.type_uuid = profile->type_uuid;
+    descriptor.nullability = profile->nullable
+                                 ? BoundNullability::kNullable
+                                 : BoundNullability::kNonNull;
+    if (!profile->collation_uuid.empty()) {
+      descriptor.collation_uuid = profile->collation_uuid;
+    }
+    if (profile->width != 0) descriptor.width_precision_scale.width = profile->width;
+    if (profile->precision != 0) {
+      descriptor.width_precision_scale.precision = profile->precision;
+      descriptor.width_precision_scale.scale = profile->scale;
+    }
+    context.descriptors.push_back(std::move(descriptor));
+    return context.descriptors.back().descriptor_id;
+  };
+
+  const auto aggregate = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kAggregate;
+      });
+  const bool aggregate_profile = aggregate != ast.relations.end();
+  std::unordered_map<std::uint32_t, std::uint32_t> descriptor_by_expression;
+  std::vector<std::uint32_t> values_descriptor_by_ordinal;
+  if (ast.values_rows.empty()) return fail("values_rows_missing");
+  const auto values_arity = ast.values_rows.front().expression_ids.size();
+  values_descriptor_by_ordinal.reserve(values_arity);
+  for (std::size_t ordinal = 0; ordinal < values_arity; ++ordinal) {
+    std::uint8_t kind = 2;  // numeric nullable for aggregate keys/arguments
+    if (!aggregate_profile) {
+      const auto expression_id = ast.values_rows.front().expression_ids[ordinal];
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == expression_id;
+          });
+      if (expression != ast.expressions.end() &&
+          expression->literal_kind == NativeLiteralAstKind::kString) {
+        kind = 4;
+      } else if (expression != ast.expressions.end() &&
+                 expression->literal_kind == NativeLiteralAstKind::kBoolean) {
+        kind = 6;
+      } else {
+        kind = 2;
+      }
+    }
+    const auto descriptor = allocate_descriptor(kind);
+    if (!descriptor.has_value()) return fail("values_descriptor_profile_exhausted");
+    values_descriptor_by_ordinal.push_back(*descriptor);
+  }
+  for (const auto& row : ast.values_rows) {
+    if (row.expression_ids.size() != values_descriptor_by_ordinal.size()) {
+      return fail("values_arity_mismatch");
+    }
+    for (std::size_t ordinal = 0; ordinal < row.expression_ids.size(); ++ordinal) {
+      descriptor_by_expression[row.expression_ids[ordinal]] =
+          values_descriptor_by_ordinal[ordinal];
+    }
+  }
+
+  std::optional<std::uint32_t> count_descriptor;
+  std::optional<std::uint32_t> sum_descriptor;
+  std::optional<std::uint32_t> threshold_descriptor;
+  std::optional<std::uint32_t> boolean_descriptor;
+  std::vector<std::uint32_t> grouping_metadata_descriptors;
+  const auto ensure = [&](std::optional<std::uint32_t>* value,
+                          std::uint8_t kind) -> std::optional<std::uint32_t> {
+    if (!value->has_value()) *value = allocate_descriptor(kind);
+    return *value;
+  };
+  const auto values_column_for_name = [&](std::string_view name) -> std::size_t {
+    if (name == "key_a") return 0;
+    if (name == "key_b" && values_arity > 1) return 1;
+    if (name == "amount") return values_arity - 1;
+    return 0;
+  };
+
+  for (const auto& expression : ast.expressions) {
+    auto descriptor = descriptor_by_expression.find(expression.expression_id);
+    std::optional<std::string> function_uuid;
+    std::optional<std::string> bound_name_uuid;
+    if (descriptor == descriptor_by_expression.end()) {
+      std::optional<std::uint32_t> selected;
+      if (expression.expression_kind == NativeExpressionAstKind::kIdentifier) {
+        const auto ordinal = values_column_for_name(expression.spelling);
+        if (ordinal >= values_descriptor_by_ordinal.size()) {
+          return fail("identifier_column_out_of_range");
+        }
+        selected = values_descriptor_by_ordinal[ordinal];
+        bound_name_uuid =
+            context.descriptors[*selected - 1].descriptor_uuid;
+      } else if (expression.expression_kind ==
+                 NativeExpressionAstKind::kFunctionCall) {
+        const auto function = ToUpperAscii(expression.operator_name);
+        if (function == "COUNT") {
+          selected = ensure(&count_descriptor, 1);
+          function_uuid = statement_context.count_function_uuid;
+        } else if (function == "SUM") {
+          selected = ensure(&sum_descriptor, 2);
+          function_uuid = statement_context.sum_function_uuid;
+        }
+      } else if ((expression.expression_kind == NativeExpressionAstKind::kUnary &&
+                  expression.operator_name == "grouping") ||
+                 (expression.expression_kind == NativeExpressionAstKind::kBinary &&
+                  expression.operator_name == "grouping_id")) {
+        const auto metadata = allocate_descriptor(1);
+        if (metadata.has_value()) grouping_metadata_descriptors.push_back(*metadata);
+        selected = metadata;
+      } else if (expression.expression_kind == NativeExpressionAstKind::kLiteral) {
+        selected = ensure(&threshold_descriptor, 1);
+      } else if (expression.expression_kind == NativeExpressionAstKind::kUnary ||
+                 expression.expression_kind == NativeExpressionAstKind::kBinary) {
+        selected = ensure(&boolean_descriptor, 6);
+      } else if (expression.expression_kind ==
+                     NativeExpressionAstKind::kParenthesized &&
+                 expression.child_expression_ids.size() == 1) {
+        const auto child = descriptor_by_expression.find(
+            expression.child_expression_ids.front());
+        if (child != descriptor_by_expression.end()) selected = child->second;
+      }
+      if (!selected.has_value()) return fail("expression_profile_unavailable");
+      descriptor_by_expression[expression.expression_id] = *selected;
+      descriptor = descriptor_by_expression.find(expression.expression_id);
+    } else if (expression.expression_kind == NativeExpressionAstKind::kFunctionCall) {
+      const auto function = ToUpperAscii(expression.operator_name);
+      if (function == "COUNT") function_uuid = statement_context.count_function_uuid;
+      if (function == "SUM") function_uuid = statement_context.sum_function_uuid;
+    }
+    context.expressions.push_back(
+        {expression.expression_id, descriptor->second,
+         std::move(function_uuid), std::move(bound_name_uuid)});
+  }
+
+  std::uint32_t output_id = 1;
+  for (const auto& relation : ast.relations) {
+    static constexpr std::array<std::string_view, 3> kValuesNames{
+        "key_a", "key_b", "amount"};
+    static constexpr std::array<std::string_view, 7> kAggregateNames{
+        "key_a", "key_b", "row_count", "total_amount",
+        "grouping_a", "grouping_b", "grouping_id"};
+    const bool one_key =
+        relation.aggregate_projection_form ==
+        NativeAggregateProjectionForm::kKeyCountSum;
+    for (std::size_t ordinal = 0;
+         ordinal < relation.output_expression_ids.size(); ++ordinal) {
+      const auto expression_id = relation.output_expression_ids[ordinal];
+      const auto descriptor = descriptor_by_expression.find(expression_id);
+      if (descriptor == descriptor_by_expression.end()) {
+        return fail("output_expression_descriptor_missing");
+      }
+      std::string name;
+      if (relation.relation_kind == NativeRelationAstKind::kValues) {
+        name = one_key || values_arity == 2
+                   ? (ordinal == 0 ? "key_a" : "amount")
+                   : (ordinal < kValuesNames.size()
+                          ? std::string(kValuesNames[ordinal])
+                          : "column_" + std::to_string(ordinal + 1));
+      } else if (one_key) {
+        static constexpr std::array<std::string_view, 3> kNames{
+            "key_a", "row_count", "total_amount"};
+        name = std::string(kNames[ordinal]);
+      } else {
+        name = ordinal < kAggregateNames.size()
+                   ? std::string(kAggregateNames[ordinal])
+                   : "column_" + std::to_string(ordinal + 1);
+      }
+      context.outputs.push_back(
+          {output_id++, expression_id, std::move(name), descriptor->second,
+           true, static_cast<std::uint32_t>(ordinal), relation.relation_id});
+    }
+    if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      const auto semantic = NativeAggregateSemantic(
+          relation.aggregate_grouping_form,
+          relation.aggregate_projection_form);
+      if (semantic.empty()) return fail("aggregate_semantic_unavailable");
+      context.relations.push_back(
+          {relation.relation_id, std::string(semantic)});
+    } else if (relation.relation_kind == NativeRelationAstKind::kFilter) {
+      const auto semantic = NativeFilterSemantic(ast, relation);
+      if (semantic.empty()) return fail("filter_semantic_unavailable");
+      context.relations.push_back({relation.relation_id, semantic});
+    }
+  }
+  return context;
+}
+
+using CanonicalBytes = std::vector<std::uint8_t>;
+
+void CanonicalAppendU16(CanonicalBytes* out, std::uint16_t value) {
+  out->push_back(static_cast<std::uint8_t>(value));
+  out->push_back(static_cast<std::uint8_t>(value >> 8));
+}
+
+void CanonicalAppendU32(CanonicalBytes* out, std::uint32_t value) {
+  for (unsigned shift = 0; shift != 32; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>(value >> shift));
+  }
+}
+
+void CanonicalAppendU64(CanonicalBytes* out, std::uint64_t value) {
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>(value >> shift));
+  }
+}
+
+void CanonicalStoreU16(CanonicalBytes* out,
+                       std::size_t offset,
+                       std::uint16_t value) {
+  (*out)[offset] = static_cast<std::uint8_t>(value);
+  (*out)[offset + 1] = static_cast<std::uint8_t>(value >> 8);
+}
+
+void CanonicalStoreU32(CanonicalBytes* out,
+                       std::size_t offset,
+                       std::uint32_t value) {
+  for (unsigned shift = 0; shift != 32; shift += 8) {
+    (*out)[offset + shift / 8] =
+        static_cast<std::uint8_t>(value >> shift);
+  }
+}
+
+void CanonicalStoreU64(CanonicalBytes* out,
+                       std::size_t offset,
+                       std::uint64_t value) {
+  for (unsigned shift = 0; shift != 64; shift += 8) {
+    (*out)[offset + shift / 8] =
+        static_cast<std::uint8_t>(value >> shift);
+  }
+}
+
+void CanonicalAppendText(CanonicalBytes* out, std::string_view value) {
+  CanonicalAppendU32(out, static_cast<std::uint32_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
+    std::string_view text) {
+  if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
+      text[18] != '-' || text[23] != '-') {
+    return std::nullopt;
+  }
+  const auto nibble = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    return -1;
+  };
+  std::array<std::uint8_t, 16> bytes{};
+  std::size_t output = 0;
+  for (std::size_t input = 0; input < text.size();) {
+    if (text[input] == '-') {
+      ++input;
+      continue;
+    }
+    if (input + 1 >= text.size() || output >= bytes.size()) {
+      return std::nullopt;
+    }
+    const auto high = nibble(text[input]);
+    const auto low = nibble(text[input + 1]);
+    if (high < 0 || low < 0) return std::nullopt;
+    bytes[output++] = static_cast<std::uint8_t>((high << 4) | low);
+    input += 2;
+  }
+  if (output != bytes.size() ||
+      std::ranges::all_of(bytes, [](std::uint8_t byte) { return byte == 0; })) {
+    return std::nullopt;
+  }
+  return bytes;
+}
+
+std::optional<std::array<std::uint8_t, 32>> CanonicalSha256(
+    const CanonicalBytes& bytes) {
+  std::array<std::uint8_t, 32> digest{};
+  unsigned digest_size = 0;
+  auto* context = EVP_MD_CTX_new();
+  if (context == nullptr ||
+      EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1 ||
+      EVP_DigestUpdate(context, bytes.data(), bytes.size()) != 1 ||
+      EVP_DigestFinal_ex(context, digest.data(), &digest_size) != 1 ||
+      digest_size != digest.size()) {
+    if (context != nullptr) EVP_MD_CTX_free(context);
+    return std::nullopt;
+  }
+  EVP_MD_CTX_free(context);
+  return digest;
+}
+
+std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session) {
+  constexpr std::uint16_t kSectionCount = 9;
+  constexpr std::uint16_t kHeaderSize = 64;
+  constexpr std::uint32_t kSectionTableSize = 216;
+  constexpr std::uint32_t kPayloadOffset = 280;
+  constexpr std::array<std::uint16_t, kSectionCount> kTags{
+      1, 2, 3, 4, 5, 6, 7, 8, 9};
+  const auto parser_uuid =
+      CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto registry_uuid =
+      CanonicalUuidBytes(statement_context.catalog_epoch_uuid);
+  if (lowered.operation_id != "query.execute" ||
+      lowered.sblr_opcode != "SBLR_QUERY_EXECUTE" ||
+      lowered.result_shape_key != "query_execute_result" ||
+      !parser_uuid.has_value() || !registry_uuid.has_value() ||
+      statement_context.descriptor_profiles.empty()) {
+    return std::nullopt;
+  }
+  const auto value_type_uuid = CanonicalUuidBytes(
+      statement_context.descriptor_profiles.front().type_uuid);
+  if (!value_type_uuid.has_value()) return std::nullopt;
+
+  std::array<CanonicalBytes, kSectionCount> sections;
+  CanonicalAppendText(&sections[0], lowered.operation_id);
+  CanonicalAppendText(&sections[1], lowered.sblr_opcode);
+  sections[2].insert(sections[2].end(), parser_uuid->begin(),
+                     parser_uuid->end());
+  CanonicalAppendU32(&sections[2],
+                     session.admitted_parser_package_version_major);
+  CanonicalAppendU32(&sections[2],
+                     session.admitted_parser_package_version_minor);
+  CanonicalAppendU32(&sections[2],
+                     session.admitted_parser_package_version_patch);
+  sections[3].insert(sections[3].end(), registry_uuid->begin(),
+                     registry_uuid->end());
+  CanonicalAppendU32(&sections[4],
+                     static_cast<std::uint32_t>(lowered.operands.size()));
+  std::uint32_t ordinal = 1;
+  for (const auto& operand : lowered.operands) {
+    CanonicalAppendU32(&sections[4], ordinal++);
+    CanonicalAppendText(&sections[4], operand.type);
+    const bool numeric_name = !operand.name.empty() &&
+        std::ranges::all_of(operand.name, [](unsigned char ch) {
+          return ch >= '0' && ch <= '9';
+        });
+    const std::string encoded_name =
+        numeric_name ? "slot_" + operand.name : operand.name;
+    CanonicalAppendText(&sections[4], encoded_name);
+    CanonicalAppendU16(&sections[4], 5);  // literal_typed
+    CanonicalAppendU16(&sections[4], 0);
+    CanonicalAppendU64(&sections[4], 24 + operand.value.size());
+    sections[4].insert(sections[4].end(), value_type_uuid->begin(),
+                       value_type_uuid->end());
+    CanonicalAppendU64(&sections[4], operand.value.size());
+    sections[4].insert(sections[4].end(), operand.value.begin(),
+                       operand.value.end());
+  }
+  CanonicalAppendText(&sections[5], lowered.result_shape_key);
+  CanonicalAppendText(&sections[6], lowered.diagnostic_shape_key);
+  CanonicalAppendText(&sections[7],
+                      lowered.trace_key.empty() ? "query.execute.native"
+                                                : lowered.trace_key);
+
+  CanonicalBytes provenance;
+  constexpr char kDomain[] =
+      "ScratchBird.SBOP.ProducerProvenance.V1\0";
+  provenance.insert(provenance.end(), std::begin(kDomain),
+                    std::end(kDomain) - 1);
+  provenance.insert(provenance.end(), sections[2].begin(), sections[2].end());
+  provenance.insert(provenance.end(), sections[3].begin(), sections[3].end());
+  CanonicalAppendU16(&provenance, 0x1207);
+  CanonicalAppendU16(&provenance, 1);
+  CanonicalAppendU16(&provenance, 0);
+  provenance.insert(provenance.end(), sections[0].begin(), sections[0].end());
+  provenance.insert(provenance.end(), sections[1].begin(), sections[1].end());
+  const auto digest = CanonicalSha256(provenance);
+  if (!digest.has_value()) return std::nullopt;
+  sections[8].assign(digest->begin(), digest->end());
+
+  std::uint64_t payload_size = 0;
+  for (const auto& section : sections) payload_size += section.size();
+  const std::uint64_t total_size = kPayloadOffset + payload_size + 16;
+  if (total_size > scratchbird::engine::kSblrMaxPayloadBytes) {
+    return std::nullopt;
+  }
+  CanonicalBytes encoded(static_cast<std::size_t>(total_size), 0);
+  CanonicalStoreU32(&encoded, 0, 0x504f4253u);
+  CanonicalStoreU16(&encoded, 4, 1);
+  CanonicalStoreU16(&encoded, 6, 0);
+  CanonicalStoreU16(&encoded, 8, kHeaderSize);
+  CanonicalStoreU16(&encoded, 10, kSectionCount);
+  CanonicalStoreU16(&encoded, 16, 0x1207);
+  CanonicalStoreU16(&encoded, 18, 1);
+  CanonicalStoreU16(&encoded, 20, 0);
+  CanonicalStoreU32(&encoded, 24, kHeaderSize);
+  CanonicalStoreU32(&encoded, 28, kSectionTableSize);
+  CanonicalStoreU32(&encoded, 32, kPayloadOffset);
+  CanonicalStoreU64(&encoded, 40, payload_size);
+  CanonicalStoreU64(&encoded, 48, total_size);
+  std::uint64_t section_offset = kPayloadOffset;
+  for (std::size_t index = 0; index < sections.size(); ++index) {
+    const auto table = kHeaderSize + index * 24;
+    CanonicalStoreU16(&encoded, table, kTags[index]);
+    CanonicalStoreU16(&encoded, table + 2, 1);
+    CanonicalStoreU32(&encoded, table + 4, 1);
+    CanonicalStoreU64(&encoded, table + 8, section_offset);
+    CanonicalStoreU64(&encoded, table + 16, sections[index].size());
+    std::copy(sections[index].begin(), sections[index].end(),
+              encoded.begin() + static_cast<std::ptrdiff_t>(section_offset));
+    section_offset += sections[index].size();
+  }
+  const auto trailer = encoded.size() - 16;
+  CanonicalStoreU32(&encoded, trailer, 0x544f4253u);
+  CanonicalStoreU32(
+      &encoded, trailer + 4,
+      scratchbird::engine::SblrCrc32c(encoded.data(), trailer));
+  CanonicalStoreU64(&encoded, trailer + 8, total_size);
+  return encoded;
+}
+
+CanonicalBytes CanonicalU16(std::uint16_t value) {
+  CanonicalBytes out;
+  CanonicalAppendU16(&out, value);
+  return out;
+}
+
+CanonicalBytes CanonicalU32(std::uint32_t value) {
+  CanonicalBytes out;
+  CanonicalAppendU32(&out, value);
+  return out;
+}
+
+CanonicalBytes CanonicalU64(std::uint64_t value) {
+  CanonicalBytes out;
+  CanonicalAppendU64(&out, value);
+  return out;
+}
+
+CanonicalBytes CanonicalOptionalUuid(
+    const std::array<std::uint8_t, 16>& uuid) {
+  CanonicalBytes out{1};
+  out.insert(out.end(), uuid.begin(), uuid.end());
+  return out;
+}
+
+CanonicalBytes CanonicalStruct(std::uint32_t format,
+                               std::uint8_t payload) {
+  CanonicalBytes out;
+  CanonicalAppendU32(&out, format);
+  CanonicalAppendU16(&out, 1);
+  CanonicalAppendU16(&out, 0);
+  CanonicalAppendU64(&out, 1);
+  out.push_back(payload);
+  return out;
+}
+
+std::optional<ParserCanonicalSblrSubmission> BuildCanonicalNativeSubmission(
+    const SblrEnvelope& lowered,
+    const ParserStatementContext& statement_context,
+    const SessionContext& session) {
+  const auto operation = EncodeNativeQueryOperationBinary(
+      lowered, statement_context, session);
+  const auto database_uuid = CanonicalUuidBytes(session.database_uuid);
+  const auto dialect_uuid =
+      CanonicalUuidBytes(session.admitted_dialect_profile_uuid);
+  const auto parser_uuid =
+      CanonicalUuidBytes(session.admitted_parser_package_uuid);
+  const auto registry_uuid =
+      CanonicalUuidBytes(statement_context.catalog_epoch_uuid);
+  const auto statement_uuid =
+      CanonicalUuidBytes(statement_context.statement_uuid);
+  const auto user_uuid = CanonicalUuidBytes(session.authenticated_user_uuid);
+  if (!operation.has_value() || !database_uuid.has_value() ||
+      !dialect_uuid.has_value() || !parser_uuid.has_value() ||
+      !registry_uuid.has_value() || !statement_uuid.has_value() ||
+      !user_uuid.has_value()) {
+    return std::nullopt;
+  }
+
+  scratchbird::engine::SblrCanonicalContainer container;
+  std::copy(database_uuid->begin(), database_uuid->end(),
+            container.canonical_anchor.begin());
+  std::copy(dialect_uuid->begin(), dialect_uuid->end(),
+            container.canonical_anchor.begin() + 16);
+  std::copy(parser_uuid->begin(), parser_uuid->end(),
+            container.canonical_anchor.begin() + 32);
+  const auto anchor_u16 = [&](std::size_t offset, std::uint16_t value) {
+    container.canonical_anchor[offset] = static_cast<std::uint8_t>(value);
+    container.canonical_anchor[offset + 1] =
+        static_cast<std::uint8_t>(value >> 8);
+  };
+  const auto anchor_u32 = [&](std::size_t offset, std::uint32_t value) {
+    for (unsigned shift = 0; shift != 32; shift += 8) {
+      container.canonical_anchor[offset + shift / 8] =
+          static_cast<std::uint8_t>(value >> shift);
+    }
+  };
+  const auto anchor_u64 = [&](std::size_t offset, std::uint64_t value) {
+    for (unsigned shift = 0; shift != 64; shift += 8) {
+      container.canonical_anchor[offset + shift / 8] =
+          static_cast<std::uint8_t>(value >> shift);
+    }
+  };
+  anchor_u32(48, 1);
+  anchor_u64(52, 1);
+  anchor_u64(60, 1);
+  anchor_u64(68, 1);
+  std::copy(registry_uuid->begin(), registry_uuid->end(),
+            container.canonical_anchor.begin() + 76);
+  anchor_u64(92, 1);
+  anchor_u16(100, 2);
+  std::copy(statement_uuid->begin(), statement_uuid->end(),
+            container.canonical_anchor.begin() + 116);
+  container.operation_payload = *operation;
+  auto container_bytes = scratchbird::engine::EncodeSblrContainer(container);
+
+  scratchbird::engine::SblrExecutionEnvelopeV1 ingress;
+  auto& fields = ingress.fields;
+  fields[0].assign(statement_uuid->begin(), statement_uuid->end());
+  fields[1] = CanonicalU16(1);
+  fields[2] = CanonicalU16(0);
+  fields[3] = CanonicalU32(0x00010001);
+  fields[4] = CanonicalU16(2);
+  fields[5] = {0};
+  fields[6] = {1};
+  CanonicalAppendU64(&fields[6], operation->size());
+  fields[6].insert(fields[6].end(), operation->begin(), operation->end());
+  fields[7] = {1};
+  CanonicalAppendU32(
+      &fields[7],
+      scratchbird::engine::SblrCrc32c(operation->data(), operation->size()));
+  fields[8] = CanonicalU64(operation->size());
+  fields[9] = CanonicalU16(1);
+  fields[10] = CanonicalOptionalUuid(*dialect_uuid);
+  fields[11] = CanonicalOptionalUuid(*user_uuid);
+  fields[12] = CanonicalStruct(0x1001, 1);
+  fields[13] = CanonicalStruct(0x1002, 2);
+  fields[14] = {0};
+  fields[15] = CanonicalU64(1);
+  fields[16] = CanonicalU32(0);
+  fields[17] = CanonicalU32(0);
+  fields[18] = CanonicalU32(0);
+  fields[19] = {0};
+  fields[20] = CanonicalU32(0);
+  fields[21] = CanonicalStruct(0x1005, 5);
+  fields[22] = {0};
+  fields[23] = {0};
+  fields[24] = {0};
+  fields[25] = CanonicalU16(0);
+  fields[26] = {0};
+  fields[27] = {0};
+  auto ingress_bytes =
+      scratchbird::engine::EncodeSblrExecutionEnvelopeV1(ingress);
+  if (container_bytes.empty() || ingress_bytes.empty()) return std::nullopt;
+
+  ParserCanonicalSblrSubmission submission;
+  submission.statement_uuid = statement_context.statement_uuid;
+  submission.canonical_container_bytes = std::move(container_bytes);
+  submission.canonical_execution_envelope_bytes = std::move(ingress_bytes);
+  return submission;
+}
 
 bool IsWord(const Token& token, std::string_view word) {
   return !token.quoted && ToUpperAscii(token.text) == ToUpperAscii(word);
@@ -583,7 +1499,6 @@ PipelineResult PipelineResultFromCacheEntry(const CacheEntry& entry) {
 
 bool CanReuseFrontdoorCacheForSubmit(const PipelineResult& result) {
   return result.operation_family == "sblr.dml.operation.v3" ||
-         result.operation_family == "sblr.query.relational.v3" ||
          result.operation_family == "sblr.transaction.control.v3";
 }
 
@@ -3914,6 +4829,10 @@ SbsqlTestWireSession::SbsqlTestWireSession(ParserConfig config, ParserMetrics* m
     : config_(std::move(config)), metrics_(metrics), cache_(cache) {
   if (config_.embedded_engine_direct) {
     embedded_client_ = std::make_unique<EmbeddedEngineClient>(config_);
+  } else if (!config_.server_endpoint.empty()) {
+    config_.require_transaction_routing_v2 = true;
+    config_.require_relation_descriptor_projection_v3 = true;
+    server_client_ = std::make_unique<SbpsClient>(config_.server_endpoint);
   }
 }
 
@@ -3937,8 +4856,7 @@ ServerExecutionResult SbsqlTestWireSession::ExecuteSblrOnRouteWithDataPacket(
     return embedded_client_->ExecuteSblrWithDataPacket(
         session_, encoded_sblr_envelope, data_packet, cursor_requested);
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.ExecuteSblrWithDataPacket(
+  return server_client_->ExecuteSblrWithDataPacket(
       session_, encoded_sblr_envelope, data_packet, cursor_requested);
 }
 
@@ -3949,24 +4867,22 @@ ServerFetchResult SbsqlTestWireSession::FetchCursorOnRoute(std::string_view curs
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     return embedded_client_->FetchCursor(session_, cursor_uuid, max_rows, max_bytes, fetch_flags);
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.FetchCursor(session_, cursor_uuid, max_rows, max_bytes, fetch_flags);
+  return server_client_->FetchCursor(
+      session_, cursor_uuid, max_rows, max_bytes, fetch_flags);
 }
 
 ServerCloseCursorResult SbsqlTestWireSession::CloseCursorOnRoute(std::string_view cursor_uuid) {
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     return embedded_client_->CloseCursor(session_, cursor_uuid);
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.CloseCursor(session_, cursor_uuid);
+  return server_client_->CloseCursor(session_, cursor_uuid);
 }
 
 ServerCloseCursorResult SbsqlTestWireSession::CancelCursorOnRoute(std::string_view cursor_uuid) {
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     return embedded_client_->CancelCursor(session_, cursor_uuid);
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.CancelCursor(session_, cursor_uuid);
+  return server_client_->CancelCursor(session_, cursor_uuid);
 }
 
 void SbsqlTestWireSession::ClearNameResolutionCache(
@@ -4139,9 +5055,17 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
     resolved =
         embedded_client_->ResolveNamePublic(session_, presented_name, quoted, object_class, config_);
   } else {
-    SbpsClient client(config_.server_endpoint);
-    resolved =
-        client.ResolveNamePublicUncached(session_, presented_name, quoted, object_class, config_);
+    ParserTransactionSelector transaction;
+    transaction.local_transaction_id = session_.local_transaction_id;
+    transaction.transaction_uuid = session_.transaction_uuid;
+    if ((object_class == "relation" || object_class == "table") &&
+        transaction.present()) {
+      resolved = server_client_->ResolveRelationDescriptorPublicOnTransaction(
+          session_, presented_name, quoted, object_class, config_, transaction);
+    } else {
+      resolved = server_client_->ResolveNamePublicUncached(
+          session_, presented_name, quoted, object_class, config_);
+    }
   }
   if (resolved.resolved) {
     session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
@@ -4237,8 +5161,7 @@ bool SbsqlTestWireSession::DisconnectExecutionRoute(MessageVectorSet* messages) 
     return embedded_client_->DisconnectSession(session_, messages);
   }
   if (!config_.server_endpoint.empty()) {
-    SbpsClient client(config_.server_endpoint);
-    return client.DisconnectSession(session_, messages);
+    return server_client_->DisconnectSession(session_, messages);
   }
   return true;
 }
@@ -4279,8 +5202,7 @@ PipelineResult SbsqlTestWireSession::RunServerManagementCommand(
                                        30000,
                                        false);
   } else {
-    SbpsClient client(config_.server_endpoint);
-    managed = client.Manage(session_,
+    managed = server_client_->Manage(session_,
                             command.operation_key,
                             "",
                             command.mode,
@@ -4655,7 +5577,45 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     WriteParserPipelinePhaseTrace(sql, result, phase_micros);
     return result;
   }
-  auto bound = BindAst(ast, cst, config_, session_, resolved_object_uuids);
+  std::optional<ParserStatementContext> native_statement_context;
+  std::optional<NativeRelationalBindingContext> native_binding_context;
+  if (submit && ast.native_relational.recognized()) {
+    if (config_.embedded_engine_direct || server_client_ == nullptr) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.NATIVE_BINDING.SERVER_ROUTE_REQUIRED", "ERROR",
+          "Native relational execution requires the private server statement-context route.",
+          "sbp_sbsql.wire"));
+    } else {
+      ParserTransactionSelector selector;
+      selector.local_transaction_id = session_.local_transaction_id;
+      selector.transaction_uuid = session_.transaction_uuid;
+      auto acquired =
+          server_client_->AcquireNativeStatementContext(session_, selector);
+      mark_phase("acquire_native_statement_context");
+      if (!acquired.accepted) {
+        result.messages = std::move(acquired.messages);
+      } else {
+        native_statement_context = std::move(acquired.context);
+        native_binding_context = BuildEngineProjectedNativeBindingContext(
+            ast.native_relational, *native_statement_context,
+            resolved_object_reference_seeds,
+            &result.messages);
+        mark_phase("build_native_binding_context");
+      }
+    }
+  }
+  if (result.messages.has_errors()) {
+    result.accepted = false;
+    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
+    return result;
+  }
+  auto bound = BindAst(
+      ast, cst, config_, session_, resolved_object_uuids,
+      native_binding_context.has_value() ? &*native_binding_context : nullptr);
+  if (native_statement_context.has_value()) {
+    bound.command_registry_snapshot_uuid =
+        native_statement_context->catalog_epoch_uuid;
+  }
   mark_phase("bind_ast");
   auto lowered = LowerToSblr(bound, cst, session_);
   mark_phase("lower_to_sblr");
@@ -4679,6 +5639,20 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   result.operation_family = lowered.operation_family;
   result.statement_hash = lowered.statement_hash;
   result.sblr_payload = lowered.payload;
+  result.messages = std::move(lowered.messages);
+  std::optional<ParserCanonicalSblrSubmission> native_submission;
+  if (submit && result.accepted && native_statement_context.has_value()) {
+    native_submission = BuildCanonicalNativeSubmission(
+        lowered, *native_statement_context, session_);
+    if (!native_submission.has_value()) {
+      result.accepted = false;
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
+          "The native relational operation could not be encoded as canonical SBLR/SBEE/SBOP.",
+          "sbp_sbsql.wire"));
+    }
+    mark_phase("encode_native_canonical_submission");
+  }
   if (cursor_requested) {
     if (stream_row_count != 0) {
       InjectStreamRowCount(&result.sblr_payload, stream_row_count);
@@ -4687,7 +5661,6 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
     }
   }
   mark_phase("shape_pipeline_result");
-  result.messages = std::move(lowered.messages);
   if (result.accepted && cache_ != nullptr &&
       (!submit || CanReuseFrontdoorCacheForSubmit(result))) {
     CacheEntry entry;
@@ -4757,7 +5730,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         InjectAutocommitEmulation(&execution_payload);
       }
       mark_phase("prepare_execution_payload");
-      const auto executed = ExecuteSblrOnRoute(execution_payload, cursor_requested);
+      const auto executed = native_submission.has_value()
+          ? server_client_->ExecuteCanonicalSblrWithDataPacket(
+                session_, *native_statement_context, *native_submission, {},
+                cursor_requested)
+          : ExecuteSblrOnRoute(execution_payload, cursor_requested);
       mark_phase("execute_sblr_route");
       if (!executed.accepted) {
         result.accepted = false;
@@ -4857,8 +5834,7 @@ ServerPrepareSblrResult SbsqlTestWireSession::PrepareSblrForWire(
         "sbp_sbsql.wire"));
     return result;
   }
-  SbpsClient client(config_.server_endpoint);
-  return client.PrepareSblr(session_, encoded_sblr_envelope);
+  return server_client_->PrepareSblr(session_, encoded_sblr_envelope);
 }
 
 PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
@@ -4883,8 +5859,7 @@ PipelineResult SbsqlTestWireSession::RunPreparedSblrEnvelopeForWire(
   if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
     return RunSblrEnvelopeWithDataPacket(encoded_sblr_envelope, data_packet, cursor_requested);
   }
-  SbpsClient client(config_.server_endpoint);
-  const auto executed = client.ExecutePreparedSblr(session_,
+  const auto executed = server_client_->ExecutePreparedSblr(session_,
                                                   prepared_statement_uuid,
                                                   encoded_sblr_envelope,
                                                   data_packet,
@@ -4948,8 +5923,8 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
       result.accepted =
           embedded_client_->AuthenticateAndAttachSysarch(credentials, &session_, &result.messages);
     } else if (!config_.server_endpoint.empty()) {
-      SbpsClient client(config_.server_endpoint);
-      result.accepted = client.AuthenticateAndAttach(request.payload, config_, &session_, &result.messages);
+      result.accepted = server_client_->AuthenticateAndAttach(
+          request.payload, config_, &session_, &result.messages);
     } else {
       result = config_.allow_probe_auth || config_.probe_mode ? ProbeAuthRelay(request, config_) : FailClosedAuthRelay(request, config_);
       if (result.accepted) session_ = std::move(result.session);
