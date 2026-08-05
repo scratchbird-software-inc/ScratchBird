@@ -727,22 +727,6 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = BoundNullability::kNullable;
       context.descriptors.push_back(std::move(descriptor));
     }
-    const auto source_is_nullable = [&](const std::size_t source_ordinal) {
-      return std::ranges::all_of(
-          context.catalog_relations[source_ordinal].columns,
-          [&](const auto& column) {
-            return context.descriptors[column.descriptor_id - 1].nullability ==
-                   BoundNullability::kNullable;
-          });
-    };
-    if (((catalog_join->join_kind == NativeJoinAstKind::kRightOuter ||
-          catalog_join->join_kind == NativeJoinAstKind::kFullOuter) &&
-         !source_is_nullable(0)) ||
-        ((catalog_join->join_kind == NativeJoinAstKind::kLeftOuter ||
-          catalog_join->join_kind == NativeJoinAstKind::kFullOuter) &&
-         !source_is_nullable(1))) {
-      return fail("catalog_outer_join_nullable_descriptor_required");
-    }
     const auto source_output_count = context.outputs.size();
     const bool left_only_join =
         catalog_join->join_kind == NativeJoinAstKind::kLeftSemi ||

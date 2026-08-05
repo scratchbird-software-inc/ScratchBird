@@ -20591,8 +20591,18 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     published.name_utf8 = output.output_name_utf8;
     published.descriptor_uuid = descriptor->descriptor_uuid;
     published.type_uuid = descriptor->type_uuid;
+    const auto left_width = scans[0]->output_descriptor_ids.size();
+    const bool null_extended_output =
+        ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
+         ordinal < left_width) ||
+        ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+          join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
+         ordinal >= left_width);
     published.nullability =
-        descriptor->nullability == api::RelationalNullability::kNullable
+        null_extended_output ||
+                descriptor->nullability ==
+                    api::RelationalNullability::kNullable
             ? exec::CanonicalResultNullability::kNullable
             : exec::CanonicalResultNullability::kNonNull;
     published.collation_uuid = descriptor->collation_uuid;

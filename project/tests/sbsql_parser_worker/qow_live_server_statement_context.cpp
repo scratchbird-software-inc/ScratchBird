@@ -411,7 +411,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "integer";
   column.descriptor.encoded_descriptor = "type=integer";
-  column.nullable = true;
+  column.nullable = false;
   table.table_columns.push_back(std::move(column));
   api::EngineColumnDefinition auxiliary_column;
   auxiliary_column.ordinal = 1;
@@ -460,7 +460,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_column.descriptor.descriptor_kind = "scalar";
   join_column.descriptor.canonical_type_name = "integer";
   join_column.descriptor.encoded_descriptor = "type=integer";
-  join_column.nullable = true;
+  join_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_column));
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");

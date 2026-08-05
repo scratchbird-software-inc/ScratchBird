@@ -54,6 +54,40 @@ bool IsCanonicalUuid(const std::string_view value) {
   return true;
 }
 
+bool DeriveNullableDescriptorEncoding(
+    scratchbird::engine::internal_api::EngineDescriptor* descriptor) {
+  if (descriptor == nullptr || descriptor->encoded_descriptor.empty()) {
+    return false;
+  }
+  std::string derived;
+  derived.reserve(descriptor->encoded_descriptor.size());
+  bool nullability_carrier_seen = false;
+  std::size_t offset = 0;
+  while (offset <= descriptor->encoded_descriptor.size()) {
+    const auto separator = descriptor->encoded_descriptor.find(';', offset);
+    const auto end = separator == std::string::npos
+                         ? descriptor->encoded_descriptor.size()
+                         : separator;
+    const std::string_view field(descriptor->encoded_descriptor.data() + offset,
+                                 end - offset);
+    if (!derived.empty()) derived.push_back(';');
+    if (field.starts_with("nullability=")) {
+      derived.append("nullability=nullable");
+      nullability_carrier_seen = true;
+    } else if (field.starts_with("nullable=")) {
+      derived.append("nullable=true");
+      nullability_carrier_seen = true;
+    } else {
+      derived.append(field);
+    }
+    if (separator == std::string::npos) break;
+    offset = separator + 1;
+  }
+  if (!nullability_carrier_seen) return false;
+  descriptor->encoded_descriptor = std::move(derived);
+  return true;
+}
+
 bool CanonicalWindowAuthorityAbsent(
     const CanonicalExecutionMgaAuthority& authority) {
   return authority.origin == CanonicalMgaAuthorityOrigin::kMissing &&
@@ -1968,10 +2002,12 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
                           key_request.right_batch.columns.begin(),
                           key_request.right_batch.columns.end());
   }
+  std::vector<bool> derived_nullable_columns(output.columns.size(), false);
   if (request.join_kind == CanonicalAcceptedJoinKind::kRightOuter ||
       request.join_kind == CanonicalAcceptedJoinKind::kFullOuter) {
     for (std::size_t column = 0; column < left_width; ++column) {
       output.columns[column].nullable = true;
+      derived_nullable_columns[column] = true;
     }
   }
   if (request.join_kind == CanonicalAcceptedJoinKind::kLeftOuter ||
@@ -1979,6 +2015,15 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
     for (std::size_t column = left_width; column < output.columns.size();
          ++column) {
       output.columns[column].nullable = true;
+      derived_nullable_columns[column] = true;
+    }
+  }
+  for (std::size_t column = 0; column < output.columns.size(); ++column) {
+    if (derived_nullable_columns[column] &&
+        !DeriveNullableDescriptorEncoding(
+            &output.columns[column].descriptor)) {
+      return refuse("outer join result descriptor lacks an exact nullability "
+                    "carrier");
     }
   }
   output.rows.reserve(expected_output_rows);
@@ -2063,6 +2108,14 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   } else {
     for (const auto pair : accepted_pair_indices) {
       append_joined(pair / right_count, pair % right_count);
+    }
+  }
+
+  for (auto& row : output.rows) {
+    for (std::size_t column = 0; column < output.columns.size(); ++column) {
+      if (derived_nullable_columns[column]) {
+        row.values[column].descriptor = output.columns[column].descriptor;
+      }
     }
   }
 
