@@ -11578,6 +11578,52 @@ HeapPhysicalRegistrationBuildResult BuildHeapPhysicalRegistration(
 
         auto acquisition_relational_dag = state->relational_dag;
         auto acquisition_physical_dag = state->physical_dag;
+        std::erase_if(acquisition_relational_dag.nodes,
+                      [&](const auto& candidate) {
+                        return candidate.node_id !=
+                               dispatched_node.relational_node_id;
+                      });
+        if (acquisition_relational_dag.nodes.size() != 1) {
+          step.diagnostic = HeapAcquisitionRefusal(
+              "QOW-DIAG-QRY-004-HEAP-DISPATCH-IDENTITY-V1",
+              "heap acquisition leaf is unresolved in the relational DAG");
+          return step;
+        }
+        acquisition_relational_dag.root_node_id =
+            dispatched_node.relational_node_id;
+        const auto& acquisition_node =
+            acquisition_relational_dag.nodes.front();
+        const std::unordered_set<std::uint32_t> acquisition_expressions(
+            acquisition_node.bound_expression_ids.begin(),
+            acquisition_node.bound_expression_ids.end());
+        const std::unordered_set<std::uint32_t> acquisition_descriptors(
+            acquisition_node.output_descriptor_ids.begin(),
+            acquisition_node.output_descriptor_ids.end());
+        std::erase_if(acquisition_relational_dag.expressions,
+                      [&](const auto& expression) {
+                        return !acquisition_expressions.contains(
+                            expression.expression_id);
+                      });
+        std::erase_if(acquisition_relational_dag.descriptors,
+                      [&](const auto& descriptor) {
+                        return !acquisition_descriptors.contains(
+                            descriptor.descriptor_id);
+                      });
+        std::erase_if(acquisition_relational_dag.outputs,
+                      [&](const auto& output) {
+                        return output.relation_node_id !=
+                               acquisition_node.node_id;
+                      });
+        acquisition_relational_dag.values_rows.clear();
+        acquisition_relational_dag.grouping_sets.clear();
+        acquisition_relational_dag.properties.clear();
+        std::erase_if(acquisition_physical_dag.nodes,
+                      [&](const auto& candidate) {
+                        return candidate.physical_node_id !=
+                               dispatched_node.physical_node_id;
+                      });
+        acquisition_physical_dag.root_physical_node_id =
+            dispatched_node.physical_node_id;
         if (state->table_sample_profile.has_value()) {
           // The sample executor owns the selected sample node. Its private
           // acquisition child is a plain heap scan that returns only the
@@ -11761,6 +11807,26 @@ CanonicalPhysicalDagDispatchResult HeapPhysicalDispatchRefusal(
 }
 
 }  // namespace
+
+CanonicalHeapPhysicalRegistrationResult
+BuildCanonicalHeapPhysicalRegistration(
+    const CanonicalHeapPhysicalDagDispatchRequest& request) {
+  CanonicalHeapPhysicalRegistrationResult result;
+  if (request.context == nullptr) {
+    result.diagnostic = HeapAcquisitionRefusal(
+        "QOW-DIAG-QRY-004-HEAP-REGISTRATION-V1",
+        "engine context is required");
+    return result;
+  }
+  auto owned = request;
+  owned.mga_authority = BuildCurrentHeapExecutionMgaAuthority(
+      *request.context, request.physical_dag);
+  auto built = BuildHeapPhysicalRegistration(owned);
+  result.diagnostic = std::move(built.diagnostic);
+  result.registration = std::move(built.registration);
+  result.mga_authority = std::move(owned.mga_authority);
+  return result;
+}
 
 // QOW-SOURCE-QRY-004-HEAP-DISPATCH-V1
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(

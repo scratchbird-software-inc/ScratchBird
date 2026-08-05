@@ -413,13 +413,31 @@ BuildEngineProjectedNativeBindingContext(
       context.snapshot_visible_through_local_transaction_id};
 
   if (!ast.catalog_relation_sources.empty()) {
-    if (ast.catalog_relation_sources.size() != 1 || ast.relations.size() != 1 ||
+    const auto source_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind ==
+                 NativeRelationAstKind::kCatalogSource;
+        });
+    const auto limit_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kLimit;
+        });
+    const bool limit_composition =
+        ast.relations.size() == 2 &&
+        source_relation != ast.relations.end() &&
+        limit_relation != ast.relations.end() &&
+        ast.root_relation_id == limit_relation->relation_id &&
+        limit_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{source_relation->relation_id};
+    if (ast.catalog_relation_sources.size() != 1 ||
+        source_relation == ast.relations.end() ||
+        (ast.relations.size() != 1 && !limit_composition) ||
         ast.root_relation_id == 0 ||
         resolved_object_reference_seeds.size() != 1) {
       return fail("catalog_source_projection_cardinality_invalid");
     }
     const auto& source = ast.catalog_relation_sources.front();
-    const auto& relation = ast.relations.front();
+    const auto& relation = *source_relation;
     const auto& resolved = resolved_object_reference_seeds.front().resolved;
     const auto& projection = resolved.relation_descriptor;
     const bool relation_object_class =
@@ -428,7 +446,7 @@ BuildEngineProjectedNativeBindingContext(
         resolved.object_class == "materialized_view" ||
         resolved.object_class == "external_table" ||
         resolved.object_class == "foreign_table";
-    if (relation.relation_id != ast.root_relation_id ||
+    if ((!limit_composition && relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         relation.relation_source_ids !=
             std::vector<std::uint32_t>{source.source_id} ||
@@ -454,9 +472,11 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.security_epoch = resolved.security_epoch;
     catalog_relation.resource_epoch = projection.validated_resource_epoch;
     catalog_relation.columns.reserve(projection.columns.size());
-    context.descriptors.reserve(projection.columns.size());
+    context.descriptors.reserve(projection.columns.size() +
+                                (limit_composition ? 1 : 0));
     context.expressions.reserve(projection.columns.size());
-    context.outputs.reserve(projection.columns.size());
+    context.outputs.reserve(projection.columns.size() *
+                            (limit_composition ? 2 : 1));
     // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
     // type identities are distinct engine-owned values. Decode only the exact
     // persisted descriptor fields transported by the selected-transaction
@@ -594,6 +614,37 @@ BuildEngineProjectedNativeBindingContext(
       catalog_relation.columns.push_back(
           {expected_ordinal, column.column_uuid, binding_id,
            column.canonical_name_key});
+    }
+    if (limit_composition) {
+      const auto numeric_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 1 && candidate.slot == 0;
+          });
+      if (numeric_profile == statement_context.descriptor_profiles.end() ||
+          numeric_profile->nullable ||
+          !CanonicalUuidBytes(numeric_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(numeric_profile->type_uuid).has_value()) {
+        return fail("catalog_limit_numeric_descriptor_profile_unavailable");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = numeric_profile->descriptor_uuid;
+      descriptor.type_uuid = numeric_profile->type_uuid;
+      descriptor.nullability = BoundNullability::kNonNull;
+      context.descriptors.push_back(std::move(descriptor));
+
+      const auto first_limit_output_id =
+          static_cast<std::uint32_t>(projection.columns.size() + 1);
+      for (std::size_t ordinal = 0; ordinal < projection.columns.size();
+           ++ordinal) {
+        const auto& column = projection.columns[ordinal];
+        const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
+        context.outputs.push_back(
+            {first_limit_output_id + static_cast<std::uint32_t>(ordinal),
+             binding_id, column.canonical_name_key, binding_id, true,
+             static_cast<std::uint32_t>(ordinal), limit_relation->relation_id});
+      }
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
     return context;
@@ -5495,6 +5546,8 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   if (!result.messages.has_errors() && ast.requires_name_resolution &&
       HasExecutionRoute() && session_.authenticated) {
     const auto refs = ExtractObjectReferences(cst);
+    const bool native_catalog_projection_required =
+        !ast.native_relational.catalog_relation_sources.empty();
     mark_phase("extract_object_references");
     for (const auto& ref : refs) {
       if (IsEngineOwnedProjectionReference(ref)) {
@@ -5536,7 +5589,11 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           break;
         }
       } else {
-        resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, ref.object_class);
+        resolved = native_catalog_projection_required
+                       ? ResolveNameOnRouteUncached(
+                             ref.presented_name, ref.quoted, ref.object_class)
+                       : ResolveNameOnRoute(
+                             ref.presented_name, ref.quoted, ref.object_class);
       }
       if (!resolved.resolved) {
         if (ref.object_class == "procedure") {

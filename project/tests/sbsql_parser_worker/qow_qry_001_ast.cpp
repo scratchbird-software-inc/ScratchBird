@@ -310,6 +310,58 @@ bool ValidateCatalogRelationSourceFamily() {
   return passed;
 }
 
+bool ValidateCatalogLimitComposition() {
+  constexpr std::string_view sql =
+      "SELECT * FROM app.orders LIMIT 7 OFFSET 2;";
+  const auto native =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  bool passed = true;
+  passed &= Require(native.accepted(),
+                    "catalog LIMIT/OFFSET composition was refused");
+  passed &= Require(native.root_relation_id == 2 &&
+                        native.relations.size() == 2 &&
+                        native.expressions.size() == 3,
+                    "catalog LIMIT/OFFSET graph cardinality differs");
+  if (native.relations.size() == 2) {
+    const auto& source = native.relations[0];
+    const auto& limit = native.relations[1];
+    passed &= Require(
+        source.relation_kind ==
+                sbsql::NativeRelationAstKind::kCatalogSource &&
+            limit.relation_kind == sbsql::NativeRelationAstKind::kLimit &&
+            limit.input_relation_ids == std::vector<std::uint32_t>({1}) &&
+            limit.output_expression_ids ==
+                source.output_expression_ids &&
+            limit.limit_expression_ids ==
+                std::vector<std::uint32_t>({2, 3}),
+        "catalog LIMIT/OFFSET relation linkage differs");
+    passed &= Require(SourceForRange(sql, source.range) ==
+                          "SELECT * FROM app.orders" &&
+                          SourceForRange(sql, limit.range) ==
+                              "SELECT * FROM app.orders LIMIT 7 OFFSET 2",
+                      "catalog LIMIT/OFFSET relation ranges differ");
+  }
+  if (native.expressions.size() == 3) {
+    passed &= Require(
+        native.expressions[1].expression_kind ==
+                sbsql::NativeExpressionAstKind::kLiteral &&
+            native.expressions[1].literal_kind ==
+                sbsql::NativeLiteralAstKind::kNumeric &&
+            native.expressions[1].spelling == "7" &&
+            native.expressions[2].expression_kind ==
+                sbsql::NativeExpressionAstKind::kLiteral &&
+            native.expressions[2].literal_kind ==
+                sbsql::NativeLiteralAstKind::kNumeric &&
+            native.expressions[2].spelling == "2",
+        "catalog LIMIT/OFFSET literal expressions differ");
+  }
+  passed &= Require(
+      sbsql::NativeRelationAstKindName(
+          sbsql::NativeRelationAstKind::kLimit) == "limit",
+      "catalog LIMIT relation kind name differs");
+  return passed;
+}
+
 bool ValidateCatalogRelationRefusal() {
   constexpr std::string_view malformed[] = {
       "SELECT * FROM;",
@@ -322,6 +374,11 @@ bool ValidateCatalogRelationRefusal() {
       "SELECT * FROM app.orders, app.customers;",
       "SELECT * FROM app.orders JOIN app.customers ON TRUE;",
       "SELECT * FROM app.orders alias trailing;",
+      "SELECT * FROM app.orders LIMIT;",
+      "SELECT * FROM app.orders LIMIT value;",
+      "SELECT * FROM app.orders LIMIT 1 OFFSET;",
+      "SELECT * FROM app.orders LIMIT 1 OFFSET -1;",
+      "SELECT * FROM app.orders OFFSET 1;",
   };
 
   bool passed = true;
@@ -390,6 +447,7 @@ int main() {
   passed &= ValidateTypedValuesFamily();
   passed &= ValidateMalformedRefusal();
   passed &= ValidateCatalogRelationSourceFamily();
+  passed &= ValidateCatalogLimitComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

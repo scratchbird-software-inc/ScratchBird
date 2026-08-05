@@ -393,6 +393,53 @@ class NativeRelationalParser final {
     }
     source.range = Span(first_name_token, *source_end);
 
+    std::vector<std::uint32_t> limit_expression_ids;
+    const Token* query_end = source_end;
+    if (!AtEnd() && IsWord(Current(), "LIMIT")) {
+      Consume();
+      const auto parse_row_bound = [&](const std::string_view diagnostic_id,
+                                       const std::string_view detail)
+          -> std::optional<std::uint32_t> {
+        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+          Refuse(std::string(diagnostic_id), std::string(detail));
+          return std::nullopt;
+        }
+        const Token& literal_token = Consume();
+        std::uint64_t parsed = 0;
+        const auto [end, error] = std::from_chars(
+            literal_token.text.data(),
+            literal_token.text.data() + literal_token.text.size(), parsed);
+        if (error != std::errc{} ||
+            end != literal_token.text.data() + literal_token.text.size()) {
+          Refuse(std::string(diagnostic_id), std::string(detail));
+          return std::nullopt;
+        }
+        NativeExpressionAstNode literal;
+        literal.expression_id = NextExpressionId();
+        literal.expression_kind = NativeExpressionAstKind::kLiteral;
+        literal.literal_kind = NativeLiteralAstKind::kNumeric;
+        literal.spelling = literal_token.text;
+        literal.range = TokenSourceRange(literal_token);
+        const auto expression_id = literal.expression_id;
+        document_.expressions.push_back(std::move(literal));
+        query_end = &literal_token;
+        return expression_id;
+      };
+      const auto count = parse_row_bound(
+          "catalog_select_limit_bound_required",
+          "bounded catalog SELECT LIMIT requires an unsigned numeric bound");
+      if (!count.has_value()) return FinishRefusal();
+      limit_expression_ids.push_back(*count);
+      if (!AtEnd() && IsWord(Current(), "OFFSET")) {
+        Consume();
+        const auto offset = parse_row_bound(
+            "catalog_select_offset_bound_required",
+            "bounded catalog SELECT OFFSET requires an unsigned numeric bound");
+        if (!offset.has_value()) return FinishRefusal();
+        limit_expression_ids.push_back(*offset);
+      }
+    }
+
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_select_clause_unsupported",
@@ -409,6 +456,17 @@ class NativeRelationalParser final {
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
+    if (!limit_expression_ids.empty()) {
+      NativeRelationAstNode limit;
+      limit.relation_id = 2;
+      limit.relation_kind = NativeRelationAstKind::kLimit;
+      limit.input_relation_ids = {1};
+      limit.output_expression_ids = {wildcard_expression_id};
+      limit.limit_expression_ids = std::move(limit_expression_ids);
+      limit.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(limit));
+      document_.root_relation_id = 2;
+    }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);
   }

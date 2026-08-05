@@ -112,6 +112,18 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   # QOW-ROUTE-STAGE-QRY-005-V1
   add_executable(qow_qry_005_test_v1 qow_qry_005.cpp)
   target_compile_features(qow_qry_005_test_v1 PRIVATE cxx_std_23)
+  # This proof driver intentionally carries the complete generated QRY-005
+  # vector catalog in one translation unit.  Optimizing the driver adds no
+  # production-code coverage and makes an ordinary Release rebuild take more
+  # than an hour.  Keep the driver unoptimized while its linked parser,
+  # optimizer, and executor libraries retain the selected Release profile.
+  if(MSVC)
+    target_compile_options(qow_qry_005_test_v1 PRIVATE
+      $<$<CONFIG:Release>:/Od>)
+  else()
+    target_compile_options(qow_qry_005_test_v1 PRIVATE
+      $<$<CONFIG:Release>:-O0>)
+  endif()
   target_link_libraries(qow_qry_005_test_v1 PRIVATE
     sbl_sbsql_parser_pipeline
     sb_qow_sblr_query_route_contract

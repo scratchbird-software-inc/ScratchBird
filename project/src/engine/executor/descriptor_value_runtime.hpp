@@ -1310,6 +1310,12 @@ struct CanonicalPhysicalExecutorRegistration {
   bool accepts_optimizer_publication_v2 = false;
 };
 
+struct CanonicalHeapPhysicalRegistrationResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::optional<CanonicalPhysicalExecutorRegistration> registration;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
 struct CanonicalPhysicalDagRuntimeLimits {
   std::size_t maximum_rows_per_batch = 1048576;
   std::size_t maximum_columns_per_batch = 65536;
@@ -2391,6 +2397,9 @@ CanonicalScanAccessResult ExecuteCanonicalSelectedScanAccess(
 CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     const CanonicalHeapRelationAcquisitionRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalHeapPhysicalDagDispatch(
+    const CanonicalHeapPhysicalDagDispatchRequest& request);
+CanonicalHeapPhysicalRegistrationResult
+BuildCanonicalHeapPhysicalRegistration(
     const CanonicalHeapPhysicalDagDispatchRequest& request);
 CanonicalPhysicalDagDispatchResult ExecuteCanonicalPhysicalDag(
     const CanonicalPhysicalDagDispatchRequest& request);

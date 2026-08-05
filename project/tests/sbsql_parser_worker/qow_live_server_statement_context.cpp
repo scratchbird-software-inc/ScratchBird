@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "ddl/create_api.hpp"
+#include "dml/insert_api.hpp"
 #include "ipc_server.hpp"
 #include "lifecycle.hpp"
 #include "local_transaction_store.hpp"
@@ -411,6 +412,27 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
+  api::EngineInsertRowsRequest insert;
+  insert.context = context;
+  insert.target_table.uuid.canonical =
+      uuid::UuidToString(fixture->relation_uuid.value);
+  insert.target_table.object_kind = "table";
+  for (std::int64_t value = 1; value <= 3; ++value) {
+    api::EngineTypedValue typed;
+    typed.descriptor.descriptor_kind = "scalar";
+    typed.descriptor.canonical_type_name = "integer";
+    typed.descriptor.encoded_descriptor = "type=integer";
+    typed.encoded_value = std::to_string(value);
+    api::EngineRowValue row;
+    row.fields.push_back({"integer_value", std::move(typed)});
+    insert.input_rows.push_back(std::move(row));
+  }
+  insert.estimated_row_count = insert.input_rows.size();
+  const auto inserted = api::EngineInsertRows(insert);
+  RequireEngineOk(inserted, "object-backed fixture row insert failed");
+  Require(inserted.inserted_count == 3,
+          "object-backed fixture did not insert three rows");
+
   api::EngineCommitTransactionRequest commit;
   commit.context = context;
   RequireEngineOk(api::EngineCommitTransaction(commit),
@@ -547,8 +569,35 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
     if (!object_backed.accepted) PrintMessages(object_backed.messages);
     Require(object_backed.accepted &&
                 object_backed.server_operation_id == "query.execute" &&
-                object_backed.server_cursor_uuid.empty(),
+                object_backed.server_cursor_uuid.empty() &&
+                object_backed.server_row_count == 3,
             "object-backed native SELECT did not complete the full live route");
+
+    auto object_backed_limit = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation LIMIT 1;", true);
+    if (!object_backed_limit.accepted) {
+      PrintMessages(object_backed_limit.messages);
+    }
+    Require(object_backed_limit.accepted &&
+                object_backed_limit.server_operation_id == "query.execute" &&
+                object_backed_limit.server_cursor_uuid.empty() &&
+                object_backed_limit.server_row_count == 1,
+            "object-backed native SELECT with LIMIT did not complete the full "
+            "live route");
+
+    auto object_backed_limit_offset = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation LIMIT 1 OFFSET 1;",
+        true);
+    if (!object_backed_limit_offset.accepted) {
+      PrintMessages(object_backed_limit_offset.messages);
+    }
+    Require(object_backed_limit_offset.accepted &&
+                object_backed_limit_offset.server_operation_id ==
+                    "query.execute" &&
+                object_backed_limit_offset.server_cursor_uuid.empty() &&
+                object_backed_limit_offset.server_row_count == 1,
+            "object-backed native SELECT with LIMIT/OFFSET did not complete "
+            "the full live route");
 
     auto cursor = parser.RunPipeline(kSourceFreeNativeSelect, true, true);
     if (!cursor.accepted) PrintMessages(cursor.messages);

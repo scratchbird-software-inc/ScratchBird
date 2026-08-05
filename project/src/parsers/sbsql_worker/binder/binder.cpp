@@ -9,6 +9,7 @@
 #include "binder/binder.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -461,12 +462,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
   if (has_catalog_relation_ast || !ast.catalog_relation_sources.empty()) {
+    const auto source_relation = std::ranges::find_if(
+        ast.relations, [](const auto& candidate) {
+          return candidate.relation_kind ==
+                 NativeRelationAstKind::kCatalogSource;
+        });
+    const auto limit_relation = std::ranges::find_if(
+        ast.relations, [](const auto& candidate) {
+          return candidate.relation_kind == NativeRelationAstKind::kLimit;
+        });
+    const bool limit_composition =
+        ast.relations.size() == 2 &&
+        source_relation != ast.relations.end() &&
+        limit_relation != ast.relations.end() &&
+        ast.root_relation_id == limit_relation->relation_id &&
+        limit_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{source_relation->relation_id};
     const bool expanded_projection =
         !context.expressions.empty() || !context.outputs.empty();
-    if (!has_catalog_relation_ast || ast.relations.size() != 1 ||
+    if (!has_catalog_relation_ast ||
+        source_relation == ast.relations.end() ||
+        (ast.relations.size() != 1 && !limit_composition) ||
         ast.catalog_relation_sources.size() != 1 ||
         ast.root_relation_id == 0 || !ast.values_rows.empty() ||
-        !ast.grouping_sets.empty() || ast.expressions.size() != 1 ||
+        !ast.grouping_sets.empty() || ast.expressions.empty() ||
         !context.relations.empty() || context.catalog_relations.size() != 1 ||
         (expanded_projection &&
          (context.expressions.empty() || context.outputs.empty()))) {
@@ -476,10 +495,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       return RefusedBoundAst(std::move(bound));
     }
 
-    const auto& relation = ast.relations.front();
+    const auto& relation = *source_relation;
     const auto& source = ast.catalog_relation_sources.front();
     const auto& wildcard = ast.expressions.front();
-    if (relation.relation_id != ast.root_relation_id ||
+    if ((!limit_composition && relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         !relation.input_relation_ids.empty() ||
         relation.relation_source_ids !=
@@ -492,7 +511,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             NativeAggregateProjectionForm::kNone ||
         !relation.grouping_key_expression_ids.empty() ||
         !relation.aggregate_expression_ids.empty() ||
-        !relation.predicate_expression_ids.empty() || source.source_id == 0 ||
+        !relation.predicate_expression_ids.empty() ||
+        !relation.limit_expression_ids.empty() || source.source_id == 0 ||
         source.source_kind != NativeRelationSourceAstKind::kCatalogRelation ||
         source.qualified_name.empty() ||
         std::ranges::any_of(source.qualified_name, [](const auto& component) {
@@ -507,6 +527,60 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         !wildcard.operator_name.empty()) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog relation AST is outside the bounded source profile");
+      return RefusedBoundAst(std::move(bound));
+    }
+    if (limit_composition) {
+      if (ast.expressions.size() !=
+              1 + limit_relation->limit_expression_ids.size() ||
+          !limit_relation->relation_source_ids.empty() ||
+          !limit_relation->values_row_ids.empty() ||
+          limit_relation->output_expression_ids !=
+              std::vector<std::uint32_t>{wildcard.expression_id} ||
+          limit_relation->aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          limit_relation->aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !limit_relation->grouping_key_expression_ids.empty() ||
+          !limit_relation->aggregate_expression_ids.empty() ||
+          !limit_relation->predicate_expression_ids.empty() ||
+          (limit_relation->limit_expression_ids.size() != 1 &&
+           limit_relation->limit_expression_ids.size() != 2)) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "catalog LIMIT AST is outside the bounded composition profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+      for (const auto expression_id : limit_relation->limit_expression_ids) {
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        std::uint64_t parsed = 0;
+        if (expression == ast.expressions.end() ||
+            expression->expression_kind != NativeExpressionAstKind::kLiteral ||
+            expression->literal_kind != NativeLiteralAstKind::kNumeric ||
+            !expression->child_expression_ids.empty() ||
+            !expression->operator_name.empty()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog LIMIT operands must be unsigned numeric literals");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto [end, error] = std::from_chars(
+            expression->spelling.data(),
+            expression->spelling.data() + expression->spelling.size(), parsed);
+        if (error != std::errc{} ||
+            end != expression->spelling.data() + expression->spelling.size()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog LIMIT operands must be canonical unsigned integers");
+          return RefusedBoundAst(std::move(bound));
+        }
+      }
+    } else if (ast.expressions.size() != 1) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+          "catalog source without LIMIT admits only its wildcard expression");
       return RefusedBoundAst(std::move(bound));
     }
 
@@ -572,6 +646,27 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {column.ordinal, column.column_uuid, column.descriptor_id,
            column.canonical_name_key});
     }
+    const NativeDescriptorBindingInput* limit_descriptor = nullptr;
+    if (limit_composition) {
+      const auto expected_limit_descriptor_id =
+          static_cast<std::uint32_t>(relation_binding.columns.size() + 1);
+      const auto descriptor =
+          descriptor_by_id.find(expected_limit_descriptor_id);
+      if (descriptor == descriptor_by_id.end() ||
+          descriptor->second->nullability != BoundNullability::kNonNull ||
+          descriptor->second->collation_uuid.has_value() ||
+          descriptor->second->timezone_profile_id.has_value() ||
+          descriptor->second->width_precision_scale.width.has_value() ||
+          descriptor->second->width_precision_scale.precision.has_value() ||
+          descriptor->second->width_precision_scale.scale.has_value()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
+            "catalog LIMIT requires one non-null numeric descriptor profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+      limit_descriptor = descriptor->second;
+      used_descriptor_ids.insert(expected_limit_descriptor_id);
+    }
     if (used_descriptor_ids.size() != descriptor_by_id.size()) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-DESCRIPTOR",
@@ -584,14 +679,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (expanded_projection) {
       const auto column_count = relation_binding.columns.size();
       if (context.expressions.size() != column_count ||
-          context.outputs.size() != column_count) {
+          context.outputs.size() !=
+              column_count * (limit_composition ? 2 : 1)) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
             "catalog projection must cover every persisted column exactly once");
         return RefusedBoundAst(std::move(bound));
       }
-      bound.expressions.reserve(column_count);
-      bound.outputs.reserve(column_count);
+      bound.expressions.reserve(
+          column_count + (limit_composition
+                              ? limit_relation->limit_expression_ids.size()
+                              : 0));
+      bound.outputs.reserve(
+          column_count * (limit_composition ? 2 : 1));
       expanded_expression_ids.reserve(column_count);
       expanded_output_ids.reserve(column_count);
       for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
@@ -638,7 +738,37 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_output.ordinal = output.ordinal;
         bound.outputs.push_back(std::move(bound_output));
         expanded_expression_ids.push_back(expression.expression_id);
-        expanded_output_ids.push_back(output.output_id);
+        if (!limit_composition) expanded_output_ids.push_back(output.output_id);
+      }
+      if (limit_composition) {
+        for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
+          const auto& column = relation_binding.columns[ordinal];
+          const auto& expression = context.expressions[ordinal];
+          const auto& output = context.outputs[column_count + ordinal];
+          const auto expected_output_id = static_cast<std::uint32_t>(
+              column_count + ordinal + 1);
+          if (output.output_id != expected_output_id ||
+              output.relation_id != limit_relation->relation_id ||
+              output.expression_id != expression.expression_id ||
+              output.output_name_utf8 != column.canonical_name_key ||
+              output.descriptor_id != column.descriptor_id || !output.visible ||
+              output.ordinal != ordinal) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                "catalog LIMIT output must preserve every source projection");
+            return RefusedBoundAst(std::move(bound));
+          }
+          BoundOutputAstRecord bound_output;
+          bound_output.output_id = output.output_id;
+          bound_output.relation_id = output.relation_id;
+          bound_output.expression_id = output.expression_id;
+          bound_output.output_name_utf8 = output.output_name_utf8;
+          bound_output.descriptor_id = output.descriptor_id;
+          bound_output.visible = output.visible;
+          bound_output.ordinal = output.ordinal;
+          bound.outputs.push_back(std::move(bound_output));
+          expanded_output_ids.push_back(output.output_id);
+        }
       }
     }
 
@@ -648,8 +778,44 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_relation.semantic_variant_id = "catalog.relation-source.v1";
     bound_relation.bound_object_uuid = relation_binding.object_uuid;
     bound_relation.output_expression_ids = expanded_expression_ids;
-    bound_relation.bound_expression_ids = std::move(expanded_expression_ids);
+    bound_relation.bound_expression_ids = expanded_expression_ids;
     bound.relations.push_back(std::move(bound_relation));
+    if (limit_composition) {
+      std::vector<std::uint32_t> bound_limit_expression_ids;
+      bound_limit_expression_ids.reserve(
+          limit_relation->limit_expression_ids.size());
+      for (const auto ast_expression_id :
+           limit_relation->limit_expression_ids) {
+        const auto ast_expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == ast_expression_id;
+            });
+        BoundExpressionAstRecord bound_expression;
+        bound_expression.expression_id =
+            static_cast<std::uint32_t>(bound.expressions.size() + 1);
+        bound_expression.expression_kind = NativeExpressionAstKind::kLiteral;
+        bound_expression.literal_kind = NativeLiteralAstKind::kNumeric;
+        bound_expression.result_descriptor_id =
+            limit_descriptor->descriptor_id;
+        bound_expression.literal_or_parameter_ref = ast_expression->spelling;
+        bound_limit_expression_ids.push_back(bound_expression.expression_id);
+        bound.expressions.push_back(std::move(bound_expression));
+      }
+
+      BoundRelationAstRecord bound_limit;
+      bound_limit.relation_id = limit_relation->relation_id;
+      bound_limit.relation_kind = NativeRelationAstKind::kLimit;
+      bound_limit.input_relation_ids = {relation.relation_id};
+      bound_limit.output_expression_ids = expanded_expression_ids;
+      bound_limit.limit_expression_ids = bound_limit_expression_ids;
+      bound_limit.bound_expression_ids =
+          std::move(bound_limit_expression_ids);
+      bound_limit.semantic_variant_id =
+          limit_relation->limit_expression_ids.size() == 1
+              ? "limit.bound-count.v1"
+              : "limit.bound-count-offset.v1";
+      bound.relations.push_back(std::move(bound_limit));
+    }
     bound.catalog_relation_sources.push_back(std::move(bound_source));
 
     bound.descriptors.reserve(context.descriptors.size());
@@ -913,6 +1079,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
     }
+    for (const auto expression_id : relation.limit_expression_ids) {
+      if (!ast_expression_by_id.contains(expression_id)) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                              "relation row bound contains a dangling expression");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
 
     BoundRelationAstRecord record;
     record.relation_id = relation.relation_id;
@@ -925,6 +1098,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     record.grouping_key_expression_ids = relation.grouping_key_expression_ids;
     record.aggregate_expression_ids = relation.aggregate_expression_ids;
     record.predicate_expression_ids = relation.predicate_expression_ids;
+    record.limit_expression_ids = relation.limit_expression_ids;
     record.bound_object_uuid = std::nullopt;
     record.lateral = false;
 
@@ -938,7 +1112,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
-          !relation.predicate_expression_ids.empty()) {
+          !relation.predicate_expression_ids.empty() ||
+          !relation.limit_expression_ids.empty()) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                               "typed VALUES relation graph is not canonical");
         return RefusedBoundAst(std::move(bound));
@@ -1015,6 +1190,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           relation.input_relation_ids.size() != 1 ||
           !relation.values_row_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
+          !relation.limit_expression_ids.empty() ||
           (!one_key_profile && !two_key_profile) ||
           relation.output_expression_ids.size() != expected_output_count ||
           !output_shape_matches) {

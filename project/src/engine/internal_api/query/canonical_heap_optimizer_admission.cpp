@@ -19,6 +19,7 @@
 #include <optional>
 #include <ranges>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -260,12 +261,57 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   issue.field_id + ":node_id=" +
                       std::to_string(issue.node_id));
   }
-  if (relational.wire_version != 2 || relational.nodes.size() != 1 ||
-      relational.root_node_id != relational.nodes.front().node_id) {
+  if (relational.wire_version != 2 || relational.nodes.empty() ||
+      relational.nodes.size() > 2) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                  "one_leaf_root");
+                  "heap_scan_with_optional_limit_root");
   }
-  const auto& node = relational.nodes.front();
+  const RelationalDagNode* scan_node = nullptr;
+  const RelationalDagNode* limit_node = nullptr;
+  for (const auto& candidate : relational.nodes) {
+    if (candidate.node_kind == RelationalDagNodeKind::kScan) {
+      if (scan_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_heap_scan_leaf");
+      }
+      scan_node = &candidate;
+    } else if (candidate.node_kind == RelationalDagNodeKind::kLimit) {
+      if (limit_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_optional_limit_root");
+      }
+      limit_node = &candidate;
+    } else {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                    "heap_scan_limit_node_kinds");
+    }
+  }
+  if (scan_node == nullptr ||
+      relational.root_node_id !=
+          (limit_node == nullptr ? scan_node->node_id
+                                 : limit_node->node_id) ||
+      (limit_node == nullptr && relational.nodes.size() != 1) ||
+      (limit_node != nullptr &&
+       (relational.nodes.size() != 2 ||
+        limit_node->input_node_ids !=
+            std::vector<std::uint32_t>{scan_node->node_id} ||
+        (limit_node->semantic_variant_id != "limit.bound-count.v1" &&
+         limit_node->semantic_variant_id !=
+             "limit.bound-count-offset.v1") ||
+        limit_node->bound_expression_ids.size() !=
+            (limit_node->semantic_variant_id == "limit.bound-count.v1"
+                 ? 1
+                 : 2) ||
+        limit_node->output_descriptor_ids !=
+            scan_node->output_descriptor_ids ||
+        !limit_node->required_object_uuids.empty() ||
+        !limit_node->values_row_ids.empty() ||
+        !limit_node->required_property_uuids.empty() ||
+        !limit_node->delivered_property_uuids.empty()))) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                  "heap_scan_optional_limit_shape");
+  }
+  const auto& node = *scan_node;
   if (node.node_kind != RelationalDagNodeKind::kScan ||
       node.semantic_variant_id != "relation.source.v1" ||
       !node.input_node_ids.empty() || node.shareable ||
@@ -281,11 +327,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                   "relation_source_leaf");
   }
   const std::size_t width = node.output_descriptor_ids.size();
-  if (relational.outputs.size() != width ||
-      relational.expressions.size() != width ||
-      relational.descriptors.size() != width) {
+  const auto scan_output_count = std::ranges::count_if(
+      relational.outputs, [&](const auto& output) {
+        return output.relation_node_id == node.node_id;
+      });
+  if (scan_output_count != width) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
-                  "complete_visible_width");
+                  "complete_visible_scan_width");
   }
 
   CanonicalRelationalPlanningScope planning_scope;
@@ -362,10 +410,36 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   std::unordered_set<std::uint32_t> descriptor_ids;
   std::unordered_set<std::string> column_uuids;
   std::unordered_set<std::string> column_names;
+  std::vector<const RelationalOutputRecord*> scan_outputs;
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  for (const auto& output : relational.outputs) {
+    if (output.relation_node_id == node.node_id) {
+      scan_outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(scan_outputs, {}, &RelationalOutputRecord::ordinal);
+  for (const auto& expression : relational.expressions) {
+    expressions_by_id.emplace(expression.expression_id, &expression);
+  }
+  for (const auto& descriptor : relational.descriptors) {
+    descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+  }
   for (std::size_t ordinal = 0; ordinal < width; ++ordinal) {
-    const auto& output = relational.outputs[ordinal];
-    const auto& expression = relational.expressions[ordinal];
-    const auto& descriptor = relational.descriptors[ordinal];
+    const auto& output = *scan_outputs[ordinal];
+    const auto expression_it =
+        expressions_by_id.find(node.bound_expression_ids[ordinal]);
+    const auto descriptor_it =
+        descriptors_by_id.find(output.descriptor_id);
+    if (expression_it == expressions_by_id.end() ||
+        descriptor_it == descriptors_by_id.end()) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "scan_expression_descriptor_resolution");
+    }
+    const auto& expression = *expression_it->second;
+    const auto& descriptor = *descriptor_it->second;
     const auto& column = persisted.columns[ordinal];
     const auto persisted_type_uuid = ExactDescriptorField(
         column.value_descriptor.encoded_descriptor, "type_uuid");
@@ -490,12 +564,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       built.admission.benchmark_clean_ready ||
       built.admission.data_access_allowed ||
       built.admission.evidence.size() != 8 ||
-      built.request.statistics.node_estimates.size() != 1) {
+      built.request.statistics.node_estimates.size() !=
+          relational.nodes.size()) {
     return Refuse(
         built.diagnostic_id.empty()
             ? "QOW-DIAG-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1"
             : built.diagnostic_id,
-        built.field_id.empty() ? "one_source_unknown_statistics_admission"
+        built.field_id.empty() ? "heap_source_unknown_statistics_admission"
                                : built.field_id);
   }
 

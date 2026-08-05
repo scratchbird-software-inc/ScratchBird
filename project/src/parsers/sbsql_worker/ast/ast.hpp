@@ -56,6 +56,7 @@ enum class NativeRelationAstKind {
   kAggregate,
   kFilter,
   kCatalogSource,
+  kLimit,
 };
 
 enum class NativeRelationSourceAstKind {
@@ -176,6 +177,7 @@ struct NativeRelationAstNode {
   std::vector<std::uint32_t> grouping_key_expression_ids;
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
+  std::vector<std::uint32_t> limit_expression_ids;
   SourceRange range;
 };
 
