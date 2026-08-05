@@ -33938,12 +33938,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (predicate_join) {
       const auto predicate = expressions_by_id.find(
           catalog_join_relation->predicate_expression_ids.front());
+      const bool comparison_operator =
+          predicate != expressions_by_id.end() &&
+          predicate->second->canonical_operator_name.has_value() &&
+          (*predicate->second->canonical_operator_name == "=" ||
+           *predicate->second->canonical_operator_name == "<>" ||
+           *predicate->second->canonical_operator_name == "!=" ||
+           *predicate->second->canonical_operator_name == "<" ||
+           *predicate->second->canonical_operator_name == "<=" ||
+           *predicate->second->canonical_operator_name == ">" ||
+           *predicate->second->canonical_operator_name == ">=" ||
+           *predicate->second->canonical_operator_name ==
+               "IS DISTINCT FROM" ||
+           *predicate->second->canonical_operator_name ==
+               "IS NOT DISTINCT FROM");
       if (descriptor_offset >= native.descriptors.size() ||
           predicate == expressions_by_id.end() ||
           predicate->second->expression_kind !=
               NativeExpressionAstKind::kBinary ||
           predicate->second->child_expression_ids.size() != 2 ||
-          predicate->second->canonical_operator_name != "=" ||
+          !comparison_operator ||
           predicate->second->result_descriptor_id !=
               native.descriptors[descriptor_offset].descriptor_id ||
           native.descriptors[descriptor_offset].nullability !=

@@ -718,6 +718,33 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed native INNER JOIN did not evaluate its typed ON "
             "predicate over two heap scans");
 
+    const auto verify_inner_comparison =
+        [&](const std::string_view comparison_operator,
+            const std::uint64_t expected_rows) {
+          auto joined = parser.RunPipeline(
+              "SELECT * FROM qow_packet7.qow_packet7_relation INNER JOIN "
+              "qow_packet7.qow_packet7_join_relation ON integer_value " +
+                  std::string(comparison_operator) + " join_value;",
+              true);
+          if (!joined.accepted) PrintMessages(joined.messages);
+          Require(joined.accepted &&
+                      joined.server_operation_id == "query.execute" &&
+                      joined.server_cursor_uuid.empty() &&
+                      joined.server_row_count == expected_rows,
+                  "object-backed INNER JOIN did not execute canonical typed "
+                  "comparison operator " +
+                      std::string(comparison_operator));
+        };
+    verify_inner_comparison("=", 2);
+    verify_inner_comparison("<>", 7);
+    verify_inner_comparison("!=", 7);
+    verify_inner_comparison("<", 6);
+    verify_inner_comparison("<=", 8);
+    verify_inner_comparison(">", 1);
+    verify_inner_comparison(">=", 3);
+    verify_inner_comparison("IS DISTINCT FROM", 7);
+    verify_inner_comparison("IS NOT DISTINCT FROM", 2);
+
     const auto verify_outer_join = [&](const std::string_view join_sql,
                                        const std::uint64_t expected_rows,
                                        const std::string_view label) {

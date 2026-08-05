@@ -598,9 +598,20 @@ BuildEngineProjectedNativeBindingContext(
       };
       predicate = find_expression(
           catalog_join->predicate_expression_ids.front());
+      const bool comparison_operator =
+          predicate != nullptr &&
+          (predicate->operator_name == "=" ||
+           predicate->operator_name == "<>" ||
+           predicate->operator_name == "!=" ||
+           predicate->operator_name == "<" ||
+           predicate->operator_name == "<=" ||
+           predicate->operator_name == ">" ||
+           predicate->operator_name == ">=" ||
+           predicate->operator_name == "IS DISTINCT FROM" ||
+           predicate->operator_name == "IS NOT DISTINCT FROM");
       if (predicate == nullptr ||
           predicate->expression_kind != NativeExpressionAstKind::kBinary ||
-          predicate->operator_name != "=" ||
+          !comparison_operator ||
           predicate->child_expression_ids.size() != 2) {
         return fail("catalog_inner_join_predicate_invalid");
       }
@@ -3568,6 +3579,30 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     if (IsTriviaToken(token)) continue;
     if (token.kind == TokenKind::kEnd) break;
     if (IsLiteralKind(token.kind)) continue;
+    if (IsWord(token, "FROM")) {
+      const auto previous_non_trivia = [&](std::size_t cursor)
+          -> std::optional<std::size_t> {
+        while (cursor > first_token) {
+          --cursor;
+          if (!IsTriviaToken(cst.tokens[cursor])) return cursor;
+        }
+        return std::nullopt;
+      };
+      const auto distinct = previous_non_trivia(i);
+      const auto maybe_not =
+          distinct.has_value() && IsWord(cst.tokens[*distinct], "DISTINCT")
+              ? previous_non_trivia(*distinct)
+              : std::nullopt;
+      const auto maybe_is =
+          maybe_not.has_value() && IsWord(cst.tokens[*maybe_not], "NOT")
+              ? previous_non_trivia(*maybe_not)
+              : maybe_not;
+      if (distinct.has_value() && maybe_is.has_value() &&
+          IsWord(cst.tokens[*distinct], "DISTINCT") &&
+          IsWord(cst.tokens[*maybe_is], "IS")) {
+        continue;
+      }
+    }
     if (!IsWord(token, "FROM") && !IsWord(token, "INTO") &&
         !IsWord(token, "UPDATE") && !IsWord(token, "TABLE") &&
         !IsWord(token, "CALL") && !IsWord(token, "JOIN")) {

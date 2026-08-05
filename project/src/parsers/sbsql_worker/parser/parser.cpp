@@ -503,7 +503,7 @@ class NativeRelationalParser final {
     auto right_source = parse_source(2);
     if (!right_source.has_value()) return FinishRefusal();
     const Token* predicate_left = nullptr;
-    const Token* predicate_operator = nullptr;
+    std::string predicate_operator;
     const Token* predicate_right = nullptr;
     if (join_kind != NativeJoinAstKind::kCross) {
       if (!RequireWord("ON", "catalog_inner_join_on_required",
@@ -514,13 +514,31 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       predicate_left = &Consume();
-      if (AtEnd() || Current().kind != TokenKind::kOperator ||
-          Current().text != "=") {
-        Refuse("catalog_inner_join_equality_required",
-               "bounded catalog INNER JOIN requires an equality predicate");
+      if (!AtEnd() && Current().kind == TokenKind::kOperator &&
+          (Current().text == "=" || Current().text == "<>" ||
+           Current().text == "!=" || Current().text == "<" ||
+           Current().text == "<=" || Current().text == ">" ||
+           Current().text == ">=")) {
+        predicate_operator = CanonicalTokenText(Consume());
+      } else if (!AtEnd() && IsWord(Current(), "IS")) {
+        Consume();
+        const bool negate = !AtEnd() && IsWord(Current(), "NOT");
+        if (negate) Consume();
+        if (!RequireWord(
+                "DISTINCT", "catalog_join_distinct_operator_required",
+                "bounded catalog JOIN requires DISTINCT after IS [NOT]") ||
+            !RequireWord(
+                "FROM", "catalog_join_distinct_from_required",
+                "bounded catalog JOIN requires FROM after IS [NOT] DISTINCT")) {
+          return FinishRefusal();
+        }
+        predicate_operator = negate ? "IS NOT DISTINCT FROM"
+                                    : "IS DISTINCT FROM";
+      } else {
+        Refuse("catalog_join_comparison_required",
+               "bounded catalog JOIN requires a typed comparison predicate");
         return FinishRefusal();
       }
-      predicate_operator = &Consume();
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
         Refuse("catalog_inner_join_right_key_required",
                "bounded catalog INNER JOIN requires a right key identifier");
@@ -587,7 +605,7 @@ class NativeRelationalParser final {
       predicate.expression_id = NextExpressionId();
       predicate.expression_kind = NativeExpressionAstKind::kBinary;
       predicate.child_expression_ids = {left_key_id, right_key_id};
-      predicate.operator_name = predicate_operator->text;
+      predicate.operator_name = predicate_operator;
       predicate.range = Span(*predicate_left, *predicate_right);
       join.predicate_expression_ids = {predicate.expression_id};
       document_.expressions.push_back(std::move(predicate));

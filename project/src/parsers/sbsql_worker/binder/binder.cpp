@@ -635,9 +635,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             return expression.expression_id ==
                    catalog_join->predicate_expression_ids.front();
           });
+      const bool comparison_operator =
+          predicate_ast != ast.expressions.end() &&
+          (predicate_ast->operator_name == "=" ||
+           predicate_ast->operator_name == "<>" ||
+           predicate_ast->operator_name == "!=" ||
+           predicate_ast->operator_name == "<" ||
+           predicate_ast->operator_name == "<=" ||
+           predicate_ast->operator_name == ">" ||
+           predicate_ast->operator_name == ">=" ||
+           predicate_ast->operator_name == "IS DISTINCT FROM" ||
+           predicate_ast->operator_name == "IS NOT DISTINCT FROM");
       if (predicate_ast == ast.expressions.end() ||
           predicate_ast->expression_kind != NativeExpressionAstKind::kBinary ||
-          predicate_ast->operator_name != "=" ||
+          !comparison_operator ||
           predicate_ast->child_expression_ids.size() != 2) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
                               "catalog INNER JOIN predicate is not exact");
