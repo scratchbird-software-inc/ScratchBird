@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 42> kFunctionNames{
+    static constexpr std::array<std::string_view, 43> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -316,7 +316,7 @@ class NativeRelationalParser final {
         "PERCENTILE_CONT", "PERCENTILE_DISC", "RANK", "DENSE_RANK",
         "PERCENT_RANK", "CUME_DIST", "APPROX_PERCENTILE_CONT",
         "APPROX_PERCENTILE_DISC", "ARRAY_AGG", "JSON_AGG",
-        "JSON_OBJECT_AGG"};
+        "JSON_OBJECT_AGG", "APPROX_TOP_K"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -364,6 +364,10 @@ class NativeRelationalParser final {
 
   static bool IsBoundedCatalogJsonObjectAggregate(const Token& token) {
     return CanonicalTokenText(token) == "JSON_OBJECT_AGG";
+  }
+
+  static bool IsBoundedCatalogApproxTopK(const Token& token) {
+    return CanonicalTokenText(token) == "APPROX_TOP_K";
   }
 
   bool LooksLikeBoundedCatalogRelationSelect() const {
@@ -415,6 +419,15 @@ class NativeRelationalParser final {
           return false;
         }
         cursor += 9;
+      } else if (IsBoundedCatalogApproxTopK(*tokens_[cursor])) {
+        if (cursor + 5 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 3]->text != "," ||
+            tokens_[cursor + 4]->kind != TokenKind::kNumericLiteral ||
+            tokens_[cursor + 5]->text != ")") {
+          return false;
+        }
+        cursor += 6;
       } else if (IsBoundedCatalogMode(*tokens_[cursor])) {
         if (cursor + 9 >= tokens_.size() ||
             tokens_[cursor + 2]->text != ")" ||
@@ -522,6 +535,7 @@ class NativeRelationalParser final {
           IsBoundedCatalogJsonObjectAggregate(function_token);
       const bool ordered_collection =
           ordered_single_collection || json_object_aggregate;
+      const bool approx_top_k = IsBoundedCatalogApproxTopK(function_token);
       const bool direct_numeric_ordered_set =
           percentile || hypothetical_set;
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
@@ -600,6 +614,34 @@ class NativeRelationalParser final {
                 second_argument.expression_id);
             document_.expressions.push_back(std::move(second_argument));
           }
+        } else if (approx_top_k) {
+          if (!AtSymbol(",")) {
+            Refuse("catalog_approx_top_k_separator_required",
+                   "bounded APPROX_TOP_K requires a numeric result bound");
+            return FinishRefusal();
+          }
+          Consume();
+          if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+            Refuse("catalog_approx_top_k_bound_required",
+                   "bounded APPROX_TOP_K requires a numeric result bound");
+            return FinishRefusal();
+          }
+          const Token& bound_token = Consume();
+          reserved_aggregate_expression_id = NextExpressionId();
+          NativeExpressionAstNode aggregate_placeholder;
+          aggregate_placeholder.expression_id =
+              *reserved_aggregate_expression_id;
+          reserved_aggregate_expression_index = document_.expressions.size();
+          document_.expressions.push_back(std::move(aggregate_placeholder));
+          NativeExpressionAstNode bound;
+          bound.expression_id = NextExpressionId();
+          bound.expression_kind = NativeExpressionAstKind::kLiteral;
+          bound.literal_kind = NativeLiteralAstKind::kNumeric;
+          bound.spelling = bound_token.text;
+          bound.range = TokenSourceRange(bound_token);
+          argument_expression_ids.insert(argument_expression_ids.begin(),
+                                         bound.expression_id);
+          document_.expressions.push_back(std::move(bound));
         } else if (json_object_aggregate) {
           if (!AtSymbol(",")) {
             Refuse("catalog_json_object_aggregate_separator_required",

@@ -896,6 +896,24 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
               "the complete engine-issued aggregate registry");
     }
 
+    auto approximate_top_k = parser.RunPipeline(
+        "SELECT APPROX_TOP_K(text_value, 2) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!approximate_top_k.accepted) {
+      PrintMessages(approximate_top_k.messages);
+    }
+    Require(approximate_top_k.accepted &&
+                approximate_top_k.server_operation_id == "query.execute" &&
+                approximate_top_k.server_cursor_uuid.empty() &&
+                approximate_top_k.server_row_count == 1 &&
+                approximate_top_k.server_result_payload.find(
+                    "approx_top_k_value=[{\"value\":\"alpha\",\"count\":2},"
+                    "{\"value\":\"beta\",\"count\":1}]") !=
+                    std::string::npos,
+            "object-backed APPROX_TOP_K did not preserve its exact numeric "
+            "bound and canonical frequency ordering");
+
     auto string_aggregate = parser.RunPipeline(
         "SELECT STRING_AGG(text_value, ',') FROM "
         "qow_packet7.qow_packet7_relation;",

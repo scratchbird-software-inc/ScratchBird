@@ -657,7 +657,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-json-agg-ordered-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-json-object-agg-ordered-expression.v1"))
+                     "aggregate.global-json-object-agg-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-approx-top-k-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -832,6 +834,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool ordered_collection_function =
           ordered_single_collection_function ||
           json_object_aggregate_function;
+      const bool approx_top_k_function = function == "APPROX_TOP_K";
       const bool direct_numeric_ordered_function =
           percentile_function || hypothetical_function;
       const bool expression_function =
@@ -845,13 +848,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "APPROX_MEDIAN" ||
           string_agg_function || listagg_function || mode_function ||
           direct_numeric_ordered_function || pair_function ||
-          ordered_collection_function;
+          ordered_collection_function || approx_top_k_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (!pair_function && !string_agg_function && !listagg_function &&
-           !ordered_collection_function &&
+           !ordered_collection_function && !approx_top_k_function &&
            !direct_numeric_ordered_function &&
            expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
@@ -861,6 +864,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                            : ((pair_function ||
                                                string_agg_function ||
                                                ordered_single_collection_function ||
+                                               approx_top_k_function ||
                                                direct_numeric_ordered_function)
                                                   ? 2
                                                   : 1))) ||
@@ -880,7 +884,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         const bool direct_text =
             (string_agg_function || listagg_function) && ordinal == 1;
         const bool direct_numeric =
-            direct_numeric_ordered_function && ordinal == 0;
+            (direct_numeric_ordered_function || approx_top_k_function) &&
+            ordinal == 0;
         if (direct_text || direct_numeric) {
           if (argument == ast.expressions.end() ||
               argument->expression_kind != NativeExpressionAstKind::kLiteral ||
@@ -1263,6 +1268,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_json_object_agg =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-json-object-agg-");
+    const bool aggregate_approx_top_k =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-approx-top-k-");
     const bool aggregate_mode =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-mode-");
@@ -1378,6 +1386,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (aggregate_json_object_agg) {
         return std::string("json_object_agg_value");
       }
+      if (aggregate_approx_top_k) {
+        return std::string("approx_top_k_value");
+      }
       if (aggregate_mode) return std::string("mode_value");
       if (aggregate_percentile_cont) {
         return std::string("percentile_cont_value");
@@ -1463,7 +1474,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
              !aggregate_percentile_cont && !aggregate_percentile_disc &&
              !aggregate_approx_percentile_cont &&
              !aggregate_approx_percentile_disc &&
-             !aggregate_hypothetical) ||
+             !aggregate_hypothetical && !aggregate_approx_top_k) ||
             direct_descriptor == descriptor_by_id.end() ||
             direct_descriptor->second->nullability !=
                 BoundNullability::kNonNull ||
@@ -1489,7 +1500,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         } else if (aggregate_percentile_cont || aggregate_percentile_disc ||
                    aggregate_approx_percentile_cont ||
                    aggregate_approx_percentile_disc ||
-                   aggregate_hypothetical) {
+                   aggregate_hypothetical || aggregate_approx_top_k) {
           aggregate_argument_expression_ids.insert(
               aggregate_argument_expression_ids.begin(),
               global_aggregate_direct_literal->expression_id);

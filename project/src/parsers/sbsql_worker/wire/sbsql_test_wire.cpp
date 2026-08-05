@@ -817,6 +817,7 @@ BuildEngineProjectedNativeBindingContext(
           array_agg_function || json_agg_function;
       const bool ordered_collection_function =
           ordered_single_collection_function || json_object_agg_function;
+      const bool approx_top_k_function = function == "APPROX_TOP_K";
       const bool mode_function = function == "MODE";
       const bool percentile_cont_function = function == "PERCENTILE_CONT";
       const bool percentile_disc_function = function == "PERCENTILE_DISC";
@@ -851,7 +852,7 @@ BuildEngineProjectedNativeBindingContext(
           approx_count_distinct_function || approx_median_function ||
           string_agg_function || listagg_function || mode_function ||
           direct_numeric_ordered_function || pair_function ||
-          ordered_collection_function;
+          ordered_collection_function || approx_top_k_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -860,7 +861,8 @@ BuildEngineProjectedNativeBindingContext(
       const std::uint8_t result_profile_kind =
           array_agg_function
               ? 10
-              : ((json_agg_function || json_object_agg_function)
+              : ((json_agg_function || json_object_agg_function ||
+                  approx_top_k_function)
                      ? 8
                      : ((string_agg_function || listagg_function)
                             ? 4
@@ -874,6 +876,7 @@ BuildEngineProjectedNativeBindingContext(
               ? 3
               : ((pair_function || string_agg_function ||
                   ordered_single_collection_function ||
+                  approx_top_k_function ||
                   direct_numeric_ordered_function)
                      ? 2
                      : 1);
@@ -913,7 +916,8 @@ BuildEngineProjectedNativeBindingContext(
           const bool direct_text =
               (string_agg_function || listagg_function) && ordinal == 1;
           const bool direct_numeric =
-              direct_numeric_ordered_function && ordinal == 0;
+              (direct_numeric_ordered_function || approx_top_k_function) &&
+              ordinal == 0;
           if (direct_text || direct_numeric) {
             argument_profile_exact =
                 argument->expression_kind ==
@@ -961,7 +965,7 @@ BuildEngineProjectedNativeBindingContext(
             !CanonicalUuidBytes(direct_text_profile->descriptor_uuid)
                  .has_value() ||
             !CanonicalUuidBytes(direct_text_profile->type_uuid).has_value())) ||
-          (direct_numeric_ordered_function &&
+          ((direct_numeric_ordered_function || approx_top_k_function) &&
            (direct_numeric_profile ==
                 statement_context.descriptor_profiles.end() ||
             direct_numeric_profile->nullable ||
@@ -1004,7 +1008,7 @@ BuildEngineProjectedNativeBindingContext(
             {separator_expression->expression_id,
              context.descriptors.back().descriptor_id, std::nullopt,
              std::nullopt});
-      } else if (direct_numeric_ordered_function) {
+      } else if (direct_numeric_ordered_function || approx_top_k_function) {
         const auto direct_expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id ==
@@ -1128,6 +1132,9 @@ BuildEngineProjectedNativeBindingContext(
         aggregate_output_name = "json_object_agg_value";
         aggregate_semantic =
             "aggregate.global-json-object-agg-ordered-expression.v1";
+      } else if (approx_top_k_function) {
+        aggregate_output_name = "approx_top_k_value";
+        aggregate_semantic = "aggregate.global-approx-top-k-expression.v1";
       } else if (mode_function) {
         aggregate_output_name = "mode_value";
         aggregate_semantic = "aggregate.global-mode-ordered-expression.v1";

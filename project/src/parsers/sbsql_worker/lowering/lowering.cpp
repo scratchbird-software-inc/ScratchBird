@@ -33086,7 +33086,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-json-agg-ordered-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-json-object-agg-ordered-expression.v1");
+               "aggregate.global-json-object-agg-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-approx-top-k-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33836,7 +33838,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          aggregate_relation->semantic_variant_id ==
              "aggregate.global-approx-percentile-cont-ordered-expression.v1" ||
          aggregate_relation->semantic_variant_id ==
-             "aggregate.global-approx-percentile-disc-ordered-expression.v1");
+             "aggregate.global-approx-percentile-disc-ordered-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-approx-top-k-expression.v1");
     const auto aggregate_direct_descriptor_count =
         string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
@@ -33973,6 +33977,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-json-object-agg-");
       const bool ordered_single_collection = array_agg || json_agg;
+      const bool approx_top_k =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-approx-top-k-");
       const bool mode =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-mode-");
@@ -34006,6 +34013,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool hypothetical =
           rank || dense_rank || percent_rank || cume_dist;
       const bool direct_numeric_ordered = percentile || hypothetical;
+      const bool direct_numeric = direct_numeric_ordered || approx_top_k;
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -34105,6 +34113,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (array_agg) return "array_agg_value";
         if (json_agg) return "json_agg_value";
         if (json_object_agg) return "json_object_agg_value";
+        if (approx_top_k) return "approx_top_k_value";
         if (mode) return "mode_value";
         if (percentile_cont) return "percentile_cont_value";
         if (percentile_disc) return "percentile_disc_value";
@@ -34135,7 +34144,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                           ? 3
                           : ((pair_aggregate || string_aggregate ||
                               ordered_single_collection ||
-                              direct_numeric_ordered)
+                              direct_numeric)
                                  ? 2
                                  : 1))) ||
           aggregate_expression->second->result_descriptor_id !=
@@ -34169,7 +34178,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           const bool direct_text =
               (string_aggregate || listagg) && ordinal == 1;
           const bool direct_numeric =
-              direct_numeric_ordered && ordinal == 0;
+              (direct_numeric_ordered || approx_top_k) && ordinal == 0;
           if (direct_text || direct_numeric) {
             const auto& direct_descriptor =
                 native.descriptors[width + aggregate_descriptor_count];
