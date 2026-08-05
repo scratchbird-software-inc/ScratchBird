@@ -920,6 +920,18 @@ FilteredProjectedDistinctSortOffsetValuesEnvelope(
   return envelope;
 }
 
+// RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
+sblr::SblrOperationEnvelope RejectAllFilteredRows(
+    sblr::SblrOperationEnvelope envelope) {
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "13") {
+      operand.value = "1|-|1|-|-|1|-|39";
+    }
+  }
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4209,7 +4221,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 16> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 17> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4226,6 +4238,8 @@ bool ValidateGeneralSelectExecutionBoundary() {
       FilteredProjectedDistinctSortLimitValuesEnvelope(),
       FilteredProjectedDistinctSortOffsetValuesEnvelope(false),
       FilteredProjectedDistinctSortOffsetValuesEnvelope(true),
+      RejectAllFilteredRows(
+          FilteredProjectedDistinctSortOffsetValuesEnvelope(true)),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5732,6 +5746,78 @@ bool ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "negative OFFSET or exhausted full FETCH tail published evidence");
+  return passed;
+}
+
+// RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
+bool ValidateEmptyFilteredExpressionProjectionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), std::move(envelope), {}});
+  };
+  struct EmptyShape {
+    sblr::SblrOperationEnvelope envelope;
+    std::size_t node_count = 0;
+    std::size_t column_count = 0;
+    std::string_view name;
+  };
+  std::array<EmptyShape, 5> shapes{
+      EmptyShape{RejectAllFilteredRows(
+                     FilteredExpressionProjectValuesEnvelope()),
+                 3, 2, "FILTER/PROJECT"},
+      EmptyShape{RejectAllFilteredRows(
+                     FilteredProjectedSortValuesEnvelope()),
+                 4, 2, "FILTER/PROJECT/SORT"},
+      EmptyShape{RejectAllFilteredRows(
+                     FilteredProjectedSortLimitValuesEnvelope()),
+                 5, 2, "FILTER/PROJECT/SORT/LIMIT"},
+      EmptyShape{RejectAllFilteredRows(
+                     FilteredProjectedDistinctSortOffsetValuesEnvelope(false)),
+                 6, 1, "full LIMIT/OFFSET tail"},
+      EmptyShape{RejectAllFilteredRows(
+                     FilteredProjectedDistinctSortOffsetValuesEnvelope(true)),
+                 6, 1, "full FETCH tail"},
+  };
+
+  bool passed = true;
+  for (auto& shape : shapes) {
+    const auto result = dispatch(std::move(shape.envelope));
+    if (!result.api_result.ok) {
+      for (const auto& diagnostic : result.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    passed &= Require(
+        result.accepted && result.optimizer_admitted &&
+            result.optimizer_selected && result.physical_dag_published &&
+            result.physical_dag_executed &&
+            result.runtime_actuals_attached &&
+            result.canonical_result_published && result.api_result.ok &&
+            result.diagnostics.empty() &&
+            result.logical_node_count == shape.node_count &&
+            result.physical_node_count == shape.node_count &&
+            result.canonical_result_column_count == shape.column_count &&
+            result.canonical_result_row_count == 0 &&
+            result.api_result.result_shape.columns.size() ==
+                shape.column_count &&
+            result.api_result.result_shape.rows.empty(),
+        std::string(shape.name) +
+            " did not publish a typed empty result after FILTER rejected "
+            "every row");
+  }
+
+  const auto repeated_first = dispatch(RejectAllFilteredRows(
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(true)));
+  const auto repeated_second = dispatch(RejectAllFilteredRows(
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(true)));
+  passed &= Require(
+      repeated_first.api_result.ok && repeated_second.api_result.ok &&
+          repeated_first.canonical_result_row_count == 0 &&
+          repeated_first.selected_plan_uuid ==
+              repeated_second.selected_plan_uuid &&
+          repeated_first.canonical_result_bytes ==
+              repeated_second.canonical_result_bytes,
+      "typed empty full-tail result changed deterministic plan/result bytes");
   return passed;
 }
 
@@ -10820,6 +10906,7 @@ int main() {
                       ValidateFilteredProjectedSortLimitCompositionSpine() &&
                       ValidateFilteredProjectedDistinctSortLimitCompositionSpine() &&
                       ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() &&
+                      ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&

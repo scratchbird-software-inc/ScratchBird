@@ -3849,8 +3849,7 @@ bool MaterializeExpressionProjectBatch(
     exec::DescriptorBatch* output_batch,
     std::string* detail) {
   if (output_batch == nullptr || detail == nullptr || expressions.empty() ||
-      expressions.size() != output_columns.size() ||
-      input_batch.rows.empty()) {
+      expressions.size() != output_columns.size()) {
     if (detail != nullptr) {
       *detail = "expression PROJECT materialization request is incomplete";
     }
@@ -3906,8 +3905,7 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
   if (root.output_descriptor_ids.empty() ||
       root.bound_expression_ids.size() != root.output_descriptor_ids.size() ||
       input.result_bindings.size() != input.batch.columns.size() ||
-      input_node.output_descriptor_ids.size() != input.batch.columns.size() ||
-      input.batch.rows.empty()) {
+      input_node.output_descriptor_ids.size() != input.batch.columns.size()) {
     result.detail =
         "expression PROJECT input, output, or expression coverage is incomplete";
     return result;
@@ -3938,6 +3936,20 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
   }
 
   CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
+  std::vector<api::EngineTypedValue> descriptor_only_input_row;
+  if (input.batch.rows.empty()) {
+    descriptor_only_input_row.reserve(input.batch.columns.size());
+    for (const auto& column : input.batch.columns) {
+      api::EngineTypedValue value;
+      value.descriptor = column.descriptor;
+      value.state = api::EngineValueState::value;
+      value.is_null = false;
+      descriptor_only_input_row.push_back(std::move(value));
+    }
+  }
+  const auto& type_inference_row =
+      input.batch.rows.empty() ? descriptor_only_input_row
+                               : input.batch.rows.front().values;
   std::vector<exec::ExecutorColumnDescriptor> output_columns;
   output_columns.reserve(outputs.size());
   std::size_t published_ordinal = 0;
@@ -3967,7 +3979,7 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
             &prepared_expression.row_binding, &result.detail) ||
         !runtime.InferTypeForConsumer(
             expression_id, prepared_expression.row_binding,
-            input.batch.rows.front().values,
+            type_inference_row,
             api::EngineCanonicalExpressionConsumer::projection,
             &prepared_expression.expected_type, &result.detail) ||
         prepared_expression.expected_type.empty() ||
@@ -3988,16 +4000,52 @@ PreparedProjectRoot PrepareExpressionProjectRoot(
           "expression PROJECT descriptor metadata contradicts its result type";
       return result;
     }
-    api::EngineTypedValue first_value;
-    if (!runtime.EvaluateForConsumer(
-            expression_id, prepared_expression.expected_type,
-            prepared_expression.row_binding, input.batch.rows.front().values,
-            api::EngineCanonicalExpressionConsumer::projection, &first_value,
-            &result.detail)) {
-      return result;
+    api::EngineDescriptor output_descriptor;
+    if (!input.batch.rows.empty()) {
+      api::EngineTypedValue first_value;
+      if (!runtime.EvaluateForConsumer(
+              expression_id, prepared_expression.expected_type,
+              prepared_expression.row_binding,
+              input.batch.rows.front().values,
+              api::EngineCanonicalExpressionConsumer::projection,
+              &first_value, &result.detail)) {
+        return result;
+      }
+      output_descriptor = std::move(first_value.descriptor);
+    } else {
+      const auto& source = *descriptor->second;
+      output_descriptor.descriptor_uuid.canonical = source.descriptor_uuid;
+      output_descriptor.descriptor_kind = "scalar";
+      output_descriptor.canonical_type_name =
+          prepared_expression.expected_type;
+      output_descriptor.encoded_descriptor =
+          "type_uuid=" + source.type_uuid + ";nullability=" +
+          (source.nullability == api::RelationalNullability::kNullable
+               ? "nullable"
+               : "non_null");
+      if (source.collation_uuid.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";collation_uuid=" + *source.collation_uuid;
+      }
+      if (source.timezone_profile_id.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";timezone_profile_id=" + *source.timezone_profile_id;
+      }
+      if (source.width.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";width=" + std::to_string(*source.width);
+      }
+      if (source.precision.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";precision=" + std::to_string(*source.precision);
+      }
+      if (source.scale.has_value()) {
+        output_descriptor.encoded_descriptor +=
+            ";scale=" + std::to_string(*source.scale);
+      }
     }
     output_columns.push_back(
-        {output->output_name_utf8, first_value.descriptor,
+        {output->output_name_utf8, std::move(output_descriptor),
          descriptor->second->nullability ==
              api::RelationalNullability::kNullable,
          descriptor->second->descriptor_id});
@@ -6622,12 +6670,6 @@ ExecuteCanonicalObjectFreeFilterProjectQuery(
       filtered_input.batch.rows.push_back(row);
     }
   }
-  if (filtered_input.batch.rows.empty()) {
-    return refuse("QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-PAYLOAD-V1",
-                  "bounded expression PROJECT requires one surviving "
-                  "FILTER row for exact type validation");
-  }
-
   std::uint64_t project_expression_work = 0;
   std::uint64_t total_expression_work = 0;
   if (!CheckedMultiply(filtered_input.batch.rows.size(),
@@ -7207,13 +7249,6 @@ ExecuteCanonicalObjectFreeFilterProjectSortQuery(
       filtered_input.batch.rows.push_back(row);
     }
   }
-  if (filtered_input.batch.rows.empty()) {
-    return refuse(
-        "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-SORT-PAYLOAD-V1",
-        "bounded expression PROJECT/SORT requires one surviving FILTER row "
-        "for exact type validation");
-  }
-
   std::uint64_t project_expression_work = 0;
   std::uint64_t total_expression_work = 0;
   if (!CheckedMultiply(filtered_input.batch.rows.size(),
@@ -7590,13 +7625,6 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
       filtered_input.batch.rows.push_back(row);
     }
   }
-  if (filtered_input.batch.rows.empty()) {
-    return refuse(
-        "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-SORT-LIMIT-PAYLOAD-V1",
-        "bounded expression tail requires one surviving FILTER row for "
-        "exact type validation");
-  }
-
   std::uint64_t project_expression_work = 0;
   std::uint64_t total_expression_work = 0;
   if (!CheckedMultiply(filtered_input.batch.rows.size(),
@@ -8037,11 +8065,6 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       filtered_input.batch.rows.push_back(row);
     }
   }
-  if (filtered_input.batch.rows.empty()) {
-    return refuse(std::string(kPayloadDiagnostic),
-                  "bounded full SQL tail requires one surviving FILTER row");
-  }
-
   std::uint64_t project_expression_work = 0;
   std::uint64_t total_expression_work = 0;
   if (!CheckedMultiply(filtered_input.batch.rows.size(),
