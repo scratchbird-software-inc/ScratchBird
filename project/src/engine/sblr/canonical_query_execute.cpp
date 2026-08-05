@@ -23,9 +23,11 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -5766,8 +5768,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // The compiler admits a descriptor-valid unary tail containing at most one
 // FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
 // canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
-// ordinal UNION ALL branch. Every node still executes through the ordinary
-// optimizer-published ABI-v2 DAG and its canonical executor.
+// ordinal quantified set-operation branch. Every node still executes through
+// the ordinary optimizer-published ABI-v2 DAG and its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -5882,7 +5884,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       set_profile = MatchLiveSetOperationProfile(
           current->semantic_variant_id);
       if (!set_profile.matched ||
-          current->semantic_variant_id != "set-operation.union-all.v1" ||
+          set_profile.alignment !=
+              exec::CanonicalSetOperationAlignment::kOrdinal ||
+          set_profile.type_profile !=
+              exec::CanonicalSetOperationTypeProfile::kExact ||
+          set_profile.equality_profile !=
+              exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
           current->input_logical_node_ids.size() != 2 ||
           current->input_logical_node_ids[0] ==
               current->input_logical_node_ids[1] ||
@@ -6360,22 +6367,109 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     set_output_row_bound = static_cast<std::size_t>(output_bound);
     set_comparison_bound = std::max<std::size_t>(
         1, static_cast<std::size_t>(comparison_bound));
+    const auto set_work =
+        set_profile.operation == exec::CanonicalSetOperationKind::kUnion &&
+                set_profile.quantifier ==
+                    exec::CanonicalSetOperationQuantifier::kAll
+            ? output_bound
+            : comparison_bound;
 
     state.ok = true;
     state.batch.columns = prepared_set->result_columns;
-    const auto append_retagged_rows = [&](const exec::DescriptorBatch& batch) {
+    const auto retagged_rows = [&](const exec::DescriptorBatch& batch) {
+      std::vector<exec::DescriptorTuple> rows;
+      rows.reserve(batch.rows.size());
       for (const auto& source : batch.rows) {
         auto row = source;
         for (std::size_t column = 0; column < row.values.size(); ++column) {
           row.values[column].descriptor =
               prepared_set->result_columns[column].descriptor;
         }
-        state.batch.rows.push_back(std::move(row));
+        rows.push_back(std::move(row));
       }
+      return rows;
     };
+    const auto left_rows = retagged_rows(set_left_values->batch);
+    const auto right_rows = retagged_rows(set_right_values->batch);
+    using SetRowKey = std::vector<std::string>;
+    const auto row_key = [](const exec::DescriptorTuple& row) {
+      SetRowKey key;
+      key.reserve(row.values.size());
+      for (const auto& value : row.values) {
+        if (value.state == api::EngineValueState::sql_null) {
+          key.emplace_back("null");
+          continue;
+        }
+        std::string token = value.descriptor.canonical_type_name + ":" +
+                            value.encoded_value + ":";
+        token.append(
+            reinterpret_cast<const char*>(value.binary_value.data()),
+            value.binary_value.size());
+        key.push_back(std::move(token));
+      }
+      return key;
+    };
+    std::vector<SetRowKey> left_keys;
+    std::vector<SetRowKey> right_keys;
+    left_keys.reserve(left_rows.size());
+    right_keys.reserve(right_rows.size());
+    for (const auto& row : left_rows) left_keys.push_back(row_key(row));
+    for (const auto& row : right_rows) right_keys.push_back(row_key(row));
+
     state.batch.rows.reserve(set_output_row_bound);
-    append_retagged_rows(set_left_values->batch);
-    append_retagged_rows(set_right_values->batch);
+    const bool distinct =
+        set_profile.quantifier ==
+        exec::CanonicalSetOperationQuantifier::kDistinct;
+    if (distinct &&
+        set_profile.operation == exec::CanonicalSetOperationKind::kUnion) {
+      std::set<SetRowKey> emitted;
+      for (std::size_t row = 0; row < left_rows.size(); ++row) {
+        if (emitted.insert(left_keys[row]).second) {
+          state.batch.rows.push_back(left_rows[row]);
+        }
+      }
+      for (std::size_t row = 0; row < right_rows.size(); ++row) {
+        if (emitted.insert(right_keys[row]).second) {
+          state.batch.rows.push_back(right_rows[row]);
+        }
+      }
+    } else if (distinct) {
+      std::set<SetRowKey> right_membership(
+          right_keys.begin(), right_keys.end());
+      std::set<SetRowKey> emitted;
+      for (std::size_t row = 0; row < left_rows.size(); ++row) {
+        const bool present = right_membership.contains(left_keys[row]);
+        const bool candidate =
+            set_profile.operation ==
+                    exec::CanonicalSetOperationKind::kIntersect
+                ? present
+                : !present;
+        if (candidate && emitted.insert(left_keys[row]).second) {
+          state.batch.rows.push_back(left_rows[row]);
+        }
+      }
+    } else if (set_profile.operation ==
+               exec::CanonicalSetOperationKind::kUnion) {
+      state.batch.rows.insert(state.batch.rows.end(), left_rows.begin(),
+                              left_rows.end());
+      state.batch.rows.insert(state.batch.rows.end(), right_rows.begin(),
+                              right_rows.end());
+    } else {
+      std::map<SetRowKey, std::size_t> right_multiplicity;
+      for (const auto& key : right_keys) ++right_multiplicity[key];
+      for (std::size_t row = 0; row < left_rows.size(); ++row) {
+        auto found = right_multiplicity.find(left_keys[row]);
+        const bool consumes = found != right_multiplicity.end() &&
+                              found->second != 0;
+        if (consumes) --found->second;
+        const bool emit =
+            set_profile.operation ==
+                    exec::CanonicalSetOperationKind::kIntersect
+                ? consumes
+                : !consumes;
+        if (emit) state.batch.rows.push_back(left_rows[row]);
+      }
+    }
     state.result_bindings = prepared_set->result_bindings;
 
     std::uint64_t left_memory = 1;
@@ -6386,7 +6480,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         !AddBatchMemoryBytes(state.batch, &set_memory) ||
         !CheckedAdd(set_memory, left_memory, &set_memory) ||
         !CheckedAdd(set_memory, right_memory, &set_memory) ||
-        !CheckedAdd(set_memory, output_bound, &set_memory) ||
+        !CheckedAdd(set_memory, set_work, &set_memory) ||
         set_memory >
             request.optimizer_request.resource.memory_budget_bytes) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
@@ -6412,7 +6506,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          set_profile.physical_semantic_id, set_output_row_bound,
          set_memory, 2, 2});
     if (!CheckedAdd(left_count, right_count, &total_work) ||
-        !CheckedAdd(total_work, output_bound, &total_work) ||
+        !CheckedAdd(total_work, set_work, &total_work) ||
         total_work >
             request.optimizer_request.resource.maximum_candidate_count) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",

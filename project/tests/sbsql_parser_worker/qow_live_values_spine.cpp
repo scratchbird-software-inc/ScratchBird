@@ -482,6 +482,31 @@ sblr::SblrOperationEnvelope SetOperationValuesEnvelope(
   return envelope;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-EXACT-SET-PROFILE-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenExactSetProfileLimitEnvelope(
+    const std::string& semantic_variant_hex,
+    const std::string& tree_uuid) {
+  auto envelope = SetOperationValuesEnvelope(semantic_variant_hex, tree_uuid);
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uint32" &&
+        operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000c941|"
+       "019f0000-0000-7400-8000-000000008402|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "7", "1|-|4|-|-|1|-|3130"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|7|-|-|-"});
+  return envelope;
+}
+
 // RCP-046-TEST-LIVE-SET-OPERATION-BY-NAME-V1
 sblr::SblrOperationEnvelope SetOperationByNameValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -7221,6 +7246,76 @@ bool ValidateNodeDrivenUnionAllCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-EXACT-SET-PROFILE-COMPOSITION-V1
+bool ValidateNodeDrivenExactSetProfilesCompositionSpine() {
+  struct ProfileExpectation {
+    std::string semantic_hex;
+    std::string tree_uuid;
+    std::vector<std::string> values;
+  };
+  const std::array<ProfileExpectation, 5> profiles{{
+      {"7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000c940",
+       {"1", "2", "null", "3"}},
+      {"7365742d6f7065726174696f6e2e696e746572736563742d616c6c2e7631",
+       "019f0000-0000-7000-8000-00000000c941", {"2", "null"}},
+      {"7365742d6f7065726174696f6e2e696e746572736563742d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000c942", {"2", "null"}},
+      {"7365742d6f7065726174696f6e2e6578636570742d616c6c2e7631",
+       "019f0000-0000-7000-8000-00000000c943", {"1"}},
+      {"7365742d6f7065726174696f6e2e6578636570742d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000c944", {"1"}},
+  }};
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::size_t rows) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 4 &&
+           result.physical_node_count == 4 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == rows &&
+           result.api_result.result_shape.rows.size() == rows;
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& profile : profiles) {
+    const auto first = dispatch(NodeDrivenExactSetProfileLimitEnvelope(
+        profile.semantic_hex, profile.tree_uuid));
+    const auto repeated = dispatch(NodeDrivenExactSetProfileLimitEnvelope(
+        profile.semantic_hex, profile.tree_uuid));
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    bool values_match = completed(first, profile.values.size());
+    if (values_match) {
+      for (std::size_t row = 0; row < profile.values.size(); ++row) {
+        const auto& value =
+            first.api_result.result_shape.rows[row].fields[0].second;
+        values_match &= profile.values[row] == "null"
+                            ? value.state == api::EngineValueState::sql_null
+                            : value.encoded_value == profile.values[row];
+      }
+    }
+    passed &= Require(
+        values_match && completed(repeated, profile.values.size()) &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes &&
+            selected_plans.insert(first.selected_plan_uuid).second,
+        "node-driven exact quantified set profile lost semantics, identity, "
+        "or deterministic replay");
+  }
+  return passed;
+}
+
 // RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
 bool ValidateEmptyFilteredExpressionProjectionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
@@ -12667,6 +12762,7 @@ int main() {
                       ValidateNodeDrivenJoinCompositionSpine() &&
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
+                      ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
