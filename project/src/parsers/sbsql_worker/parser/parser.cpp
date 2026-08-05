@@ -438,15 +438,29 @@ class NativeRelationalParser final {
           return false;
         }
         const Token& identifier_token = Consume();
-        NativeExpressionAstNode identifier;
-        identifier.expression_id = NextExpressionId();
-        identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
-        identifier.spelling = identifier_token.text;
-        identifier.range = TokenSourceRange(identifier_token);
-        const auto expression_id = identifier.expression_id;
-        document_.expressions.push_back(std::move(identifier));
+        std::optional<std::uint32_t> interned_expression_id;
+        for (const auto source_expression_id : source_expression_ids) {
+          const auto& candidate =
+              document_.expressions[source_expression_id - 1];
+          if (candidate.expression_kind ==
+                  NativeExpressionAstKind::kIdentifier &&
+              candidate.spelling == identifier_token.text) {
+            interned_expression_id = source_expression_id;
+            break;
+          }
+        }
+        if (!interned_expression_id.has_value()) {
+          NativeExpressionAstNode identifier;
+          identifier.expression_id = NextExpressionId();
+          identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+          identifier.spelling = identifier_token.text;
+          identifier.range = TokenSourceRange(identifier_token);
+          interned_expression_id = identifier.expression_id;
+          document_.expressions.push_back(std::move(identifier));
+          source_expression_ids.push_back(*interned_expression_id);
+        }
+        const auto expression_id = *interned_expression_id;
         expression_ids->push_back(expression_id);
-        source_expression_ids.push_back(expression_id);
 
         if (ordering_terms != nullptr) {
           NativeOrderingAstTerm term;

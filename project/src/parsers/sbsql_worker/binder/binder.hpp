@@ -67,6 +67,16 @@ struct NativeRelationBindingInput {
   std::string semantic_variant_id;
 };
 
+struct NativeWindowFunctionBindingInput {
+  std::uint32_t invocation_id{0};
+  std::uint32_t function_expression_id{0};
+  std::uint16_t abi_version{0};
+  std::string builtin_id;
+  std::string function_uuid;
+  bool executable{false};
+  std::uint32_t result_descriptor_id{0};
+};
+
 struct NativeCatalogColumnBindingInput {
   std::uint32_t ordinal{0};
   std::string column_uuid;
@@ -116,6 +126,7 @@ struct NativeRelationalBindingContext {
   std::vector<NativeExpressionBindingInput> expressions;
   std::vector<NativeOutputBindingInput> outputs;
   std::vector<NativeRelationBindingInput> relations;
+  std::vector<NativeWindowFunctionBindingInput> window_functions;
   std::vector<NativeCatalogRelationBindingInput> catalog_relations;
 };
 
@@ -192,6 +203,11 @@ struct BoundWindowInvocationAstRecord {
   std::uint32_t function_expression_id{0};
   std::uint32_t window_definition_id{0};
   std::optional<std::string> output_name_utf8;
+  std::uint16_t function_abi_version{0};
+  std::string builtin_id;
+  std::string bound_function_uuid;
+  std::uint32_t result_descriptor_id{0};
+  std::vector<std::uint32_t> argument_expression_ids;
 };
 
 struct BoundRelationAstRecord {

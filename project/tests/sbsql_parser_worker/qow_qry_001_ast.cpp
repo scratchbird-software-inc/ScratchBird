@@ -762,6 +762,19 @@ bool ValidateTypedWindowParse() {
                         native.catalog_relation_sources.front().alias->spelling ==
                             "e",
                     "typed window catalog source differs");
+
+  const auto reused = sbsql::ParseNativeRelationalAst(sbsql::BuildCst(
+      "SELECT ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY account_id) "
+      "FROM app.events;"));
+  passed &= Require(
+      reused.accepted() && reused.expressions.size() == 2 &&
+          reused.relations.front().output_expression_ids ==
+              std::vector<std::uint32_t>({2}) &&
+          reused.window_definitions.front().partition_expression_ids ==
+              std::vector<std::uint32_t>({2}) &&
+          reused.window_definitions.front().ordering_terms.front().expression_id ==
+              2,
+      "reused partition/order column was not interned to one typed expression");
   return passed;
 }
 

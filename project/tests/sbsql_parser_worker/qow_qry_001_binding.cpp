@@ -166,6 +166,45 @@ sbsql::NativeRelationalBindingContext CatalogBindingContext() {
   return context;
 }
 
+sbsql::NativeRelationalBindingContext WindowBindingContext() {
+  auto context = CatalogBindingContext();
+  context.catalog_relations.front().columns[0].canonical_name_key =
+      "account_id";
+  context.catalog_relations.front().columns[1].canonical_name_key =
+      "created_at";
+
+  sbsql::NativeDescriptorBindingInput frame_offset;
+  frame_offset.descriptor_id = 3;
+  frame_offset.descriptor_uuid = "019f0000-0000-7200-8000-00000000020e";
+  frame_offset.type_uuid = "019f0000-0000-7300-8000-00000000020f";
+  frame_offset.nullability = sbsql::BoundNullability::kNonNull;
+  context.descriptors.push_back(frame_offset);
+  sbsql::NativeDescriptorBindingInput row_number;
+  row_number.descriptor_id = 4;
+  row_number.descriptor_uuid = "019f0000-0000-7200-8000-000000000210";
+  row_number.type_uuid = "019f0000-0000-7300-8000-000000000211";
+  row_number.nullability = sbsql::BoundNullability::kNonNull;
+  context.descriptors.push_back(row_number);
+  context.expressions = {
+      {1, 1, std::nullopt,
+       context.catalog_relations.front().columns[0].column_uuid},
+      {2, 2, std::nullopt,
+       context.catalog_relations.front().columns[1].column_uuid},
+      {3, 3, std::nullopt, std::nullopt},
+      {4, 4, "019de5fc-2400-7539-bcce-00eef3ae7220", std::nullopt},
+  };
+  context.outputs = {
+      {1, 1, "account_id", 1, false, 0, 1},
+      {2, 2, "created_at", 2, false, 1, 1},
+      {3, 4, "sequence_no", 4, true, 0, 2},
+  };
+  context.relations = {{2, "window.row-number.v1"}};
+  context.window_functions = {
+      {1, 4, 1, "sb.window.row_number",
+       "019de5fc-2400-7539-bcce-00eef3ae7220", true, 4}};
+  return context;
+}
+
 bool HasExactMgaStatementContext(
     const sbsql::BoundNativeRelationalDocument& bound,
     const sbsql::NativeRelationalBindingContext& context) {
@@ -920,6 +959,88 @@ bool ValidateMgaStatementContext() {
   return passed;
 }
 
+bool ValidateTypedWindowBinding() {
+  constexpr std::string_view sql =
+      "SELECT ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at "
+      "DESC NULLS FIRST GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE "
+      "TIES) AS sequence_no FROM app.events AS e;";
+  const auto ast =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  auto context = WindowBindingContext();
+  auto bound = sbsql::BindNativeRelationalAst(ast, context);
+  bool passed = true;
+  passed &= Require(bound.bound && !bound.messages.has_errors(),
+                    "typed ROW_NUMBER binding was refused");
+  passed &= Require(HasExactMgaStatementContext(bound, context),
+                    "typed window binding changed MGA statement authority");
+  passed &= Require(bound.root_relation_id == 2 &&
+                        bound.relations.size() == 2 &&
+                        bound.relations[1].relation_kind ==
+                            sbsql::NativeRelationAstKind::kWindow &&
+                        bound.relations[1].semantic_variant_id ==
+                            "window.row-number.v1" &&
+                        bound.relations[1].input_relation_ids ==
+                            std::vector<std::uint32_t>({1}) &&
+                        bound.relations[1].window_invocation_ids ==
+                            std::vector<std::uint32_t>({1}),
+                    "typed bound window relation differs");
+  passed &= Require(bound.expressions.size() == 4 &&
+                        bound.expressions[2].literal_kind ==
+                            sbsql::NativeLiteralAstKind::kNumeric &&
+                        bound.expressions[2].literal_or_parameter_ref == "2" &&
+                        bound.expressions[3].bound_function_uuid ==
+                            context.expressions[3].function_uuid,
+                    "typed window expression binding differs");
+  passed &= Require(bound.window_definitions.size() == 1 &&
+                        bound.window_invocations.size() == 1,
+                    "bound window carrier cardinality differs");
+  if (bound.window_invocations.size() == 1) {
+    const auto& invocation = bound.window_invocations.front();
+    passed &= Require(
+        invocation.function_abi_version == 1 &&
+            invocation.builtin_id == "sb.window.row_number" &&
+            invocation.bound_function_uuid ==
+                "019de5fc-2400-7539-bcce-00eef3ae7220" &&
+            invocation.result_descriptor_id == 4 &&
+            invocation.argument_expression_ids.empty(),
+        "engine-issued window registry identity was not preserved");
+  }
+  if (bound.window_definitions.size() == 1) {
+    const auto& definition = bound.window_definitions.front();
+    passed &= Require(
+        definition.partition_expression_ids ==
+                std::vector<std::uint32_t>({1}) &&
+            definition.ordering_terms.size() == 1 &&
+            definition.ordering_terms.front().expression_id == 2 &&
+            definition.frame_unit == sbsql::NativeWindowFrameUnit::kGroups &&
+            definition.frame_start.has_value() &&
+            definition.frame_start->offset_expression_id == 3 &&
+            definition.frame_end.has_value() &&
+            definition.frame_end->bound_kind ==
+                sbsql::NativeWindowFrameBoundKind::kCurrentRow &&
+            definition.exclusion ==
+                sbsql::NativeWindowFrameExclusion::kTies,
+        "bound window partition/order/frame state differs");
+  }
+  passed &= Require(bound.outputs.size() == 3 &&
+                        !bound.outputs[0].visible &&
+                        !bound.outputs[1].visible &&
+                        bound.outputs[2].visible &&
+                        bound.outputs[2].output_name_utf8 == "sequence_no" &&
+                        bound.scopes.front().visible_projection_ids ==
+                            std::vector<std::uint32_t>({3}),
+                    "typed window hidden/source or visible/result output differs");
+
+  context.expressions.back().function_uuid = std::nullopt;
+  bound = sbsql::BindNativeRelationalAst(ast, context);
+  passed &= Require(
+      !bound.bound && bound.relations.empty() && bound.expressions.empty() &&
+          bound.window_definitions.empty() && bound.window_invocations.empty() &&
+          HasScrubbedMgaStatementContext(bound),
+      "missing engine-issued window UUID did not refuse atomically");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-001-BINDING-V1
@@ -939,5 +1060,6 @@ int main() {
   passed &= ValidateValuesRowRefusal();
   passed &= ValidateScopeRefusal();
   passed &= ValidateMgaStatementContext();
+  passed &= ValidateTypedWindowBinding();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

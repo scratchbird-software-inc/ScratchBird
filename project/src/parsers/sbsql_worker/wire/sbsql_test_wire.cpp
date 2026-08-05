@@ -532,6 +532,224 @@ BuildEngineProjectedNativeBindingContext(
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
 
+  const auto window_relation = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kWindow;
+      });
+  if (window_relation != ast.relations.end()) {
+    // QOW-SOURCE-RCP-050-ENGINE-WINDOW-BINDING-CONTEXT-V1
+    const auto source_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind ==
+                 NativeRelationAstKind::kCatalogSource;
+        });
+    if (source_relation == ast.relations.end() || ast.relations.size() != 2 ||
+        ast.root_relation_id != window_relation->relation_id ||
+        window_relation->input_relation_ids !=
+            std::vector<std::uint32_t>{source_relation->relation_id} ||
+        ast.catalog_relation_sources.size() != 1 ||
+        ast.window_definitions.size() != 1 ||
+        ast.window_invocations.size() != 1 ||
+        window_relation->window_invocation_ids !=
+            std::vector<std::uint32_t>{
+                ast.window_invocations.front().invocation_id} ||
+        ast.window_invocations.front().window_definition_id !=
+            ast.window_definitions.front().window_id ||
+        window_relation->output_expression_ids !=
+            std::vector<std::uint32_t>{
+                ast.window_invocations.front().function_expression_id} ||
+        resolved_object_reference_seeds.size() != 1 ||
+        statement_context.window_function_profiles.size() != 11) {
+      return fail("catalog_window_shape_invalid");
+    }
+    const auto& source = ast.catalog_relation_sources.front();
+    const auto& resolved = resolved_object_reference_seeds.front().resolved;
+    const auto& projection = resolved.relation_descriptor;
+    const bool relation_object_class =
+        resolved.object_class == "relation" || resolved.object_class == "table" ||
+        resolved.object_class == "view" ||
+        resolved.object_class == "materialized_view" ||
+        resolved.object_class == "external_table" ||
+        resolved.object_class == "foreign_table";
+    if (source_relation->relation_source_ids !=
+            std::vector<std::uint32_t>{source.source_id} ||
+        source_relation->output_expression_ids.empty() || !resolved.resolved ||
+        !projection.present || !relation_object_class ||
+        resolved.object_uuid.empty() ||
+        projection.relation_uuid != resolved.object_uuid ||
+        projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+        projection.descriptor_generation == 0 ||
+        projection.validated_resource_epoch == 0 ||
+        resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+        projection.columns.empty()) {
+      return fail("catalog_window_projection_authority_incomplete");
+    }
+
+    NativeCatalogRelationBindingInput catalog_relation;
+    catalog_relation.source_id = source.source_id;
+    catalog_relation.resolution_state =
+        NativeCatalogRelationResolutionState::kBound;
+    catalog_relation.object_uuid = resolved.object_uuid;
+    catalog_relation.resolved_object_type = resolved.object_class;
+    catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+    catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+    catalog_relation.security_epoch = resolved.security_epoch;
+    catalog_relation.resource_epoch = projection.validated_resource_epoch;
+
+    std::unordered_set<std::string> source_names;
+    for (const auto ast_expression_id :
+         source_relation->output_expression_ids) {
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == ast_expression_id;
+          });
+      if (expression == ast.expressions.end() ||
+          expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          expression->spelling.empty() ||
+          !source_names.insert(expression->spelling).second) {
+        return fail("catalog_window_source_expression_invalid");
+      }
+      const auto column = std::ranges::find_if(
+          projection.columns, [&](const auto& candidate) {
+            return candidate.canonical_name_key == expression->spelling;
+          });
+      if (column == projection.columns.end() || column->column_uuid.empty() ||
+          !CanonicalUuidBytes(column->type_descriptor_uuid).has_value()) {
+        return fail("catalog_window_source_column_unresolved");
+      }
+      const auto descriptor_fields = ParseExactProjectedDescriptor(
+          column->encoded_type_descriptor, column->collation_uuid,
+          column->nullable);
+      if (!descriptor_fields.has_value()) {
+        return fail("catalog_window_source_descriptor_invalid");
+      }
+      const auto binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id = binding_id;
+      descriptor.descriptor_uuid = column->type_descriptor_uuid;
+      descriptor.type_uuid = descriptor_fields->type_uuid;
+      descriptor.nullability = descriptor_fields->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
+      descriptor.collation_uuid = descriptor_fields->collation_uuid;
+      descriptor.timezone_profile_id = descriptor_fields->timezone_profile_id;
+      if (column->character_length != 0) {
+        descriptor.width_precision_scale.width = column->character_length;
+      }
+      context.descriptors.push_back(std::move(descriptor));
+      context.expressions.push_back(
+          {binding_id, binding_id, std::nullopt, column->column_uuid});
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(context.outputs.size() + 1), binding_id,
+           column->canonical_name_key, binding_id, false,
+           static_cast<std::uint32_t>(catalog_relation.columns.size()),
+           source_relation->relation_id});
+      catalog_relation.columns.push_back(
+          {static_cast<std::uint32_t>(catalog_relation.columns.size()),
+           column->column_uuid, binding_id, column->canonical_name_key});
+    }
+
+    const auto& definition = ast.window_definitions.front();
+    std::vector<std::uint32_t> offset_expression_ids;
+    const auto collect_offset = [&](const auto& bound) {
+      if (bound.has_value() && bound->offset_expression_id.has_value()) {
+        offset_expression_ids.push_back(*bound->offset_expression_id);
+      }
+    };
+    collect_offset(definition.frame_start);
+    collect_offset(definition.frame_end);
+    if (offset_expression_ids.size() > 2 ||
+        (offset_expression_ids.size() == 2 &&
+         offset_expression_ids[0] == offset_expression_ids[1])) {
+      return fail("catalog_window_frame_offset_invalid");
+    }
+    for (std::size_t ordinal = 0; ordinal < offset_expression_ids.size();
+         ++ordinal) {
+      const auto ast_expression_id = offset_expression_ids[ordinal];
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id == ast_expression_id;
+          });
+      const auto profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 1 &&
+                   candidate.slot == ordinal + 1;
+          });
+      if (expression == ast.expressions.end() ||
+          expression->expression_kind != NativeExpressionAstKind::kLiteral ||
+          expression->literal_kind != NativeLiteralAstKind::kNumeric ||
+          expression->spelling.empty() ||
+          profile == statement_context.descriptor_profiles.end() ||
+          profile->nullable ||
+          !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(profile->type_uuid).has_value()) {
+        return fail("catalog_window_frame_offset_profile_unavailable");
+      }
+      const auto binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      context.descriptors.push_back(
+          {binding_id, profile->descriptor_uuid, profile->type_uuid,
+           BoundNullability::kNonNull, std::nullopt, std::nullopt, {}});
+      context.expressions.push_back(
+          {binding_id, binding_id, std::nullopt, std::nullopt});
+    }
+
+    const auto& invocation = ast.window_invocations.front();
+    const auto function_expression = std::ranges::find_if(
+        ast.expressions, [&](const auto& candidate) {
+          return candidate.expression_id == invocation.function_expression_id;
+        });
+    const auto function_profile = std::ranges::find_if(
+        statement_context.window_function_profiles,
+        [](const auto& candidate) {
+          return candidate.builtin_id == "sb.window.row_number";
+        });
+    const auto result_profile = std::ranges::find_if(
+        statement_context.descriptor_profiles, [](const auto& candidate) {
+          return candidate.profile_kind == 1 && candidate.slot == 0;
+        });
+    if (function_expression == ast.expressions.end() ||
+        function_expression->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        function_expression->operator_name != "ROW_NUMBER" ||
+        !function_expression->child_expression_ids.empty() ||
+        function_profile == statement_context.window_function_profiles.end() ||
+        function_profile->abi_version != 1 || !function_profile->executable ||
+        !CanonicalUuidBytes(function_profile->function_uuid).has_value() ||
+        result_profile == statement_context.descriptor_profiles.end() ||
+        result_profile->nullable ||
+        !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
+        !CanonicalUuidBytes(result_profile->type_uuid).has_value()) {
+      return fail("catalog_window_row_number_profile_unavailable");
+    }
+    const auto function_binding_id =
+        static_cast<std::uint32_t>(context.descriptors.size() + 1);
+    context.descriptors.push_back(
+        {function_binding_id, result_profile->descriptor_uuid,
+         result_profile->type_uuid, BoundNullability::kNonNull, std::nullopt,
+         std::nullopt, {}});
+    context.expressions.push_back(
+        {function_binding_id, function_binding_id,
+         function_profile->function_uuid, std::nullopt});
+    context.window_functions.push_back(
+        {invocation.invocation_id, function_binding_id,
+         function_profile->abi_version, function_profile->builtin_id,
+         function_profile->function_uuid, function_profile->executable,
+         function_binding_id});
+    context.outputs.push_back(
+        {static_cast<std::uint32_t>(context.outputs.size() + 1),
+         function_binding_id,
+         invocation.output_alias.has_value()
+             ? invocation.output_alias->spelling
+             : std::string("row_number"),
+         function_binding_id, true, 0, window_relation->relation_id});
+    context.catalog_relations.push_back(std::move(catalog_relation));
+    context.relations.push_back(
+        {window_relation->relation_id, "window.row-number.v1"});
+    return context;
+  }
+
   const auto catalog_join = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kJoin;
