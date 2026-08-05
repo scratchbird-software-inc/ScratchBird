@@ -157,7 +157,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_test(NAME qow_live_values_spine_v1
     COMMAND qow_live_values_spine_test_v1)
   set_tests_properties(qow_live_values_spine_v1 PROPERTIES
-    LABELS "qow_closure;QOW-201;QOW-202;QOW-204;QOW-205;QOW-206;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;RCP-022-GENERAL-SELECT-BOUNDARY;RCP-026-GROUP-BY-HAVING;RCP-027-GROUPING-EXPANSION;development_candidate"
+    LABELS "qow_closure;QOW-201;QOW-202;QOW-204;QOW-205;QOW-206;QOW-301;QOW-302;QOW-303;QOW-304;QOW-305;QOW-306;QOW-211;QOW-INTEGRATION-306-211-LIVE-VALUES;RCP-022-GENERAL-SELECT-BOUNDARY;RCP-026-GROUP-BY-HAVING;RCP-027-GROUPING-EXPANSION;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-007-AGGREGATE-V1
@@ -384,7 +384,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   add_test(NAME qow_qry_011_registry_v1
     COMMAND qow_qry_011_registry_test_v1)
   set_tests_properties(qow_qry_011_registry_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;RCP-025-CANONICAL-AGGREGATE-REGISTRY;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-STATE;RCP-025-CANONICAL-AGGREGATE-REGISTRY;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-EMPTY-V1
@@ -402,7 +402,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_qry_011_group_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_qry_011_group_v1 COMMAND qow_qry_011_group_test_v1)
   set_tests_properties(qow_qry_011_group_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-GROUP;RCP-026-GROUP-BY-HAVING;RCP-027-GROUPING-EXPANSION;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-GROUP;RCP-026-GROUP-BY-HAVING;RCP-027-GROUPING-EXPANSION;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-FILTER-V1
@@ -411,7 +411,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_qry_011_filter_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_qry_011_filter_v1 COMMAND qow_qry_011_filter_test_v1)
   set_tests_properties(qow_qry_011_filter_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-FILTER;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-FILTER;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-DISTINCT-V1
@@ -420,7 +420,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_qry_011_distinct_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_qry_011_distinct_v1 COMMAND qow_qry_011_distinct_test_v1)
   set_tests_properties(qow_qry_011_distinct_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-DISTINCT;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-DISTINCT;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-ORDERED-V1
@@ -429,7 +429,7 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
   target_link_libraries(qow_qry_011_ordered_test_v1 PRIVATE sb_engine_executor)
   add_test(NAME qow_qry_011_ordered_v1 COMMAND qow_qry_011_ordered_test_v1)
   set_tests_properties(qow_qry_011_ordered_v1 PROPERTIES
-    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-ORDERED;development_candidate"
+    LABELS "qow_closure;QOW-205;QOW-LEAF-QRY-011-ORDERED;RCP-028-AGGREGATE-MODIFIERS;development_candidate"
   )
 
   # QOW-CMAKE-QRY-011-SPILL-V1

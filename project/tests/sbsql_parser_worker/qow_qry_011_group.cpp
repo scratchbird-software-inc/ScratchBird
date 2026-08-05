@@ -748,6 +748,50 @@ bool ValidateGroupedAggregateSetState() {
           result.groups[7].aggregate_state_bytes.size() == 2,
       "independent AVG/filtered COUNT states or evidence are wrong");
 
+  // RCP-028: every aggregate in one grouped physical node owns its modifier
+  // pipeline.  FILTER, DISTINCT, and aggregate ORDER BY must be sliced by the
+  // exact group row vector without borrowing a sibling aggregate's state.
+  request = GroupedAggregateSetRequest();
+  using Truth = api::EngineSqlTruthValue;
+  auto& average = request.first_aggregate.aggregate_request;
+  average.filter_truth_values = std::vector<Truth>{
+      Truth::true_value, Truth::false_value, Truth::true_value,
+      Truth::true_value, Truth::true_value};
+  average.distinct = true;
+  average.aggregate_order_terms = {
+      {.column = 1,
+       .expression_descriptor_id = 1422,
+       .direction = exec::CanonicalDescriptorOrderDirection::descending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+      {.column = 0,
+       .expression_descriptor_id = 1421,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::last},
+  };
+  request.additional_aggregates[0].aggregate_order_terms = {
+      {.column = 0,
+       .expression_descriptor_id = 1421,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::last},
+  };
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(
+      result.diagnostic.ok && result.aggregate_count == 2 &&
+          result.group_identity_proven &&
+          result.aggregate_distinct_tuple_count != 0 &&
+          result.aggregate_order_comparison_count != 0 &&
+          result.groups.size() == 8 &&
+          result.groups[7].aggregate_transition_counts ==
+              std::vector<std::size_t>({4, 3}) &&
+          result.output_batch.rows[7].values[3].encoded_value == "3",
+      "grouped aggregates did not retain independent FILTER/DISTINCT/ORDER BY pipelines");
+
+  request.additional_aggregates[0].maximum_aggregate_order_term_count = 0;
+  result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
+                        result.output_batch.rows.empty(),
+                    "one aggregate bypassed its private ORDER BY term bound");
+
   request = GroupedAggregateSetRequest();
   request.maximum_aggregate_count = 1;
   result = exec::ExecuteCanonicalGroupedAggregateSetRuntime(request);

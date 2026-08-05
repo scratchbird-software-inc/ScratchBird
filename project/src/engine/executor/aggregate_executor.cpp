@@ -1392,21 +1392,34 @@ EngineTypedValue FinalizeCanonicalAggregateCore(
   return {};
 }
 
+void AppendAggregateDistinctKeyField(std::string* key,
+                                     const std::string_view field) {
+  if (key == nullptr) return;
+  const auto size = static_cast<std::uint64_t>(field.size());
+  for (unsigned shift = 0; shift < 64; shift += 8) {
+    key->push_back(static_cast<char>(size >> shift));
+  }
+  key->append(field);
+}
+
 std::string AggregateDistinctKey(const std::vector<EngineTypedValue>& values) {
   std::string key;
+  key.reserve(values.size() * 64);
   for (const auto& value : values) {
-    key += value.descriptor.descriptor_uuid.canonical;
-    key.push_back(':');
-    key += value.descriptor.canonical_type_name;
-    key.push_back(':');
-    if (value.state == EngineValueState::sql_null) {
-      key += "<NULL>";
-    } else {
-      key += value.encoded_value;
-      key.append(reinterpret_cast<const char*>(value.binary_value.data()),
-                 value.binary_value.size());
-    }
-    key.push_back('\x1f');
+    AppendAggregateDistinctKeyField(
+        &key, value.descriptor.descriptor_uuid.canonical);
+    AppendAggregateDistinctKeyField(&key,
+                                    value.descriptor.canonical_type_name);
+    key.push_back(static_cast<char>(value.state));
+    key.push_back(value.is_null ? 1 : 0);
+    AppendAggregateDistinctKeyField(&key, value.encoded_value);
+    const auto binary = value.binary_value.empty()
+                            ? std::string_view{}
+                            : std::string_view(
+                                  reinterpret_cast<const char*>(
+                                      value.binary_value.data()),
+                                  value.binary_value.size());
+    AppendAggregateDistinctKeyField(&key, binary);
   }
   return key;
 }
@@ -1946,6 +1959,19 @@ bool SameCanonicalAggregateRuntimeScalar(
              right.output_batch.columns.front().descriptor_id &&
          left.transition_count == right.transition_count &&
          left.non_null_transition_count == right.non_null_transition_count &&
+         left.distinct_tuple_count == right.distinct_tuple_count &&
+         left.modifier_count == right.modifier_count &&
+         left.aggregate_order_term_count == right.aggregate_order_term_count &&
+         left.order_comparison_count == right.order_comparison_count &&
+         left.modifier_pipeline_validated ==
+             right.modifier_pipeline_validated &&
+         left.filter_modifier_applied == right.filter_modifier_applied &&
+         left.distinct_modifier_applied == right.distinct_modifier_applied &&
+         left.filter_applied_before_distinct ==
+             right.filter_applied_before_distinct &&
+         left.distinct_applied_before_order ==
+             right.distinct_applied_before_order &&
+         left.aggregate_order_applied == right.aggregate_order_applied &&
          left.selected_plan_uuid == right.selected_plan_uuid &&
          left.executed_physical_node_id == right.executed_physical_node_id &&
          left.causal_counter_id == right.causal_counter_id;
@@ -2191,10 +2217,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   CanonicalAggregateRuntimeResult result;
   result.descriptor = request.descriptor;
   const auto refuse = [&](DescriptorRuntimeDiagnostic diagnostic) {
+    const auto descriptor = result.descriptor;
+    result = {};
+    result.descriptor = descriptor;
     result.diagnostic = std::move(diagnostic);
-    result.output_batch = {};
-    result.executed_strategy = CanonicalAggregateExecutionStrategy::unknown;
-    result.shared_state_authority_used = false;
     return result;
   };
 
@@ -2333,6 +2359,10 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
     return refuse(Refusal("QOW-DIAG-QRY-011-REGISTRY-DISTINCT-V1",
                           "COUNT(DISTINCT *) is not admitted"));
   }
+  if (request.distinct && request.maximum_distinct_value_count == 0) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "aggregate DISTINCT bound is zero"));
+  }
   if (request.maximum_transition_count == 0 ||
       request.maximum_state_bytes == 0 ||
       request.input_batch.rows.size() > request.maximum_transition_count) {
@@ -2343,6 +2373,26 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
       request.filter_truth_values->size() != request.input_batch.rows.size()) {
     return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
                           "aggregate FILTER cardinality is not bound"));
+  }
+  if (request.filter_truth_values.has_value()) {
+    using scratchbird::engine::internal_api::EnginePredicateConsumer;
+    using scratchbird::engine::internal_api::QowPredicateConsumerPassesV1;
+    for (const auto truth : *request.filter_truth_values) {
+      bool passes = false;
+      std::string detail;
+      if (!QowPredicateConsumerPassesV1(
+              truth, EnginePredicateConsumer::filter, &passes, &detail)) {
+        return refuse(Refusal("QOW-DIAG-QRY-017-3VL-REFUSAL-V1",
+                              std::move(detail)));
+      }
+    }
+  }
+  if (!request.aggregate_order_terms.empty() &&
+      (request.maximum_aggregate_order_term_count == 0 ||
+       request.aggregate_order_terms.size() >
+           request.maximum_aggregate_order_term_count)) {
+    return refuse(Refusal("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                          "aggregate order-term bound is exceeded"));
   }
   for (const auto& term : request.aggregate_order_terms) {
     if (term.column >= request.input_batch.columns.size()) {
@@ -2411,7 +2461,16 @@ static CanonicalAggregateRuntimeResult ExecuteCanonicalAggregateRuntimeSelected(
   result.distinct_tuple_count = prepared.distinct_tuple_count;
   result.order_comparison_count = prepared.order_comparison_count;
   result.aggregate_order_applied = prepared.aggregate_order_applied;
+  result.modifier_count =
+      (request.filter_truth_values.has_value() ? 1U : 0U) +
+      (request.distinct ? 1U : 0U) +
+      (!request.aggregate_order_terms.empty() ? 1U : 0U);
+  result.aggregate_order_term_count = request.aggregate_order_terms.size();
+  result.modifier_pipeline_validated = true;
+  result.filter_modifier_applied = request.filter_truth_values.has_value();
+  result.distinct_modifier_applied = request.distinct;
   result.filter_applied_before_distinct = true;
+  result.distinct_applied_before_order = true;
 
   CanonicalAggregateCoreState state;
   if (!BuildCanonicalAggregateCoreState(request, prepared.transitions, &state,

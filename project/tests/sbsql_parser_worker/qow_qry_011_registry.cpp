@@ -923,12 +923,89 @@ bool ValidateCanonicalAggregateRegistry() {
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::true_value,
           api::EngineSqlTruthValue::unknown};
+  sum_request.aggregate_order_terms = {
+      {.column = 3,
+       .expression_descriptor_id = 2104,
+       .direction = exec::CanonicalDescriptorOrderDirection::descending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::first},
+      {.column = 0,
+       .expression_descriptor_id = 2101,
+       .direction = exec::CanonicalDescriptorOrderDirection::ascending,
+       .null_placement = exec::CanonicalDescriptorNullPlacement::last},
+  };
   auto sum = exec::ExecuteCanonicalAggregateRuntime(sum_request);
-  passed &= Require(sum.diagnostic.ok && sum.filter_applied_before_distinct &&
+  passed &= Require(sum.diagnostic.ok && sum.modifier_pipeline_validated &&
+                        sum.modifier_count == 3 &&
+                        sum.aggregate_order_term_count == 2 &&
+                        sum.filter_modifier_applied &&
+                        sum.distinct_modifier_applied &&
+                        sum.filter_applied_before_distinct &&
+                        sum.distinct_applied_before_order &&
+                        sum.aggregate_order_applied &&
+                        sum.order_comparison_count != 0 &&
                         sum.distinct_tuple_count == 2 &&
                         sum.transition_count == 2 &&
                         sum.output_batch.rows[0].values[0].encoded_value == "3",
-                    "FILTER then DISTINCT did not feed the shared state exactly once");
+                    "FILTER/DISTINCT/two-term ORDER BY did not execute one canonical modifier pipeline");
+  auto partitioned_sum_request = sum_request;
+  partitioned_sum_request.forced_strategy =
+      exec::CanonicalAggregateExecutionStrategy::partitioned_combine;
+  const auto partitioned_sum =
+      exec::ExecuteCanonicalAggregateRuntime(partitioned_sum_request);
+  passed &= Require(SameScalar(sum, partitioned_sum) &&
+                        partitioned_sum.modifier_count == 3 &&
+                        partitioned_sum.aggregate_order_term_count == 2,
+                    "combined aggregate modifiers diverged across physical strategies");
+
+  auto empty_distinct = Request(exec::CanonicalAggregateFunction::sum, 0,
+                                2101, "int64");
+  empty_distinct.input_batch.rows.clear();
+  empty_distinct.distinct = true;
+  empty_distinct.maximum_distinct_value_count = 0;
+  auto modifier_refusal =
+      exec::ExecuteCanonicalAggregateRuntime(empty_distinct);
+  passed &= Require(!modifier_refusal.diagnostic.ok &&
+                        modifier_refusal.diagnostic.diagnostic_code ==
+                            "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+                        modifier_refusal.output_batch.rows.empty() &&
+                        !modifier_refusal.modifier_pipeline_validated,
+                    "empty DISTINCT bypassed its explicit resource bound");
+
+  auto excessive_order = Request(exec::CanonicalAggregateFunction::sum, 0,
+                                 2101, "int64");
+  excessive_order.input_batch.rows.clear();
+  const exec::CanonicalDescriptorOrderTerm repeated_order{
+      .column = 3, .expression_descriptor_id = 2104};
+  excessive_order.aggregate_order_terms.assign(65, repeated_order);
+  modifier_refusal = exec::ExecuteCanonicalAggregateRuntime(excessive_order);
+  passed &= Require(!modifier_refusal.diagnostic.ok &&
+                        modifier_refusal.diagnostic.diagnostic_code ==
+                            "SBLR.PLAN_TREE.RESOURCE_LIMIT" &&
+                        modifier_refusal.output_batch.rows.empty(),
+                    "empty aggregate bypassed its ORDER BY term-count bound");
+
+  auto binary_safe_distinct = Request(
+      exec::CanonicalAggregateFunction::count, 0, 2101, "int64");
+  const auto collision_text_descriptor = Descriptor(
+      "019f0000-0000-7200-8000-000000002181",
+      "019f0000-0000-7300-8000-000000002182", "text");
+  binary_safe_distinct.input_batch.columns[0].descriptor =
+      collision_text_descriptor;
+  binary_safe_distinct.input_batch.rows.resize(2);
+  binary_safe_distinct.input_batch.rows[0].values[0] =
+      Value(collision_text_descriptor, "a");
+  binary_safe_distinct.input_batch.rows[0].values[0].binary_value = {'b'};
+  binary_safe_distinct.input_batch.rows[1].values[0] =
+      Value(collision_text_descriptor, "ab");
+  binary_safe_distinct.distinct = true;
+  const auto binary_safe =
+      exec::ExecuteCanonicalAggregateRuntime(binary_safe_distinct);
+  passed &= Require(binary_safe.diagnostic.ok &&
+                        binary_safe.distinct_tuple_count == 2 &&
+                        binary_safe.transition_count == 2 &&
+                        binary_safe.output_batch.rows[0].values[0]
+                                .encoded_value == "2",
+                    "length-ambiguous text/binary payloads collided in aggregate DISTINCT identity");
 
   auto empty_sum = Request(exec::CanonicalAggregateFunction::sum, 0, 2101,
                            "int64");

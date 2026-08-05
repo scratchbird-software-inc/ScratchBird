@@ -1594,6 +1594,7 @@ struct CanonicalAggregateRuntimeRequest {
       CanonicalAggregateExecutionStrategy::serial;
   std::size_t maximum_transition_count = 1048576;
   std::size_t maximum_distinct_value_count = 1048576;
+  std::size_t maximum_aggregate_order_term_count = 64;
   std::size_t maximum_order_comparison_count = 1048576;
   std::size_t maximum_state_bytes = 16777216;
   bool parser_execution_authority_claimed = false;
@@ -1614,10 +1615,16 @@ struct CanonicalAggregateRuntimeResult {
   std::size_t non_null_transition_count = 0;
   std::size_t distinct_tuple_count = 0;
   std::size_t direct_argument_count = 0;
+  std::size_t modifier_count = 0;
+  std::size_t aggregate_order_term_count = 0;
   std::size_t order_comparison_count = 0;
   std::size_t state_bytes = 0;
   bool every_descriptor_field_consumed = false;
+  bool modifier_pipeline_validated = false;
+  bool filter_modifier_applied = false;
+  bool distinct_modifier_applied = false;
   bool filter_applied_before_distinct = false;
+  bool distinct_applied_before_order = false;
   bool aggregate_order_applied = false;
   bool shared_state_authority_used = false;
   CanonicalPhysicalDispatchAuthorityEvidence authority;
