@@ -486,6 +486,11 @@ ParseCanonicalDerivedDescriptorIdentity(const std::string_view encoded) {
 
 }  // namespace
 
+bool IsCanonicalBoundedSignedIntegerDescriptor(
+    const EngineDescriptor& descriptor) {
+  return IsInt64Type(descriptor);
+}
+
 EngineDescriptor MakeExecutorDescriptor(std::string canonical_type_name, std::string encoded_descriptor) {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "executor.scalar";

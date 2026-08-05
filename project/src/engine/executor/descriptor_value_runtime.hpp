@@ -2536,6 +2536,8 @@ scratchbird::engine::internal_api::EngineTypedValue EvaluateDescriptorDomainMeth
     const std::string& security_token,
     DescriptorRuntimeDiagnostic* diagnostic = nullptr);
 Int64DecodeResult DecodeInt64Value(const scratchbird::engine::internal_api::EngineTypedValue& value);
+bool IsCanonicalBoundedSignedIntegerDescriptor(
+    const scratchbird::engine::internal_api::EngineDescriptor& descriptor);
 BoolDecodeResult DecodeBoolValue(const scratchbird::engine::internal_api::EngineTypedValue& value);
 Real64DecodeResult DecodeReal64Value(const scratchbird::engine::internal_api::EngineTypedValue& value);
 scratchbird::engine::internal_api::EngineTypedValue EncodeInt64Value(std::int64_t value);

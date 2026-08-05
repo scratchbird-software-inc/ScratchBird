@@ -131,7 +131,7 @@ bool DecodeAggregateNumeric(const EngineTypedValue& value,
                             long double* decoded,
                             DescriptorRuntimeDiagnostic* diagnostic) {
   if (decoded == nullptr || diagnostic == nullptr) return false;
-  if (value.descriptor.canonical_type_name == "int64") {
+  if (IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
     const auto result = DecodeInt64Value(value);
     if (!result.ok()) {
       *diagnostic = result.diagnostic;
@@ -484,7 +484,7 @@ bool TransitionCanonicalAggregateCore(
       return true;
     case CanonicalAggregateFunction::sum:
     case CanonicalAggregateFunction::avg:
-      if (IsType(value, "int64")) {
+      if (IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
         const auto decoded = DecodeInt64Value(value);
         if (!decoded.ok()) {
           *diagnostic = decoded.diagnostic;
@@ -509,7 +509,8 @@ bool TransitionCanonicalAggregateCore(
         return true;
       }
       *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
-                            "SUM and AVG require int64 or real64 input");
+                            "SUM and AVG require bounded signed integer or "
+                            "real64 input");
       return false;
     case CanonicalAggregateFunction::stddev_pop:
     case CanonicalAggregateFunction::variance_pop:
@@ -615,10 +616,11 @@ bool InverseCanonicalAggregateCore(
   std::int64_t decoded_value = 0;
   if (descriptor.function == CanonicalAggregateFunction::sum ||
       descriptor.function == CanonicalAggregateFunction::avg) {
-    if (!IsType(value, "int64")) {
+    if (!IsCanonicalBoundedSignedIntegerDescriptor(value.descriptor)) {
       *diagnostic = Refusal(
           "QOW-DIAG-QRY-011-REGISTRY-INVERSE-TYPE-V1",
-          "moving SUM and AVG inverse state currently requires int64 input");
+          "moving SUM and AVG inverse state currently requires bounded "
+          "signed integer input");
       return false;
     }
     const auto decoded = DecodeInt64Value(value);
@@ -829,6 +831,17 @@ bool ValidateCanonicalAggregateResultType(
         request.result_column.nullable) {
       return true;
     }
+  } else if (function == CanonicalAggregateFunction::sum &&
+             !request.value_columns.empty()) {
+    const auto& input =
+        request.input_batch.columns[request.value_columns.front()];
+    if (request.result_column.nullable &&
+        ((IsCanonicalBoundedSignedIntegerDescriptor(input.descriptor) &&
+          IsType(request.result_column, "int64")) ||
+         (input.descriptor.canonical_type_name == "real64" &&
+          IsType(request.result_column, "real64")))) {
+      return true;
+    }
   } else if (function == CanonicalAggregateFunction::avg) {
     if (IsType(request.result_column, "real64") &&
         request.result_column.nullable) {
@@ -924,7 +937,13 @@ bool ValidateCanonicalAggregateInputType(
     const auto& type = request.input_batch
                            .columns[request.value_columns.front()]
                            .descriptor.canonical_type_name;
-    if (type == "int64" || type == "real64") return true;
+    if (IsCanonicalBoundedSignedIntegerDescriptor(
+            request.input_batch
+                .columns[request.value_columns.front()]
+                .descriptor) ||
+        type == "real64") {
+      return true;
+    }
     *diagnostic = Refusal("QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
                           "ordered numeric aggregate requires numeric input");
     return false;
@@ -943,7 +962,13 @@ bool ValidateCanonicalAggregateInputType(
       request.descriptor.function == CanonicalAggregateFunction::avg ||
       IsCanonicalUnivariateStatisticalFunction(
           request.descriptor.function)) {
-    if (type == "int64" || type == "real64") return true;
+    if (IsCanonicalBoundedSignedIntegerDescriptor(
+            request.input_batch
+                .columns[request.value_columns.front()]
+                .descriptor) ||
+        type == "real64") {
+      return true;
+    }
   } else if (request.descriptor.function ==
                  CanonicalAggregateFunction::bool_and ||
              request.descriptor.function ==

@@ -654,6 +654,53 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed global COUNT(*)/LIMIT composition did not publish "
             "its aggregate result");
 
+    auto object_backed_count_expression = parser.RunPipeline(
+        "SELECT COUNT(nullable_order_value) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!object_backed_count_expression.accepted) {
+      PrintMessages(object_backed_count_expression.messages);
+    }
+    Require(object_backed_count_expression.accepted &&
+                object_backed_count_expression.server_operation_id ==
+                    "query.execute" &&
+                object_backed_count_expression.server_cursor_uuid.empty() &&
+                object_backed_count_expression.server_row_count == 1 &&
+                object_backed_count_expression.server_result_payload.find(
+                    "row_count=2") != std::string::npos,
+            "object-backed COUNT(expression) did not exclude the persisted "
+            "NULL value");
+
+    auto object_backed_sum = parser.RunPipeline(
+        "SELECT SUM(integer_value) FROM qow_packet7.qow_packet7_relation;",
+        true);
+    if (!object_backed_sum.accepted) PrintMessages(object_backed_sum.messages);
+    Require(object_backed_sum.accepted &&
+                object_backed_sum.server_operation_id == "query.execute" &&
+                object_backed_sum.server_cursor_uuid.empty() &&
+                object_backed_sum.server_row_count == 1 &&
+                object_backed_sum.server_result_payload.find("total_amount=6") !=
+                    std::string::npos,
+            "object-backed SUM(expression) did not execute through the "
+            "canonical aggregate registry");
+
+    auto object_backed_filtered_sum = parser.RunPipeline(
+        "SELECT SUM(integer_value) FROM qow_packet7.qow_packet7_relation "
+        "WHERE auxiliary_value >= 102;",
+        true);
+    if (!object_backed_filtered_sum.accepted) {
+      PrintMessages(object_backed_filtered_sum.messages);
+    }
+    Require(object_backed_filtered_sum.accepted &&
+                object_backed_filtered_sum.server_operation_id ==
+                    "query.execute" &&
+                object_backed_filtered_sum.server_cursor_uuid.empty() &&
+                object_backed_filtered_sum.server_row_count == 1 &&
+                object_backed_filtered_sum.server_result_payload.find(
+                    "total_amount=5") != std::string::npos,
+            "object-backed WHERE/SUM composition did not aggregate only the "
+            "visible filtered heap rows");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

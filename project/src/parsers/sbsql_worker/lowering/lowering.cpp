@@ -33002,7 +33002,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.output_expression_ids ==
               relation.aggregate_expression_ids &&
           relation.bound_expression_ids == relation.output_expression_ids &&
-          relation.semantic_variant_id == "aggregate.global-count-star.v1";
+          (relation.semantic_variant_id == "aggregate.global-count-star.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-count-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-sum-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33829,15 +33833,26 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->aggregate_expression_ids.front());
       const auto& aggregate_outputs =
           outputs_by_relation.at(aggregate_relation->relation_id);
+      const bool count_aggregate =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-count-");
+      const bool count_star =
+          aggregate_relation->semantic_variant_id ==
+          "aggregate.global-count-star.v1";
+      const auto expected_output_name =
+          count_aggregate ? std::string_view("row_count")
+                          : std::string_view("total_amount");
       if (aggregate_expression == expressions_by_id.end() ||
           aggregate_expression->second->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           !aggregate_expression->second->bound_function_uuid.has_value() ||
-          !aggregate_expression->second->child_expression_ids.empty() ||
+          aggregate_expression->second->child_expression_ids.size() !=
+              (count_star ? 0 : 1) ||
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
-              BoundNullability::kNonNull ||
+              (count_aggregate ? BoundNullability::kNonNull
+                               : BoundNullability::kNullable) ||
           aggregate_descriptor.collation_uuid.has_value() ||
           aggregate_descriptor.timezone_profile_id.has_value() ||
           aggregate_outputs.size() != 1 ||
@@ -33845,11 +33860,27 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               aggregate_expression->second->expression_id ||
           aggregate_outputs.front()->descriptor_id !=
               aggregate_descriptor.descriptor_id ||
-          aggregate_outputs.front()->output_name_utf8 != "row_count") {
+          aggregate_outputs.front()->output_name_utf8 != expected_output_name) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed catalog COUNT(*) binding is incomplete");
+            "typed catalog aggregate binding is incomplete");
         return envelope;
+      }
+      if (!count_star) {
+        const auto argument = expressions_by_id.find(
+            aggregate_expression->second->child_expression_ids.front());
+        if (argument == expressions_by_id.end() ||
+            argument->second->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            !argument->second->bound_name_uuid.has_value() ||
+            std::ranges::find(catalog_relation->bound_expression_ids,
+                              argument->second->expression_id) ==
+                catalog_relation->bound_expression_ids.end()) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed catalog aggregate argument is not source-bound");
+          return envelope;
+        }
       }
     }
     if (numeric_descriptor_count != 0) {

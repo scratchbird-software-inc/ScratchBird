@@ -750,39 +750,88 @@ BuildEngineProjectedNativeBindingContext(
            column.canonical_name_key});
     }
     std::optional<std::uint32_t> aggregate_binding_id;
+    std::string aggregate_output_name;
+    std::string aggregate_semantic;
     if (aggregate_composition) {
-      const auto count_expression = std::ranges::find_if(
+      const auto aggregate_expression = std::ranges::find_if(
           ast.expressions, [&](const auto& candidate) {
             return candidate.expression_id ==
                    aggregate_relation->aggregate_expression_ids.front();
           });
-      const auto count_profile = std::ranges::find_if(
-          statement_context.descriptor_profiles, [](const auto& candidate) {
-            return candidate.profile_kind == 1 && candidate.slot == 0;
+      const auto function =
+          aggregate_expression == ast.expressions.end()
+              ? std::string{}
+              : ToUpperAscii(aggregate_expression->operator_name);
+      const bool count_function = function == "COUNT";
+      const bool sum_function = function == "SUM";
+      const bool count_star = count_function &&
+                              aggregate_expression != ast.expressions.end() &&
+                              aggregate_expression->child_expression_ids.empty();
+      const auto result_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == (count_function ? 1 : 2) &&
+                   candidate.slot == 0;
           });
-      if (count_expression == ast.expressions.end() ||
-          count_expression->expression_kind !=
+      bool argument_profile_exact = count_star;
+      if (!count_star && aggregate_expression != ast.expressions.end() &&
+          aggregate_expression->child_expression_ids.size() == 1 &&
+          result_profile != statement_context.descriptor_profiles.end()) {
+        const auto argument = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     aggregate_expression->child_expression_ids.front();
+            });
+        if (argument != ast.expressions.end()) {
+          const auto source_expression = std::ranges::find(
+              relation.output_expression_ids, argument->expression_id);
+          if (source_expression != relation.output_expression_ids.end()) {
+            const auto source_ordinal = static_cast<std::size_t>(
+                std::distance(relation.output_expression_ids.begin(),
+                              source_expression));
+            argument_profile_exact =
+                source_ordinal < context.descriptors.size();
+          }
+        }
+      }
+      if (aggregate_expression == ast.expressions.end() ||
+          aggregate_expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
-          ToUpperAscii(count_expression->operator_name) != "COUNT" ||
-          !count_expression->child_expression_ids.empty() ||
-          count_profile == statement_context.descriptor_profiles.end() ||
-          count_profile->nullable ||
-          !CanonicalUuidBytes(count_profile->descriptor_uuid).has_value() ||
-          !CanonicalUuidBytes(count_profile->type_uuid).has_value() ||
-          !CanonicalUuidBytes(statement_context.count_function_uuid).has_value()) {
-        return fail("catalog_global_count_profile_unavailable");
+          (!count_function && !sum_function) ||
+          (aggregate_expression->child_expression_ids.size() !=
+           (count_star ? 0 : 1)) ||
+          !argument_profile_exact ||
+          result_profile == statement_context.descriptor_profiles.end() ||
+          (count_function && result_profile->nullable) ||
+          (sum_function && !result_profile->nullable) ||
+          !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
+          !CanonicalUuidBytes(count_function
+                                  ? statement_context.count_function_uuid
+                                  : statement_context.sum_function_uuid)
+               .has_value()) {
+        return fail("catalog_global_aggregate_profile_unavailable");
       }
       aggregate_binding_id =
           static_cast<std::uint32_t>(context.descriptors.size() + 1);
       NativeDescriptorBindingInput descriptor;
       descriptor.descriptor_id = *aggregate_binding_id;
-      descriptor.descriptor_uuid = count_profile->descriptor_uuid;
-      descriptor.type_uuid = count_profile->type_uuid;
-      descriptor.nullability = BoundNullability::kNonNull;
+      descriptor.descriptor_uuid = result_profile->descriptor_uuid;
+      descriptor.type_uuid = result_profile->type_uuid;
+      descriptor.nullability = result_profile->nullable
+                                   ? BoundNullability::kNullable
+                                   : BoundNullability::kNonNull;
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
           {*aggregate_binding_id, *aggregate_binding_id,
-           statement_context.count_function_uuid, std::nullopt});
+           count_function ? statement_context.count_function_uuid
+                          : statement_context.sum_function_uuid,
+           std::nullopt});
+      aggregate_output_name = count_function ? "row_count" : "total_amount";
+      aggregate_semantic =
+          count_function
+              ? (count_star ? "aggregate.global-count-star.v1"
+                            : "aggregate.global-count-expression.v1")
+              : "aggregate.global-sum-expression.v1";
     }
     if (limit_composition) {
       const auto numeric_profile = std::ranges::find_if(
@@ -833,7 +882,8 @@ BuildEngineProjectedNativeBindingContext(
         const auto output_id =
             static_cast<std::uint32_t>(context.outputs.size() + 1);
         context.outputs.push_back(
-            {output_id, *aggregate_binding_id, "row_count",
+            {output_id, *aggregate_binding_id,
+             aggregate_output_name,
              *aggregate_binding_id, true, 0, downstream.relation_id});
         continue;
       }
@@ -879,7 +929,7 @@ BuildEngineProjectedNativeBindingContext(
     }
     if (aggregate_composition) {
       context.relations.push_back(
-          {aggregate_relation->relation_id, "aggregate.global-count-star.v1"});
+          {aggregate_relation->relation_id, aggregate_semantic});
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
     return context;

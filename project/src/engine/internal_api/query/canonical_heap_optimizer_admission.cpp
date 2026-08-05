@@ -400,8 +400,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
             std::vector<std::uint32_t>{
                 filter_node != nullptr ? filter_node->node_id
                                        : scan_node->node_id} ||
-        aggregate_node->semantic_variant_id !=
-            "aggregate.global-count-star.v1" ||
+        (aggregate_node->semantic_variant_id !=
+             "aggregate.global-count-star.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-count-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-sum-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||

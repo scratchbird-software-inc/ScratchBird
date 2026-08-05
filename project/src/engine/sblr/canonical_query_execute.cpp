@@ -20435,14 +20435,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
     std::ranges::sort(input_outputs, {},
                       &api::RelationalOutputRecord::ordinal);
-    if (!aggregate_profile.matched || !aggregate_profile.count_star ||
+    if (!aggregate_profile.matched ||
         aggregate_profile.distinct || aggregate_profile.has_filter ||
         logical_aggregate == graph.nodes.end() ||
         logical_input == graph.nodes.end() ||
         input_outputs.size() !=
             aggregate_input_node->output_descriptor_ids.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
-                    "object-backed global COUNT(*) profile is not exact");
+                    "object-backed global aggregate profile is not exact");
     }
     for (std::size_t ordinal = 0; ordinal < input_outputs.size(); ++ordinal) {
       const auto descriptor = std::ranges::find_if(
@@ -20459,7 +20459,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       api::EngineDescriptor engine_descriptor;
       engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
-      engine_descriptor.canonical_type_name = "catalog_scalar";
+      engine_descriptor.canonical_type_name = "int64";
       engine_descriptor.encoded_descriptor =
           "type_uuid=" + descriptor->type_uuid + ";nullability=" +
           (descriptor->nullability == api::RelationalNullability::kNullable
@@ -20474,18 +20474,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     planning_input.ok = true;
     prepared_heap_aggregate = PrepareGlobalAggregateRoot(
         dag, *logical_aggregate, *logical_input, planning_input,
-        aggregate_profile.function, true, false, false);
+        aggregate_profile.function, aggregate_profile.count_star,
+        aggregate_profile.distinct, aggregate_profile.has_filter);
     if (!prepared_heap_aggregate.ok) {
       return refuse(
           "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
           prepared_heap_aggregate.detail.empty()
-              ? "object-backed global COUNT(*) binding is unresolved"
+              ? "object-backed global aggregate binding is unresolved"
               : prepared_heap_aggregate.detail);
     }
     aggregate_capability_uuid =
         DerivedCanonicalUuid(identity_scope, "heap-aggregate.capability");
     profiles.push_back(
-        {aggregate_node->node_id, "aggregate.count-star.v1",
+        {aggregate_node->node_id,
+         aggregate_profile.count_star ? "aggregate.count-star.v1"
+                                      : "aggregate.registry-core.v1",
          aggregate_capability_uuid,
          plan::CanonicalLogicalRelationalNodeKind::kAggregate,
          exec::PhysicalNodeKind::kAggregate,
@@ -20640,7 +20643,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       limit_composition
           ? "object-backed heap LIMIT composition"
           : (aggregate_composition
-                 ? "object-backed heap global COUNT(*) composition"
+                 ? "object-backed heap global aggregate composition"
                  : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (sort_composition
@@ -20755,11 +20758,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               maximum_output_rows, input.context));
     }
     if (aggregate_composition) {
-      selected.available_executors.push_back(
-          MakeLiveCountStarRegistration(
-              prepared_heap_aggregate.result_column,
-              aggregate_capability_uuid, maximum_output_rows,
-              input.context));
+      const auto aggregate_profile =
+          MatchLiveUnaryAggregateExpressionProfile(
+              aggregate_node->semantic_variant_id);
+      if (aggregate_profile.count_star) {
+        selected.available_executors.push_back(
+            MakeLiveCountStarRegistration(
+                prepared_heap_aggregate.result_column,
+                aggregate_capability_uuid, maximum_output_rows,
+                input.context));
+      } else {
+        selected.available_executors.push_back(
+            MakeLiveAggregateRegistryRegistration(
+                prepared_heap_aggregate, aggregate_capability_uuid,
+                maximum_output_rows, input.context));
+      }
     }
     if (sort_composition) {
       selected.available_executors.push_back(
@@ -20792,10 +20805,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
             identity_scope + ":" + input.context.current_monotonic_ns,
             limit_composition
                 ? "heap-limit.execution-attempt"
-                : (project_composition
+                : (aggregate_composition
+                       ? "heap-aggregate.execution-attempt"
+                       : (project_composition
                        ? "heap-project.execution-attempt"
                        : (sort_composition ? "heap-sort.execution-attempt"
-                                           : "heap-filter.execution-attempt")));
+                                           : "heap-filter.execution-attempt"))));
     selected.result_publication_request.transaction_effect_evidence_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" +
@@ -20805,11 +20820,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                         .snapshot_visible_through_local_transaction_id),
             limit_composition
                 ? "heap-limit.transaction-effect-unchanged"
-                : (project_composition
+                : (aggregate_composition
+                       ? "heap-aggregate.transaction-effect-unchanged"
+                       : (project_composition
                        ? "heap-project.transaction-effect-unchanged"
                        : (sort_composition
                               ? "heap-sort.transaction-effect-unchanged"
-                              : "heap-filter.transaction-effect-unchanged")));
+                              : "heap-filter.transaction-effect-unchanged"))));
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.invocation_mode =
@@ -20851,20 +20868,24 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
           execution.issues.empty()
               ? (limit_composition
                      ? "QOW-DIAG-PACKET7-OBJECT-HEAP-LIMIT-EXECUTION-V1"
-                     : (project_composition
+                     : (aggregate_composition
+                            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-EXECUTION-V1"
+                            : (project_composition
                             ? "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1"
                             : (sort_composition
                                    ? "QOW-DIAG-PACKET7-OBJECT-HEAP-SORT-EXECUTION-V1"
-                                   : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")))
+                                   : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
               ? (limit_composition
                      ? "object-backed heap LIMIT selected DAG was not completed"
-                     : (project_composition
+                     : (aggregate_composition
+                            ? "object-backed heap aggregate selected DAG was not completed"
+                            : (project_composition
                             ? "object-backed heap PROJECT selected DAG was not completed"
                             : (sort_composition
                                    ? "object-backed heap ORDER BY selected DAG was not completed"
-                                   : "object-backed heap WHERE selected DAG was not completed")))
+                                   : "object-backed heap WHERE selected DAG was not completed"))))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;
