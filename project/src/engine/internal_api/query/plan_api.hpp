@@ -123,6 +123,33 @@ struct RelationalGroupingSetRecord {
   std::vector<std::uint32_t> expression_ids;
 };
 
+enum class RelationalWindowFrameUnit : std::uint8_t {
+  kRows = 1,
+  kRange,
+  kGroups,
+};
+
+enum class RelationalWindowFrameBoundKind : std::uint8_t {
+  kUnboundedPreceding = 1,
+  kPreceding,
+  kCurrentRow,
+  kFollowing,
+  kUnboundedFollowing,
+};
+
+enum class RelationalWindowFrameExclusion : std::uint8_t {
+  kNoOthers = 1,
+  kCurrentRow,
+  kGroup,
+  kTies,
+};
+
+struct RelationalWindowFrameBoundRecord {
+  RelationalWindowFrameBoundKind bound_kind{
+      RelationalWindowFrameBoundKind::kCurrentRow};
+  std::optional<std::uint32_t> offset_expression_id;
+};
+
 enum class RelationalPropertyKind : std::uint8_t {
   kOrdering = 1,
   kGrouping,
@@ -148,6 +175,33 @@ struct RelationalPropertyOrderingTerm {
   RelationalPropertyNullPlacement null_placement{
       RelationalPropertyNullPlacement::kNullsLast};
   std::string collation_uuid;
+};
+
+struct RelationalWindowDefinitionRecord {
+  std::uint32_t window_id{0};
+  std::uint32_t relation_node_id{0};
+  std::optional<std::string> canonical_name_key;
+  std::optional<std::uint32_t> inherited_window_id;
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<RelationalPropertyOrderingTerm> ordering_terms;
+  std::optional<RelationalWindowFrameUnit> frame_unit;
+  std::optional<RelationalWindowFrameBoundRecord> frame_start;
+  std::optional<RelationalWindowFrameBoundRecord> frame_end;
+  RelationalWindowFrameExclusion exclusion{
+      RelationalWindowFrameExclusion::kNoOthers};
+};
+
+struct RelationalWindowInvocationRecord {
+  std::uint32_t invocation_id{0};
+  std::uint32_t relation_node_id{0};
+  std::uint32_t function_expression_id{0};
+  std::uint32_t window_definition_id{0};
+  std::uint16_t function_abi_version{0};
+  std::string builtin_id;
+  std::string function_uuid;
+  std::uint32_t result_descriptor_id{0};
+  std::string output_name_utf8;
+  std::vector<std::uint32_t> argument_expression_ids;
 };
 
 struct RelationalPropertyRecord {
@@ -192,6 +246,8 @@ struct TypedRelationalDag {
   std::vector<RelationalOutputRecord> outputs;
   std::vector<RelationalValuesRowRecord> values_rows;
   std::vector<RelationalGroupingSetRecord> grouping_sets;
+  std::vector<RelationalWindowDefinitionRecord> window_definitions;
+  std::vector<RelationalWindowInvocationRecord> window_invocations;
   std::vector<RelationalPropertyRecord> properties;
   std::vector<RelationalDagNode> nodes;
 };

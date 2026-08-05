@@ -129,6 +129,57 @@ sblr::SblrOperationEnvelope QueryEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope WindowEnvelope() {
+  auto envelope = QueryEnvelope();
+  envelope.trace_key = "qow.qry.003.window";
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000000300"},
+      {"uuid", "relational_catalog_epoch_uuid",
+       "019f0000-0000-7100-8000-000000000303"},
+      {"uuid", "relational_security_context_uuid",
+       "019f0000-0000-7110-8000-000000000304"},
+      {"uuid", "relational_statement_uuid",
+       "019f0000-0000-7120-8000-000000000303"},
+      {"uuid", "relational_owning_transaction_uuid",
+       "019f0000-0000-7130-8000-000000000313"},
+      {"uuid", "relational_statement_snapshot_uuid",
+       "019f0000-0000-7140-8000-000000000314"},
+      {"uuid", "relational_statement_metadata_snapshot_uuid",
+       "019f0000-0000-7150-8000-000000000315"},
+      {"uint64", "relational_local_transaction_id", "37"},
+      {"uint64",
+       "relational_snapshot_visible_through_local_transaction_id", "35"},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7200-8000-000000000301|"
+       "019f0000-0000-7300-8000-000000000302|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7200-8000-000000000303|"
+       "019f0000-0000-7300-8000-000000000304|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2",
+       "4|-|2|019de5fc-2400-7539-bcce-00eef3ae7220|-|-|-|-"},
+      {"relational_output_v1", "1", "1|1|1|0|0|636f6c756d6e5f31"},
+      {"relational_output_v1", "2", "2|2|2|1|0|73657175656e63655f6e6f"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_window_definition_v1", "1",
+       "2|-|-|1|1:1:2:-|-|-|-|1"},
+      {"relational_window_invocation_v1", "1",
+       "2|2|1|1|73622e77696e646f772e726f775f6e756d626572|"
+       "019de5fc-2400-7539-bcce-00eef3ae7220|2|"
+       "73657175656e63655f6e6f|-"},
+      {"relational_node_v1", "1", "13|0|-|1|1"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-"},
+      {"relational_node_v1", "2", "8|0|1|2|-"},
+      {"relational_node_binding_v1", "2",
+       "77696e646f772e726f772d6e756d6265722e7631|1,2|-|-|-"},
+  };
+  return envelope;
+}
+
 bool ValidateRegistryClosure() {
   const auto* canonical = sblr::LookupSblrOperation("query.execute");
   const auto* legacy = sblr::LookupSblrOperation("query.plan_operation");
@@ -244,6 +295,49 @@ bool ValidateDagAndTransportRefusal() {
           HasApiDiagnostic(side_channel_result,
                            "SBLR.PLAN_TREE.INVALID_HANDLE"),
       "out-of-band flat API payload bypassed the typed DAG route");
+  return passed;
+}
+
+bool ValidateWindowRecordTransport() {
+  const auto result = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), WindowEnvelope(), {}});
+
+  auto missing_definition = WindowEnvelope();
+  std::erase_if(missing_definition.operands, [](const auto& operand) {
+    return operand.type == "relational_window_definition_v1";
+  });
+  const auto missing_definition_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(missing_definition), {}});
+
+  auto malformed_definition = WindowEnvelope();
+  const auto definition = std::ranges::find_if(
+      malformed_definition.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1";
+      });
+  definition->value = "2|-|-|1|1:1:2:-|3|-|-|1";
+  const auto malformed_definition_result =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), std::move(malformed_definition), {}});
+
+  bool passed = true;
+  passed &= Require(
+      result.envelope_validated && result.logical_graph_populated &&
+          result.logical_node_count == 2 &&
+          !HasApiDiagnostic(result, "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "canonical window records did not cross the engine decoder boundary");
+  passed &= Require(
+      !missing_definition_result.accepted &&
+          !missing_definition_result.logical_graph_populated &&
+          HasApiDiagnostic(missing_definition_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "engine decoder admitted a window invocation without its definition");
+  passed &= Require(
+      !malformed_definition_result.accepted &&
+          !malformed_definition_result.logical_graph_populated &&
+          HasApiDiagnostic(malformed_definition_result,
+                           "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "engine decoder admitted a frame unit without a start bound");
   return passed;
 }
 
@@ -509,6 +603,7 @@ int main() {
   passed &= ValidateRegistryClosure();
   passed &= ValidateCanonicalDispatchSeam();
   passed &= ValidateDagAndTransportRefusal();
+  passed &= ValidateWindowRecordTransport();
   passed &= ValidateStatementContextDecoderMatrix();
   passed &= ValidateRegistryAndAuthorityRefusal();
   passed &= ValidateDecodePath();

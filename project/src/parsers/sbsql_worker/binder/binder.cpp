@@ -801,15 +801,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_window.window_invocation_ids = {invocation.invocation_id};
     bound_window.semantic_variant_id =
         context.relations.front().semantic_variant_id;
-    bound_window.bound_expression_ids =
-        bound.window_definitions.front().partition_expression_ids;
+    const auto append_bound_expression = [&](const std::uint32_t expression_id) {
+      if (std::ranges::find(bound_window.bound_expression_ids,
+                            expression_id) ==
+          bound_window.bound_expression_ids.end()) {
+        bound_window.bound_expression_ids.push_back(expression_id);
+      }
+    };
+    for (const auto expression_id :
+         bound.window_definitions.front().partition_expression_ids) {
+      append_bound_expression(expression_id);
+    }
     for (const auto& term : bound.window_definitions.front().ordering_terms) {
-      bound_window.bound_expression_ids.push_back(term.expression_id);
+      append_bound_expression(term.expression_id);
     }
     for (const auto expression_id : offset_ast_ids) {
-      bound_window.bound_expression_ids.push_back(ast_to_bound.at(expression_id));
+      append_bound_expression(ast_to_bound.at(expression_id));
     }
-    bound_window.bound_expression_ids.push_back(function_binding.expression_id);
+    append_bound_expression(function_binding.expression_id);
     bound.relations.push_back(std::move(bound_window));
 
     bound.descriptors.reserve(context.descriptors.size());

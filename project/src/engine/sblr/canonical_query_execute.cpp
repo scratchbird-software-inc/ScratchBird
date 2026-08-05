@@ -20309,6 +20309,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
   return result;
 }
 
+#if !defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     const CanonicalCurrentHeapExecutionRequest& input) {
   CanonicalObjectFreeValuesExecutionResult result;
@@ -20635,6 +20636,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   result.api_result = SuccessfulApiResult(planning_request, execution);
   return result;
 }
+#endif
 
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(

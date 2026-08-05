@@ -129,15 +129,26 @@ sblr::SblrOperationEnvelope PropertyEnvelope() {
       {"relational_descriptor_v1", "2",
        "019f0000-0000-7300-8000-000000003203|"
        "019f0000-0000-7400-8000-000000003204|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000003205|"
+       "019f0000-0000-7400-8000-000000003206|1|-|-|-|-|-"},
       {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
       {"relational_expression_v1", "2", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "3",
+       "4|-|3|019de5fc-2400-7539-bcce-00eef3ae7220|-|-|-|-"},
       {"relational_output_v1", "1", "1|1|1|1|0|67726f75705f6b6579"},
       {"relational_output_v1", "2", "1|2|2|1|1|6d656173757265"},
+      {"relational_output_v1", "3", "4|3|3|1|0|726f775f6e756d626572"},
       {"relational_values_row_v1", "1", "1,2"},
+      {"relational_window_definition_v1", "1",
+       "4|-|-|1|2:1:2:-|-|-|-|1"},
+      {"relational_window_invocation_v1", "1",
+       "4|3|1|1|73622e77696e646f772e726f775f6e756d626572|"
+       "019de5fc-2400-7539-bcce-00eef3ae7220|3|726f775f6e756d626572|-"},
       {"relational_node_v1", "1", "13|0|-|1,2|1"},
       {"relational_node_v1", "2", "5|0|1|1,2|-"},
       {"relational_node_v1", "3", "6|0|2|1,2|-"},
-      {"relational_node_v1", "4", "8|0|3|1,2|-"},
+      {"relational_node_v1", "4", "8|0|3|3|-"},
       {"relational_node_binding_v1", "1",
        "76616c7565732e6c69746572616c2d7461626c652e7631|1,2|-|-|"
        "019f0000-0000-7200-8000-000000003101,"
@@ -151,7 +162,7 @@ sblr::SblrOperationEnvelope PropertyEnvelope() {
        "019f0000-0000-7200-8000-000000003103|"
        "019f0000-0000-7200-8000-000000003103"},
       {"relational_node_binding_v1", "4",
-       "77696e646f772e6f7665722e7631|1,2|-|"
+       "77696e646f772e6f7665722e7631|1,2,3|-|"
        "019f0000-0000-7200-8000-000000003103,"
        "019f0000-0000-7200-8000-000000003104|"
        "019f0000-0000-7200-8000-000000003103,"
@@ -223,7 +234,12 @@ bool ValidateEngineScopeAndPropertyRefusal() {
       {std::move(stale_context), PropertyEnvelope(), {}});
 
   auto unknown_property = PropertyEnvelope();
-  unknown_property.operands[23].value =
+  const auto aggregate_binding = std::ranges::find_if(
+      unknown_property.operands, [](const auto& operand) {
+        return operand.type == "relational_node_binding_v1" &&
+               operand.name == "2";
+      });
+  aggregate_binding->value =
       "6167677265676174652e67726f75702e7631|1,2|-|"
       "019f0000-0000-7200-8000-000000003999|"
       "019f0000-0000-7200-8000-000000003102";

@@ -32956,6 +32956,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
+  const BoundRelationAstRecord* window_relation = nullptr;
   for (const auto& relation : native.relations) {
     if (relation.relation_id == 0 || relation.lateral ||
         (relation.relation_kind != NativeRelationAstKind::kSort &&
@@ -33418,6 +33419,37 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       limit_relation = &relation;
+    } else if (relation.relation_kind == NativeRelationAstKind::kWindow) {
+      if (window_relation != nullptr || catalog_relation == nullptr ||
+          relation.relation_id != native.root_relation_id ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{catalog_relation->relation_id} ||
+          !relation.values_row_ids.empty() ||
+          relation.output_expression_ids.size() != 1 ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
+          !relation.limit_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
+          relation.bound_object_uuid.has_value() ||
+          relation.window_invocation_ids.size() != 1 ||
+          relation.semantic_variant_id != "window.row-number.v1" ||
+          native.window_definitions.size() != 1 ||
+          native.window_invocations.size() != 1 ||
+          native.window_invocations.front().invocation_id !=
+              relation.window_invocation_ids.front() ||
+          native.window_invocations.front().function_expression_id !=
+              relation.output_expression_ids.front()) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed window fields do not form the accepted canonical node");
+        return envelope;
+      }
+      window_relation = &relation;
     }
   }
   const bool single_catalog_graph_is_exact =
@@ -33462,8 +33494,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       limit_relation == nullptr && native.relations.size() == 3 &&
       native.root_relation_id == catalog_join_relation->relation_id &&
       native.values_rows.empty() && native.grouping_sets.empty();
+  const bool catalog_window_graph_is_exact =
+      catalog_relations.size() == 1 && catalog_relation != nullptr &&
+      window_relation != nullptr && catalog_join_relation == nullptr &&
+      values_relation == nullptr && aggregate_relation == nullptr &&
+      filter_relation == nullptr && catalog_filter_relation == nullptr &&
+      catalog_project_relation == nullptr && catalog_sort_relation == nullptr &&
+      limit_relation == nullptr && native.relations.size() == 2 &&
+      native.root_relation_id == window_relation->relation_id &&
+      native.values_rows.empty() && native.grouping_sets.empty();
   const bool catalog_graph_is_exact =
-      single_catalog_graph_is_exact || catalog_cross_join_graph_is_exact;
+      single_catalog_graph_is_exact || catalog_cross_join_graph_is_exact ||
+      catalog_window_graph_is_exact;
   const bool values_graph_is_exact =
       catalog_relation == nullptr && limit_relation == nullptr &&
       values_relation != nullptr &&
@@ -33550,6 +33592,103 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             "typed scalar expression contains a dangling child handle");
         return envelope;
       }
+    }
+  }
+  if (window_relation != nullptr) {
+    const auto& definition = native.window_definitions.front();
+    const auto& invocation = native.window_invocations.front();
+    const auto function = expressions_by_id.find(
+        invocation.function_expression_id);
+    const auto has_bound_expression = [&](const std::uint32_t expression_id) {
+      return expressions_by_id.contains(expression_id) &&
+             std::ranges::find(window_relation->bound_expression_ids,
+                               expression_id) !=
+                 window_relation->bound_expression_ids.end();
+    };
+    const auto frame_bound_exact = [&](const auto& bound, const bool start) {
+      if (!bound.has_value()) return true;
+      const bool offset_kind =
+          bound->bound_kind == NativeWindowFrameBoundKind::kPreceding ||
+          bound->bound_kind == NativeWindowFrameBoundKind::kFollowing;
+      if (offset_kind != bound->offset_expression_id.has_value() ||
+          (start && bound->bound_kind ==
+                        NativeWindowFrameBoundKind::kUnboundedFollowing) ||
+          (!start && bound->bound_kind ==
+                         NativeWindowFrameBoundKind::kUnboundedPreceding)) {
+        return false;
+      }
+      if (!bound->offset_expression_id.has_value()) return true;
+      const auto offset = expressions_by_id.find(*bound->offset_expression_id);
+      if (offset == expressions_by_id.end() ||
+          !has_bound_expression(*bound->offset_expression_id) ||
+          offset->second->expression_kind !=
+              NativeExpressionAstKind::kLiteral ||
+          offset->second->literal_kind != NativeLiteralAstKind::kNumeric ||
+          !offset->second->literal_or_parameter_ref.has_value()) {
+        return false;
+      }
+      const auto& encoded = *offset->second->literal_or_parameter_ref;
+      std::uint64_t parsed = 0;
+      const auto [end, error] = std::from_chars(
+          encoded.data(), encoded.data() + encoded.size(), parsed);
+      return !encoded.empty() &&
+             (encoded.size() == 1 || encoded.front() != '0') &&
+             error == std::errc{} &&
+             end == encoded.data() + encoded.size() &&
+             parsed <= static_cast<std::uint64_t>(
+                           std::numeric_limits<std::int64_t>::max());
+    };
+    bool references_exact = definition.window_id != 0 &&
+                            !definition.canonical_name_key.has_value() &&
+                            !definition.inherited_window_id.has_value() &&
+                            invocation.invocation_id != 0 &&
+                            invocation.window_definition_id ==
+                                definition.window_id &&
+                            invocation.function_expression_id ==
+                                window_relation->output_expression_ids.front();
+    for (const auto expression_id : definition.partition_expression_ids) {
+      references_exact = references_exact && has_bound_expression(expression_id);
+    }
+    for (const auto& term : definition.ordering_terms) {
+      references_exact =
+          references_exact && has_bound_expression(term.expression_id);
+    }
+    const auto result_descriptor = std::ranges::find_if(
+        native.descriptors, [&](const auto& descriptor) {
+          return descriptor.descriptor_id == invocation.result_descriptor_id;
+        });
+    if (!references_exact ||
+        (definition.partition_expression_ids.empty() &&
+         definition.ordering_terms.empty()) ||
+        definition.frame_unit.has_value() !=
+            definition.frame_start.has_value() ||
+        (definition.frame_end.has_value() &&
+         !definition.frame_start.has_value()) ||
+        (!definition.frame_unit.has_value() &&
+         definition.exclusion != NativeWindowFrameExclusion::kNoOthers) ||
+        !frame_bound_exact(definition.frame_start, true) ||
+        !frame_bound_exact(definition.frame_end, false) ||
+        function == expressions_by_id.end() ||
+        function->second->expression_kind !=
+            NativeExpressionAstKind::kFunctionCall ||
+        !function->second->child_expression_ids.empty() ||
+        function->second->bound_function_uuid !=
+            invocation.bound_function_uuid ||
+        invocation.function_abi_version != 1 ||
+        invocation.builtin_id != "sb.window.row_number" ||
+        invocation.bound_function_uuid.empty() ||
+        invocation.result_descriptor_id !=
+            function->second->result_descriptor_id ||
+        !invocation.argument_expression_ids.empty() ||
+        invocation.output_name_utf8.value_or("").empty() ||
+        result_descriptor == native.descriptors.end() ||
+        result_descriptor->nullability != BoundNullability::kNonNull ||
+        result_descriptor->collation_uuid.has_value() ||
+        result_descriptor->timezone_profile_id.has_value()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed window definition and registry receipt are not exact");
+      return envelope;
     }
   }
   if (catalog_filter_relation != nullptr) {
@@ -34130,6 +34269,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     } else if (catalog_filter_relation != nullptr) {
       visible_outputs =
           &outputs_by_relation.at(catalog_filter_relation->relation_id);
+    } else if (window_relation != nullptr) {
+      visible_outputs = &outputs_by_relation.at(window_relation->relation_id);
     }
     const auto limit_expression_count =
         limit_relation == nullptr ? 0 : limit_relation->limit_expression_ids.size();
@@ -34165,6 +34306,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
         catalog_filter_relation != nullptr ? 1 : 0;
+    const auto window_offset_count = [&] {
+      if (window_relation == nullptr) return std::size_t{0};
+      const auto& definition = native.window_definitions.front();
+      return static_cast<std::size_t>(
+                 definition.frame_start.has_value() &&
+                 definition.frame_start->offset_expression_id.has_value()) +
+             static_cast<std::size_t>(
+                 definition.frame_end.has_value() &&
+                 definition.frame_end->offset_expression_id.has_value());
+    }();
+    const auto window_expression_count =
+        window_relation == nullptr ? 0 : window_offset_count + 1;
     const auto visible_width = visible_outputs->size();
     const auto expected_output_count =
         width + (catalog_filter_relation != nullptr ? width : 0) +
@@ -34175,17 +34328,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (aggregate_relation != nullptr
              ? aggregate_relation->output_expression_ids.size()
              : 0) +
+        (window_relation != nullptr
+             ? window_relation->output_expression_ids.size()
+             : 0) +
         (limit_relation != nullptr
              ? limit_relation->output_expression_ids.size()
              : 0);
     if (native.descriptors.size() !=
         width + aggregate_descriptor_count + numeric_descriptor_count +
-                filter_descriptor_count + aggregate_direct_descriptor_count ||
+                filter_descriptor_count + aggregate_direct_descriptor_count +
+                window_expression_count ||
         native.expressions.size() !=
             width + aggregate_descriptor_count +
                 aggregate_direct_descriptor_count +
                 (catalog_filter_relation != nullptr ? 2 : 0) +
-                limit_expression_count ||
+                limit_expression_count + window_expression_count ||
         native.outputs.size() != expected_output_count ||
         catalog_relation->output_expression_ids.size() != width ||
         catalog_relation->bound_expression_ids.size() != width ||
@@ -34242,7 +34399,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               expression.expression_id ||
           output.relation_id != catalog_relation->relation_id ||
           output.expression_id != expression.expression_id ||
-          output.descriptor_id != descriptor.descriptor_id || !output.visible ||
+          output.descriptor_id != descriptor.descriptor_id ||
+          output.visible != (window_relation == nullptr) ||
           output.ordinal != ordinal || output.output_name_utf8.empty() ||
           !output_names.insert(output.output_name_utf8).second ||
           bound.descriptor_refs[ordinal] != descriptor.descriptor_uuid ||
@@ -34255,6 +34413,25 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       previous_descriptor_id = descriptor.descriptor_id;
       previous_expression_id = expression.expression_id;
       previous_output_id = output.output_id;
+    }
+    if (window_relation != nullptr) {
+      const auto& invocation = native.window_invocations.front();
+      const auto& window_outputs =
+          outputs_by_relation.at(window_relation->relation_id);
+      if (window_outputs.size() != 1 || !window_outputs.front()->visible ||
+          window_outputs.front()->expression_id !=
+              invocation.function_expression_id ||
+          window_outputs.front()->descriptor_id !=
+              invocation.result_descriptor_id ||
+          window_outputs.front()->output_name_utf8 !=
+              invocation.output_name_utf8.value_or("") ||
+          native.scopes.front().visible_projection_ids !=
+              std::vector<std::uint32_t>{window_outputs.front()->output_id}) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed window result projection does not cover its exact lineage");
+        return envelope;
+      }
     }
     if (aggregate_relation != nullptr) {
       const auto& aggregate_descriptor = native.descriptors[width];
@@ -34627,6 +34804,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       for (std::size_t ordinal = 0; ordinal < downstream_outputs.size();
            ++ordinal) {
         const auto& downstream_output = *downstream_outputs[ordinal];
+        if (window_relation != nullptr &&
+            downstream.relation_id == window_relation->relation_id) {
+          continue;
+        }
         if (aggregate_relation != nullptr &&
             (downstream.relation_id == aggregate_relation->relation_id ||
              (limit_relation != nullptr &&
@@ -35941,6 +36122,75 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(grouping_set.relation_id) + "|" +
              JoinCanonicalHandleList(grouping_set.expression_ids)});
   }
+  for (const auto& definition : native.window_definitions) {
+    std::string encoded_ordering_terms;
+    for (std::size_t ordinal = 0; ordinal < definition.ordering_terms.size();
+         ++ordinal) {
+      const auto& term = definition.ordering_terms[ordinal];
+      const auto expression = expressions_by_id.at(term.expression_id);
+      const auto descriptor = std::ranges::find_if(
+          native.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id == expression->result_descriptor_id;
+          });
+      if (ordinal != 0) encoded_ordering_terms.push_back(',');
+      encoded_ordering_terms +=
+          std::to_string(term.expression_id) + ":" +
+          std::to_string(term.direction == NativeSortDirection::kAscending
+                             ? 1
+                             : 2) +
+          ":" +
+          std::to_string(term.null_placement ==
+                                 NativeNullPlacement::kNullsFirst
+                             ? 1
+                             : 2) +
+          ":" +
+          (descriptor->collation_uuid.has_value()
+               ? *descriptor->collation_uuid
+               : "-");
+    }
+    const auto encode_frame_bound = [](const auto& bound) {
+      if (!bound.has_value()) return std::string("-");
+      return std::to_string(
+                 static_cast<std::uint8_t>(bound->bound_kind) + 1) +
+             ":" +
+             (bound->offset_expression_id.has_value()
+                  ? std::to_string(*bound->offset_expression_id)
+                  : "-");
+    };
+    envelope.operands.push_back(
+        {"relational_window_definition_v1",
+         std::to_string(definition.window_id),
+         std::to_string(window_relation->relation_id) + "|" +
+             EncodeOptionalCanonicalHex(definition.canonical_name_key) + "|" +
+             EncodeOptionalCanonicalU32(definition.inherited_window_id) + "|" +
+             JoinCanonicalHandleList(definition.partition_expression_ids) +
+             "|" +
+             (encoded_ordering_terms.empty() ? "-" : encoded_ordering_terms) +
+             "|" +
+             (definition.frame_unit.has_value()
+                  ? std::to_string(
+                        static_cast<std::uint8_t>(*definition.frame_unit) + 1)
+                  : "-") +
+             "|" + encode_frame_bound(definition.frame_start) + "|" +
+             encode_frame_bound(definition.frame_end) + "|" +
+             std::to_string(
+                 static_cast<std::uint8_t>(definition.exclusion) + 1)});
+  }
+  for (const auto& invocation : native.window_invocations) {
+    envelope.operands.push_back(
+        {"relational_window_invocation_v1",
+         std::to_string(invocation.invocation_id),
+         std::to_string(window_relation->relation_id) + "|" +
+             std::to_string(invocation.function_expression_id) + "|" +
+             std::to_string(invocation.window_definition_id) + "|" +
+             std::to_string(invocation.function_abi_version) + "|" +
+             EncodeCanonicalHex(invocation.builtin_id) + "|" +
+             invocation.bound_function_uuid + "|" +
+             std::to_string(invocation.result_descriptor_id) + "|" +
+             EncodeCanonicalHex(invocation.output_name_utf8.value_or("")) +
+             "|" +
+             JoinCanonicalHandleList(invocation.argument_expression_ids)});
+  }
   constexpr std::string_view kCatalogOrderingPropertyUuid =
       "019f0000-0000-7200-8000-00000000c701";
   std::string encoded_catalog_ordering_terms;
@@ -35998,7 +36248,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                         : (relation.relation_kind ==
                                                NativeRelationAstKind::kSort
                                                ? 6
-                                               : 2))))));
+                                               : (relation.relation_kind ==
+                                                          NativeRelationAstKind::kWindow
+                                                      ? 8
+                                                      : 2)))))));
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +
@@ -37714,6 +37967,37 @@ struct ParsedRelationalProperty {
   std::optional<std::string> window_frame_descriptor_uuid;
 };
 
+struct ParsedRelationalWindowBound {
+  std::uint8_t kind{0};
+  std::optional<std::uint32_t> offset_expression_id;
+};
+
+struct ParsedRelationalWindowDefinition {
+  std::uint32_t id{0};
+  std::uint32_t node_id{0};
+  std::optional<std::string> canonical_name_key;
+  std::optional<std::uint32_t> inherited_window_id;
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<ParsedRelationalOrderingTerm> ordering_terms;
+  std::optional<std::uint8_t> frame_unit;
+  std::optional<ParsedRelationalWindowBound> frame_start;
+  std::optional<ParsedRelationalWindowBound> frame_end;
+  std::uint8_t exclusion{0};
+};
+
+struct ParsedRelationalWindowInvocation {
+  std::uint32_t id{0};
+  std::uint32_t node_id{0};
+  std::uint32_t function_expression_id{0};
+  std::uint32_t definition_id{0};
+  std::uint16_t function_abi_version{0};
+  std::string builtin_id;
+  std::string function_uuid;
+  std::uint32_t result_descriptor_id{0};
+  std::string output_name_utf8;
+  std::vector<std::uint32_t> argument_expression_ids;
+};
+
 struct ParsedRelationalNode {
   std::uint32_t id{0};
   std::uint8_t kind{0};
@@ -37746,6 +38030,8 @@ struct ParsedRelationalGraph {
   std::vector<ParsedRelationalOutput> outputs;
   std::vector<ParsedRelationalValuesRow> values_rows;
   std::vector<ParsedRelationalGroupingSet> grouping_sets;
+  std::vector<ParsedRelationalWindowDefinition> window_definitions;
+  std::vector<ParsedRelationalWindowInvocation> window_invocations;
   std::vector<ParsedRelationalProperty> properties;
   std::vector<ParsedRelationalNode> nodes;
 };
@@ -37985,6 +38271,33 @@ bool ParseCanonicalRelationalOrderingTerms(
     if (separator == std::string_view::npos) break;
     start = separator + 1;
   }
+  return true;
+}
+
+bool ParseCanonicalRelationalWindowBound(
+    const std::string_view encoded,
+    std::optional<ParsedRelationalWindowBound>* bound) {
+  if (bound == nullptr) return false;
+  if (encoded == "-") {
+    bound->reset();
+    return true;
+  }
+  const auto separator = encoded.find(':');
+  if (separator == std::string_view::npos ||
+      encoded.find(':', separator + 1) != std::string_view::npos) {
+    return false;
+  }
+  std::uint64_t kind = 0;
+  ParsedRelationalWindowBound decoded;
+  if (!ParseCanonicalRelationalUnsigned(
+          encoded.substr(0, separator),
+          std::numeric_limits<std::uint8_t>::max(), &kind) ||
+      !ParseOptionalCanonicalRelationalU32(
+          encoded.substr(separator + 1), &decoded.offset_expression_id)) {
+    return false;
+  }
+  decoded.kind = static_cast<std::uint8_t>(kind);
+  *bound = std::move(decoded);
   return true;
 }
 
@@ -38413,6 +38726,118 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->grouping_sets.push_back(std::move(grouping_set));
       continue;
     }
+    if (operand.type == "relational_window_definition_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::array<std::string_view, 9> fields{};
+      std::uint64_t id = 0;
+      std::uint64_t node_id = 0;
+      std::uint64_t frame_unit = 0;
+      std::uint64_t exclusion = 0;
+      ParsedRelationalWindowDefinition definition;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          node_id == 0 ||
+          !DecodeOptionalCanonicalRelationalHex(
+              fields[1], &definition.canonical_name_key) ||
+          !ParseOptionalCanonicalRelationalU32(
+              fields[2], &definition.inherited_window_id) ||
+          !ParseCanonicalRelationalHandleList(
+              fields[3], &definition.partition_expression_ids) ||
+          !ParseCanonicalRelationalOrderingTerms(
+              fields[4], &definition.ordering_terms) ||
+          (fields[5] != "-" &&
+           !ParseCanonicalRelationalUnsigned(
+               fields[5], std::numeric_limits<std::uint8_t>::max(),
+               &frame_unit)) ||
+          !ParseCanonicalRelationalWindowBound(fields[6],
+                                               &definition.frame_start) ||
+          !ParseCanonicalRelationalWindowBound(fields[7],
+                                               &definition.frame_end) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[8], std::numeric_limits<std::uint8_t>::max(),
+              &exclusion)) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational window-definition record is malformed",
+            "window_definition_record");
+      }
+      definition.id = static_cast<std::uint32_t>(id);
+      definition.node_id = static_cast<std::uint32_t>(node_id);
+      if (fields[5] != "-") {
+        definition.frame_unit = static_cast<std::uint8_t>(frame_unit);
+      }
+      definition.exclusion = static_cast<std::uint8_t>(exclusion);
+      graph->window_definitions.push_back(std::move(definition));
+      continue;
+    }
+    if (operand.type == "relational_window_invocation_v1") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
+                              &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational record limit exceeded",
+                                     "record_count");
+      }
+      std::array<std::string_view, 9> fields{};
+      std::uint64_t id = 0;
+      std::uint64_t node_id = 0;
+      std::uint64_t expression_id = 0;
+      std::uint64_t definition_id = 0;
+      std::uint64_t abi_version = 0;
+      std::uint64_t descriptor_id = 0;
+      ParsedRelationalWindowInvocation invocation;
+      if (!ParseCanonicalRelationalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
+          id == 0 ||
+          !SplitCanonicalRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &definition_id) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[3], std::numeric_limits<std::uint16_t>::max(),
+              &abi_version) ||
+          !DecodeCanonicalRelationalHex(fields[4], &invocation.builtin_id) ||
+          !IsNonNullCanonicalRelationalUuid(fields[5]) ||
+          !ParseCanonicalRelationalUnsigned(
+              fields[6], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          !DecodeCanonicalRelationalHex(fields[7],
+                                        &invocation.output_name_utf8) ||
+          !ParseCanonicalRelationalHandleList(
+              fields[8], &invocation.argument_expression_ids)) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational window-invocation record is malformed",
+            "window_invocation_record");
+      }
+      invocation.id = static_cast<std::uint32_t>(id);
+      invocation.node_id = static_cast<std::uint32_t>(node_id);
+      invocation.function_expression_id =
+          static_cast<std::uint32_t>(expression_id);
+      invocation.definition_id = static_cast<std::uint32_t>(definition_id);
+      invocation.function_abi_version =
+          static_cast<std::uint16_t>(abi_version);
+      invocation.function_uuid = fields[5];
+      invocation.result_descriptor_id =
+          static_cast<std::uint32_t>(descriptor_id);
+      graph->window_invocations.push_back(std::move(invocation));
+      continue;
+    }
     if (operand.type == "relational_property_v1") {
       if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
                               &record_count)) {
@@ -38816,6 +39241,155 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                      "relational grouping-set ordinals are not dense",
                                      "grouping_set_ordinals", node_id);
       }
+    }
+  }
+
+  std::unordered_map<std::uint32_t, const ParsedRelationalWindowDefinition*>
+      window_definitions;
+  std::unordered_map<std::uint32_t, std::size_t> window_definition_count;
+  const auto window_bound_exact = [&](const auto& bound,
+                                      const ParsedRelationalNode& node,
+                                      const bool start) {
+    if (!bound.has_value()) return true;
+    const bool offset_kind = bound->kind == 2 || bound->kind == 4;
+    if (bound->kind < 1 || bound->kind > 5 ||
+        offset_kind != bound->offset_expression_id.has_value() ||
+        (start && bound->kind == 5) || (!start && bound->kind == 1)) {
+      return false;
+    }
+    if (!bound->offset_expression_id.has_value()) return true;
+    const auto expression = expressions.find(*bound->offset_expression_id);
+    if (expression == expressions.end() || expression->second->kind != 1 ||
+        expression->second->literal_kind != 1 ||
+        !expression->second->literal_or_parameter_ref.has_value() ||
+        std::ranges::find(node.bound_expression_ids,
+                          *bound->offset_expression_id) ==
+            node.bound_expression_ids.end()) {
+      return false;
+    }
+    const auto& encoded = *expression->second->literal_or_parameter_ref;
+    std::uint64_t parsed = 0;
+    return ParseCanonicalRelationalUnsigned(
+               encoded, static_cast<std::uint64_t>(
+                            std::numeric_limits<std::int64_t>::max()),
+               &parsed);
+  };
+  for (const auto& definition : graph.window_definitions) {
+    const auto node = nodes.find(definition.node_id);
+    if (!AddRelationalCount(definition.partition_expression_ids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !AddRelationalCount(definition.ordering_terms.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        node == nodes.end() || node->second->kind != 8 ||
+        !window_definitions.emplace(definition.id, &definition).second ||
+        (definition.canonical_name_key.has_value() &&
+         definition.canonical_name_key->empty()) ||
+        (definition.frame_unit.has_value() &&
+         (*definition.frame_unit < 1 || *definition.frame_unit > 3)) ||
+        definition.frame_unit.has_value() !=
+            definition.frame_start.has_value() ||
+        (definition.frame_end.has_value() &&
+         !definition.frame_start.has_value()) ||
+        (!definition.frame_unit.has_value() && definition.exclusion != 1) ||
+        definition.exclusion < 1 || definition.exclusion > 4 ||
+        !window_bound_exact(definition.frame_start, *node->second, true) ||
+        !window_bound_exact(definition.frame_end, *node->second, false)) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "relational window definition is invalid",
+          "window_definition_record", definition.node_id);
+    }
+    std::unordered_set<std::uint32_t> partition_ids;
+    for (const auto expression_id : definition.partition_expression_ids) {
+      if (!expressions.contains(expression_id) ||
+          !partition_ids.insert(expression_id).second ||
+          std::ranges::find(node->second->bound_expression_ids,
+                            expression_id) ==
+              node->second->bound_expression_ids.end()) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational window partition expression is invalid",
+            "window_partition_expression_ids", definition.node_id);
+      }
+    }
+    std::unordered_set<std::uint32_t> ordering_ids;
+    for (const auto& term : definition.ordering_terms) {
+      if (!expressions.contains(term.expression_id) ||
+          !ordering_ids.insert(term.expression_id).second ||
+          term.direction < 1 || term.direction > 2 ||
+          term.null_placement < 1 || term.null_placement > 2 ||
+          (term.collation_uuid.has_value() &&
+           !IsCanonicalRelationalUuid(*term.collation_uuid)) ||
+          std::ranges::find(node->second->bound_expression_ids,
+                            term.expression_id) ==
+              node->second->bound_expression_ids.end()) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational window ordering term is invalid",
+            "window_ordering_terms", definition.node_id);
+      }
+    }
+    ++window_definition_count[definition.node_id];
+  }
+  for (const auto& definition : graph.window_definitions) {
+    if (definition.inherited_window_id.has_value()) {
+      const auto inherited =
+          window_definitions.find(*definition.inherited_window_id);
+      if (inherited == window_definitions.end() ||
+          inherited->second->node_id != definition.node_id ||
+          inherited->second->id == definition.id) {
+        return RefuseRelationalGraph(
+            "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "relational inherited window identity is invalid",
+            "inherited_window_id", definition.node_id);
+      }
+    }
+  }
+  std::unordered_set<std::uint32_t> invocation_ids;
+  std::unordered_map<std::uint32_t, std::size_t> window_invocation_count;
+  for (const auto& invocation : graph.window_invocations) {
+    const auto node = nodes.find(invocation.node_id);
+    const auto definition = window_definitions.find(invocation.definition_id);
+    const auto expression =
+        expressions.find(invocation.function_expression_id);
+    if (!AddRelationalCount(invocation.argument_expression_ids.size(),
+                            kMaximumRelationalReferenceCount,
+                            &reference_count) ||
+        !invocation_ids.insert(invocation.id).second ||
+        node == nodes.end() || node->second->kind != 8 ||
+        definition == window_definitions.end() ||
+        definition->second->node_id != invocation.node_id ||
+        expression == expressions.end() || expression->second->kind != 4 ||
+        expression->second->function_uuid != invocation.function_uuid ||
+        expression->second->descriptor_id != invocation.result_descriptor_id ||
+        expression->second->child_ids != invocation.argument_expression_ids ||
+        invocation.function_abi_version != 1 || invocation.builtin_id.empty() ||
+        !IsNonNullCanonicalRelationalUuid(invocation.function_uuid) ||
+        !descriptors.contains(invocation.result_descriptor_id) ||
+        invocation.output_name_utf8.empty() ||
+        std::ranges::find(node->second->bound_expression_ids,
+                          invocation.function_expression_id) ==
+            node->second->bound_expression_ids.end() ||
+        std::ranges::find(node->second->output_descriptor_ids,
+                          invocation.result_descriptor_id) ==
+            node->second->output_descriptor_ids.end()) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "relational window invocation is invalid",
+          "window_invocation_record", invocation.node_id);
+    }
+    ++window_invocation_count[invocation.node_id];
+  }
+  for (const auto& node : graph.nodes) {
+    const bool window_node = node.kind == 8;
+    if (window_node != (window_definition_count[node.id] != 0) ||
+        window_node != (window_invocation_count[node.id] != 0)) {
+      return RefuseRelationalGraph(
+          "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "relational window record coverage is incomplete",
+          "window_record_coverage", node.id);
     }
   }
 

@@ -92,6 +92,80 @@ api::TypedRelationalDag GroupingSetDag() {
   return dag;
 }
 
+api::TypedRelationalDag WindowDag() {
+  api::TypedRelationalDag dag;
+  dag.wire_version = 2;
+  dag.bound_sblr_tree_uuid = "019f0000-0000-7000-8000-000000000291";
+  dag.bound_catalog_epoch_uuid = "019f0000-0000-7000-8000-000000000292";
+  dag.bound_security_context_uuid = "019f0000-0000-7000-8000-000000000293";
+  dag.statement_uuid = "019f0000-0000-7000-8000-000000000294";
+  dag.owning_transaction_uuid = "019f0000-0000-7000-8000-000000000295";
+  dag.statement_snapshot_uuid = "019f0000-0000-7000-8000-000000000296";
+  dag.statement_metadata_snapshot_uuid =
+      "019f0000-0000-7000-8000-000000000297";
+  dag.local_transaction_id = 29;
+  dag.root_node_id = 2;
+  dag.descriptors = {
+      {1, "019f0000-0000-7200-8000-000000000291",
+       "019f0000-0000-7300-8000-000000000291",
+       api::RelationalNullability::kNonNull},
+      {2, "019f0000-0000-7200-8000-000000000292",
+       "019f0000-0000-7300-8000-000000000292",
+       api::RelationalNullability::kNonNull},
+  };
+  api::RelationalExpressionRecord identifier;
+  identifier.expression_id = 1;
+  identifier.expression_kind = api::RelationalExpressionKind::kIdentifier;
+  identifier.result_descriptor_id = 1;
+  identifier.bound_name_uuid =
+      "019f0000-0000-7600-8000-000000000291";
+  api::RelationalExpressionRecord function;
+  function.expression_id = 2;
+  function.expression_kind = api::RelationalExpressionKind::kFunctionCall;
+  function.result_descriptor_id = 2;
+  function.function_uuid = "019de5fc-2400-7539-bcce-00eef3ae7220";
+  dag.expressions = {std::move(identifier), std::move(function)};
+  dag.outputs = {
+      {1, 1, 1, "account_id", 1, false, 0},
+      {2, 2, 2, "sequence_no", 2, true, 0},
+  };
+  api::RelationalDagNode scan;
+  scan.node_id = 1;
+  scan.node_kind = api::RelationalDagNodeKind::kScan;
+  scan.output_descriptor_ids = {1};
+  scan.bound_expression_ids = {1};
+  scan.semantic_variant_id = "catalog.relation-source.v1";
+  api::RelationalDagNode window;
+  window.node_id = 2;
+  window.node_kind = api::RelationalDagNodeKind::kWindow;
+  window.input_node_ids = {1};
+  window.output_descriptor_ids = {2};
+  window.bound_expression_ids = {1, 2};
+  window.semantic_variant_id = "window.row-number.v1";
+  dag.nodes = {std::move(scan), std::move(window)};
+  api::RelationalWindowDefinitionRecord definition;
+  definition.window_id = 1;
+  definition.relation_node_id = 2;
+  definition.partition_expression_ids = {1};
+  definition.ordering_terms = {
+      {1, api::RelationalPropertySortDirection::kAscending,
+       api::RelationalPropertyNullPlacement::kNullsLast, ""},
+  };
+  dag.window_definitions.push_back(std::move(definition));
+  api::RelationalWindowInvocationRecord invocation;
+  invocation.invocation_id = 1;
+  invocation.relation_node_id = 2;
+  invocation.function_expression_id = 2;
+  invocation.window_definition_id = 1;
+  invocation.function_abi_version = 1;
+  invocation.builtin_id = "sb.window.row_number";
+  invocation.function_uuid = "019de5fc-2400-7539-bcce-00eef3ae7220";
+  invocation.result_descriptor_id = 2;
+  invocation.output_name_utf8 = "sequence_no";
+  dag.window_invocations.push_back(std::move(invocation));
+  return dag;
+}
+
 bool ValidateAcceptedSharedDag() {
   const auto result = api::ValidateTypedRelationalDag(SharedDag());
   bool passed = true;
@@ -397,6 +471,47 @@ bool ValidateTypedGroupingSetContract() {
   return passed;
 }
 
+bool ValidateTypedWindowContract() {
+  const auto accepted = api::ValidateTypedRelationalDag(WindowDag());
+
+  auto missing_definition = WindowDag();
+  missing_definition.window_definitions.clear();
+  const auto missing_definition_result =
+      api::ValidateTypedRelationalDag(missing_definition);
+
+  auto unframed_exclusion = WindowDag();
+  unframed_exclusion.window_definitions.front().exclusion =
+      api::RelationalWindowFrameExclusion::kTies;
+  const auto unframed_exclusion_result =
+      api::ValidateTypedRelationalDag(unframed_exclusion);
+
+  auto wrong_abi = WindowDag();
+  wrong_abi.window_invocations.front().function_abi_version = 2;
+  const auto wrong_abi_result = api::ValidateTypedRelationalDag(wrong_abi);
+
+  bool passed = true;
+  passed &= Require(accepted.accepted && accepted.issues.empty(),
+                    "canonical typed window records were refused");
+  passed &= Require(
+      !missing_definition_result.accepted &&
+          HasIssue(missing_definition_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "window_invocation_record"),
+      "window invocation without a definition was accepted");
+  passed &= Require(
+      !unframed_exclusion_result.accepted &&
+          HasIssue(unframed_exclusion_result,
+                   "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "window_definition_record"),
+      "window exclusion without a frame was accepted");
+  passed &= Require(
+      !wrong_abi_result.accepted &&
+          HasIssue(wrong_abi_result, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                   "window_invocation_record"),
+      "unknown window function ABI was accepted");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-002-V1
@@ -414,5 +529,6 @@ int main() {
   passed &= ValidateFanoutLimitRefusal();
   passed &= ValidateTypedValuesRefusal();
   passed &= ValidateTypedGroupingSetContract();
+  passed &= ValidateTypedWindowContract();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

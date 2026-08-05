@@ -32,6 +32,7 @@
 #endif
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdlib>
 #include <cmath>
@@ -43,6 +44,7 @@
 #include <set>
 #include <sstream>
 #include <string_view>
+#include <system_error>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -102,6 +104,14 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return kind >= RelationalLiteralKind::kNumeric &&
            kind <= RelationalLiteralKind::kRange;
   };
+  const auto known_window_frame_unit = [](const RelationalWindowFrameUnit unit) {
+    return unit >= RelationalWindowFrameUnit::kRows &&
+           unit <= RelationalWindowFrameUnit::kGroups;
+  };
+  const auto known_window_bound = [](const RelationalWindowFrameBoundKind kind) {
+    return kind >= RelationalWindowFrameBoundKind::kUnboundedPreceding &&
+           kind <= RelationalWindowFrameBoundKind::kUnboundedFollowing;
+  };
   const auto canonical_uuid = [](const std::string_view value) {
     if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
         value[18] != '-' || value[23] != '-' ||
@@ -132,7 +142,10 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   }
   const auto record_count = dag.descriptors.size() + dag.expressions.size() +
                             dag.outputs.size() + dag.values_rows.size() +
-                            dag.grouping_sets.size() + dag.properties.size();
+                            dag.grouping_sets.size() +
+                            dag.window_definitions.size() +
+                            dag.window_invocations.size() +
+                            dag.properties.size();
   if (record_count > limits.maximum_records) {
     return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT", 0, "record_count");
   }
@@ -435,6 +448,171 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                       "grouping_set_ordinals");
       }
       ++expected_ordinal;
+    }
+  }
+
+  if (!planning_wire &&
+      (!dag.window_definitions.empty() || !dag.window_invocations.empty())) {
+    return refuse("SBLR.PLAN_TREE.INVALID_VERSION", 0,
+                  "window_records_require_wire_v2");
+  }
+  std::unordered_map<std::uint32_t, const RelationalWindowDefinitionRecord*>
+      window_definitions_by_id;
+  std::unordered_map<std::uint32_t, std::size_t> window_definition_count;
+  const auto validate_window_bound = [&](
+      const std::optional<RelationalWindowFrameBoundRecord>& bound,
+      const RelationalDagNode& node, const bool start) {
+    if (!bound.has_value()) return true;
+    if (!known_window_bound(bound->bound_kind)) return false;
+    const bool offset_kind =
+        bound->bound_kind == RelationalWindowFrameBoundKind::kPreceding ||
+        bound->bound_kind == RelationalWindowFrameBoundKind::kFollowing;
+    if (offset_kind != bound->offset_expression_id.has_value()) return false;
+    if ((start && bound->bound_kind ==
+                      RelationalWindowFrameBoundKind::kUnboundedFollowing) ||
+        (!start && bound->bound_kind ==
+                       RelationalWindowFrameBoundKind::kUnboundedPreceding)) {
+      return false;
+    }
+    if (!bound->offset_expression_id.has_value()) return true;
+    const auto expression =
+        expressions_by_id.find(*bound->offset_expression_id);
+    if (expression == expressions_by_id.end() ||
+        expression->second->expression_kind !=
+            RelationalExpressionKind::kLiteral ||
+        expression->second->literal_kind != RelationalLiteralKind::kNumeric ||
+        !expression->second->literal_or_parameter_ref.has_value() ||
+        std::ranges::find(node.bound_expression_ids,
+                          *bound->offset_expression_id) ==
+            node.bound_expression_ids.end()) {
+      return false;
+    }
+    const auto& encoded = *expression->second->literal_or_parameter_ref;
+    std::uint64_t parsed = 0;
+    const auto [end, error] =
+        std::from_chars(encoded.data(), encoded.data() + encoded.size(), parsed);
+    return !encoded.empty() &&
+           (encoded.size() == 1 || encoded.front() != '0') &&
+           error == std::errc{} && end == encoded.data() + encoded.size() &&
+           parsed <= static_cast<std::uint64_t>(
+                         std::numeric_limits<std::int64_t>::max());
+  };
+  for (const auto& definition : dag.window_definitions) {
+    const auto node = nodes_by_id.find(definition.relation_node_id);
+    if (!add_planning_references(definition.partition_expression_ids.size()) ||
+        !add_planning_references(definition.ordering_terms.size()) ||
+        definition.window_id == 0 || node == nodes_by_id.end() ||
+        node->second->node_kind != RelationalDagNodeKind::kWindow ||
+        (definition.canonical_name_key.has_value() &&
+         definition.canonical_name_key->empty()) ||
+        (definition.frame_unit.has_value() &&
+         !known_window_frame_unit(*definition.frame_unit)) ||
+        definition.frame_unit.has_value() != definition.frame_start.has_value() ||
+        (definition.frame_end.has_value() &&
+         !definition.frame_start.has_value()) ||
+        (!definition.frame_unit.has_value() &&
+         definition.exclusion != RelationalWindowFrameExclusion::kNoOthers) ||
+        definition.exclusion < RelationalWindowFrameExclusion::kNoOthers ||
+        definition.exclusion > RelationalWindowFrameExclusion::kTies ||
+        !validate_window_bound(definition.frame_start, *node->second, true) ||
+        !validate_window_bound(definition.frame_end, *node->second, false) ||
+        !window_definitions_by_id.emplace(definition.window_id, &definition)
+             .second) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    definition.relation_node_id, "window_definition_record");
+    }
+    std::unordered_set<std::uint32_t> partition_ids;
+    for (const auto expression_id : definition.partition_expression_ids) {
+      if (!expressions_by_id.contains(expression_id) ||
+          !partition_ids.insert(expression_id).second ||
+          std::ranges::find(node->second->bound_expression_ids,
+                            expression_id) ==
+              node->second->bound_expression_ids.end()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      definition.relation_node_id,
+                      "window_partition_expression_ids");
+      }
+    }
+    std::unordered_set<std::uint32_t> ordering_ids;
+    for (const auto& term : definition.ordering_terms) {
+      if (!expressions_by_id.contains(term.expression_id) ||
+          !ordering_ids.insert(term.expression_id).second ||
+          (term.direction != RelationalPropertySortDirection::kAscending &&
+           term.direction != RelationalPropertySortDirection::kDescending) ||
+          (term.null_placement !=
+               RelationalPropertyNullPlacement::kNullsFirst &&
+           term.null_placement !=
+               RelationalPropertyNullPlacement::kNullsLast) ||
+          (!term.collation_uuid.empty() &&
+           !canonical_uuid(term.collation_uuid)) ||
+          std::ranges::find(node->second->bound_expression_ids,
+                            term.expression_id) ==
+              node->second->bound_expression_ids.end()) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      definition.relation_node_id, "window_ordering_terms");
+      }
+    }
+    ++window_definition_count[definition.relation_node_id];
+  }
+  for (const auto& definition : dag.window_definitions) {
+    if (definition.inherited_window_id.has_value()) {
+      const auto inherited =
+          window_definitions_by_id.find(*definition.inherited_window_id);
+      if (inherited == window_definitions_by_id.end() ||
+          inherited->second->relation_node_id != definition.relation_node_id ||
+          inherited->second->window_id == definition.window_id) {
+        return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                      definition.relation_node_id,
+                      "inherited_window_id");
+      }
+    }
+  }
+
+  std::unordered_set<std::uint32_t> window_invocation_ids;
+  std::unordered_map<std::uint32_t, std::size_t> window_invocation_count;
+  for (const auto& invocation : dag.window_invocations) {
+    const auto node = nodes_by_id.find(invocation.relation_node_id);
+    const auto definition =
+        window_definitions_by_id.find(invocation.window_definition_id);
+    const auto expression =
+        expressions_by_id.find(invocation.function_expression_id);
+    if (!add_planning_references(invocation.argument_expression_ids.size()) ||
+        invocation.invocation_id == 0 ||
+        !window_invocation_ids.insert(invocation.invocation_id).second ||
+        node == nodes_by_id.end() ||
+        node->second->node_kind != RelationalDagNodeKind::kWindow ||
+        definition == window_definitions_by_id.end() ||
+        definition->second->relation_node_id != invocation.relation_node_id ||
+        expression == expressions_by_id.end() ||
+        expression->second->expression_kind !=
+            RelationalExpressionKind::kFunctionCall ||
+        expression->second->function_uuid != invocation.function_uuid ||
+        expression->second->result_descriptor_id !=
+            invocation.result_descriptor_id ||
+        expression->second->child_expression_ids !=
+            invocation.argument_expression_ids ||
+        invocation.function_abi_version != 1 || invocation.builtin_id.empty() ||
+        !canonical_uuid(invocation.function_uuid) ||
+        !descriptors_by_id.contains(invocation.result_descriptor_id) ||
+        invocation.output_name_utf8.empty() ||
+        std::ranges::find(node->second->bound_expression_ids,
+                          invocation.function_expression_id) ==
+            node->second->bound_expression_ids.end() ||
+        std::ranges::find(node->second->output_descriptor_ids,
+                          invocation.result_descriptor_id) ==
+            node->second->output_descriptor_ids.end()) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE",
+                    invocation.relation_node_id,
+                    "window_invocation_record");
+    }
+    ++window_invocation_count[invocation.relation_node_id];
+  }
+  for (const auto& node : dag.nodes) {
+    const bool window_node = node.node_kind == RelationalDagNodeKind::kWindow;
+    if (window_node != (window_definition_count[node.node_id] != 0) ||
+        window_node != (window_invocation_count[node.node_id] != 0)) {
+      return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
+                    "window_record_coverage");
     }
   }
 

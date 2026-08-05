@@ -439,6 +439,34 @@ bool ParseRelationalOrderingTerms(
   return true;
 }
 
+bool ParseRelationalWindowBound(
+    const std::string_view encoded,
+    std::optional<api::RelationalWindowFrameBoundRecord>* bound) {
+  if (bound == nullptr) return false;
+  if (encoded == "-") {
+    bound->reset();
+    return true;
+  }
+  const auto separator = encoded.find(':');
+  if (separator == std::string_view::npos ||
+      encoded.find(':', separator + 1) != std::string_view::npos) {
+    return false;
+  }
+  std::uint64_t kind = 0;
+  api::RelationalWindowFrameBoundRecord decoded;
+  if (!ParseCanonicalUnsigned(encoded.substr(0, separator),
+                              std::numeric_limits<std::uint8_t>::max(),
+                              &kind) ||
+      !ParseOptionalCanonicalU32(encoded.substr(separator + 1),
+                                &decoded.offset_expression_id)) {
+    return false;
+  }
+  decoded.bound_kind =
+      static_cast<api::RelationalWindowFrameBoundKind>(kind);
+  *bound = std::move(decoded);
+  return true;
+}
+
 // QOW-ROUTE-STAGE-QRY-003-V1
 TypedPlanOperationDecodeResult TypedPlanOperationRequest(
     const SblrDispatchRequest& dispatch_request) {
@@ -960,6 +988,117 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       grouping_set.ordinal = static_cast<std::uint32_t>(ordinal);
       decoded.request.relational_dag.grouping_sets.push_back(
           std::move(grouping_set));
+      continue;
+    }
+    if (operand.type == "relational_window_definition_v1") {
+      if (decoded.request.relational_dag.window_definitions.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational window-definition transport limit exceeded";
+        return decoded;
+      }
+      std::array<std::string_view, 9> fields{};
+      std::uint64_t window_id = 0;
+      std::uint64_t node_id = 0;
+      std::uint64_t frame_unit = 0;
+      std::uint64_t exclusion = 0;
+      api::RelationalWindowDefinitionRecord definition;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &window_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !DecodeOptionalCanonicalHex(fields[1],
+                                      &definition.canonical_name_key) ||
+          !ParseOptionalCanonicalU32(fields[2],
+                                     &definition.inherited_window_id) ||
+          !ParseRelationalHandleList(fields[3],
+                                     &definition.partition_expression_ids) ||
+          !ParseRelationalOrderingTerms(fields[4],
+                                        &definition.ordering_terms) ||
+          (fields[5] != "-" &&
+           !ParseCanonicalUnsigned(
+               fields[5], std::numeric_limits<std::uint8_t>::max(),
+               &frame_unit)) ||
+          !ParseRelationalWindowBound(fields[6], &definition.frame_start) ||
+          !ParseRelationalWindowBound(fields[7], &definition.frame_end) ||
+          !ParseCanonicalUnsigned(
+              fields[8], std::numeric_limits<std::uint8_t>::max(),
+              &exclusion)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational window-definition record";
+        return decoded;
+      }
+      definition.window_id = static_cast<std::uint32_t>(window_id);
+      definition.relation_node_id = static_cast<std::uint32_t>(node_id);
+      if (fields[5] != "-") {
+        definition.frame_unit =
+            static_cast<api::RelationalWindowFrameUnit>(frame_unit);
+      }
+      definition.exclusion =
+          static_cast<api::RelationalWindowFrameExclusion>(exclusion);
+      decoded.request.relational_dag.window_definitions.push_back(
+          std::move(definition));
+      continue;
+    }
+    if (operand.type == "relational_window_invocation_v1") {
+      if (decoded.request.relational_dag.window_invocations.size() >= 524288 ||
+          operand.value.size() > 65536) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
+        decoded.detail = "relational window-invocation transport limit exceeded";
+        return decoded;
+      }
+      std::array<std::string_view, 9> fields{};
+      std::uint64_t invocation_id = 0;
+      std::uint64_t node_id = 0;
+      std::uint64_t expression_id = 0;
+      std::uint64_t definition_id = 0;
+      std::uint64_t abi_version = 0;
+      std::uint64_t descriptor_id = 0;
+      api::RelationalWindowInvocationRecord invocation;
+      if (!ParseCanonicalUnsigned(
+              operand.name, std::numeric_limits<std::uint32_t>::max(),
+              &invocation_id) ||
+          !SplitRelationalFields(operand.value, &fields) ||
+          !ParseCanonicalUnsigned(
+              fields[0], std::numeric_limits<std::uint32_t>::max(),
+              &node_id) ||
+          !ParseCanonicalUnsigned(
+              fields[1], std::numeric_limits<std::uint32_t>::max(),
+              &expression_id) ||
+          !ParseCanonicalUnsigned(
+              fields[2], std::numeric_limits<std::uint32_t>::max(),
+              &definition_id) ||
+          !ParseCanonicalUnsigned(
+              fields[3], std::numeric_limits<std::uint16_t>::max(),
+              &abi_version) ||
+          !DecodeCanonicalHex(fields[4], &invocation.builtin_id) ||
+          !IsCanonicalNonNilUuid(fields[5]) ||
+          !ParseCanonicalUnsigned(
+              fields[6], std::numeric_limits<std::uint32_t>::max(),
+              &descriptor_id) ||
+          !DecodeCanonicalHex(fields[7], &invocation.output_name_utf8) ||
+          !ParseRelationalHandleList(fields[8],
+                                     &invocation.argument_expression_ids)) {
+        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
+        decoded.detail = "malformed relational window-invocation record";
+        return decoded;
+      }
+      invocation.invocation_id = static_cast<std::uint32_t>(invocation_id);
+      invocation.relation_node_id = static_cast<std::uint32_t>(node_id);
+      invocation.function_expression_id =
+          static_cast<std::uint32_t>(expression_id);
+      invocation.window_definition_id =
+          static_cast<std::uint32_t>(definition_id);
+      invocation.function_abi_version =
+          static_cast<std::uint16_t>(abi_version);
+      invocation.function_uuid = fields[5];
+      invocation.result_descriptor_id =
+          static_cast<std::uint32_t>(descriptor_id);
+      decoded.request.relational_dag.window_invocations.push_back(
+          std::move(invocation));
       continue;
     }
     if (operand.type == "relational_property_v1") {

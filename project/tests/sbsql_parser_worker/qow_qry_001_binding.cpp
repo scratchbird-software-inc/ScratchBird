@@ -964,8 +964,9 @@ bool ValidateTypedWindowBinding() {
       "SELECT ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at "
       "DESC NULLS FIRST GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE "
       "TIES) AS sequence_no FROM app.events AS e;";
-  const auto ast =
-      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  const auto cst = sbsql::BuildCst(sql);
+  const auto ast_document = sbsql::BuildAst(cst);
+  const auto& ast = ast_document.native_relational;
   auto context = WindowBindingContext();
   auto bound = sbsql::BindNativeRelationalAst(ast, context);
   bool passed = true;
@@ -1030,6 +1031,95 @@ bool ValidateTypedWindowBinding() {
                         bound.scopes.front().visible_projection_ids ==
                             std::vector<std::uint32_t>({3}),
                     "typed window hidden/source or visible/result output differs");
+
+  const auto session = SessionForTest();
+  const auto bound_statement =
+      sbsql::BindAst(ast_document, cst, ParserConfigForTest(), session, {},
+                     &context);
+  passed &= Require(bound_statement.bound &&
+                        bound_statement.native_relational.bound &&
+                        !bound_statement.messages.has_errors(),
+                    "typed window BindAst route was refused");
+  const auto lowered = sbsql::LowerToSblr(bound_statement, cst, session);
+  const auto definition_operand = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_window_definition_v1";
+      });
+  const auto invocation_operand = std::ranges::find_if(
+      lowered.operands, [](const auto& operand) {
+        return operand.type == "relational_window_invocation_v1";
+      });
+  passed &= Require(
+      !lowered.messages.has_errors() && !lowered.payload.empty() &&
+          definition_operand != lowered.operands.end() &&
+          definition_operand->name == "1" &&
+          definition_operand->value == "2|-|-|1|2:2:1:-|3|2:3|3:-|4" &&
+          invocation_operand != lowered.operands.end() &&
+          invocation_operand->name == "1" &&
+          invocation_operand->value.find(
+              "2|4|1|1|73622e77696e646f772e726f775f6e756d626572|"
+              "019de5fc-2400-7539-bcce-00eef3ae7220|4|"
+              "73657175656e63655f6e6f|-") == 0,
+      "canonical typed window definition or invocation operand differs");
+  const auto verified = sbsql::VerifySblrEnvelope(lowered);
+  if (!verified.admitted) {
+    for (const auto& diagnostic : verified.messages.diagnostics) {
+      std::cerr << "window verifier diagnostic: " << diagnostic.code << " "
+                << diagnostic.message << '\n';
+    }
+  }
+  passed &= Require(verified.admitted && !verified.messages.has_errors() &&
+                        verified.validated_relational_node_count == 2 &&
+                        verified.validated_relational_expression_count == 4,
+                    "canonical typed window envelope was not verifier-admitted");
+  auto missing_definition = lowered;
+  std::erase_if(missing_definition.operands, [](const auto& operand) {
+    return operand.type == "relational_window_definition_v1";
+  });
+  const auto missing_definition_result =
+      sbsql::VerifySblrEnvelope(missing_definition);
+  passed &= Require(
+      !missing_definition_result.admitted &&
+          HasDiagnostic(missing_definition_result.messages,
+                        "SBLR.PLAN_TREE.INVALID_HANDLE"),
+      "window invocation without its canonical definition was admitted");
+
+  constexpr std::string_view reused_sql =
+      "SELECT ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY account_id) "
+      "AS sequence_no FROM app.events AS e;";
+  const auto reused_ast =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(reused_sql));
+  auto reused_context = WindowBindingContext();
+  reused_context.catalog_relations.front().columns.resize(1);
+  auto reused_result_descriptor = reused_context.descriptors.back();
+  reused_result_descriptor.descriptor_id = 2;
+  reused_context.descriptors = {reused_context.descriptors.front(),
+                                reused_result_descriptor};
+  reused_context.expressions = {
+      {1, 1, std::nullopt,
+       reused_context.catalog_relations.front().columns.front().column_uuid},
+      {2, 2, "019de5fc-2400-7539-bcce-00eef3ae7220", std::nullopt},
+  };
+  reused_context.outputs = {
+      {1, 1, "account_id", 1, false, 0, 1},
+      {2, 2, "sequence_no", 2, true, 0, 2},
+  };
+  reused_context.window_functions = {
+      {1, 2, 1, "sb.window.row_number",
+       "019de5fc-2400-7539-bcce-00eef3ae7220", true, 2},
+  };
+  const auto reused_bound =
+      sbsql::BindNativeRelationalAst(reused_ast, reused_context);
+  passed &= Require(
+      reused_bound.bound && reused_bound.relations.size() == 2 &&
+          reused_bound.relations.back().bound_expression_ids ==
+              std::vector<std::uint32_t>({1, 2}) &&
+          reused_bound.window_definitions.front().partition_expression_ids ==
+              std::vector<std::uint32_t>({1}) &&
+          reused_bound.window_definitions.front()
+                  .ordering_terms.front()
+                  .expression_id == 1,
+      "reused partition/order expression was not interned exactly once");
 
   context.expressions.back().function_uuid = std::nullopt;
   bound = sbsql::BindNativeRelationalAst(ast, context);
