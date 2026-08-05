@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <iomanip>
 #include <limits>
@@ -6477,6 +6478,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              global_aggregate_profile.function ==
                  exec::CanonicalAggregateFunction::sum ||
              global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::avg ||
+             global_aggregate_profile.function ==
                  exec::CanonicalAggregateFunction::min ||
              global_aggregate_profile.function ==
                  exec::CanonicalAggregateFunction::max ||
@@ -7286,6 +7289,134 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          break;
+        }
+        if (global_aggregate_profile.matched &&
+            global_aggregate_profile.function ==
+                exec::CanonicalAggregateFunction::avg) {
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state,
+              exec::CanonicalAggregateFunction::avg, false,
+              global_aggregate_profile.distinct,
+              global_aggregate_profile.has_filter);
+          if (!prepared.ok || prepared.value_columns.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          if (prepared.filter_column.has_value()) {
+            std::vector<api::EngineSqlTruthValue> materialized_filter;
+            std::string filter_detail;
+            if (!MaterializeAggregateFilterTruthValues(
+                    input_batch, *prepared.filter_column,
+                    prepared.filter_descriptor_id, &materialized_filter,
+                    &filter_detail)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            std::move(filter_detail));
+            }
+            filter_truth_values = std::move(materialized_filter);
+          }
+          std::set<std::string> distinct_values;
+          long double real_sum = 0.0L;
+          std::uint64_t non_null_count = 0;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            if (value.descriptor.canonical_type_name != "int64") {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition AVG input is not canonical int64");
+            }
+            if (prepared.distinct) {
+              std::string key = value.encoded_value + ":";
+              key.append(
+                  reinterpret_cast<const char*>(value.binary_value.data()),
+                  value.binary_value.size());
+              if (!distinct_values.insert(std::move(key)).second) continue;
+            }
+            std::int64_t decoded = 0;
+            const auto [end, error] = std::from_chars(
+                value.encoded_value.data(),
+                value.encoded_value.data() + value.encoded_value.size(),
+                decoded);
+            if (error != std::errc{} ||
+                end != value.encoded_value.data() +
+                           value.encoded_value.size()) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition AVG input is not exact int64");
+            }
+            real_sum += static_cast<long double>(decoded);
+            if (!std::isfinite(static_cast<double>(real_sum)) ||
+                non_null_count == std::numeric_limits<std::uint64_t>::max()) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition AVG state overflowed");
+            }
+            ++non_null_count;
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition AVG(DISTINCT) work bound overflowed");
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition AVG work exceeds the admitted bound");
+          }
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue average;
+          average.descriptor = prepared.result_column.descriptor;
+          average.is_null = non_null_count == 0;
+          average.state = non_null_count == 0
+                              ? api::EngineValueState::sql_null
+                              : api::EngineValueState::value;
+          if (non_null_count != 0) {
+            const auto result =
+                real_sum / static_cast<long double>(non_null_count);
+            if (!std::isfinite(static_cast<double>(result))) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition AVG result overflowed");
+            }
+            std::ostringstream encoded;
+            encoded << std::setprecision(17) << static_cast<double>(result);
+            average.encoded_value = encoded.str();
+          }
+          tuple.values.push_back(std::move(average));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "AVG planning state: " + canonical.detail
+                    : "AVG planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          transformation_rule =
+              "canonical.aggregate.composed-global-avg-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
           break;
