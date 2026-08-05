@@ -16,6 +16,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::sblr {
@@ -434,6 +435,158 @@ sblr::SblrOperationEnvelope UnionAllValuesEnvelope() {
        "76616c7565732e6c69746572616c2d7461626c652e7631|4,5,6|-|-|-"},
       {"relational_node_binding_v1", "3",
        "7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e7631|-|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+// RCP-046-TEST-LIVE-SET-OPERATION-PROFILES-V1
+sblr::SblrOperationEnvelope SetOperationValuesEnvelope(
+    const std::string& semantic_variant_hex,
+    const std::string& tree_uuid) {
+  auto envelope = UnionAllValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = tree_uuid;
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value = semantic_variant_hex + "|-|-|-|-";
+    }
+  }
+  return envelope;
+}
+
+// RCP-046-TEST-LIVE-SET-OPERATION-BY-NAME-V1
+sblr::SblrOperationEnvelope SetOperationByNameValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.values.union-distinct-by-name");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-00000000b100"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "3"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000b101|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000b102|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000b103|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000b104|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000b105|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-00000000b106|"
+       "019f0000-0000-7400-8000-00000000b111|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|3130"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|1|-|3230"},
+      {"relational_expression_v1", "5", "1|-|3|-|-|1|-|3230"},
+      {"relational_expression_v1", "6", "1|-|4|-|-|1|-|32"},
+      {"relational_expression_v1", "7", "1|-|3|-|-|1|-|3330"},
+      {"relational_expression_v1", "8", "1|-|4|-|-|1|-|33"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6e"},
+      {"relational_output_v1", "2", "1|2|2|1|1|6c6162656c"},
+      {"relational_output_v1", "3", "2|5|3|1|0|6c6162656c"},
+      {"relational_output_v1", "4", "2|6|4|1|1|6e"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2"},
+      {"relational_node_v1", "2", "13|0|-|3,4|3,4"},
+      {"relational_node_v1", "3", "9|0|1,2|5,6|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|5,6,7,8|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       "7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e"
+       "62792d6e616d652e7631|-|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+// RCP-046-TEST-LIVE-SET-OPERATION-NESTING-V1
+sblr::SblrOperationEnvelope SetOperationNestedValuesEnvelope(
+    const bool explicit_right_grouping) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      explicit_right_grouping ? "qow.live.values.set-nested-right"
+                              : "qow.live.values.set-nested-left");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       explicit_right_grouping
+           ? "019f0000-0000-7000-8000-00000000b301"
+           : "019f0000-0000-7000-8000-00000000b300"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "5"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000b311|"
+       "019f0000-0000-7400-8000-00000000b321|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000b312|"
+       "019f0000-0000-7400-8000-00000000b321|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000b313|"
+       "019f0000-0000-7400-8000-00000000b321|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000b314|"
+       "019f0000-0000-7400-8000-00000000b321|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000b315|"
+       "019f0000-0000-7400-8000-00000000b321|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "3", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "4", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "5", "1|-|3|-|-|1|-|32"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6e"},
+      {"relational_output_v1", "2", "2|3|2|1|0|6e"},
+      {"relational_output_v1", "3", "3|5|3|1|0|6e"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_values_row_v1", "4", "4"},
+      {"relational_values_row_v1", "5", "5"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2"},
+      {"relational_node_v1", "2", "13|0|-|2|3,4"},
+      {"relational_node_v1", "3", "13|0|-|3|5"},
+      {"relational_node_v1", "4",
+       explicit_right_grouping ? "9|0|2,3|4|-" : "9|0|1,2|4|-"},
+      {"relational_node_v1", "5",
+       explicit_right_grouping ? "9|0|1,4|5|-" : "9|0|4,3|5|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|3,4|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|5|-|-|-"},
+      {"relational_node_binding_v1", "4",
+       explicit_right_grouping
+           ? "7365742d6f7065726174696f6e2e6578636570742d64697374696e63742e7631|-|-|-|-"
+           : "7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e7631|-|-|-|-"},
+      {"relational_node_binding_v1", "5",
+       explicit_right_grouping
+           ? "7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e7631|-|-|-|-"
+           : "7365742d6f7065726174696f6e2e6578636570742d64697374696e63742e7631|-|-|-|-"},
   };
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
@@ -4426,7 +4579,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 23> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 32> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4434,6 +4587,27 @@ bool ValidateGeneralSelectExecutionBoundary() {
       SortValuesEnvelope(),
       GlobalCountStarValuesEnvelope(),
       UnionAllValuesEnvelope(),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e7631",
+          "019f0000-0000-7000-8000-00000000b200"),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e696e746572736563742d616c6c2e7631",
+          "019f0000-0000-7000-8000-00000000b201"),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e696e746572736563742d64697374696e63742e7631",
+          "019f0000-0000-7000-8000-00000000b202"),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e6578636570742d616c6c2e7631",
+          "019f0000-0000-7000-8000-00000000b203"),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e6578636570742d64697374696e63742e7631",
+          "019f0000-0000-7000-8000-00000000b204"),
+      SetOperationValuesEnvelope(
+          "7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e747970652d7265636f6e63696c65642e7631",
+          "019f0000-0000-7000-8000-00000000b205"),
+      SetOperationByNameValuesEnvelope(),
+      SetOperationNestedValuesEnvelope(false),
+      SetOperationNestedValuesEnvelope(true),
       InnerJoinValuesEnvelope(),
       DistinctSortLimitValuesEnvelope(false),
       ProjectedExpressionSortValuesEnvelope(),
@@ -4739,6 +4913,221 @@ bool ValidateUnionAllRefusalIsAtomic() {
           HasApiDiagnostic(result,
                            "QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1"),
       "incompatible UNION ALL input published partial plan/result evidence");
+}
+
+// RCP-046-TEST-LIVE-SET-OPERATION-PROFILES-V1
+bool ValidateSetOperationProfilesSpine() {
+  struct ProfileExpectation {
+    std::string semantic_hex;
+    std::string tree_uuid;
+    std::vector<std::string> values;
+  };
+  const std::array<ProfileExpectation, 6> profiles{{
+      {"7365742d6f7065726174696f6e2e756e696f6e2d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000b200",
+       {"1", "2", "null", "3"}},
+      {"7365742d6f7065726174696f6e2e696e746572736563742d616c6c2e7631",
+       "019f0000-0000-7000-8000-00000000b201", {"2", "null"}},
+      {"7365742d6f7065726174696f6e2e696e746572736563742d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000b202", {"2", "null"}},
+      {"7365742d6f7065726174696f6e2e6578636570742d616c6c2e7631",
+       "019f0000-0000-7000-8000-00000000b203", {"1"}},
+      {"7365742d6f7065726174696f6e2e6578636570742d64697374696e63742e7631",
+       "019f0000-0000-7000-8000-00000000b204", {"1"}},
+      {"7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e747970652d7265636f6e63696c65642e7631",
+       "019f0000-0000-7000-8000-00000000b205",
+       {"1", "2", "null", "2", "3", "null"}},
+  }};
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::size_t rows) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == rows &&
+           result.api_result.result_shape.rows.size() == rows;
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& profile : profiles) {
+    const auto first = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(),
+         SetOperationValuesEnvelope(profile.semantic_hex, profile.tree_uuid),
+         {}});
+    const auto repeated = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(),
+         SetOperationValuesEnvelope(profile.semantic_hex, profile.tree_uuid),
+         {}});
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    bool values_match = completed(first, profile.values.size());
+    if (values_match) {
+      for (std::size_t row = 0; row < profile.values.size(); ++row) {
+        const auto& value =
+            first.api_result.result_shape.rows[row].fields[0].second;
+        values_match &= profile.values[row] == "null"
+                            ? value.state == api::EngineValueState::sql_null
+                            : value.encoded_value == profile.values[row];
+      }
+    }
+    passed &= Require(
+        values_match,
+        "UNION/INTERSECT/EXCEPT ALL/DISTINCT profile changed canonical "
+        "multiplicity or NULL equality");
+    passed &= Require(
+        completed(repeated, profile.values.size()) &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "set-operation profile changed deterministic plan/result bytes");
+    selected_plans.insert(first.selected_plan_uuid);
+  }
+  passed &= Require(
+      selected_plans.size() == profiles.size(),
+      "set-operation semantic profiles did not retain distinct plan identity");
+
+  const auto by_name = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), SetOperationByNameValuesEnvelope(), {}});
+  const auto by_name_repeated =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), SetOperationByNameValuesEnvelope(), {}});
+  const auto& by_name_rows = by_name.api_result.result_shape.rows;
+  passed &= Require(
+      by_name.api_result.ok && by_name.optimizer_selected &&
+          by_name.physical_dag_executed &&
+          by_name.canonical_result_published &&
+          by_name.canonical_result_column_count == 2 &&
+          by_name.canonical_result_row_count == 3 &&
+          by_name_rows.size() == 3 &&
+          by_name_rows[0].fields[0].first == "n" &&
+          by_name_rows[0].fields[1].first == "label" &&
+          by_name_rows[0].fields[0].second.encoded_value == "1" &&
+          by_name_rows[0].fields[1].second.encoded_value == "10" &&
+          by_name_rows[1].fields[0].second.encoded_value == "2" &&
+          by_name_rows[1].fields[1].second.encoded_value == "20" &&
+          by_name_rows[2].fields[0].second.encoded_value == "3" &&
+          by_name_rows[2].fields[1].second.encoded_value == "30",
+      "UNION DISTINCT BY NAME did not align the reversed right schema before "
+      "duplicate elimination");
+  passed &= Require(
+      by_name_repeated.api_result.ok &&
+          by_name_repeated.selected_plan_uuid == by_name.selected_plan_uuid &&
+          by_name_repeated.canonical_result_bytes ==
+              by_name.canonical_result_bytes,
+      "UNION DISTINCT BY NAME changed deterministic plan/result bytes");
+
+  auto duplicate_name = SetOperationByNameValuesEnvelope();
+  for (auto& operand : duplicate_name.operands) {
+    if (operand.type == "relational_output_v1" && operand.name == "4") {
+      operand.value = "2|6|4|1|1|6c6162656c";
+    }
+  }
+  const auto refused = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), std::move(duplicate_name), {}});
+  passed &= Require(
+      refused.accepted && refused.optimizer_admitted &&
+          !refused.optimizer_selected && !refused.physical_dag_published &&
+          !refused.physical_dag_executed &&
+          !refused.runtime_actuals_attached &&
+          !refused.canonical_result_published && !refused.api_result.ok &&
+          refused.physical_node_count == 0 &&
+          refused.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(refused,
+                           "QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1"),
+      "duplicate BY NAME input published partial plan/result evidence");
+  return passed;
+}
+
+// RCP-046-TEST-LIVE-SET-OPERATION-NESTING-V1
+bool ValidateSetOperationNestingSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::vector<std::string>& values) {
+    if (!result.accepted || !result.optimizer_admitted ||
+        !result.optimizer_selected || !result.physical_dag_published ||
+        !result.physical_dag_executed || !result.runtime_actuals_attached ||
+        !result.canonical_result_published || !result.api_result.ok ||
+        !result.diagnostics.empty() || result.logical_node_count != 5 ||
+        result.physical_node_count != 5 ||
+        result.canonical_result_column_count != 1 ||
+        result.canonical_result_row_count != values.size() ||
+        result.api_result.result_shape.rows.size() != values.size()) {
+      return false;
+    }
+    for (std::size_t row = 0; row < values.size(); ++row) {
+      if (result.api_result.result_shape.rows[row]
+              .fields[0]
+              .second.encoded_value != values[row]) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const auto left_grouped =
+      dispatch(SetOperationNestedValuesEnvelope(false));
+  const auto left_repeated =
+      dispatch(SetOperationNestedValuesEnvelope(false));
+  const auto right_grouped =
+      dispatch(SetOperationNestedValuesEnvelope(true));
+  const auto right_repeated =
+      dispatch(SetOperationNestedValuesEnvelope(true));
+  if (!left_grouped.api_result.ok) {
+    for (const auto& diagnostic : left_grouped.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  if (!right_grouped.api_result.ok) {
+    for (const auto& diagnostic : right_grouped.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      completed(left_grouped, {"1", "3"}),
+      "(A UNION B) EXCEPT C did not consume the left-grouped selected DAG");
+  passed &= Require(
+      completed(right_grouped, {"1", "2", "3"}),
+      "A UNION (B EXCEPT C) did not consume the right-grouped selected DAG");
+  passed &= Require(
+      left_grouped.selected_plan_uuid != right_grouped.selected_plan_uuid &&
+          left_repeated.selected_plan_uuid ==
+              left_grouped.selected_plan_uuid &&
+          left_repeated.canonical_result_bytes ==
+              left_grouped.canonical_result_bytes &&
+          right_repeated.selected_plan_uuid ==
+              right_grouped.selected_plan_uuid &&
+          right_repeated.canonical_result_bytes ==
+              right_grouped.canonical_result_bytes,
+      "set-operation nesting lost grouping identity or deterministic replay");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 40;
+  const auto exhausted = dispatch(SetOperationNestedValuesEnvelope(false),
+                                  std::move(bounded_context));
+  passed &= Require(
+      exhausted.accepted && exhausted.optimizer_admitted &&
+          !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(exhausted,
+                           "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "candidate-exhausted nested set operation published partial evidence");
+  return passed;
 }
 
 bool ValidateInnerJoinValuesSpine() {
@@ -11541,6 +11930,8 @@ int main() {
                       ValidateComposedScalarValuesSpine() &&
                       ValidateUnionAllValuesSpine() &&
                       ValidateUnionAllRefusalIsAtomic() &&
+                      ValidateSetOperationProfilesSpine() &&
+                      ValidateSetOperationNestingSpine() &&
                       ValidateInnerJoinValuesSpine() &&
                       ValidateInnerJoinThreeValuedPredicate() &&
                       ValidateInnerJoinRefusalIsAtomic() &&

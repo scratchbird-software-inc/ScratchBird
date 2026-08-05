@@ -301,7 +301,27 @@ struct PreparedSetOperationRoot {
   bool ok{false};
   std::vector<exec::ExecutorColumnDescriptor> result_columns;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  std::vector<exec::CanonicalSetOperationCollationBinding>
+      collation_bindings;
   std::string detail;
+};
+
+struct LiveSetOperationProfile {
+  bool matched{false};
+  exec::CanonicalSetOperationKind operation =
+      exec::CanonicalSetOperationKind::kUnion;
+  exec::CanonicalSetOperationAlignment alignment =
+      exec::CanonicalSetOperationAlignment::kOrdinal;
+  exec::CanonicalSetOperationQuantifier quantifier =
+      exec::CanonicalSetOperationQuantifier::kAll;
+  exec::CanonicalSetOperationEqualityProfile equality_profile =
+      exec::CanonicalSetOperationEqualityProfile::kExactTyped;
+  exec::CanonicalSetOperationTypeProfile type_profile =
+      exec::CanonicalSetOperationTypeProfile::kExact;
+  std::string implementation_id;
+  std::string physical_semantic_id;
+  std::string identity_component;
+  std::string operation_name;
 };
 
 struct PreparedJoinRoot {
@@ -4224,16 +4244,135 @@ PreparedJoinRoot PrepareJoinRoot(
   return result;
 }
 
-PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
+LiveSetOperationProfile MatchLiveSetOperationProfile(
+    const std::string_view semantic_variant_id) {
+  LiveSetOperationProfile profile;
+  constexpr std::string_view kPrefix = "set-operation.";
+  constexpr std::string_view kSuffix = ".v1";
+  if (!semantic_variant_id.starts_with(kPrefix) ||
+      !semantic_variant_id.ends_with(kSuffix) ||
+      semantic_variant_id.size() <= kPrefix.size() + kSuffix.size()) {
+    return profile;
+  }
+  const auto payload = semantic_variant_id.substr(
+      kPrefix.size(),
+      semantic_variant_id.size() - kPrefix.size() - kSuffix.size());
+  const auto first_modifier = payload.find('.');
+  const auto base = payload.substr(0, first_modifier);
+  std::string operation_component;
+  std::string quantifier_component;
+  if (base == "union-all") {
+    profile.operation = exec::CanonicalSetOperationKind::kUnion;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kAll;
+    operation_component = "union";
+    quantifier_component = "all";
+    profile.operation_name = "UNION ALL";
+  } else if (base == "union-distinct") {
+    profile.operation = exec::CanonicalSetOperationKind::kUnion;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kDistinct;
+    operation_component = "union";
+    quantifier_component = "distinct";
+    profile.operation_name = "UNION DISTINCT";
+  } else if (base == "intersect-all") {
+    profile.operation = exec::CanonicalSetOperationKind::kIntersect;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kAll;
+    operation_component = "intersect";
+    quantifier_component = "all";
+    profile.operation_name = "INTERSECT ALL";
+  } else if (base == "intersect-distinct") {
+    profile.operation = exec::CanonicalSetOperationKind::kIntersect;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kDistinct;
+    operation_component = "intersect";
+    quantifier_component = "distinct";
+    profile.operation_name = "INTERSECT DISTINCT";
+  } else if (base == "except-all") {
+    profile.operation = exec::CanonicalSetOperationKind::kExcept;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kAll;
+    operation_component = "except";
+    quantifier_component = "all";
+    profile.operation_name = "EXCEPT ALL";
+  } else if (base == "except-distinct") {
+    profile.operation = exec::CanonicalSetOperationKind::kExcept;
+    profile.quantifier = exec::CanonicalSetOperationQuantifier::kDistinct;
+    operation_component = "except";
+    quantifier_component = "distinct";
+    profile.operation_name = "EXCEPT DISTINCT";
+  } else {
+    return profile;
+  }
+
+  bool by_name = false;
+  bool type_reconciled = false;
+  bool null_collation = false;
+  std::size_t modifier_begin = first_modifier;
+  while (modifier_begin != std::string_view::npos) {
+    ++modifier_begin;
+    const auto modifier_end = payload.find('.', modifier_begin);
+    const auto modifier = payload.substr(
+        modifier_begin,
+        modifier_end == std::string_view::npos
+            ? std::string_view::npos
+            : modifier_end - modifier_begin);
+    if (modifier == "by-name" && !by_name && !type_reconciled &&
+        !null_collation) {
+      by_name = true;
+    } else if (modifier == "type-reconciled" && !type_reconciled &&
+               !null_collation) {
+      type_reconciled = true;
+    } else if (modifier == "null-collation" && !null_collation) {
+      null_collation = true;
+    } else {
+      return {};
+    }
+    modifier_begin = modifier_end;
+  }
+
+  profile.alignment =
+      by_name ? exec::CanonicalSetOperationAlignment::kByName
+              : exec::CanonicalSetOperationAlignment::kOrdinal;
+  profile.type_profile =
+      type_reconciled
+          ? exec::CanonicalSetOperationTypeProfile::kLosslessImplicit
+          : exec::CanonicalSetOperationTypeProfile::kExact;
+  profile.equality_profile =
+      null_collation
+          ? exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation
+          : exec::CanonicalSetOperationEqualityProfile::kExactTyped;
+  profile.implementation_id = "setop." + operation_component + "-" +
+                              quantifier_component + "." +
+                              (by_name ? "by-name" : "ordinal");
+  if (type_reconciled) {
+    profile.implementation_id += ".type-reconciled";
+  }
+  if (null_collation) {
+    profile.implementation_id += ".null-collation";
+  }
+  profile.implementation_id += ".typed.v1";
+  profile.identity_component = operation_component + "-" +
+                               quantifier_component +
+                               (by_name ? ".by-name" : ".ordinal") +
+                               (type_reconciled ? ".type-reconciled" : "") +
+                               (null_collation ? ".null-collation" : "");
+  profile.physical_semantic_id =
+      "canonical.setop." + profile.identity_component + ".v1";
+  if (by_name) profile.operation_name += " BY NAME";
+  profile.matched = true;
+  return profile;
+}
+
+PreparedSetOperationRoot PrepareSetOperationRoot(
+    const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
     const MaterializedValues& left,
-    const MaterializedValues& right) {
+    const MaterializedValues& right,
+    const LiveSetOperationProfile& profile) {
   PreparedSetOperationRoot result;
-  if (root.output_descriptor_ids.empty() ||
+  if (!profile.matched || root.output_descriptor_ids.empty() ||
       left.batch.columns.size() != root.output_descriptor_ids.size() ||
       right.batch.columns.size() != root.output_descriptor_ids.size() ||
-      left.result_bindings.size() != root.output_descriptor_ids.size()) {
+      left.result_bindings.size() != root.output_descriptor_ids.size() ||
+      right.result_bindings.size() != root.output_descriptor_ids.size()) {
     result.detail = "set-operation input/result arity is inconsistent";
     return result;
   }
@@ -4241,7 +4380,7 @@ PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
         return output.relation_node_id == root.logical_node_id;
       })) {
     result.detail =
-        "set-operation root output lineage is not admitted by this ordinal profile";
+        "set-operation root output lineage is not admitted by this profile";
     return result;
   }
 
@@ -4251,21 +4390,75 @@ PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
     descriptors.emplace(descriptor.descriptor_id, &descriptor);
   }
 
+  std::unordered_map<std::string, std::size_t> right_name_ordinals;
+  if (profile.alignment == exec::CanonicalSetOperationAlignment::kByName) {
+    std::unordered_set<std::string> left_names;
+    for (const auto& column : left.batch.columns) {
+      if (column.stable_name.empty() ||
+          !left_names.insert(column.stable_name).second) {
+        result.detail = "set-operation BY NAME left names are not unique";
+        return result;
+      }
+    }
+    for (std::size_t column = 0; column < right.batch.columns.size();
+         ++column) {
+      if (right.batch.columns[column].stable_name.empty() ||
+          !right_name_ordinals
+               .emplace(right.batch.columns[column].stable_name, column)
+               .second) {
+        result.detail = "set-operation BY NAME right names are not unique";
+        return result;
+      }
+    }
+    if (left_names.size() != right_name_ordinals.size()) {
+      result.detail = "set-operation BY NAME column sets differ";
+      return result;
+    }
+  }
+
+  const auto descriptor_has_type_uuid = [](const api::EngineDescriptor& value,
+                                           const std::string_view type_uuid) {
+    const auto token = "type_uuid=" + std::string(type_uuid);
+    return value.encoded_descriptor == token ||
+           value.encoded_descriptor.starts_with(token + ";");
+  };
   std::size_t published_ordinal = 0;
   for (std::size_t column = 0; column < root.output_descriptor_ids.size();
        ++column) {
     const auto descriptor = descriptors.find(root.output_descriptor_ids[column]);
     const auto& left_column = left.batch.columns[column];
-    const auto& right_column = right.batch.columns[column];
+    std::size_t right_column_ordinal = column;
+    if (profile.alignment == exec::CanonicalSetOperationAlignment::kByName) {
+      const auto right_ordinal =
+          right_name_ordinals.find(left_column.stable_name);
+      if (right_ordinal == right_name_ordinals.end()) {
+        result.detail = "set-operation BY NAME column sets differ";
+        return result;
+      }
+      right_column_ordinal = right_ordinal->second;
+    }
+    const auto& right_column = right.batch.columns[right_column_ordinal];
     if (descriptor == descriptors.end() ||
         descriptor->second->nullability == api::RelationalNullability::kUnknown ||
-        descriptor->second->collation_uuid.has_value() ||
-        descriptor->second->timezone_profile_id.has_value() ||
         left_column.descriptor.canonical_type_name.empty() ||
-        left_column.descriptor.canonical_type_name !=
-            right_column.descriptor.canonical_type_name) {
+        right_column.descriptor.canonical_type_name.empty()) {
+      result.detail = "set-operation descriptor reconciliation is unresolved";
+      return result;
+    }
+
+    std::string result_type_name;
+    if (descriptor_has_type_uuid(left_column.descriptor,
+                                 descriptor->second->type_uuid)) {
+      result_type_name = left_column.descriptor.canonical_type_name;
+    } else if (descriptor_has_type_uuid(right_column.descriptor,
+                                        descriptor->second->type_uuid)) {
+      result_type_name = right_column.descriptor.canonical_type_name;
+    } else if (left_column.descriptor.canonical_type_name ==
+               right_column.descriptor.canonical_type_name) {
+      result_type_name = left_column.descriptor.canonical_type_name;
+    } else {
       result.detail =
-          "set-operation exact ordinal descriptor reconciliation is unresolved";
+          "set-operation common result type is not bound to either input";
       return result;
     }
 
@@ -4273,14 +4466,21 @@ PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
     engine_descriptor.descriptor_uuid.canonical =
         descriptor->second->descriptor_uuid;
     engine_descriptor.descriptor_kind = "scalar";
-    engine_descriptor.canonical_type_name =
-        left_column.descriptor.canonical_type_name;
+    engine_descriptor.canonical_type_name = result_type_name;
     engine_descriptor.encoded_descriptor =
         "type_uuid=" + descriptor->second->type_uuid + ";nullability=" +
         (descriptor->second->nullability ==
                  api::RelationalNullability::kNullable
              ? "nullable"
              : "non_null");
+    if (descriptor->second->collation_uuid.has_value()) {
+      engine_descriptor.encoded_descriptor +=
+          ";collation_uuid=" + *descriptor->second->collation_uuid;
+    }
+    if (descriptor->second->timezone_profile_id.has_value()) {
+      engine_descriptor.encoded_descriptor +=
+          ";timezone_profile_id=" + *descriptor->second->timezone_profile_id;
+    }
     if (descriptor->second->width.has_value()) {
       engine_descriptor.encoded_descriptor +=
           ";width=" + std::to_string(*descriptor->second->width);
@@ -4293,22 +4493,85 @@ PreparedSetOperationRoot PrepareOrdinalSetOperationRoot(
       engine_descriptor.encoded_descriptor +=
           ";scale=" + std::to_string(*descriptor->second->scale);
     }
-    if (engine_descriptor.encoded_descriptor !=
-            left_column.descriptor.encoded_descriptor ||
-        engine_descriptor.encoded_descriptor !=
-            right_column.descriptor.encoded_descriptor ||
-        (descriptor->second->nullability ==
-             api::RelationalNullability::kNullable) !=
-            (left_column.nullable || right_column.nullable)) {
+    const bool nullable = descriptor->second->nullability ==
+                          api::RelationalNullability::kNullable;
+    if (nullable != (left_column.nullable || right_column.nullable)) {
       result.detail =
-          "set-operation exact ordinal descriptors do not share one bound type";
+          "set-operation result nullability does not cover both inputs";
+      return result;
+    }
+    if (profile.type_profile ==
+            exec::CanonicalSetOperationTypeProfile::kExact &&
+        (engine_descriptor.canonical_type_name !=
+             left_column.descriptor.canonical_type_name ||
+         engine_descriptor.canonical_type_name !=
+             right_column.descriptor.canonical_type_name ||
+         engine_descriptor.encoded_descriptor !=
+             left_column.descriptor.encoded_descriptor ||
+         engine_descriptor.encoded_descriptor !=
+             right_column.descriptor.encoded_descriptor)) {
+      result.detail =
+          "set-operation exact descriptors do not share one bound type";
+      return result;
+    }
+
+    if (result_type_name == "text" &&
+        profile.equality_profile ==
+            exec::CanonicalSetOperationEqualityProfile::kNullEqualBoundCollation) {
+      if (!descriptor->second->collation_uuid.has_value()) {
+        result.detail =
+            "set-operation character equality lacks a bound collation";
+        return result;
+      }
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+      (void)context;
+      result.detail =
+          "set-operation character equality requires the production engine "
+          "resource catalog";
+      return result;
+#else
+      api::EngineUuid collation_uuid;
+      collation_uuid.canonical = *descriptor->second->collation_uuid;
+      const auto resolved = api::LookupEngineResourceDescriptorByUuid(
+          context, collation_uuid, "collation");
+      if (!resolved.ok || !resolved.resource_descriptor.present ||
+          resolved.resource_descriptor.resource_uuid.canonical !=
+              collation_uuid.canonical) {
+        result.detail =
+            "set-operation character equality lacks current engine "
+            "collation authority";
+        return result;
+      }
+      exec::CanonicalSetOperationCollationBinding binding;
+      binding.result_column = column;
+      binding.collation_uuid = collation_uuid.canonical;
+      binding.resource_epoch =
+          resolved.resource_descriptor.resource_epoch;
+      binding.collation_epoch = resolved.resource_descriptor.family_epoch;
+      binding.text_seed.active = true;
+      binding.text_seed.seed_pack_name =
+          resolved.resource_descriptor.seed_pack_name;
+      binding.text_seed.seed_pack_version =
+          resolved.resource_descriptor.seed_pack_version;
+      binding.text_seed.charset_name =
+          resolved.resource_descriptor.parent_canonical_name;
+      binding.text_seed.collation_name =
+          resolved.resource_descriptor.canonical_name;
+      binding.text_seed.collation_case_insensitive =
+          resolved.resource_descriptor.case_insensitive;
+      binding.text_seed.collation_accent_insensitive =
+          resolved.resource_descriptor.accent_insensitive;
+      result.collation_bindings.push_back(std::move(binding));
+#endif
+    } else if (descriptor->second->collation_uuid.has_value() &&
+               result_type_name != "text") {
+      result.detail = "set-operation collation targets a non-character type";
       return result;
     }
 
     result.result_columns.push_back(
         {left_column.stable_name, engine_descriptor,
-         descriptor->second->nullability ==
-             api::RelationalNullability::kNullable,
+         nullable,
          descriptor->second->descriptor_id});
     auto binding = left.result_bindings[column];
     if (binding.visible) {
@@ -5384,17 +5647,21 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 }
 
 CanonicalObjectFreeValuesExecutionResult
-ExecuteCanonicalObjectFreeUnionAllQuery(
+ExecuteCanonicalObjectFreeSetOperationQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& graph = request.optimizer_request.logical_graph;
   const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
     return node.logical_node_id == graph.root_logical_node_id;
   });
+  const auto set_profile =
+      root == graph.nodes.end()
+          ? LiveSetOperationProfile{}
+          : MatchLiveSetOperationProfile(root->semantic_variant_id);
   if (graph.nodes.size() != 3 || root == graph.nodes.end() ||
       root->node_kind !=
           plan::CanonicalLogicalRelationalNodeKind::kSetOperation ||
-      root->semantic_variant_id != "set-operation.union-all.v1" ||
+      !set_profile.matched ||
       root->input_logical_node_ids.size() != 2 ||
       root->input_logical_node_ids[0] == root->input_logical_node_ids[1] ||
       !root->bound_expression_ids.empty() ||
@@ -5446,7 +5713,7 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   if (!request.optimizer_admission.admitted ||
       !request.optimizer_admission.planning_allowed) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-ADMISSION-V1",
-                  "live UNION ALL execution lacks optimizer admission");
+                  "live set-operation execution lacks optimizer admission");
   }
 
   auto left = MaterializeValues(request.relational_dag, *left_node,
@@ -5461,8 +5728,9 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
                   "right VALUES: " + right.detail);
   }
-  auto prepared_root = PrepareOrdinalSetOperationRoot(
-      request.relational_dag, *root, left, right);
+  auto prepared_root = PrepareSetOperationRoot(
+      request.context, request.relational_dag, *root, left, right,
+      set_profile);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
                   prepared_root.detail);
@@ -5471,28 +5739,49 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   if (right.batch.rows.size() >
       std::numeric_limits<std::size_t>::max() - left.batch.rows.size()) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live UNION ALL row bound overflowed");
+                  "live set-operation row bound overflowed");
   }
   const auto set_output_row_bound =
       left.batch.rows.size() + right.batch.rows.size();
+  std::uint64_t set_comparison_bound = 0;
+  if (!CheckedMultiply(set_output_row_bound, set_output_row_bound,
+                       &set_comparison_bound)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live set-operation comparison bound overflowed");
+  }
+  const bool concatenation_only =
+      set_profile.operation == exec::CanonicalSetOperationKind::kUnion &&
+      set_profile.quantifier == exec::CanonicalSetOperationQuantifier::kAll;
+  const auto set_work =
+      concatenation_only
+          ? static_cast<std::uint64_t>(set_output_row_bound)
+          : set_comparison_bound;
+  if (set_work >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live set-operation work exceeds the admitted candidate "
+                  "bound");
+  }
 
   std::uint64_t memory_bytes = 1;
   if (!AddBatchMemoryBytes(left.batch, &memory_bytes) ||
-      !AddBatchMemoryBytes(right.batch, &memory_bytes)) {
+      !AddBatchMemoryBytes(right.batch, &memory_bytes) ||
+      !CheckedAdd(memory_bytes, set_work, &memory_bytes)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live UNION ALL materialization size overflowed");
+                  "live set-operation materialization size overflowed");
   }
   if (memory_bytes > request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "live UNION ALL inputs exceed the admitted memory budget");
+                  "live set-operation inputs exceed the admitted memory budget");
   }
 
   const auto identity_scope =
       graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
-  const auto set_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "union-all.capability");
+  const auto set_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "set." + set_profile.identity_component +
+                          ".capability");
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& node : graph.nodes) {
     const bool values =
@@ -5517,20 +5806,22 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
     profiles.push_back(
         {node.logical_node_id,
          values ? std::string(kValuesImplementationId)
-                : std::string("setop.union-all.ordinal.typed.v1"),
+                : set_profile.implementation_id,
          values ? values_capability_uuid : set_capability_uuid,
          node.node_kind,
          values ? exec::PhysicalNodeKind::kValues
                 : exec::PhysicalNodeKind::kSetOperation,
          values ? "canonical.values.materialize.v1"
-                : "canonical.setop.union-all.ordinal.v1",
+                : set_profile.physical_semantic_id,
          node_rows,
          node_memory,
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
-      request, profiles, "set.selected-plan", "UNION ALL");
+      request, profiles,
+      "set." + set_profile.identity_component + ".selected-plan",
+      set_profile.operation_name);
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
   }
@@ -5544,17 +5835,20 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   values_batches.emplace(right_node->logical_node_id, std::move(right.batch));
   auto values_registration = MakeLiveValuesRegistration(
       std::move(values_batches), values_capability_uuid,
-      "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1", "UNION ALL");
+      "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1",
+      set_profile.operation_name);
 
   exec::CanonicalPhysicalExecutorRegistration set_registration;
   set_registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
-  set_registration.implementation_id = "setop.union-all.ordinal.typed.v1";
+  set_registration.implementation_id = set_profile.implementation_id;
   set_registration.executor_capability_uuid = set_capability_uuid;
   set_registration.executor_capability_abi_version = 1;
   set_registration.engine_owned = true;
   set_registration.accepts_optimizer_publication_v2 = true;
   set_registration.execute =
-      [result_columns = prepared_root.result_columns, set_output_row_bound,
+      [result_columns = prepared_root.result_columns,
+       collation_bindings = prepared_root.collation_bindings,
+       set_profile, set_output_row_bound, set_comparison_bound,
        mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -5573,7 +5867,7 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
           step.diagnostic.detail =
-              "UNION ALL executor did not receive two typed input batches";
+              "set-operation executor did not receive two typed input batches";
           return step;
         }
         exec::CanonicalSetOperationAllRequest set_request;
@@ -5582,19 +5876,24 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
         set_request.left_batch = *inputs[0].materialized_output_batch;
         set_request.right_batch = *inputs[1].materialized_output_batch;
         set_request.result_columns = result_columns;
-        set_request.operation = exec::CanonicalSetOperationKind::kUnion;
-        set_request.alignment = exec::CanonicalSetOperationAlignment::kOrdinal;
-        set_request.quantifier = exec::CanonicalSetOperationQuantifier::kAll;
-        set_request.equality_profile =
-            exec::CanonicalSetOperationEqualityProfile::kExactTyped;
-        set_request.type_profile =
-            exec::CanonicalSetOperationTypeProfile::kExact;
+        set_request.operation = set_profile.operation;
+        set_request.alignment = set_profile.alignment;
+        set_request.quantifier = set_profile.quantifier;
+        set_request.equality_profile = set_profile.equality_profile;
+        set_request.type_profile = set_profile.type_profile;
+        set_request.collation_bindings = collation_bindings;
+        set_request.maximum_equality_comparison_count =
+            std::max<std::size_t>(
+                1, static_cast<std::size_t>(set_comparison_bound));
         set_request.maximum_output_row_count =
             std::max<std::size_t>(1, set_output_row_bound);
         set_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
         const auto set_result =
-            exec::ExecuteCanonicalSetOperationAll(set_request);
+            set_profile.quantifier ==
+                    exec::CanonicalSetOperationQuantifier::kAll
+                ? exec::ExecuteCanonicalSetOperationAll(set_request)
+                : exec::ExecuteCanonicalSetOperationDistinct(set_request);
         if (!set_result.diagnostic.ok) {
           step.diagnostic = set_result.diagnostic;
           return step;
@@ -5625,14 +5924,15 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
-          "set.execution-attempt");
+          "set." + set_profile.identity_component + ".execution-attempt");
   execution_request.result_publication_request.transaction_effect_evidence_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" +
               std::to_string(request.context.local_transaction_id) + ":" +
               std::to_string(
                   request.context.snapshot_visible_through_local_transaction_id),
-          "set.transaction-effect-unchanged");
+          "set." + set_profile.identity_component +
+              ".transaction-effect-unchanged");
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -5652,7 +5952,457 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
             ? "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1"
             : execution.issues.front().diagnostic_id,
         execution.issues.empty()
-            ? "live UNION ALL selected DAG was not completed"
+            ? "live set-operation selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeNestedSetOperationQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() < 5 || root == graph.nodes.end() ||
+      root->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kSetOperation ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return result;
+  }
+
+  std::unordered_map<std::uint64_t, const plan::CanonicalLogicalRelationalNode*>
+      nodes;
+  std::unordered_map<std::uint64_t, LiveSetOperationProfile> set_profiles;
+  std::size_t values_count = 0;
+  for (const auto& node : graph.nodes) {
+    if (!nodes.emplace(node.logical_node_id, &node).second ||
+        !node.required_object_uuids.empty() ||
+        !node.required_property_uuids.empty() ||
+        !node.delivered_property_uuids.empty()) {
+      return result;
+    }
+    if (node.node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kValues) {
+      if (!node.input_logical_node_ids.empty() ||
+          node.semantic_variant_id != "values.literal-table.v1") {
+        return result;
+      }
+      ++values_count;
+      continue;
+    }
+    if (node.node_kind !=
+        plan::CanonicalLogicalRelationalNodeKind::kSetOperation) {
+      return result;
+    }
+    auto profile = MatchLiveSetOperationProfile(node.semantic_variant_id);
+    if (!profile.matched || node.input_logical_node_ids.size() != 2 ||
+        node.input_logical_node_ids[0] == node.input_logical_node_ids[1] ||
+        !node.bound_expression_ids.empty()) {
+      return result;
+    }
+    set_profiles.emplace(node.logical_node_id, std::move(profile));
+  }
+  if (values_count < 3 || set_profiles.size() < 2 ||
+      values_count + set_profiles.size() != graph.nodes.size()) {
+    return result;
+  }
+
+  std::unordered_set<std::uint64_t> reachable;
+  std::vector<std::uint64_t> pending_reachability{root->logical_node_id};
+  while (!pending_reachability.empty()) {
+    const auto node_id = pending_reachability.back();
+    pending_reachability.pop_back();
+    if (!reachable.insert(node_id).second) continue;
+    const auto found = nodes.find(node_id);
+    if (found == nodes.end()) return result;
+    for (const auto input_id : found->second->input_logical_node_ids) {
+      pending_reachability.push_back(input_id);
+    }
+  }
+  if (reachable.size() != graph.nodes.size()) return result;
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-ADMISSION-V1",
+                  "nested set-operation execution lacks optimizer admission");
+  }
+
+  struct PreparedLiveSetNode {
+    LiveSetOperationProfile profile;
+    PreparedSetOperationRoot prepared;
+    std::size_t maximum_output_row_count{0};
+    std::size_t maximum_equality_comparison_count{0};
+  };
+  std::unordered_map<std::uint64_t, MaterializedValues> materialized_schemas;
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  std::unordered_map<std::uint64_t, std::uint64_t> row_bounds;
+  std::unordered_map<std::uint64_t, std::uint64_t> leaf_memory;
+  std::uint64_t memory_bytes = 1;
+  for (const auto& node : graph.nodes) {
+    if (node.node_kind !=
+        plan::CanonicalLogicalRelationalNodeKind::kValues) {
+      continue;
+    }
+    auto materialized = MaterializeValues(
+        request.relational_dag, node, request.expression_services);
+    if (!materialized.ok) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
+                    "nested VALUES: " + materialized.detail);
+    }
+    std::uint64_t node_memory = 1;
+    if (!AddBatchMemoryBytes(materialized.batch, &node_memory) ||
+        !AddBatchMemoryBytes(materialized.batch, &memory_bytes)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "nested set-operation leaf memory overflowed");
+    }
+    row_bounds.emplace(node.logical_node_id,
+                       materialized.batch.rows.size());
+    leaf_memory.emplace(node.logical_node_id, node_memory);
+    values_batches.emplace(node.logical_node_id, materialized.batch);
+    materialized_schemas.emplace(node.logical_node_id,
+                                 std::move(materialized));
+  }
+
+  std::unordered_map<std::uint64_t, PreparedLiveSetNode> prepared_set_nodes;
+  std::unordered_set<std::uint64_t> pending_set_nodes;
+  for (const auto& [node_id, profile] : set_profiles) {
+    (void)profile;
+    pending_set_nodes.insert(node_id);
+  }
+  std::uint64_t total_set_work = 0;
+  while (!pending_set_nodes.empty()) {
+    bool progressed = false;
+    for (auto pending = pending_set_nodes.begin();
+         pending != pending_set_nodes.end();) {
+      const auto node_id = *pending;
+      const auto* node = nodes.at(node_id);
+      const auto left = materialized_schemas.find(
+          node->input_logical_node_ids[0]);
+      const auto right = materialized_schemas.find(
+          node->input_logical_node_ids[1]);
+      if (left == materialized_schemas.end() ||
+          right == materialized_schemas.end()) {
+        ++pending;
+        continue;
+      }
+      auto prepared = PrepareSetOperationRoot(
+          request.context, request.relational_dag, *node, left->second,
+          right->second, set_profiles.at(node_id));
+      if (!prepared.ok) {
+        return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
+                      prepared.detail);
+      }
+      std::uint64_t output_bound = 0;
+      std::uint64_t comparison_bound = 0;
+      const auto left_bound =
+          row_bounds.at(node->input_logical_node_ids[0]);
+      const auto right_bound =
+          row_bounds.at(node->input_logical_node_ids[1]);
+      if (!CheckedAdd(left_bound, right_bound, &output_bound) ||
+          !CheckedMultiply(output_bound, output_bound, &comparison_bound)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "nested set-operation row/comparison bound overflowed");
+      }
+      const bool concatenation_only =
+          set_profiles.at(node_id).operation ==
+              exec::CanonicalSetOperationKind::kUnion &&
+          set_profiles.at(node_id).quantifier ==
+              exec::CanonicalSetOperationQuantifier::kAll;
+      const auto node_work =
+          concatenation_only ? output_bound : comparison_bound;
+      if (!CheckedAdd(total_set_work, node_work, &total_set_work)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "nested set-operation work bound overflowed");
+      }
+      MaterializedValues schema;
+      schema.ok = true;
+      schema.batch.columns = prepared.result_columns;
+      schema.result_bindings = prepared.result_bindings;
+      row_bounds.emplace(node_id, output_bound);
+      materialized_schemas.emplace(node_id, std::move(schema));
+      prepared_set_nodes.emplace(
+          node_id,
+          PreparedLiveSetNode{
+              set_profiles.at(node_id), std::move(prepared),
+              static_cast<std::size_t>(output_bound),
+              static_cast<std::size_t>(std::max<std::uint64_t>(
+                  1, comparison_bound))});
+      pending = pending_set_nodes.erase(pending);
+      progressed = true;
+    }
+    if (!progressed) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-SET-PAYLOAD-V1",
+                    "nested set-operation graph is cyclic or unresolved");
+    }
+  }
+  if (total_set_work >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "nested set-operation work exceeds the admitted candidate "
+                  "bound");
+  }
+  if (!CheckedAdd(memory_bytes, total_set_work, &memory_bytes)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "nested set-operation memory bound overflowed");
+  }
+  if (memory_bytes > request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "nested set-operation exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
+                              request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  std::unordered_map<std::string, std::string> set_capability_uuids;
+  std::string graph_identity = "nested-set";
+  for (const auto& node : graph.nodes) {
+    const auto prepared = prepared_set_nodes.find(node.logical_node_id);
+    if (prepared == prepared_set_nodes.end()) continue;
+    graph_identity += "." + std::to_string(node.logical_node_id) + "." +
+                      prepared->second.profile.identity_component;
+    set_capability_uuids.try_emplace(
+        prepared->second.profile.implementation_id,
+        DerivedCanonicalUuid(
+            identity_scope,
+            "set." + prepared->second.profile.implementation_id +
+                ".capability"));
+  }
+
+  std::vector<LivePhysicalNodeProfile> profiles;
+  profiles.reserve(graph.nodes.size());
+  for (const auto& node : graph.nodes) {
+    if (node.node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kValues) {
+      profiles.push_back(
+          {node.logical_node_id, std::string(kValuesImplementationId),
+           values_capability_uuid, node.node_kind,
+           exec::PhysicalNodeKind::kValues,
+           "canonical.values.materialize.v1", row_bounds.at(node.logical_node_id),
+           leaf_memory.at(node.logical_node_id), 0, 0});
+      continue;
+    }
+    const auto& prepared = prepared_set_nodes.at(node.logical_node_id);
+    profiles.push_back(
+        {node.logical_node_id, prepared.profile.implementation_id,
+         set_capability_uuids.at(prepared.profile.implementation_id),
+         node.node_kind, exec::PhysicalNodeKind::kSetOperation,
+         prepared.profile.physical_semantic_id,
+         prepared.maximum_output_row_count, memory_bytes, 2, 2});
+  }
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, graph_identity + ".selected-plan",
+      "NESTED SET OPERATION");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-SET-VALUES-V1",
+      "NESTED SET OPERATION");
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      request.context, planning.physical_dag);
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+
+  std::unordered_set<std::string> registered_implementations;
+  for (const auto& [node_id, prepared] : prepared_set_nodes) {
+    (void)node_id;
+    if (!registered_implementations
+             .insert(prepared.profile.implementation_id)
+             .second) {
+      continue;
+    }
+    exec::CanonicalPhysicalExecutorRegistration registration;
+    registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
+    registration.implementation_id = prepared.profile.implementation_id;
+    registration.executor_capability_uuid =
+        set_capability_uuids.at(prepared.profile.implementation_id);
+    registration.executor_capability_abi_version = 1;
+    registration.engine_owned = true;
+    registration.accepts_optimizer_publication_v2 = true;
+    registration.execute =
+        [prepared_set_nodes, mga_context = request.context](
+            const exec::TypedPhysicalNodeDag& dag,
+            const exec::PhysicalNodeRecord& node,
+            const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+          exec::CanonicalPhysicalDispatchStepResult step;
+          step.selected_plan_uuid = dag.selected_plan_uuid;
+          step.mga_statement_context = dag.mga_statement_context;
+          step.executed_physical_node_id = node.physical_node_id;
+          step.causal_counter_id = node.causal_counter_id;
+          step.output_descriptor_ids = node.output_descriptor_ids;
+          step.authority.engine_mga_snapshot_bound = true;
+          const auto prepared =
+              prepared_set_nodes.find(node.relational_node_id);
+          if (prepared == prepared_set_nodes.end() ||
+              prepared->second.profile.implementation_id !=
+                  node.implementation_id ||
+              inputs.size() != 2 ||
+              !inputs[0].materialized_output_batch.has_value() ||
+              !inputs[1].materialized_output_batch.has_value()) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
+            step.diagnostic.detail =
+                "nested set-operation executor input/profile is unresolved";
+            return step;
+          }
+          const auto& config = prepared->second;
+          exec::CanonicalSetOperationAllRequest set_request;
+          set_request.physical_dag = dag;
+          if (node.physical_node_id != dag.root_physical_node_id) {
+            // The quantified set executor validates one binary operation as
+            // its request root. Build a request-local ancestor view for this
+            // already selected dispatch step; the optimizer publication and
+            // outer physical DAG remain unchanged and are still consumed by
+            // the engine dispatcher.
+            std::unordered_set<std::uint64_t> execution_view_nodes;
+            std::vector<std::uint64_t> execution_view_pending{
+                node.physical_node_id};
+            while (!execution_view_pending.empty()) {
+              const auto physical_node_id = execution_view_pending.back();
+              execution_view_pending.pop_back();
+              if (!execution_view_nodes.insert(physical_node_id).second) {
+                continue;
+              }
+              const auto found = std::ranges::find_if(
+                  dag.nodes, [&](const auto& candidate) {
+                    return candidate.physical_node_id == physical_node_id;
+                  });
+              if (found == dag.nodes.end()) {
+                step.diagnostic.ok = false;
+                step.diagnostic.diagnostic_code =
+                    "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
+                step.diagnostic.detail =
+                    "nested set-operation execution view is unresolved";
+                return step;
+              }
+              execution_view_pending.insert(
+                  execution_view_pending.end(),
+                  found->input_physical_node_ids.begin(),
+                  found->input_physical_node_ids.end());
+            }
+            std::erase_if(set_request.physical_dag.nodes,
+                          [&](const auto& candidate) {
+                            return !execution_view_nodes.contains(
+                                candidate.physical_node_id);
+                          });
+            set_request.physical_dag.root_physical_node_id =
+                node.physical_node_id;
+          }
+          set_request.selected_physical_node_id = node.physical_node_id;
+          set_request.left_batch = *inputs[0].materialized_output_batch;
+          set_request.right_batch = *inputs[1].materialized_output_batch;
+          set_request.result_columns = config.prepared.result_columns;
+          set_request.operation = config.profile.operation;
+          set_request.alignment = config.profile.alignment;
+          set_request.quantifier = config.profile.quantifier;
+          set_request.equality_profile = config.profile.equality_profile;
+          set_request.type_profile = config.profile.type_profile;
+          set_request.collation_bindings =
+              config.prepared.collation_bindings;
+          set_request.maximum_equality_comparison_count =
+              config.maximum_equality_comparison_count;
+          set_request.maximum_output_row_count =
+              std::max<std::size_t>(1, config.maximum_output_row_count);
+          set_request.mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          const auto set_result =
+              config.profile.quantifier ==
+                      exec::CanonicalSetOperationQuantifier::kAll
+                  ? exec::ExecuteCanonicalSetOperationAll(set_request)
+                  : exec::ExecuteCanonicalSetOperationDistinct(set_request);
+          if (!set_result.diagnostic.ok) {
+            step.diagnostic = set_result.diagnostic;
+            return step;
+          }
+          step.result_handle_id = node.physical_node_id;
+          step.input_row_count = set_result.left_input_row_count +
+                                 set_result.right_input_row_count;
+          step.rows_examined = step.input_row_count;
+          step.output_row_count = set_result.output_batch.rows.size();
+          step.materialized_output_batch = set_result.output_batch;
+          step.mga_statement_context = set_result.mga_statement_context;
+          return step;
+        };
+    execution_request.available_executors.push_back(std::move(registration));
+  }
+
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          graph_identity + ".execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      graph_identity + ".transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      prepared_set_nodes.at(root->logical_node_id).prepared.result_bindings;
+  const auto root_output_bound =
+      prepared_set_nodes.at(root->logical_node_id).maximum_output_row_count;
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, root_output_bound);
+
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-SET-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "nested set-operation selected DAG was not completed"
             : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
@@ -11479,7 +12229,10 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (join_filter_project.profile_matched) return join_filter_project;
   auto join = ExecuteCanonicalObjectFreeJoinQuery(request);
   if (join.profile_matched) return join;
-  auto set_operation = ExecuteCanonicalObjectFreeUnionAllQuery(request);
+  auto nested_set_operation =
+      ExecuteCanonicalObjectFreeNestedSetOperationQuery(request);
+  if (nested_set_operation.profile_matched) return nested_set_operation;
+  auto set_operation = ExecuteCanonicalObjectFreeSetOperationQuery(request);
   if (set_operation.profile_matched) return set_operation;
   CanonicalObjectFreeValuesExecutionResult result;
   const auto refuse = [&](std::string diagnostic_id, std::string detail) {
