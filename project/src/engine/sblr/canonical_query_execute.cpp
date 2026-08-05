@@ -773,6 +773,33 @@ LiveGroupedCountSumProfile MatchLiveGroupedCountSumProfile(
   return result;
 }
 
+bool IsLiveGroupedHavingProfile(const std::string_view semantic_variant_id) {
+  return semantic_variant_id ==
+             "filter.having-sum-gt-int64-literal.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-not-sum-gt-int64-literal.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-not-count-gt-int64-literal.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-not-count-sum-and-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-not-count-sum-or-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-not-sum-count-or-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-sum-gt-int64-literal.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-count-gt-int64-literal.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-count-sum-and-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-not-count-sum-or-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-count-sum-and-gt-int64-literals.v1" ||
+         semantic_variant_id ==
+             "filter.having-count-sum-or-gt-int64-literals.v1";
+}
+
 struct LiveUnaryAggregateExpressionProfile {
   bool matched{false};
   bool count_star{false};
@@ -6716,7 +6743,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     switch (current->node_kind) {
       case plan::CanonicalLogicalRelationalNodeKind::kFilter:
-        if (current->semantic_variant_id != "filter.where.v1" ||
+        if ((current->semantic_variant_id != "filter.where.v1" &&
+             !IsLiveGroupedHavingProfile(
+                 current->semantic_variant_id)) ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -7328,8 +7357,40 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
 
     switch (node.node_kind) {
       case plan::CanonicalLogicalRelationalNodeKind::kFilter: {
-        auto prepared = PrepareFilterRoot(request.relational_dag, node,
-                                          input_node, state);
+        PreparedFilterRoot prepared;
+        if (IsLiveGroupedHavingProfile(node.semantic_variant_id)) {
+          if (!prepared_grouped_aggregate.has_value() ||
+              input_node.node_kind !=
+                  plan::CanonicalLogicalRelationalNodeKind::kAggregate ||
+              input_node.input_logical_node_ids.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composed HAVING lacks its grouped aggregate");
+          }
+          const auto aggregate_input = std::ranges::find_if(
+              graph.nodes, [&](const auto& candidate) {
+                return candidate.logical_node_id ==
+                       input_node.input_logical_node_ids.front();
+              });
+          if (aggregate_input == graph.nodes.end()) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "composed HAVING aggregate input is unresolved");
+          }
+          const auto having = PrepareGroupedHavingRoot(
+              request.relational_dag, node, input_node, *aggregate_input,
+              *prepared_grouped_aggregate);
+          if (!having.ok ||
+              having.output_column_count != state.batch.columns.size()) {
+            return refuse(std::string(kPayloadDiagnostic), having.detail);
+          }
+          prepared.predicate_expression_id =
+              having.predicate_expression_id;
+          prepared.predicate_row_binding = having.row_binding;
+          prepared.result_bindings = state.result_bindings;
+          prepared.ok = true;
+        } else {
+          prepared = PrepareFilterRoot(request.relational_dag, node,
+                                       input_node, state);
+        }
         if (!prepared.ok) {
           return refuse(std::string(kPayloadDiagnostic), prepared.detail);
         }
@@ -13443,30 +13504,7 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   }
   const bool has_having =
       root->node_kind == plan::CanonicalLogicalRelationalNodeKind::kFilter &&
-      (root->semantic_variant_id ==
-           "filter.having-sum-gt-int64-literal.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-not-sum-gt-int64-literal.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-not-count-gt-int64-literal.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-not-count-sum-and-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-not-count-sum-or-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-not-sum-count-or-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-sum-gt-int64-literal.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-count-gt-int64-literal.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-count-sum-and-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-not-count-sum-or-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-count-sum-and-gt-int64-literals.v1" ||
-       root->semantic_variant_id ==
-           "filter.having-count-sum-or-gt-int64-literals.v1");
+      IsLiveGroupedHavingProfile(root->semantic_variant_id);
   auto aggregate_root = root;
   if (has_having) {
     if (root->input_logical_node_ids.size() != 1) return result;

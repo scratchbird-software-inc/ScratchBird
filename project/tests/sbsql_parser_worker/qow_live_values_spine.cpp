@@ -2796,6 +2796,70 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedExpansionLimitEnvelope(
   return envelope;
 }
 
+sblr::SblrOperationEnvelope TwoKeyGroupedCountSumHavingValuesEnvelope() {
+  auto envelope = TwoKeyGroupedCountSumValuesEnvelope();
+  envelope.trace_key = "qow.live.values.two-key-grouped-count-sum-having";
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000ce00";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.insert(
+      envelope.operands.end(),
+      {{"relational_descriptor_v1", "9",
+        "019f0000-0000-7300-8000-00000000ce01|"
+        "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"},
+       {"relational_descriptor_v1", "10",
+        "019f0000-0000-7300-8000-00000000ce02|"
+        "019f0000-0000-7400-8000-00000000ce03|2|-|-|-|-|-"},
+       {"relational_expression_v1", "24",
+        "3|-|3|-|019f0000-0000-7500-8000-00000000e20d|-|-|-"},
+       {"relational_expression_v1", "25",
+        "4|24|5|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+       {"relational_expression_v1", "26", "1|-|9|-|-|1|-|36"},
+       {"relational_expression_v1", "27", "6|25,26|10|-|-|-|3e|-"},
+       {"relational_output_v1", "8", "3|19|1|1|0|6b65795f61"},
+       {"relational_output_v1", "9", "3|20|2|1|1|6b65795f62"},
+       {"relational_output_v1", "10",
+        "3|21|4|1|2|726f775f636f756e74"},
+       {"relational_output_v1", "11",
+        "3|23|5|1|3|746f74616c5f616d6f756e74"},
+       {"relational_node_v1", "3", "2|0|2|1,2,4,5|-"},
+       {"relational_node_binding_v1", "3",
+        "66696c7465722e686176696e672d73756d2d67742d696e7436342d6c69746572616c2e7631|27|-|-|-"}});
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+// RCP-049-TEST-NODE-DRIVEN-GROUPED-HAVING-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenGroupedHavingLimitEnvelope() {
+  auto envelope = TwoKeyGroupedCountSumHavingValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000ce10";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "11",
+       "019f0000-0000-7300-8000-00000000ce11|"
+       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "28", "1|-|11|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|1,2,4,5|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|28|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -8394,6 +8458,65 @@ bool ValidateNodeDrivenGroupingExpansionCompositionSpine() {
                      "019f0000-0000-7000-8000-00000000cd70",
                      "1,2,4,5,6,7,8", 318,
                      "GROUPING SETS with GROUPING metadata");
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-GROUPED-HAVING-COMPOSITION-V1
+bool ValidateNodeDrivenGroupedHavingCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto reference = dispatch(TwoKeyGroupedCountSumHavingValuesEnvelope());
+  const auto first = dispatch(NodeDrivenGroupedHavingLimitEnvelope());
+  const auto repeated = dispatch(NodeDrivenGroupedHavingLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = first.api_result.result_shape.rows;
+  bool passed = true;
+  passed &= Require(
+      reference.api_result.ok &&
+          reference.canonical_result_row_count == 2 && first.accepted &&
+          first.optimizer_admitted && first.optimizer_selected &&
+          first.physical_dag_published && first.physical_dag_executed &&
+          first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 4 &&
+          first.physical_node_count == 4 &&
+          first.canonical_result_column_count == 4 &&
+          first.canonical_result_row_count == 1 && rows.size() == 1 &&
+          rows[0].fields.size() == 4 &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[0].fields[1].second.encoded_value == "20" &&
+          rows[0].fields[2].second.encoded_value == "1" &&
+          rows[0].fields[3].second.encoded_value == "7" &&
+          repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven grouped HAVING composition lost 3VL filtering, LIMIT, "
+      "or deterministic replay semantics");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 89;
+  const auto exhausted = dispatch(NodeDrivenGroupedHavingLimitEnvelope(),
+                                  std::move(bounded_context));
+  passed &= Require(
+      !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "exhausted node-driven grouped HAVING composition published partial "
+      "evidence");
   return passed;
 }
 
@@ -14072,6 +14195,7 @@ int main() {
                       ValidateNodeDrivenPairStatisticalCompositionSpine() &&
                       ValidateNodeDrivenGroupedCountSumCompositionSpine() &&
                       ValidateNodeDrivenGroupingExpansionCompositionSpine() &&
+                      ValidateNodeDrivenGroupedHavingCompositionSpine() &&
                       ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
                       ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
