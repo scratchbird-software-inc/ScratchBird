@@ -327,6 +327,147 @@ struct LiveSetOperationProfile {
   std::string operation_name;
 };
 
+struct PreparedLiveSetNode {
+  LiveSetOperationProfile profile;
+  PreparedSetOperationRoot prepared;
+  std::size_t maximum_output_row_count{0};
+  std::size_t maximum_equality_comparison_count{0};
+};
+
+struct MaterializedExactSetOperation {
+  MaterializedValues values;
+  std::uint64_t output_bound{0};
+  std::uint64_t comparison_bound{0};
+  std::uint64_t work_bound{0};
+};
+
+bool CheckedAdd(std::uint64_t left, std::uint64_t right,
+                std::uint64_t* result);
+bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
+                     std::uint64_t* result);
+
+MaterializedExactSetOperation MaterializeExactSetOperation(
+    const PreparedSetOperationRoot& prepared,
+    const LiveSetOperationProfile& profile,
+    const MaterializedValues& left,
+    const MaterializedValues& right) {
+  MaterializedExactSetOperation result;
+  if (!prepared.ok || !left.ok || !right.ok ||
+      profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal ||
+      profile.type_profile != exec::CanonicalSetOperationTypeProfile::kExact ||
+      profile.equality_profile !=
+          exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
+      !CheckedAdd(left.batch.rows.size(), right.batch.rows.size(),
+                  &result.output_bound) ||
+      !CheckedMultiply(result.output_bound, result.output_bound,
+                       &result.comparison_bound)) {
+    result.values.detail =
+        "exact set-operation materialization contract or bound is invalid";
+    return result;
+  }
+  result.work_bound =
+      profile.operation == exec::CanonicalSetOperationKind::kUnion &&
+              profile.quantifier ==
+                  exec::CanonicalSetOperationQuantifier::kAll
+          ? result.output_bound
+          : result.comparison_bound;
+
+  result.values.ok = true;
+  result.values.batch.columns = prepared.result_columns;
+  result.values.result_bindings = prepared.result_bindings;
+  const auto retagged_rows = [&](const exec::DescriptorBatch& batch) {
+    std::vector<exec::DescriptorTuple> rows;
+    rows.reserve(batch.rows.size());
+    for (const auto& source : batch.rows) {
+      auto row = source;
+      for (std::size_t column = 0; column < row.values.size(); ++column) {
+        row.values[column].descriptor =
+            prepared.result_columns[column].descriptor;
+      }
+      rows.push_back(std::move(row));
+    }
+    return rows;
+  };
+  const auto left_rows = retagged_rows(left.batch);
+  const auto right_rows = retagged_rows(right.batch);
+  using SetRowKey = std::vector<std::string>;
+  const auto row_key = [](const exec::DescriptorTuple& row) {
+    SetRowKey key;
+    key.reserve(row.values.size());
+    for (const auto& value : row.values) {
+      if (value.state == api::EngineValueState::sql_null) {
+        key.emplace_back("null");
+        continue;
+      }
+      std::string token = value.descriptor.canonical_type_name + ":" +
+                          value.encoded_value + ":";
+      token.append(reinterpret_cast<const char*>(value.binary_value.data()),
+                   value.binary_value.size());
+      key.push_back(std::move(token));
+    }
+    return key;
+  };
+  std::vector<SetRowKey> left_keys;
+  std::vector<SetRowKey> right_keys;
+  left_keys.reserve(left_rows.size());
+  right_keys.reserve(right_rows.size());
+  for (const auto& row : left_rows) left_keys.push_back(row_key(row));
+  for (const auto& row : right_rows) right_keys.push_back(row_key(row));
+
+  result.values.batch.rows.reserve(result.output_bound);
+  const bool distinct =
+      profile.quantifier ==
+      exec::CanonicalSetOperationQuantifier::kDistinct;
+  if (distinct &&
+      profile.operation == exec::CanonicalSetOperationKind::kUnion) {
+    std::set<SetRowKey> emitted;
+    for (std::size_t row = 0; row < left_rows.size(); ++row) {
+      if (emitted.insert(left_keys[row]).second) {
+        result.values.batch.rows.push_back(left_rows[row]);
+      }
+    }
+    for (std::size_t row = 0; row < right_rows.size(); ++row) {
+      if (emitted.insert(right_keys[row]).second) {
+        result.values.batch.rows.push_back(right_rows[row]);
+      }
+    }
+  } else if (distinct) {
+    std::set<SetRowKey> right_membership(right_keys.begin(), right_keys.end());
+    std::set<SetRowKey> emitted;
+    for (std::size_t row = 0; row < left_rows.size(); ++row) {
+      const bool present = right_membership.contains(left_keys[row]);
+      const bool candidate =
+          profile.operation == exec::CanonicalSetOperationKind::kIntersect
+              ? present
+              : !present;
+      if (candidate && emitted.insert(left_keys[row]).second) {
+        result.values.batch.rows.push_back(left_rows[row]);
+      }
+    }
+  } else if (profile.operation ==
+             exec::CanonicalSetOperationKind::kUnion) {
+    result.values.batch.rows.insert(result.values.batch.rows.end(),
+                                    left_rows.begin(), left_rows.end());
+    result.values.batch.rows.insert(result.values.batch.rows.end(),
+                                    right_rows.begin(), right_rows.end());
+  } else {
+    std::map<SetRowKey, std::size_t> right_multiplicity;
+    for (const auto& key : right_keys) ++right_multiplicity[key];
+    for (std::size_t row = 0; row < left_rows.size(); ++row) {
+      auto found = right_multiplicity.find(left_keys[row]);
+      const bool consumes =
+          found != right_multiplicity.end() && found->second != 0;
+      if (consumes) --found->second;
+      const bool emit =
+          profile.operation == exec::CanonicalSetOperationKind::kIntersect
+              ? consumes
+              : !consumes;
+      if (emit) result.values.batch.rows.push_back(left_rows[row]);
+    }
+  }
+  return result;
+}
+
 struct PreparedJoinRoot {
   bool ok{false};
   std::uint32_t predicate_expression_id{0};
@@ -5427,22 +5568,20 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
 }
 
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
-    LiveSetOperationProfile set_profile,
-    PreparedSetOperationRoot prepared,
+    std::unordered_map<std::uint64_t, PreparedLiveSetNode>
+        prepared_set_nodes,
+    std::string implementation_id,
     std::string capability_uuid,
-    const std::size_t maximum_output_row_count,
-    const std::size_t maximum_equality_comparison_count,
     api::EngineRequestContext mga_context) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
-  registration.implementation_id = set_profile.implementation_id;
+  registration.implementation_id = std::move(implementation_id);
   registration.executor_capability_uuid = std::move(capability_uuid);
   registration.executor_capability_abi_version = 1;
   registration.engine_owned = true;
   registration.accepts_optimizer_publication_v2 = true;
   registration.execute =
-      [set_profile = std::move(set_profile), prepared = std::move(prepared),
-       maximum_output_row_count, maximum_equality_comparison_count,
+      [prepared_set_nodes = std::move(prepared_set_nodes),
        mga_context = std::move(mga_context)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -5454,16 +5593,22 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
         step.causal_counter_id = node.causal_counter_id;
         step.output_descriptor_ids = node.output_descriptor_ids;
         step.authority.engine_mga_snapshot_bound = true;
-        if (inputs.size() != 2 ||
+        const auto prepared =
+            prepared_set_nodes.find(node.relational_node_id);
+        if (prepared == prepared_set_nodes.end() ||
+            prepared->second.profile.implementation_id !=
+                node.implementation_id ||
+            inputs.size() != 2 ||
             !inputs[0].materialized_output_batch.has_value() ||
             !inputs[1].materialized_output_batch.has_value()) {
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
           step.diagnostic.detail =
-              "set-operation executor did not receive two typed input batches";
+              "set-operation executor input/profile is unresolved";
           return step;
         }
+        const auto& config = prepared->second;
         exec::CanonicalSetOperationAllRequest set_request;
         set_request.physical_dag = dag;
         if (node.physical_node_id != dag.root_physical_node_id) {
@@ -5504,21 +5649,23 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
         set_request.selected_physical_node_id = node.physical_node_id;
         set_request.left_batch = *inputs[0].materialized_output_batch;
         set_request.right_batch = *inputs[1].materialized_output_batch;
-        set_request.result_columns = prepared.result_columns;
-        set_request.operation = set_profile.operation;
-        set_request.alignment = set_profile.alignment;
-        set_request.quantifier = set_profile.quantifier;
-        set_request.equality_profile = set_profile.equality_profile;
-        set_request.type_profile = set_profile.type_profile;
-        set_request.collation_bindings = prepared.collation_bindings;
+        set_request.result_columns = config.prepared.result_columns;
+        set_request.operation = config.profile.operation;
+        set_request.alignment = config.profile.alignment;
+        set_request.quantifier = config.profile.quantifier;
+        set_request.equality_profile = config.profile.equality_profile;
+        set_request.type_profile = config.profile.type_profile;
+        set_request.collation_bindings =
+            config.prepared.collation_bindings;
         set_request.maximum_equality_comparison_count =
-            std::max<std::size_t>(1, maximum_equality_comparison_count);
+            std::max<std::size_t>(
+                1, config.maximum_equality_comparison_count);
         set_request.maximum_output_row_count =
-            std::max<std::size_t>(1, maximum_output_row_count);
+            std::max<std::size_t>(1, config.maximum_output_row_count);
         set_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
             mga_context, set_request.physical_dag);
         const auto set_result =
-            set_profile.quantifier ==
+            config.profile.quantifier ==
                     exec::CanonicalSetOperationQuantifier::kAll
                 ? exec::ExecuteCanonicalSetOperationAll(set_request)
                 : exec::ExecuteCanonicalSetOperationDistinct(set_request);
@@ -5768,7 +5915,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // The compiler admits a descriptor-valid unary tail containing at most one
 // FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
 // canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
-// ordinal quantified set-operation branch. Every node still executes through
+// ordinal quantified set-operation subtree. Every node still executes through
 // the ordinary optimizer-published ABI-v2 DAG and its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
@@ -5793,9 +5940,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
   std::string join_component;
   std::string join_operation_name;
-  const plan::CanonicalLogicalRelationalNode* set_left_node = nullptr;
-  const plan::CanonicalLogicalRelationalNode* set_right_node = nullptr;
-  LiveSetOperationProfile set_profile;
+  std::unordered_map<
+      std::uint32_t, const plan::CanonicalLogicalRelationalNode*>
+      set_base_nodes;
+  std::unordered_map<std::uint32_t, LiveSetOperationProfile>
+      set_profiles;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
     if (!visited.insert(current->logical_node_id).second ||
@@ -5881,46 +6030,61 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kSetOperation) {
-      set_profile = MatchLiveSetOperationProfile(
-          current->semantic_variant_id);
-      if (!set_profile.matched ||
-          set_profile.alignment !=
-              exec::CanonicalSetOperationAlignment::kOrdinal ||
-          set_profile.type_profile !=
-              exec::CanonicalSetOperationTypeProfile::kExact ||
-          set_profile.equality_profile !=
-              exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
-          current->input_logical_node_ids.size() != 2 ||
-          current->input_logical_node_ids[0] ==
-              current->input_logical_node_ids[1] ||
-          !current->bound_expression_ids.empty() ||
-          !current->required_property_uuids.empty() ||
-          !current->delivered_property_uuids.empty()) {
-        return result;
+      std::vector<std::uint64_t> pending_set_base{
+          current->logical_node_id};
+      while (!pending_set_base.empty()) {
+        const auto node_id = pending_set_base.back();
+        pending_set_base.pop_back();
+        if (set_base_nodes.contains(node_id)) continue;
+        const auto node = find_node(node_id);
+        if (node == graph.nodes.end() ||
+            !node->required_object_uuids.empty() ||
+            !node->required_property_uuids.empty() ||
+            !node->delivered_property_uuids.empty() ||
+            (node_id != current->logical_node_id &&
+             visited.contains(node_id))) {
+          return result;
+        }
+        set_base_nodes.emplace(node_id, &*node);
+        if (node->node_kind ==
+            plan::CanonicalLogicalRelationalNodeKind::kValues) {
+          if (node->semantic_variant_id != "values.literal-table.v1" ||
+              !node->input_logical_node_ids.empty()) {
+            return result;
+          }
+          continue;
+        }
+        if (node->node_kind !=
+            plan::CanonicalLogicalRelationalNodeKind::kSetOperation) {
+          return result;
+        }
+        auto profile =
+            MatchLiveSetOperationProfile(node->semantic_variant_id);
+        if (!profile.matched ||
+            profile.alignment !=
+                exec::CanonicalSetOperationAlignment::kOrdinal ||
+            profile.type_profile !=
+                exec::CanonicalSetOperationTypeProfile::kExact ||
+            profile.equality_profile !=
+                exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
+            node->input_logical_node_ids.size() != 2 ||
+            node->input_logical_node_ids[0] ==
+                node->input_logical_node_ids[1] ||
+            !node->bound_expression_ids.empty()) {
+          return result;
+        }
+        set_profiles.emplace(node_id, std::move(profile));
+        pending_set_base.insert(pending_set_base.end(),
+                                node->input_logical_node_ids.begin(),
+                                node->input_logical_node_ids.end());
       }
-      const auto left = find_node(current->input_logical_node_ids[0]);
-      const auto right = find_node(current->input_logical_node_ids[1]);
-      if (left == graph.nodes.end() || right == graph.nodes.end() ||
-          left->node_kind !=
-              plan::CanonicalLogicalRelationalNodeKind::kValues ||
-          right->node_kind !=
-              plan::CanonicalLogicalRelationalNodeKind::kValues ||
-          left->semantic_variant_id != "values.literal-table.v1" ||
-          right->semantic_variant_id != "values.literal-table.v1" ||
-          !left->input_logical_node_ids.empty() ||
-          !right->input_logical_node_ids.empty() ||
-          !left->required_object_uuids.empty() ||
-          !right->required_object_uuids.empty() ||
-          !left->required_property_uuids.empty() ||
-          !right->required_property_uuids.empty() ||
-          !left->delivered_property_uuids.empty() ||
-          !right->delivered_property_uuids.empty() ||
-          !visited.insert(left->logical_node_id).second ||
-          !visited.insert(right->logical_node_id).second) {
-        return result;
+      for (const auto& [node_id, node] : set_base_nodes) {
+        (void)node;
+        if (node_id != current->logical_node_id &&
+            !visited.insert(node_id).second) {
+          return result;
+        }
       }
-      set_left_node = &*left;
-      set_right_node = &*right;
       break;
     }
     if (current->input_logical_node_ids.size() != 1 ||
@@ -6022,11 +6186,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t join_pair_count = 0;
   std::size_t join_output_row_bound = 0;
   std::string join_implementation_id;
-  std::optional<MaterializedValues> set_left_values;
-  std::optional<MaterializedValues> set_right_values;
-  std::optional<PreparedSetOperationRoot> prepared_set;
-  std::size_t set_output_row_bound = 0;
-  std::size_t set_comparison_bound = 0;
+  std::unordered_map<std::uint32_t, MaterializedValues>
+      set_materialized_values;
+  std::unordered_map<std::uint64_t, PreparedLiveSetNode>
+      prepared_set_nodes;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag, request.expression_services);
 
@@ -6055,8 +6218,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       DerivedCanonicalUuid(identity_scope, "composition.values.capability");
   const auto join_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.join.capability");
-  const auto set_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "composition.set.capability");
+  std::unordered_map<std::string, std::string> set_capability_uuids;
+  for (const auto& [node_id, profile] : set_profiles) {
+    (void)node_id;
+    set_capability_uuids.try_emplace(
+        profile.implementation_id,
+        DerivedCanonicalUuid(
+            identity_scope,
+            "composition.set." + profile.implementation_id +
+                ".capability"));
+  }
   const auto filter_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.filter.capability");
   const auto project_capability_uuid =
@@ -6332,186 +6503,124 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                     "composition JOIN work exceeds the admitted bound");
     }
   } else {
-    set_left_values = MaterializeValues(
-        request.relational_dag, *set_left_node,
-        request.expression_services);
-    set_right_values = MaterializeValues(
-        request.relational_dag, *set_right_node,
-        request.expression_services);
-    if (!set_left_values->ok || !set_right_values->ok) {
-      return refuse(
-          std::string(kPayloadDiagnostic),
-          !set_left_values->ok
-              ? "composition SET left VALUES: " + set_left_values->detail
-              : "composition SET right VALUES: " +
-                    set_right_values->detail);
-    }
-    prepared_set = PrepareSetOperationRoot(
-        request.context, request.relational_dag, *reverse_chain.front(),
-        *set_left_values, *set_right_values, set_profile);
-    if (!prepared_set->ok) {
-      return refuse(std::string(kPayloadDiagnostic), prepared_set->detail);
-    }
-
-    std::uint64_t output_bound = 0;
-    std::uint64_t comparison_bound = 0;
-    const auto left_count = set_left_values->batch.rows.size();
-    const auto right_count = set_right_values->batch.rows.size();
-    if (!CheckedAdd(left_count, right_count, &output_bound) ||
-        !CheckedMultiply(output_bound, output_bound, &comparison_bound) ||
-        output_bound > std::numeric_limits<std::size_t>::max() ||
-        comparison_bound > std::numeric_limits<std::size_t>::max()) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "composition SET row/comparison bound overflowed");
-    }
-    set_output_row_bound = static_cast<std::size_t>(output_bound);
-    set_comparison_bound = std::max<std::size_t>(
-        1, static_cast<std::size_t>(comparison_bound));
-    const auto set_work =
-        set_profile.operation == exec::CanonicalSetOperationKind::kUnion &&
-                set_profile.quantifier ==
-                    exec::CanonicalSetOperationQuantifier::kAll
-            ? output_bound
-            : comparison_bound;
-
-    state.ok = true;
-    state.batch.columns = prepared_set->result_columns;
-    const auto retagged_rows = [&](const exec::DescriptorBatch& batch) {
-      std::vector<exec::DescriptorTuple> rows;
-      rows.reserve(batch.rows.size());
-      for (const auto& source : batch.rows) {
-        auto row = source;
-        for (std::size_t column = 0; column < row.values.size(); ++column) {
-          row.values[column].descriptor =
-              prepared_set->result_columns[column].descriptor;
-        }
-        rows.push_back(std::move(row));
+    for (const auto& [node_id, node] : set_base_nodes) {
+      if (node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues) {
+        continue;
       }
-      return rows;
-    };
-    const auto left_rows = retagged_rows(set_left_values->batch);
-    const auto right_rows = retagged_rows(set_right_values->batch);
-    using SetRowKey = std::vector<std::string>;
-    const auto row_key = [](const exec::DescriptorTuple& row) {
-      SetRowKey key;
-      key.reserve(row.values.size());
-      for (const auto& value : row.values) {
-        if (value.state == api::EngineValueState::sql_null) {
-          key.emplace_back("null");
+      auto materialized = MaterializeValues(
+          request.relational_dag, *node, request.expression_services);
+      if (!materialized.ok) {
+        return refuse(std::string(kPayloadDiagnostic),
+                      "composition SET VALUES: " + materialized.detail);
+      }
+      std::uint64_t values_memory = 1;
+      if (!AddBatchMemoryBytes(materialized.batch, &values_memory) ||
+          values_memory >
+              request.optimizer_request.resource.memory_budget_bytes ||
+          !CheckedAdd(total_work, materialized.batch.rows.size(),
+                      &total_work) ||
+          total_work >
+              request.optimizer_request.resource.maximum_candidate_count) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                      "composition SET VALUES exceeds an admitted bound");
+      }
+      profiles.push_back(
+          {node_id, std::string(kValuesImplementationId),
+           values_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kValues,
+           exec::PhysicalNodeKind::kValues,
+           "canonical.values.materialize.v1", materialized.batch.rows.size(),
+           values_memory, 0, 0});
+      set_materialized_values.emplace(node_id, std::move(materialized));
+    }
+
+    std::unordered_set<std::uint32_t> pending_set_nodes;
+    for (const auto& [node_id, profile] : set_profiles) {
+      (void)profile;
+      pending_set_nodes.insert(node_id);
+    }
+    while (!pending_set_nodes.empty()) {
+      bool progressed = false;
+      for (auto pending = pending_set_nodes.begin();
+           pending != pending_set_nodes.end();) {
+        const auto node_id = *pending;
+        const auto* node = set_base_nodes.at(node_id);
+        const auto left = set_materialized_values.find(
+            node->input_logical_node_ids[0]);
+        const auto right = set_materialized_values.find(
+            node->input_logical_node_ids[1]);
+        if (left == set_materialized_values.end() ||
+            right == set_materialized_values.end()) {
+          ++pending;
           continue;
         }
-        std::string token = value.descriptor.canonical_type_name + ":" +
-                            value.encoded_value + ":";
-        token.append(
-            reinterpret_cast<const char*>(value.binary_value.data()),
-            value.binary_value.size());
-        key.push_back(std::move(token));
-      }
-      return key;
-    };
-    std::vector<SetRowKey> left_keys;
-    std::vector<SetRowKey> right_keys;
-    left_keys.reserve(left_rows.size());
-    right_keys.reserve(right_rows.size());
-    for (const auto& row : left_rows) left_keys.push_back(row_key(row));
-    for (const auto& row : right_rows) right_keys.push_back(row_key(row));
+        auto prepared = PrepareSetOperationRoot(
+            request.context, request.relational_dag, *node, left->second,
+            right->second, set_profiles.at(node_id));
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        auto materialized = MaterializeExactSetOperation(
+            prepared, set_profiles.at(node_id), left->second, right->second);
+        if (!materialized.values.ok ||
+            materialized.output_bound >
+                std::numeric_limits<std::size_t>::max() ||
+            materialized.comparison_bound >
+                std::numeric_limits<std::size_t>::max()) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+              materialized.values.detail.empty()
+                  ? "composition SET row/comparison bound overflowed"
+                  : materialized.values.detail);
+        }
 
-    state.batch.rows.reserve(set_output_row_bound);
-    const bool distinct =
-        set_profile.quantifier ==
-        exec::CanonicalSetOperationQuantifier::kDistinct;
-    if (distinct &&
-        set_profile.operation == exec::CanonicalSetOperationKind::kUnion) {
-      std::set<SetRowKey> emitted;
-      for (std::size_t row = 0; row < left_rows.size(); ++row) {
-        if (emitted.insert(left_keys[row]).second) {
-          state.batch.rows.push_back(left_rows[row]);
+        std::uint64_t left_memory = 1;
+        std::uint64_t right_memory = 1;
+        std::uint64_t set_memory = 1;
+        if (!AddBatchMemoryBytes(left->second.batch, &left_memory) ||
+            !AddBatchMemoryBytes(right->second.batch, &right_memory) ||
+            !AddBatchMemoryBytes(materialized.values.batch, &set_memory) ||
+            !CheckedAdd(set_memory, left_memory, &set_memory) ||
+            !CheckedAdd(set_memory, right_memory, &set_memory) ||
+            !CheckedAdd(set_memory, materialized.work_bound, &set_memory) ||
+            set_memory >
+                request.optimizer_request.resource.memory_budget_bytes ||
+            !CheckedAdd(total_work, materialized.work_bound, &total_work) ||
+            total_work >
+                request.optimizer_request.resource.maximum_candidate_count) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                        "composition SET exceeds an admitted bound");
         }
-      }
-      for (std::size_t row = 0; row < right_rows.size(); ++row) {
-        if (emitted.insert(right_keys[row]).second) {
-          state.batch.rows.push_back(right_rows[row]);
-        }
-      }
-    } else if (distinct) {
-      std::set<SetRowKey> right_membership(
-          right_keys.begin(), right_keys.end());
-      std::set<SetRowKey> emitted;
-      for (std::size_t row = 0; row < left_rows.size(); ++row) {
-        const bool present = right_membership.contains(left_keys[row]);
-        const bool candidate =
-            set_profile.operation ==
-                    exec::CanonicalSetOperationKind::kIntersect
-                ? present
-                : !present;
-        if (candidate && emitted.insert(left_keys[row]).second) {
-          state.batch.rows.push_back(left_rows[row]);
-        }
-      }
-    } else if (set_profile.operation ==
-               exec::CanonicalSetOperationKind::kUnion) {
-      state.batch.rows.insert(state.batch.rows.end(), left_rows.begin(),
-                              left_rows.end());
-      state.batch.rows.insert(state.batch.rows.end(), right_rows.begin(),
-                              right_rows.end());
-    } else {
-      std::map<SetRowKey, std::size_t> right_multiplicity;
-      for (const auto& key : right_keys) ++right_multiplicity[key];
-      for (std::size_t row = 0; row < left_rows.size(); ++row) {
-        auto found = right_multiplicity.find(left_keys[row]);
-        const bool consumes = found != right_multiplicity.end() &&
-                              found->second != 0;
-        if (consumes) --found->second;
-        const bool emit =
-            set_profile.operation ==
-                    exec::CanonicalSetOperationKind::kIntersect
-                ? consumes
-                : !consumes;
-        if (emit) state.batch.rows.push_back(left_rows[row]);
-      }
-    }
-    state.result_bindings = prepared_set->result_bindings;
 
-    std::uint64_t left_memory = 1;
-    std::uint64_t right_memory = 1;
-    std::uint64_t set_memory = 1;
-    if (!AddBatchMemoryBytes(set_left_values->batch, &left_memory) ||
-        !AddBatchMemoryBytes(set_right_values->batch, &right_memory) ||
-        !AddBatchMemoryBytes(state.batch, &set_memory) ||
-        !CheckedAdd(set_memory, left_memory, &set_memory) ||
-        !CheckedAdd(set_memory, right_memory, &set_memory) ||
-        !CheckedAdd(set_memory, set_work, &set_memory) ||
-        set_memory >
-            request.optimizer_request.resource.memory_budget_bytes) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                    "composition SET exceeds the admitted memory budget");
+        const auto& profile = set_profiles.at(node_id);
+        profiles.push_back(
+            {node_id, profile.implementation_id,
+             set_capability_uuids.at(profile.implementation_id),
+             plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
+             exec::PhysicalNodeKind::kSetOperation,
+             profile.physical_semantic_id,
+             static_cast<std::size_t>(materialized.output_bound), set_memory,
+             2, 2});
+        prepared_set_nodes.emplace(
+            node_id,
+            PreparedLiveSetNode{
+                profile, std::move(prepared),
+                static_cast<std::size_t>(materialized.output_bound),
+                static_cast<std::size_t>(std::max<std::uint64_t>(
+                    1, materialized.comparison_bound))});
+        set_materialized_values.emplace(
+            node_id, std::move(materialized.values));
+        pending = pending_set_nodes.erase(pending);
+        progressed = true;
+      }
+      if (!progressed) {
+        return refuse(std::string(kPayloadDiagnostic),
+                      "composition SET subtree is cyclic or unresolved");
+      }
     }
-    profiles.push_back(
-        {set_left_node->logical_node_id,
-         std::string(kValuesImplementationId), values_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kValues,
-         exec::PhysicalNodeKind::kValues,
-         "canonical.values.materialize.v1", left_count, left_memory, 0, 0});
-    profiles.push_back(
-        {set_right_node->logical_node_id,
-         std::string(kValuesImplementationId), values_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kValues,
-         exec::PhysicalNodeKind::kValues,
-         "canonical.values.materialize.v1", right_count, right_memory, 0, 0});
-    profiles.push_back(
-        {reverse_chain.front()->logical_node_id,
-         set_profile.implementation_id, set_capability_uuid,
-         plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
-         exec::PhysicalNodeKind::kSetOperation,
-         set_profile.physical_semantic_id, set_output_row_bound,
-         set_memory, 2, 2});
-    if (!CheckedAdd(left_count, right_count, &total_work) ||
-        !CheckedAdd(total_work, set_work, &total_work) ||
-        total_work >
-            request.optimizer_request.resource.maximum_candidate_count) {
-      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                    "composition SET work exceeds the admitted bound");
-    }
+    state = set_materialized_values.at(
+        reverse_chain.front()->logical_node_id);
   }
   const auto add_work = [&](const std::uint64_t work) {
     return CheckedAdd(total_work, work, &total_work) &&
@@ -6902,11 +7011,14 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                            std::move(join_left_values->batch));
     values_batches.emplace(join_right_node->logical_node_id,
                            std::move(join_right_values->batch));
-  } else if (set_left_node != nullptr) {
-    values_batches.emplace(set_left_node->logical_node_id,
-                           std::move(set_left_values->batch));
-    values_batches.emplace(set_right_node->logical_node_id,
-                           std::move(set_right_values->batch));
+  } else if (!set_base_nodes.empty()) {
+    for (auto& [node_id, materialized] : set_materialized_values) {
+      const auto base_node = set_base_nodes.at(node_id);
+      if (base_node->node_kind ==
+          plan::CanonicalLogicalRelationalNodeKind::kValues) {
+        values_batches.emplace(node_id, std::move(materialized.batch));
+      }
+    }
   } else {
     auto values = MaterializeValues(request.relational_dag,
                                     *reverse_chain.front(),
@@ -6938,11 +7050,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             join_output_row_bound, *join_kind, join_operation_name,
             request.context));
   }
-  if (prepared_set.has_value()) {
+  std::unordered_set<std::string> registered_set_implementations;
+  for (const auto& [node_id, prepared] : prepared_set_nodes) {
+    (void)node_id;
+    if (!registered_set_implementations
+             .insert(prepared.profile.implementation_id)
+             .second) {
+      continue;
+    }
     execution_request.available_executors.push_back(
         MakeLiveSetOperationRegistration(
-            set_profile, std::move(*prepared_set), set_capability_uuid,
-            set_output_row_bound, set_comparison_bound, request.context));
+            prepared_set_nodes, prepared.profile.implementation_id,
+            set_capability_uuids.at(prepared.profile.implementation_id),
+            request.context));
   }
   if (prepared_filter.has_value()) {
     execution_request.available_executors.push_back(
@@ -7442,12 +7562,6 @@ ExecuteCanonicalObjectFreeNestedSetOperationQuery(
                   "nested set-operation execution lacks optimizer admission");
   }
 
-  struct PreparedLiveSetNode {
-    LiveSetOperationProfile profile;
-    PreparedSetOperationRoot prepared;
-    std::size_t maximum_output_row_count{0};
-    std::size_t maximum_equality_comparison_count{0};
-  };
   std::unordered_map<std::uint64_t, MaterializedValues> materialized_schemas;
   std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
   std::unordered_map<std::uint64_t, std::uint64_t> row_bounds;

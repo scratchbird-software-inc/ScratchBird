@@ -642,6 +642,35 @@ sblr::SblrOperationEnvelope SetOperationNestedValuesEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-NESTED-EXACT-SET-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenNestedExactSetLimitEnvelope(
+    const bool explicit_right_grouping) {
+  auto envelope = SetOperationNestedValuesEnvelope(explicit_right_grouping);
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = explicit_right_grouping
+          ? "019f0000-0000-7000-8000-00000000c951"
+          : "019f0000-0000-7000-8000-00000000c950";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "6";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-00000000c951|"
+       "019f0000-0000-7400-8000-00000000b321|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "6", "1|-|6|-|-|1|-|32"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "6", "7|0|5|5|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "6",
+       "6c696d69742e626f756e642d636f756e742e7631|6|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope InnerJoinValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.inner-join");
@@ -7316,6 +7345,100 @@ bool ValidateNodeDrivenExactSetProfilesCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-NESTED-EXACT-SET-COMPOSITION-V1
+bool ValidateNodeDrivenNestedExactSetCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::array<std::string_view, 2>& values) {
+    if (!result.accepted || !result.optimizer_admitted ||
+        !result.optimizer_selected || !result.physical_dag_published ||
+        !result.physical_dag_executed || !result.runtime_actuals_attached ||
+        !result.canonical_result_published || !result.api_result.ok ||
+        !result.diagnostics.empty() || result.logical_node_count != 6 ||
+        result.physical_node_count != 6 ||
+        result.canonical_result_column_count != 1 ||
+        result.canonical_result_row_count != values.size() ||
+        result.api_result.result_shape.rows.size() != values.size()) {
+      return false;
+    }
+    for (std::size_t row = 0; row < values.size(); ++row) {
+      if (result.api_result.result_shape.rows[row]
+              .fields[0]
+              .second.encoded_value != values[row]) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto no_publication = [](const auto& result) {
+    return !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty();
+  };
+
+  const auto left =
+      dispatch(NodeDrivenNestedExactSetLimitEnvelope(false));
+  const auto left_repeated =
+      dispatch(NodeDrivenNestedExactSetLimitEnvelope(false));
+  const auto right =
+      dispatch(NodeDrivenNestedExactSetLimitEnvelope(true));
+  const auto right_repeated =
+      dispatch(NodeDrivenNestedExactSetLimitEnvelope(true));
+  if (!left.api_result.ok) {
+    for (const auto& diagnostic : left.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  if (!right.api_result.ok) {
+    for (const auto& diagnostic : right.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      completed(left, {"1", "3"}) && completed(right, {"1", "2"}) &&
+          left.selected_plan_uuid != right.selected_plan_uuid &&
+          completed(left_repeated, {"1", "3"}) &&
+          completed(right_repeated, {"1", "2"}) &&
+          left_repeated.selected_plan_uuid == left.selected_plan_uuid &&
+          right_repeated.selected_plan_uuid == right.selected_plan_uuid &&
+          left_repeated.canonical_result_bytes ==
+              left.canonical_result_bytes &&
+          right_repeated.canonical_result_bytes ==
+              right.canonical_result_bytes,
+      "node-driven nested set composition lost grouping, LIMIT semantics, "
+      "plan identity, or deterministic replay");
+
+  auto malformed = NodeDrivenNestedExactSetLimitEnvelope(false);
+  for (auto& operand : malformed.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "4") {
+      operand.value = "9|0|1,1|4|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 20;
+  const auto malformed_result = dispatch(std::move(malformed));
+  const auto exhausted_result = dispatch(
+      NodeDrivenNestedExactSetLimitEnvelope(false),
+      std::move(bounded_context));
+  passed &= Require(
+      no_publication(malformed_result) &&
+          no_publication(exhausted_result) &&
+          HasApiDiagnostic(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "malformed or exhausted node-driven nested set composition published "
+      "partial evidence");
+  return passed;
+}
+
 // RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
 bool ValidateEmptyFilteredExpressionProjectionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
@@ -12763,6 +12886,7 @@ int main() {
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
+                      ValidateNodeDrivenNestedExactSetCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
