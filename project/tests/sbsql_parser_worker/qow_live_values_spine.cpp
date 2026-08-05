@@ -3233,6 +3233,38 @@ GlobalPairStatisticalAggregateExpressionValuesEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-PAIR-STATISTICAL-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenPairStatisticalLimitEnvelope(
+    const PairStatisticalAggregateProfile& profile,
+    const std::string_view fixture_family) {
+  auto envelope =
+      GlobalPairStatisticalAggregateExpressionValuesEnvelope(profile);
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000" +
+                      std::string(fixture_family) + "0";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000" +
+           std::string(fixture_family) + "1|" +
+           PairProfileUuid("7400", profile.uuid_family, "06") +
+           "|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "12", "1|-|4|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "7|0|2|3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|12|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope
 GlobalPairStatisticalAggregateModifierValuesEnvelope(
     const PairStatisticalAggregateProfile& profile,
@@ -8023,6 +8055,84 @@ bool ValidateNodeDrivenStatisticalAggregateCompositionSpine() {
     bounded_context.optimizer_maximum_candidate_count = 8;
     const auto exhausted = dispatch(
         NodeDrivenStatisticalAggregateLimitEnvelope(
+            profile, kFixtureFamilies[index]),
+        std::move(bounded_context));
+    passed &= Require(
+        !exhausted.optimizer_selected &&
+            !exhausted.physical_dag_published &&
+            !exhausted.physical_dag_executed &&
+            !exhausted.runtime_actuals_attached &&
+            !exhausted.canonical_result_published &&
+            !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+            exhausted.canonical_result_bytes.empty() &&
+            HasApiDiagnostic(
+                exhausted,
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+        "exhausted node-driven " + std::string(profile.name) +
+            " composition published partial evidence");
+  }
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-PAIR-STATISTICAL-COMPOSITION-V1
+bool ValidateNodeDrivenPairStatisticalCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  constexpr std::array<std::string_view, 12> kFixtureFamilies = {
+      "cb0", "cb1", "cb2", "cb3", "cb4", "cb5",
+      "cb6", "cb7", "cb8", "cb9", "cba", "cbb"};
+  bool passed = true;
+  for (std::size_t index = 0;
+       index < std::size(kPairStatisticalAggregateProfiles); ++index) {
+    const auto& profile = kPairStatisticalAggregateProfiles[index];
+    const auto first = dispatch(NodeDrivenPairStatisticalLimitEnvelope(
+        profile, kFixtureFamilies[index]));
+    const auto repeated = dispatch(NodeDrivenPairStatisticalLimitEnvelope(
+        profile, kFixtureFamilies[index]));
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    bool exact_result =
+        first.api_result.result_shape.columns.size() == 1 &&
+        first.api_result.result_shape.rows.size() == 1 &&
+        first.api_result.result_shape.rows[0].fields.size() == 1 &&
+        first.api_result.result_shape.rows[0]
+                .fields[0]
+                .second.state == api::EngineValueState::value;
+    if (exact_result) {
+      const auto& encoded = first.api_result.result_shape.rows[0]
+                                .fields[0]
+                                .second.encoded_value;
+      char* end = nullptr;
+      const double observed = std::strtod(encoded.c_str(), &end);
+      exact_result = end == encoded.c_str() + encoded.size() &&
+                     std::abs(observed - profile.expected) <= 1e-12;
+    }
+    passed &= Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed && first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 3 &&
+            first.physical_node_count == 3 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1 && exact_result &&
+            repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "node-driven " + std::string(profile.name) +
+            " composition lost pair-statistical, LIMIT, or deterministic "
+            "replay semantics");
+
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count = 8;
+    const auto exhausted = dispatch(
+        NodeDrivenPairStatisticalLimitEnvelope(
             profile, kFixtureFamilies[index]),
         std::move(bounded_context));
     passed &= Require(
@@ -13714,6 +13824,7 @@ int main() {
                       ValidateNodeDrivenSumExpressionCompositionSpine() &&
                       ValidateNodeDrivenAvgExpressionCompositionSpine() &&
                       ValidateNodeDrivenStatisticalAggregateCompositionSpine() &&
+                      ValidateNodeDrivenPairStatisticalCompositionSpine() &&
                       ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
                       ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
