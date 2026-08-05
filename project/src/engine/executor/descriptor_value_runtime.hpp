@@ -1911,6 +1911,10 @@ struct CanonicalDescriptorSortRequest {
   TypedPhysicalNodeDag physical_dag;
   std::uint64_t selected_physical_node_id = 0;
   DescriptorBatch input_batch;
+  // Optional engine-materialized hidden ordering keys. When present, these
+  // rows supply comparisons while input_batch remains the exact physical
+  // output schema and payload.
+  std::optional<DescriptorBatch> order_key_batch;
   std::vector<CanonicalDescriptorOrderTerm> order_terms;
   std::string deterministic_tie_evidence_uuid;
   std::size_t maximum_pair_comparisons = 1048576;

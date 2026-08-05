@@ -342,9 +342,19 @@ struct PreparedLimitRoot {
   std::string detail;
 };
 
+struct PreparedSortExpression {
+  std::uint32_t expression_id{0};
+  std::string expected_type;
+  CanonicalRelationalExpressionRowBinding row_binding;
+  exec::ExecutorColumnDescriptor materialized_column;
+};
+
 struct PreparedSortRoot {
   bool ok{false};
+  bool expression_ordering{false};
   std::vector<exec::CanonicalDescriptorOrderTerm> order_terms;
+  std::vector<PreparedSortExpression> expressions;
+  exec::DescriptorBatch expression_input_batch;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string ordering_property_uuid;
   std::string detail;
@@ -3149,6 +3159,88 @@ bool BindTimezoneOrderAuthority(
 #endif
 }
 
+bool PrepareCanonicalSortOrderTerm(
+    const api::EngineRequestContext& context,
+    const plan::CanonicalLogicalPropertyOrderingTerm& logical_term,
+    const exec::ExecutorColumnDescriptor& column,
+    const std::size_t column_ordinal,
+    exec::CanonicalDescriptorOrderTerm* term,
+    std::string* detail) {
+  if (term == nullptr || detail == nullptr) return false;
+  *term = {};
+  detail->clear();
+  term->column = column_ordinal;
+  term->expression_descriptor_id = column.descriptor_id;
+  term->direction =
+      logical_term.direction ==
+              plan::CanonicalLogicalPropertySortDirection::kAscending
+          ? exec::CanonicalDescriptorOrderDirection::ascending
+          : exec::CanonicalDescriptorOrderDirection::descending;
+  term->null_placement =
+      logical_term.null_placement ==
+              plan::CanonicalLogicalPropertyNullPlacement::kNullsFirst
+          ? exec::CanonicalDescriptorNullPlacement::first
+          : exec::CanonicalDescriptorNullPlacement::last;
+  term->collation_uuid = logical_term.collation_uuid;
+
+  if (column.descriptor.canonical_type_name == "text") {
+#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+    *term = {};
+    *detail =
+        "sort character ordering requires the production engine resource "
+        "catalog";
+    return false;
+#else
+    api::EngineUuid collation_uuid;
+    collation_uuid.canonical = term->collation_uuid;
+    const auto resolved = api::LookupEngineResourceDescriptorByUuid(
+        context, collation_uuid, "collation");
+    if (!resolved.ok || !resolved.resource_descriptor.present ||
+        resolved.resource_descriptor.resource_uuid.canonical !=
+            term->collation_uuid) {
+      *term = {};
+      *detail =
+          "sort character ordering lacks current engine collation authority: " +
+          (resolved.diagnostic.code.empty()
+               ? std::string("CATALOG.RESOURCE.DESCRIPTOR_INVALID")
+               : resolved.diagnostic.code);
+      return false;
+    }
+    term->resource_epoch = resolved.resource_descriptor.resource_epoch;
+    term->collation_epoch = resolved.resource_descriptor.family_epoch;
+    term->text_seed.active = true;
+    term->text_seed.seed_pack_name =
+        resolved.resource_descriptor.seed_pack_name;
+    term->text_seed.seed_pack_version =
+        resolved.resource_descriptor.seed_pack_version;
+    term->text_seed.charset_name =
+        resolved.resource_descriptor.parent_canonical_name;
+    term->text_seed.collation_name =
+        resolved.resource_descriptor.canonical_name;
+    term->text_seed.collation_case_insensitive =
+        resolved.resource_descriptor.case_insensitive;
+    term->text_seed.collation_accent_insensitive =
+        resolved.resource_descriptor.accent_insensitive;
+#endif
+  } else if ((column.descriptor.canonical_type_name == "time" ||
+              column.descriptor.canonical_type_name == "timestamp") &&
+             column.descriptor.encoded_descriptor.find(
+                 "timezone_profile_id=") != std::string::npos) {
+    if (!BindTimezoneOrderAuthority(context, term, detail)) {
+      *term = {};
+      return false;
+    }
+  }
+  const auto validation =
+      exec::ValidateCanonicalDescriptorOrderTerm(*term, column);
+  if (!validation.ok) {
+    *term = {};
+    *detail = validation.detail;
+    return false;
+  }
+  return true;
+}
+
 PreparedSortRoot PrepareSortRoot(
     const api::EngineRequestContext& context,
     const api::TypedRelationalDag& dag,
@@ -3227,76 +3319,12 @@ PreparedSortRoot PrepareSortRoot(
       return result;
     }
 
+    const auto& column = input.batch.columns[ordinal->second];
     exec::CanonicalDescriptorOrderTerm term;
-    term.column = ordinal->second;
-    term.expression_descriptor_id = expression->second->result_descriptor_id;
-    term.direction =
-        logical_term.direction ==
-                plan::CanonicalLogicalPropertySortDirection::kAscending
-            ? exec::CanonicalDescriptorOrderDirection::ascending
-            : exec::CanonicalDescriptorOrderDirection::descending;
-    term.null_placement =
-        logical_term.null_placement ==
-                plan::CanonicalLogicalPropertyNullPlacement::kNullsFirst
-            ? exec::CanonicalDescriptorNullPlacement::first
-            : exec::CanonicalDescriptorNullPlacement::last;
-    term.collation_uuid = logical_term.collation_uuid;
-
-    const auto& column = input.batch.columns[term.column];
-    if (column.descriptor.canonical_type_name == "text") {
-#if defined(SCRATCHBIRD_QOW_QUERY_ROUTE_CONTRACT_ONLY)
+    if (!PrepareCanonicalSortOrderTerm(
+            context, logical_term, column, ordinal->second, &term,
+            &result.detail)) {
       result.order_terms.clear();
-      result.detail =
-          "sort character ordering requires the production engine resource "
-          "catalog";
-      return result;
-#else
-      api::EngineUuid collation_uuid;
-      collation_uuid.canonical = term.collation_uuid;
-      const auto resolved = api::LookupEngineResourceDescriptorByUuid(
-          context, collation_uuid, "collation");
-      if (!resolved.ok || !resolved.resource_descriptor.present ||
-          resolved.resource_descriptor.resource_uuid.canonical !=
-              term.collation_uuid) {
-        result.order_terms.clear();
-        result.detail =
-            "sort character ordering lacks current engine collation "
-            "authority: " +
-            (resolved.diagnostic.code.empty()
-                 ? std::string("CATALOG.RESOURCE.DESCRIPTOR_INVALID")
-                 : resolved.diagnostic.code);
-        return result;
-      }
-      term.resource_epoch = resolved.resource_descriptor.resource_epoch;
-      term.collation_epoch = resolved.resource_descriptor.family_epoch;
-      term.text_seed.active = true;
-      term.text_seed.seed_pack_name =
-          resolved.resource_descriptor.seed_pack_name;
-      term.text_seed.seed_pack_version =
-          resolved.resource_descriptor.seed_pack_version;
-      term.text_seed.charset_name =
-          resolved.resource_descriptor.parent_canonical_name;
-      term.text_seed.collation_name =
-          resolved.resource_descriptor.canonical_name;
-      term.text_seed.collation_case_insensitive =
-          resolved.resource_descriptor.case_insensitive;
-      term.text_seed.collation_accent_insensitive =
-          resolved.resource_descriptor.accent_insensitive;
-#endif
-    } else if ((column.descriptor.canonical_type_name == "time" ||
-                column.descriptor.canonical_type_name == "timestamp") &&
-               column.descriptor.encoded_descriptor.find(
-                   "timezone_profile_id=") != std::string::npos) {
-      if (!BindTimezoneOrderAuthority(context, &term, &result.detail)) {
-        result.order_terms.clear();
-        return result;
-      }
-    }
-    const auto validation =
-        exec::ValidateCanonicalDescriptorOrderTerm(term, column);
-    if (!validation.ok) {
-      result.order_terms.clear();
-      result.detail = validation.detail;
       return result;
     }
     result.order_terms.push_back(std::move(term));
@@ -3587,6 +3615,229 @@ bool PrepareInputRowBinding(
                    expression->second->child_expression_ids.end());
   }
   return true;
+}
+
+bool MaterializeExpressionSortBatch(
+    const api::TypedRelationalDag& dag,
+    const std::vector<PreparedSortExpression>& expressions,
+    const exec::DescriptorBatch& input_batch,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services,
+    exec::DescriptorBatch* sort_batch,
+    std::string* detail) {
+  if (sort_batch == nullptr || detail == nullptr || expressions.empty() ||
+      input_batch.columns.empty() || input_batch.rows.empty()) {
+    if (detail != nullptr) {
+      *detail = "expression SORT materialization request is incomplete";
+    }
+    return false;
+  }
+  *sort_batch = input_batch;
+  detail->clear();
+  for (const auto& expression : expressions) {
+    sort_batch->columns.push_back(expression.materialized_column);
+  }
+
+  CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
+  for (std::size_t row_ordinal = 0;
+       row_ordinal < input_batch.rows.size(); ++row_ordinal) {
+    auto& sort_row = sort_batch->rows[row_ordinal];
+    const auto& input_row = input_batch.rows[row_ordinal];
+    sort_row.values.reserve(input_row.values.size() + expressions.size());
+    for (const auto& expression : expressions) {
+      api::EngineTypedValue value;
+      if (!runtime.EvaluateForConsumer(
+              expression.expression_id, expression.expected_type,
+              expression.row_binding, input_row.values,
+              api::EngineCanonicalExpressionConsumer::projection, &value,
+              detail)) {
+        *sort_batch = {};
+        return false;
+      }
+      sort_row.values.push_back(std::move(value));
+    }
+  }
+
+  std::vector<std::uint32_t> descriptor_ids;
+  descriptor_ids.reserve(sort_batch->columns.size());
+  for (const auto& column : sort_batch->columns) {
+    descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto canonical =
+      exec::ValidateCanonicalDescriptorBatch(*sort_batch, descriptor_ids);
+  const auto values = exec::ValidateDescriptorBatch(*sort_batch);
+  if (!canonical.ok || !values.ok) {
+    *detail = !canonical.ok
+                  ? canonical.diagnostic_code + ":" + canonical.detail
+                  : values.diagnostic_code + ":" + values.detail;
+    *sort_batch = {};
+    return false;
+  }
+  return true;
+}
+
+PreparedSortRoot PrepareExpressionSortRoot(
+    const api::EngineRequestContext& context,
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalPropertyCatalog& properties,
+    const plan::CanonicalLogicalRelationalNode& root,
+    const plan::CanonicalLogicalRelationalNode& input_node,
+    const MaterializedValues& input,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services) {
+  PreparedSortRoot result;
+  if (root.output_descriptor_ids.empty() ||
+      root.output_descriptor_ids != input_node.output_descriptor_ids ||
+      input.result_bindings.size() != input.batch.columns.size() ||
+      input_node.output_descriptor_ids.size() != input.batch.columns.size() ||
+      input.batch.rows.empty()) {
+    result.detail =
+        "expression SORT output does not preserve its bound input schema";
+    return result;
+  }
+  if (std::ranges::any_of(dag.outputs, [&](const auto& output) {
+        return output.relation_node_id == root.logical_node_id;
+      })) {
+    result.detail =
+        "expression SORT root output lineage is not admitted by this profile";
+    return result;
+  }
+  if (properties.properties.size() != 1 ||
+      root.required_property_uuids.size() != 1 ||
+      root.delivered_property_uuids.size() != 1 ||
+      root.required_property_uuids.front() !=
+          root.delivered_property_uuids.front()) {
+    result.detail =
+        "expression SORT requires exactly one enforced ordering property";
+    return result;
+  }
+  const auto& property = properties.properties.front();
+  if (property.property_uuid != root.required_property_uuids.front() ||
+      property.property_kind !=
+          plan::CanonicalLogicalPropertyKind::kOrdering ||
+      property.origin_logical_node_id != root.logical_node_id ||
+      property.ordering_terms.empty() ||
+      root.bound_expression_ids.size() != property.ordering_terms.size()) {
+    result.detail =
+        "expression SORT ordering property or expression coverage is invalid";
+    return result;
+  }
+
+  std::unordered_map<std::uint32_t, const api::RelationalExpressionRecord*>
+      expression_records;
+  std::unordered_map<std::uint32_t, const api::RelationalTypeDescriptor*>
+      descriptors;
+  std::unordered_set<std::uint32_t> materialized_descriptor_ids(
+      input_node.output_descriptor_ids.begin(),
+      input_node.output_descriptor_ids.end());
+  for (const auto& expression : dag.expressions) {
+    expression_records.emplace(expression.expression_id, &expression);
+  }
+  for (const auto& descriptor : dag.descriptors) {
+    descriptors.emplace(descriptor.descriptor_id, &descriptor);
+  }
+
+  CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
+  for (std::size_t ordinal = 0; ordinal < property.ordering_terms.size();
+       ++ordinal) {
+    const auto& logical_term = property.ordering_terms[ordinal];
+    if (root.bound_expression_ids[ordinal] != logical_term.expression_id) {
+      result.detail =
+          "expression SORT bound-expression order differs from its property";
+      return result;
+    }
+    const auto expression =
+        expression_records.find(logical_term.expression_id);
+    if (expression == expression_records.end()) {
+      result.detail = "expression SORT term is unresolved";
+      return result;
+    }
+    const auto descriptor =
+        descriptors.find(expression->second->result_descriptor_id);
+    if (descriptor == descriptors.end() ||
+        descriptor->second->nullability ==
+            api::RelationalNullability::kUnknown ||
+        !materialized_descriptor_ids
+             .insert(expression->second->result_descriptor_id)
+             .second) {
+      result.detail =
+          "expression SORT result descriptor is absent, ambiguous, or "
+          "unresolved";
+      return result;
+    }
+
+    PreparedSortExpression prepared_expression;
+    prepared_expression.expression_id = logical_term.expression_id;
+    if (!PrepareInputRowBinding(
+            dag, prepared_expression.expression_id,
+            input_node.output_descriptor_ids,
+            &prepared_expression.row_binding, &result.detail) ||
+        !runtime.InferTypeForConsumer(
+            prepared_expression.expression_id,
+            prepared_expression.row_binding, input.batch.rows.front().values,
+            api::EngineCanonicalExpressionConsumer::projection,
+            &prepared_expression.expected_type, &result.detail) ||
+        prepared_expression.expected_type.empty() ||
+        prepared_expression.expected_type == "null") {
+      if (result.detail.empty()) {
+        result.detail = "expression SORT result type is unresolved";
+      }
+      return result;
+    }
+    const auto type_id = dt::CanonicalTypeIdFromStableName(
+        prepared_expression.expected_type);
+    if (type_id == dt::CanonicalTypeId::unknown ||
+        (descriptor->second->collation_uuid.has_value() &&
+         type_id != dt::CanonicalTypeId::character) ||
+        (descriptor->second->timezone_profile_id.has_value() &&
+         prepared_expression.expected_type != "timestamp")) {
+      result.detail =
+          "expression SORT descriptor metadata contradicts its result type";
+      return result;
+    }
+    api::EngineTypedValue first_value;
+    if (!runtime.EvaluateForConsumer(
+            prepared_expression.expression_id,
+            prepared_expression.expected_type,
+            prepared_expression.row_binding, input.batch.rows.front().values,
+            api::EngineCanonicalExpressionConsumer::projection, &first_value,
+            &result.detail) ||
+        first_value.descriptor.canonical_type_name !=
+            prepared_expression.expected_type) {
+      if (result.detail.empty()) {
+        result.detail = "expression SORT first value has an invalid type";
+      }
+      return result;
+    }
+    prepared_expression.materialized_column = {
+        "__sort_expression_" +
+            std::to_string(prepared_expression.expression_id),
+        first_value.descriptor,
+        descriptor->second->nullability ==
+            api::RelationalNullability::kNullable,
+        descriptor->second->descriptor_id};
+    exec::CanonicalDescriptorOrderTerm term;
+    if (!PrepareCanonicalSortOrderTerm(
+            context, logical_term,
+            prepared_expression.materialized_column,
+            input.batch.columns.size() + result.expressions.size(), &term,
+            &result.detail)) {
+      return result;
+    }
+    result.order_terms.push_back(std::move(term));
+    result.expressions.push_back(std::move(prepared_expression));
+  }
+
+  if (!MaterializeExpressionSortBatch(
+          dag, result.expressions, input.batch, expression_services,
+          &result.expression_input_batch, &result.detail)) {
+    result.order_terms.clear();
+    result.expressions.clear();
+    return result;
+  }
+  result.expression_ordering = true;
+  result.result_bindings = input.result_bindings;
+  result.ordering_property_uuid = property.property_uuid;
+  result.ok = true;
+  return result;
 }
 
 bool MaterializeExpressionProjectBatch(
@@ -7860,10 +8111,32 @@ ExecuteCanonicalObjectFreeSortQuery(
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SORT-PAYLOAD-V1",
                   "SORT input VALUES: " + input.detail);
   }
-  auto prepared_root = PrepareSortRoot(
-      request.context, request.relational_dag,
-      request.optimizer_request.logical_properties, *root, *input_node,
-      input);
+  const bool expression_ordering = std::ranges::any_of(
+      root->bound_expression_ids, [&](const auto expression_id) {
+        return std::ranges::find(input_node->bound_expression_ids,
+                                 expression_id) ==
+               input_node->bound_expression_ids.end();
+      });
+  std::uint64_t expression_work = 0;
+  if (expression_ordering &&
+      (!CheckedMultiply(input.batch.rows.size(),
+                        root->bound_expression_ids.size(),
+                        &expression_work) ||
+       expression_work >
+           request.optimizer_request.resource.maximum_candidate_count)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live expression SORT row evaluation exceeds the admitted "
+                  "candidate bound");
+  }
+  auto prepared_root = expression_ordering
+      ? PrepareExpressionSortRoot(
+            request.context, request.relational_dag,
+            request.optimizer_request.logical_properties, *root, *input_node,
+            input, request.expression_services)
+      : PrepareSortRoot(
+            request.context, request.relational_dag,
+            request.optimizer_request.logical_properties, *root, *input_node,
+            input);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-SORT-PAYLOAD-V1",
                   prepared_root.detail);
@@ -7871,15 +8144,22 @@ ExecuteCanonicalObjectFreeSortQuery(
 
   const auto input_row_count = input.batch.rows.size();
   std::uint64_t input_memory = 1;
+  std::uint64_t expression_memory = 1;
   std::uint64_t comparison_count = 0;
   std::uint64_t row_order_memory = 0;
   std::uint64_t total_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      (prepared_root.expression_ordering &&
+       !AddBatchMemoryBytes(prepared_root.expression_input_batch,
+                            &expression_memory)) ||
       !CheckedMultiply(input_row_count, input_row_count,
                        &comparison_count) ||
       !CheckedMultiply(input_row_count, sizeof(std::size_t),
                        &row_order_memory) ||
       !CheckedAdd(input_memory, input_memory, &total_memory) ||
+      (prepared_root.expression_ordering &&
+       (!CheckedAdd(total_memory, expression_memory, &total_memory) ||
+        !CheckedAdd(total_memory, expression_memory, &total_memory))) ||
       !CheckedAdd(total_memory, comparison_count, &total_memory) ||
       !CheckedAdd(total_memory, row_order_memory, &total_memory) ||
       comparison_count > std::numeric_limits<std::size_t>::max()) {
@@ -7901,6 +8181,10 @@ ExecuteCanonicalObjectFreeSortQuery(
   const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + prepared_root.ordering_property_uuid,
       "sort.deterministic-tie");
+  const std::string sort_implementation_id =
+      prepared_root.expression_ordering
+          ? "sort.typed.expression-row.v1"
+          : "sort.typed.terms.v1";
   const std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -7913,11 +8197,13 @@ ExecuteCanonicalObjectFreeSortQuery(
        0,
        0},
       {root->logical_node_id,
-       "sort.typed.terms.v1",
+       sort_implementation_id,
        sort_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kSort,
        exec::PhysicalNodeKind::kSort,
-       "canonical.sort.typed.terms.v1",
+       prepared_root.expression_ordering
+           ? "canonical.sort.expression-row.v1"
+           : "canonical.sort.typed.terms.v1",
        input_row_count,
        total_memory,
        1,
@@ -7943,13 +8229,17 @@ ExecuteCanonicalObjectFreeSortQuery(
 
   exec::CanonicalPhysicalExecutorRegistration sort_registration;
   sort_registration.node_kind = exec::PhysicalNodeKind::kSort;
-  sort_registration.implementation_id = "sort.typed.terms.v1";
+  sort_registration.implementation_id = sort_implementation_id;
   sort_registration.executor_capability_uuid = sort_capability_uuid;
   sort_registration.executor_capability_abi_version = 1;
   sort_registration.engine_owned = true;
   sort_registration.accepts_optimizer_publication_v2 = true;
   sort_registration.execute =
       [order_terms = prepared_root.order_terms,
+       expression_ordering = prepared_root.expression_ordering,
+       expressions = prepared_root.expressions,
+       relational_dag = request.relational_dag,
+       expression_services = request.expression_services,
        deterministic_tie_evidence_uuid, input_row_count,
        maximum_pair_comparisons =
            std::max<std::size_t>(1, static_cast<std::size_t>(comparison_count)),
@@ -7982,27 +8272,76 @@ ExecuteCanonicalObjectFreeSortQuery(
               "SORT input cardinality differs from its selected cost";
           return step;
         }
+        const auto mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        exec::DescriptorBatch expression_batch;
+        if (expression_ordering) {
+          const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+              input_batch, inputs.front().output_descriptor_ids);
+          if (!input_validation.ok) {
+            step.diagnostic = input_validation;
+            return step;
+          }
+          const auto before =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!before.ok) {
+            step.diagnostic = before;
+            return step;
+          }
+          std::string expression_detail;
+          if (!MaterializeExpressionSortBatch(
+                  relational_dag, expressions, input_batch,
+                  expression_services, &expression_batch,
+                  &expression_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SORT-EXPRESSION-V1";
+            step.diagnostic.detail = std::move(expression_detail);
+            return step;
+          }
+        }
+
         exec::CanonicalDescriptorSortRequest sort_request;
         sort_request.physical_dag = dag;
         sort_request.selected_physical_node_id = node.physical_node_id;
         sort_request.input_batch = input_batch;
+        if (expression_ordering) {
+          sort_request.order_key_batch = std::move(expression_batch);
+        }
         sort_request.order_terms = order_terms;
         sort_request.deterministic_tie_evidence_uuid =
             deterministic_tie_evidence_uuid;
         sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
-        sort_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        sort_request.mga_authority = mga_authority;
         const auto sort_result =
             exec::ExecuteCanonicalDescriptorSort(sort_request);
         if (!sort_result.diagnostic.ok) {
           step.diagnostic = sort_result.diagnostic;
           return step;
         }
+        exec::DescriptorBatch output_batch = sort_result.output_batch;
+        if (expression_ordering) {
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  output_batch, node.output_descriptor_ids);
+          if (!output_validation.ok) {
+            step.diagnostic = output_validation;
+            return step;
+          }
+          const auto after =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!after.ok) {
+            step.diagnostic = after;
+            return step;
+          }
+        }
         step.result_handle_id = node.physical_node_id;
         step.input_row_count = input_batch.rows.size();
         step.rows_examined = input_batch.rows.size();
-        step.output_row_count = sort_result.output_batch.rows.size();
-        step.materialized_output_batch = sort_result.output_batch;
+        step.output_row_count = output_batch.rows.size();
+        step.materialized_output_batch = std::move(output_batch);
         step.mga_statement_context = sort_result.mga_statement_context;
         return step;
       };

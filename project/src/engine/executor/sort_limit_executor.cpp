@@ -653,6 +653,23 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   auto input_validation = ValidateCanonicalDescriptorBatch(
       request.input_batch, input_node->output_descriptor_ids);
   if (!input_validation.ok) return refuse(std::move(input_validation));
+  const DescriptorBatch* order_batch = &request.input_batch;
+  if (request.order_key_batch.has_value()) {
+    if (request.order_key_batch->rows.size() !=
+        request.input_batch.rows.size()) {
+      return order_refusal(
+          "materialized order-key cardinality differs from the input");
+    }
+    std::vector<std::uint32_t> order_descriptor_ids;
+    order_descriptor_ids.reserve(request.order_key_batch->columns.size());
+    for (const auto& column : request.order_key_batch->columns) {
+      order_descriptor_ids.push_back(column.descriptor_id);
+    }
+    auto order_validation = ValidateCanonicalDescriptorBatch(
+        *request.order_key_batch, order_descriptor_ids);
+    if (!order_validation.ok) return refuse(std::move(order_validation));
+    order_batch = &*request.order_key_batch;
+  }
   if (request.order_terms.empty() ||
       !IsCanonicalUuid(request.deterministic_tie_evidence_uuid)) {
     return order_refusal(
@@ -660,10 +677,10 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   }
 
   for (const auto& term : request.order_terms) {
-    if (term.column >= request.input_batch.columns.size()) {
+    if (term.column >= order_batch->columns.size()) {
       return order_refusal("order term column is outside the input schema");
     }
-    const auto& column = request.input_batch.columns[term.column];
+    const auto& column = order_batch->columns[term.column];
     const auto validation =
         ValidateCanonicalDescriptorOrderTerm(term, column);
     if (!validation.ok) {
@@ -686,7 +703,7 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
   std::vector<std::int8_t> comparisons(matrix_size, 0);
   for (std::size_t row = 0; row < row_count; ++row) {
     for (const auto& term : request.order_terms) {
-      const auto& value = request.input_batch.rows[row].values[term.column];
+      const auto& value = order_batch->rows[row].values[term.column];
       const auto compared =
           CompareCanonicalDescriptorOrderValues(value, value, term);
       if (!compared.diagnostic.ok) {
@@ -700,9 +717,9 @@ CanonicalDescriptorSortResult ExecuteCanonicalDescriptorSort(
       int comparison = 0;
       for (const auto& term : request.order_terms) {
         const auto& left_value =
-            request.input_batch.rows[left].values[term.column];
+            order_batch->rows[left].values[term.column];
         const auto& right_value =
-            request.input_batch.rows[right].values[term.column];
+            order_batch->rows[right].values[term.column];
         const auto compared = CompareCanonicalDescriptorOrderValues(
             left_value, right_value, term);
         if (!compared.diagnostic.ok) {

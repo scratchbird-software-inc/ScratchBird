@@ -808,6 +808,37 @@ sblr::SblrOperationEnvelope SortValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-033-TEST-LIVE-ROW-DEPENDENT-SORT-EXPRESSION-V1
+sblr::SblrOperationEnvelope RowDependentSortValuesEnvelope() {
+  auto envelope = SortValuesEnvelope();
+  const auto first_output = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_output_v1";
+      });
+  envelope.operands.insert(
+      first_output,
+      {{"relational_descriptor_v1", "4",
+        "019f0000-0000-7300-8000-000000008908|"
+        "019f0000-0000-7400-8000-000000008909|2|-|-|-|-|-"},
+       {"relational_expression_v1", "19", "6|20,21|4|-|-|-|2b|-"},
+       {"relational_expression_v1", "20",
+        "3|-|1|-|019f0000-0000-7500-8000-000000008910|-|-|-"},
+       {"relational_expression_v1", "21",
+        "3|-|3|-|019f0000-0000-7500-8000-000000008911|-|-|-"}});
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "2") {
+      operand.value =
+          "736f72742e72657175697265642d6f726465722e7631|19|-|"
+          "019f0000-0000-7200-8000-000000008907|"
+          "019f0000-0000-7200-8000-000000008907";
+    } else if (operand.type == "relational_property_v1") {
+      operand.value = "1|2|-|19:2:1:-|-|-";
+    }
+  }
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -9774,6 +9805,86 @@ bool ValidateSortRefusalIsAtomic() {
       "schema-drifted or invalid-collation SORT published partial evidence");
 }
 
+// RCP-033-TEST-LIVE-ROW-DEPENDENT-SORT-EXPRESSION-V1
+bool ValidateRowDependentSortExpressionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 2 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 2 &&
+           result.canonical_result_column_count == 3 &&
+           result.canonical_result_row_count == 6 &&
+           result.api_result.result_shape.columns.size() == 3 &&
+           result.api_result.result_shape.rows.size() == 6;
+  };
+
+  const auto sorted = dispatch(RowDependentSortValuesEnvelope());
+  const auto repeated = dispatch(RowDependentSortValuesEnvelope());
+  bool passed = true;
+  if (!sorted.api_result.ok) {
+    for (const auto& diagnostic : sorted.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = sorted.api_result.result_shape.rows;
+  passed &= Require(
+      completed(sorted) && rows[0].fields[2].second.encoded_value == "2" &&
+          rows[1].fields[2].second.encoded_value == "5" &&
+          rows[2].fields[2].second.encoded_value == "6" &&
+          rows[3].fields[2].second.encoded_value == "3" &&
+          rows[4].fields[2].second.encoded_value == "4" &&
+          rows[5].fields[2].second.encoded_value == "1" &&
+          sorted.api_result.result_shape.columns.size() == 3,
+      "row-dependent SORT did not evaluate arithmetic, preserve NULLS FIRST, "
+      "or remove its internal ordering key");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == sorted.selected_plan_uuid &&
+          repeated.canonical_result_bytes == sorted.canonical_result_bytes,
+      "row-dependent SORT changed deterministic plan/result bytes");
+
+  auto unbound = RowDependentSortValuesEnvelope();
+  for (auto& operand : unbound.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "20") {
+      operand.value =
+          "3|-|4|-|019f0000-0000-7500-8000-000000008910|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 5;
+  const auto unbound_result = dispatch(std::move(unbound));
+  const auto exhausted_result = dispatch(RowDependentSortValuesEnvelope(),
+                                         std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          unbound_result, "QOW-DIAG-RELATIONAL-LIVE-SORT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "unbound or resource-exhausted row SORT published partial evidence");
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -10051,6 +10162,7 @@ int main() {
                       ValidateOrderedJsonObjectAggModifierRefusalIsAtomic() &&
                       ValidateSortValuesSpine() &&
                       ValidateSortRefusalIsAtomic() &&
+                      ValidateRowDependentSortExpressionSpine() &&
                       ValidateDistinctSortLimitValuesSpine() &&
                       ValidateDistinctSortLimitRefusalIsAtomic() &&
                       ValidatePayloadRefusalIsAtomic() &&
