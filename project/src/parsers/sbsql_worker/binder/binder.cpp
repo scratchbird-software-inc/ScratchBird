@@ -631,7 +631,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-approx-median-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-string-agg-expression.v1"))
+                     "aggregate.global-string-agg-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-listagg-ordered-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -790,6 +792,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "REGR_SLOPE" || function == "REGR_SXX" ||
           function == "REGR_SXY" || function == "REGR_SYY";
       const bool string_agg_function = function == "STRING_AGG";
+      const bool listagg_function = function == "LISTAGG";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
@@ -799,18 +802,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "STDDEV_SAMP" || function == "VARIANCE_SAMP" ||
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
-          string_agg_function ||
+          string_agg_function || listagg_function ||
           pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
-          (!pair_function && !string_agg_function &&
+          (!pair_function && !string_agg_function && !listagg_function &&
            expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
-                                      ((pair_function || string_agg_function)
-                                           ? 2
-                                           : 1)) ||
+                                      (listagg_function
+                                           ? 3
+                                           : ((pair_function ||
+                                               string_agg_function)
+                                                  ? 2
+                                                  : 1))) ||
           expression->literal_kind.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
@@ -824,7 +830,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == argument_id;
             });
-        if (string_agg_function && ordinal == 1) {
+        if ((string_agg_function || listagg_function) && ordinal == 1) {
           if (argument == ast.expressions.end() ||
               argument->expression_kind != NativeExpressionAstKind::kLiteral ||
               argument->literal_kind != NativeLiteralAstKind::kString ||
@@ -1192,6 +1198,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_string_agg =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-string-agg-");
+    const bool aggregate_listagg =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-listagg-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1266,6 +1275,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return std::string("approx_median_value");
       }
       if (aggregate_string_agg) return std::string("string_agg_value");
+      if (aggregate_listagg) return std::string("listagg_value");
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }
@@ -1330,7 +1340,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               return candidate.expression_id ==
                      global_aggregate_direct_literal->expression_id;
             });
-        if (!aggregate_string_agg ||
+        if ((!aggregate_string_agg && !aggregate_listagg) ||
             direct_descriptor == descriptor_by_id.end() ||
             direct_descriptor->second->nullability !=
                 BoundNullability::kNonNull ||
@@ -1349,8 +1359,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               "catalog STRING_AGG separator binding is incomplete");
           return RefusedBoundAst(std::move(bound));
         }
-        aggregate_argument_expression_ids.push_back(
-            global_aggregate_direct_literal->expression_id);
+        if (aggregate_listagg) {
+          aggregate_argument_expression_ids.insert(
+              aggregate_argument_expression_ids.begin() + 1,
+              global_aggregate_direct_literal->expression_id);
+        } else {
+          aggregate_argument_expression_ids.push_back(
+              global_aggregate_direct_literal->expression_id);
+        }
         used_descriptor_ids.insert(expected_direct_descriptor_id);
       }
       used_descriptor_ids.insert(expected_aggregate_descriptor_id);

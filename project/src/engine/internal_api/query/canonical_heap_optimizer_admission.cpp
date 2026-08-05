@@ -459,7 +459,9 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-approx-median-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-string-agg-expression.v1") ||
+             "aggregate.global-string-agg-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-listagg-ordered-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||

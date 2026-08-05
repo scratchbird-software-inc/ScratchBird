@@ -913,6 +913,20 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed STRING_AGG did not preserve its engine-typed "
             "text separator and persisted scan order");
 
+    auto listagg = parser.RunPipeline(
+        "SELECT LISTAGG(text_value, ',') WITHIN GROUP "
+        "(ORDER BY integer_value) FROM qow_packet7.qow_packet7_relation;",
+        true);
+    if (!listagg.accepted) PrintMessages(listagg.messages);
+    Require(listagg.accepted &&
+                listagg.server_operation_id == "query.execute" &&
+                listagg.server_cursor_uuid.empty() &&
+                listagg.server_row_count == 1 &&
+                listagg.server_result_payload.find(
+                    "listagg_value=alpha,beta,alpha") != std::string::npos,
+            "object-backed LISTAGG did not preserve its exact WITHIN GROUP "
+            "ordering and engine-typed text separator");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

@@ -809,6 +809,7 @@ BuildEngineProjectedNativeBindingContext(
           function == "APPROX_COUNT_DISTINCT";
       const bool approx_median_function = function == "APPROX_MEDIAN";
       const bool string_agg_function = function == "STRING_AGG";
+      const bool listagg_function = function == "LISTAGG";
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -822,7 +823,7 @@ BuildEngineProjectedNativeBindingContext(
           stddev_pop_function || variance_pop_function || stddev_function ||
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
-          string_agg_function || pair_function;
+          string_agg_function || listagg_function || pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -831,7 +832,7 @@ BuildEngineProjectedNativeBindingContext(
       const auto result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind ==
-                       (string_agg_function
+                       ((string_agg_function || listagg_function)
                             ? 4
                             : ((count_function || regr_count_function ||
                                 approx_count_distinct_function)
@@ -846,7 +847,9 @@ BuildEngineProjectedNativeBindingContext(
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
           aggregate_expression->child_expression_ids.size() ==
-              ((pair_function || string_agg_function) ? 2 : 1) &&
+              (listagg_function
+                   ? 3
+                   : ((pair_function || string_agg_function) ? 2 : 1)) &&
           result_profile != statement_context.descriptor_profiles.end()) {
         argument_profile_exact = true;
         for (std::size_t ordinal = 0;
@@ -862,7 +865,7 @@ BuildEngineProjectedNativeBindingContext(
             argument_profile_exact = false;
             break;
           }
-          if (string_agg_function && ordinal == 1) {
+          if ((string_agg_function || listagg_function) && ordinal == 1) {
             argument_profile_exact =
                 argument->expression_kind ==
                     NativeExpressionAstKind::kLiteral &&
@@ -886,8 +889,11 @@ BuildEngineProjectedNativeBindingContext(
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (aggregate_expression->child_expression_ids.size() !=
-           (count_star ? 0
-                       : ((pair_function || string_agg_function) ? 2 : 1))) ||
+           (count_star
+                ? 0
+                : (listagg_function
+                       ? 3
+                       : ((pair_function || string_agg_function) ? 2 : 1)))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           ((count_function || regr_count_function ||
@@ -898,7 +904,7 @@ BuildEngineProjectedNativeBindingContext(
            !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
-          (string_agg_function &&
+          ((string_agg_function || listagg_function) &&
            (direct_text_profile ==
                 statement_context.descriptor_profiles.end() ||
             direct_text_profile->nullable ||
@@ -922,7 +928,7 @@ BuildEngineProjectedNativeBindingContext(
           {*aggregate_binding_id, *aggregate_binding_id,
            std::string(*aggregate_function_uuid),
            std::nullopt});
-      if (string_agg_function) {
+      if (string_agg_function || listagg_function) {
         const auto separator_expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id ==
@@ -1028,9 +1034,12 @@ BuildEngineProjectedNativeBindingContext(
       } else if (approx_median_function) {
         aggregate_output_name = "approx_median_value";
         aggregate_semantic = "aggregate.global-approx-median-expression.v1";
-      } else {
+      } else if (string_agg_function) {
         aggregate_output_name = "string_agg_value";
         aggregate_semantic = "aggregate.global-string-agg-expression.v1";
+      } else {
+        aggregate_output_name = "listagg_value";
+        aggregate_semantic = "aggregate.global-listagg-ordered-expression.v1";
       }
     }
     if (limit_composition) {
