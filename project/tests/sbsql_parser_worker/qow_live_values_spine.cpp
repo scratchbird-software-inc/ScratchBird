@@ -1885,6 +1885,97 @@ sblr::SblrOperationEnvelope NodeDrivenRowSubqueryLimitValuesEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+enum class PredicateSubqueryInputProfile {
+  kStandard,
+  kInTrue,
+  kEmpty,
+};
+
+// RCP-049-TEST-NODE-DRIVEN-EXISTS-QUANTIFIED-SUBQUERY-V1
+sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
+    const std::string& semantic_variant,
+    const std::string& tree_uuid,
+    const PredicateSubqueryInputProfile input_profile) {
+  const bool exists = semantic_variant == "subquery.exists.v1";
+  const bool empty = input_profile == PredicateSubqueryInputProfile::kEmpty;
+  const auto subquery_node_id = empty ? 3 : 2;
+  const auto limit_node_id = empty ? 4 : 3;
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.predicate-subquery." + semantic_variant);
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id",
+       std::to_string(limit_node_id)},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000cf61|"
+       "019f0000-0000-7400-8000-00000000cf62|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000cf63|"
+           "019f0000-0000-7400-8000-00000000cf64|" +
+           std::string(exists ? "1" : "2") + "|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000cf65|"
+       "019f0000-0000-7400-8000-00000000cf66|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000cf67|"
+       "019f0000-0000-7400-8000-00000000cf68|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "3",
+       input_profile == PredicateSubqueryInputProfile::kInTrue
+           ? "1|-|1|-|-|1|-|32"
+           : "1|-|1|-|-|1|-|33"},
+      {"relational_expression_v1", "4", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "5",
+       "1|-|2|-|-|6|-|66616c7365"},
+      {"relational_expression_v1", "6", "1|-|4|-|-|1|-|31"},
+      {"relational_output_v1", "1", "1|1|1|1|0|7269676874"},
+      {"relational_output_v1", "2",
+       std::to_string(subquery_node_id) +
+           "|5|2|1|0|707265646963617465"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_values_row_v1", "2", "2"},
+      {"relational_values_row_v1", "3", "3"},
+      {"relational_node_v1", "1", "13|0|-|1|1,2,3"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3|-|-|-"},
+  };
+  if (empty) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "5",
+         "019f0000-0000-7300-8000-00000000cf69|"
+         "019f0000-0000-7400-8000-00000000cf6a|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "7",
+         "1|-|5|-|-|6|-|66616c7365"});
+    envelope.operands.push_back(
+        {"relational_node_v1", "2", "2|0|1|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "2",
+         EncodeHex("filter.where.v1") + "|7|-|-|-"});
+  }
+  envelope.operands.push_back(
+      {"relational_node_v1", std::to_string(subquery_node_id),
+       "10|0|" + std::to_string(empty ? 2 : 1) + "|2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", std::to_string(subquery_node_id),
+       EncodeHex(semantic_variant) + (exists ? "|5|-|-|-" : "|5,4|-|-|-")});
+  envelope.operands.push_back(
+      {"relational_node_v1", std::to_string(limit_node_id),
+       "7|0|" + std::to_string(subquery_node_id) + "|2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", std::to_string(limit_node_id),
+       "6c696d69742e626f756e642d636f756e742e7631|6|-|-|-"});
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -14625,6 +14716,170 @@ bool ValidateNodeDrivenScalarRowSubqueryCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-EXISTS-QUANTIFIED-SUBQUERY-V1
+bool ValidateNodeDrivenPredicateSubqueryCompositionSpine() {
+  enum class ExpectedPredicateTruth {
+    kFalse,
+    kTrue,
+    kUnknown,
+  };
+  struct PredicateCase {
+    std::string semantic_variant;
+    std::string tree_uuid;
+    PredicateSubqueryInputProfile input_profile;
+    ExpectedPredicateTruth expected_truth;
+    std::uint64_t exhausted_candidate_bound;
+  };
+  const std::vector<PredicateCase> cases{
+      {"subquery.exists.v1",
+       "019f0000-0000-7000-8000-00000000cf70",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 6},
+      {"subquery.exists.v1",
+       "019f0000-0000-7000-8000-00000000cf71",
+       PredicateSubqueryInputProfile::kEmpty,
+       ExpectedPredicateTruth::kFalse, 7},
+      {"subquery.in-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf72",
+       PredicateSubqueryInputProfile::kInTrue,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-eq-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf73",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kUnknown, 9},
+      {"subquery.quantified-any-ne-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf74",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-lt-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf75",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-le-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf76",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-gt-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf77",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-any-ge-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf78",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kTrue, 9},
+      {"subquery.quantified-all-eq-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf79",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kFalse, 9},
+      {"subquery.quantified-all-ne-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7a",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kUnknown, 9},
+      {"subquery.quantified-all-lt-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7b",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kFalse, 9},
+      {"subquery.quantified-all-le-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7c",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kFalse, 9},
+      {"subquery.quantified-all-gt-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7d",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kFalse, 9},
+      {"subquery.quantified-all-ge-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7e",
+       PredicateSubqueryInputProfile::kStandard,
+       ExpectedPredicateTruth::kFalse, 9},
+      {"subquery.quantified-any-eq-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf7f",
+       PredicateSubqueryInputProfile::kEmpty,
+       ExpectedPredicateTruth::kFalse, 7},
+      {"subquery.quantified-all-eq-int64.v1",
+       "019f0000-0000-7000-8000-00000000cf80",
+       PredicateSubqueryInputProfile::kEmpty,
+       ExpectedPredicateTruth::kTrue, 7},
+  };
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto no_publication = [](const auto& result) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1");
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& proof : cases) {
+    const auto envelope = NodeDrivenPredicateSubqueryLimitEnvelope(
+        proof.semantic_variant, proof.tree_uuid, proof.input_profile);
+    const auto first = dispatch(envelope);
+    const auto replay = dispatch(envelope);
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count =
+        proof.exhausted_candidate_bound;
+    const auto exhausted = dispatch(envelope, std::move(bounded_context));
+    const auto expected_nodes =
+        proof.input_profile == PredicateSubqueryInputProfile::kEmpty ? 4 : 3;
+    bool value_matches = false;
+    if (first.api_result.ok &&
+        first.api_result.result_shape.rows.size() == 1 &&
+        first.api_result.result_shape.rows[0].fields.size() == 1) {
+      const auto& value =
+          first.api_result.result_shape.rows[0].fields[0].second;
+      value_matches =
+          proof.expected_truth == ExpectedPredicateTruth::kUnknown
+              ? value.state == api::EngineValueState::sql_null &&
+                    value.is_null
+              : value.state == api::EngineValueState::value &&
+                    !value.is_null &&
+                    value.encoded_value ==
+                        (proof.expected_truth == ExpectedPredicateTruth::kTrue
+                             ? "true"
+                             : "false");
+    }
+    const bool case_passed =
+        first.accepted && first.optimizer_admitted &&
+        first.optimizer_selected && first.physical_dag_published &&
+        first.physical_dag_executed &&
+        first.runtime_actuals_attached &&
+        first.canonical_result_published && first.api_result.ok &&
+        first.logical_node_count == expected_nodes &&
+        first.physical_node_count == expected_nodes &&
+        first.canonical_result_column_count == 1 &&
+        first.canonical_result_row_count == 1 && value_matches &&
+        replay.api_result.ok &&
+        replay.selected_plan_uuid == first.selected_plan_uuid &&
+        replay.canonical_result_bytes == first.canonical_result_bytes &&
+        selected_plans.insert(first.selected_plan_uuid).second &&
+        no_publication(exhausted);
+    passed &= Require(
+        case_passed,
+        "predicate subquery composition lost profile " +
+            proof.semantic_variant + " at " + proof.tree_uuid);
+    if (!case_passed) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << proof.semantic_variant << ": " << diagnostic.code
+                  << ": " << diagnostic.detail << '\n';
+      }
+      for (const auto& diagnostic : exhausted.api_result.diagnostics) {
+        std::cerr << proof.semantic_variant << " exhausted: "
+                  << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+  }
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -15127,6 +15382,7 @@ int main() {
                       ValidateNodeDrivenExpressionSortLimitCompositionSpine() &&
                       ValidateNodeDrivenTableSubqueryCteCompositionSpine() &&
                       ValidateNodeDrivenScalarRowSubqueryCompositionSpine() &&
+                      ValidateNodeDrivenPredicateSubqueryCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&

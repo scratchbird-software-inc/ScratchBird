@@ -733,6 +733,92 @@ struct PreparedCardinalitySubqueryRoot {
   std::string implementation_id;
 };
 
+enum class LivePredicateSubqueryKind {
+  kExists,
+  kQuantified,
+};
+
+struct PreparedPredicateSubqueryRoot {
+  LivePredicateSubqueryKind kind{LivePredicateSubqueryKind::kExists};
+  exec::ExecutorColumnDescriptor result_column;
+  exec::ExecutorColumnDescriptor left_operand_column;
+  api::EngineTypedValue left_value;
+  std::uint32_t right_expression_descriptor_id{0};
+  api::EngineComparisonPredicateOperator comparison_operator =
+      api::EngineComparisonPredicateOperator::unspecified;
+  exec::CanonicalQuantifiedSubqueryQuantifier quantifier =
+      exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  std::string implementation_id;
+  std::string transformation_id;
+};
+
+struct LivePredicateSubqueryProfile {
+  bool matched{false};
+  LivePredicateSubqueryKind kind{LivePredicateSubqueryKind::kExists};
+  api::EngineComparisonPredicateOperator comparison_operator =
+      api::EngineComparisonPredicateOperator::unspecified;
+  exec::CanonicalQuantifiedSubqueryQuantifier quantifier =
+      exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+  std::string implementation_id;
+  std::string transformation_id;
+};
+
+LivePredicateSubqueryProfile MatchLivePredicateSubqueryProfile(
+    const std::string_view semantic_variant_id) {
+  LivePredicateSubqueryProfile profile;
+  if (semantic_variant_id == "subquery.exists.v1") {
+    profile.matched = true;
+    profile.kind = LivePredicateSubqueryKind::kExists;
+    profile.implementation_id = "subquery.exists.typed.v1";
+    profile.transformation_id = "canonical.subquery.composed-exists.v1";
+    return profile;
+  }
+
+  struct QuantifiedName {
+    std::string_view suffix;
+    api::EngineComparisonPredicateOperator operation;
+  };
+  constexpr std::array<QuantifiedName, 6> kNames{{
+      {"eq", api::EngineComparisonPredicateOperator::equal},
+      {"ne", api::EngineComparisonPredicateOperator::not_equal},
+      {"lt", api::EngineComparisonPredicateOperator::less_than},
+      {"le", api::EngineComparisonPredicateOperator::less_than_or_equal},
+      {"gt", api::EngineComparisonPredicateOperator::greater_than},
+      {"ge", api::EngineComparisonPredicateOperator::greater_than_or_equal},
+  }};
+  for (const auto& name : kNames) {
+    const auto any = "subquery.quantified-any-" +
+                     std::string(name.suffix) + "-int64.v1";
+    const auto all = "subquery.quantified-all-" +
+                     std::string(name.suffix) + "-int64.v1";
+    if (semantic_variant_id != any && semantic_variant_id != all) continue;
+    profile.matched = true;
+    profile.kind = LivePredicateSubqueryKind::kQuantified;
+    profile.comparison_operator = name.operation;
+    profile.quantifier =
+        semantic_variant_id == any
+            ? exec::CanonicalQuantifiedSubqueryQuantifier::kAny
+            : exec::CanonicalQuantifiedSubqueryQuantifier::kAll;
+    profile.implementation_id =
+        "subquery.quantified.int64.typed.v1";
+    profile.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+    return profile;
+  }
+  if (semantic_variant_id == "subquery.in-int64.v1") {
+    profile.matched = true;
+    profile.kind = LivePredicateSubqueryKind::kQuantified;
+    profile.comparison_operator =
+        api::EngineComparisonPredicateOperator::equal;
+    profile.quantifier =
+        exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+    profile.implementation_id =
+        "subquery.quantified.int64.typed.v1";
+    profile.transformation_id = "canonical.subquery.composed-in-int64.v1";
+  }
+  return profile;
+}
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
@@ -6876,6 +6962,152 @@ MakeLiveCardinalitySubqueryRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLivePredicateSubqueryRegistration(
+    PreparedPredicateSubqueryRoot prepared,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSubquery;
+  registration.implementation_id = prepared.implementation_id;
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared = std::move(prepared), maximum_input_row_count,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "predicate subquery did not receive its bounded typed input";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+
+        // The canonical predicate executors deliberately evaluate a table
+        // subquery first. Its selected subquery node therefore carries the
+        // input table descriptor handles, while this enclosing physical node
+        // continues to publish the separately bound boolean result handle.
+        auto selected = std::ranges::find_if(
+            operator_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (selected == operator_dag.nodes.end() ||
+            selected->input_physical_node_ids.size() != 1) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "predicate subquery local root is unresolved";
+          return step;
+        }
+        const auto input_id = selected->input_physical_node_ids.front();
+        const auto table_input = std::ranges::find_if(
+            operator_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == input_id;
+            });
+        if (table_input == operator_dag.nodes.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "predicate subquery table input is unresolved";
+          return step;
+        }
+        selected->output_descriptor_ids =
+            table_input->output_descriptor_ids;
+
+        exec::CanonicalTableSubqueryRequest table_request;
+        table_request.physical_dag = std::move(operator_dag);
+        table_request.selected_physical_node_id = node.physical_node_id;
+        table_request.input_batch =
+            *inputs.front().materialized_output_batch;
+        table_request.maximum_materialized_row_count =
+            std::max<std::size_t>(1, maximum_input_row_count);
+        table_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, table_request.physical_dag);
+
+        exec::DescriptorBatch output;
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        exec::PhysicalMgaStatementContext result_mga;
+        std::size_t comparison_count = 0;
+        if (prepared.kind == LivePredicateSubqueryKind::kExists) {
+          exec::CanonicalExistsSubqueryRequest exists_request;
+          exists_request.table_request = std::move(table_request);
+          exists_request.exists_expression_descriptor_id =
+              prepared.result_column.descriptor_id;
+          exists_request.result_column = prepared.result_column;
+          const auto exists =
+              exec::ExecuteCanonicalExistsSubquery(exists_request);
+          diagnostic = exists.diagnostic;
+          output = exists.output_batch;
+          result_mga = exists.mga_statement_context;
+        } else {
+          exec::CanonicalQuantifiedSubqueryRequest quantified_request;
+          quantified_request.table_request = std::move(table_request);
+          quantified_request.left_operand_column =
+              prepared.left_operand_column;
+          quantified_request.left_value = prepared.left_value;
+          quantified_request.right_expression_descriptor_id =
+              prepared.right_expression_descriptor_id;
+          quantified_request.comparison_operator =
+              prepared.comparison_operator;
+          quantified_request.quantifier = prepared.quantifier;
+          quantified_request.result_expression_descriptor_id =
+              prepared.result_column.descriptor_id;
+          quantified_request.result_column = prepared.result_column;
+          quantified_request.maximum_comparison_count =
+              std::max<std::size_t>(1, maximum_input_row_count);
+          const auto quantified =
+              exec::ExecuteCanonicalQuantifiedSubquery(quantified_request);
+          diagnostic = quantified.diagnostic;
+          output = quantified.output_batch;
+          result_mga = quantified.mga_statement_context;
+          comparison_count = quantified.comparison_count;
+        }
+        if (!diagnostic.ok) {
+          step.diagnostic = std::move(diagnostic);
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count =
+            inputs.front().materialized_output_batch->rows.size();
+        step.rows_examined = step.input_row_count + comparison_count;
+        step.output_row_count = output.rows.size();
+        step.materialized_output_batch = std::move(output);
+        step.mga_statement_context = std::move(result_mga);
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -7329,10 +7561,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         break;
       case plan::CanonicalLogicalRelationalNodeKind::kSubquery:
-        if ((current->semantic_variant_id != "subquery.table.v1" &&
-             current->semantic_variant_id != "subquery.scalar.v1" &&
-             current->semantic_variant_id != "subquery.row.v1") ||
-            !current->bound_expression_ids.empty() ||
+        if (const auto predicate_profile =
+                MatchLivePredicateSubqueryProfile(
+                    current->semantic_variant_id);
+            ((current->semantic_variant_id == "subquery.table.v1" ||
+              current->semantic_variant_id == "subquery.scalar.v1" ||
+              current->semantic_variant_id == "subquery.row.v1")
+                 ? !current->bound_expression_ids.empty()
+                 : (!predicate_profile.matched ||
+                    current->bound_expression_ids.size() !=
+                        (predicate_profile.kind ==
+                                 LivePredicateSubqueryKind::kExists
+                             ? 1
+                             : 2))) ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -7442,6 +7683,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<PreparedCardinalitySubqueryRoot>
       prepared_cardinality_subquery;
   std::size_t cardinality_subquery_input_row_count = 0;
+  std::optional<PreparedPredicateSubqueryRoot>
+      prepared_predicate_subquery;
+  std::size_t predicate_subquery_input_row_count = 0;
   bool prepared_nonrecursive_cte = false;
   std::size_t nonrecursive_cte_input_row_count = 0;
   std::string nonrecursive_cte_implementation_id;
@@ -9721,14 +9965,21 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kSubquery: {
-        if (node.output_descriptor_ids != input_node.output_descriptor_ids ||
+        const auto predicate_profile =
+            MatchLivePredicateSubqueryProfile(node.semantic_variant_id);
+        const bool predicate_subquery = predicate_profile.matched;
+        if ((!predicate_subquery &&
+             node.output_descriptor_ids !=
+                 input_node.output_descriptor_ids) ||
             state.result_bindings.size() != input_batch.columns.size()) {
           return refuse(
               std::string(kPayloadDiagnostic),
-              "subquery does not preserve its bound input schema");
+              predicate_subquery
+                  ? "predicate subquery input schema is incomplete"
+                  : "subquery does not preserve its bound input schema");
         }
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
-            input_batch, node.output_descriptor_ids);
+            input_batch, input_node.output_descriptor_ids);
         if (!validated.ok) {
           return refuse(std::string(kPayloadDiagnostic),
                         "subquery input: " + validated.detail);
@@ -9744,6 +9995,232 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         auxiliary_memory = input_memory;
         capability_uuid = subquery_capability_uuid;
         physical_kind = exec::PhysicalNodeKind::kSubquery;
+        if (predicate_subquery) {
+          auto result_node = node;
+          result_node.bound_expression_ids = {
+              node.bound_expression_ids.front()};
+          auto projected = PrepareExpressionProjectRoot(
+              request.relational_dag, result_node, input_node, state,
+              request.expression_services);
+          if (!projected.ok ||
+              projected.expression_output_batch.columns.size() != 1 ||
+              projected.result_bindings.size() != 1) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                projected.detail.empty()
+                    ? "predicate subquery result binding is incomplete"
+                    : projected.detail);
+          }
+
+          PreparedPredicateSubqueryRoot prepared;
+          prepared.kind = predicate_profile.kind;
+          prepared.result_column =
+              projected.expression_output_batch.columns.front();
+          prepared.implementation_id =
+              predicate_profile.implementation_id;
+          prepared.transformation_id =
+              predicate_profile.transformation_id;
+          const bool exists =
+              prepared.kind == LivePredicateSubqueryKind::kExists;
+          if (prepared.result_column.descriptor.canonical_type_name !=
+                  "boolean" ||
+              prepared.result_column.nullable == exists) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                exists
+                    ? "EXISTS result is not a bound non-null boolean"
+                    : "quantified result is not a bound nullable boolean");
+          }
+
+          api::EngineSqlTruthValue truth =
+              exists
+                  ? (input_row_count == 0
+                         ? api::EngineSqlTruthValue::false_value
+                         : api::EngineSqlTruthValue::true_value)
+                  : api::EngineSqlTruthValue::unspecified;
+          if (!exists) {
+            if (input_batch.columns.size() != 1 ||
+                input_batch.columns.front()
+                        .descriptor.canonical_type_name != "int64") {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "quantified subquery requires one bound int64 column");
+            }
+            const auto left_expression_id =
+                node.bound_expression_ids[1];
+            const auto left_expression = std::ranges::find_if(
+                request.relational_dag.expressions,
+                [&](const auto& candidate) {
+                  return candidate.expression_id == left_expression_id;
+                });
+            const auto left_descriptor =
+                left_expression == request.relational_dag.expressions.end()
+                    ? request.relational_dag.descriptors.end()
+                    : std::ranges::find_if(
+                          request.relational_dag.descriptors,
+                          [&](const auto& candidate) {
+                            return candidate.descriptor_id ==
+                                   left_expression->result_descriptor_id;
+                          });
+            CanonicalRelationalExpressionRowBinding left_binding;
+            std::string detail;
+            if (left_expression ==
+                    request.relational_dag.expressions.end() ||
+                left_descriptor ==
+                    request.relational_dag.descriptors.end() ||
+                !PrepareInputRowBinding(
+                    request.relational_dag, left_expression_id,
+                    input_node.output_descriptor_ids, &left_binding,
+                    &detail) ||
+                !left_binding.slots.empty()) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  detail.empty()
+                      ? "quantified left operand is not an independent "
+                        "bound expression"
+                      : detail);
+            }
+            std::vector<api::EngineTypedValue> descriptor_only_input;
+            if (input_batch.rows.empty()) {
+              descriptor_only_input.reserve(input_batch.columns.size());
+              for (const auto& column : input_batch.columns) {
+                api::EngineTypedValue value;
+                value.descriptor = column.descriptor;
+                value.state = api::EngineValueState::value;
+                descriptor_only_input.push_back(std::move(value));
+              }
+            }
+            const auto& input_row =
+                input_batch.rows.empty()
+                    ? descriptor_only_input
+                    : input_batch.rows.front().values;
+            if (!expression_runtime.EvaluateForConsumer(
+                    left_expression_id, "int64", left_binding, input_row,
+                    api::EngineCanonicalExpressionConsumer::subquery,
+                    &prepared.left_value, &detail)) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "quantified left operand: " + detail);
+            }
+            prepared.left_operand_column = {
+                "quantified_left", prepared.left_value.descriptor,
+                left_descriptor->nullability ==
+                    api::RelationalNullability::kNullable,
+                left_descriptor->descriptor_id};
+            prepared.right_expression_descriptor_id =
+                input_batch.columns.front().descriptor_id;
+            prepared.comparison_operator =
+                predicate_profile.comparison_operator;
+            prepared.quantifier = predicate_profile.quantifier;
+
+            api::EngineCanonicalExpressionOperation operation =
+                api::EngineCanonicalExpressionOperation::equal;
+            using Comparison = api::EngineComparisonPredicateOperator;
+            if (prepared.comparison_operator == Comparison::not_equal) {
+              operation =
+                  api::EngineCanonicalExpressionOperation::not_equal;
+            } else if (prepared.comparison_operator ==
+                       Comparison::less_than) {
+              operation = api::EngineCanonicalExpressionOperation::less_than;
+            } else if (prepared.comparison_operator ==
+                       Comparison::less_than_or_equal) {
+              operation =
+                  api::EngineCanonicalExpressionOperation::less_than_or_equal;
+            } else if (prepared.comparison_operator ==
+                       Comparison::greater_than) {
+              operation =
+                  api::EngineCanonicalExpressionOperation::greater_than;
+            } else if (prepared.comparison_operator ==
+                       Comparison::greater_than_or_equal) {
+              operation = api::EngineCanonicalExpressionOperation::
+                  greater_than_or_equal;
+            }
+            const bool any =
+                prepared.quantifier ==
+                exec::CanonicalQuantifiedSubqueryQuantifier::kAny;
+            truth = any ? api::EngineSqlTruthValue::false_value
+                        : api::EngineSqlTruthValue::true_value;
+            for (const auto& row : input_batch.rows) {
+              api::EngineCanonicalExpressionEvaluationRequest evaluation;
+              evaluation.consumer =
+                  api::EngineCanonicalExpressionConsumer::subquery;
+              evaluation.operation = operation;
+              evaluation.left_value = prepared.left_value;
+              evaluation.right_value = row.values.front();
+              evaluation.result_descriptor =
+                  prepared.result_column.descriptor;
+              api::EngineCanonicalExpressionEvaluationResult evaluated;
+              if (!api::QowEvaluateCanonicalTypedExpressionV1(
+                      evaluation, &evaluated, &detail)) {
+                return refuse(
+                    std::string(kPayloadDiagnostic),
+                    "quantified comparison: " + detail);
+              }
+              if (any) {
+                if (evaluated.truth ==
+                    api::EngineSqlTruthValue::true_value) {
+                  truth = api::EngineSqlTruthValue::true_value;
+                } else if (evaluated.truth ==
+                               api::EngineSqlTruthValue::unknown &&
+                           truth ==
+                               api::EngineSqlTruthValue::false_value) {
+                  truth = api::EngineSqlTruthValue::unknown;
+                }
+              } else if (evaluated.truth ==
+                         api::EngineSqlTruthValue::false_value) {
+                truth = api::EngineSqlTruthValue::false_value;
+              } else if (evaluated.truth ==
+                             api::EngineSqlTruthValue::unknown &&
+                         truth ==
+                             api::EngineSqlTruthValue::true_value) {
+                truth = api::EngineSqlTruthValue::unknown;
+              }
+            }
+            if (!add_work(input_row_count)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "composition quantified comparisons exhausted their "
+                  "admitted bound");
+            }
+          }
+
+          api::EngineCanonicalExpressionEvaluationRequest truth_request;
+          truth_request.consumer =
+              api::EngineCanonicalExpressionConsumer::subquery;
+          truth_request.operation =
+              api::EngineCanonicalExpressionOperation::consume_truth;
+          truth_request.input_truth = truth;
+          truth_request.result_descriptor =
+              prepared.result_column.descriptor;
+          api::EngineCanonicalExpressionEvaluationResult truth_result;
+          std::string truth_detail;
+          if (!api::QowEvaluateCanonicalTypedExpressionV1(
+                  truth_request, &truth_result, &truth_detail)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "predicate subquery truth publication: " + truth_detail);
+          }
+          exec::DescriptorBatch output;
+          output.columns = {prepared.result_column};
+          output.rows = {{{std::move(truth_result.value)}}};
+          const auto output_validated =
+              exec::ValidateCanonicalDescriptorBatch(
+                  output, node.output_descriptor_ids);
+          if (!output_validated.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "predicate subquery output: " + output_validated.detail);
+          }
+          predicate_subquery_input_row_count = input_row_count;
+          prepared_predicate_subquery = std::move(prepared);
+          state.batch = std::move(output);
+          state.result_bindings = std::move(projected.result_bindings);
+          implementation_id =
+              prepared_predicate_subquery->implementation_id;
+          transformation_rule =
+              prepared_predicate_subquery->transformation_id;
+          break;
+        }
         if (node.semantic_variant_id == "subquery.table.v1") {
           prepared_table_subquery = true;
           table_subquery_input_row_count = input_row_count;
@@ -10073,6 +10550,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             std::move(*prepared_cardinality_subquery),
             subquery_capability_uuid,
             cardinality_subquery_input_row_count, request.context));
+  }
+  if (prepared_predicate_subquery.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLivePredicateSubqueryRegistration(
+            std::move(*prepared_predicate_subquery),
+            subquery_capability_uuid,
+            predicate_subquery_input_row_count, request.context));
   }
   if (prepared_nonrecursive_cte) {
     execution_request.available_executors.push_back(
