@@ -33955,63 +33955,72 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 *candidate->canonical_operator_name ==
                     "IS NOT DISTINCT FROM");
       };
-      std::vector<const BoundExpressionAstRecord*> comparisons;
-      bool composite_predicate = false;
-      if (predicate != expressions_by_id.end() &&
-          is_comparison(predicate->second)) {
-        comparisons.push_back(predicate->second);
-      } else if (predicate != expressions_by_id.end() &&
-                 predicate->second->expression_kind ==
-                     NativeExpressionAstKind::kBinary &&
-                 predicate->second->child_expression_ids.size() == 2 &&
-                 predicate->second->canonical_operator_name.has_value() &&
-                 (*predicate->second->canonical_operator_name == "AND" ||
-                  *predicate->second->canonical_operator_name == "OR")) {
-        composite_predicate = true;
-        for (const auto child_id : predicate->second->child_expression_ids) {
-          const auto child = expressions_by_id.find(child_id);
-          if (child == expressions_by_id.end() ||
-              !is_comparison(child->second)) {
-            comparisons.clear();
-            break;
-          }
-          comparisons.push_back(child->second);
+      std::vector<const BoundExpressionAstRecord*> predicate_nodes;
+      std::unordered_set<std::uint32_t> visited_predicate_ids;
+      const auto collect_predicate = [&](auto&& self,
+                                         const BoundExpressionAstRecord* node,
+                                         const std::size_t depth) -> bool {
+        if (node == nullptr || depth > 32 ||
+            !visited_predicate_ids.insert(node->expression_id).second) {
+          return false;
         }
-      }
-      bool predicate_lineage_exact = !comparisons.empty();
-      for (const auto* comparison : comparisons) {
+        if (!is_comparison(node)) {
+          if (node->expression_kind != NativeExpressionAstKind::kBinary ||
+              node->child_expression_ids.size() != 2 ||
+              !node->canonical_operator_name.has_value() ||
+              (*node->canonical_operator_name != "AND" &&
+               *node->canonical_operator_name != "OR")) {
+            return false;
+          }
+          for (const auto child_id : node->child_expression_ids) {
+            const auto child = expressions_by_id.find(child_id);
+            if (child == expressions_by_id.end() ||
+                !self(self, child->second, depth + 1)) {
+              return false;
+            }
+          }
+        }
+        predicate_nodes.push_back(node);
+        return predicate_nodes.size() <= 32;
+      };
+      bool predicate_lineage_exact =
+          predicate != expressions_by_id.end() &&
+          collect_predicate(collect_predicate, predicate->second, 1) &&
+          !predicate_nodes.empty() && predicate_nodes.size() <= 32;
+      std::unordered_set<std::uint32_t> validated_predicate_ids;
+      for (const auto* predicate_node : predicate_nodes) {
         if (descriptor_offset >= native.descriptors.size() ||
-            comparison->result_descriptor_id !=
+            predicate_node->result_descriptor_id !=
                 native.descriptors[descriptor_offset].descriptor_id ||
             native.descriptors[descriptor_offset].nullability !=
                 BoundNullability::kNullable ||
-            std::ranges::find(
-                catalog_relations[0]->output_expression_ids,
-                comparison->child_expression_ids[0]) ==
-                catalog_relations[0]->output_expression_ids.end() ||
-            std::ranges::find(
-                catalog_relations[1]->output_expression_ids,
-                comparison->child_expression_ids[1]) ==
-                catalog_relations[1]->output_expression_ids.end() ||
             bound.descriptor_refs[descriptor_offset] !=
                 native.descriptors[descriptor_offset].descriptor_uuid) {
           predicate_lineage_exact = false;
           break;
         }
-        ++descriptor_offset;
-      }
-      if (predicate_lineage_exact && composite_predicate) {
-        if (descriptor_offset >= native.descriptors.size() ||
-            predicate->second->result_descriptor_id !=
-                native.descriptors[descriptor_offset].descriptor_id ||
-            native.descriptors[descriptor_offset].nullability !=
-                BoundNullability::kNullable ||
-            bound.descriptor_refs[descriptor_offset] !=
-                native.descriptors[descriptor_offset].descriptor_uuid) {
+        if (is_comparison(predicate_node)) {
+          if (std::ranges::find(
+                  catalog_relations[0]->output_expression_ids,
+                  predicate_node->child_expression_ids[0]) ==
+                  catalog_relations[0]->output_expression_ids.end() ||
+              std::ranges::find(
+                  catalog_relations[1]->output_expression_ids,
+                  predicate_node->child_expression_ids[1]) ==
+                  catalog_relations[1]->output_expression_ids.end()) {
+            predicate_lineage_exact = false;
+            break;
+          }
+        } else if (std::ranges::any_of(
+                       predicate_node->child_expression_ids,
+                       [&](const auto child_id) {
+                         return !validated_predicate_ids.contains(child_id);
+                       })) {
           predicate_lineage_exact = false;
-        } else {
-          ++descriptor_offset;
+          break;
         }
+        validated_predicate_ids.insert(predicate_node->expression_id);
+        ++descriptor_offset;
       }
       if (!predicate_lineage_exact) {
         AddNativeRelationalLoweringError(

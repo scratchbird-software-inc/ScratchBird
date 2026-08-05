@@ -791,6 +791,22 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
         "integer_value = join_value AND auxiliary_value < "
         "join_auxiliary_value",
         1);
+    verify_composite_join_predicate(
+        "integer_value = join_value AND (auxiliary_value = "
+        "join_auxiliary_value OR auxiliary_value < join_auxiliary_value)",
+        2);
+    verify_composite_join_predicate(
+        "integer_value = join_value OR auxiliary_value = "
+        "join_auxiliary_value AND auxiliary_value < join_auxiliary_value",
+        2);
+    verify_composite_join_predicate(
+        "(integer_value = join_value OR auxiliary_value = "
+        "join_auxiliary_value) AND auxiliary_value < join_auxiliary_value",
+        1);
+    verify_composite_join_predicate(
+        "integer_value = join_value OR auxiliary_value = "
+        "join_auxiliary_value OR auxiliary_value < join_auxiliary_value",
+        7);
 
     const auto verify_outer_join = [&](const std::string_view join_sql,
                                        const std::uint64_t expected_rows,

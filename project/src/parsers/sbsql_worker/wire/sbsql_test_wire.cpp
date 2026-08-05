@@ -34,6 +34,7 @@
 #include <sstream>
 #include <utility>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <openssl/evp.h>
@@ -586,7 +587,7 @@ BuildEngineProjectedNativeBindingContext(
       return fail("catalog_join_predicate_cardinality_invalid");
     }
     std::vector<const NativeExpressionAstNode*> predicate_comparisons;
-    bool composite_predicate = false;
+    std::vector<const NativeExpressionAstNode*> predicate_nodes;
     if (predicate_join) {
       const auto find_expression = [&](const std::uint32_t expression_id) {
         const auto found = std::ranges::find_if(
@@ -612,23 +613,32 @@ BuildEngineProjectedNativeBindingContext(
                 candidate->operator_name == "IS DISTINCT FROM" ||
                 candidate->operator_name == "IS NOT DISTINCT FROM");
       };
-      if (is_comparison(predicate)) {
-        predicate_comparisons.push_back(predicate);
-      } else if (predicate != nullptr &&
-                 predicate->expression_kind ==
-                     NativeExpressionAstKind::kBinary &&
-                 predicate->child_expression_ids.size() == 2 &&
-                 (predicate->operator_name == "AND" ||
-                  predicate->operator_name == "OR")) {
-        composite_predicate = true;
-        for (const auto child_id : predicate->child_expression_ids) {
-          const auto* comparison = find_expression(child_id);
-          if (!is_comparison(comparison)) {
-            return fail("catalog_join_composite_predicate_invalid");
-          }
-          predicate_comparisons.push_back(comparison);
+      std::unordered_set<std::uint32_t> visited_predicate_ids;
+      const auto collect_predicate = [&](auto&& self,
+                                         const NativeExpressionAstNode* node,
+                                         const std::size_t depth) -> bool {
+        if (node == nullptr || depth > 32 ||
+            !visited_predicate_ids.insert(node->expression_id).second) {
+          return false;
         }
-      } else {
+        if (is_comparison(node)) {
+          predicate_comparisons.push_back(node);
+          predicate_nodes.push_back(node);
+          return true;
+        }
+        if (node->expression_kind != NativeExpressionAstKind::kBinary ||
+            node->child_expression_ids.size() != 2 ||
+            (node->operator_name != "AND" && node->operator_name != "OR")) {
+          return false;
+        }
+        for (const auto child_id : node->child_expression_ids) {
+          if (!self(self, find_expression(child_id), depth + 1)) return false;
+        }
+        predicate_nodes.push_back(node);
+        return predicate_nodes.size() <= 32;
+      };
+      if (!collect_predicate(collect_predicate, predicate, 1) ||
+          predicate_nodes.empty() || predicate_nodes.size() > 32) {
         return fail("catalog_inner_join_predicate_invalid");
       }
       for (const auto* comparison : predicate_comparisons) {
@@ -756,9 +766,7 @@ BuildEngineProjectedNativeBindingContext(
           return fail("catalog_inner_join_key_binding_unavailable");
         }
       }
-      const auto predicate_descriptor_count =
-          predicate_comparisons.size() +
-          static_cast<std::size_t>(composite_predicate);
+      const auto predicate_descriptor_count = predicate_nodes.size();
       for (std::size_t slot = 0; slot < predicate_descriptor_count; ++slot) {
         const auto boolean_profile = std::ranges::find_if(
             statement_context.descriptor_profiles, [&](const auto& candidate) {
