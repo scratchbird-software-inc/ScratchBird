@@ -438,6 +438,18 @@ bool ValidateGroupedRegistryState() {
                     "grouping-set transition bound was exceeded");
 
   request = GroupedRegistryRequest();
+  request.maximum_grouping_set_count = 2;
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "runtime grouping-set expansion count bound was ignored");
+
+  request = GroupedRegistryRequest();
+  request.maximum_grouping_set_member_count = 2;
+  result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "runtime grouping-set member bound was ignored");
+
+  request = GroupedRegistryRequest();
   request.maximum_grouping_key_comparison_count = 1;
   result = exec::ExecuteCanonicalGroupedAggregateRuntime(request);
   passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
@@ -564,6 +576,153 @@ bool ValidateOrdinaryGroupByIdentity() {
   passed &= Require(!result.diagnostic.ok && result.groups.empty() &&
                         result.output_batch.rows.empty(),
                     "group output descriptor-kind drift was accepted");
+  return passed;
+}
+
+bool ValidateGroupingExpansion() {
+  bool passed = true;
+  exec::CanonicalAggregateGroupingExpansionRequest request;
+  request.kind =
+      exec::CanonicalAggregateGroupingExpansionKind::explicit_sets;
+  request.group_key_count = 3;
+  request.explicit_grouping_sets = {{{1}}, {}, {{0, 2}}, {{1}}};
+  auto result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(
+      result.diagnostic.ok && result.grouping_sets.size() == 4 &&
+          result.grouping_set_member_count == 4 &&
+          result.repeated_explicit_sets_preserved &&
+          result.grouping_sets[0].key_term_ordinals ==
+              std::vector<std::size_t>{1} &&
+          result.grouping_sets[1].key_term_ordinals.empty() &&
+          result.grouping_sets[2].key_term_ordinals ==
+              std::vector<std::size_t>({0, 2}) &&
+          result.grouping_sets[3].key_term_ordinals ==
+              result.grouping_sets[0].key_term_ordinals,
+      "explicit grouping sets did not preserve order and duplicates");
+
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::rollup;
+  request.group_key_count = 3;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(
+      result.diagnostic.ok && result.grouping_sets.size() == 4 &&
+          result.grouping_set_member_count == 6 &&
+          result.grouping_sets[0].key_term_ordinals ==
+              std::vector<std::size_t>({0, 1, 2}) &&
+          result.grouping_sets[1].key_term_ordinals ==
+              std::vector<std::size_t>({0, 1}) &&
+          result.grouping_sets[2].key_term_ordinals ==
+              std::vector<std::size_t>{0} &&
+          result.grouping_sets[3].key_term_ordinals.empty(),
+      "three-key ROLLUP expansion order is wrong");
+
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::cube;
+  request.group_key_count = 3;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  const std::vector<std::vector<std::size_t>> expected_cube = {
+      {0, 1, 2}, {0, 1}, {0, 2}, {0}, {1, 2}, {1}, {2}, {}};
+  bool cube_matches = result.grouping_sets.size() == expected_cube.size();
+  for (std::size_t ordinal = 0;
+       cube_matches && ordinal < expected_cube.size(); ++ordinal) {
+    cube_matches = result.grouping_sets[ordinal].key_term_ordinals ==
+                   expected_cube[ordinal];
+    const auto metadata = exec::ComputeCanonicalAggregateGroupingMetadata(
+        3, result.grouping_sets[ordinal]);
+    cube_matches = cube_matches && metadata.diagnostic.ok &&
+                   metadata.grouping_id == ordinal;
+  }
+  passed &= Require(result.diagnostic.ok && cube_matches &&
+                        result.grouping_set_member_count == 12,
+                    "three-key CUBE expansion or GROUPING_ID order is wrong");
+
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::rollup;
+  auto zero_key = exec::ExpandCanonicalAggregateGroupingSets(request);
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::cube;
+  const auto zero_key_cube =
+      exec::ExpandCanonicalAggregateGroupingSets(request);
+  const auto zero_key_metadata =
+      exec::ComputeCanonicalAggregateGroupingMetadata(
+          0, exec::CanonicalAggregateGroupingSet{});
+  passed &= Require(
+      zero_key.diagnostic.ok && zero_key.grouping_sets.size() == 1 &&
+          zero_key.grouping_sets[0].key_term_ordinals.empty() &&
+          zero_key_cube.diagnostic.ok &&
+          zero_key_cube.grouping_sets.size() == 1 &&
+          zero_key_cube.grouping_sets[0].key_term_ordinals.empty() &&
+          zero_key_metadata.diagnostic.ok &&
+          zero_key_metadata.grouping_id == 0 &&
+          zero_key_metadata.grouping_indicators.empty(),
+      "zero-key grouping expansion lost the grand-total set");
+
+  const auto sixty_four_key_metadata =
+      exec::ComputeCanonicalAggregateGroupingMetadata(
+          64, exec::CanonicalAggregateGroupingSet{});
+  passed &= Require(
+      sixty_four_key_metadata.diagnostic.ok &&
+          sixty_four_key_metadata.grouping_id ==
+              std::numeric_limits<std::uint64_t>::max() &&
+          sixty_four_key_metadata.grouping_indicators.size() == 64,
+      "64-key GROUPING_ID boundary is wrong");
+
+  request = {};
+  request.kind =
+      exec::CanonicalAggregateGroupingExpansionKind::explicit_sets;
+  request.group_key_count = 3;
+  request.explicit_grouping_sets = {{{1, 0}}};
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "out-of-order grouping-set members were accepted");
+  request.explicit_grouping_sets = {{{1, 1}}};
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "duplicate grouping-set members were accepted");
+  request.explicit_grouping_sets = {{{3}}};
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "unbound grouping-set member was accepted");
+  request.explicit_grouping_sets.clear();
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "empty explicit GROUPING SETS was accepted");
+
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::rollup;
+  request.group_key_count = 3;
+  request.maximum_grouping_set_count = 3;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "ROLLUP set-count limit was ignored");
+  request.maximum_grouping_set_count = 4;
+  request.maximum_grouping_set_member_count = 5;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "ROLLUP member-count limit was ignored");
+
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::cube;
+  request.group_key_count = 4;
+  request.maximum_grouping_set_count = 8;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "CUBE exponential set-count limit was ignored");
+  request = {};
+  request.kind = exec::CanonicalAggregateGroupingExpansionKind::rollup;
+  request.group_key_count = 65;
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  const auto too_wide_metadata =
+      exec::ComputeCanonicalAggregateGroupingMetadata(
+          65, exec::CanonicalAggregateGroupingSet{});
+  passed &= Require(!result.diagnostic.ok &&
+                        !too_wide_metadata.diagnostic.ok,
+                    "GROUPING_ID width greater than 64 was accepted");
+  request = {};
+  request.kind =
+      static_cast<exec::CanonicalAggregateGroupingExpansionKind>(255);
+  result = exec::ExpandCanonicalAggregateGroupingSets(request);
+  passed &= Require(!result.diagnostic.ok && result.grouping_sets.empty(),
+                    "unknown grouping expansion kind was accepted");
   return passed;
 }
 
@@ -771,7 +930,8 @@ bool ValidateTypedGroupingState() {
 
 #ifndef QOW_QRY_011_GROUP_FIXTURE_ONLY
 int main() {
-  return ValidateTypedGroupingState() && ValidateGroupedRegistryState() &&
+  return ValidateGroupingExpansion() && ValidateTypedGroupingState() &&
+                 ValidateGroupedRegistryState() &&
                  ValidateGroupedAggregateSetState() &&
                  ValidateOrdinaryGroupByIdentity()
              ? EXIT_SUCCESS

@@ -1719,11 +1719,43 @@ struct CanonicalAggregateGroupingSet {
   std::vector<std::size_t> key_term_ordinals;
 };
 
+enum class CanonicalAggregateGroupingExpansionKind : std::uint8_t {
+  explicit_sets = 0,
+  rollup = 1,
+  cube = 2,
+};
+
+struct CanonicalAggregateGroupingExpansionRequest {
+  CanonicalAggregateGroupingExpansionKind kind =
+      CanonicalAggregateGroupingExpansionKind::explicit_sets;
+  std::size_t group_key_count = 0;
+  // Explicit GROUPING SETS retain their source order and repeated sets.
+  // ROLLUP and CUBE derive their complete sequence from group_key_count.
+  std::vector<CanonicalAggregateGroupingSet> explicit_grouping_sets;
+  std::size_t maximum_grouping_set_count = 65536;
+  std::size_t maximum_grouping_set_member_count = 1048576;
+};
+
+struct CanonicalAggregateGroupingExpansionResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::vector<CanonicalAggregateGroupingSet> grouping_sets;
+  std::size_t grouping_set_member_count = 0;
+  bool repeated_explicit_sets_preserved = false;
+};
+
+struct CanonicalAggregateGroupingMetadataResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  std::uint64_t grouping_id = 0;
+  std::vector<bool> grouping_indicators;
+};
+
 struct CanonicalGroupedAggregateRuntimeRequest {
   CanonicalAggregateRuntimeRequest aggregate_request;
   std::vector<CanonicalDescriptorOrderTerm> group_key_terms;
   std::vector<ExecutorColumnDescriptor> group_result_columns;
   std::vector<CanonicalAggregateGroupingSet> grouping_sets;
+  std::size_t maximum_grouping_set_count = 65536;
+  std::size_t maximum_grouping_set_member_count = 1048576;
   std::size_t maximum_group_count = 65536;
   std::size_t maximum_grouping_key_comparison_count = 1048576;
   std::size_t maximum_grouping_set_transition_count = 1048576;
@@ -2196,6 +2228,13 @@ CanonicalAggregateStateExchangeResult ExecuteCanonicalAggregateStateExchange(
     const CanonicalAggregateStateExchangeRequest& request);
 CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
     const CanonicalAggregateMovingRuntimeRequest& request);
+CanonicalAggregateGroupingExpansionResult
+ExpandCanonicalAggregateGroupingSets(
+    const CanonicalAggregateGroupingExpansionRequest& request);
+CanonicalAggregateGroupingMetadataResult
+ComputeCanonicalAggregateGroupingMetadata(
+    std::size_t group_key_count,
+    const CanonicalAggregateGroupingSet& grouping_set);
 CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
     const CanonicalGroupedAggregateRuntimeRequest& request);
 CanonicalGroupedAggregateSetRuntimeResult

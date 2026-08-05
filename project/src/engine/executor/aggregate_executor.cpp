@@ -3205,6 +3205,168 @@ CanonicalAggregateMovingRuntimeResult ExecuteCanonicalAggregateMovingRuntime(
   return result;
 }
 
+// QOW-SOURCE-QRY-011-GROUPING-EXPANSION-V1
+// Expand every accepted grouping form once, in the engine, before grouping
+// state is allocated.  Explicit GROUPING SETS preserve source order and
+// duplicates.  ROLLUP emits longest prefix to empty; CUBE emits descending
+// membership masks (full set to empty), which also preserves the established
+// two-key order: (a,b), (a), (b), ().
+CanonicalAggregateGroupingExpansionResult
+ExpandCanonicalAggregateGroupingSets(
+    const CanonicalAggregateGroupingExpansionRequest& request) {
+  CanonicalAggregateGroupingExpansionResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result.diagnostic = Refusal(std::move(code), std::move(detail));
+    result.grouping_sets.clear();
+    result.grouping_set_member_count = 0;
+    result.repeated_explicit_sets_preserved = false;
+    return result;
+  };
+  const auto add_member_count = [&](const std::size_t count) {
+    if (result.grouping_set_member_count >
+            request.maximum_grouping_set_member_count ||
+        count > request.maximum_grouping_set_member_count -
+                    result.grouping_set_member_count) {
+      return false;
+    }
+    result.grouping_set_member_count += count;
+    return true;
+  };
+
+  if (request.group_key_count > 64) {
+    return refuse("QOW-DIAG-QRY-011-GROUPING-EXPANSION-V1",
+                  "GROUPING_ID admits at most 64 ordered grouping keys");
+  }
+  if (request.maximum_grouping_set_count == 0 ||
+      request.maximum_grouping_set_member_count == 0) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "grouping-set expansion limits must be nonzero");
+  }
+
+  switch (request.kind) {
+    case CanonicalAggregateGroupingExpansionKind::explicit_sets: {
+      if (request.explicit_grouping_sets.empty() ||
+          request.explicit_grouping_sets.size() >
+              request.maximum_grouping_set_count) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "explicit grouping-set count is empty or exceeds its bound");
+      }
+      std::set<std::vector<std::size_t>> observed;
+      result.grouping_sets.reserve(request.explicit_grouping_sets.size());
+      for (const auto& grouping_set : request.explicit_grouping_sets) {
+        std::optional<std::size_t> previous;
+        for (const auto ordinal : grouping_set.key_term_ordinals) {
+          if (ordinal >= request.group_key_count ||
+              (previous.has_value() && ordinal <= *previous)) {
+            return refuse(
+                "QOW-DIAG-QRY-011-GROUPING-EXPANSION-V1",
+                "explicit grouping-set members must be unique, increasing, and bound");
+          }
+          previous = ordinal;
+        }
+        if (!add_member_count(grouping_set.key_term_ordinals.size())) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "explicit grouping-set member bound is exceeded");
+        }
+        if (!observed.insert(grouping_set.key_term_ordinals).second) {
+          result.repeated_explicit_sets_preserved = true;
+        }
+        result.grouping_sets.push_back(grouping_set);
+      }
+      break;
+    }
+    case CanonicalAggregateGroupingExpansionKind::rollup: {
+      if (request.group_key_count ==
+              std::numeric_limits<std::size_t>::max() ||
+          request.group_key_count + 1 > request.maximum_grouping_set_count) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "ROLLUP grouping-set count exceeds its bound");
+      }
+      result.grouping_sets.reserve(request.group_key_count + 1);
+      for (std::size_t prefix_size = request.group_key_count;;
+           --prefix_size) {
+        if (!add_member_count(prefix_size)) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "ROLLUP grouping-set member bound is exceeded");
+        }
+        CanonicalAggregateGroupingSet grouping_set;
+        grouping_set.key_term_ordinals.resize(prefix_size);
+        std::iota(grouping_set.key_term_ordinals.begin(),
+                  grouping_set.key_term_ordinals.end(), 0);
+        result.grouping_sets.push_back(std::move(grouping_set));
+        if (prefix_size == 0) break;
+      }
+      break;
+    }
+    case CanonicalAggregateGroupingExpansionKind::cube: {
+      std::size_t grouping_set_count = 1;
+      for (std::size_t key = 0; key < request.group_key_count; ++key) {
+        if (grouping_set_count >
+            request.maximum_grouping_set_count / 2) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "CUBE grouping-set count exceeds its bound");
+        }
+        grouping_set_count *= 2;
+      }
+      result.grouping_sets.reserve(grouping_set_count);
+      for (std::size_t descending = grouping_set_count; descending > 0;
+           --descending) {
+        const auto membership_mask = descending - 1;
+        CanonicalAggregateGroupingSet grouping_set;
+        for (std::size_t key = 0; key < request.group_key_count; ++key) {
+          const auto bit = request.group_key_count - 1 - key;
+          if ((membership_mask & (std::size_t{1} << bit)) != 0) {
+            grouping_set.key_term_ordinals.push_back(key);
+          }
+        }
+        if (!add_member_count(grouping_set.key_term_ordinals.size())) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "CUBE grouping-set member bound is exceeded");
+        }
+        result.grouping_sets.push_back(std::move(grouping_set));
+      }
+      break;
+    }
+    default:
+      return refuse("QOW-DIAG-QRY-011-GROUPING-EXPANSION-V1",
+                    "grouping-set expansion kind is unknown");
+  }
+
+  result.diagnostic = {};
+  return result;
+}
+
+CanonicalAggregateGroupingMetadataResult
+ComputeCanonicalAggregateGroupingMetadata(
+    const std::size_t group_key_count,
+    const CanonicalAggregateGroupingSet& grouping_set) {
+  CanonicalAggregateGroupingMetadataResult result;
+  CanonicalAggregateGroupingExpansionRequest validation;
+  validation.kind = CanonicalAggregateGroupingExpansionKind::explicit_sets;
+  validation.group_key_count = group_key_count;
+  validation.explicit_grouping_sets = {grouping_set};
+  validation.maximum_grouping_set_count = 1;
+  validation.maximum_grouping_set_member_count = 64;
+  const auto expanded = ExpandCanonicalAggregateGroupingSets(validation);
+  if (!expanded.diagnostic.ok) {
+    result.diagnostic = expanded.diagnostic;
+    return result;
+  }
+
+  result.grouping_indicators.assign(group_key_count, true);
+  for (const auto ordinal : grouping_set.key_term_ordinals) {
+    result.grouping_indicators[ordinal] = false;
+  }
+  for (std::size_t key = 0; key < group_key_count; ++key) {
+    if (result.grouping_indicators[key]) {
+      result.grouping_id |=
+          std::uint64_t{1} << (group_key_count - 1 - key);
+    }
+  }
+  result.diagnostic = {};
+  return result;
+}
+
 // QOW-SOURCE-QRY-011-GROUPED-REGISTRY-V1
 // Build explicit grouping sets over ordered, descriptor-bound keys and route
 // every resulting group through the one canonical aggregate registry/state
@@ -3247,6 +3409,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       request.group_key_terms.size() > 64 ||
       request.group_result_columns.size() !=
           request.group_key_terms.size() ||
+      request.maximum_grouping_set_count == 0 ||
+      request.maximum_grouping_set_member_count == 0 ||
       request.maximum_group_count == 0 ||
       request.maximum_grouping_key_comparison_count == 0 ||
       request.maximum_grouping_set_transition_count == 0 ||
@@ -3256,6 +3420,21 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       request.maximum_output_rows == 0) {
     return grouped_refusal(
         "grouped aggregate shape or resource contract is invalid");
+  }
+
+  CanonicalAggregateGroupingExpansionRequest expansion_request;
+  expansion_request.kind =
+      CanonicalAggregateGroupingExpansionKind::explicit_sets;
+  expansion_request.group_key_count = request.group_key_terms.size();
+  expansion_request.explicit_grouping_sets = request.grouping_sets;
+  expansion_request.maximum_grouping_set_count =
+      request.maximum_grouping_set_count;
+  expansion_request.maximum_grouping_set_member_count =
+      request.maximum_grouping_set_member_count;
+  const auto expansion =
+      ExpandCanonicalAggregateGroupingSets(expansion_request);
+  if (!expansion.diagnostic.ok) {
+    return refuse(expansion.diagnostic);
   }
 
   const auto authority_validation = RevalidateCanonicalExecutionMgaAuthority(
@@ -3469,23 +3648,22 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
   for (std::size_t set_ordinal = 0;
        set_ordinal < grouping_membership.size(); ++set_ordinal) {
     const auto& included = grouping_membership[set_ordinal];
-    std::vector<bool> indicators(included.size(), false);
-    std::uint64_t grouping_id = 0;
+    const auto metadata = ComputeCanonicalAggregateGroupingMetadata(
+        request.group_key_terms.size(), request.grouping_sets[set_ordinal]);
+    if (!metadata.diagnostic.ok) {
+      return refuse(metadata.diagnostic);
+    }
     bool grand_total = true;
     for (std::size_t index = 0; index < included.size(); ++index) {
-      indicators[index] = !included[index];
       if (included[index]) {
         grand_total = false;
-      } else {
-        grouping_id |= std::uint64_t{1}
-                       << (included.size() - 1 - index);
       }
     }
     if (grand_total) {
       WorkingGroup group;
       group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
-      group.grouping_id = grouping_id;
-      group.grouping_indicators = std::move(indicators);
+      group.grouping_id = metadata.grouping_id;
+      group.grouping_indicators = metadata.grouping_indicators;
       group.source_rows.resize(row_count);
       std::iota(group.source_rows.begin(), group.source_rows.end(), 0);
       if (!add_group(std::move(group))) {
@@ -3546,8 +3724,8 @@ ExecuteCanonicalGroupedAggregateRuntimeSelected(
       }
       WorkingGroup group;
       group.grouping_set_ordinal = static_cast<std::uint32_t>(set_ordinal);
-      group.grouping_id = grouping_id;
-      group.grouping_indicators = indicators;
+      group.grouping_id = metadata.grouping_id;
+      group.grouping_indicators = metadata.grouping_indicators;
       group.representative_row = row;
       group.source_rows = {row};
       if (!add_group(std::move(group))) {
