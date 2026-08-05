@@ -722,6 +722,17 @@ struct PreparedDistinctRoot {
   std::string detail;
 };
 
+enum class LiveCardinalitySubqueryKind {
+  kScalar,
+  kRow,
+};
+
+struct PreparedCardinalitySubqueryRoot {
+  LiveCardinalitySubqueryKind kind{LiveCardinalitySubqueryKind::kScalar};
+  std::vector<exec::ExecutorColumnDescriptor> result_columns;
+  std::string implementation_id;
+};
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
@@ -6764,6 +6775,107 @@ MakeLiveTableSubqueryRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveCardinalitySubqueryRegistration(
+    PreparedCardinalitySubqueryRoot prepared,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSubquery;
+  registration.implementation_id = prepared.implementation_id;
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared = std::move(prepared), maximum_input_row_count,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "cardinality subquery did not receive its bounded typed input";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+        exec::CanonicalTableSubqueryRequest table_request;
+        table_request.physical_dag = std::move(operator_dag);
+        table_request.selected_physical_node_id = node.physical_node_id;
+        table_request.input_batch =
+            *inputs.front().materialized_output_batch;
+        table_request.maximum_materialized_row_count =
+            std::max<std::size_t>(1, maximum_input_row_count);
+        table_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, table_request.physical_dag);
+
+        exec::DescriptorBatch output;
+        exec::DescriptorRuntimeDiagnostic diagnostic;
+        exec::PhysicalMgaStatementContext result_mga;
+        if (prepared.kind == LiveCardinalitySubqueryKind::kScalar) {
+          exec::CanonicalScalarSubqueryRequest scalar_request;
+          scalar_request.table_request = std::move(table_request);
+          scalar_request.value_expression_descriptor_id =
+              prepared.result_columns.front().descriptor_id;
+          scalar_request.result_column = prepared.result_columns.front();
+          const auto scalar =
+              exec::ExecuteCanonicalScalarSubquery(scalar_request);
+          diagnostic = scalar.diagnostic;
+          output = scalar.output_batch;
+          result_mga = scalar.mga_statement_context;
+        } else {
+          exec::CanonicalRowSubqueryRequest row_request;
+          row_request.table_request = std::move(table_request);
+          row_request.result_columns = prepared.result_columns;
+          for (const auto& column : prepared.result_columns) {
+            row_request.row_expression_descriptor_ids.push_back(
+                column.descriptor_id);
+          }
+          const auto row = exec::ExecuteCanonicalRowSubquery(row_request);
+          diagnostic = row.diagnostic;
+          output = row.output_batch;
+          result_mga = row.mga_statement_context;
+        }
+        if (!diagnostic.ok) {
+          step.diagnostic = std::move(diagnostic);
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count =
+            inputs.front().materialized_output_batch->rows.size();
+        step.rows_examined = step.input_row_count;
+        step.output_row_count = output.rows.size();
+        step.materialized_output_batch = std::move(output);
+        step.mga_statement_context = std::move(result_mga);
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -7217,7 +7329,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         break;
       case plan::CanonicalLogicalRelationalNodeKind::kSubquery:
-        if (current->semantic_variant_id != "subquery.table.v1" ||
+        if ((current->semantic_variant_id != "subquery.table.v1" &&
+             current->semantic_variant_id != "subquery.scalar.v1" &&
+             current->semantic_variant_id != "subquery.row.v1") ||
             !current->bound_expression_ids.empty() ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
@@ -7325,6 +7439,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t sort_comparison_bound = 0;
   bool prepared_table_subquery = false;
   std::size_t table_subquery_input_row_count = 0;
+  std::optional<PreparedCardinalitySubqueryRoot>
+      prepared_cardinality_subquery;
+  std::size_t cardinality_subquery_input_row_count = 0;
   bool prepared_nonrecursive_cte = false;
   std::size_t nonrecursive_cte_input_row_count = 0;
   std::string nonrecursive_cte_implementation_id;
@@ -9608,30 +9725,89 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             state.result_bindings.size() != input_batch.columns.size()) {
           return refuse(
               std::string(kPayloadDiagnostic),
-              "table subquery does not preserve its bound input schema");
+              "subquery does not preserve its bound input schema");
         }
         const auto validated = exec::ValidateCanonicalDescriptorBatch(
             input_batch, node.output_descriptor_ids);
         if (!validated.ok) {
           return refuse(std::string(kPayloadDiagnostic),
-                        "table subquery input: " + validated.detail);
+                        "subquery input: " + validated.detail);
         }
         const auto materialization_work =
             std::max<std::size_t>(1, input_row_count);
         if (!add_work(materialization_work)) {
           return refuse(
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-              "composition table subquery materialization exhausted its "
+              "composition subquery materialization exhausted its "
               "admitted bound");
         }
-        prepared_table_subquery = true;
-        table_subquery_input_row_count = input_row_count;
         auxiliary_memory = input_memory;
-        implementation_id = "subquery.table.materialize.typed.v1";
         capability_uuid = subquery_capability_uuid;
-        transformation_rule =
-            "canonical.subquery.composed-table-materialize.v1";
         physical_kind = exec::PhysicalNodeKind::kSubquery;
+        if (node.semantic_variant_id == "subquery.table.v1") {
+          prepared_table_subquery = true;
+          table_subquery_input_row_count = input_row_count;
+          implementation_id = "subquery.table.materialize.typed.v1";
+          transformation_rule =
+              "canonical.subquery.composed-table-materialize.v1";
+          break;
+        }
+        const bool scalar =
+            node.semantic_variant_id == "subquery.scalar.v1";
+        if ((scalar && input_batch.columns.size() != 1) ||
+            input_batch.columns.empty() ||
+            std::ranges::any_of(input_batch.columns, [](const auto& column) {
+              return !column.nullable;
+            })) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "cardinality subquery result is not completely nullable");
+        }
+        if (input_row_count > 1) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              scalar ? "scalar subquery produced more than one row"
+                     : "row subquery produced more than one row");
+        }
+        exec::DescriptorBatch output;
+        output.columns = input_batch.columns;
+        if (input_row_count == 1) {
+          output.rows.push_back(input_batch.rows.front());
+        } else {
+          exec::DescriptorTuple row;
+          row.values.reserve(output.columns.size());
+          for (const auto& column : output.columns) {
+            api::EngineTypedValue value;
+            value.descriptor = column.descriptor;
+            value.is_null = true;
+            value.state = api::EngineValueState::sql_null;
+            row.values.push_back(std::move(value));
+          }
+          output.rows.push_back(std::move(row));
+        }
+        const auto output_validated =
+            exec::ValidateCanonicalDescriptorBatch(
+                output, node.output_descriptor_ids);
+        if (!output_validated.ok) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "cardinality subquery output: " +
+                            output_validated.detail);
+        }
+        PreparedCardinalitySubqueryRoot prepared;
+        prepared.kind = scalar ? LiveCardinalitySubqueryKind::kScalar
+                               : LiveCardinalitySubqueryKind::kRow;
+        prepared.result_columns = input_batch.columns;
+        prepared.implementation_id =
+            scalar ? "subquery.scalar.cardinality.typed.v1"
+                   : "subquery.row.cardinality.typed.v1";
+        cardinality_subquery_input_row_count = input_row_count;
+        prepared_cardinality_subquery = std::move(prepared);
+        state.batch = std::move(output);
+        implementation_id =
+            prepared_cardinality_subquery->implementation_id;
+        transformation_rule =
+            scalar ? "canonical.subquery.composed-scalar-cardinality.v1"
+                   : "canonical.subquery.composed-row-cardinality.v1";
         break;
       }
       case plan::CanonicalLogicalRelationalNodeKind::kCte: {
@@ -9890,6 +10066,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLiveTableSubqueryRegistration(
             subquery_capability_uuid, table_subquery_input_row_count,
             request.context));
+  }
+  if (prepared_cardinality_subquery.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveCardinalitySubqueryRegistration(
+            std::move(*prepared_cardinality_subquery),
+            subquery_capability_uuid,
+            cardinality_subquery_input_row_count, request.context));
   }
   if (prepared_nonrecursive_cte) {
     execution_request.available_executors.push_back(

@@ -1745,6 +1745,146 @@ sblr::SblrOperationEnvelope NodeDrivenTableSubqueryCteLimitValuesEnvelope(
   return envelope;
 }
 
+enum class ScalarSubqueryInputCardinality {
+  kZero,
+  kOne,
+  kMany,
+};
+
+// RCP-049-TEST-NODE-DRIVEN-SCALAR-ROW-SUBQUERY-CARDINALITY-V1
+sblr::SblrOperationEnvelope NodeDrivenScalarSubqueryLimitValuesEnvelope(
+    const ScalarSubqueryInputCardinality cardinality) {
+  auto envelope = LimitValuesEnvelope();
+  const bool zero = cardinality == ScalarSubqueryInputCardinality::kZero;
+  const bool many = cardinality == ScalarSubqueryInputCardinality::kMany;
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = zero
+                          ? "019f0000-0000-7000-8000-00000000cf50"
+                          : many
+                                ? "019f0000-0000-7000-8000-00000000cf52"
+                                : "019f0000-0000-7000-8000-00000000cf51";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = zero ? "4" : "3";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "1") {
+      operand.value = many ? "13|0|-|1|1,2" : "13|0|-|1|1";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "2") {
+      operand.value = zero ? "2|0|1|1|-" : "10|0|1|1|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.value = zero
+                          ? EncodeHex("filter.where.v1") + "|6|-|-|-"
+                          : EncodeHex("subquery.scalar.v1") + "|-|-|-|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "1") {
+      operand.value =
+          EncodeHex("values.literal-table.v1") +
+          (many ? "|1,2|-|-|-" : "|1|-|-|-");
+    }
+  }
+  std::erase_if(envelope.operands, [&](const auto& operand) {
+    if (operand.type == "relational_values_row_v1") {
+      return many ? operand.name == "3" || operand.name == "4"
+                  : operand.name != "1";
+    }
+    if (operand.type == "relational_expression_v1") {
+      return many ? operand.name == "3" || operand.name == "4"
+                  : operand.name == "2" || operand.name == "3" ||
+                        operand.name == "4";
+    }
+    return false;
+  });
+  if (zero) {
+    envelope.operands.push_back(
+        {"relational_descriptor_v1", "3",
+         "019f0000-0000-7300-8000-00000000cf53|"
+         "019f0000-0000-7400-8000-00000000cf54|1|-|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_expression_v1", "6", "1|-|3|-|-|6|-|66616c7365"});
+    envelope.operands.push_back(
+        {"relational_node_v1", "3", "10|0|2|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "3",
+         EncodeHex("subquery.scalar.v1") + "|-|-|-|-"});
+    envelope.operands.push_back(
+        {"relational_node_v1", "4", "7|0|3|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "4",
+         "6c696d69742e626f756e642d636f756e742e7631|5|-|-|-"});
+  } else {
+    envelope.operands.push_back(
+        {"relational_node_v1", "3", "7|0|2|1|-"});
+    envelope.operands.push_back(
+        {"relational_node_binding_v1", "3",
+         "6c696d69742e626f756e642d636f756e742e7631|5|-|-|-"});
+  }
+  return envelope;
+}
+
+sblr::SblrOperationEnvelope NodeDrivenRowSubqueryLimitValuesEnvelope(
+    const bool many) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      many ? "qow.live.row-subquery.many"
+           : "qow.live.row-subquery.one");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       many ? "019f0000-0000-7000-8000-00000000cf56"
+            : "019f0000-0000-7000-8000-00000000cf55"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "3"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000cf57|"
+       "019f0000-0000-7400-8000-00000000cf58|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000cf59|"
+       "019f0000-0000-7400-8000-00000000cf5a|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000cf5b|"
+       "019f0000-0000-7400-8000-00000000cf5c|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|37"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|39"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|1|-|31"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|38"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|3130"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6b6579"},
+      {"relational_output_v1", "2", "1|2|2|1|1|7061796c6f6164"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "4,5"},
+      {"relational_node_v1", "1", many ? "13|0|-|1,2|1,2"
+                                               : "13|0|-|1,2|1"},
+      {"relational_node_v1", "2", "10|0|1|1,2|-"},
+      {"relational_node_v1", "3", "7|0|2|1,2|-"},
+      {"relational_node_binding_v1", "1",
+       many ? "76616c7565732e6c69746572616c2d7461626c652e7631|"
+              "1,2,4,5|-|-|-"
+            : "76616c7565732e6c69746572616c2d7461626c652e7631|"
+              "1,2|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex("subquery.row.v1") + "|-|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|3|-|-|-"},
+  };
+  if (!many) {
+    std::erase_if(envelope.operands, [](const auto& operand) {
+      return (operand.type == "relational_values_row_v1" &&
+              operand.name == "2") ||
+             (operand.type == "relational_expression_v1" &&
+              (operand.name == "4" || operand.name == "5"));
+    });
+  }
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -14339,6 +14479,152 @@ bool ValidateNodeDrivenTableSubqueryCteCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-SCALAR-ROW-SUBQUERY-CARDINALITY-V1
+bool ValidateNodeDrivenScalarRowSubqueryCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto no_publication = [](const auto& result,
+                                 const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  const auto admission_refused = [](const auto& result,
+                                     const std::string_view code) {
+    return !result.accepted && !result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  const auto scalar_one = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kOne));
+  const auto scalar_replay = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kOne));
+  const auto scalar_zero = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kZero));
+  const auto scalar_many = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kMany));
+  auto scalar_one_bound = Context();
+  scalar_one_bound.optimizer_maximum_candidate_count = 2;
+  const auto scalar_one_exhausted = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kOne),
+      std::move(scalar_one_bound));
+  auto scalar_zero_bound = Context();
+  scalar_zero_bound.optimizer_maximum_candidate_count = 3;
+  const auto scalar_zero_exhausted = dispatch(
+      NodeDrivenScalarSubqueryLimitValuesEnvelope(
+          ScalarSubqueryInputCardinality::kZero),
+      std::move(scalar_zero_bound));
+  const auto dump_result = [](const std::string_view label,
+                              const auto& result) {
+    std::cerr << label << ": ok=" << result.api_result.ok
+              << ", accepted=" << result.accepted
+              << ", admitted=" << result.optimizer_admitted
+              << ", logical=" << result.logical_node_count
+              << ", physical=" << result.physical_node_count
+              << ", rows=" << result.canonical_result_row_count
+              << ", selected=" << result.optimizer_selected << '\n';
+    for (const auto& diagnostic : result.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  };
+  bool passed = Require(
+      scalar_one.api_result.ok && scalar_one.logical_node_count == 3 &&
+          scalar_one.physical_node_count == 3 &&
+          scalar_one.canonical_result_column_count == 1 &&
+          scalar_one.canonical_result_row_count == 1 &&
+          scalar_one.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "1" &&
+          scalar_replay.api_result.ok &&
+          scalar_replay.selected_plan_uuid == scalar_one.selected_plan_uuid &&
+          scalar_replay.canonical_result_bytes ==
+              scalar_one.canonical_result_bytes &&
+          scalar_zero.api_result.ok &&
+          scalar_zero.logical_node_count == 4 &&
+          scalar_zero.physical_node_count == 4 &&
+          scalar_zero.canonical_result_row_count == 1 &&
+          scalar_zero.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.state == api::EngineValueState::sql_null &&
+          no_publication(
+              scalar_many,
+              "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-PAYLOAD-V1") &&
+          admission_refused(
+              scalar_one_exhausted,
+              "QOW-DIAG-OPTIMIZER-ADMISSION-RESOURCE-V1") &&
+          admission_refused(
+              scalar_zero_exhausted,
+              "QOW-DIAG-OPTIMIZER-ADMISSION-RESOURCE-V1"),
+      "scalar subquery composition lost zero/one/many cardinality, typed "
+      "NULL, replay, or atomic resource behavior");
+  if (!passed) {
+    dump_result("scalar-one", scalar_one);
+    dump_result("scalar-zero", scalar_zero);
+    dump_result("scalar-many", scalar_many);
+    dump_result("scalar-one-exhausted", scalar_one_exhausted);
+    dump_result("scalar-zero-exhausted", scalar_zero_exhausted);
+  }
+
+  const auto row_one =
+      dispatch(NodeDrivenRowSubqueryLimitValuesEnvelope(false));
+  const auto row_replay =
+      dispatch(NodeDrivenRowSubqueryLimitValuesEnvelope(false));
+  const auto row_many =
+      dispatch(NodeDrivenRowSubqueryLimitValuesEnvelope(true));
+  auto row_bound = Context();
+  row_bound.optimizer_maximum_candidate_count = 2;
+  const auto row_exhausted = dispatch(
+      NodeDrivenRowSubqueryLimitValuesEnvelope(false),
+      std::move(row_bound));
+  passed &= Require(
+      row_one.api_result.ok && row_one.logical_node_count == 3 &&
+          row_one.physical_node_count == 3 &&
+          row_one.canonical_result_column_count == 2 &&
+          row_one.canonical_result_row_count == 1 &&
+          row_one.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "7" &&
+          row_one.api_result.result_shape.rows[0]
+                  .fields[1]
+                  .second.encoded_value == "9" &&
+          row_replay.api_result.ok &&
+          row_replay.selected_plan_uuid == row_one.selected_plan_uuid &&
+          row_replay.canonical_result_bytes ==
+              row_one.canonical_result_bytes &&
+          no_publication(
+              row_many,
+              "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-PAYLOAD-V1") &&
+          admission_refused(
+              row_exhausted,
+              "QOW-DIAG-OPTIMIZER-ADMISSION-RESOURCE-V1"),
+      "row subquery composition lost exact width, cardinality, replay, or "
+      "atomic resource behavior");
+  if (!passed) {
+    dump_result("row-one", row_one);
+    dump_result("row-many", row_many);
+    dump_result("row-exhausted", row_exhausted);
+  }
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -14840,6 +15126,7 @@ int main() {
                       ValidateNodeDrivenNullCollationSetCompositionSpine() &&
                       ValidateNodeDrivenExpressionSortLimitCompositionSpine() &&
                       ValidateNodeDrivenTableSubqueryCteCompositionSpine() &&
+                      ValidateNodeDrivenScalarRowSubqueryCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&
