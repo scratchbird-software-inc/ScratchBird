@@ -512,7 +512,8 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         !bound_expression.operator_name.has_value() &&
         !bound_expression.literal_or_parameter_ref.has_value();
     const bool exact_input_identifier =
-        consumer == api::EngineCanonicalExpressionConsumer::join &&
+        (consumer == api::EngineCanonicalExpressionConsumer::join ||
+         consumer == api::EngineCanonicalExpressionConsumer::filter) &&
         bound_expression.expression_kind ==
             api::RelationalExpressionKind::kIdentifier &&
         bound_expression.child_expression_ids.empty() &&

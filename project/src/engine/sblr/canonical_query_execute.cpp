@@ -314,6 +314,8 @@ struct PreparedJoinRoot {
 
 struct PreparedFilterRoot {
   bool ok{false};
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding predicate_row_binding;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
@@ -3513,6 +3515,71 @@ PreparedProjectRoot PrepareDescriptorDirectProjectRoot(
   return result;
 }
 
+bool PrepareInputPredicateRowBinding(
+    const api::TypedRelationalDag& dag,
+    const std::uint32_t predicate_expression_id,
+    const std::vector<std::uint32_t>& input_descriptor_ids,
+    CanonicalRelationalExpressionRowBinding* row_binding,
+    std::string* detail) {
+  if (row_binding == nullptr || detail == nullptr ||
+      predicate_expression_id == 0 || input_descriptor_ids.empty()) {
+    if (detail != nullptr) {
+      *detail = "row predicate binding request is incomplete";
+    }
+    return false;
+  }
+  *row_binding = {};
+  row_binding->row_descriptor_ids = input_descriptor_ids;
+
+  std::unordered_map<std::uint32_t, std::size_t> input_ordinals;
+  for (std::size_t ordinal = 0; ordinal < input_descriptor_ids.size();
+       ++ordinal) {
+    if (!input_ordinals.emplace(input_descriptor_ids[ordinal], ordinal)
+             .second) {
+      *row_binding = {};
+      *detail = "row predicate input descriptor identity is ambiguous";
+      return false;
+    }
+  }
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalExpressionRecord*>
+      expressions;
+  for (const auto& expression : dag.expressions) {
+    expressions.emplace(expression.expression_id, &expression);
+  }
+  std::unordered_set<std::uint32_t> reachable;
+  std::vector<std::uint32_t> pending{predicate_expression_id};
+  while (!pending.empty()) {
+    const auto expression_id = pending.back();
+    pending.pop_back();
+    if (!reachable.insert(expression_id).second) continue;
+    const auto expression = expressions.find(expression_id);
+    if (expression == expressions.end()) {
+      *row_binding = {};
+      *detail = "row predicate has a dangling expression child";
+      return false;
+    }
+    if (expression->second->expression_kind ==
+        api::RelationalExpressionKind::kIdentifier) {
+      const auto ordinal =
+          input_ordinals.find(expression->second->result_descriptor_id);
+      if (ordinal == input_ordinals.end()) {
+        *row_binding = {};
+        *detail = "row predicate identifier is not supplied by its input";
+        return false;
+      }
+      row_binding->slots.push_back(
+          {expression_id, expression->second->result_descriptor_id,
+           ordinal->second,
+           CanonicalRelationalExpressionRowSlotKind::input_identifier});
+    }
+    pending.insert(pending.end(),
+                   expression->second->child_expression_ids.begin(),
+                   expression->second->child_expression_ids.end());
+  }
+  return true;
+}
+
 PreparedFilterRoot PrepareFilterRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
@@ -3529,6 +3596,17 @@ PreparedFilterRoot PrepareFilterRoot(
         return output.relation_node_id == root.logical_node_id;
       })) {
     result.detail = "filter root output lineage is not admitted by this profile";
+    return result;
+  }
+  if (root.bound_expression_ids.size() != 1) {
+    result.detail = "filter predicate root identity is not exact";
+    return result;
+  }
+  result.predicate_expression_id = root.bound_expression_ids.front();
+  if (!PrepareInputPredicateRowBinding(
+          dag, result.predicate_expression_id,
+          input_node.output_descriptor_ids, &result.predicate_row_binding,
+          &result.detail)) {
     return result;
   }
   result.result_bindings = input.result_bindings;
@@ -3601,54 +3679,21 @@ PreparedJoinRoot PrepareJoinRoot(
       return result;
     }
     result.predicate_expression_id = root.bound_expression_ids.front();
-    result.predicate_row_binding.row_descriptor_ids = predicate_descriptors;
-
-    std::unordered_map<std::uint32_t, std::size_t> predicate_ordinals;
-    for (std::size_t ordinal = 0; ordinal < predicate_descriptors.size();
-         ++ordinal) {
-      if (!predicate_ordinals.emplace(predicate_descriptors[ordinal], ordinal)
-               .second) {
+    if (!PrepareInputPredicateRowBinding(
+            dag, result.predicate_expression_id, predicate_descriptors,
+            &result.predicate_row_binding, &result.detail)) {
+      if (result.detail ==
+          "row predicate input descriptor identity is ambiguous") {
+        result.detail = "join predicate input descriptor identity is ambiguous";
+      } else if (result.detail ==
+                 "row predicate identifier is not supplied by its input") {
         result.detail =
-            "join predicate input descriptor identity is ambiguous";
-        return result;
-      }
-    }
-    std::unordered_map<std::uint32_t,
-                       const api::RelationalExpressionRecord*>
-        expressions;
-    for (const auto& expression : dag.expressions) {
-      expressions.emplace(expression.expression_id, &expression);
-    }
-    std::unordered_set<std::uint32_t> reachable;
-    std::vector<std::uint32_t> pending{result.predicate_expression_id};
-    while (!pending.empty()) {
-      const auto expression_id = pending.back();
-      pending.pop_back();
-      if (!reachable.insert(expression_id).second) continue;
-      const auto expression = expressions.find(expression_id);
-      if (expression == expressions.end()) {
-        result.predicate_row_binding = {};
+            "join predicate identifier is not supplied by either input";
+      } else if (result.detail ==
+                 "row predicate has a dangling expression child") {
         result.detail = "join predicate has a dangling expression child";
-        return result;
       }
-      if (expression->second->expression_kind ==
-          api::RelationalExpressionKind::kIdentifier) {
-        const auto ordinal = predicate_ordinals.find(
-            expression->second->result_descriptor_id);
-        if (ordinal == predicate_ordinals.end()) {
-          result.predicate_row_binding = {};
-          result.detail =
-              "join predicate identifier is not supplied by either input";
-          return result;
-        }
-        result.predicate_row_binding.slots.push_back(
-            {expression_id, expression->second->result_descriptor_id,
-             ordinal->second,
-             CanonicalRelationalExpressionRowSlotKind::input_identifier});
-      }
-      pending.insert(pending.end(),
-                     expression->second->child_expression_ids.begin(),
-                     expression->second->child_expression_ids.end());
+      return result;
     }
   }
 
@@ -5430,24 +5475,12 @@ ExecuteCanonicalObjectFreeFilterQuery(
                   prepared_root.detail);
   }
 
-  api::EngineSqlTruthValue predicate_truth =
-      api::EngineSqlTruthValue::unknown;
-  std::string predicate_detail;
-  CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag, request.expression_services);
-  if (!expression_runtime.EvaluatePredicateForConsumer(
-          root->bound_expression_ids.front(),
-          api::EngineCanonicalExpressionConsumer::filter, &predicate_truth,
-          &predicate_detail)) {
-    return refuse("QOW-DIAG-RELATIONAL-LIVE-FILTER-PAYLOAD-V1",
-                  "FILTER predicate: " + predicate_detail);
-  }
-
   const auto input_row_count = input.batch.rows.size();
-  const auto output_row_bound =
-      predicate_truth == api::EngineSqlTruthValue::true_value
-          ? input_row_count
-          : 0;
+  if (input_row_count >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live FILTER row evaluation exceeds the admitted candidate bound");
+  }
   std::uint64_t input_memory = 1;
   if (!AddBatchMemoryBytes(input.batch, &input_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
@@ -5457,11 +5490,54 @@ ExecuteCanonicalObjectFreeFilterQuery(
   std::uint64_t total_memory = 0;
   if (!CheckedMultiply(input_row_count, sizeof(api::EngineSqlTruthValue),
                        &predicate_memory) ||
-      !CheckedAdd(input_memory, predicate_memory, &total_memory) ||
-      (output_row_bound != 0 &&
-       !CheckedAdd(total_memory, input_memory, &total_memory))) {
+      !CheckedAdd(input_memory, predicate_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live FILTER predicate or output size overflowed");
+                  "live FILTER predicate state size overflowed");
+  }
+  if (total_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live FILTER predicate state exceeds the admitted memory budget");
+  }
+
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag, request.expression_services);
+  std::vector<api::EngineSqlTruthValue> predicate_truth_values;
+  predicate_truth_values.reserve(input_row_count);
+  std::size_t output_row_bound = 0;
+  std::uint64_t output_memory = 0;
+  for (const auto& row : input.batch.rows) {
+    api::EngineSqlTruthValue predicate_truth =
+        api::EngineSqlTruthValue::unknown;
+    std::string predicate_detail;
+    if (!expression_runtime.EvaluatePredicateForConsumer(
+            prepared_root.predicate_expression_id,
+            prepared_root.predicate_row_binding, row.values,
+            api::EngineCanonicalExpressionConsumer::filter,
+            &predicate_truth, &predicate_detail)) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-FILTER-PAYLOAD-V1",
+                    "FILTER predicate row " +
+                        std::to_string(predicate_truth_values.size()) +
+                        ": " + predicate_detail);
+    }
+    predicate_truth_values.push_back(predicate_truth);
+    if (predicate_truth != api::EngineSqlTruthValue::true_value) continue;
+    ++output_row_bound;
+    if (!CheckedAdd(output_memory, 1, &output_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "live FILTER output row count overflowed");
+    }
+    for (const auto& value : row.values) {
+      if (!CheckedAdd(output_memory, value.encoded_value.size(),
+                      &output_memory)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live FILTER output payload overflowed");
+      }
+    }
+  }
+  if (!CheckedAdd(total_memory, output_memory, &total_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live FILTER output size overflowed");
   }
   if (total_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
@@ -5492,7 +5568,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
        plan::CanonicalLogicalRelationalNodeKind::kFilter,
        exec::PhysicalNodeKind::kFilter,
        "canonical.filter.3vl.row.v1",
-       input_row_count,
+       output_row_bound,
        total_memory,
        1,
        1}};
@@ -5520,7 +5596,8 @@ ExecuteCanonicalObjectFreeFilterQuery(
   filter_registration.engine_owned = true;
   filter_registration.accepts_optimizer_publication_v2 = true;
   filter_registration.execute =
-      [predicate_truth, input_row_count, mga_context = request.context](
+      [predicate_truth_values = std::move(predicate_truth_values),
+       input_row_count, mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -5553,8 +5630,7 @@ ExecuteCanonicalObjectFreeFilterQuery(
         filter_request.physical_dag = dag;
         filter_request.selected_physical_node_id = node.physical_node_id;
         filter_request.input_batch = input_batch;
-        filter_request.row_truth_values.assign(input_row_count,
-                                               predicate_truth);
+        filter_request.row_truth_values = predicate_truth_values;
         filter_request.consumer = api::EnginePredicateConsumer::filter;
         filter_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
