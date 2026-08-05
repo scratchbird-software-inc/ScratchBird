@@ -6489,6 +6489,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                  exec::CanonicalAggregateFunction::bool_or ||
              global_aggregate_profile.function ==
                  exec::CanonicalAggregateFunction::every);
+        if (global_aggregate_profile.matched) {
+          const auto function = global_aggregate_profile.function;
+          registry_aggregate_composable =
+              registry_aggregate_composable ||
+              function == exec::CanonicalAggregateFunction::stddev_pop ||
+              function == exec::CanonicalAggregateFunction::variance_pop ||
+              function == exec::CanonicalAggregateFunction::stddev ||
+              function == exec::CanonicalAggregateFunction::variance ||
+              function == exec::CanonicalAggregateFunction::stddev_samp ||
+              function == exec::CanonicalAggregateFunction::variance_samp;
+        }
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
              !registry_aggregate_composable) ||
@@ -7289,6 +7300,165 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          break;
+        }
+        if (global_aggregate_profile.matched &&
+            (global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::stddev_pop ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::variance_pop ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::stddev ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::variance ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::stddev_samp ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::variance_samp)) {
+          const auto function = global_aggregate_profile.function;
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state, function,
+              false, global_aggregate_profile.distinct,
+              global_aggregate_profile.has_filter);
+          if (!prepared.ok || prepared.value_columns.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          if (prepared.filter_column.has_value()) {
+            std::vector<api::EngineSqlTruthValue> materialized_filter;
+            std::string filter_detail;
+            if (!MaterializeAggregateFilterTruthValues(
+                    input_batch, *prepared.filter_column,
+                    prepared.filter_descriptor_id, &materialized_filter,
+                    &filter_detail)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            std::move(filter_detail));
+            }
+            filter_truth_values = std::move(materialized_filter);
+          }
+          std::set<std::string> distinct_values;
+          std::uint64_t non_null_count = 0;
+          long double numeric_mean = 0.0L;
+          long double numeric_m2 = 0.0L;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            if (value.descriptor.canonical_type_name != "int64") {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "composition statistical input is not canonical int64");
+            }
+            if (prepared.distinct) {
+              std::string key = value.encoded_value + ":";
+              key.append(
+                  reinterpret_cast<const char*>(value.binary_value.data()),
+                  value.binary_value.size());
+              if (!distinct_values.insert(std::move(key)).second) continue;
+            }
+            std::int64_t decoded = 0;
+            const auto [end, error] = std::from_chars(
+                value.encoded_value.data(),
+                value.encoded_value.data() + value.encoded_value.size(),
+                decoded);
+            if (error != std::errc{} ||
+                end != value.encoded_value.data() +
+                           value.encoded_value.size() ||
+                non_null_count == std::numeric_limits<std::uint64_t>::max()) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "composition statistical input or count is invalid");
+            }
+            ++non_null_count;
+            const auto numeric = static_cast<long double>(decoded);
+            const auto count = static_cast<long double>(non_null_count);
+            const auto delta = numeric - numeric_mean;
+            numeric_mean += delta / count;
+            const auto delta2 = numeric - numeric_mean;
+            numeric_m2 += delta * delta2;
+            if (!std::isfinite(static_cast<double>(numeric_mean)) ||
+                !std::isfinite(static_cast<double>(numeric_m2))) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition statistical state overflowed");
+            }
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition statistical DISTINCT work bound overflowed");
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition statistical work exceeds the admitted bound");
+          }
+          const bool population =
+              function == exec::CanonicalAggregateFunction::stddev_pop ||
+              function == exec::CanonicalAggregateFunction::variance_pop;
+          const bool deviation =
+              function == exec::CanonicalAggregateFunction::stddev_pop ||
+              function == exec::CanonicalAggregateFunction::stddev ||
+              function == exec::CanonicalAggregateFunction::stddev_samp;
+          const bool has_result = non_null_count >= (population ? 1U : 2U);
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue statistic_value;
+          statistic_value.descriptor = prepared.result_column.descriptor;
+          statistic_value.is_null = !has_result;
+          statistic_value.state = has_result
+                                      ? api::EngineValueState::value
+                                      : api::EngineValueState::sql_null;
+          if (has_result) {
+            const auto denominator = static_cast<long double>(
+                population ? non_null_count : non_null_count - 1);
+            auto statistic = numeric_m2 / denominator;
+            if (statistic < 0.0L && statistic > -1e-18L) statistic = 0.0L;
+            if (deviation) statistic = std::sqrt(statistic);
+            if (!std::isfinite(static_cast<double>(statistic))) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition statistical result overflowed");
+            }
+            std::ostringstream encoded;
+            encoded << std::setprecision(17)
+                    << static_cast<double>(statistic);
+            statistic_value.encoded_value = encoded.str();
+          }
+          tuple.values.push_back(std::move(statistic_value));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "statistical planning state: " + canonical.detail
+                    : "statistical planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          transformation_rule =
+              global_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
           break;
