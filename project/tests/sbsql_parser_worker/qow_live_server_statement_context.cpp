@@ -640,6 +640,40 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed projection/WHERE/LIMIT did not preserve its bound "
             "source column");
 
+    auto hidden_filter = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation WHERE "
+        "auxiliary_value >= 102;",
+        true);
+    if (!hidden_filter.accepted) PrintMessages(hidden_filter.messages);
+    Require(hidden_filter.accepted &&
+                hidden_filter.server_operation_id == "query.execute" &&
+                hidden_filter.server_cursor_uuid.empty() &&
+                hidden_filter.server_row_count == 2 &&
+                hidden_filter.server_result_payload.find("integer_value") !=
+                    std::string::npos &&
+                hidden_filter.server_result_payload.find("auxiliary_value") ==
+                    std::string::npos,
+            "object-backed hidden predicate column did not filter before its "
+            "canonical projection");
+
+    auto hidden_filter_limit = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation WHERE "
+        "auxiliary_value >= 102 LIMIT 1;",
+        true);
+    if (!hidden_filter_limit.accepted) {
+      PrintMessages(hidden_filter_limit.messages);
+    }
+    Require(hidden_filter_limit.accepted &&
+                hidden_filter_limit.server_operation_id == "query.execute" &&
+                hidden_filter_limit.server_cursor_uuid.empty() &&
+                hidden_filter_limit.server_row_count == 1 &&
+                hidden_filter_limit.server_result_payload.find(
+                    "integer_value") != std::string::npos &&
+                hidden_filter_limit.server_result_payload.find(
+                    "auxiliary_value") == std::string::npos,
+            "object-backed hidden predicate/project/LIMIT chain leaked its "
+            "dependency column");
+
     auto missing_projection = parser.RunPipeline(
         "SELECT missing_value FROM qow_packet7.qow_packet7_relation;", true);
     Require(!missing_projection.accepted &&

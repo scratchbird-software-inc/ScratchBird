@@ -8,6 +8,7 @@
 
 #include "ast/ast.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <limits>
@@ -421,6 +422,7 @@ class NativeRelationalParser final {
     source.range = Span(first_name_token, *source_end);
 
     std::optional<std::uint32_t> predicate_expression_id;
+    std::optional<std::uint32_t> hidden_predicate_expression_id;
     if (!AtEnd() && IsWord(Current(), "WHERE")) {
       Consume();
       predicate_expression_id = ParseExpression(0, 0);
@@ -449,6 +451,21 @@ class NativeRelationalParser final {
                "bounded catalog WHERE requires an identifier comparison to "
                "an unsigned numeric literal");
         return FinishRefusal();
+      }
+      const bool wildcard_projection =
+          projection_expression_ids.size() == 1 &&
+          document_.expressions[projection_expression_ids.front() - 1]
+                  .expression_kind == NativeExpressionAstKind::kWildcard;
+      const bool predicate_is_projected = std::ranges::any_of(
+          projection_expression_ids, [&](const auto expression_id) {
+            const auto& projection =
+                document_.expressions[expression_id - 1];
+            return projection.expression_kind ==
+                       NativeExpressionAstKind::kIdentifier &&
+                   projection.spelling == left->spelling;
+          });
+      if (!wildcard_projection && !predicate_is_projected) {
+        hidden_predicate_expression_id = left->expression_id;
       }
     }
 
@@ -515,6 +532,10 @@ class NativeRelationalParser final {
     relation.relation_kind = NativeRelationAstKind::kCatalogSource;
     relation.relation_source_ids = {source.source_id};
     relation.output_expression_ids = projection_expression_ids;
+    if (hidden_predicate_expression_id.has_value()) {
+      relation.output_expression_ids.push_back(
+          *hidden_predicate_expression_id);
+    }
     relation.range = Span(select_token, *source_end);
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
@@ -524,7 +545,8 @@ class NativeRelationalParser final {
       filter.relation_id = 2;
       filter.relation_kind = NativeRelationAstKind::kFilter;
       filter.input_relation_ids = {1};
-      filter.output_expression_ids = projection_expression_ids;
+      filter.output_expression_ids =
+          document_.relations.front().output_expression_ids;
       filter.predicate_expression_ids = {*predicate_expression_id};
       filter.range = Span(
           select_token,
@@ -532,6 +554,19 @@ class NativeRelationalParser final {
               document_.expressions[*predicate_expression_id - 1].range));
       document_.relations.push_back(std::move(filter));
       document_.root_relation_id = 2;
+    }
+    if (hidden_predicate_expression_id.has_value()) {
+      NativeRelationAstNode project;
+      project.relation_id = document_.root_relation_id + 1;
+      project.relation_kind = NativeRelationAstKind::kProject;
+      project.input_relation_ids = {document_.root_relation_id};
+      project.output_expression_ids = projection_expression_ids;
+      project.range = Span(
+          select_token,
+          TokenForRangeEnd(
+              document_.expressions[*predicate_expression_id - 1].range));
+      document_.relations.push_back(std::move(project));
+      document_.root_relation_id = document_.relations.back().relation_id;
     }
     if (!limit_expression_ids.empty()) {
       NativeRelationAstNode limit;

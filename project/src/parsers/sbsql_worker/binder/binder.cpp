@@ -475,28 +475,44 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.relations, [](const auto& candidate) {
           return candidate.relation_kind == NativeRelationAstKind::kFilter;
         });
+    const auto project_relation = std::ranges::find_if(
+        ast.relations, [](const auto& candidate) {
+          return candidate.relation_kind == NativeRelationAstKind::kProject;
+        });
     const bool filter_composition =
         source_relation != ast.relations.end() &&
         filter_relation != ast.relations.end() &&
         filter_relation->input_relation_ids ==
             std::vector<std::uint32_t>{source_relation->relation_id};
+    const bool project_composition =
+        filter_composition && project_relation != ast.relations.end() &&
+        project_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{filter_relation->relation_id} &&
+        !project_relation->output_expression_ids.empty();
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition
             ? limit_relation->relation_id
-            : (filter_composition ? filter_relation->relation_id
-                                  : (source_relation == ast.relations.end()
-                                         ? 0
-                                         : source_relation->relation_id));
+            : (project_composition
+                   ? project_relation->relation_id
+                   : (filter_composition
+                          ? filter_relation->relation_id
+                          : (source_relation == ast.relations.end()
+                                 ? 0
+                                 : source_relation->relation_id)));
     const auto expected_limit_input =
-        filter_composition ? filter_relation->relation_id
-                           : (source_relation == ast.relations.end()
-                                  ? 0
-                                  : source_relation->relation_id);
+        project_composition
+            ? project_relation->relation_id
+            : (filter_composition
+                   ? filter_relation->relation_id
+                   : (source_relation == ast.relations.end()
+                          ? 0
+                          : source_relation->relation_id));
     const bool catalog_chain =
         source_relation != ast.relations.end() &&
         ast.relations.size() ==
             1 + static_cast<std::size_t>(filter_composition) +
+                static_cast<std::size_t>(project_composition) +
                 static_cast<std::size_t>(limit_composition) &&
         ast.root_relation_id == expected_root &&
         (!limit_composition ||
@@ -520,20 +536,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     const auto& relation = *source_relation;
     const auto& source = ast.catalog_relation_sources.front();
+    const auto& visible_projection_expression_ids =
+        project_composition ? project_relation->output_expression_ids
+                            : relation.output_expression_ids;
     const auto wildcard = std::ranges::find_if(
         ast.expressions, [&](const auto& candidate) {
-          return relation.output_expression_ids.size() == 1 &&
+          return visible_projection_expression_ids.size() == 1 &&
                  candidate.expression_id ==
-                     relation.output_expression_ids.front() &&
+                     visible_projection_expression_ids.front() &&
                  candidate.expression_kind ==
                      NativeExpressionAstKind::kWildcard;
         });
     const bool wildcard_projection = wildcard != ast.expressions.end();
     std::vector<const NativeExpressionAstNode*> projection_identifiers;
+    std::vector<const NativeExpressionAstNode*> source_identifiers;
     std::unordered_set<std::string> projection_names;
     if (!wildcard_projection) {
-      projection_identifiers.reserve(relation.output_expression_ids.size());
-      for (const auto expression_id : relation.output_expression_ids) {
+      projection_identifiers.reserve(visible_projection_expression_ids.size());
+      for (const auto expression_id : visible_projection_expression_ids) {
         const auto expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == expression_id;
@@ -552,6 +572,27 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         }
         projection_identifiers.push_back(&*expression);
       }
+      source_identifiers.reserve(relation.output_expression_ids.size());
+      std::unordered_set<std::string> source_names;
+      for (const auto expression_id : relation.output_expression_ids) {
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.expressions.end() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->spelling.empty() ||
+            !expression->child_expression_ids.empty() ||
+            !expression->operator_name.empty() ||
+            !source_names.insert(expression->spelling).second) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog source requires unique persisted identifiers");
+          return RefusedBoundAst(std::move(bound));
+        }
+        source_identifiers.push_back(&*expression);
+      }
     }
     const bool projection_syntax_exact =
         wildcard_projection
@@ -561,7 +602,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             : !projection_identifiers.empty();
     const auto projection_ast_count =
         wildcard_projection ? 1U : projection_identifiers.size();
-    if ((!filter_composition && !limit_composition &&
+    if ((!filter_composition && !project_composition && !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         !relation.input_relation_ids.empty() ||
@@ -672,6 +713,35 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
     }
+    if (project_composition) {
+      auto expected_source_expression_ids = visible_projection_expression_ids;
+      expected_source_expression_ids.push_back(
+          filter_identifier->expression_id);
+      if (!project_relation->relation_source_ids.empty() ||
+          !project_relation->values_row_ids.empty() ||
+          project_relation->output_expression_ids !=
+              visible_projection_expression_ids ||
+          project_relation->aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          project_relation->aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !project_relation->grouping_key_expression_ids.empty() ||
+          !project_relation->aggregate_expression_ids.empty() ||
+          !project_relation->predicate_expression_ids.empty() ||
+          !project_relation->limit_expression_ids.empty() ||
+          relation.output_expression_ids != expected_source_expression_ids ||
+          filter_relation->output_expression_ids !=
+              relation.output_expression_ids ||
+          std::ranges::any_of(
+              projection_identifiers, [&](const auto* identifier) {
+                return identifier->spelling == filter_identifier->spelling;
+              })) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "catalog hidden-column projection is outside the bounded composition profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
     if (limit_composition) {
       if (ast.expressions.size() !=
               projection_ast_count + (filter_composition ? 3 : 0) +
@@ -679,7 +749,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           !limit_relation->relation_source_ids.empty() ||
           !limit_relation->values_row_ids.empty() ||
           limit_relation->output_expression_ids !=
-              relation.output_expression_ids ||
+              visible_projection_expression_ids ||
           limit_relation->aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
           limit_relation->aggregate_projection_form !=
@@ -748,15 +818,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       return RefusedBoundAst(std::move(bound));
     }
     if (!wildcard_projection &&
-        (projection_identifiers.size() != relation_binding.columns.size() ||
+        (source_identifiers.size() != relation_binding.columns.size() ||
          !std::ranges::equal(
-             projection_identifiers, relation_binding.columns,
+             source_identifiers, relation_binding.columns,
              [](const auto* expression, const auto& column) {
                return expression->spelling == column.canonical_name_key;
              }))) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
-          "catalog source projection differs from its resolved column order");
+          "catalog source dependency projection differs from its resolved column order");
       return RefusedBoundAst(std::move(bound));
     }
 
@@ -864,22 +934,32 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     std::vector<std::uint32_t> expanded_expression_ids;
+    std::vector<std::uint32_t> visible_expression_ids;
     std::vector<std::uint32_t> expanded_output_ids;
     if (expanded_projection) {
       const auto column_count = relation_binding.columns.size();
+      const auto visible_column_count =
+          project_composition ? projection_identifiers.size() : column_count;
+      const auto expected_output_count =
+          column_count +
+          (filter_composition ? column_count : 0) +
+          (project_composition ? visible_column_count : 0) +
+          (limit_composition ? visible_column_count : 0);
       if (context.expressions.size() != column_count ||
-          context.outputs.size() != column_count * ast.relations.size()) {
+          visible_column_count == 0 ||
+          context.outputs.size() != expected_output_count) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
-            "catalog projection must cover every persisted column exactly once");
+            "catalog projection must cover its source and visible widths exactly");
         return RefusedBoundAst(std::move(bound));
       }
       bound.expressions.reserve(
           column_count + (filter_composition ? 3 : 0) +
           (limit_composition ? limit_relation->limit_expression_ids.size()
                              : 0));
-      bound.outputs.reserve(column_count * ast.relations.size());
+      bound.outputs.reserve(expected_output_count);
       expanded_expression_ids.reserve(column_count);
+      visible_expression_ids.reserve(visible_column_count);
       expanded_output_ids.reserve(column_count);
       for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
         const auto expected_id = static_cast<std::uint32_t>(ordinal + 1);
@@ -925,17 +1005,53 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_output.ordinal = output.ordinal;
         bound.outputs.push_back(std::move(bound_output));
         expanded_expression_ids.push_back(expression.expression_id);
-        if (!filter_composition && !limit_composition) {
+        if (!filter_composition && !project_composition && !limit_composition) {
           expanded_output_ids.push_back(output.output_id);
         }
       }
+      visible_expression_ids = project_composition
+                                   ? project_relation->output_expression_ids
+                                   : expanded_expression_ids;
+      std::size_t output_index = column_count;
       for (std::size_t relation_ordinal = 1;
            relation_ordinal < ast.relations.size(); ++relation_ordinal) {
         const auto& downstream = ast.relations[relation_ordinal];
-        for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
-          const auto& column = relation_binding.columns[ordinal];
-          const auto& expression = context.expressions[ordinal];
-          const auto output_index = relation_ordinal * column_count + ordinal;
+        std::vector<std::size_t> source_ordinals;
+        if (wildcard_projection) {
+          source_ordinals.reserve(column_count);
+          for (std::size_t ordinal = 0; ordinal < column_count; ++ordinal) {
+            source_ordinals.push_back(ordinal);
+          }
+        } else {
+          source_ordinals.reserve(downstream.output_expression_ids.size());
+          for (const auto expression_id : downstream.output_expression_ids) {
+            const auto source_expression = std::ranges::find(
+                relation.output_expression_ids, expression_id);
+            if (source_expression == relation.output_expression_ids.end()) {
+              AddBoundAstDiagnostic(
+                  &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                  "catalog operator output has no source dependency");
+              return RefusedBoundAst(std::move(bound));
+            }
+            source_ordinals.push_back(static_cast<std::size_t>(std::distance(
+                relation.output_expression_ids.begin(), source_expression)));
+          }
+        }
+        const auto expected_downstream_width =
+            downstream.relation_kind == NativeRelationAstKind::kFilter
+                ? column_count
+                : visible_column_count;
+        if (source_ordinals.size() != expected_downstream_width) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "catalog operator output width differs from its bounded profile");
+          return RefusedBoundAst(std::move(bound));
+        }
+        for (std::size_t ordinal = 0; ordinal < source_ordinals.size();
+             ++ordinal, ++output_index) {
+          const auto source_ordinal = source_ordinals[ordinal];
+          const auto& column = relation_binding.columns[source_ordinal];
+          const auto& expression = context.expressions[source_ordinal];
           const auto& output = context.outputs[output_index];
           const auto expected_output_id = static_cast<std::uint32_t>(
               output_index + 1);
@@ -963,6 +1079,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expanded_output_ids.push_back(output.output_id);
           }
         }
+      }
+      if (output_index != context.outputs.size()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+            "catalog operator outputs contain trailing projection evidence");
+        return RefusedBoundAst(std::move(bound));
       }
     }
 
@@ -1007,6 +1129,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           "filter.catalog-column-numeric-comparison.v1";
       bound.relations.push_back(std::move(bound_filter));
     }
+    if (project_composition) {
+      BoundRelationAstRecord bound_project;
+      bound_project.relation_id = project_relation->relation_id;
+      bound_project.relation_kind = NativeRelationAstKind::kProject;
+      bound_project.input_relation_ids = {filter_relation->relation_id};
+      bound_project.output_expression_ids = visible_expression_ids;
+      bound_project.bound_expression_ids = visible_expression_ids;
+      bound_project.semantic_variant_id =
+          "project.catalog-visible-columns.v1";
+      bound.relations.push_back(std::move(bound_project));
+    }
     if (limit_composition) {
       std::vector<std::uint32_t> bound_limit_expression_ids;
       bound_limit_expression_ids.reserve(
@@ -1033,9 +1166,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound_limit.relation_id = limit_relation->relation_id;
       bound_limit.relation_kind = NativeRelationAstKind::kLimit;
       bound_limit.input_relation_ids = {
-          filter_composition ? filter_relation->relation_id
-                             : relation.relation_id};
-      bound_limit.output_expression_ids = expanded_expression_ids;
+          project_composition
+              ? project_relation->relation_id
+              : (filter_composition ? filter_relation->relation_id
+                                    : relation.relation_id)};
+      bound_limit.output_expression_ids = visible_expression_ids;
       bound_limit.limit_expression_ids = bound_limit_expression_ids;
       bound_limit.bound_expression_ids =
           std::move(bound_limit_expression_ids);

@@ -57,6 +57,7 @@ enum class NativeRelationAstKind {
   kFilter,
   kCatalogSource,
   kLimit,
+  kProject,
 };
 
 enum class NativeRelationSourceAstKind {

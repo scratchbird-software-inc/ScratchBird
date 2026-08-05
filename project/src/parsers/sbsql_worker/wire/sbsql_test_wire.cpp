@@ -426,6 +426,10 @@ BuildEngineProjectedNativeBindingContext(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind == NativeRelationAstKind::kFilter;
         });
+    const auto project_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kProject;
+        });
     if (source_relation == ast.relations.end()) {
       return fail("catalog_source_projection_cardinality_invalid");
     }
@@ -433,17 +437,28 @@ BuildEngineProjectedNativeBindingContext(
         filter_relation != ast.relations.end() &&
         filter_relation->input_relation_ids ==
             std::vector<std::uint32_t>{source_relation->relation_id};
+    const bool project_composition =
+        project_relation != ast.relations.end() && filter_composition &&
+        project_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{filter_relation->relation_id} &&
+        !project_relation->output_expression_ids.empty();
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition ? limit_relation->relation_id
-                          : (filter_composition ? filter_relation->relation_id
-                                                : source_relation->relation_id);
+                          : (project_composition
+                                 ? project_relation->relation_id
+                                 : (filter_composition
+                                        ? filter_relation->relation_id
+                                        : source_relation->relation_id));
     const auto expected_limit_input =
-        filter_composition ? filter_relation->relation_id
-                           : source_relation->relation_id;
+        project_composition
+            ? project_relation->relation_id
+            : (filter_composition ? filter_relation->relation_id
+                                  : source_relation->relation_id);
     const bool catalog_chain =
         ast.relations.size() ==
             1 + static_cast<std::size_t>(filter_composition) +
+                static_cast<std::size_t>(project_composition) +
                 static_cast<std::size_t>(limit_composition) &&
         ast.root_relation_id == expected_root &&
         (!limit_composition ||
@@ -464,7 +479,7 @@ BuildEngineProjectedNativeBindingContext(
         resolved.object_class == "materialized_view" ||
         resolved.object_class == "external_table" ||
         resolved.object_class == "foreign_table";
-    if ((!filter_composition && !limit_composition &&
+    if ((!filter_composition && !project_composition && !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         relation.relation_source_ids !=
@@ -480,7 +495,7 @@ BuildEngineProjectedNativeBindingContext(
       return fail("catalog_source_projection_authority_incomplete");
     }
 
-    std::vector<std::size_t> selected_column_indexes;
+    std::vector<std::size_t> source_column_indexes;
     const bool wildcard_projection =
         relation.output_expression_ids.size() == 1 &&
         ast.expressions.front().expression_id ==
@@ -488,12 +503,12 @@ BuildEngineProjectedNativeBindingContext(
         ast.expressions.front().expression_kind ==
             NativeExpressionAstKind::kWildcard;
     if (wildcard_projection) {
-      selected_column_indexes.reserve(projection.columns.size());
+      source_column_indexes.reserve(projection.columns.size());
       for (std::size_t index = 0; index < projection.columns.size(); ++index) {
-        selected_column_indexes.push_back(index);
+        source_column_indexes.push_back(index);
       }
     } else {
-      selected_column_indexes.reserve(relation.output_expression_ids.size());
+      source_column_indexes.reserve(relation.output_expression_ids.size());
       for (const auto expression_id : relation.output_expression_ids) {
         const auto expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
@@ -516,14 +531,14 @@ BuildEngineProjectedNativeBindingContext(
         }
         const auto index = static_cast<std::size_t>(
             std::distance(projection.columns.begin(), column));
-        if (std::ranges::find(selected_column_indexes, index) !=
-            selected_column_indexes.end()) {
+        if (std::ranges::find(source_column_indexes, index) !=
+            source_column_indexes.end()) {
           return fail("catalog_projection_column_duplicate");
         }
-        selected_column_indexes.push_back(index);
+        source_column_indexes.push_back(index);
       }
     }
-    if (selected_column_indexes.empty()) {
+    if (source_column_indexes.empty()) {
       return fail("catalog_projection_column_empty");
     }
 
@@ -537,13 +552,13 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.catalog_generation_id = resolved.catalog_epoch;
     catalog_relation.security_epoch = resolved.security_epoch;
     catalog_relation.resource_epoch = projection.validated_resource_epoch;
-    catalog_relation.columns.reserve(selected_column_indexes.size());
+    catalog_relation.columns.reserve(source_column_indexes.size());
     context.descriptors.reserve(
-        selected_column_indexes.size() +
+        source_column_indexes.size() +
         (limit_composition ? 1 : 0) +
         (filter_composition ? 1 : 0));
-    context.expressions.reserve(selected_column_indexes.size());
-    context.outputs.reserve(selected_column_indexes.size() *
+    context.expressions.reserve(source_column_indexes.size());
+    context.outputs.reserve(source_column_indexes.size() *
                             ast.relations.size());
     // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
     // type identities are distinct engine-owned values. Decode only the exact
@@ -645,9 +660,9 @@ BuildEngineProjectedNativeBindingContext(
       }
       return fields;
     };
-    for (std::size_t ordinal = 0; ordinal < selected_column_indexes.size();
+    for (std::size_t ordinal = 0; ordinal < source_column_indexes.size();
          ++ordinal) {
-      const auto selected_index = selected_column_indexes[ordinal];
+      const auto selected_index = source_column_indexes[ordinal];
       const auto& column = projection.columns[selected_index];
       const auto expected_ordinal = static_cast<std::uint32_t>(ordinal);
       const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
@@ -726,12 +741,40 @@ BuildEngineProjectedNativeBindingContext(
     }
     for (const auto& downstream : ast.relations) {
       if (downstream.relation_id == source_relation->relation_id) continue;
+      std::vector<std::size_t> downstream_source_ordinals;
+      if (wildcard_projection) {
+        downstream_source_ordinals.reserve(source_column_indexes.size());
+        for (std::size_t ordinal = 0; ordinal < source_column_indexes.size();
+             ++ordinal) {
+          downstream_source_ordinals.push_back(ordinal);
+        }
+      } else {
+        downstream_source_ordinals.reserve(
+            downstream.output_expression_ids.size());
+        for (const auto expression_id : downstream.output_expression_ids) {
+          const auto source_expression = std::ranges::find(
+              relation.output_expression_ids, expression_id);
+          if (source_expression == relation.output_expression_ids.end()) {
+            return fail("catalog_operator_projection_source_unresolved");
+          }
+          downstream_source_ordinals.push_back(
+              static_cast<std::size_t>(std::distance(
+                  relation.output_expression_ids.begin(), source_expression)));
+        }
+      }
+      if (downstream_source_ordinals.empty()) {
+        return fail("catalog_operator_projection_empty");
+      }
       const auto first_output_id =
           static_cast<std::uint32_t>(context.outputs.size() + 1);
-      for (std::size_t ordinal = 0; ordinal < selected_column_indexes.size();
+      for (std::size_t ordinal = 0;
+           ordinal < downstream_source_ordinals.size();
            ++ordinal) {
-        const auto& column = projection.columns[selected_column_indexes[ordinal]];
-        const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
+        const auto source_ordinal = downstream_source_ordinals[ordinal];
+        const auto& column =
+            projection.columns[source_column_indexes[source_ordinal]];
+        const auto binding_id =
+            static_cast<std::uint32_t>(source_ordinal + 1);
         context.outputs.push_back(
             {first_output_id + static_cast<std::uint32_t>(ordinal), binding_id,
              column.canonical_name_key, binding_id, true,

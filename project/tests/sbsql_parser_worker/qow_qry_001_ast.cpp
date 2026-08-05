@@ -24,6 +24,8 @@ static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kAggregate) == 1);
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kFilter) == 2);
 static_assert(
     static_cast<int>(sbsql::NativeRelationAstKind::kCatalogSource) == 3);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kLimit) == 4);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kProject) == 5);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kLiteral) == 0);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kParameter) == 1);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kIdentifier) == 2);
@@ -455,6 +457,34 @@ bool ValidateCatalogProjectionComposition() {
             native.expressions[4].child_expression_ids ==
                 std::vector<std::uint32_t>({3, 4}),
         "catalog projection expression identities differ");
+  }
+  constexpr std::string_view hidden_sql =
+      "SELECT amount FROM app.orders WHERE order_id >= 10 LIMIT 2;";
+  const auto hidden =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(hidden_sql));
+  passed &= Require(hidden.accepted() && hidden.root_relation_id == 4 &&
+                        hidden.relations.size() == 4 &&
+                        hidden.expressions.size() == 5,
+                    "hidden predicate-column projection shape differs");
+  if (hidden.relations.size() == 4) {
+    passed &= Require(
+        hidden.relations[0].output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}) &&
+            hidden.relations[1].relation_kind ==
+                sbsql::NativeRelationAstKind::kFilter &&
+            hidden.relations[1].output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}) &&
+            hidden.relations[2].relation_kind ==
+                sbsql::NativeRelationAstKind::kProject &&
+            hidden.relations[2].input_relation_ids ==
+                std::vector<std::uint32_t>({2}) &&
+            hidden.relations[2].output_expression_ids ==
+                std::vector<std::uint32_t>({1}) &&
+            hidden.relations[3].input_relation_ids ==
+                std::vector<std::uint32_t>({3}) &&
+            hidden.relations[3].output_expression_ids ==
+                std::vector<std::uint32_t>({1}),
+        "hidden predicate column did not terminate at the Project node");
   }
   return passed;
 }

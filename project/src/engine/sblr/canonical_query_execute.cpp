@@ -5871,6 +5871,74 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapProjectRegistration(
+    std::vector<std::size_t> projected_columns,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kProject;
+  registration.implementation_id = "project.descriptor-direct.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [projected_columns = std::move(projected_columns),
+       maximum_input_row_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-INPUT-V1";
+          step.diagnostic.detail =
+              "object-backed PROJECT input exceeds its admitted bound";
+          return step;
+        }
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
+        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids);
+        if (!input_validation.ok) {
+          step.diagnostic = input_validation;
+          return step;
+        }
+        exec::CanonicalDescriptorProjectionRequest project_request;
+        project_request.physical_dag = dag;
+        project_request.selected_physical_node_id = node.physical_node_id;
+        project_request.input_batch = input_batch;
+        project_request.projected_columns = projected_columns;
+        project_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto project_result =
+            exec::ExecuteCanonicalDescriptorProjection(project_request);
+        if (!project_result.diagnostic.ok) {
+          step.diagnostic = project_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = project_result.output_batch.rows.size();
+        step.materialized_output_batch = project_result.output_batch;
+        step.mga_statement_context = project_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveHeapFilterRegistration(
     const std::uint32_t predicate_expression_id,
     CanonicalRelationalExpressionRowBinding predicate_row_binding,
@@ -20065,31 +20133,48 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kFilter;
       });
+  const auto project_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kProject;
+      });
   const auto limit_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kLimit;
       });
   const bool filter_composition = filter_node != dag.nodes.end();
+  const bool project_composition = project_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
   const auto expected_root =
       limit_composition
           ? limit_node->node_id
+          : (project_composition
+                 ? project_node->node_id
+                 : (filter_composition
+                        ? filter_node->node_id
+                        : (scan_node == dag.nodes.end() ? 0
+                                                        : scan_node->node_id)));
+  const auto expected_project_input =
+      filter_composition ? filter_node->node_id : 0;
+  const auto expected_limit_input =
+      project_composition
+          ? project_node->node_id
           : (filter_composition
                  ? filter_node->node_id
                  : (scan_node == dag.nodes.end() ? 0 : scan_node->node_id));
-  const auto expected_limit_input =
-      filter_composition
-          ? filter_node->node_id
-          : (scan_node == dag.nodes.end() ? 0 : scan_node->node_id);
   const bool exact_composition =
       scan_node != dag.nodes.end() &&
       dag.nodes.size() ==
           1 + static_cast<std::size_t>(filter_composition) +
+              static_cast<std::size_t>(project_composition) +
               static_cast<std::size_t>(limit_composition) &&
       dag.root_node_id == expected_root &&
       (!filter_composition ||
        filter_node->input_node_ids ==
            std::vector<std::uint32_t>{scan_node->node_id}) &&
+      (!project_composition ||
+       (filter_composition &&
+        project_node->input_node_ids ==
+            std::vector<std::uint32_t>{expected_project_input})) &&
       (!limit_composition ||
        limit_node->input_node_ids ==
            std::vector<std::uint32_t>{expected_limit_input});
@@ -20194,6 +20279,44 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          "canonical.heap.filter.catalog-column-numeric-comparison.v1",
          1, 1024, 1, 1});
   }
+  std::vector<std::size_t> projected_columns;
+  std::string project_capability_uuid;
+  if (project_composition) {
+    std::unordered_set<std::size_t> projected_source_ordinals;
+    for (const auto descriptor_id : project_node->output_descriptor_ids) {
+      const auto source_descriptor = std::ranges::find(
+          filter_node->output_descriptor_ids, descriptor_id);
+      if (source_descriptor == filter_node->output_descriptor_ids.end()) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                      "object-backed PROJECT output is not supplied by FILTER");
+      }
+      const auto source_ordinal = static_cast<std::size_t>(std::distance(
+          filter_node->output_descriptor_ids.begin(), source_descriptor));
+      if (!projected_source_ordinals.insert(source_ordinal).second) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                      "object-backed PROJECT repeats a source column");
+      }
+      projected_columns.push_back(source_ordinal);
+    }
+    if (project_node->semantic_variant_id !=
+            "project.catalog-visible-columns.v1" ||
+        project_node->bound_expression_ids.size() !=
+            projected_columns.size() ||
+        projected_columns.empty() ||
+        projected_columns.size() >=
+            filter_node->output_descriptor_ids.size()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-V1",
+                    "object-backed hidden-column PROJECT binding is not exact");
+    }
+    project_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-project.capability");
+    profiles.push_back(
+        {project_node->node_id, "project.descriptor-direct.v1",
+         project_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kProject,
+         exec::PhysicalNodeKind::kProject,
+         "canonical.heap.project.visible-columns.v1", 1, 1024, 1, 1});
+  }
   std::uint64_t row_limit = 0;
   std::uint64_t row_offset = 0;
   std::string limit_implementation_id;
@@ -20236,12 +20359,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       planning_request, profiles,
       limit_composition
           ? "heap-limit.selected-plan"
-          : (filter_composition ? "heap-filter.selected-plan"
-                                : "heap-scan.selected-plan"),
+          : (project_composition
+                 ? "heap-project.selected-plan"
+                 : (filter_composition ? "heap-filter.selected-plan"
+                                       : "heap-scan.selected-plan")),
       limit_composition
           ? "object-backed heap LIMIT composition"
-          : (filter_composition ? "object-backed heap WHERE composition"
-                                : "object-backed heap scan"));
+          : (project_composition
+                 ? "object-backed heap hidden-column PROJECT composition"
+                 : (filter_composition
+                        ? "object-backed heap WHERE composition"
+                        : "object-backed heap scan")));
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
@@ -20276,7 +20404,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                   "object-backed heap execution bounds are absent or overflow");
   }
 
-  if (filter_composition || limit_composition) {
+  if (filter_composition || project_composition || limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -20306,14 +20434,21 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     }
 
     std::vector<const api::RelationalOutputRecord*> ordered_outputs;
+    const auto* publication_node =
+        limit_composition
+            ? &*limit_node
+            : (project_composition
+                   ? &*project_node
+                   : (filter_composition ? &*filter_node : &*scan_node));
     for (const auto& output : dag.outputs) {
-      if (output.relation_node_id == scan_node->node_id) {
+      if (output.relation_node_id == publication_node->node_id) {
         ordered_outputs.push_back(&output);
       }
     }
     std::ranges::sort(ordered_outputs, {},
                       &api::RelationalOutputRecord::ordinal);
-    if (ordered_outputs.size() != scan_node->output_descriptor_ids.size()) {
+    if (ordered_outputs.size() !=
+        publication_node->output_descriptor_ids.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-BINDING-V1",
                     "object-backed heap result bindings are incomplete");
     }
@@ -20332,6 +20467,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               input.relational_dag, {}, filter_capability_uuid,
               maximum_output_rows, input.context));
     }
+    if (project_composition) {
+      selected.available_executors.push_back(
+          MakeLiveHeapProjectRegistration(
+              projected_columns, project_capability_uuid,
+              maximum_output_rows, input.context));
+    }
     if (limit_composition) {
       selected.available_executors.push_back(
           MakeLiveLimitRegistration(
@@ -20344,8 +20485,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     selected.result_publication_request.execution_attempt_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" + input.context.current_monotonic_ns,
-            limit_composition ? "heap-limit.execution-attempt"
-                              : "heap-filter.execution-attempt");
+            limit_composition
+                ? "heap-limit.execution-attempt"
+                : (project_composition ? "heap-project.execution-attempt"
+                                       : "heap-filter.execution-attempt"));
     selected.result_publication_request.transaction_effect_evidence_uuid =
         DerivedCanonicalUuid(
             identity_scope + ":" +
@@ -20355,7 +20498,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                         .snapshot_visible_through_local_transaction_id),
             limit_composition
                 ? "heap-limit.transaction-effect-unchanged"
-                : "heap-filter.transaction-effect-unchanged");
+                : (project_composition
+                       ? "heap-project.transaction-effect-unchanged"
+                       : "heap-filter.transaction-effect-unchanged"));
     selected.result_publication_request.result_kind =
         exec::CanonicalResultKind::kRows;
     selected.result_publication_request.invocation_mode =
@@ -20397,12 +20542,16 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
           execution.issues.empty()
               ? (limit_composition
                      ? "QOW-DIAG-PACKET7-OBJECT-HEAP-LIMIT-EXECUTION-V1"
-                     : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1")
+                     : (project_composition
+                            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-PROJECT-EXECUTION-V1"
+                            : "QOW-DIAG-PACKET7-OBJECT-HEAP-FILTER-EXECUTION-V1"))
               : execution.issues.front().diagnostic_id,
           execution.issues.empty()
               ? (limit_composition
                      ? "object-backed heap LIMIT selected DAG was not completed"
-                     : "object-backed heap WHERE selected DAG was not completed")
+                     : (project_composition
+                            ? "object-backed heap PROJECT selected DAG was not completed"
+                            : "object-backed heap WHERE selected DAG was not completed"))
               : execution.issues.front().field_id);
     }
     result.physical_dag_executed = true;
