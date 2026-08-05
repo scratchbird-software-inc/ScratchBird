@@ -118,6 +118,10 @@ class NativeRelationalParser final {
       return ParseGroupedAggregateSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeBoundedCatalogCrossJoinSelect()) {
+      return ParseCatalogCrossJoinSelect();
+    }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeBoundedCatalogRelationSelect()) {
       return ParseCatalogRelationSelect();
     }
@@ -368,6 +372,119 @@ class NativeRelationalParser final {
 
   static bool IsBoundedCatalogApproxTopK(const Token& token) {
     return CanonicalTokenText(token) == "APPROX_TOP_K";
+  }
+
+  bool LooksLikeBoundedCatalogCrossJoinSelect() const {
+    if (tokens_.size() < 8 || tokens_[1]->text != "*" ||
+        !IsWord(*tokens_[2], "FROM")) {
+      return false;
+    }
+    for (std::size_t index = 3; index + 1 < tokens_.size(); ++index) {
+      if (IsWord(*tokens_[index], "CROSS") &&
+          IsWord(*tokens_[index + 1], "JOIN")) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  NativeRelationalAstDocument ParseCatalogCrossJoinSelect() {
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select_token = Consume();
+    if (!RequireSymbol("*", "catalog_cross_join_wildcard_required",
+                       "bounded catalog CROSS JOIN requires SELECT *") ||
+        !RequireWord("FROM", "catalog_cross_join_from_required",
+                     "bounded catalog CROSS JOIN requires FROM")) {
+      return FinishRefusal();
+    }
+
+    const auto parse_source = [&](const std::uint32_t source_id)
+        -> std::optional<NativeCatalogRelationSourceAstNode> {
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("catalog_cross_join_relation_required",
+               "bounded catalog CROSS JOIN requires a qualified relation");
+        return std::nullopt;
+      }
+      NativeCatalogRelationSourceAstNode source;
+      source.source_id = source_id;
+      source.source_kind = NativeRelationSourceAstKind::kCatalogRelation;
+      const Token& first = Consume();
+      const Token* last = &first;
+      source.qualified_name.push_back(
+          {first.text, first.quoted, TokenSourceRange(first)});
+      while (AtSymbol(".")) {
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_cross_join_relation_name_incomplete",
+                 "bounded catalog CROSS JOIN relation name is incomplete");
+          return std::nullopt;
+        }
+        last = &Consume();
+        source.qualified_name.push_back(
+            {last->text, last->quoted, TokenSourceRange(*last)});
+      }
+      source.qualified_name_range = Span(first, *last);
+      source.range = source.qualified_name_range;
+      return source;
+    };
+
+    auto left_source = parse_source(1);
+    if (!left_source.has_value()) return FinishRefusal();
+    if (!RequireWord("CROSS", "catalog_cross_join_cross_required",
+                     "bounded catalog CROSS JOIN requires CROSS JOIN") ||
+        !RequireWord("JOIN", "catalog_cross_join_join_required",
+                     "bounded catalog CROSS JOIN requires CROSS JOIN")) {
+      return FinishRefusal();
+    }
+    auto right_source = parse_source(2);
+    if (!right_source.has_value()) return FinishRefusal();
+    const Token& query_end = TokenForRangeEnd(right_source->range);
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("catalog_cross_join_clause_unsupported",
+             "bounded catalog CROSS JOIN does not admit aliases or clauses");
+      return FinishRefusal();
+    }
+
+    for (std::uint32_t source_id = 1; source_id <= 2; ++source_id) {
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = "*";
+      wildcard.range = TokenSourceRange(select_token);
+      const auto wildcard_id = wildcard.expression_id;
+      document_.expressions.push_back(std::move(wildcard));
+
+      NativeRelationAstNode source_relation;
+      source_relation.relation_id = source_id;
+      source_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+      source_relation.relation_source_ids = {source_id};
+      source_relation.output_expression_ids = {wildcard_id};
+      source_relation.range = source_id == 1 ? left_source->range
+                                             : right_source->range;
+      document_.relations.push_back(std::move(source_relation));
+    }
+    NativeRelationAstNode join;
+    join.relation_id = 3;
+    join.relation_kind = NativeRelationAstKind::kJoin;
+    join.input_relation_ids = {1, 2};
+    join.output_expression_ids = {1, 2};
+    join.range = Span(select_token, query_end);
+    document_.relations.push_back(std::move(join));
+    document_.catalog_relation_sources.push_back(std::move(*left_source));
+    document_.catalog_relation_sources.push_back(std::move(*right_source));
+    document_.root_relation_id = 3;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
   }
 
   bool LooksLikeBoundedCatalogRelationSelect() const {

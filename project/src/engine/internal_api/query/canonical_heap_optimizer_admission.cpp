@@ -185,6 +185,307 @@ plan::CanonicalMgaStatementContext CanonicalMgaContextFromResolvedSnapshot(
   return result;
 }
 
+CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
+    const CanonicalHeapOptimizerAdmissionRequest& request,
+    const plan::CanonicalMgaStatementContext& canonical_mga,
+    const std::uint64_t admitted_at_monotonic_ns) {
+  const auto& context = request.context;
+  const auto& relational = request.relational_dag;
+  std::vector<const RelationalDagNode*> scans;
+  const RelationalDagNode* join = nullptr;
+  for (const auto& node : relational.nodes) {
+    if (node.node_kind == RelationalDagNodeKind::kScan) {
+      scans.push_back(&node);
+    } else if (node.node_kind == RelationalDagNodeKind::kJoin &&
+               join == nullptr) {
+      join = &node;
+    } else {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "two_heap_scans_one_cross_join");
+    }
+  }
+  if (scans.size() != 2 || join == nullptr || relational.nodes.size() != 3 ||
+      relational.root_node_id != join->node_id ||
+      join->semantic_variant_id != "join.cross.v1" ||
+      join->input_node_ids !=
+          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
+      !join->bound_expression_ids.empty() ||
+      !join->required_object_uuids.empty() || !join->values_row_ids.empty() ||
+      !join->required_property_uuids.empty() ||
+      !join->delivered_property_uuids.empty() ||
+      !relational.values_rows.empty() || !relational.grouping_sets.empty() ||
+      !relational.properties.empty()) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "two_heap_scans_one_cross_join");
+  }
+  std::vector<std::uint32_t> expected_join_descriptors;
+  for (const auto* scan : scans) {
+    if (scan->semantic_variant_id != "relation.source.v1" ||
+        !scan->input_node_ids.empty() || scan->shareable ||
+        scan->required_object_uuids.size() != 1 ||
+        !IsCanonicalUuid(scan->required_object_uuids.front()) ||
+        scan->output_descriptor_ids.empty() ||
+        scan->output_descriptor_ids.size() !=
+            scan->bound_expression_ids.size() ||
+        !scan->values_row_ids.empty() ||
+        !scan->required_property_uuids.empty() ||
+        !scan->delivered_property_uuids.empty()) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                    "relation_source_leaf");
+    }
+    expected_join_descriptors.insert(expected_join_descriptors.end(),
+                                      scan->output_descriptor_ids.begin(),
+                                      scan->output_descriptor_ids.end());
+  }
+  if (scans[0]->required_object_uuids.front() ==
+          scans[1]->required_object_uuids.front() ||
+      join->output_descriptor_ids != expected_join_descriptors) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "exact_distinct_source_and_join_output_lineage");
+  }
+
+  CanonicalRelationalPlanningScope planning_scope;
+  planning_scope.catalog_epoch_uuid = context.catalog_epoch_uuid.canonical;
+  planning_scope.security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  planning_scope.statement_uuid = context.statement_uuid.canonical;
+  planning_scope.owning_transaction_uuid = context.transaction_uuid.canonical;
+  planning_scope.statement_snapshot_uuid =
+      context.statement_snapshot_uuid.canonical;
+  planning_scope.statement_metadata_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  planning_scope.local_transaction_id = context.local_transaction_id;
+  planning_scope.snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+  planning_scope.metadata_snapshot_engine_owned =
+      context.statement_metadata_snapshot_engine_owned;
+  planning_scope.authorization_context_engine_owned =
+      context.authorization_context.present;
+  auto logical = PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
+      relational, planning_scope);
+  if (!logical.accepted || !logical.property_catalog.properties.empty()) {
+    if (!logical.issues.empty()) {
+      return Refuse(logical.issues.front().diagnostic_id,
+                    logical.issues.front().field_id);
+    }
+    return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
+                  "object_source_properties");
+  }
+  auto registered_mga = canonical_mga;
+  registered_mga.current = false;
+  if (!plan::CanonicalMgaStatementContextEqual(
+          logical.logical_graph.mga_statement_context, registered_mga) ||
+      !plan::CanonicalMgaStatementContextEqual(
+          logical.property_catalog.mga_statement_context, registered_mga)) {
+    return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-MGA-SNAPSHOT-V1",
+                  "bridge_statement_snapshot_carriage");
+  }
+  logical.logical_graph.mga_statement_context = canonical_mga;
+  logical.property_catalog.mga_statement_context = canonical_mga;
+
+  std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
+      expressions_by_id;
+  std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
+      descriptors_by_id;
+  for (const auto& expression : relational.expressions) {
+    expressions_by_id.emplace(expression.expression_id, &expression);
+  }
+  for (const auto& descriptor : relational.descriptors) {
+    descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor);
+  }
+
+  std::vector<std::string> relation_uuids;
+  std::vector<std::string> projection_type_names;
+  for (const auto* scan : scans) {
+    const auto& relation_uuid = scan->required_object_uuids.front();
+    relation_uuids.push_back(relation_uuid);
+    const auto temporary = CheckMgaTemporaryTableVisibility(context,
+                                                              relation_uuid);
+    if (!temporary.ok || !temporary.table_visible || temporary.known_temporary ||
+        temporary.table.temporary) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-RELATION-V1",
+                    temporary.ok ? "current_non_temporary_relation"
+                                 : temporary.diagnostic.detail);
+    }
+    const auto loaded = LoadMgaRelationStorageDescriptor(context,
+                                                          relation_uuid);
+    if (!loaded.ok) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
+                    loaded.diagnostic.detail);
+    }
+    const auto& persisted = loaded.descriptor;
+    const auto width = scan->output_descriptor_ids.size();
+    if (persisted.relation_uuid.canonical != relation_uuid ||
+        persisted.database_uuid.canonical != context.database_uuid.canonical ||
+        persisted.relation_kind != "table" ||
+        persisted.storage_profile != "local_mga_rowstore_v1" ||
+        !IsCanonicalUuid(persisted.descriptor_uuid.canonical) ||
+        persisted.descriptor_generation == 0 ||
+        (persisted.descriptor_status != "production_descriptor" &&
+         persisted.descriptor_status != "metadata_bridge_vetted_descriptor") ||
+        persisted.columns.size() < width) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
+                    "current_persisted_local_heap_descriptor");
+    }
+    std::vector<const RelationalOutputRecord*> outputs;
+    for (const auto& output : relational.outputs) {
+      if (output.relation_node_id == scan->node_id) outputs.push_back(&output);
+    }
+    std::ranges::sort(outputs, {}, &RelationalOutputRecord::ordinal);
+    if (outputs.size() != width) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "complete_visible_scan_width");
+    }
+    std::unordered_set<std::uint32_t> output_ids;
+    std::unordered_set<std::string> column_uuids;
+    for (std::size_t ordinal = 0; ordinal < width; ++ordinal) {
+      const auto& output = *outputs[ordinal];
+      const auto expression_it =
+          expressions_by_id.find(scan->bound_expression_ids[ordinal]);
+      const auto descriptor_it = descriptors_by_id.find(output.descriptor_id);
+      if (expression_it == expressions_by_id.end() ||
+          descriptor_it == descriptors_by_id.end() ||
+          !expression_it->second->bound_name_uuid.has_value()) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                      "scan_expression_descriptor_resolution");
+      }
+      const auto& expression = *expression_it->second;
+      const auto& descriptor = *descriptor_it->second;
+      const auto persisted_column = std::ranges::find_if(
+          persisted.columns, [&](const auto& candidate) {
+            return candidate.column_uuid.canonical ==
+                   *expression.bound_name_uuid;
+          });
+      if (persisted_column == persisted.columns.end()) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                      "scan_projected_column_resolution");
+      }
+      const auto& column = *persisted_column;
+      const auto persisted_type_uuid = ExactDescriptorField(
+          column.value_descriptor.encoded_descriptor, "type_uuid");
+      const bool nullable =
+          descriptor.nullability == RelationalNullability::kNullable;
+      if (!output.visible || output.ordinal != ordinal || output.output_id == 0 ||
+          !output_ids.insert(output.output_id).second ||
+          output.descriptor_id != scan->output_descriptor_ids[ordinal] ||
+          expression.expression_id != output.expression_id ||
+          expression.expression_id != scan->bound_expression_ids[ordinal] ||
+          expression.expression_kind !=
+              RelationalExpressionKind::kIdentifier ||
+          !expression.child_expression_ids.empty() ||
+          expression.result_descriptor_id != output.descriptor_id ||
+          expression.function_uuid.has_value() ||
+          expression.literal_kind.has_value() ||
+          expression.operator_name.has_value() ||
+          expression.literal_or_parameter_ref.has_value() ||
+          descriptor.descriptor_id != output.descriptor_id ||
+          !IsCanonicalUuid(descriptor.descriptor_uuid) ||
+          !IsCanonicalUuid(descriptor.type_uuid) ||
+          descriptor.nullability == RelationalNullability::kUnknown ||
+          !IsCanonicalUuid(column.column_uuid.canonical) ||
+          !column_uuids.insert(column.column_uuid.canonical).second ||
+          column.column_uuid.canonical != *expression.bound_name_uuid ||
+          output.output_name_utf8 != column.canonical_name_key ||
+          column.value_descriptor.descriptor_uuid.canonical !=
+              descriptor.descriptor_uuid ||
+          !persisted_type_uuid.has_value() ||
+          *persisted_type_uuid != descriptor.type_uuid ||
+          column.nullable != nullable ||
+          !ExactNullabilityCarrierMatches(
+              column.value_descriptor.encoded_descriptor, nullable) ||
+          (descriptor.collation_uuid.has_value()
+               ? column.collation_uuid != *descriptor.collation_uuid
+               : !column.collation_uuid.empty()) ||
+          !ExactOptionalDescriptorFieldMatches(
+              column.value_descriptor.encoded_descriptor, "collation_uuid",
+              descriptor.collation_uuid) ||
+          !ExactOptionalDescriptorFieldMatches(
+              column.value_descriptor.encoded_descriptor,
+              "timezone_profile_id", descriptor.timezone_profile_id)) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                      "persisted_ordinal_descriptor_binding");
+      }
+      projection_type_names.push_back(
+          column.value_descriptor.canonical_type_name);
+    }
+    const auto authorization = EvaluateMaterializedAuthorization(
+        context, context.authorization_context, "SELECT", relation_uuid);
+    if (!authorization.authorized || authorization.denied ||
+        authorization.policy_recheck_required ||
+        !authorization.diagnostics.empty()) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-SECURITY-V1",
+                    authorization.diagnostics.empty()
+                        ? "select_authorization"
+                        : authorization.diagnostics.front().detail);
+    }
+  }
+
+  opt::CanonicalNativeObjectAdmissionContext admission_context;
+  admission_context.statement_uuid = context.statement_uuid.canonical;
+  admission_context.catalog_snapshot_uuid =
+      context.statement_metadata_snapshot_uuid.canonical;
+  admission_context.security_context_uuid =
+      context.authorization_context.authority_uuid.canonical;
+  admission_context.catalog_generation = context.catalog_generation_id;
+  admission_context.authorization_catalog_generation =
+      context.authorization_context.catalog_generation_id;
+  admission_context.security_epoch = context.authorization_context.security_epoch;
+  admission_context.policy_epoch = context.authorization_context.policy_epoch;
+  admission_context.resource_epoch = context.resource_epoch;
+  admission_context.capability_snapshot_uuid =
+      context.optimizer_capability_snapshot_uuid.canonical;
+  admission_context.resource_snapshot_uuid =
+      context.optimizer_resource_snapshot_uuid.canonical;
+  admission_context.route_snapshot_uuid =
+      context.optimizer_route_snapshot_uuid.canonical;
+  admission_context.route_epoch = context.optimizer_route_epoch;
+  admission_context.route_generation = context.optimizer_route_generation;
+  admission_context.memory_budget_bytes = context.optimizer_memory_budget_bytes;
+  admission_context.maximum_candidate_count =
+      context.optimizer_maximum_candidate_count;
+  admission_context.maximum_memo_groups = context.optimizer_maximum_memo_groups;
+  admission_context.maximum_search_steps =
+      context.optimizer_maximum_search_steps;
+  admission_context.maximum_planning_time_ns =
+      context.optimizer_maximum_planning_time_ns;
+  admission_context.spill_allowed = context.optimizer_spill_allowed;
+  admission_context.local_transaction_id = context.local_transaction_id;
+  admission_context.statement_snapshot_id =
+      context.snapshot_visible_through_local_transaction_id;
+  admission_context.mga_statement_context = canonical_mga;
+  admission_context.admitted_at_monotonic_ns = admitted_at_monotonic_ns;
+  admission_context.metadata_snapshot_engine_owned = true;
+  admission_context.authorization_context_engine_owned = true;
+  admission_context.catalog_object_uuids = relation_uuids;
+  admission_context.authorized_object_uuids = relation_uuids;
+  admission_context.catalog_object_evidence_engine_owned = true;
+  admission_context.authorization_object_evidence_engine_owned = true;
+  auto built = opt::BuildCanonicalObjectAwareNativeOptimizerAdmissionRequest(
+      logical.logical_graph, logical.property_catalog, admission_context);
+  if (!built.built || !built.admission.admitted ||
+      !built.admission.planning_allowed ||
+      !built.admission.degraded_for_unknown_statistics ||
+      built.admission.benchmark_clean_ready ||
+      built.admission.data_access_allowed ||
+      built.admission.evidence.size() != 8 ||
+      built.request.statistics.node_estimates.size() !=
+          relational.nodes.size()) {
+    return Refuse(
+        built.diagnostic_id.empty()
+            ? "QOW-DIAG-QRY-004-HEAP-OPTIMIZER-ADMISSION-V1"
+            : built.diagnostic_id,
+        built.field_id.empty() ? "heap_cross_join_unknown_statistics_admission"
+                               : built.field_id);
+  }
+  CanonicalHeapOptimizerAdmissionResult result;
+  result.built = true;
+  result.request = std::move(built.request);
+  result.admission = std::move(built.admission);
+  result.current_relation_projection_type_names =
+      std::move(projection_type_names);
+  return result;
+}
+
 }  // namespace
 
 CanonicalHeapOptimizerAdmissionResult
@@ -265,6 +566,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       relational.nodes.size() > 5) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
                   "heap_scan_with_optional_filter_project_limit_root");
+  }
+  if (std::ranges::count_if(relational.nodes, [](const auto& node) {
+        return node.node_kind == RelationalDagNodeKind::kScan;
+      }) == 2) {
+    return BuildCanonicalCrossJoinHeapAdmission(
+        request, canonical_mga, admitted_at_monotonic_ns);
   }
   const RelationalDagNode* scan_node = nullptr;
   const RelationalDagNode* filter_node = nullptr;

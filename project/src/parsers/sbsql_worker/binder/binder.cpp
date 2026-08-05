@@ -461,6 +461,200 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
+  const auto catalog_cross_join = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kJoin;
+      });
+  if (catalog_cross_join != ast.relations.end()) {
+    std::vector<const NativeRelationAstNode*> source_relations;
+    for (const auto& relation : ast.relations) {
+      if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
+        source_relations.push_back(&relation);
+      }
+    }
+    if (ast.catalog_relation_sources.size() != 2 ||
+        source_relations.size() != 2 || ast.relations.size() != 3 ||
+        context.catalog_relations.size() != 2 ||
+        context.relations.size() != 1 ||
+        context.relations.front().relation_id !=
+            catalog_cross_join->relation_id ||
+        context.relations.front().semantic_variant_id != "join.cross.v1" ||
+        ast.root_relation_id != catalog_cross_join->relation_id ||
+        catalog_cross_join->input_relation_ids !=
+            std::vector<std::uint32_t>{source_relations[0]->relation_id,
+                                       source_relations[1]->relation_id} ||
+        !catalog_cross_join->predicate_expression_ids.empty() ||
+        context.expressions.size() != context.descriptors.size() ||
+        context.outputs.size() != context.descriptors.size() * 2) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "catalog CROSS JOIN binding shape is incomplete");
+      return RefusedBoundAst(std::move(bound));
+    }
+
+    std::size_t binding_offset = 0;
+    std::vector<std::uint32_t> joined_expression_ids;
+    for (std::size_t source_ordinal = 0; source_ordinal < 2;
+         ++source_ordinal) {
+      const auto& ast_source = ast.catalog_relation_sources[source_ordinal];
+      const auto& ast_relation = *source_relations[source_ordinal];
+      const auto& relation_binding = context.catalog_relations[source_ordinal];
+      if (ast_source.source_id != relation_binding.source_id ||
+          ast_relation.relation_source_ids !=
+              std::vector<std::uint32_t>{ast_source.source_id} ||
+          relation_binding.resolution_state !=
+              NativeCatalogRelationResolutionState::kBound ||
+          !IsNonNullCanonicalUuid(relation_binding.object_uuid) ||
+          !IsNonNullCanonicalUuid(relation_binding.resolved_schema_uuid) ||
+          relation_binding.resolved_object_type.empty() ||
+          relation_binding.catalog_generation_id == 0 ||
+          relation_binding.security_epoch == 0 ||
+          relation_binding.resource_epoch == 0 ||
+          relation_binding.columns.empty()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "catalog CROSS JOIN source authority is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+
+      BoundCatalogRelationSourceAstRecord bound_source;
+      bound_source.source_id = ast_source.source_id;
+      bound_source.source_kind = ast_source.source_kind;
+      bound_source.resolution_state = relation_binding.resolution_state;
+      bound_source.qualified_name = ast_source.qualified_name;
+      bound_source.alias = ast_source.alias;
+      bound_source.alias_is_explicit = ast_source.alias_is_explicit;
+      bound_source.qualified_name_range = ast_source.qualified_name_range;
+      bound_source.range = ast_source.range;
+      bound_source.object_uuid = relation_binding.object_uuid;
+      bound_source.resolved_object_type =
+          relation_binding.resolved_object_type;
+      bound_source.resolved_schema_uuid =
+          relation_binding.resolved_schema_uuid;
+      bound_source.parent_object_uuid = relation_binding.parent_object_uuid;
+      bound_source.catalog_generation_id =
+          relation_binding.catalog_generation_id;
+      bound_source.security_epoch = relation_binding.security_epoch;
+      bound_source.resource_epoch = relation_binding.resource_epoch;
+
+      BoundRelationAstRecord bound_source_relation;
+      bound_source_relation.relation_id = ast_relation.relation_id;
+      bound_source_relation.relation_kind =
+          NativeRelationAstKind::kCatalogSource;
+      bound_source_relation.semantic_variant_id = "catalog.relation-source.v1";
+      bound_source_relation.bound_object_uuid = relation_binding.object_uuid;
+      for (std::size_t ordinal = 0;
+           ordinal < relation_binding.columns.size(); ++ordinal) {
+        const auto& column = relation_binding.columns[ordinal];
+        const auto& expression = context.expressions[binding_offset];
+        const auto& output = context.outputs[binding_offset];
+        const auto descriptor = descriptor_by_id.find(column.descriptor_id);
+        const auto expected_binding =
+            static_cast<std::uint32_t>(binding_offset + 1);
+        if (column.ordinal != ordinal || column.column_uuid.empty() ||
+            column.canonical_name_key.empty() ||
+            descriptor == descriptor_by_id.end() ||
+            expression.expression_id != expected_binding ||
+            expression.descriptor_id != column.descriptor_id ||
+            expression.function_uuid.has_value() ||
+            expression.bound_name_uuid != column.column_uuid ||
+            output.output_id != expected_binding ||
+            output.expression_id != expression.expression_id ||
+            output.output_name_utf8 != column.canonical_name_key ||
+            output.descriptor_id != column.descriptor_id || !output.visible ||
+            output.ordinal != ordinal ||
+            output.relation_id != ast_relation.relation_id) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+              "catalog CROSS JOIN source projection is not exact");
+          return RefusedBoundAst(std::move(bound));
+        }
+        bound_source.columns.push_back(
+            {column.ordinal, column.column_uuid, column.descriptor_id,
+             column.canonical_name_key});
+        BoundExpressionAstRecord bound_expression;
+        bound_expression.expression_id = expression.expression_id;
+        bound_expression.expression_kind =
+            NativeExpressionAstKind::kIdentifier;
+        bound_expression.result_descriptor_id = expression.descriptor_id;
+        bound_expression.bound_name_uuid = expression.bound_name_uuid;
+        bound.expressions.push_back(std::move(bound_expression));
+        BoundOutputAstRecord bound_output;
+        bound_output.output_id = output.output_id;
+        bound_output.relation_id = output.relation_id;
+        bound_output.expression_id = output.expression_id;
+        bound_output.output_name_utf8 = output.output_name_utf8;
+        bound_output.descriptor_id = output.descriptor_id;
+        bound_output.visible = output.visible;
+        bound_output.ordinal = output.ordinal;
+        bound.outputs.push_back(std::move(bound_output));
+        bound_source_relation.output_expression_ids.push_back(
+            expression.expression_id);
+        bound_source_relation.bound_expression_ids.push_back(
+            expression.expression_id);
+        joined_expression_ids.push_back(expression.expression_id);
+        ++binding_offset;
+      }
+      bound.catalog_relation_sources.push_back(std::move(bound_source));
+      bound.relations.push_back(std::move(bound_source_relation));
+    }
+
+    std::vector<std::uint32_t> joined_output_ids;
+    for (std::size_t ordinal = 0; ordinal < context.descriptors.size();
+         ++ordinal) {
+      const auto& output = context.outputs[context.descriptors.size() + ordinal];
+      const auto expression_id = static_cast<std::uint32_t>(ordinal + 1);
+      if (output.output_id != context.descriptors.size() + ordinal + 1 ||
+          output.expression_id != expression_id ||
+          output.descriptor_id != expression_id || !output.visible ||
+          output.ordinal != ordinal ||
+          output.relation_id != catalog_cross_join->relation_id) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                              "catalog CROSS JOIN result projection is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      BoundOutputAstRecord bound_output;
+      bound_output.output_id = output.output_id;
+      bound_output.relation_id = output.relation_id;
+      bound_output.expression_id = output.expression_id;
+      bound_output.output_name_utf8 = output.output_name_utf8;
+      bound_output.descriptor_id = output.descriptor_id;
+      bound_output.visible = output.visible;
+      bound_output.ordinal = output.ordinal;
+      bound.outputs.push_back(std::move(bound_output));
+      joined_output_ids.push_back(output.output_id);
+    }
+
+    BoundRelationAstRecord bound_join;
+    bound_join.relation_id = catalog_cross_join->relation_id;
+    bound_join.relation_kind = NativeRelationAstKind::kJoin;
+    bound_join.input_relation_ids = catalog_cross_join->input_relation_ids;
+    bound_join.output_expression_ids = joined_expression_ids;
+    bound_join.semantic_variant_id = "join.cross.v1";
+    bound.relations.push_back(std::move(bound_join));
+
+    bound.descriptors.reserve(context.descriptors.size());
+    for (const auto& descriptor : context.descriptors) {
+      bound.descriptors.push_back(
+          {descriptor.descriptor_id, descriptor.descriptor_uuid,
+           descriptor.type_uuid, descriptor.nullability,
+           descriptor.collation_uuid, descriptor.timezone_profile_id,
+           descriptor.width_precision_scale});
+    }
+    std::ranges::sort(bound.descriptors, {},
+                      &BoundDescriptorAstRecord::descriptor_id);
+    BoundScopeAstRecord scope;
+    scope.scope_id = 1;
+    scope.visible_relation_ids = {ast.root_relation_id};
+    scope.visible_projection_ids = std::move(joined_output_ids);
+    scope.catalog_epoch_uuid = context.catalog_epoch_uuid;
+    bound.scopes.push_back(std::move(scope));
+    bound.bound_ast_uuid = context.bound_ast_uuid;
+    bound.security_context_uuid = context.security_context_uuid;
+    bound.root_relation_id = ast.root_relation_id;
+    bound.root_scope_id = 1;
+    bound.bound = true;
+    return bound;
+  }
   if (has_catalog_relation_ast || !ast.catalog_relation_sources.empty()) {
     const auto source_relation = std::ranges::find_if(
         ast.relations, [](const auto& candidate) {

@@ -32951,6 +32951,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   const BoundRelationAstRecord* filter_relation = nullptr;
   const BoundRelationAstRecord* catalog_filter_relation = nullptr;
   const BoundRelationAstRecord* catalog_relation = nullptr;
+  std::vector<const BoundRelationAstRecord*> catalog_relations;
+  const BoundRelationAstRecord* catalog_join_relation = nullptr;
   const BoundRelationAstRecord* catalog_project_relation = nullptr;
   const BoundRelationAstRecord* catalog_sort_relation = nullptr;
   const BoundRelationAstRecord* limit_relation = nullptr;
@@ -33296,7 +33298,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       catalog_sort_relation = &relation;
     } else if (relation.relation_kind ==
                NativeRelationAstKind::kCatalogSource) {
-      if (catalog_relation != nullptr || !relation.input_relation_ids.empty() ||
+      if (catalog_relations.size() >= 2 || !relation.input_relation_ids.empty() ||
           !relation.values_row_ids.empty() ||
           relation.aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
@@ -33315,7 +33317,44 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             "typed catalog relation fields do not form the accepted canonical leaf");
         return envelope;
       }
-      catalog_relation = &relation;
+      catalog_relations.push_back(&relation);
+      if (catalog_relation == nullptr) catalog_relation = &relation;
+    } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
+      if (catalog_join_relation != nullptr || catalog_relations.size() != 2 ||
+          relation.input_relation_ids !=
+              std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
+                                         catalog_relations[1]->relation_id} ||
+          !relation.values_row_ids.empty() ||
+          relation.aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          relation.aggregate_projection_form !=
+              NativeAggregateProjectionForm::kNone ||
+          !relation.grouping_key_expression_ids.empty() ||
+          !relation.aggregate_expression_ids.empty() ||
+          !relation.predicate_expression_ids.empty() ||
+          !relation.limit_expression_ids.empty() ||
+          !relation.ordering_terms.empty() ||
+          relation.bound_object_uuid.has_value() ||
+          !relation.bound_expression_ids.empty() ||
+          relation.semantic_variant_id != "join.cross.v1") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed CROSS JOIN fields do not form the accepted canonical node");
+        return envelope;
+      }
+      std::vector<std::uint32_t> expected_outputs;
+      for (const auto* input : catalog_relations) {
+        expected_outputs.insert(expected_outputs.end(),
+                                input->output_expression_ids.begin(),
+                                input->output_expression_ids.end());
+      }
+      if (relation.output_expression_ids != expected_outputs) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed CROSS JOIN output lineage is not the exact input concatenation");
+        return envelope;
+      }
+      catalog_join_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kLimit) {
       if (catalog_relation == nullptr) {
         AddNativeRelationalLoweringError(
@@ -33364,7 +33403,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       limit_relation = &relation;
     }
   }
-  const bool catalog_graph_is_exact =
+  const bool single_catalog_graph_is_exact =
+      catalog_relations.size() == 1 && catalog_join_relation == nullptr &&
       catalog_relation != nullptr && values_relation == nullptr &&
       filter_relation == nullptr &&
       (aggregate_relation == nullptr ||
@@ -33397,6 +33437,16 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                     ? catalog_filter_relation->relation_id
                                     : catalog_relation->relation_id))))) &&
       native.values_rows.empty() && native.grouping_sets.empty();
+  const bool catalog_cross_join_graph_is_exact =
+      catalog_relations.size() == 2 && catalog_join_relation != nullptr &&
+      values_relation == nullptr && aggregate_relation == nullptr &&
+      filter_relation == nullptr && catalog_filter_relation == nullptr &&
+      catalog_project_relation == nullptr && catalog_sort_relation == nullptr &&
+      limit_relation == nullptr && native.relations.size() == 3 &&
+      native.root_relation_id == catalog_join_relation->relation_id &&
+      native.values_rows.empty() && native.grouping_sets.empty();
+  const bool catalog_graph_is_exact =
+      single_catalog_graph_is_exact || catalog_cross_join_graph_is_exact;
   const bool values_graph_is_exact =
       catalog_relation == nullptr && limit_relation == nullptr &&
       values_relation != nullptr &&
@@ -33742,7 +33792,151 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
 
-  if (catalog_relation != nullptr) {
+  if (catalog_cross_join_graph_is_exact) {
+    if (native.catalog_relation_sources.size() != 2 ||
+        bound.resolved_object_uuids.size() != 2 ||
+        native.scopes.front().visible_relation_ids !=
+            std::vector<std::uint32_t>{native.root_relation_id} ||
+        native.scopes.front().parent_scope_id.has_value() ||
+        !IsCanonicalBoundSourceUuid(native.bound_ast_uuid) ||
+        !IsCanonicalBoundSourceUuid(native.security_context_uuid) ||
+        !IsCanonicalBoundSourceUuid(
+            native.scopes.front().catalog_epoch_uuid) ||
+        native.descriptors.size() != native.expressions.size() ||
+        bound.descriptor_refs.size() != native.descriptors.size()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed CROSS JOIN scope and source cardinality are incomplete");
+      return envelope;
+    }
+
+    std::size_t descriptor_offset = 0;
+    std::vector<std::uint32_t> expected_join_projection_ids;
+    std::unordered_set<std::string> object_uuids;
+    std::unordered_set<std::uint32_t> source_ids;
+    for (std::size_t source_ordinal = 0; source_ordinal < 2;
+         ++source_ordinal) {
+      const auto& source = native.catalog_relation_sources[source_ordinal];
+      const auto* relation = catalog_relations[source_ordinal];
+      const auto& relation_uuid = *relation->bound_object_uuid;
+      const bool accepted_object_type =
+          source.resolved_object_type == "relation" ||
+          source.resolved_object_type == "table" ||
+          source.resolved_object_type == "view" ||
+          source.resolved_object_type == "materialized_view" ||
+          source.resolved_object_type == "external_table" ||
+          source.resolved_object_type == "foreign_table";
+      if (source.source_id == 0 ||
+          !source_ids.insert(source.source_id).second ||
+          source.source_kind !=
+              NativeRelationSourceAstKind::kCatalogRelation ||
+          source.resolution_state !=
+              NativeCatalogRelationResolutionState::kBound ||
+          source.qualified_name.empty() ||
+          std::ranges::any_of(source.qualified_name,
+                              [](const auto& component) {
+                                return component.spelling.empty();
+                              }) ||
+          (source.alias.has_value() && source.alias->spelling.empty()) ||
+          (!source.alias.has_value() && source.alias_is_explicit) ||
+          !IsCanonicalBoundSourceUuid(relation_uuid) ||
+          !object_uuids.insert(relation_uuid).second ||
+          source.object_uuid != relation_uuid ||
+          bound.resolved_object_uuids[source_ordinal] != relation_uuid ||
+          !accepted_object_type ||
+          !IsCanonicalBoundSourceUuid(source.resolved_schema_uuid) ||
+          (source.parent_object_uuid.has_value() &&
+           !IsCanonicalBoundSourceUuid(*source.parent_object_uuid)) ||
+          source.catalog_generation_id == 0 || source.security_epoch == 0 ||
+          source.resource_epoch == 0 || source.columns.empty()) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed CROSS JOIN source identity and epoch evidence are incomplete");
+        return envelope;
+      }
+
+      const auto& source_outputs = outputs_by_relation.at(relation->relation_id);
+      if (source_outputs.size() != source.columns.size() ||
+          relation->output_expression_ids.size() != source.columns.size() ||
+          relation->bound_expression_ids !=
+              relation->output_expression_ids) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed CROSS JOIN source width is incomplete");
+        return envelope;
+      }
+      std::unordered_set<std::string> column_uuids;
+      for (std::size_t ordinal = 0; ordinal < source.columns.size();
+           ++ordinal, ++descriptor_offset) {
+        const auto& column = source.columns[ordinal];
+        const auto& descriptor = native.descriptors[descriptor_offset];
+        const auto& expression = native.expressions[descriptor_offset];
+        const auto& output = *source_outputs[ordinal];
+        if (column.ordinal != ordinal ||
+            !IsCanonicalBoundSourceUuid(column.column_uuid) ||
+            !column_uuids.insert(column.column_uuid).second ||
+            descriptor.descriptor_id != column.descriptor_id ||
+            !IsCanonicalBoundSourceUuid(descriptor.descriptor_uuid) ||
+            !IsCanonicalBoundSourceUuid(descriptor.type_uuid) ||
+            descriptor.nullability == BoundNullability::kUnknown ||
+            (descriptor.collation_uuid.has_value() &&
+             !IsCanonicalBoundSourceUuid(*descriptor.collation_uuid)) ||
+            expression.expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            !expression.child_expression_ids.empty() ||
+            expression.result_descriptor_id != descriptor.descriptor_id ||
+            expression.bound_name_uuid != column.column_uuid ||
+            expression.literal_kind.has_value() ||
+            expression.bound_function_uuid.has_value() ||
+            expression.canonical_operator_name.has_value() ||
+            expression.literal_or_parameter_ref.has_value() ||
+            relation->output_expression_ids[ordinal] !=
+                expression.expression_id ||
+            output.expression_id != expression.expression_id ||
+            output.descriptor_id != descriptor.descriptor_id ||
+            !output.visible || output.ordinal != ordinal ||
+            output.output_name_utf8 != column.canonical_name_key ||
+            bound.descriptor_refs[descriptor_offset] !=
+                descriptor.descriptor_uuid) {
+          AddNativeRelationalLoweringError(
+              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+              "typed CROSS JOIN column lineage is incomplete");
+          return envelope;
+        }
+      }
+      expected_join_projection_ids.insert(
+          expected_join_projection_ids.end(),
+          relation->output_expression_ids.begin(),
+          relation->output_expression_ids.end());
+    }
+    const auto& join_outputs =
+        outputs_by_relation.at(catalog_join_relation->relation_id);
+    std::vector<std::uint32_t> join_output_ids;
+    for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
+      const auto* output = join_outputs[ordinal];
+      if (output->expression_id != expected_join_projection_ids[ordinal] ||
+          output->ordinal != ordinal || !output->visible) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed CROSS JOIN result projection is not canonical");
+        return envelope;
+      }
+      join_output_ids.push_back(output->output_id);
+    }
+    if (descriptor_offset != native.descriptors.size() ||
+        catalog_join_relation->output_expression_ids !=
+            expected_join_projection_ids ||
+        join_outputs.size() != expected_join_projection_ids.size() ||
+        native.outputs.size() != native.descriptors.size() * 2 ||
+        native.scopes.front().visible_projection_ids != join_output_ids) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed CROSS JOIN result scope does not cover its exact lineage");
+      return envelope;
+    }
+  }
+
+  if (catalog_relation != nullptr && !catalog_cross_join_graph_is_exact) {
     if (native.catalog_relation_sources.size() != 1 ||
         bound.resolved_object_uuids.size() != 1 ||
         native.scopes.front().visible_relation_ids !=
@@ -35667,15 +35861,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                               NativeRelationAstKind::kCatalogSource
                           ? 1
                           : (relation.relation_kind ==
+                                     NativeRelationAstKind::kJoin
+                                 ? 4
+                          : (relation.relation_kind ==
                                      NativeRelationAstKind::kLimit
                                  ? 7
                                  : (relation.relation_kind ==
                                             NativeRelationAstKind::kProject
                                         ? 3
                                         : (relation.relation_kind ==
-                                                   NativeRelationAstKind::kSort
+                                               NativeRelationAstKind::kSort
                                                ? 6
-                                               : 2)))));
+                                               : 2))))));
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::to_string(node_kind) + "|0|" +

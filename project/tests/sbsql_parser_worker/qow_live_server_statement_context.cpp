@@ -113,6 +113,7 @@ struct Fixture {
   platform::TypedUuid session_uuid;
   platform::TypedUuid schema_uuid;
   platform::TypedUuid relation_uuid;
+  platform::TypedUuid join_relation_uuid;
   std::uint64_t resource_epoch = 1;
   std::uint64_t salt = 0;
 
@@ -128,6 +129,7 @@ struct Fixture {
         session_uuid(other.session_uuid),
         schema_uuid(other.schema_uuid),
         relation_uuid(other.relation_uuid),
+        join_relation_uuid(other.join_relation_uuid),
         resource_epoch(other.resource_epoch),
         salt(other.salt) {
     other.directory.clear();
@@ -185,6 +187,8 @@ Fixture CreateFixture(bool credentialed_full_route = false) {
       NewTypedUuid(platform::UuidKind::schema, fixture.salt + 6);
   fixture.relation_uuid =
       NewTypedUuid(platform::UuidKind::object, fixture.salt + 7);
+  fixture.join_relation_uuid =
+      NewTypedUuid(platform::UuidKind::object, fixture.salt + 8);
   fixture.resource_epoch =
       created.state.resource_seed_catalog.resource_epoch == 0
           ? 1
@@ -444,6 +448,23 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
+  api::EngineCreateTableRequest join_table;
+  join_table.context = context;
+  join_table.target_schema = schema.target_object;
+  join_table.requested_table_uuid.canonical =
+      uuid::UuidToString(fixture->join_relation_uuid.value);
+  join_table.table_names.push_back(PrimaryName("qow_packet7_join_relation"));
+  api::EngineColumnDefinition join_column;
+  join_column.ordinal = 0;
+  join_column.names.push_back(PrimaryName("join_value"));
+  join_column.descriptor.descriptor_kind = "scalar";
+  join_column.descriptor.canonical_type_name = "integer";
+  join_column.descriptor.encoded_descriptor = "type=integer";
+  join_column.nullable = false;
+  join_table.table_columns.push_back(std::move(join_column));
+  RequireEngineOk(api::EngineCreateTable(join_table),
+                  "object-backed join fixture table create failed");
+
   api::EngineInsertRowsRequest insert;
   insert.context = context;
   insert.target_table.uuid.canonical =
@@ -501,6 +522,28 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   RequireEngineOk(inserted, "object-backed fixture row insert failed");
   Require(inserted.inserted_count == 3,
           "object-backed fixture did not insert three rows");
+
+  api::EngineInsertRowsRequest join_insert;
+  join_insert.context = context;
+  join_insert.target_table.uuid.canonical =
+      uuid::UuidToString(fixture->join_relation_uuid.value);
+  join_insert.target_table.object_kind = "table";
+  for (const std::int64_t value : {10, 20}) {
+    api::EngineTypedValue typed;
+    typed.descriptor.descriptor_kind = "scalar";
+    typed.descriptor.canonical_type_name = "integer";
+    typed.descriptor.encoded_descriptor = "type=integer";
+    typed.encoded_value = std::to_string(value);
+    api::EngineRowValue row;
+    row.fields.push_back({"join_value", std::move(typed)});
+    join_insert.input_rows.push_back(std::move(row));
+  }
+  join_insert.estimated_row_count = join_insert.input_rows.size();
+  const auto join_inserted = api::EngineInsertRows(join_insert);
+  RequireEngineOk(join_inserted,
+                  "object-backed join fixture row insert failed");
+  Require(join_inserted.inserted_count == 2,
+          "object-backed join fixture did not insert two rows");
 
   api::EngineCommitTransactionRequest commit;
   commit.context = context;
@@ -641,6 +684,23 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed.server_cursor_uuid.empty() &&
                 object_backed.server_row_count == 3,
             "object-backed native SELECT did not complete the full live route");
+
+    auto object_backed_cross_join = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation CROSS JOIN "
+        "qow_packet7.qow_packet7_join_relation;",
+        true);
+    if (!object_backed_cross_join.accepted) {
+      PrintMessages(object_backed_cross_join.messages);
+    }
+    Require(object_backed_cross_join.accepted &&
+                object_backed_cross_join.server_operation_id ==
+                    "query.execute" &&
+                object_backed_cross_join.server_cursor_uuid.empty() &&
+                object_backed_cross_join.server_row_count == 6 &&
+                object_backed_cross_join.server_result_payload.find(
+                    "join_value") != std::string::npos,
+            "object-backed native CROSS JOIN did not complete the canonical "
+            "two-heap-scan route");
 
     auto object_backed_count = parser.RunPipeline(
         "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);

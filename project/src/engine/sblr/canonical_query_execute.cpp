@@ -6092,7 +6092,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     const std::size_t output_row_bound,
     const exec::CanonicalAcceptedJoinKind join_kind,
     std::string operation_name,
-    api::EngineRequestContext mga_context) {
+    api::EngineRequestContext mga_context,
+    const bool runtime_bounded_inputs = false) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kJoin;
   registration.implementation_id = std::move(implementation_id);
@@ -6103,7 +6104,7 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
   registration.execute =
       [predicate_truth_values = std::move(predicate_truth_values), pair_count,
        output_row_bound, join_kind, operation_name = std::move(operation_name),
-       mga_context = std::move(mga_context)](
+       mga_context = std::move(mga_context), runtime_bounded_inputs](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -6139,7 +6140,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         }
         const auto actual_pair_count =
             left_batch.rows.size() * right_batch.rows.size();
-        if (actual_pair_count != pair_count ||
+        if ((!runtime_bounded_inputs && actual_pair_count != pair_count) ||
+            (runtime_bounded_inputs && actual_pair_count > pair_count) ||
             right_batch.rows.size() >
                 std::numeric_limits<std::size_t>::max() -
                     left_batch.rows.size()) {
@@ -6176,9 +6178,14 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, key_request.physical_dag);
         join_request.residual_request.residual_truth_values =
-            predicate_truth_values;
+            runtime_bounded_inputs
+                ? std::vector<api::EngineSqlTruthValue>(
+                      actual_pair_count, api::EngineSqlTruthValue::true_value)
+                : predicate_truth_values;
         join_request.residual_request.maximum_candidate_rechecks =
-            std::max<std::size_t>(1, pair_count);
+            std::max<std::size_t>(1, runtime_bounded_inputs
+                                         ? actual_pair_count
+                                         : pair_count);
         join_request.join_kind = join_kind;
         join_request.bound_pair_truth_profile = true;
         join_request.maximum_output_rows =
@@ -6192,7 +6199,8 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         step.result_handle_id = node.physical_node_id;
         step.input_row_count =
             left_batch.rows.size() + right_batch.rows.size();
-        step.rows_examined = pair_count;
+        step.rows_examined = runtime_bounded_inputs ? actual_pair_count
+                                                    : pair_count;
         step.output_row_count = join_result.output_batch.rows.size();
         step.materialized_output_batch = join_result.output_batch;
         step.mga_statement_context = join_result.mga_statement_context;
@@ -20251,6 +20259,260 @@ ExecuteCanonicalObjectFreeValuesQuery(
   return result;
 }
 
+CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
+    const CanonicalCurrentHeapExecutionRequest& input) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& dag = input.relational_dag;
+  std::vector<const api::RelationalDagNode*> scans;
+  const api::RelationalDagNode* join = nullptr;
+  for (const auto& node : dag.nodes) {
+    if (node.node_kind == api::RelationalDagNodeKind::kScan) {
+      scans.push_back(&node);
+    } else if (node.node_kind == api::RelationalDagNodeKind::kJoin &&
+               join == nullptr) {
+      join = &node;
+    }
+  }
+  if (dag.wire_version != 2 || scans.size() != 2 || join == nullptr ||
+      dag.nodes.size() != 3 || dag.root_node_id != join->node_id ||
+      join->semantic_variant_id != "join.cross.v1" ||
+      join->input_node_ids !=
+          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id}) {
+    return result;
+  }
+  result.profile_matched = true;
+  CanonicalObjectFreeValuesExecutionRequest response_context;
+  response_context.context = input.context;
+  response_context.relational_dag = input.relational_dag;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(response_context, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+
+  const auto admission = api::BuildCanonicalCurrentHeapOptimizerAdmission(
+      {input.context, input.relational_dag});
+  if (!admission.built || !admission.admission.admitted ||
+      !admission.admission.planning_allowed ||
+      admission.admission.data_access_allowed) {
+    return refuse(
+        admission.issue.diagnostic_id.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-ADMISSION-V1"
+            : admission.issue.diagnostic_id,
+        admission.issue.field_id.empty()
+            ? "current object-backed heap CROSS JOIN admission failed"
+            : admission.issue.field_id);
+  }
+  result.optimizer_admitted = true;
+  result.optimizer_admission_degraded =
+      admission.admission.degraded_for_unknown_statistics;
+  result.optimizer_benchmark_clean_ready =
+      admission.admission.benchmark_clean_ready;
+  result.optimizer_admission_stage_count =
+      admission.admission.evidence.size();
+
+  CanonicalObjectFreeValuesExecutionRequest planning_request{
+      input.context, input.relational_dag, admission.request,
+      admission.admission};
+  const auto& graph = admission.request.logical_graph;
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + input.context.statement_uuid.canonical;
+  const auto scan_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "heap-cross-scan.capability");
+  const auto join_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "heap-cross-join.capability");
+  std::vector<LivePhysicalNodeProfile> profiles;
+  for (const auto* scan : scans) {
+    LivePhysicalNodeProfile profile;
+    profile.logical_node_id = scan->node_id;
+    profile.implementation_id = "scan.heap.v1";
+    profile.capability_uuid = scan_capability_uuid;
+    profile.logical_node_kind =
+        plan::CanonicalLogicalRelationalNodeKind::kRelationSource;
+    profile.physical_node_kind = exec::PhysicalNodeKind::kScan;
+    profile.transformation_rule_id = "canonical.heap.scan.v1";
+    profile.estimated_rows = 1;
+    profile.memory_bytes_required = 1024;
+    profile.minimum_input_count = 0;
+    profile.maximum_input_count = 0;
+    profile.page_read_sequential_units = 1;
+    profile.mga_visibility_checks_expected = 1;
+    profile.storage_read_capable = true;
+    profile.mga_visibility_capable = true;
+    profiles.push_back(std::move(profile));
+  }
+  profiles.push_back(
+      {join->node_id, "join.cross.3vl.nested.v1", join_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kJoin,
+       exec::PhysicalNodeKind::kJoin,
+       "canonical.heap.join.cross.v1", 1, 2048, 2, 2});
+  const auto physical = PlanAndPublishLivePhysicalDag(
+      planning_request, profiles, "heap-cross-join.selected-plan",
+      "object-backed heap CROSS JOIN");
+  if (!physical.ok) {
+    return refuse(
+        physical.diagnostic_id.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-PLANNING-V1"
+            : physical.diagnostic_id,
+        physical.detail.empty()
+            ? "object-backed heap CROSS JOIN physical DAG was not published"
+            : physical.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = physical.physical_dag.nodes.size();
+  result.selected_plan_uuid = physical.physical_dag.selected_plan_uuid;
+
+  const auto bounded_size = [](const std::uint64_t value) {
+    return static_cast<std::size_t>(std::min<std::uint64_t>(
+        value, std::numeric_limits<std::size_t>::max()));
+  };
+  const auto maximum_scanned_row_versions = bounded_size(std::min(
+      input.context.optimizer_maximum_search_steps,
+      input.context.optimizer_maximum_candidate_count));
+  const auto maximum_decoded_bytes =
+      bounded_size(input.context.optimizer_memory_budget_bytes);
+  const auto maximum_output_rows =
+      bounded_size(input.context.optimizer_maximum_candidate_count);
+  const auto maximum_output_columns = join->output_descriptor_ids.size();
+  if (maximum_scanned_row_versions == 0 || maximum_decoded_bytes == 0 ||
+      maximum_output_rows == 0 || maximum_output_columns == 0 ||
+      maximum_output_rows >
+          std::numeric_limits<std::size_t>::max() / maximum_output_columns) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "object-backed heap CROSS JOIN bounds are absent or overflow");
+  }
+
+  exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
+  heap_request.context = &input.context;
+  heap_request.relational_dag = &input.relational_dag;
+  heap_request.physical_dag = physical.physical_dag;
+  heap_request.maximum_scanned_row_versions = maximum_scanned_row_versions;
+  heap_request.maximum_decoded_bytes = maximum_decoded_bytes;
+  heap_request.maximum_output_rows = maximum_output_rows;
+  heap_request.maximum_output_columns = maximum_output_columns;
+  heap_request.maximum_output_cells =
+      maximum_output_rows * maximum_output_columns;
+  heap_request.cancellation_requested =
+      input.context.query_cancellation_requested
+          ? input.context.query_cancellation_requested
+          : std::function<bool()>([] { return false; });
+  auto heap_registration =
+      exec::BuildCanonicalHeapPhysicalRegistration(heap_request);
+  if (!heap_registration.diagnostic.ok ||
+      !heap_registration.registration.has_value()) {
+    return refuse(
+        heap_registration.diagnostic.diagnostic_code.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-REGISTRATION-V1"
+            : heap_registration.diagnostic.diagnostic_code,
+        heap_registration.diagnostic.detail.empty()
+            ? "object-backed heap CROSS JOIN scan registration is unavailable"
+            : heap_registration.diagnostic.detail);
+  }
+
+  std::vector<const api::RelationalOutputRecord*> ordered_outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == join->node_id) {
+      ordered_outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(ordered_outputs, {},
+                    &api::RelationalOutputRecord::ordinal);
+  if (ordered_outputs.size() != join->output_descriptor_ids.size()) {
+    return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
+                  "object-backed CROSS JOIN result bindings are incomplete");
+  }
+
+  api::CanonicalOptimizerSelectedExecutionRequest selected;
+  selected.selected_physical_dag = physical.physical_dag;
+  selected.pre_access_statistics_snapshot_uuid =
+      physical.physical_dag.statistics_snapshot_uuid;
+  selected.mga_authority = heap_registration.mga_authority;
+  selected.available_executors.push_back(
+      std::move(*heap_registration.registration));
+  selected.available_executors.push_back(MakeLiveJoinRegistration(
+      "join.cross.3vl.nested.v1", join_capability_uuid, {},
+      maximum_output_rows, maximum_output_rows,
+      exec::CanonicalAcceptedJoinKind::kCross,
+      "object-backed heap CROSS JOIN", input.context, true));
+  selected.engine_execution_authorized = true;
+  selected.result_publication_request.statement_uuid =
+      input.context.statement_uuid.canonical;
+  selected.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + input.context.current_monotonic_ns,
+          "heap-cross-join.execution-attempt");
+  selected.result_publication_request.transaction_effect_evidence_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" +
+              std::to_string(input.context.local_transaction_id) + ":" +
+              std::to_string(
+                  input.context.snapshot_visible_through_local_transaction_id),
+          "heap-cross-join.transaction-effect-unchanged");
+  selected.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  selected.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  for (std::size_t ordinal = 0; ordinal < ordered_outputs.size(); ++ordinal) {
+    const auto& output = *ordered_outputs[ordinal];
+    const auto descriptor = std::ranges::find_if(
+        dag.descriptors, [&](const auto& candidate) {
+          return candidate.descriptor_id == output.descriptor_id;
+        });
+    if (descriptor == dag.descriptors.end()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-BINDING-V1",
+                    "object-backed CROSS JOIN descriptor is unresolved");
+    }
+    exec::CanonicalResultColumnDescriptor published;
+    published.ordinal = static_cast<std::uint32_t>(ordinal);
+    published.name_utf8 = output.output_name_utf8;
+    published.descriptor_uuid = descriptor->descriptor_uuid;
+    published.type_uuid = descriptor->type_uuid;
+    published.nullability =
+        descriptor->nullability == api::RelationalNullability::kNullable
+            ? exec::CanonicalResultNullability::kNullable
+            : exec::CanonicalResultNullability::kNonNull;
+    published.collation_uuid = descriptor->collation_uuid;
+    published.timezone_profile_id = descriptor->timezone_profile_id;
+    selected.result_publication_request.column_bindings.push_back(
+        {ordinal, true, std::move(published)});
+  }
+  selected.result_publication_request.maximum_row_count = maximum_output_rows;
+  const auto execution = ExecuteSelectedWithMgaGuard(input.context, selected);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-PACKET7-OBJECT-HEAP-CROSS-JOIN-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "object-backed heap CROSS JOIN selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(planning_request, execution);
+  return result;
+}
+
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const CanonicalCurrentHeapExecutionRequest& input) {
@@ -20260,6 +20522,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   return result;
 #else
   const auto& dag = input.relational_dag;
+  if (std::ranges::count_if(dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kScan;
+      }) == 2) {
+    return ExecuteCanonicalCurrentHeapCrossJoin(input);
+  }
   const auto scan_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kScan;

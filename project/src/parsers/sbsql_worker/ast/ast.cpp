@@ -1438,6 +1438,7 @@ std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
     case NativeRelationAstKind::kProject: return "project";
     case NativeRelationAstKind::kSort: return "sort";
     case NativeRelationAstKind::kLimit: return "limit";
+    case NativeRelationAstKind::kJoin: return "join";
   }
   return "unknown";
 }

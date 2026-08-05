@@ -389,6 +389,99 @@ std::optional<std::string_view> EngineIssuedAggregateFunctionUuid(
   return profile->function_uuid;
 }
 
+struct ExactProjectedDescriptorFields {
+  std::string type_uuid;
+  std::optional<std::string> collation_uuid;
+  std::optional<std::string> timezone_profile_id;
+  bool nullable{false};
+};
+
+std::optional<ExactProjectedDescriptorFields> ParseExactProjectedDescriptor(
+    std::string_view encoded,
+    std::string_view projected_collation_uuid,
+    bool projected_nullable) {
+  ExactProjectedDescriptorFields fields;
+  std::optional<bool> canonical_nullable;
+  std::optional<bool> storage_nullable;
+  bool type_seen = false;
+  bool collation_seen = false;
+  bool timezone_seen = false;
+  std::size_t offset = 0;
+  while (offset <= encoded.size()) {
+    const auto delimiter = encoded.find(';', offset);
+    const auto end = delimiter == std::string_view::npos ? encoded.size()
+                                                         : delimiter;
+    const auto field = encoded.substr(offset, end - offset);
+    const auto assign_text = [&](std::string_view prefix, bool* seen,
+                                 std::string* value) {
+      if (!field.starts_with(prefix)) return true;
+      if (*seen || field.size() == prefix.size()) return false;
+      *seen = true;
+      value->assign(field.substr(prefix.size()));
+      return true;
+    };
+    if (!assign_text("type_uuid=", &type_seen, &fields.type_uuid)) {
+      return std::nullopt;
+    }
+    std::string collation_uuid;
+    if (field.starts_with("collation_uuid=")) {
+      if (!assign_text("collation_uuid=", &collation_seen,
+                       &collation_uuid)) {
+        return std::nullopt;
+      }
+      fields.collation_uuid = std::move(collation_uuid);
+    }
+    std::string timezone_profile_id;
+    if (field.starts_with("timezone_profile_id=")) {
+      if (!assign_text("timezone_profile_id=", &timezone_seen,
+                       &timezone_profile_id)) {
+        return std::nullopt;
+      }
+      fields.timezone_profile_id = std::move(timezone_profile_id);
+    }
+    if (field.starts_with("nullability=")) {
+      if (canonical_nullable.has_value()) return std::nullopt;
+      const auto value = field.substr(std::string_view("nullability=").size());
+      if (value == "nullable") {
+        canonical_nullable = true;
+      } else if (value == "non_null") {
+        canonical_nullable = false;
+      } else {
+        return std::nullopt;
+      }
+    } else if (field.starts_with("nullable=")) {
+      if (storage_nullable.has_value()) return std::nullopt;
+      const auto value = field.substr(std::string_view("nullable=").size());
+      if (value == "true") {
+        storage_nullable = true;
+      } else if (value == "false") {
+        storage_nullable = false;
+      } else {
+        return std::nullopt;
+      }
+    }
+    if (delimiter == std::string_view::npos) break;
+    offset = delimiter + 1;
+  }
+  if (!type_seen || !CanonicalUuidBytes(fields.type_uuid).has_value() ||
+      (!canonical_nullable.has_value() && !storage_nullable.has_value()) ||
+      (canonical_nullable.has_value() && storage_nullable.has_value() &&
+       *canonical_nullable != *storage_nullable)) {
+    return std::nullopt;
+  }
+  fields.nullable = canonical_nullable.has_value() ? *canonical_nullable
+                                                    : *storage_nullable;
+  if (fields.nullable != projected_nullable ||
+      fields.collation_uuid.has_value() !=
+          !projected_collation_uuid.empty() ||
+      (fields.collation_uuid.has_value() &&
+       (*fields.collation_uuid != projected_collation_uuid ||
+        !CanonicalUuidBytes(*fields.collation_uuid).has_value()))) {
+    return std::nullopt;
+  }
+  return fields;
+}
+
 std::optional<NativeRelationalBindingContext>
 BuildEngineProjectedNativeBindingContext(
     const NativeRelationalAstDocument& ast,
@@ -437,6 +530,120 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_epoch_uuid,
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
+
+  const auto cross_join = std::ranges::find_if(
+      ast.relations, [](const auto& relation) {
+        return relation.relation_kind == NativeRelationAstKind::kJoin;
+      });
+  if (cross_join != ast.relations.end()) {
+    std::vector<const NativeRelationAstNode*> source_relations;
+    for (const auto& relation : ast.relations) {
+      if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
+        source_relations.push_back(&relation);
+      }
+    }
+    if (ast.catalog_relation_sources.size() != 2 ||
+        source_relations.size() != 2 || ast.relations.size() != 3 ||
+        ast.root_relation_id != cross_join->relation_id ||
+        cross_join->input_relation_ids !=
+            std::vector<std::uint32_t>{source_relations[0]->relation_id,
+                                       source_relations[1]->relation_id} ||
+        !cross_join->predicate_expression_ids.empty() ||
+        resolved_object_reference_seeds.size() != 2) {
+      return fail("catalog_cross_join_shape_invalid");
+    }
+
+    std::uint32_t binding_id = 1;
+    for (std::size_t source_ordinal = 0; source_ordinal < 2;
+         ++source_ordinal) {
+      const auto& source = ast.catalog_relation_sources[source_ordinal];
+      const auto& relation = *source_relations[source_ordinal];
+      const auto& resolved =
+          resolved_object_reference_seeds[source_ordinal].resolved;
+      const auto& projection = resolved.relation_descriptor;
+      const bool relation_object_class =
+          resolved.object_class == "relation" ||
+          resolved.object_class == "table" ||
+          resolved.object_class == "view" ||
+          resolved.object_class == "materialized_view" ||
+          resolved.object_class == "external_table" ||
+          resolved.object_class == "foreign_table";
+      if (relation.relation_source_ids !=
+              std::vector<std::uint32_t>{source.source_id} ||
+          relation.output_expression_ids.size() != 1 ||
+          !resolved.resolved || !projection.present ||
+          !relation_object_class || resolved.object_uuid.empty() ||
+          projection.relation_uuid != resolved.object_uuid ||
+          projection.descriptor_uuid.empty() || projection.schema_uuid.empty() ||
+          projection.descriptor_generation == 0 ||
+          projection.validated_resource_epoch == 0 ||
+          resolved.catalog_epoch == 0 || resolved.security_epoch == 0 ||
+          projection.columns.empty()) {
+        return fail("catalog_cross_join_projection_authority_incomplete");
+      }
+
+      NativeCatalogRelationBindingInput catalog_relation;
+      catalog_relation.source_id = source.source_id;
+      catalog_relation.resolution_state =
+          NativeCatalogRelationResolutionState::kBound;
+      catalog_relation.object_uuid = resolved.object_uuid;
+      catalog_relation.resolved_object_type = resolved.object_class;
+      catalog_relation.resolved_schema_uuid = projection.schema_uuid;
+      catalog_relation.catalog_generation_id = resolved.catalog_epoch;
+      catalog_relation.security_epoch = resolved.security_epoch;
+      catalog_relation.resource_epoch = projection.validated_resource_epoch;
+      for (std::size_t ordinal = 0; ordinal < projection.columns.size();
+           ++ordinal, ++binding_id) {
+        const auto& column = projection.columns[ordinal];
+        const auto descriptor_fields = ParseExactProjectedDescriptor(
+            column.encoded_type_descriptor, column.collation_uuid,
+            column.nullable);
+        if (column.ordinal != ordinal || column.column_uuid.empty() ||
+            column.canonical_name_key.empty() ||
+            !CanonicalUuidBytes(column.type_descriptor_uuid).has_value() ||
+            !descriptor_fields.has_value()) {
+          return fail("catalog_cross_join_column_projection_incomplete");
+        }
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id = binding_id;
+        descriptor.descriptor_uuid = column.type_descriptor_uuid;
+        descriptor.type_uuid = descriptor_fields->type_uuid;
+        descriptor.nullability = descriptor_fields->nullable
+                                     ? BoundNullability::kNullable
+                                     : BoundNullability::kNonNull;
+        descriptor.collation_uuid = descriptor_fields->collation_uuid;
+        descriptor.timezone_profile_id =
+            descriptor_fields->timezone_profile_id;
+        if (column.character_length != 0) {
+          descriptor.width_precision_scale.width = column.character_length;
+        }
+        context.descriptors.push_back(std::move(descriptor));
+        context.expressions.push_back(
+            {binding_id, binding_id, std::nullopt, column.column_uuid});
+        context.outputs.push_back(
+            {static_cast<std::uint32_t>(context.outputs.size() + 1),
+             binding_id, column.canonical_name_key, binding_id, true,
+             static_cast<std::uint32_t>(ordinal), relation.relation_id});
+        catalog_relation.columns.push_back(
+            {static_cast<std::uint32_t>(ordinal), column.column_uuid,
+             binding_id, column.canonical_name_key});
+      }
+      context.catalog_relations.push_back(std::move(catalog_relation));
+    }
+    const auto source_output_count = context.outputs.size();
+    for (std::size_t ordinal = 0; ordinal < context.descriptors.size();
+         ++ordinal) {
+      const auto binding = static_cast<std::uint32_t>(ordinal + 1);
+      const auto source_output = context.outputs[ordinal];
+      context.outputs.push_back(
+          {static_cast<std::uint32_t>(source_output_count + ordinal + 1),
+           binding, source_output.output_name_utf8, binding, true,
+           static_cast<std::uint32_t>(ordinal), cross_join->relation_id});
+    }
+    context.relations.push_back(
+        {cross_join->relation_id, "join.cross.v1"});
+    return context;
+  }
 
   if (!ast.catalog_relation_sources.empty()) {
     const auto source_relation = std::ranges::find_if(

@@ -59,6 +59,7 @@ enum class NativeRelationAstKind {
   kLimit,
   kProject,
   kSort,
+  kJoin,
 };
 
 enum class NativeSortDirection {
