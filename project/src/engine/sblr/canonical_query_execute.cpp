@@ -6479,7 +6479,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
              global_aggregate_profile.function ==
                  exec::CanonicalAggregateFunction::min ||
              global_aggregate_profile.function ==
-                 exec::CanonicalAggregateFunction::max);
+                 exec::CanonicalAggregateFunction::max ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::bool_and ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::bool_or ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::every);
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
              !registry_aggregate_composable) ||
@@ -7535,6 +7541,144 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               minimum
                   ? "canonical.aggregate.composed-global-min-expression.v1"
                   : "canonical.aggregate.composed-global-max-expression.v1";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          break;
+        }
+        if (global_aggregate_profile.matched &&
+            (global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::bool_and ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::bool_or ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::every)) {
+          const auto function = global_aggregate_profile.function;
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state, function,
+              false, global_aggregate_profile.distinct,
+              global_aggregate_profile.has_filter);
+          if (!prepared.ok || prepared.value_columns.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          if (prepared.filter_column.has_value()) {
+            std::vector<api::EngineSqlTruthValue> materialized_filter;
+            std::string filter_detail;
+            if (!MaterializeAggregateFilterTruthValues(
+                    input_batch, *prepared.filter_column,
+                    prepared.filter_descriptor_id, &materialized_filter,
+                    &filter_detail)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            std::move(filter_detail));
+            }
+            filter_truth_values = std::move(materialized_filter);
+          }
+          std::set<std::string> distinct_values;
+          bool saw_value = false;
+          bool saw_true = false;
+          bool saw_false = false;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            if (value.descriptor.canonical_type_name != "boolean") {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition boolean aggregate input is not "
+                            "canonical boolean");
+            }
+            if (prepared.distinct) {
+              std::string key = value.encoded_value + ":";
+              key.append(
+                  reinterpret_cast<const char*>(value.binary_value.data()),
+                  value.binary_value.size());
+              if (!distinct_values.insert(std::move(key)).second) continue;
+            }
+            api::EngineSqlTruthValue truth =
+                api::EngineSqlTruthValue::unspecified;
+            std::string truth_detail;
+            if (!api::QowCanonicalTruthFromTypedValueV1(
+                    value, &truth, &truth_detail) ||
+                (truth != api::EngineSqlTruthValue::true_value &&
+                 truth != api::EngineSqlTruthValue::false_value)) {
+              return refuse(
+                  std::string(kPayloadDiagnostic),
+                  "composition boolean aggregate input: " + truth_detail);
+            }
+            saw_value = true;
+            saw_true = saw_true ||
+                       truth == api::EngineSqlTruthValue::true_value;
+            saw_false = saw_false ||
+                        truth == api::EngineSqlTruthValue::false_value;
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition boolean aggregate DISTINCT work bound "
+                "overflowed");
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition boolean aggregate work exceeds the admitted "
+                "bound");
+          }
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue value;
+          value.descriptor = prepared.result_column.descriptor;
+          value.is_null = !saw_value;
+          value.state = saw_value ? api::EngineValueState::value
+                                  : api::EngineValueState::sql_null;
+          if (saw_value) {
+            const bool aggregate_truth =
+                function == exec::CanonicalAggregateFunction::bool_or
+                    ? saw_true
+                    : !saw_false;
+            value.encoded_value = aggregate_truth ? "true" : "false";
+          }
+          tuple.values.push_back(std::move(value));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "boolean aggregate planning state: " +
+                          canonical.detail
+                    : "boolean aggregate planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          if (function == exec::CanonicalAggregateFunction::bool_and) {
+            transformation_rule =
+                "canonical.aggregate.composed-global-bool-and-expression.v1";
+          } else if (function == exec::CanonicalAggregateFunction::bool_or) {
+            transformation_rule =
+                "canonical.aggregate.composed-global-bool-or-expression.v1";
+          } else {
+            transformation_rule =
+                "canonical.aggregate.composed-global-every-expression.v1";
+          }
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
           break;
