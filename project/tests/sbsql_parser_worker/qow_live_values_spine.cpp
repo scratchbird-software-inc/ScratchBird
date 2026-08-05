@@ -688,6 +688,56 @@ sblr::SblrOperationEnvelope InnerJoinFilterProjectSortLimitValuesEnvelope() {
   return envelope;
 }
 
+// RCP-044-TEST-LIVE-INNER-JOIN-FILTER-PROJECT-DISTINCT-SORT-LIMIT-V1
+sblr::SblrOperationEnvelope
+InnerJoinFilterProjectDistinctSortLimitValuesEnvelope() {
+  auto envelope = InnerJoinFilterProjectSortLimitValuesEnvelope();
+  std::erase_if(envelope.operands, [](const auto& operand) {
+    return operand.type == "relational_output_v1" && operand.name == "4";
+  });
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000a400";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "8";
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "16") {
+      operand.value = "1|-|5|-|-|1|-|32";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "5") {
+      operand.value = "3|0|4|4|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "5") {
+      operand.value =
+          "70726f6a6563742e73656c6563742d6c6973742e7631|13|-|-|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "6") {
+      operand.name = "7";
+      operand.value = "6|0|6|4|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "6") {
+      operand.name = "7";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "7") {
+      operand.name = "8";
+      operand.value = "7|0|7|4|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "7") {
+      operand.name = "8";
+    } else if (operand.type == "relational_property_v1") {
+      operand.value = "1|7|-|13:1:2:-|-|-";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_node_v1", "6", "5|0|5|4|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "6",
+       "6167677265676174652e71756572792d64697374696e63742e7631|13|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope FilterValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.filter");
@@ -4349,7 +4399,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 20> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 21> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4371,6 +4421,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
       InnerJoinFilterProjectValuesEnvelope(),
       InnerJoinFilterProjectSortValuesEnvelope(),
       InnerJoinFilterProjectSortLimitValuesEnvelope(),
+      InnerJoinFilterProjectDistinctSortLimitValuesEnvelope(),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5286,6 +5337,92 @@ bool ValidateInnerJoinFilterProjectSortLimitCompositionSpine() {
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "negative or exhausted JOIN/FILTER/PROJECT/SORT/LIMIT published "
       "evidence");
+  return passed;
+}
+
+// RCP-044-TEST-LIVE-INNER-JOIN-FILTER-PROJECT-DISTINCT-SORT-LIMIT-V1
+bool ValidateInnerJoinFilterProjectDistinctSortLimitSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 8 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 8 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 2 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 2;
+  };
+
+  const auto distinct_limited =
+      dispatch(InnerJoinFilterProjectDistinctSortLimitValuesEnvelope());
+  const auto repeated =
+      dispatch(InnerJoinFilterProjectDistinctSortLimitValuesEnvelope());
+  if (!distinct_limited.api_result.ok) {
+    for (const auto& diagnostic : distinct_limited.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  const auto& rows = distinct_limited.api_result.result_shape.rows;
+  passed &= Require(
+      completed(distinct_limited) &&
+          rows[0].fields[0].first == "safe_quotient" &&
+          rows[0].fields[0].second.encoded_value == "5" &&
+          rows[1].fields[0].second.encoded_value == "10",
+      "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/LIMIT did not eliminate "
+      "projected duplicates before row limiting");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid ==
+              distinct_limited.selected_plan_uuid &&
+          repeated.canonical_result_bytes ==
+              distinct_limited.canonical_result_bytes,
+      "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/LIMIT changed deterministic "
+      "plan/result bytes");
+
+  auto source_only_distinct =
+      InnerJoinFilterProjectDistinctSortLimitValuesEnvelope();
+  for (auto& operand : source_only_distinct.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "6") {
+      operand.value =
+          "6167677265676174652e71756572792d64697374696e63742e7631|6|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 16;
+  const auto source_only_result =
+      dispatch(std::move(source_only_distinct));
+  const auto exhausted_result = dispatch(
+      InnerJoinFilterProjectDistinctSortLimitValuesEnvelope(),
+      std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          source_only_result,
+          "QOW-DIAG-RELATIONAL-LIVE-JOIN-FILTER-PROJECT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "invalid DISTINCT or exhausted joined SQL tail published evidence");
   return passed;
 }
 
@@ -11285,6 +11422,7 @@ int main() {
                       ValidateInnerJoinFilterProjectCompositionSpine() &&
                       ValidateInnerJoinFilterProjectSortCompositionSpine() &&
                       ValidateInnerJoinFilterProjectSortLimitCompositionSpine() &&
+                      ValidateInnerJoinFilterProjectDistinctSortLimitSpine() &&
                       ValidateFilterValuesSpine() &&
                       ValidateFilterThreeValuedPredicate() &&
                       ValidateRowDependentFilterPredicateSpine() &&
