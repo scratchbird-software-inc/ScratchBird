@@ -394,6 +394,13 @@ class NativeRelationalParser final {
           IsWord(*tokens_[index + 2], "JOIN")) {
         return true;
       }
+      if (IsWord(*tokens_[index], "LEFT") &&
+          index + 2 < tokens_.size() &&
+          (IsWord(*tokens_[index + 1], "SEMI") ||
+           IsWord(*tokens_[index + 1], "ANTI")) &&
+          IsWord(*tokens_[index + 2], "JOIN")) {
+        return true;
+      }
     }
     return false;
   }
@@ -477,7 +484,17 @@ class NativeRelationalParser final {
         join_kind == NativeJoinAstKind::kLeftOuter ||
         join_kind == NativeJoinAstKind::kRightOuter ||
         join_kind == NativeJoinAstKind::kFullOuter;
-    if (outer_join && !AtEnd() && IsWord(Current(), "OUTER")) Consume();
+    if (join_kind == NativeJoinAstKind::kLeftOuter && !AtEnd() &&
+        IsWord(Current(), "SEMI")) {
+      Consume();
+      join_kind = NativeJoinAstKind::kLeftSemi;
+    } else if (join_kind == NativeJoinAstKind::kLeftOuter && !AtEnd() &&
+               IsWord(Current(), "ANTI")) {
+      Consume();
+      join_kind = NativeJoinAstKind::kLeftAnti;
+    } else if (outer_join && !AtEnd() && IsWord(Current(), "OUTER")) {
+      Consume();
+    }
     if (
         !RequireWord("JOIN", "catalog_join_join_required",
                      "bounded catalog JOIN requires JOIN")) {
@@ -544,7 +561,11 @@ class NativeRelationalParser final {
     join.relation_kind = NativeRelationAstKind::kJoin;
     join.join_kind = join_kind;
     join.input_relation_ids = {1, 2};
-    join.output_expression_ids = {1, 2};
+    join.output_expression_ids =
+        join_kind == NativeJoinAstKind::kLeftSemi ||
+                join_kind == NativeJoinAstKind::kLeftAnti
+            ? std::vector<std::uint32_t>{1}
+            : std::vector<std::uint32_t>{1, 2};
     if (join_kind != NativeJoinAstKind::kCross) {
       NativeExpressionAstNode left_key;
       left_key.expression_id = NextExpressionId();

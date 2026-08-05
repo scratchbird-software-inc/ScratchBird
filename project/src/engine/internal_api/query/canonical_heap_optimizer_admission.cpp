@@ -210,9 +210,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
        join->semantic_variant_id == "join.inner.v1" ||
        join->semantic_variant_id == "join.left-outer.v1" ||
        join->semantic_variant_id == "join.right-outer.v1" ||
-       join->semantic_variant_id == "join.full-outer.v1");
+       join->semantic_variant_id == "join.full-outer.v1" ||
+       join->semantic_variant_id == "join.left-semi.v1" ||
+       join->semantic_variant_id == "join.left-anti.v1");
   const bool predicate_join =
       accepted_join && join->semantic_variant_id != "join.cross.v1";
+  const bool left_only_join =
+      accepted_join &&
+      (join->semantic_variant_id == "join.left-semi.v1" ||
+       join->semantic_variant_id == "join.left-anti.v1");
   if (scans.size() != 2 || join == nullptr || relational.nodes.size() != 3 ||
       relational.root_node_id != join->node_id ||
       !accepted_join ||
@@ -229,7 +235,9 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                   "two_heap_scans_one_cross_join");
   }
   std::vector<std::uint32_t> expected_join_descriptors;
-  for (const auto* scan : scans) {
+  for (std::size_t scan_ordinal = 0; scan_ordinal < scans.size();
+       ++scan_ordinal) {
+    const auto* scan = scans[scan_ordinal];
     if (scan->semantic_variant_id != "relation.source.v1" ||
         !scan->input_node_ids.empty() || scan->shareable ||
         scan->required_object_uuids.size() != 1 ||
@@ -243,9 +251,11 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-CROSS-JOIN-PROFILE-V1",
                     "relation_source_leaf");
     }
-    expected_join_descriptors.insert(expected_join_descriptors.end(),
-                                      scan->output_descriptor_ids.begin(),
-                                      scan->output_descriptor_ids.end());
+    if (!left_only_join || scan_ordinal == 0) {
+      expected_join_descriptors.insert(expected_join_descriptors.end(),
+                                       scan->output_descriptor_ids.begin(),
+                                       scan->output_descriptor_ids.end());
+    }
   }
   if (scans[0]->required_object_uuids.front() ==
           scans[1]->required_object_uuids.front() ||

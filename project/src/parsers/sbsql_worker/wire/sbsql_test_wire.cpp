@@ -570,9 +570,13 @@ BuildEngineProjectedNativeBindingContext(
       case NativeJoinAstKind::kFullOuter:
         join_semantic = "join.full-outer.v1";
         break;
-      case NativeJoinAstKind::kNone:
       case NativeJoinAstKind::kLeftSemi:
+        join_semantic = "join.left-semi.v1";
+        break;
       case NativeJoinAstKind::kLeftAnti:
+        join_semantic = "join.left-anti.v1";
+        break;
+      case NativeJoinAstKind::kNone:
         return fail("catalog_join_kind_invalid");
     }
     const bool predicate_join =
@@ -740,7 +744,13 @@ BuildEngineProjectedNativeBindingContext(
       return fail("catalog_outer_join_nullable_descriptor_required");
     }
     const auto source_output_count = context.outputs.size();
-    for (std::size_t ordinal = 0; ordinal < source_descriptor_count;
+    const bool left_only_join =
+        catalog_join->join_kind == NativeJoinAstKind::kLeftSemi ||
+        catalog_join->join_kind == NativeJoinAstKind::kLeftAnti;
+    const auto join_output_count =
+        left_only_join ? context.catalog_relations[0].columns.size()
+                       : source_descriptor_count;
+    for (std::size_t ordinal = 0; ordinal < join_output_count;
          ++ordinal) {
       const auto binding = static_cast<std::uint32_t>(ordinal + 1);
       const auto source_output = context.outputs[ordinal];

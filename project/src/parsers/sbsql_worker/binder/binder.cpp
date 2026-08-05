@@ -485,7 +485,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
          context.relations.front().semantic_variant_id !=
              "join.right-outer.v1" &&
          context.relations.front().semantic_variant_id !=
-             "join.full-outer.v1") ||
+             "join.full-outer.v1" &&
+         context.relations.front().semantic_variant_id !=
+             "join.left-semi.v1" &&
+         context.relations.front().semantic_variant_id !=
+             "join.left-anti.v1") ||
         ast.root_relation_id != catalog_join->relation_id ||
         catalog_join->input_relation_ids !=
             std::vector<std::uint32_t>{source_relations[0]->relation_id,
@@ -497,12 +501,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     const bool predicate_join =
         context.relations.front().semantic_variant_id != "join.cross.v1";
+    const bool left_only_join =
+        context.relations.front().semantic_variant_id == "join.left-semi.v1" ||
+        context.relations.front().semantic_variant_id == "join.left-anti.v1";
+    const auto join_output_count =
+        left_only_join ? context.catalog_relations.front().columns.size()
+                       : context.expressions.size();
     if (catalog_join->predicate_expression_ids.size() !=
             static_cast<std::size_t>(predicate_join) ||
         context.descriptors.size() !=
             context.expressions.size() +
                 static_cast<std::size_t>(predicate_join) ||
-        context.outputs.size() != context.expressions.size() * 2) {
+        context.outputs.size() !=
+            context.expressions.size() + join_output_count) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog JOIN predicate binding is incomplete");
       return RefusedBoundAst(std::move(bound));
@@ -608,7 +619,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             expression.expression_id);
         bound_source_relation.bound_expression_ids.push_back(
             expression.expression_id);
-        joined_expression_ids.push_back(expression.expression_id);
+        if (!left_only_join || source_ordinal == 0) {
+          joined_expression_ids.push_back(expression.expression_id);
+        }
         ++binding_offset;
       }
       bound.catalog_relation_sources.push_back(std::move(bound_source));
@@ -679,10 +692,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound.expressions.push_back(std::move(predicate));
     }
 
-    for (std::size_t ordinal = 0; ordinal < context.expressions.size();
+    for (std::size_t ordinal = 0; ordinal < joined_expression_ids.size();
          ++ordinal) {
       const auto& output = context.outputs[context.expressions.size() + ordinal];
-      const auto expression_id = static_cast<std::uint32_t>(ordinal + 1);
+      const auto expression_id = joined_expression_ids[ordinal];
       if (output.output_id != context.expressions.size() + ordinal + 1 ||
           output.expression_id != expression_id ||
           output.descriptor_id != expression_id || !output.visible ||

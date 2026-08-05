@@ -33325,9 +33325,14 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation.semantic_variant_id == "join.inner.v1" ||
           relation.semantic_variant_id == "join.left-outer.v1" ||
           relation.semantic_variant_id == "join.right-outer.v1" ||
-          relation.semantic_variant_id == "join.full-outer.v1";
+          relation.semantic_variant_id == "join.full-outer.v1" ||
+          relation.semantic_variant_id == "join.left-semi.v1" ||
+          relation.semantic_variant_id == "join.left-anti.v1";
       const bool predicate_join =
           relation.semantic_variant_id != "join.cross.v1";
+      const bool left_only_join =
+          relation.semantic_variant_id == "join.left-semi.v1" ||
+          relation.semantic_variant_id == "join.left-anti.v1";
       if (catalog_join_relation != nullptr || catalog_relations.size() != 2 ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
@@ -33353,10 +33358,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       std::vector<std::uint32_t> expected_outputs;
-      for (const auto* input : catalog_relations) {
-        expected_outputs.insert(expected_outputs.end(),
-                                input->output_expression_ids.begin(),
-                                input->output_expression_ids.end());
+      expected_outputs = catalog_relations.front()->output_expression_ids;
+      if (!left_only_join) {
+        expected_outputs.insert(
+            expected_outputs.end(),
+            catalog_relations.back()->output_expression_ids.begin(),
+            catalog_relations.back()->output_expression_ids.end());
       }
       if (relation.output_expression_ids != expected_outputs) {
         AddNativeRelationalLoweringError(
@@ -33822,7 +33829,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
 
     const bool predicate_join =
         catalog_join_relation->semantic_variant_id != "join.cross.v1";
+    const bool left_only_join =
+        catalog_join_relation->semantic_variant_id == "join.left-semi.v1" ||
+        catalog_join_relation->semantic_variant_id == "join.left-anti.v1";
     std::size_t descriptor_offset = 0;
+    std::size_t source_projection_count = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
     std::unordered_set<std::string> object_uuids;
     std::unordered_set<std::uint32_t> source_ids;
@@ -33916,10 +33927,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           return envelope;
         }
       }
-      expected_join_projection_ids.insert(
-          expected_join_projection_ids.end(),
-          relation->output_expression_ids.begin(),
-          relation->output_expression_ids.end());
+      if (!left_only_join || source_ordinal == 0) {
+        expected_join_projection_ids.insert(
+            expected_join_projection_ids.end(),
+            relation->output_expression_ids.begin(),
+            relation->output_expression_ids.end());
+      }
+      source_projection_count += relation->output_expression_ids.size();
     }
     if (predicate_join) {
       const auto predicate = expressions_by_id.find(
@@ -33953,6 +33967,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     const auto& join_outputs =
         outputs_by_relation.at(catalog_join_relation->relation_id);
+    if (join_outputs.size() != expected_join_projection_ids.size()) {
+      AddNativeRelationalLoweringError(
+          &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+          "typed JOIN result projection width is not canonical");
+      return envelope;
+    }
     std::vector<std::uint32_t> join_output_ids;
     for (std::size_t ordinal = 0; ordinal < join_outputs.size(); ++ordinal) {
       const auto* output = join_outputs[ordinal];
@@ -33968,8 +33988,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (descriptor_offset != native.descriptors.size() ||
         catalog_join_relation->output_expression_ids !=
             expected_join_projection_ids ||
-        join_outputs.size() != expected_join_projection_ids.size() ||
-        native.outputs.size() != expected_join_projection_ids.size() * 2 ||
+        native.outputs.size() !=
+            source_projection_count + expected_join_projection_ids.size() ||
         native.scopes.front().visible_projection_ids != join_output_ids) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",

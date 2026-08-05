@@ -20346,6 +20346,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
       join_component = "full-outer";
       join_operation = "FULL OUTER JOIN";
+    } else if (join->semantic_variant_id == "join.left-semi.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
+      join_component = "left-semi";
+      join_operation = "LEFT SEMI JOIN";
+    } else if (join->semantic_variant_id == "join.left-anti.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
+      join_component = "left-anti";
+      join_operation = "LEFT ANTI JOIN";
     }
   }
   const bool accepted_join = !join_component.empty();

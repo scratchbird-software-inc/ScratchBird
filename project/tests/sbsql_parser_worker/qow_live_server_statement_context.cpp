@@ -744,6 +744,35 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                       "object-backed FULL OUTER JOIN did not preserve both "
                       "unmatched sides");
 
+    const auto verify_left_only_join = [&](const std::string_view join_sql,
+                                           const std::uint64_t expected_rows,
+                                           const std::string_view label) {
+      auto joined = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation " +
+              std::string(join_sql) +
+              " qow_packet7.qow_packet7_join_relation ON integer_value = "
+              "join_value;",
+          true);
+      if (!joined.accepted) PrintMessages(joined.messages);
+      Require(joined.accepted &&
+                  joined.server_operation_id == "query.execute" &&
+                  joined.server_cursor_uuid.empty() &&
+                  joined.server_row_count == expected_rows &&
+                  joined.server_result_payload.find("integer_value") !=
+                      std::string::npos &&
+                  joined.server_result_payload.find("join_value") ==
+                      std::string::npos,
+              label);
+    };
+    verify_left_only_join(
+        "LEFT SEMI JOIN", 2,
+        "object-backed LEFT SEMI JOIN did not publish each matching left row "
+        "once with a left-only result shape");
+    verify_left_only_join(
+        "LEFT ANTI JOIN", 1,
+        "object-backed LEFT ANTI JOIN did not publish only its unmatched left "
+        "row with a left-only result shape");
+
     auto object_backed_count = parser.RunPipeline(
         "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);
     if (!object_backed_count.accepted) {
