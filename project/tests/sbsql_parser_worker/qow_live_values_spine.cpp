@@ -655,6 +655,55 @@ sblr::SblrOperationEnvelope ProjectValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-032-TEST-LIVE-ROW-DEPENDENT-PROJECT-EXPRESSION-V1
+sblr::SblrOperationEnvelope RowDependentProjectValuesEnvelope() {
+  auto envelope = ProjectValuesEnvelope();
+  const auto first_output = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_output_v1";
+      });
+  envelope.operands.insert(
+      first_output,
+      {{"relational_descriptor_v1", "3",
+        "019f0000-0000-7300-8000-000000008705|"
+        "019f0000-0000-7400-8000-000000008706|1|-|-|-|-|-"},
+       {"relational_expression_v1", "5", "6|6,7|3|-|-|-|2b|-"},
+       {"relational_expression_v1", "6",
+        "3|-|1|-|019f0000-0000-7500-8000-000000008707|-|-|-"},
+       {"relational_expression_v1", "7", "1|-|3|-|-|1|-|3130"},
+       {"relational_expression_v1", "8",
+        "3|-|2|-|019f0000-0000-7500-8000-000000008708|-|-|-"},
+       {"relational_expression_v1", "9", "1|-|1|-|-|1|-|33"},
+       {"relational_expression_v1", "10", "1|-|2|-|-|2|-|62657461"}});
+  const auto first_node = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_node_v1";
+      });
+  envelope.operands.insert(
+      first_node,
+      {{"relational_output_v1", "3",
+        "2|5|3|1|0|69645f706c75735f74656e"},
+       {"relational_output_v1", "4", "2|8|2|1|1|6c6162656c"},
+       {"relational_values_row_v1", "3", "9,10"}});
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "1") {
+      operand.value = "13|0|-|1,2|1,2,3";
+    } else if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "3|0|1|3,2|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "1") {
+      operand.value =
+          "76616c7565732e6c69746572616c2d7461626c652e7631|"
+          "1,2,3,4,9,10|-|-|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.value =
+          "70726f6a6563742e73656c6563742d6c6973742e7631|5,8|-|-|-";
+    }
+  }
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4845,6 +4894,87 @@ bool ValidateProjectRefusalIsAtomic() {
       refused_atomically(std::move(root_lineage)) &&
           refused_atomically(std::move(bound_expression)),
       "lineage-bearing or expression-bound PROJECT published partial evidence");
+}
+
+// RCP-032-TEST-LIVE-ROW-DEPENDENT-PROJECT-EXPRESSION-V1
+bool ValidateRowDependentProjectExpressionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 2 &&
+           result.physical_node_count == 2 &&
+           result.canonical_result_column_count == 2 &&
+           result.canonical_result_row_count == 3 &&
+           result.api_result.result_shape.columns.size() == 2 &&
+           result.api_result.result_shape.rows.size() == 3;
+  };
+
+  const auto projected = dispatch(RowDependentProjectValuesEnvelope());
+  const auto repeated = dispatch(RowDependentProjectValuesEnvelope());
+  bool passed = true;
+  passed &= Require(
+      completed(projected) &&
+          projected.api_result.result_shape.rows[0].fields[0].first ==
+              "id_plus_ten" &&
+          projected.api_result.result_shape.rows[0].fields[1].first ==
+              "label" &&
+          projected.api_result.result_shape.rows[0].fields[0]
+                  .second.encoded_value == "11" &&
+          projected.api_result.result_shape.rows[0].fields[1]
+                  .second.encoded_value == "alpha" &&
+          projected.api_result.result_shape.rows[1].fields[0]
+                  .second.encoded_value == "12" &&
+          projected.api_result.result_shape.rows[1].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          projected.api_result.result_shape.rows[2].fields[0]
+                  .second.encoded_value == "13" &&
+          projected.api_result.result_shape.rows[2].fields[1]
+                  .second.encoded_value == "beta",
+      "row-dependent PROJECT did not evaluate arithmetic or preserve NULL");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == projected.selected_plan_uuid &&
+          repeated.canonical_result_bytes == projected.canonical_result_bytes,
+      "row-dependent PROJECT changed deterministic plan/result bytes");
+
+  auto unbound = RowDependentProjectValuesEnvelope();
+  for (auto& operand : unbound.operands) {
+    if (operand.type == "relational_expression_v1" && operand.name == "6") {
+      operand.value =
+          "3|-|3|-|019f0000-0000-7500-8000-000000008707|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 2;
+  const auto unbound_result = dispatch(std::move(unbound));
+  const auto exhausted_result = dispatch(RowDependentProjectValuesEnvelope(),
+                                         std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          unbound_result, "QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "unbound or resource-exhausted row PROJECT published partial evidence");
+  return passed;
 }
 
 bool ValidateLimitValuesSpine() {
@@ -9845,6 +9975,7 @@ int main() {
                       ValidateFilterRefusalIsAtomic() &&
                       ValidateProjectValuesSpine() &&
                       ValidateProjectRefusalIsAtomic() &&
+                      ValidateRowDependentProjectExpressionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&

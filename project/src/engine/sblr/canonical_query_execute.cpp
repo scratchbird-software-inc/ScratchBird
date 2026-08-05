@@ -320,9 +320,18 @@ struct PreparedFilterRoot {
   std::string detail;
 };
 
+struct PreparedProjectExpression {
+  std::uint32_t expression_id{0};
+  std::string expected_type;
+  CanonicalRelationalExpressionRowBinding row_binding;
+};
+
 struct PreparedProjectRoot {
   bool ok{false};
+  bool expression_projection{false};
   std::vector<std::size_t> projected_columns;
+  std::vector<PreparedProjectExpression> expressions;
+  exec::DescriptorBatch expression_output_batch;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
@@ -3515,16 +3524,16 @@ PreparedProjectRoot PrepareDescriptorDirectProjectRoot(
   return result;
 }
 
-bool PrepareInputPredicateRowBinding(
+bool PrepareInputRowBinding(
     const api::TypedRelationalDag& dag,
-    const std::uint32_t predicate_expression_id,
+    const std::uint32_t root_expression_id,
     const std::vector<std::uint32_t>& input_descriptor_ids,
     CanonicalRelationalExpressionRowBinding* row_binding,
     std::string* detail) {
   if (row_binding == nullptr || detail == nullptr ||
-      predicate_expression_id == 0 || input_descriptor_ids.empty()) {
+      root_expression_id == 0 || input_descriptor_ids.empty()) {
     if (detail != nullptr) {
-      *detail = "row predicate binding request is incomplete";
+      *detail = "row expression binding request is incomplete";
     }
     return false;
   }
@@ -3537,7 +3546,7 @@ bool PrepareInputPredicateRowBinding(
     if (!input_ordinals.emplace(input_descriptor_ids[ordinal], ordinal)
              .second) {
       *row_binding = {};
-      *detail = "row predicate input descriptor identity is ambiguous";
+      *detail = "row expression input descriptor identity is ambiguous";
       return false;
     }
   }
@@ -3548,7 +3557,7 @@ bool PrepareInputPredicateRowBinding(
     expressions.emplace(expression.expression_id, &expression);
   }
   std::unordered_set<std::uint32_t> reachable;
-  std::vector<std::uint32_t> pending{predicate_expression_id};
+  std::vector<std::uint32_t> pending{root_expression_id};
   while (!pending.empty()) {
     const auto expression_id = pending.back();
     pending.pop_back();
@@ -3556,7 +3565,7 @@ bool PrepareInputPredicateRowBinding(
     const auto expression = expressions.find(expression_id);
     if (expression == expressions.end()) {
       *row_binding = {};
-      *detail = "row predicate has a dangling expression child";
+      *detail = "row expression has a dangling expression child";
       return false;
     }
     if (expression->second->expression_kind ==
@@ -3565,7 +3574,7 @@ bool PrepareInputPredicateRowBinding(
           input_ordinals.find(expression->second->result_descriptor_id);
       if (ordinal == input_ordinals.end()) {
         *row_binding = {};
-        *detail = "row predicate identifier is not supplied by its input";
+        *detail = "row expression identifier is not supplied by its input";
         return false;
       }
       row_binding->slots.push_back(
@@ -3578,6 +3587,198 @@ bool PrepareInputPredicateRowBinding(
                    expression->second->child_expression_ids.end());
   }
   return true;
+}
+
+bool MaterializeExpressionProjectBatch(
+    const api::TypedRelationalDag& dag,
+    const std::vector<PreparedProjectExpression>& expressions,
+    const std::vector<exec::ExecutorColumnDescriptor>& output_columns,
+    const exec::DescriptorBatch& input_batch,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services,
+    exec::DescriptorBatch* output_batch,
+    std::string* detail) {
+  if (output_batch == nullptr || detail == nullptr || expressions.empty() ||
+      expressions.size() != output_columns.size() ||
+      input_batch.rows.empty()) {
+    if (detail != nullptr) {
+      *detail = "expression PROJECT materialization request is incomplete";
+    }
+    return false;
+  }
+  *output_batch = {};
+  detail->clear();
+  output_batch->columns = output_columns;
+  output_batch->rows.reserve(input_batch.rows.size());
+  CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
+  for (const auto& input_row : input_batch.rows) {
+    exec::DescriptorTuple output_row;
+    output_row.values.reserve(expressions.size());
+    for (const auto& expression : expressions) {
+      api::EngineTypedValue value;
+      if (!runtime.EvaluateForConsumer(
+              expression.expression_id, expression.expected_type,
+              expression.row_binding, input_row.values,
+              api::EngineCanonicalExpressionConsumer::projection, &value,
+              detail)) {
+        *output_batch = {};
+        return false;
+      }
+      output_row.values.push_back(std::move(value));
+    }
+    output_batch->rows.push_back(std::move(output_row));
+  }
+  std::vector<std::uint32_t> descriptor_ids;
+  descriptor_ids.reserve(output_columns.size());
+  for (const auto& column : output_columns) {
+    descriptor_ids.push_back(column.descriptor_id);
+  }
+  const auto canonical =
+      exec::ValidateCanonicalDescriptorBatch(*output_batch, descriptor_ids);
+  const auto values = exec::ValidateDescriptorBatch(*output_batch);
+  if (!canonical.ok || !values.ok) {
+    *detail = !canonical.ok
+                  ? canonical.diagnostic_code + ":" + canonical.detail
+                  : values.diagnostic_code + ":" + values.detail;
+    *output_batch = {};
+    return false;
+  }
+  return true;
+}
+
+PreparedProjectRoot PrepareExpressionProjectRoot(
+    const api::TypedRelationalDag& dag,
+    const plan::CanonicalLogicalRelationalNode& root,
+    const plan::CanonicalLogicalRelationalNode& input_node,
+    const MaterializedValues& input,
+    const CanonicalRelationalExpressionRuntimeServices& expression_services) {
+  PreparedProjectRoot result;
+  if (root.output_descriptor_ids.empty() ||
+      root.bound_expression_ids.size() != root.output_descriptor_ids.size() ||
+      input.result_bindings.size() != input.batch.columns.size() ||
+      input_node.output_descriptor_ids.size() != input.batch.columns.size() ||
+      input.batch.rows.empty()) {
+    result.detail =
+        "expression PROJECT input, output, or expression coverage is incomplete";
+    return result;
+  }
+
+  std::vector<const api::RelationalOutputRecord*> outputs;
+  for (const auto& output : dag.outputs) {
+    if (output.relation_node_id == root.logical_node_id) {
+      outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(outputs, {}, &api::RelationalOutputRecord::ordinal);
+  if (outputs.size() != root.output_descriptor_ids.size()) {
+    result.detail = "expression PROJECT root output lineage is incomplete";
+    return result;
+  }
+
+  std::unordered_map<std::uint32_t, const api::RelationalTypeDescriptor*>
+      descriptors;
+  std::unordered_map<std::uint32_t,
+                     const api::RelationalExpressionRecord*>
+      expression_records;
+  for (const auto& descriptor : dag.descriptors) {
+    descriptors.emplace(descriptor.descriptor_id, &descriptor);
+  }
+  for (const auto& expression : dag.expressions) {
+    expression_records.emplace(expression.expression_id, &expression);
+  }
+
+  CanonicalRelationalExpressionRuntime runtime(dag, expression_services);
+  std::vector<exec::ExecutorColumnDescriptor> output_columns;
+  output_columns.reserve(outputs.size());
+  std::size_t published_ordinal = 0;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+    const auto expression_id = root.bound_expression_ids[ordinal];
+    const auto expression = expression_records.find(expression_id);
+    const auto descriptor = descriptors.find(root.output_descriptor_ids[ordinal]);
+    const auto* output = outputs[ordinal];
+    if (expression == expression_records.end() ||
+        descriptor == descriptors.end() || output->ordinal != ordinal ||
+        output->expression_id != expression_id ||
+        output->descriptor_id != root.output_descriptor_ids[ordinal] ||
+        expression->second->result_descriptor_id !=
+            root.output_descriptor_ids[ordinal] ||
+        output->output_name_utf8.empty() ||
+        descriptor->second->nullability ==
+            api::RelationalNullability::kUnknown) {
+      result.detail =
+          "expression PROJECT output expression or descriptor binding is invalid";
+      return result;
+    }
+
+    PreparedProjectExpression prepared_expression;
+    prepared_expression.expression_id = expression_id;
+    if (!PrepareInputRowBinding(
+            dag, expression_id, input_node.output_descriptor_ids,
+            &prepared_expression.row_binding, &result.detail) ||
+        !runtime.InferTypeForConsumer(
+            expression_id, prepared_expression.row_binding,
+            input.batch.rows.front().values,
+            api::EngineCanonicalExpressionConsumer::projection,
+            &prepared_expression.expected_type, &result.detail) ||
+        prepared_expression.expected_type.empty() ||
+        prepared_expression.expected_type == "null") {
+      if (result.detail.empty()) {
+        result.detail = "expression PROJECT result type is unresolved";
+      }
+      return result;
+    }
+    const auto type_id = dt::CanonicalTypeIdFromStableName(
+        prepared_expression.expected_type);
+    if (type_id == dt::CanonicalTypeId::unknown ||
+        (descriptor->second->collation_uuid.has_value() &&
+         type_id != dt::CanonicalTypeId::character) ||
+        (descriptor->second->timezone_profile_id.has_value() &&
+         prepared_expression.expected_type != "timestamp")) {
+      result.detail =
+          "expression PROJECT descriptor metadata contradicts its result type";
+      return result;
+    }
+    api::EngineTypedValue first_value;
+    if (!runtime.EvaluateForConsumer(
+            expression_id, prepared_expression.expected_type,
+            prepared_expression.row_binding, input.batch.rows.front().values,
+            api::EngineCanonicalExpressionConsumer::projection, &first_value,
+            &result.detail)) {
+      return result;
+    }
+    output_columns.push_back(
+        {output->output_name_utf8, first_value.descriptor,
+         descriptor->second->nullability ==
+             api::RelationalNullability::kNullable,
+         descriptor->second->descriptor_id});
+    result.expressions.push_back(std::move(prepared_expression));
+
+    exec::CanonicalResultColumnBinding binding;
+    binding.physical_column_ordinal = ordinal;
+    binding.visible = output->visible;
+    if (binding.visible) {
+      binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+          static_cast<std::uint32_t>(published_ordinal++),
+          output->output_name_utf8,
+          descriptor->second->descriptor_uuid,
+          descriptor->second->type_uuid,
+          ResultNullability(descriptor->second->nullability),
+          descriptor->second->collation_uuid,
+          descriptor->second->timezone_profile_id};
+    }
+    result.result_bindings.push_back(std::move(binding));
+  }
+
+  if (!MaterializeExpressionProjectBatch(
+          dag, result.expressions, output_columns, input.batch,
+          expression_services, &result.expression_output_batch,
+          &result.detail)) {
+    result.expressions.clear();
+    result.result_bindings.clear();
+    return result;
+  }
+  result.expression_projection = true;
+  result.ok = true;
+  return result;
 }
 
 PreparedFilterRoot PrepareFilterRoot(
@@ -3603,7 +3804,7 @@ PreparedFilterRoot PrepareFilterRoot(
     return result;
   }
   result.predicate_expression_id = root.bound_expression_ids.front();
-  if (!PrepareInputPredicateRowBinding(
+  if (!PrepareInputRowBinding(
           dag, result.predicate_expression_id,
           input_node.output_descriptor_ids, &result.predicate_row_binding,
           &result.detail)) {
@@ -3679,18 +3880,18 @@ PreparedJoinRoot PrepareJoinRoot(
       return result;
     }
     result.predicate_expression_id = root.bound_expression_ids.front();
-    if (!PrepareInputPredicateRowBinding(
+    if (!PrepareInputRowBinding(
             dag, result.predicate_expression_id, predicate_descriptors,
             &result.predicate_row_binding, &result.detail)) {
       if (result.detail ==
-          "row predicate input descriptor identity is ambiguous") {
+          "row expression input descriptor identity is ambiguous") {
         result.detail = "join predicate input descriptor identity is ambiguous";
       } else if (result.detail ==
-                 "row predicate identifier is not supplied by its input") {
+                 "row expression identifier is not supplied by its input") {
         result.detail =
             "join predicate identifier is not supplied by either input";
       } else if (result.detail ==
-                 "row predicate has a dangling expression child") {
+                 "row expression has a dangling expression child") {
         result.detail = "join predicate has a dangling expression child";
       }
       return result;
@@ -5763,29 +5964,42 @@ ExecuteCanonicalObjectFreeProjectQuery(
     return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-ADMISSION-V1",
                   "live PROJECT execution lacks optimizer admission");
   }
-  if (!root->bound_expression_ids.empty()) {
-    return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1",
-                  "descriptor-direct PROJECT does not admit bound expressions");
-  }
-
   auto input = MaterializeValues(request.relational_dag, *input_node,
                                  request.expression_services);
   if (!input.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1",
                   "PROJECT input VALUES: " + input.detail);
   }
-  auto prepared_root = PrepareDescriptorDirectProjectRoot(
-      request.relational_dag, *root, *input_node, input);
+  auto prepared_root = root->bound_expression_ids.empty()
+      ? PrepareDescriptorDirectProjectRoot(
+            request.relational_dag, *root, *input_node, input)
+      : PrepareExpressionProjectRoot(
+            request.relational_dag, *root, *input_node, input,
+            request.expression_services);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-PAYLOAD-V1",
                   prepared_root.detail);
   }
 
   const auto input_row_count = input.batch.rows.size();
+  if (prepared_root.expression_projection &&
+      input_row_count >
+          request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live expression PROJECT row evaluation exceeds the "
+                  "admitted candidate bound");
+  }
   std::uint64_t input_memory = 1;
+  std::uint64_t output_memory = 1;
   std::uint64_t total_memory = 0;
   if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
-      !CheckedAdd(input_memory, input_memory, &total_memory)) {
+      (prepared_root.expression_projection &&
+       !AddBatchMemoryBytes(prepared_root.expression_output_batch,
+                            &output_memory)) ||
+      !CheckedAdd(input_memory,
+                  prepared_root.expression_projection ? output_memory
+                                                      : input_memory,
+                  &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
                   "live PROJECT input or output size overflowed");
   }
@@ -5801,6 +6015,10 @@ ExecuteCanonicalObjectFreeProjectQuery(
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto project_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "project.capability");
+  const std::string project_implementation_id =
+      prepared_root.expression_projection
+          ? "project.typed.expression-row.v1"
+          : "project.typed.row.v1";
   const std::vector<LivePhysicalNodeProfile> profiles = {
       {input_node->logical_node_id,
        std::string(kValuesImplementationId),
@@ -5813,11 +6031,13 @@ ExecuteCanonicalObjectFreeProjectQuery(
        0,
        0},
       {root->logical_node_id,
-       "project.typed.row.v1",
+       project_implementation_id,
        project_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kProject,
        exec::PhysicalNodeKind::kProject,
-       "canonical.project.descriptor-direct.v1",
+       prepared_root.expression_projection
+           ? "canonical.project.expression-row.v1"
+           : "canonical.project.descriptor-direct.v1",
        input_row_count,
        total_memory,
        1,
@@ -5840,13 +6060,19 @@ ExecuteCanonicalObjectFreeProjectQuery(
 
   exec::CanonicalPhysicalExecutorRegistration project_registration;
   project_registration.node_kind = exec::PhysicalNodeKind::kProject;
-  project_registration.implementation_id = "project.typed.row.v1";
+  project_registration.implementation_id = project_implementation_id;
   project_registration.executor_capability_uuid = project_capability_uuid;
   project_registration.executor_capability_abi_version = 1;
   project_registration.engine_owned = true;
   project_registration.accepts_optimizer_publication_v2 = true;
   project_registration.execute =
-      [projected_columns = prepared_root.projected_columns, input_row_count,
+      [projected_columns = prepared_root.projected_columns,
+       expression_projection = prepared_root.expression_projection,
+       expressions = prepared_root.expressions,
+       expression_output_columns =
+           prepared_root.expression_output_batch.columns,
+       relational_dag = request.relational_dag,
+       expression_services = request.expression_services, input_row_count,
        mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
@@ -5874,6 +6100,56 @@ ExecuteCanonicalObjectFreeProjectQuery(
               "QOW-DIAG-RELATIONAL-LIVE-PROJECT-INPUT-V1";
           step.diagnostic.detail =
               "PROJECT input cardinality differs from its selected cost";
+          return step;
+        }
+        if (expression_projection) {
+          const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+              input_batch, inputs.front().output_descriptor_ids);
+          if (!input_validation.ok) {
+            step.diagnostic = input_validation;
+            return step;
+          }
+          const auto mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          const auto before =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!before.ok) {
+            step.diagnostic = before;
+            return step;
+          }
+          exec::DescriptorBatch output_batch;
+          std::string expression_detail;
+          if (!MaterializeExpressionProjectBatch(
+                  relational_dag, expressions, expression_output_columns,
+                  input_batch, expression_services, &output_batch,
+                  &expression_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXPRESSION-V1";
+            step.diagnostic.detail = std::move(expression_detail);
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  output_batch, node.output_descriptor_ids);
+          if (!output_validation.ok) {
+            step.diagnostic = output_validation;
+            return step;
+          }
+          const auto after =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!after.ok) {
+            step.diagnostic = after;
+            return step;
+          }
+          step.result_handle_id = node.physical_node_id;
+          step.input_row_count = input_batch.rows.size();
+          step.rows_examined = input_batch.rows.size();
+          step.output_row_count = output_batch.rows.size();
+          step.materialized_output_batch = std::move(output_batch);
+          step.mga_statement_context = mga_authority.statement_context;
           return step;
         }
         exec::CanonicalDescriptorProjectionRequest project_request;

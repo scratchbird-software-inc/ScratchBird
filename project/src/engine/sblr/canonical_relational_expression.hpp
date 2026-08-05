@@ -33,8 +33,8 @@ enum class CanonicalRelationalExpressionRowSlotKind : std::uint8_t {
   materialized_function = 0,
   grouping_key = 1,
   // One descriptor-exact input column consumed by a row-dependent canonical
-  // predicate.  This is deliberately separate from a grouping key: JOIN and
-  // other row consumers may read it, but it never gains aggregate authority.
+  // expression.  This is deliberately separate from a grouping key: JOIN,
+  // FILTER, and PROJECT may read it, but it never gains aggregate authority.
   input_identifier = 2,
 };
 
@@ -103,6 +103,27 @@ class CanonicalRelationalExpressionRuntime {
       internal_api::EngineTypedValue* value,
       std::string* refusal_detail);
 
+  // Infers or evaluates one canonical scalar expression against a completely
+  // prepared materialized input row. Only the explicit row-slot binding may
+  // supply identifier leaves; the ordinary typed runtime retains scalar,
+  // NULL, comparison, and consumer semantics.
+  bool InferTypeForConsumer(
+      std::uint32_t expression_id,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
+      std::string* canonical_type_name,
+      std::string* refusal_detail);
+
+  bool EvaluateForConsumer(
+      std::uint32_t expression_id,
+      std::string_view expected_type,
+      const CanonicalRelationalExpressionRowBinding& row_binding,
+      const std::vector<internal_api::EngineTypedValue>& row_values,
+      internal_api::EngineCanonicalExpressionConsumer consumer,
+      internal_api::EngineTypedValue* value,
+      std::string* refusal_detail);
+
   // Shared object-free predicate seam for FILTER/JOIN/HAVING/QUALIFY
   // consumers. SQL NULL is returned as UNKNOWN; callers retain authority for
   // the consumer-specific TRUE/FALSE/UNKNOWN decision.
@@ -118,8 +139,8 @@ class CanonicalRelationalExpressionRuntime {
       std::string* refusal_detail);
 
   // Evaluates one canonical predicate against a materialized engine row.
-  // Only explicitly bound materialized function leaves may consume row values;
-  // the surrounding literal/operator graph still uses the ordinary canonical
+  // Only explicitly bound row-slot leaves may consume row values; the
+  // surrounding literal/operator graph still uses the ordinary canonical
   // inference, typed comparison, and SQL three-valued runtime.
   bool EvaluatePredicate(
       std::uint32_t expression_id,

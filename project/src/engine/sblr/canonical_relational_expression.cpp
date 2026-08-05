@@ -403,7 +403,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
   prepared->values_by_expression.clear();
   if (!expressions_.contains(root_expression_id)) {
     *refusal_detail =
-        "materialized row predicate root is absent from the bound graph";
+        "materialized row expression root is absent from the bound graph";
     return false;
   }
   if (row_binding.row_descriptor_ids.empty() ||
@@ -513,7 +513,8 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         !bound_expression.literal_or_parameter_ref.has_value();
     const bool exact_input_identifier =
         (consumer == api::EngineCanonicalExpressionConsumer::join ||
-         consumer == api::EngineCanonicalExpressionConsumer::filter) &&
+         consumer == api::EngineCanonicalExpressionConsumer::filter ||
+         consumer == api::EngineCanonicalExpressionConsumer::projection) &&
         bound_expression.expression_kind ==
             api::RelationalExpressionKind::kIdentifier &&
         bound_expression.child_expression_ids.empty() &&
@@ -553,7 +554,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (expression == expressions_.end()) {
       prepared->values_by_expression.clear();
       *refusal_detail =
-          "materialized row predicate has a dangling expression child";
+          "materialized row expression has a dangling expression child";
       return false;
     }
     if (prepared->values_by_expression.contains(expression_id)) continue;
@@ -594,7 +595,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (!exact_shape) {
       prepared->values_by_expression.clear();
       *refusal_detail =
-          "reachable predicate expression is malformed or lacks a prepared slot";
+          "reachable row expression is malformed or lacks a prepared slot";
       return false;
     }
     pending.insert(pending.end(),
@@ -607,7 +608,7 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     if (!reachable.contains(expression_id)) {
       prepared->values_by_expression.clear();
       *refusal_detail =
-          "materialized row slot is outside the predicate graph";
+          "materialized row slot is outside the expression graph";
       return false;
     }
   }
@@ -1133,6 +1134,63 @@ bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
   return evaluated;
 }
 
+bool CanonicalRelationalExpressionRuntime::InferTypeForConsumer(
+    const std::uint32_t expression_id,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<api::EngineTypedValue>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    std::string* canonical_type_name,
+    std::string* refusal_detail) {
+  if (canonical_type_name == nullptr || refusal_detail == nullptr) {
+    return false;
+  }
+  canonical_type_name->clear();
+  refusal_detail->clear();
+  if (active_row_binding_ != nullptr) {
+    *refusal_detail = "nested materialized row evaluation is not admitted";
+    return false;
+  }
+  ActiveRowBinding prepared;
+  if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
+                         &prepared, refusal_detail)) {
+    return false;
+  }
+  const auto previous_consumer = active_consumer_;
+  active_row_binding_ = &prepared;
+  active_consumer_ = consumer;
+  const bool inferred = InferType(expression_id, std::nullopt,
+                                  canonical_type_name, refusal_detail);
+  active_consumer_ = previous_consumer;
+  active_row_binding_ = nullptr;
+  return inferred;
+}
+
+bool CanonicalRelationalExpressionRuntime::EvaluateForConsumer(
+    const std::uint32_t expression_id,
+    const std::string_view expected_type,
+    const CanonicalRelationalExpressionRowBinding& row_binding,
+    const std::vector<api::EngineTypedValue>& row_values,
+    const api::EngineCanonicalExpressionConsumer consumer,
+    api::EngineTypedValue* value,
+    std::string* refusal_detail) {
+  if (value == nullptr || refusal_detail == nullptr) return false;
+  if (active_row_binding_ != nullptr) {
+    *refusal_detail = "nested materialized row evaluation is not admitted";
+    return false;
+  }
+  ActiveRowBinding prepared;
+  refusal_detail->clear();
+  if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
+                         &prepared, refusal_detail)) {
+    return false;
+  }
+  active_row_binding_ = &prepared;
+  const bool evaluated = EvaluateForConsumer(
+      expression_id, expected_type, consumer, value, refusal_detail);
+  active_row_binding_ = nullptr;
+  return evaluated;
+}
+
 bool CanonicalRelationalExpressionRuntime::EvaluatePredicate(
     const std::uint32_t expression_id,
     api::EngineSqlTruthValue* truth,
@@ -1176,21 +1234,12 @@ bool CanonicalRelationalExpressionRuntime::EvaluatePredicateForConsumer(
     api::EngineSqlTruthValue* truth,
     std::string* refusal_detail) {
   if (truth == nullptr || refusal_detail == nullptr) return false;
-  if (active_row_binding_ != nullptr) {
-    *refusal_detail = "nested materialized row evaluation is not admitted";
+  api::EngineTypedValue value;
+  if (!EvaluateForConsumer(expression_id, "boolean", row_binding, row_values,
+                           consumer, &value, refusal_detail)) {
     return false;
   }
-  ActiveRowBinding prepared;
-  refusal_detail->clear();
-  if (!PrepareRowBinding(expression_id, row_binding, row_values, consumer,
-                         &prepared, refusal_detail)) {
-    return false;
-  }
-  active_row_binding_ = &prepared;
-  const bool evaluated = EvaluatePredicateForConsumer(
-      expression_id, consumer, truth, refusal_detail);
-  active_row_binding_ = nullptr;
-  return evaluated;
+  return TruthFromValue(value, truth, refusal_detail);
 }
 
 bool CanonicalRelationalExpressionRuntime::EvaluateInternal(
