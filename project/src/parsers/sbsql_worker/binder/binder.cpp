@@ -639,7 +639,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-percentile-cont-ordered-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-percentile-disc-ordered-expression.v1"))
+                     "aggregate.global-percentile-disc-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-rank-hypothetical-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-dense-rank-hypothetical-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-percent-rank-hypothetical-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-cume-dist-hypothetical-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -802,6 +810,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool mode_function = function == "MODE";
       const bool percentile_function =
           function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC";
+      const bool hypothetical_function =
+          function == "RANK" || function == "DENSE_RANK" ||
+          function == "PERCENT_RANK" || function == "CUME_DIST";
+      const bool direct_numeric_ordered_function =
+          percentile_function || hypothetical_function;
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
@@ -812,20 +825,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
           string_agg_function || listagg_function || mode_function ||
-          percentile_function || pair_function;
+          direct_numeric_ordered_function || pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (!pair_function && !string_agg_function && !listagg_function &&
-           !percentile_function &&
+           !direct_numeric_ordered_function &&
            expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
                                       (listagg_function
                                            ? 3
                                            : ((pair_function ||
                                                string_agg_function ||
-                                               percentile_function)
+                                               direct_numeric_ordered_function)
                                                   ? 2
                                                   : 1))) ||
           expression->literal_kind.has_value()) {
@@ -843,7 +856,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             });
         const bool direct_text =
             (string_agg_function || listagg_function) && ordinal == 1;
-        const bool direct_numeric = percentile_function && ordinal == 0;
+        const bool direct_numeric =
+            direct_numeric_ordered_function && ordinal == 0;
         if (direct_text || direct_numeric) {
           if (argument == ast.expressions.end() ||
               argument->expression_kind != NativeExpressionAstKind::kLiteral ||
@@ -1226,6 +1240,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_percentile_disc =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-percentile-disc-");
+    const bool aggregate_rank =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-rank-hypothetical-");
+    const bool aggregate_dense_rank =
+        aggregate_composition &&
+        aggregate_semantic.starts_with(
+            "aggregate.global-dense-rank-hypothetical-");
+    const bool aggregate_percent_rank =
+        aggregate_composition &&
+        aggregate_semantic.starts_with(
+            "aggregate.global-percent-rank-hypothetical-");
+    const bool aggregate_cume_dist =
+        aggregate_composition &&
+        aggregate_semantic.starts_with(
+            "aggregate.global-cume-dist-hypothetical-");
+    const bool aggregate_hypothetical =
+        aggregate_rank || aggregate_dense_rank || aggregate_percent_rank ||
+        aggregate_cume_dist;
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1308,6 +1340,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (aggregate_percentile_disc) {
         return std::string("percentile_disc_value");
       }
+      if (aggregate_rank) return std::string("rank_value");
+      if (aggregate_dense_rank) return std::string("dense_rank_value");
+      if (aggregate_percent_rank) return std::string("percent_rank_value");
+      if (aggregate_cume_dist) return std::string("cume_dist_value");
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }
@@ -1329,7 +1365,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (descriptor == descriptor_by_id.end() ||
           descriptor->second->nullability !=
               ((aggregate_count || aggregate_regr_count ||
-                aggregate_approx_count_distinct)
+                aggregate_approx_count_distinct || aggregate_hypothetical)
                    ? BoundNullability::kNonNull
                    : BoundNullability::kNullable) ||
           descriptor->second->collation_uuid.has_value() ||
@@ -1373,7 +1409,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                      global_aggregate_direct_literal->expression_id;
             });
         if ((!aggregate_string_agg && !aggregate_listagg &&
-             !aggregate_percentile_cont && !aggregate_percentile_disc) ||
+             !aggregate_percentile_cont && !aggregate_percentile_disc &&
+             !aggregate_hypothetical) ||
             direct_descriptor == descriptor_by_id.end() ||
             direct_descriptor->second->nullability !=
                 BoundNullability::kNonNull ||
@@ -1396,7 +1433,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           aggregate_argument_expression_ids.insert(
               aggregate_argument_expression_ids.begin() + 1,
               global_aggregate_direct_literal->expression_id);
-        } else if (aggregate_percentile_cont || aggregate_percentile_disc) {
+        } else if (aggregate_percentile_cont || aggregate_percentile_disc ||
+                   aggregate_hypothetical) {
           aggregate_argument_expression_ids.insert(
               aggregate_argument_expression_ids.begin(),
               global_aggregate_direct_literal->expression_id);

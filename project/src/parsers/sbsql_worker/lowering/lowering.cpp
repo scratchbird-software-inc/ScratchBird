@@ -33068,7 +33068,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-percentile-cont-ordered-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-percentile-disc-ordered-expression.v1");
+               "aggregate.global-percentile-disc-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-rank-hypothetical-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-dense-rank-hypothetical-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-percent-rank-hypothetical-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-cume-dist-hypothetical-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33806,7 +33814,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          aggregate_relation->semantic_variant_id ==
              "aggregate.global-percentile-cont-ordered-expression.v1" ||
          aggregate_relation->semantic_variant_id ==
-             "aggregate.global-percentile-disc-ordered-expression.v1");
+             "aggregate.global-percentile-disc-ordered-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-rank-hypothetical-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-dense-rank-hypothetical-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-percent-rank-hypothetical-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-cume-dist-hypothetical-expression.v1");
     const auto aggregate_direct_descriptor_count =
         string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
@@ -33943,6 +33959,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-percentile-disc-");
       const bool percentile = percentile_cont || percentile_disc;
+      const bool rank =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-rank-hypothetical-");
+      const bool dense_rank =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-dense-rank-hypothetical-");
+      const bool percent_rank =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-percent-rank-hypothetical-");
+      const bool cume_dist =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-cume-dist-hypothetical-");
+      const bool hypothetical =
+          rank || dense_rank || percent_rank || cume_dist;
+      const bool direct_numeric_ordered = percentile || hypothetical;
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -34042,6 +34073,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (mode) return "mode_value";
         if (percentile_cont) return "percentile_cont_value";
         if (percentile_disc) return "percentile_disc_value";
+        if (rank) return "rank_value";
+        if (dense_rank) return "dense_rank_value";
+        if (percent_rank) return "percent_rank_value";
+        if (cume_dist) return "cume_dist_value";
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-")) {
           return "stddev_value";
@@ -34061,14 +34096,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                    ? 0
                    : (listagg
                           ? 3
-                          : ((pair_aggregate || string_aggregate || percentile)
+                          : ((pair_aggregate || string_aggregate ||
+                              direct_numeric_ordered)
                                  ? 2
                                  : 1))) ||
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
               ((count_aggregate || regr_count_aggregate ||
-                approx_count_distinct_aggregate)
+                approx_count_distinct_aggregate || hypothetical)
                    ? BoundNullability::kNonNull
                    : BoundNullability::kNullable) ||
           aggregate_descriptor.collation_uuid.has_value() ||
@@ -34094,7 +34130,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           const auto argument = expressions_by_id.find(argument_id);
           const bool direct_text =
               (string_aggregate || listagg) && ordinal == 1;
-          const bool direct_numeric = percentile && ordinal == 0;
+          const bool direct_numeric =
+              direct_numeric_ordered && ordinal == 0;
           if (direct_text || direct_numeric) {
             const auto& direct_descriptor =
                 native.descriptors[width + aggregate_descriptor_count];

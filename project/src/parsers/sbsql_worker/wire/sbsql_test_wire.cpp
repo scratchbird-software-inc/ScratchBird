@@ -815,6 +815,15 @@ BuildEngineProjectedNativeBindingContext(
       const bool percentile_disc_function = function == "PERCENTILE_DISC";
       const bool percentile_function =
           percentile_cont_function || percentile_disc_function;
+      const bool rank_function = function == "RANK";
+      const bool dense_rank_function = function == "DENSE_RANK";
+      const bool percent_rank_function = function == "PERCENT_RANK";
+      const bool cume_dist_function = function == "CUME_DIST";
+      const bool hypothetical_function =
+          rank_function || dense_rank_function || percent_rank_function ||
+          cume_dist_function;
+      const bool direct_numeric_ordered_function =
+          percentile_function || hypothetical_function;
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -829,7 +838,7 @@ BuildEngineProjectedNativeBindingContext(
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
           string_agg_function || listagg_function || mode_function ||
-          percentile_function || pair_function;
+          direct_numeric_ordered_function || pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -841,7 +850,8 @@ BuildEngineProjectedNativeBindingContext(
                        ((string_agg_function || listagg_function)
                             ? 4
                             : ((count_function || regr_count_function ||
-                                approx_count_distinct_function)
+                                approx_count_distinct_function ||
+                                hypothetical_function)
                                    ? 1
                                    : (boolean_function ? 6 : 2))) &&
                    candidate.slot == 0;
@@ -852,7 +862,8 @@ BuildEngineProjectedNativeBindingContext(
           });
       const auto direct_numeric_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
-            return candidate.profile_kind == 1 && candidate.slot == 0;
+            return candidate.profile_kind == 1 &&
+                   candidate.slot == (hypothetical_function ? 1 : 0);
           });
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
@@ -860,7 +871,7 @@ BuildEngineProjectedNativeBindingContext(
               (listagg_function
                    ? 3
                    : ((pair_function || string_agg_function ||
-                       percentile_function)
+                       direct_numeric_ordered_function)
                           ? 2
                           : 1)) &&
           result_profile != statement_context.descriptor_profiles.end()) {
@@ -880,7 +891,8 @@ BuildEngineProjectedNativeBindingContext(
           }
           const bool direct_text =
               (string_agg_function || listagg_function) && ordinal == 1;
-          const bool direct_numeric = percentile_function && ordinal == 0;
+          const bool direct_numeric =
+              direct_numeric_ordered_function && ordinal == 0;
           if (direct_text || direct_numeric) {
             argument_profile_exact =
                 argument->expression_kind ==
@@ -912,16 +924,17 @@ BuildEngineProjectedNativeBindingContext(
                 : (listagg_function
                        ? 3
                        : ((pair_function || string_agg_function ||
-                           percentile_function)
+                           direct_numeric_ordered_function)
                               ? 2
                               : 1)))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           ((count_function || regr_count_function ||
-            approx_count_distinct_function) &&
+            approx_count_distinct_function || hypothetical_function) &&
            result_profile->nullable) ||
           (expression_function && !regr_count_function &&
            !approx_count_distinct_function &&
+           !hypothetical_function &&
            !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
@@ -932,7 +945,7 @@ BuildEngineProjectedNativeBindingContext(
             !CanonicalUuidBytes(direct_text_profile->descriptor_uuid)
                  .has_value() ||
             !CanonicalUuidBytes(direct_text_profile->type_uuid).has_value())) ||
-          (percentile_function &&
+          (direct_numeric_ordered_function &&
            (direct_numeric_profile ==
                 statement_context.descriptor_profiles.end() ||
             direct_numeric_profile->nullable ||
@@ -975,7 +988,7 @@ BuildEngineProjectedNativeBindingContext(
             {separator_expression->expression_id,
              context.descriptors.back().descriptor_id, std::nullopt,
              std::nullopt});
-      } else if (percentile_function) {
+      } else if (direct_numeric_ordered_function) {
         const auto direct_expression = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id ==
@@ -1094,10 +1107,26 @@ BuildEngineProjectedNativeBindingContext(
         aggregate_output_name = "percentile_cont_value";
         aggregate_semantic =
             "aggregate.global-percentile-cont-ordered-expression.v1";
-      } else {
+      } else if (percentile_disc_function) {
         aggregate_output_name = "percentile_disc_value";
         aggregate_semantic =
             "aggregate.global-percentile-disc-ordered-expression.v1";
+      } else if (rank_function) {
+        aggregate_output_name = "rank_value";
+        aggregate_semantic =
+            "aggregate.global-rank-hypothetical-expression.v1";
+      } else if (dense_rank_function) {
+        aggregate_output_name = "dense_rank_value";
+        aggregate_semantic =
+            "aggregate.global-dense-rank-hypothetical-expression.v1";
+      } else if (percent_rank_function) {
+        aggregate_output_name = "percent_rank_value";
+        aggregate_semantic =
+            "aggregate.global-percent-rank-hypothetical-expression.v1";
+      } else {
+        aggregate_output_name = "cume_dist_value";
+        aggregate_semantic =
+            "aggregate.global-cume-dist-hypothetical-expression.v1";
       }
     }
     if (limit_composition) {

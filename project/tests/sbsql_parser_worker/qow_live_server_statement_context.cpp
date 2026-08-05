@@ -962,6 +962,30 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
               "fraction and persisted WITHIN GROUP ordering route");
     }
 
+    static constexpr std::array<AggregateProof, 4> kHypotheticalProofs{{
+        {"RANK(2) WITHIN GROUP (ORDER BY integer_value)", "rank_value=2"},
+        {"DENSE_RANK(2) WITHIN GROUP (ORDER BY integer_value)",
+         "dense_rank_value=2"},
+        {"PERCENT_RANK(2) WITHIN GROUP (ORDER BY integer_value)",
+         "percent_rank_value=0.333333"},
+        {"CUME_DIST(2) WITHIN GROUP (ORDER BY integer_value)",
+         "cume_dist_value=0.75"},
+    }};
+    for (const auto& proof : kHypotheticalProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) + " FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto hypothetical = parser.RunPipeline(sql, true);
+      if (!hypothetical.accepted) PrintMessages(hypothetical.messages);
+      Require(hypothetical.accepted &&
+                  hypothetical.server_operation_id == "query.execute" &&
+                  hypothetical.server_cursor_uuid.empty() &&
+                  hypothetical.server_row_count == 1 &&
+                  hypothetical.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed hypothetical set aggregate did not preserve "
+              "its exact direct value and persisted ordering route");
+    }
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

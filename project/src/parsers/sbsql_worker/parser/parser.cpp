@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 33> kFunctionNames{
+    static constexpr std::array<std::string_view, 37> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -313,7 +313,8 @@ class NativeRelationalParser final {
         "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
         "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
         "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE",
-        "PERCENTILE_CONT", "PERCENTILE_DISC"};
+        "PERCENTILE_CONT", "PERCENTILE_DISC", "RANK", "DENSE_RANK",
+        "PERCENT_RANK", "CUME_DIST"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -346,6 +347,12 @@ class NativeRelationalParser final {
     return function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC";
   }
 
+  static bool IsBoundedCatalogHypotheticalSet(const Token& token) {
+    const auto function = CanonicalTokenText(token);
+    return function == "RANK" || function == "DENSE_RANK" ||
+           function == "PERCENT_RANK" || function == "CUME_DIST";
+  }
+
   bool LooksLikeBoundedCatalogRelationSelect() const {
     // The candidate owns wildcard, simple identifier-list projection, and the
     // exact global COUNT(*) projection. Other computed projections and
@@ -357,7 +364,8 @@ class NativeRelationalParser final {
     } else if (cursor + 3 < tokens_.size() &&
                IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
                tokens_[cursor + 1]->text == "(") {
-      if (IsBoundedCatalogPercentile(*tokens_[cursor])) {
+      if (IsBoundedCatalogPercentile(*tokens_[cursor]) ||
+          IsBoundedCatalogHypotheticalSet(*tokens_[cursor])) {
         if (cursor + 10 >= tokens_.size() ||
             tokens_[cursor + 2]->kind != TokenKind::kNumericLiteral ||
             tokens_[cursor + 3]->text != ")" ||
@@ -470,6 +478,10 @@ class NativeRelationalParser final {
       const bool listagg = IsBoundedCatalogListagg(function_token);
       const bool mode = IsBoundedCatalogMode(function_token);
       const bool percentile = IsBoundedCatalogPercentile(function_token);
+      const bool hypothetical_set =
+          IsBoundedCatalogHypotheticalSet(function_token);
+      const bool direct_numeric_ordered_set =
+          percentile || hypothetical_set;
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
                          "bounded catalog aggregate requires an opening parenthesis")) {
         return FinishRefusal();
@@ -481,7 +493,7 @@ class NativeRelationalParser final {
       std::optional<SourceRange> deferred_separator_range;
       std::optional<std::string> deferred_numeric_spelling;
       std::optional<SourceRange> deferred_numeric_range;
-      if (percentile) {
+      if (direct_numeric_ordered_set) {
         if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
           Refuse("catalog_percentile_fraction_required",
                  "bounded percentile aggregate requires a numeric fraction");
@@ -595,7 +607,7 @@ class NativeRelationalParser final {
       }
       const Token& close_token = Consume();
       const Token* aggregate_close_token = &close_token;
-      if (listagg || mode || percentile) {
+      if (listagg || mode || direct_numeric_ordered_set) {
         if (AtEnd() || !IsWord(Current(), "WITHIN")) {
           Refuse("catalog_ordered_set_within_group_required",
                  "bounded ordered aggregate requires WITHIN GROUP ordering");
@@ -631,14 +643,14 @@ class NativeRelationalParser final {
         }
         const Token& order_token = Consume();
         std::uint32_t order_expression_id = 0;
-        const auto value_expression = (mode || percentile)
+        const auto value_expression = (mode || direct_numeric_ordered_set)
             ? document_.expressions.end()
             : std::ranges::find_if(
                   document_.expressions, [&](const auto& candidate) {
                     return candidate.expression_id ==
                            argument_expression_ids.front();
                   });
-        if (!mode && !percentile &&
+        if (!mode && !direct_numeric_ordered_set &&
             value_expression != document_.expressions.end() &&
             order_token.text == value_expression->spelling) {
           order_expression_id = argument_expression_ids.front();
@@ -674,7 +686,7 @@ class NativeRelationalParser final {
           separator.range = *deferred_separator_range;
           argument_expression_ids.push_back(separator.expression_id);
           document_.expressions.push_back(std::move(separator));
-        } else if (percentile) {
+        } else if (direct_numeric_ordered_set) {
           reserved_aggregate_expression_id = NextExpressionId();
           NativeExpressionAstNode aggregate_placeholder;
           aggregate_placeholder.expression_id =
