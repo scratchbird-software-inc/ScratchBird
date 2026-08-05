@@ -1976,6 +1976,98 @@ sblr::SblrOperationEnvelope NodeDrivenPredicateSubqueryLimitEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-CORRELATED-LATERAL-SUBQUERY-V1
+sblr::SblrOperationEnvelope NodeDrivenCorrelationLimitEnvelope(
+    const std::string& semantic_variant,
+    const std::string& tree_uuid) {
+  const bool correlated =
+      semantic_variant == "subquery.correlated-int64-equality.v1";
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      "qow.live.correlation." + semantic_variant);
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid", tree_uuid},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "4"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000cfa1|"
+       "019f0000-0000-7400-8000-00000000cfa2|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000cfa3|"
+       "019f0000-0000-7400-8000-00000000cfa4|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000cfa5|"
+       "019f0000-0000-7400-8000-00000000cfa6|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000cfa7|"
+       "019f0000-0000-7400-8000-00000000cfa8|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000cfa9|"
+       "019f0000-0000-7400-8000-00000000cfaa|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2",
+       "1|-|2|-|-|2|-|6f757465722d61"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|7|-|2d"},
+      {"relational_expression_v1", "4",
+       "1|-|2|-|-|2|-|6f757465722d6e756c6c"},
+      {"relational_expression_v1", "5", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "6",
+       "1|-|2|-|-|2|-|6f757465722d62"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|3031"},
+      {"relational_expression_v1", "8",
+       "1|-|2|-|-|2|-|6f757465722d616c696173"},
+      {"relational_expression_v1", "9", "1|-|3|-|-|1|-|3031"},
+      {"relational_expression_v1", "10",
+       "1|-|4|-|-|2|-|696e6e65722d61"},
+      {"relational_expression_v1", "11", "1|-|3|-|-|1|-|32"},
+      {"relational_expression_v1", "12",
+       "1|-|4|-|-|2|-|696e6e65722d62"},
+      {"relational_expression_v1", "13", "1|-|3|-|-|1|-|31"},
+      {"relational_expression_v1", "14",
+       "1|-|4|-|-|2|-|696e6e65722d63"},
+      {"relational_expression_v1", "15", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "16",
+       "1|-|4|-|-|2|-|696e6e65722d6e756c6c"},
+      {"relational_expression_v1", "17", "1|-|5|-|-|1|-|3130"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6f757465725f6b6579"},
+      {"relational_output_v1", "2",
+       "1|2|2|1|1|6f757465725f7061796c6f6164"},
+      {"relational_output_v1", "3", "2|9|3|1|0|696e6e65725f6b6579"},
+      {"relational_output_v1", "4",
+       "2|10|4|1|1|696e6e65725f7061796c6f6164"},
+      {"relational_values_row_v1", "1", "1,2"},
+      {"relational_values_row_v1", "2", "3,4"},
+      {"relational_values_row_v1", "3", "5,6"},
+      {"relational_values_row_v1", "4", "7,8"},
+      {"relational_values_row_v1", "5", "9,10"},
+      {"relational_values_row_v1", "6", "11,12"},
+      {"relational_values_row_v1", "7", "13,14"},
+      {"relational_values_row_v1", "8", "15,16"},
+      {"relational_node_v1", "1", "13|0|-|1,2|1,2,3,4"},
+      {"relational_node_v1", "2", "13|0|-|3,4|5,6,7,8"},
+      {"relational_node_v1", "3",
+       std::string(correlated ? "10" : "4") + "|0|1,2|" +
+           (correlated ? "3,4" : "1,2,3,4") + "|-"},
+      {"relational_node_v1", "4",
+       std::string("7|0|3|") +
+           (correlated ? "3,4" : "1,2,3,4") + "|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|1,2,3,4,5,6,7,8|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|9,10,11,12,13,14,15,16|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       EncodeHex(semantic_variant) + "|-|-|-|-"},
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|17|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -14880,6 +14972,120 @@ bool ValidateNodeDrivenPredicateSubqueryCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-CORRELATED-LATERAL-SUBQUERY-V1
+bool ValidateNodeDrivenCorrelatedLateralCompositionSpine() {
+  struct CorrelationCase {
+    std::string semantic_variant;
+    std::string tree_uuid;
+    std::size_t expected_columns;
+    std::size_t expected_rows;
+    bool null_extended;
+  };
+  const std::vector<CorrelationCase> cases{
+      {"subquery.correlated-int64-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb0", 2, 5, false},
+      {"join.lateral-inner-int64-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb1", 4, 5, false},
+      {"join.lateral-left-int64-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb2", 4, 6, true},
+      {"join.cross-apply-int64-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb3", 4, 5, false},
+      {"join.outer-apply-int64-equality.v1",
+       "019f0000-0000-7000-8000-00000000cfb4", 4, 6, true},
+  };
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto no_publication = [](const auto& result) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1");
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& proof : cases) {
+    const auto envelope = NodeDrivenCorrelationLimitEnvelope(
+        proof.semantic_variant, proof.tree_uuid);
+    const auto first = dispatch(envelope);
+    const auto replay = dispatch(envelope);
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count = 24;
+    const auto exhausted = dispatch(envelope, std::move(bounded_context));
+    bool values_match = false;
+    if (first.api_result.ok &&
+        first.api_result.result_shape.rows.size() == proof.expected_rows &&
+        first.api_result.result_shape.columns.size() ==
+            proof.expected_columns) {
+      const auto& rows = first.api_result.result_shape.rows;
+      if (proof.expected_columns == 2) {
+        values_match =
+            rows[0].fields[1].second.encoded_value == "inner-a" &&
+            rows[1].fields[1].second.encoded_value == "inner-c" &&
+            rows[2].fields[1].second.encoded_value == "inner-b" &&
+            rows[4].fields[1].second.encoded_value == "inner-c";
+      } else {
+        values_match =
+            rows[0].fields[1].second.encoded_value == "outer-a" &&
+            rows[0].fields[3].second.encoded_value == "inner-a" &&
+            rows[1].fields[3].second.encoded_value == "inner-c";
+        if (proof.null_extended) {
+          values_match =
+              values_match &&
+              rows[2].fields[1].second.encoded_value == "outer-null" &&
+              rows[2].fields[2].second.state ==
+                  api::EngineValueState::sql_null &&
+              rows[2].fields[3].second.state ==
+                  api::EngineValueState::sql_null &&
+              rows[3].fields[1].second.encoded_value == "outer-b";
+        } else {
+          values_match =
+              values_match &&
+              rows[2].fields[1].second.encoded_value == "outer-b" &&
+              rows[2].fields[3].second.encoded_value == "inner-b";
+        }
+      }
+    }
+    const bool case_passed =
+        first.accepted && first.optimizer_admitted &&
+        first.optimizer_selected && first.physical_dag_published &&
+        first.physical_dag_executed &&
+        first.runtime_actuals_attached &&
+        first.canonical_result_published && first.api_result.ok &&
+        first.logical_node_count == 4 && first.physical_node_count == 4 &&
+        first.canonical_result_column_count == proof.expected_columns &&
+        first.canonical_result_row_count == proof.expected_rows &&
+        values_match && replay.api_result.ok &&
+        replay.selected_plan_uuid == first.selected_plan_uuid &&
+        replay.canonical_result_bytes == first.canonical_result_bytes &&
+        selected_plans.insert(first.selected_plan_uuid).second &&
+        no_publication(exhausted);
+    passed &= Require(
+        case_passed,
+        "correlated/LATERAL composition lost profile " +
+            proof.semantic_variant);
+    if (!case_passed) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << proof.semantic_variant << ": " << diagnostic.code
+                  << ": " << diagnostic.detail << '\n';
+      }
+      for (const auto& diagnostic : exhausted.api_result.diagnostics) {
+        std::cerr << proof.semantic_variant << " exhausted: "
+                  << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+  }
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -15383,6 +15589,7 @@ int main() {
                       ValidateNodeDrivenTableSubqueryCteCompositionSpine() &&
                       ValidateNodeDrivenScalarRowSubqueryCompositionSpine() &&
                       ValidateNodeDrivenPredicateSubqueryCompositionSpine() &&
+                      ValidateNodeDrivenCorrelatedLateralCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&

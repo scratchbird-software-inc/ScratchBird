@@ -819,6 +819,60 @@ LivePredicateSubqueryProfile MatchLivePredicateSubqueryProfile(
   return profile;
 }
 
+struct PreparedCorrelatedSubqueryRoot {
+  std::size_t outer_binding_column{0};
+  std::size_t inner_reference_column{0};
+  std::uint32_t outer_binding_descriptor_id{0};
+  std::uint32_t inner_reference_descriptor_id{0};
+  std::size_t outer_row_count{0};
+  std::size_t inner_row_count{0};
+  std::size_t pair_count{0};
+  std::size_t output_row_bound{0};
+};
+
+struct LiveLateralSubqueryProfile {
+  bool matched{false};
+  exec::CanonicalLateralJoinForm form =
+      exec::CanonicalLateralJoinForm::kInnerLateral;
+  std::string implementation_id;
+  std::string transformation_id;
+};
+
+LiveLateralSubqueryProfile MatchLiveLateralSubqueryProfile(
+    const std::string_view semantic_variant_id) {
+  LiveLateralSubqueryProfile profile;
+  if (semantic_variant_id ==
+      "join.lateral-inner-int64-equality.v1") {
+    profile.matched = true;
+    profile.form = exec::CanonicalLateralJoinForm::kInnerLateral;
+    profile.implementation_id =
+        "join.lateral-inner.correlated.typed.v1";
+  } else if (semantic_variant_id ==
+             "join.lateral-left-int64-equality.v1") {
+    profile.matched = true;
+    profile.form = exec::CanonicalLateralJoinForm::kLeftLateral;
+    profile.implementation_id =
+        "join.lateral-left.correlated.typed.v1";
+  } else if (semantic_variant_id ==
+             "join.cross-apply-int64-equality.v1") {
+    profile.matched = true;
+    profile.form = exec::CanonicalLateralJoinForm::kCrossApply;
+    profile.implementation_id =
+        "join.cross-apply.correlated.typed.v1";
+  } else if (semantic_variant_id ==
+             "join.outer-apply-int64-equality.v1") {
+    profile.matched = true;
+    profile.form = exec::CanonicalLateralJoinForm::kOuterApply;
+    profile.implementation_id =
+        "join.outer-apply.correlated.typed.v1";
+  }
+  if (profile.matched) {
+    profile.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+  }
+  return profile;
+}
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
@@ -5765,6 +5819,12 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveFilterRegistration(
   return registration;
 }
 
+bool BuildOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    std::uint64_t root_physical_node_id,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::string* detail);
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -5877,6 +5937,263 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         step.output_row_count = join_result.output_batch.rows.size();
         step.materialized_output_batch = join_result.output_batch;
         step.mga_statement_context = join_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveCorrelatedSubqueryRegistration(
+    const PreparedCorrelatedSubqueryRoot prepared,
+    std::string capability_uuid,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSubquery;
+  registration.implementation_id =
+      "subquery.correlated.int64-equality.typed.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 2 ||
+            !inputs[0].materialized_output_batch.has_value() ||
+            !inputs[1].materialized_output_batch.has_value() ||
+            inputs[0].materialized_output_batch->rows.size() !=
+                prepared.outer_row_count ||
+            inputs[1].materialized_output_batch->rows.size() !=
+                prepared.inner_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "correlated subquery did not receive its exact two inputs";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+        exec::CanonicalCorrelatedSubqueryRequest correlated_request;
+        correlated_request.physical_dag = std::move(operator_dag);
+        correlated_request.selected_physical_node_id = node.physical_node_id;
+        correlated_request.outer_batch =
+            *inputs[0].materialized_output_batch;
+        correlated_request.inner_batch =
+            *inputs[1].materialized_output_batch;
+        correlated_request.outer_binding_column =
+            prepared.outer_binding_column;
+        correlated_request.outer_binding_expression_descriptor_id =
+            prepared.outer_binding_descriptor_id;
+        correlated_request.inner_reference_column =
+            prepared.inner_reference_column;
+        correlated_request.inner_reference_expression_descriptor_id =
+            prepared.inner_reference_descriptor_id;
+        correlated_request.maximum_scope_execution_count =
+            std::max<std::size_t>(1, prepared.outer_row_count);
+        correlated_request.maximum_comparison_count =
+            std::max<std::size_t>(1, prepared.pair_count);
+        correlated_request.maximum_result_row_count =
+            std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, correlated_request.physical_dag);
+        const auto correlated =
+            exec::ExecuteCanonicalCorrelatedSubquery(correlated_request);
+        if (!correlated.diagnostic.ok) {
+          step.diagnostic = correlated.diagnostic;
+          return step;
+        }
+        exec::DescriptorBatch output;
+        output.columns = correlated_request.inner_batch.columns;
+        for (const auto& scope : correlated.scopes) {
+          output.rows.insert(output.rows.end(),
+                             scope.output_batch.rows.begin(),
+                             scope.output_batch.rows.end());
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            output, node.output_descriptor_ids);
+        if (!validated.ok ||
+            output.rows.size() != correlated.result_row_count) {
+          step.diagnostic = validated;
+          if (validated.ok) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+            step.diagnostic.detail =
+                "correlated scope flattening cardinality drifted";
+          }
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = prepared.outer_row_count +
+                               prepared.inner_row_count;
+        step.rows_examined = correlated.comparison_count;
+        step.output_row_count = output.rows.size();
+        step.materialized_output_batch = std::move(output);
+        step.mga_statement_context = correlated.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveLateralSubqueryRegistration(
+    const PreparedCorrelatedSubqueryRoot prepared,
+    const LiveLateralSubqueryProfile profile,
+    std::string capability_uuid,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kJoin;
+  registration.implementation_id = profile.implementation_id;
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared, profile, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 2 ||
+            !inputs[0].materialized_output_batch.has_value() ||
+            !inputs[1].materialized_output_batch.has_value() ||
+            inputs[0].materialized_output_batch->rows.size() !=
+                prepared.outer_row_count ||
+            inputs[1].materialized_output_batch->rows.size() !=
+                prepared.inner_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY did not receive its exact two inputs";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+        const auto selected = std::ranges::find_if(
+            operator_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        if (selected == operator_dag.nodes.end() ||
+            selected->input_physical_node_ids.size() != 2) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail = "LATERAL/APPLY local root is unresolved";
+          return step;
+        }
+        const auto inner_id = selected->input_physical_node_ids[1];
+
+        auto correlated_dag = operator_dag;
+        auto correlated_root = std::ranges::find_if(
+            correlated_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == node.physical_node_id;
+            });
+        correlated_root->node_kind = exec::PhysicalNodeKind::kSubquery;
+        correlated_root->implementation_id =
+            "subquery.correlated.int64-equality.typed.v1";
+        correlated_root->output_descriptor_ids =
+            inputs[1].output_descriptor_ids;
+
+        auto lateral_dag = std::move(operator_dag);
+        auto lateral_inner = std::ranges::find_if(
+            lateral_dag.nodes, [&](const auto& candidate) {
+              return candidate.physical_node_id == inner_id;
+            });
+        if (lateral_inner == lateral_dag.nodes.end()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
+          step.diagnostic.detail =
+              "LATERAL/APPLY correlated input is unresolved";
+          return step;
+        }
+        lateral_inner->node_kind = exec::PhysicalNodeKind::kSubquery;
+        lateral_inner->implementation_id =
+            "subquery.lateral-correlated.typed.v1";
+        lateral_inner->input_physical_node_ids.clear();
+
+        exec::CanonicalCorrelatedSubqueryRequest correlated_request;
+        correlated_request.physical_dag = std::move(correlated_dag);
+        correlated_request.selected_physical_node_id = node.physical_node_id;
+        correlated_request.outer_batch =
+            *inputs[0].materialized_output_batch;
+        correlated_request.inner_batch =
+            *inputs[1].materialized_output_batch;
+        correlated_request.outer_binding_column =
+            prepared.outer_binding_column;
+        correlated_request.outer_binding_expression_descriptor_id =
+            prepared.outer_binding_descriptor_id;
+        correlated_request.inner_reference_column =
+            prepared.inner_reference_column;
+        correlated_request.inner_reference_expression_descriptor_id =
+            prepared.inner_reference_descriptor_id;
+        correlated_request.maximum_scope_execution_count =
+            std::max<std::size_t>(1, prepared.outer_row_count);
+        correlated_request.maximum_comparison_count =
+            std::max<std::size_t>(1, prepared.pair_count);
+        correlated_request.maximum_result_row_count =
+            std::max<std::size_t>(1, prepared.output_row_bound);
+        correlated_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, correlated_request.physical_dag);
+
+        exec::CanonicalLateralSubqueryRequest lateral_request;
+        lateral_request.correlated_request =
+            std::move(correlated_request);
+        lateral_request.physical_dag = std::move(lateral_dag);
+        lateral_request.selected_physical_node_id = node.physical_node_id;
+        lateral_request.form = profile.form;
+        lateral_request.maximum_output_row_count =
+            std::max<std::size_t>(1, prepared.output_row_bound);
+        lateral_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, lateral_request.physical_dag);
+        const auto lateral =
+            exec::ExecuteCanonicalLateralSubquery(lateral_request);
+        if (!lateral.diagnostic.ok) {
+          step.diagnostic = lateral.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = prepared.outer_row_count +
+                               prepared.inner_row_count;
+        step.rows_examined = prepared.pair_count;
+        step.output_row_count = lateral.output_batch.rows.size();
+        step.materialized_output_batch = lateral.output_batch;
+        step.mga_statement_context = lateral.mga_statement_context;
         return step;
       };
   return registration;
@@ -7296,6 +7613,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   const plan::CanonicalLogicalRelationalNode* join_left_node = nullptr;
   const plan::CanonicalLogicalRelationalNode* join_right_node = nullptr;
   std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
+  LiveLateralSubqueryProfile lateral_subquery_profile;
+  bool correlated_subquery_base = false;
   std::string join_component;
   std::string join_operation_name;
   std::unordered_map<
@@ -7331,7 +7650,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     }
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kJoin) {
-      if (current->semantic_variant_id == "join.inner.v1") {
+      lateral_subquery_profile =
+          MatchLiveLateralSubqueryProfile(
+              current->semantic_variant_id);
+      if (lateral_subquery_profile.matched) {
+        join_component = "lateral";
+        join_operation_name = "LATERAL/APPLY";
+      } else if (current->semantic_variant_id == "join.inner.v1") {
         join_kind = exec::CanonicalAcceptedJoinKind::kInner;
         join_component = "inner";
         join_operation_name = "INNER JOIN";
@@ -7363,7 +7688,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         return result;
       }
       const auto expected_expression_count =
-          *join_kind == exec::CanonicalAcceptedJoinKind::kCross ? 0U : 1U;
+          lateral_subquery_profile.matched
+              ? 0U
+              : (*join_kind == exec::CanonicalAcceptedJoinKind::kCross
+                     ? 0U
+                     : 1U);
       if (current->input_logical_node_ids.size() != 2 ||
           current->input_logical_node_ids[0] ==
               current->input_logical_node_ids[1] ||
@@ -7395,6 +7724,44 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       }
       join_left_node = &*left;
       join_right_node = &*right;
+      break;
+    }
+    if (current->node_kind ==
+            plan::CanonicalLogicalRelationalNodeKind::kSubquery &&
+        current->semantic_variant_id ==
+            "subquery.correlated-int64-equality.v1") {
+      if (current->input_logical_node_ids.size() != 2 ||
+          current->input_logical_node_ids[0] ==
+              current->input_logical_node_ids[1] ||
+          !current->bound_expression_ids.empty() ||
+          !current->required_property_uuids.empty() ||
+          !current->delivered_property_uuids.empty()) {
+        return result;
+      }
+      const auto outer = find_node(current->input_logical_node_ids[0]);
+      const auto inner = find_node(current->input_logical_node_ids[1]);
+      if (outer == graph.nodes.end() || inner == graph.nodes.end() ||
+          outer->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          inner->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          outer->semantic_variant_id != "values.literal-table.v1" ||
+          inner->semantic_variant_id != "values.literal-table.v1" ||
+          !outer->input_logical_node_ids.empty() ||
+          !inner->input_logical_node_ids.empty() ||
+          !outer->required_object_uuids.empty() ||
+          !inner->required_object_uuids.empty() ||
+          !outer->required_property_uuids.empty() ||
+          !inner->required_property_uuids.empty() ||
+          !outer->delivered_property_uuids.empty() ||
+          !inner->delivered_property_uuids.empty() ||
+          !visited.insert(outer->logical_node_id).second ||
+          !visited.insert(inner->logical_node_id).second) {
+        return result;
+      }
+      join_left_node = &*outer;
+      join_right_node = &*inner;
+      correlated_subquery_base = true;
       break;
     }
     if (current->node_kind ==
@@ -7609,7 +7976,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
        reverse_chain.back()->node_kind !=
            plan::CanonicalLogicalRelationalNodeKind::kJoin &&
        reverse_chain.back()->node_kind !=
-           plan::CanonicalLogicalRelationalNodeKind::kSetOperation) ||
+           plan::CanonicalLogicalRelationalNodeKind::kSetOperation &&
+       !(correlated_subquery_base &&
+         reverse_chain.back()->node_kind ==
+             plan::CanonicalLogicalRelationalNodeKind::kSubquery)) ||
       visited.size() != graph.nodes.size() || sort_count > 1 ||
       (sort_count == 0 &&
        !request.optimizer_request.logical_properties.properties.empty()) ||
@@ -7652,6 +8022,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t join_pair_count = 0;
   std::size_t join_output_row_bound = 0;
   std::string join_implementation_id;
+  std::optional<PreparedCorrelatedSubqueryRoot>
+      prepared_correlated_subquery;
+  std::optional<PreparedCorrelatedSubqueryRoot> prepared_lateral_subquery;
   std::unordered_map<std::uint32_t, MaterializedValues>
       set_materialized_values;
   std::unordered_map<std::uint64_t, PreparedLiveSetNode>
@@ -7736,6 +8109,149 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
 
   std::vector<LivePhysicalNodeProfile> profiles;
   std::uint64_t total_work = 0;
+  struct CorrelationPlanningState {
+    MaterializedValues values;
+    std::size_t pair_count{0};
+    std::size_t matched_row_count{0};
+  };
+  const auto materialize_correlation =
+      [&](const MaterializedValues& outer,
+          const MaterializedValues& inner,
+          const plan::CanonicalLogicalRelationalNode& root,
+          const bool lateral,
+          const bool null_extend) {
+        CorrelationPlanningState planning;
+        if (outer.batch.columns.empty() || inner.batch.columns.empty() ||
+            outer.batch.columns.front().descriptor.canonical_type_name !=
+                "int64" ||
+            inner.batch.columns.front().descriptor.canonical_type_name !=
+                "int64" ||
+            outer.result_bindings.size() != outer.batch.columns.size() ||
+            inner.result_bindings.size() != inner.batch.columns.size() ||
+            (outer.batch.rows.size() != 0 &&
+             inner.batch.rows.size() >
+                 std::numeric_limits<std::size_t>::max() /
+                     outer.batch.rows.size())) {
+          planning.values.detail =
+              "correlation inputs are not bounded int64-key relations";
+          return planning;
+        }
+        planning.pair_count =
+            outer.batch.rows.size() * inner.batch.rows.size();
+
+        std::vector<std::optional<std::int64_t>> outer_keys;
+        std::vector<std::optional<std::int64_t>> inner_keys;
+        outer_keys.reserve(outer.batch.rows.size());
+        inner_keys.reserve(inner.batch.rows.size());
+        const auto decode_keys = [&](const exec::DescriptorBatch& batch,
+                                     auto* keys) {
+          for (const auto& row : batch.rows) {
+            const auto& value = row.values.front();
+            if (value.state == api::EngineValueState::sql_null) {
+              keys->push_back(std::nullopt);
+              continue;
+            }
+            const auto decoded = exec::DecodeInt64Value(value);
+            if (!decoded.ok()) {
+              planning.values.detail =
+                  decoded.diagnostic.diagnostic_code + ":" +
+                  decoded.diagnostic.detail;
+              return false;
+            }
+            keys->push_back(decoded.value);
+          }
+          return true;
+        };
+        if (!decode_keys(outer.batch, &outer_keys) ||
+            !decode_keys(inner.batch, &inner_keys)) {
+          return planning;
+        }
+
+        planning.values.batch.columns =
+            lateral ? outer.batch.columns : inner.batch.columns;
+        if (lateral) {
+          planning.values.batch.columns.insert(
+              planning.values.batch.columns.end(),
+              inner.batch.columns.begin(), inner.batch.columns.end());
+          planning.values.result_bindings = outer.result_bindings;
+          planning.values.result_bindings.insert(
+              planning.values.result_bindings.end(),
+              inner.result_bindings.begin(), inner.result_bindings.end());
+        } else {
+          planning.values.result_bindings = inner.result_bindings;
+        }
+        const auto inner_output_start =
+            lateral ? outer.batch.columns.size() : 0;
+        if (null_extend) {
+          for (std::size_t column = inner_output_start;
+               column < planning.values.batch.columns.size(); ++column) {
+            planning.values.batch.columns[column].nullable = true;
+          }
+        }
+        std::size_t visible_ordinal = 0;
+        for (std::size_t column = 0;
+             column < planning.values.result_bindings.size(); ++column) {
+          auto& binding = planning.values.result_bindings[column];
+          binding.physical_column_ordinal = column;
+          if (!binding.visible || !binding.published_descriptor.has_value()) {
+            continue;
+          }
+          binding.published_descriptor->ordinal =
+              static_cast<std::uint32_t>(visible_ordinal++);
+          if (null_extend && column >= inner_output_start) {
+            binding.published_descriptor->nullability =
+                exec::CanonicalResultNullability::kNullable;
+          }
+        }
+
+        for (std::size_t outer_row = 0;
+             outer_row < outer.batch.rows.size(); ++outer_row) {
+          bool matched = false;
+          if (outer_keys[outer_row].has_value()) {
+            for (std::size_t inner_row = 0;
+                 inner_row < inner.batch.rows.size(); ++inner_row) {
+              if (!inner_keys[inner_row].has_value() ||
+                  outer_keys[outer_row].value() !=
+                      inner_keys[inner_row].value()) {
+                continue;
+              }
+              matched = true;
+              ++planning.matched_row_count;
+              if (lateral) {
+                auto row = outer.batch.rows[outer_row];
+                row.values.insert(row.values.end(),
+                                  inner.batch.rows[inner_row].values.begin(),
+                                  inner.batch.rows[inner_row].values.end());
+                planning.values.batch.rows.push_back(std::move(row));
+              } else {
+                planning.values.batch.rows.push_back(
+                    inner.batch.rows[inner_row]);
+              }
+            }
+          }
+          if (lateral && null_extend && !matched) {
+            auto row = outer.batch.rows[outer_row];
+            for (const auto& column : inner.batch.columns) {
+              api::EngineTypedValue value;
+              value.descriptor = column.descriptor;
+              value.is_null = true;
+              value.state = api::EngineValueState::sql_null;
+              row.values.push_back(std::move(value));
+            }
+            planning.values.batch.rows.push_back(std::move(row));
+          }
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            planning.values.batch, root.output_descriptor_ids);
+        if (!validated.ok) {
+          planning.values.batch = {};
+          planning.values.result_bindings.clear();
+          planning.values.detail = validated.detail;
+          return planning;
+        }
+        planning.values.ok = true;
+        return planning;
+      };
   if (reverse_chain.front()->node_kind ==
       plan::CanonicalLogicalRelationalNodeKind::kValues) {
     state = MaterializeValues(request.relational_dag,
@@ -7760,6 +8276,92 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          "canonical.values.materialize.v1", state.batch.rows.size(),
          values_memory, 0, 0});
     total_work = state.batch.rows.size();
+  } else if (correlated_subquery_base &&
+             reverse_chain.front()->node_kind ==
+                 plan::CanonicalLogicalRelationalNodeKind::kSubquery) {
+    join_left_values = MaterializeValues(
+        request.relational_dag, *join_left_node,
+        request.expression_services);
+    join_right_values = MaterializeValues(
+        request.relational_dag, *join_right_node,
+        request.expression_services);
+    if (!join_left_values->ok || !join_right_values->ok ||
+        reverse_chain.front()->output_descriptor_ids !=
+            join_right_node->output_descriptor_ids) {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          !join_left_values->ok
+              ? "composition correlated outer VALUES: " +
+                    join_left_values->detail
+              : (!join_right_values->ok
+                     ? "composition correlated inner VALUES: " +
+                           join_right_values->detail
+                     : "correlated subquery output is not its inner schema"));
+    }
+    auto correlated = materialize_correlation(
+        *join_left_values, *join_right_values,
+        *reverse_chain.front(), false, false);
+    if (!correlated.values.ok) {
+      return refuse(std::string(kPayloadDiagnostic),
+                    correlated.values.detail);
+    }
+    PreparedCorrelatedSubqueryRoot prepared;
+    prepared.outer_binding_descriptor_id =
+        join_left_values->batch.columns.front().descriptor_id;
+    prepared.inner_reference_descriptor_id =
+        join_right_values->batch.columns.front().descriptor_id;
+    prepared.outer_row_count =
+        join_left_values->batch.rows.size();
+    prepared.inner_row_count =
+        join_right_values->batch.rows.size();
+    prepared.pair_count = correlated.pair_count;
+    prepared.output_row_bound = correlated.values.batch.rows.size();
+    prepared_correlated_subquery = prepared;
+    state = std::move(correlated.values);
+
+    std::uint64_t outer_memory = 1;
+    std::uint64_t inner_memory = 1;
+    std::uint64_t correlated_memory = 1;
+    if (!AddBatchMemoryBytes(join_left_values->batch, &outer_memory) ||
+        !AddBatchMemoryBytes(join_right_values->batch, &inner_memory) ||
+        !AddBatchMemoryBytes(state.batch, &correlated_memory) ||
+        !CheckedAdd(correlated_memory, outer_memory,
+                    &correlated_memory) ||
+        !CheckedAdd(correlated_memory, inner_memory,
+                    &correlated_memory) ||
+        correlated_memory >
+            request.optimizer_request.resource.memory_budget_bytes ||
+        !CheckedAdd(prepared.outer_row_count,
+                    prepared.inner_row_count, &total_work) ||
+        !CheckedAdd(total_work, prepared.pair_count, &total_work) ||
+        total_work >
+            request.optimizer_request.resource.maximum_candidate_count) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "composition correlated subquery exceeds an admitted bound");
+    }
+    profiles.push_back(
+        {join_left_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", prepared.outer_row_count,
+         outer_memory, 0, 0});
+    profiles.push_back(
+        {join_right_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", prepared.inner_row_count,
+         inner_memory, 0, 0});
+    profiles.push_back(
+        {reverse_chain.front()->logical_node_id,
+         "subquery.correlated.int64-equality.typed.v1",
+         subquery_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kSubquery,
+         exec::PhysicalNodeKind::kSubquery,
+         "canonical.subquery.correlated-int64-equality.v1",
+         prepared.output_row_bound, correlated_memory, 2, 2});
   } else if (reverse_chain.front()->node_kind ==
              plan::CanonicalLogicalRelationalNodeKind::kJoin) {
     join_left_values = MaterializeValues(
@@ -7776,6 +8378,90 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               : "composition JOIN right VALUES: " +
                     join_right_values->detail);
     }
+    if (lateral_subquery_profile.matched) {
+      std::vector<std::uint32_t> expected_output =
+          join_left_node->output_descriptor_ids;
+      expected_output.insert(expected_output.end(),
+                             join_right_node->output_descriptor_ids.begin(),
+                             join_right_node->output_descriptor_ids.end());
+      if (reverse_chain.front()->output_descriptor_ids != expected_output) {
+        return refuse(
+            std::string(kPayloadDiagnostic),
+            "LATERAL/APPLY output does not concatenate its outer and inner "
+            "schemas");
+      }
+      const bool null_extend =
+          lateral_subquery_profile.form ==
+              exec::CanonicalLateralJoinForm::kLeftLateral ||
+          lateral_subquery_profile.form ==
+              exec::CanonicalLateralJoinForm::kOuterApply;
+      auto lateral = materialize_correlation(
+          *join_left_values, *join_right_values,
+          *reverse_chain.front(), true, null_extend);
+      if (!lateral.values.ok) {
+        return refuse(std::string(kPayloadDiagnostic),
+                      lateral.values.detail);
+      }
+      PreparedCorrelatedSubqueryRoot prepared;
+      prepared.outer_binding_descriptor_id =
+          join_left_values->batch.columns.front().descriptor_id;
+      prepared.inner_reference_descriptor_id =
+          join_right_values->batch.columns.front().descriptor_id;
+      prepared.outer_row_count =
+          join_left_values->batch.rows.size();
+      prepared.inner_row_count =
+          join_right_values->batch.rows.size();
+      prepared.pair_count = lateral.pair_count;
+      prepared.output_row_bound = lateral.values.batch.rows.size();
+      prepared_lateral_subquery = prepared;
+      state = std::move(lateral.values);
+      join_pair_count = prepared.pair_count;
+      join_output_row_bound = prepared.output_row_bound;
+      join_implementation_id =
+          lateral_subquery_profile.implementation_id;
+
+      std::uint64_t left_memory = 1;
+      std::uint64_t right_memory = 1;
+      std::uint64_t lateral_memory = 1;
+      if (!AddBatchMemoryBytes(join_left_values->batch, &left_memory) ||
+          !AddBatchMemoryBytes(join_right_values->batch, &right_memory) ||
+          !AddBatchMemoryBytes(state.batch, &lateral_memory) ||
+          !CheckedAdd(lateral_memory, left_memory, &lateral_memory) ||
+          !CheckedAdd(lateral_memory, right_memory, &lateral_memory) ||
+          lateral_memory >
+              request.optimizer_request.resource.memory_budget_bytes ||
+          !CheckedAdd(prepared.outer_row_count,
+                      prepared.inner_row_count, &total_work) ||
+          !CheckedAdd(total_work, prepared.pair_count, &total_work) ||
+          total_work >
+              request.optimizer_request.resource.maximum_candidate_count) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+            "composition LATERAL/APPLY exceeds an admitted bound");
+      }
+      profiles.push_back(
+          {join_left_node->logical_node_id,
+           std::string(kValuesImplementationId), values_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kValues,
+           exec::PhysicalNodeKind::kValues,
+           "canonical.values.materialize.v1", prepared.outer_row_count,
+           left_memory, 0, 0});
+      profiles.push_back(
+          {join_right_node->logical_node_id,
+           std::string(kValuesImplementationId), values_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kValues,
+           exec::PhysicalNodeKind::kValues,
+           "canonical.values.materialize.v1", prepared.inner_row_count,
+           right_memory, 0, 0});
+      profiles.push_back(
+          {reverse_chain.front()->logical_node_id,
+           lateral_subquery_profile.implementation_id,
+           join_capability_uuid,
+           plan::CanonicalLogicalRelationalNodeKind::kJoin,
+           exec::PhysicalNodeKind::kJoin,
+           lateral_subquery_profile.transformation_id,
+           prepared.output_row_bound, lateral_memory, 2, 2});
+    } else {
     prepared_join = PrepareJoinRoot(
         request.relational_dag, *reverse_chain.front(), *join_left_node,
         *join_right_node, *join_left_values, *join_right_values, *join_kind);
@@ -7996,6 +8682,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             request.optimizer_request.resource.maximum_candidate_count) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition JOIN work exceeds the admitted bound");
+    }
     }
   } else {
     for (const auto& [node_id, node] : set_base_nodes) {
@@ -10415,7 +11102,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
 
   std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
-  if (join_kind.has_value()) {
+  if (join_kind.has_value() || lateral_subquery_profile.matched ||
+      correlated_subquery_base) {
     values_batches.emplace(join_left_node->logical_node_id,
                            std::move(join_left_values->batch));
     values_batches.emplace(join_right_node->logical_node_id,
@@ -10458,6 +11146,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             std::move(join_truth_values), join_pair_count,
             join_output_row_bound, *join_kind, join_operation_name,
             request.context));
+  }
+  if (prepared_correlated_subquery.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveCorrelatedSubqueryRegistration(
+            *prepared_correlated_subquery, subquery_capability_uuid,
+            request.context));
+  }
+  if (prepared_lateral_subquery.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveLateralSubqueryRegistration(
+            *prepared_lateral_subquery, lateral_subquery_profile,
+            join_capability_uuid, request.context));
   }
   std::unordered_set<std::string> registered_set_implementations;
   for (const auto& [node_id, prepared] : prepared_set_nodes) {
