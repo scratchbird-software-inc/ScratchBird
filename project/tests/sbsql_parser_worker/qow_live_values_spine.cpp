@@ -2748,6 +2748,54 @@ sblr::SblrOperationEnvelope NodeDrivenGroupedCountSumLimitEnvelope() {
   return envelope;
 }
 
+sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope();
+
+sblr::SblrOperationEnvelope TwoKeyGroupedCountSumValuesEnvelope() {
+  auto envelope = RollupCountSumValuesEnvelope();
+  envelope.trace_key = "qow.live.values.two-key-grouped-count-sum";
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000cd00";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.value =
+          EncodeHex("aggregate.grouped-int64-keys-count-sum.v1") +
+          "|19,20,21,23|-|-|-";
+    }
+  }
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+// RCP-049-TEST-NODE-DRIVEN-GROUPING-EXPANSION-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenGroupedExpansionLimitEnvelope(
+    sblr::SblrOperationEnvelope envelope,
+    const std::string_view tree_uuid,
+    const std::string_view output_descriptor_ids) {
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = tree_uuid;
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "9",
+       "019f0000-0000-7300-8000-00000000cd01|"
+       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "27", "1|-|9|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3",
+       "7|0|2|" + std::string(output_descriptor_ids) + "|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|27|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -8234,6 +8282,118 @@ bool ValidateNodeDrivenGroupedCountSumCompositionSpine() {
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "exhausted node-driven grouped COUNT/SUM composition published "
       "partial evidence");
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-GROUPING-EXPANSION-COMPOSITION-V1
+bool ValidateNodeDrivenGroupingExpansionCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto validate = [&](sblr::SblrOperationEnvelope reference_envelope,
+                            const std::string_view tree_uuid,
+                            const std::string_view output_descriptor_ids,
+                            const std::uint64_t exhausted_budget,
+                            const std::string_view name) {
+    auto exhausted_envelope = reference_envelope;
+    const auto first = dispatch(NodeDrivenGroupedExpansionLimitEnvelope(
+        reference_envelope, tree_uuid, output_descriptor_ids));
+    const auto repeated = dispatch(NodeDrivenGroupedExpansionLimitEnvelope(
+        reference_envelope, tree_uuid, output_descriptor_ids));
+    const auto reference = dispatch(std::move(reference_envelope));
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    bool same_first_row = reference.api_result.ok &&
+                          !reference.api_result.result_shape.rows.empty() &&
+                          first.api_result.result_shape.rows.size() == 1;
+    if (same_first_row) {
+      const auto& expected =
+          reference.api_result.result_shape.rows.front().fields;
+      const auto& actual =
+          first.api_result.result_shape.rows.front().fields;
+      same_first_row = actual.size() == expected.size();
+      for (std::size_t field = 0;
+           same_first_row && field < expected.size(); ++field) {
+        same_first_row =
+            actual[field].first == expected[field].first &&
+            actual[field].second.state == expected[field].second.state &&
+            actual[field].second.is_null == expected[field].second.is_null &&
+            actual[field].second.encoded_value ==
+                expected[field].second.encoded_value &&
+            actual[field].second.binary_value ==
+                expected[field].second.binary_value;
+      }
+    }
+    bool profile_passed = Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed && first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 3 &&
+            first.physical_node_count == 3 &&
+            first.canonical_result_column_count ==
+                reference.canonical_result_column_count &&
+            first.canonical_result_row_count == 1 && same_first_row &&
+            repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "node-driven " + std::string(name) +
+            " composition lost grouping expansion, metadata, LIMIT, or "
+            "deterministic replay semantics");
+
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count = exhausted_budget;
+    const auto exhausted = dispatch(
+        NodeDrivenGroupedExpansionLimitEnvelope(
+            std::move(exhausted_envelope), tree_uuid,
+            output_descriptor_ids),
+        std::move(bounded_context));
+    profile_passed &= Require(
+        !exhausted.optimizer_selected &&
+            !exhausted.physical_dag_published &&
+            !exhausted.physical_dag_executed &&
+            !exhausted.runtime_actuals_attached &&
+            !exhausted.canonical_result_published &&
+            !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+            exhausted.canonical_result_bytes.empty() &&
+            HasApiDiagnostic(
+                exhausted,
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+        "exhausted node-driven " + std::string(name) +
+            " composition published partial evidence");
+    return profile_passed;
+  };
+
+  bool passed = true;
+  passed &= validate(TwoKeyGroupedCountSumValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd10",
+                     "1,2,4,5", 84, "two-key GROUP BY");
+  passed &= validate(RollupCountSumValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd20",
+                     "1,2,4,5", 240, "ROLLUP");
+  passed &= validate(RollupCountSumGroupingValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd30",
+                     "1,2,4,5,6,7,8", 240,
+                     "ROLLUP with GROUPING metadata");
+  passed &= validate(CubeCountSumValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd40",
+                     "1,2,4,5", 318, "CUBE");
+  passed &= validate(CubeCountSumGroupingValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd50",
+                     "1,2,4,5,6,7,8", 318,
+                     "CUBE with GROUPING metadata");
+  passed &= validate(GroupingSetsCountSumValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd60",
+                     "1,2,4,5", 318, "GROUPING SETS");
+  passed &= validate(GroupingSetsCountSumGroupingValuesEnvelope(),
+                     "019f0000-0000-7000-8000-00000000cd70",
+                     "1,2,4,5,6,7,8", 318,
+                     "GROUPING SETS with GROUPING metadata");
   return passed;
 }
 
@@ -13911,6 +14071,7 @@ int main() {
                       ValidateNodeDrivenStatisticalAggregateCompositionSpine() &&
                       ValidateNodeDrivenPairStatisticalCompositionSpine() &&
                       ValidateNodeDrivenGroupedCountSumCompositionSpine() &&
+                      ValidateNodeDrivenGroupingExpansionCompositionSpine() &&
                       ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
                       ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
