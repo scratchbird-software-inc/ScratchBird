@@ -37,6 +37,10 @@ enum class StatementDescriptorProfileKind : std::uint8_t {
   kTextNullable = 4,
   kBooleanNonNull = 5,
   kBooleanNullable = 6,
+  kJsonNonNull = 7,
+  kJsonNullable = 8,
+  kTextListNonNull = 9,
+  kTextListNullable = 10,
 };
 
 struct StatementDescriptorProfile {

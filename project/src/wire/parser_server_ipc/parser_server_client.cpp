@@ -91,6 +91,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV3 = 7015;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV3 = 7016;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV4 = 7017;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV4 = 7018;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV5 = 7019;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV5 = 7020;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -878,6 +880,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV4(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV5(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 5;
+  return out;
+}
+
 bool DecodeAcquireStatementContextPayloadV1(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
@@ -931,6 +941,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     const std::uint16_t expected_version,
     const bool extended_aggregate_registry,
     const bool complete_aggregate_registry,
+    const std::uint8_t maximum_profile_kind,
     ParserStatementContext* context) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
@@ -1007,14 +1018,14 @@ bool DecodeAcquireStatementContextPayloadNative(
        (!UuidPresent(avg_function_uuid) || !UuidPresent(min_function_uuid) ||
         !UuidPresent(max_function_uuid))) ||
       profile_count == 0 ||
-      profile_count > 192 ||
+      profile_count > static_cast<std::uint16_t>(maximum_profile_kind) * 32u ||
       payload.size() != offset +
                             static_cast<std::size_t>(profile_count) *
                                 kProfileBytes) {
     return false;
   }
 
-  std::array<std::uint16_t, 7> expected_slots{};
+  std::array<std::uint16_t, 11> expected_slots{};
   std::set<std::string> descriptor_uuids;
   decoded.descriptor_profiles.reserve(profile_count);
   for (std::uint16_t index = 0; index < profile_count; ++index) {
@@ -1035,7 +1046,8 @@ bool DecodeAcquireStatementContextPayloadNative(
     offset += 4;
     profile.scale = GetU32(payload, offset);
     offset += 4;
-    if (profile.profile_kind < 1 || profile.profile_kind > 6 ||
+    if (profile.profile_kind < 1 ||
+        profile.profile_kind > maximum_profile_kind ||
         profile.slot != expected_slots[profile.profile_kind]++ ||
         !UuidPresent(descriptor_uuid) || !UuidPresent(type_uuid) ||
         nullable > 1 ||
@@ -1051,7 +1063,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     decoded.descriptor_profiles.push_back(std::move(profile));
   }
   if (offset != payload.size()) return false;
-  for (std::size_t kind = 1; kind < expected_slots.size(); ++kind) {
+  for (std::size_t kind = 1; kind <= maximum_profile_kind; ++kind) {
     if (expected_slots[kind] == 0) return false;
   }
   decoded.bound_ast_uuid = UuidToText(bound_ast_uuid);
@@ -1070,7 +1082,7 @@ bool DecodeAcquireStatementContextPayloadV2(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 2, false,
-                                                     false,
+                                                     false, 6,
                                                      context);
 }
 
@@ -1078,7 +1090,7 @@ bool DecodeAcquireStatementContextPayloadV3(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 3, true,
-                                                     false,
+                                                     false, 6,
                                                      context);
 }
 
@@ -1086,6 +1098,15 @@ bool DecodeAcquireStatementContextPayloadV4(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 4, true, true,
+                                                     6,
+                                                     context);
+}
+
+bool DecodeAcquireStatementContextPayloadV5(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 5, true, true,
+                                                     10,
                                                      context);
 }
 
@@ -3137,6 +3158,18 @@ bool DecodeAcquireStatementContextResultPayloadV1ForTest(
   return DecodeAcquireStatementContextPayloadV1(payload, context);
 }
 
+bool DecodeAcquireStatementContextResultPayloadV4ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV4(payload, context);
+}
+
+bool DecodeAcquireStatementContextResultPayloadV5ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadV5(payload, context);
+}
+
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,
@@ -4203,10 +4236,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV4,
+                     kSchemaAcquireStatementContextRequestV5,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV4(session, transaction),
+          EncodeAcquireStatementContextPayloadV5(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4215,19 +4248,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV4 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV5 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V4 result schema.");
+          "The server did not return the native statement-context V5 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV4(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV5(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||

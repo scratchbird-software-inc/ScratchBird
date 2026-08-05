@@ -123,6 +123,12 @@ bool DecodeDiagnosticFrameForTest(
 bool DecodeAcquireStatementContextResultPayloadV1ForTest(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context);
+bool DecodeAcquireStatementContextResultPayloadV4ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
+bool DecodeAcquireStatementContextResultPayloadV5ForTest(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context);
 std::vector<std::uint8_t>
 EncodeAcquireStatementContextRequestPayloadV1ForTest(
     const ParserSessionContext& session,

@@ -2398,9 +2398,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
   std::string numeric_type_uuid;
   std::string text_type_uuid;
   std::string boolean_type_uuid;
+  std::string json_type_uuid;
+  std::string text_list_type_uuid;
   if (!issue_identity(&numeric_type_uuid) ||
       !issue_identity(&text_type_uuid) ||
-      !issue_identity(&boolean_type_uuid)) {
+      !issue_identity(&boolean_type_uuid) ||
+      !issue_identity(&json_type_uuid) ||
+      !issue_identity(&text_list_type_uuid)) {
     scratchbird::transaction::mga::RevokePublishedSnapshotVector(
         snapshot.snapshot_uuid);
     return fail_result(
@@ -2418,26 +2422,41 @@ sb_engine_status_t AcquireStatementContextReceipt(
            StatementDescriptorProfileKind::kTextNonNull,
            StatementDescriptorProfileKind::kTextNullable,
            StatementDescriptorProfileKind::kBooleanNonNull,
-           StatementDescriptorProfileKind::kBooleanNullable}) {
+           StatementDescriptorProfileKind::kBooleanNullable,
+           StatementDescriptorProfileKind::kJsonNonNull,
+           StatementDescriptorProfileKind::kJsonNullable,
+           StatementDescriptorProfileKind::kTextListNonNull,
+           StatementDescriptorProfileKind::kTextListNullable}) {
     const bool numeric =
         kind == StatementDescriptorProfileKind::kNumericNonNull ||
         kind == StatementDescriptorProfileKind::kNumericNullable;
     const bool text =
         kind == StatementDescriptorProfileKind::kTextNonNull ||
         kind == StatementDescriptorProfileKind::kTextNullable;
+    const bool json =
+        kind == StatementDescriptorProfileKind::kJsonNonNull ||
+        kind == StatementDescriptorProfileKind::kJsonNullable;
+    const bool text_list =
+        kind == StatementDescriptorProfileKind::kTextListNonNull ||
+        kind == StatementDescriptorProfileKind::kTextListNullable;
     const bool nullable =
         kind == StatementDescriptorProfileKind::kNumericNullable ||
         kind == StatementDescriptorProfileKind::kTextNullable ||
-        kind == StatementDescriptorProfileKind::kBooleanNullable;
+        kind == StatementDescriptorProfileKind::kBooleanNullable ||
+        kind == StatementDescriptorProfileKind::kJsonNullable ||
+        kind == StatementDescriptorProfileKind::kTextListNullable;
     for (std::uint16_t slot = 0;
          slot < kDescriptorSlotsPerProfile;
          ++slot) {
       StatementDescriptorProfile profile;
       profile.profile_kind = kind;
       profile.slot = slot;
-      profile.type_uuid = numeric ? numeric_type_uuid
-                                  : (text ? text_type_uuid
-                                          : boolean_type_uuid);
+      profile.type_uuid =
+          numeric ? numeric_type_uuid
+                  : (text ? text_type_uuid
+                          : (json ? json_type_uuid
+                                  : (text_list ? text_list_type_uuid
+                                               : boolean_type_uuid)));
       profile.nullable = nullable;
       if (!issue_identity(&profile.descriptor_uuid)) {
         scratchbird::transaction::mga::RevokePublishedSnapshotVector(

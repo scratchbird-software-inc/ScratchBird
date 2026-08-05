@@ -1302,6 +1302,21 @@ sbps::Frame AcquireFrame(
   return frame;
 }
 
+sbps::Frame AcquireNativeFrame(
+    const std::array<std::uint8_t, 16>& session_uuid,
+    std::uint64_t local_transaction_id,
+    const std::array<std::uint8_t, 16>& transaction_uuid,
+    std::uint16_t version,
+    std::uint32_t schema_id) {
+  auto frame = AcquireFrame(session_uuid,
+                            local_transaction_id,
+                            transaction_uuid);
+  frame.header.payload_schema_id = schema_id;
+  frame.payload[0] = static_cast<std::uint8_t>(version);
+  frame.payload[1] = static_cast<std::uint8_t>(version >> 8u);
+  return frame;
+}
+
 void VerifyServerOwnedReceiptAndBoundedParserProjection(
     const Fixture& fixture,
     const api::EngineRequestContext& transaction) {
@@ -1403,6 +1418,74 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
                   parser_context.statement_snapshot_uuid,
           "opaque statement receipt crossed or escaped server ownership");
   const auto private_receipt = statement->second.receipt;
+
+  const auto verify_native_projection =
+      [&](std::uint16_t version,
+          std::uint32_t request_schema_id,
+          std::uint32_t response_schema_id,
+          std::size_t expected_profile_count,
+          std::uint8_t expected_maximum_kind) {
+        const auto projected = server::HandleAcquireStatementContext(
+            &registry,
+            engine_state,
+            AcquireNativeFrame(session_uuid,
+                               server_transaction.local_transaction_id,
+                               transaction_uuid.value.bytes,
+                               version,
+                               request_schema_id));
+        ipc::ParserStatementContext projected_context;
+        const bool decoded =
+            version == 4
+                ? ipc::DecodeAcquireStatementContextResultPayloadV4ForTest(
+                      projected.payload, &projected_context)
+                : ipc::DecodeAcquireStatementContextResultPayloadV5ForTest(
+                      projected.payload, &projected_context);
+        std::array<std::uint16_t, 11> profiles_by_kind{};
+        for (const auto& profile : projected_context.descriptor_profiles) {
+          if (profile.profile_kind < profiles_by_kind.size()) {
+            ++profiles_by_kind[profile.profile_kind];
+          }
+        }
+        bool exact_profile_families = true;
+        for (std::uint8_t kind = 1; kind <= expected_maximum_kind; ++kind) {
+          exact_profile_families =
+              exact_profile_families && profiles_by_kind[kind] == 32;
+        }
+        Require(projected.accepted &&
+                    projected.response_schema_id == response_schema_id &&
+                    decoded &&
+                    projected_context.aggregate_function_profiles.size() ==
+                        43 &&
+                    projected_context.descriptor_profiles.size() ==
+                        expected_profile_count &&
+                    exact_profile_families,
+                "native statement-context descriptor projection drifted");
+        const auto projected_statement =
+            registry.statement_contexts_by_statement_uuid.find(
+                projected_context.statement_uuid);
+        Require(projected_statement !=
+                    registry.statement_contexts_by_statement_uuid.end() &&
+                    bridge::ReleaseStatementContextReceipt(
+                        projected_statement->second.receipt) ==
+                        SB_ENGINE_STATUS_OK,
+                "native projection test receipt cleanup failed");
+        registry.statement_contexts_by_statement_uuid.erase(
+            projected_statement);
+      };
+  verify_native_projection(
+      4,
+      sbps::kSchemaAcquireStatementContextRequestV4,
+      sbps::kSchemaAcquireStatementContextResultV4,
+      192,
+      6);
+  verify_native_projection(
+      5,
+      sbps::kSchemaAcquireStatementContextRequestV5,
+      sbps::kSchemaAcquireStatementContextResultV5,
+      320,
+      10);
+  Require(registry.statement_contexts_by_statement_uuid.size() == 1,
+          "native projection compatibility receipts escaped test cleanup");
 
   auto swapped_uuid = NewTypedUuid(platform::UuidKind::transaction,
                                    fixture.salt + 91).value.bytes;
