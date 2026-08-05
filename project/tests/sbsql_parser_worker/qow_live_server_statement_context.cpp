@@ -433,6 +433,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   boolean_column.descriptor.encoded_descriptor = "type=boolean";
   boolean_column.nullable = true;
   table.table_columns.push_back(std::move(boolean_column));
+  api::EngineColumnDefinition text_column;
+  text_column.ordinal = 4;
+  text_column.names.push_back(PrimaryName("text_value"));
+  text_column.descriptor.descriptor_kind = "scalar";
+  text_column.descriptor.canonical_type_name = "text";
+  text_column.descriptor.encoded_descriptor = "type=text";
+  text_column.nullable = true;
+  table.table_columns.push_back(std::move(text_column));
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
@@ -472,6 +480,12 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     } else {
       boolean_typed.encoded_value = value == 1 ? "true" : "false";
     }
+    api::EngineTypedValue text_typed;
+    text_typed.descriptor.descriptor_kind = "scalar";
+    text_typed.descriptor.canonical_type_name = "text";
+    text_typed.descriptor.encoded_descriptor = "type=text";
+    text_typed.encoded_value =
+        value == 2 ? "beta" : "alpha";
     api::EngineRowValue row;
     row.fields.push_back({"integer_value", std::move(typed)});
     row.fields.push_back({"auxiliary_value", std::move(auxiliary_typed)});
@@ -479,6 +493,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
         {"nullable_order_value", std::move(nullable_order_typed)});
     row.fields.push_back(
         {"nullable_boolean_value", std::move(boolean_typed)});
+    row.fields.push_back({"text_value", std::move(text_typed)});
     insert.input_rows.push_back(std::move(row));
   }
   insert.estimated_row_count = insert.input_rows.size();
@@ -859,6 +874,27 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                     "corr_value=1") != std::string::npos,
             "object-backed pair aggregate did not preserve a repeated "
             "source argument binding");
+
+    static constexpr std::array<AggregateProof, 2>
+        kApproximateAggregateProofs{{
+            {"APPROX_COUNT_DISTINCT(text_value)",
+             "approx_count_distinct_value=2"},
+            {"APPROX_MEDIAN(integer_value)", "approx_median_value=2"},
+        }};
+    for (const auto& proof : kApproximateAggregateProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) + " FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto aggregate = parser.RunPipeline(sql, true);
+      if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      Require(aggregate.accepted &&
+                  aggregate.server_operation_id == "query.execute" &&
+                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_row_count == 1 &&
+                  aggregate.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed approximate aggregate did not execute through "
+              "the complete engine-issued aggregate registry");
+    }
 
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);

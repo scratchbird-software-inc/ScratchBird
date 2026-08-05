@@ -453,7 +453,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-stddev-samp-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-variance-samp-expression.v1") ||
+             "aggregate.global-variance-samp-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-approx-count-distinct-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-approx-median-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||

@@ -33054,7 +33054,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-stddev-samp-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-variance-samp-expression.v1");
+               "aggregate.global-variance-samp-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-approx-count-distinct-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-approx-median-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33897,6 +33901,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool regr_count_aggregate =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-regr-count-");
+      const bool approx_count_distinct_aggregate =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-approx-count-distinct-");
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -33984,6 +33991,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 "aggregate.global-variance-samp-")) {
           return "variance_samp_value";
         }
+        if (approx_count_distinct_aggregate) {
+          return "approx_count_distinct_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-approx-median-")) {
+          return "approx_median_value";
+        }
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-")) {
           return "stddev_value";
@@ -34003,7 +34017,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
-              ((count_aggregate || regr_count_aggregate)
+              ((count_aggregate || regr_count_aggregate ||
+                approx_count_distinct_aggregate)
                    ? BoundNullability::kNonNull
                    : BoundNullability::kNullable) ||
           aggregate_descriptor.collation_uuid.has_value() ||

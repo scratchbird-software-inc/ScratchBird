@@ -304,14 +304,15 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 26> kFunctionNames{
+    static constexpr std::array<std::string_view, 28> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
         "STDDEV_SAMP", "VARIANCE_SAMP", "CORR",     "COVAR_POP",
         "COVAR_SAMP",  "REGR_COUNT",   "REGR_AVGX", "REGR_AVGY",
         "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
-        "REGR_SXY",    "REGR_SYY"};
+        "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
+        "APPROX_MEDIAN"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();

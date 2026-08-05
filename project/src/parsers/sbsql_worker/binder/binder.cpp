@@ -625,7 +625,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-stddev-samp-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-variance-samp-expression.v1"))
+                     "aggregate.global-variance-samp-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-approx-count-distinct-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-approx-median-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -789,6 +793,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "STDDEV_POP" || function == "VARIANCE_POP" ||
           function == "STDDEV" || function == "VARIANCE" ||
           function == "STDDEV_SAMP" || function == "VARIANCE_SAMP" ||
+          function == "APPROX_COUNT_DISTINCT" ||
+          function == "APPROX_MEDIAN" ||
           pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
@@ -1151,6 +1157,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_regr_count =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-regr-count-");
+    const bool aggregate_approx_count_distinct =
+        aggregate_composition &&
+        aggregate_semantic.starts_with(
+            "aggregate.global-approx-count-distinct-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1218,6 +1228,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (aggregate_semantic.starts_with("aggregate.global-variance-samp-")) {
         return std::string("variance_samp_value");
       }
+      if (aggregate_approx_count_distinct) {
+        return std::string("approx_count_distinct_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-approx-median-")) {
+        return std::string("approx_median_value");
+      }
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }
@@ -1238,7 +1254,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           });
       if (descriptor == descriptor_by_id.end() ||
           descriptor->second->nullability !=
-              ((aggregate_count || aggregate_regr_count)
+              ((aggregate_count || aggregate_regr_count ||
+                aggregate_approx_count_distinct)
                    ? BoundNullability::kNonNull
                    : BoundNullability::kNullable) ||
           descriptor->second->collation_uuid.has_value() ||

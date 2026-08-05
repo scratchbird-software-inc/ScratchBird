@@ -805,6 +805,9 @@ BuildEngineProjectedNativeBindingContext(
       const bool stddev_samp_function = function == "STDDEV_SAMP";
       const bool variance_samp_function = function == "VARIANCE_SAMP";
       const bool regr_count_function = function == "REGR_COUNT";
+      const bool approx_count_distinct_function =
+          function == "APPROX_COUNT_DISTINCT";
+      const bool approx_median_function = function == "APPROX_MEDIAN";
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -817,6 +820,7 @@ BuildEngineProjectedNativeBindingContext(
           boolean_function ||
           stddev_pop_function || variance_pop_function || stddev_function ||
           variance_function || stddev_samp_function || variance_samp_function ||
+          approx_count_distinct_function || approx_median_function ||
           pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
@@ -826,7 +830,8 @@ BuildEngineProjectedNativeBindingContext(
       const auto result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind ==
-                       ((count_function || regr_count_function)
+                       ((count_function || regr_count_function ||
+                         approx_count_distinct_function)
                             ? 1
                             : (boolean_function ? 6 : 2)) &&
                    candidate.slot == 0;
@@ -860,9 +865,11 @@ BuildEngineProjectedNativeBindingContext(
            (count_star ? 0 : (pair_function ? 2 : 1))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
-          ((count_function || regr_count_function) &&
+          ((count_function || regr_count_function ||
+            approx_count_distinct_function) &&
            result_profile->nullable) ||
           (expression_function && !regr_count_function &&
+           !approx_count_distinct_function &&
            !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
@@ -960,9 +967,16 @@ BuildEngineProjectedNativeBindingContext(
       } else if (stddev_samp_function) {
         aggregate_output_name = "stddev_samp_value";
         aggregate_semantic = "aggregate.global-stddev-samp-expression.v1";
-      } else {
+      } else if (variance_samp_function) {
         aggregate_output_name = "variance_samp_value";
         aggregate_semantic = "aggregate.global-variance-samp-expression.v1";
+      } else if (approx_count_distinct_function) {
+        aggregate_output_name = "approx_count_distinct_value";
+        aggregate_semantic =
+            "aggregate.global-approx-count-distinct-expression.v1";
+      } else {
+        aggregate_output_name = "approx_median_value";
+        aggregate_semantic = "aggregate.global-approx-median-expression.v1";
       }
     }
     if (limit_composition) {
