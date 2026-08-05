@@ -6299,8 +6299,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       set_base_nodes;
   std::unordered_map<std::uint32_t, LiveSetOperationProfile>
       set_profiles;
-  bool count_star_aggregate = false;
-  bool count_expression_aggregate = false;
+  bool registry_aggregate_composable = false;
   LiveUnaryAggregateExpressionProfile global_aggregate_profile;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
@@ -6471,14 +6470,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         global_aggregate_profile =
             MatchLiveUnaryAggregateExpressionProfile(
                 current->semantic_variant_id);
-        count_star_aggregate = global_aggregate_profile.count_star;
-        count_expression_aggregate =
+        registry_aggregate_composable =
             global_aggregate_profile.matched &&
-            global_aggregate_profile.function ==
-                exec::CanonicalAggregateFunction::count;
+            (global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::count ||
+             global_aggregate_profile.function ==
+                 exec::CanonicalAggregateFunction::sum);
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
-             !count_expression_aggregate) ||
+             !registry_aggregate_composable) ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -7276,6 +7276,124 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           capability_uuid = registry_aggregate_capability_uuid;
           transformation_rule =
               "canonical.aggregate.composed-global-count-expression.v1";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          break;
+        }
+        if (global_aggregate_profile.matched &&
+            global_aggregate_profile.function ==
+                exec::CanonicalAggregateFunction::sum) {
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state,
+              exec::CanonicalAggregateFunction::sum, false,
+              global_aggregate_profile.distinct,
+              global_aggregate_profile.has_filter);
+          if (!prepared.ok || prepared.value_columns.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          if (prepared.filter_column.has_value()) {
+            std::vector<api::EngineSqlTruthValue> materialized_filter;
+            std::string filter_detail;
+            if (!MaterializeAggregateFilterTruthValues(
+                    input_batch, *prepared.filter_column,
+                    prepared.filter_descriptor_id, &materialized_filter,
+                    &filter_detail)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            std::move(filter_detail));
+            }
+            filter_truth_values = std::move(materialized_filter);
+          }
+          std::set<std::string> distinct_values;
+          std::int64_t sum_value = 0;
+          bool has_value = false;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            if (value.descriptor.canonical_type_name != "int64") {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition SUM input is not canonical int64");
+            }
+            if (prepared.distinct) {
+              std::string key = value.encoded_value + ":";
+              key.append(
+                  reinterpret_cast<const char*>(value.binary_value.data()),
+                  value.binary_value.size());
+              if (!distinct_values.insert(std::move(key)).second) continue;
+            }
+            std::int64_t decoded = 0;
+            const auto [end, error] = std::from_chars(
+                value.encoded_value.data(),
+                value.encoded_value.data() + value.encoded_value.size(),
+                decoded);
+            if (error != std::errc{} ||
+                end != value.encoded_value.data() +
+                           value.encoded_value.size() ||
+                (decoded > 0 &&
+                 sum_value >
+                     std::numeric_limits<std::int64_t>::max() - decoded) ||
+                (decoded < 0 &&
+                 sum_value <
+                     std::numeric_limits<std::int64_t>::min() - decoded)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            "composition SUM input or result overflowed");
+            }
+            sum_value += decoded;
+            has_value = true;
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition SUM(DISTINCT) work bound overflowed");
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition SUM work exceeds the admitted bound");
+          }
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue sum;
+          sum.descriptor = prepared.result_column.descriptor;
+          sum.encoded_value = has_value ? std::to_string(sum_value) : "";
+          sum.is_null = !has_value;
+          sum.state = has_value ? api::EngineValueState::value
+                                : api::EngineValueState::sql_null;
+          tuple.values.push_back(std::move(sum));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "SUM planning state: " + canonical.detail
+                    : "SUM planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          transformation_rule =
+              "canonical.aggregate.composed-global-sum-expression.v1";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
           break;

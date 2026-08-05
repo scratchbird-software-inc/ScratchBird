@@ -1925,6 +1925,32 @@ sblr::SblrOperationEnvelope GlobalSumExpressionValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-SUM-EXPRESSION-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenSumExpressionLimitEnvelope() {
+  auto envelope = GlobalSumExpressionValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000c9a0";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000c9a1|"
+       "019f0000-0000-7400-8000-000000009204|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "7", "1|-|3|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "7|0|2|2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|7|-|-|-"});
+  return envelope;
+}
+
 std::string EncodeHex(std::string_view value);
 
 enum class UnaryAggregateKind {
@@ -7700,6 +7726,61 @@ bool ValidateNodeDrivenCountExpressionCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-SUM-EXPRESSION-COMPOSITION-V1
+bool ValidateNodeDrivenSumExpressionCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto first = dispatch(NodeDrivenSumExpressionLimitEnvelope());
+  const auto repeated = dispatch(NodeDrivenSumExpressionLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted &&
+          first.optimizer_selected && first.physical_dag_published &&
+          first.physical_dag_executed && first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 3 &&
+          first.physical_node_count == 3 &&
+          first.canonical_result_column_count == 1 &&
+          first.canonical_result_row_count == 1 &&
+          first.api_result.result_shape.rows.size() == 1 &&
+          first.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "10" &&
+          repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven SUM(expression) composition lost aggregate value, LIMIT "
+      "semantics, or deterministic replay");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 8;
+  const auto exhausted = dispatch(
+      NodeDrivenSumExpressionLimitEnvelope(),
+      std::move(bounded_context));
+  passed &= Require(
+      !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "exhausted node-driven SUM(expression) composition published partial "
+      "evidence");
+  return passed;
+}
+
 // RCP-049-TEST-NODE-DRIVEN-NESTED-EXACT-SET-COMPOSITION-V1
 bool ValidateNodeDrivenNestedExactSetCompositionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
@@ -13245,6 +13326,7 @@ int main() {
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&
                       ValidateNodeDrivenCountExpressionCompositionSpine() &&
+                      ValidateNodeDrivenSumExpressionCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
