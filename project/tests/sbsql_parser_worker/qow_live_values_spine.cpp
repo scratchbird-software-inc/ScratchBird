@@ -1710,6 +1710,41 @@ sblr::SblrOperationEnvelope NodeDrivenExpressionSortLimitValuesEnvelope() {
   return envelope;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-TABLE-SUBQUERY-NONRECURSIVE-CTE-V1
+sblr::SblrOperationEnvelope NodeDrivenTableSubqueryCteLimitValuesEnvelope(
+    const bool materialize_cte) {
+  auto envelope = LimitValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = materialize_cte
+                          ? "019f0000-0000-7000-8000-00000000cf40"
+                          : "019f0000-0000-7000-8000-00000000cf41";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "2") {
+      operand.value = "10|0|1|1|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "2") {
+      operand.value = EncodeHex("subquery.table.v1") + "|-|-|-|-";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_node_v1", "3",
+       materialize_cte ? "11|1|2|1|-" : "11|0|2|1|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       EncodeHex("cte.bound.v1") + "|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|1|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|5|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -14240,6 +14275,70 @@ bool ValidateNodeDrivenExpressionSortLimitCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-TABLE-SUBQUERY-NONRECURSIVE-CTE-V1
+bool ValidateNodeDrivenTableSubqueryCteCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 4 &&
+           result.logical_property_count == 0 &&
+           result.physical_node_count == 4 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 2 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 2;
+  };
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const bool materialize_cte : {false, true}) {
+    const auto first = dispatch(
+        NodeDrivenTableSubqueryCteLimitValuesEnvelope(materialize_cte));
+    const auto repeated = dispatch(
+        NodeDrivenTableSubqueryCteLimitValuesEnvelope(materialize_cte));
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    const auto& rows = first.api_result.result_shape.rows;
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count = 12;
+    const auto exhausted = dispatch(
+        NodeDrivenTableSubqueryCteLimitValuesEnvelope(materialize_cte),
+        std::move(bounded_context));
+    passed &= Require(
+        completed(first) &&
+            rows[0].fields[0].second.encoded_value == "1" &&
+            rows[1].fields[0].second.encoded_value == "2" &&
+            completed(repeated) &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes &&
+            selected_plans.insert(first.selected_plan_uuid).second &&
+            exhausted.accepted && exhausted.optimizer_admitted &&
+            !exhausted.optimizer_selected &&
+            !exhausted.physical_dag_published &&
+            !exhausted.physical_dag_executed &&
+            !exhausted.runtime_actuals_attached &&
+            !exhausted.canonical_result_published &&
+            !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+            exhausted.canonical_result_bytes.empty() &&
+            HasApiDiagnostic(
+                exhausted, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+        std::string("node-driven table subquery with ") +
+            (materialize_cte ? "materialized" : "inline") +
+            " nonrecursive CTE lost typed rows, replay identity, policy "
+            "identity, or atomic resource exhaustion");
+  }
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -14740,6 +14839,7 @@ int main() {
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
                       ValidateNodeDrivenNullCollationSetCompositionSpine() &&
                       ValidateNodeDrivenExpressionSortLimitCompositionSpine() &&
+                      ValidateNodeDrivenTableSubqueryCteCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&

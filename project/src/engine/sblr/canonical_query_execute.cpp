@@ -6652,6 +6652,187 @@ MakeLiveExpressionSortRegistration(
   return registration;
 }
 
+bool BuildOperatorLocalPhysicalDag(
+    const exec::TypedPhysicalNodeDag& dag,
+    const std::uint64_t root_physical_node_id,
+    exec::TypedPhysicalNodeDag* operator_dag,
+    std::string* detail) {
+  if (operator_dag == nullptr || detail == nullptr ||
+      root_physical_node_id == 0) {
+    if (detail != nullptr) {
+      *detail = "operator-local physical DAG request is incomplete";
+    }
+    return false;
+  }
+  std::unordered_set<std::uint64_t> retained;
+  std::vector<std::uint64_t> pending{root_physical_node_id};
+  while (!pending.empty()) {
+    const auto physical_node_id = pending.back();
+    pending.pop_back();
+    if (!retained.insert(physical_node_id).second) continue;
+    const auto found = std::ranges::find_if(
+        dag.nodes, [&](const auto& candidate) {
+          return candidate.physical_node_id == physical_node_id;
+        });
+    if (found == dag.nodes.end()) {
+      *operator_dag = {};
+      *detail = "operator-local physical DAG input is unresolved";
+      return false;
+    }
+    pending.insert(pending.end(), found->input_physical_node_ids.begin(),
+                   found->input_physical_node_ids.end());
+  }
+  *operator_dag = dag;
+  std::erase_if(operator_dag->nodes, [&](const auto& candidate) {
+    return !retained.contains(candidate.physical_node_id);
+  });
+  operator_dag->root_physical_node_id = root_physical_node_id;
+  detail->clear();
+  return true;
+}
+
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveTableSubqueryRegistration(
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSubquery;
+  registration.implementation_id =
+      "subquery.table.materialize.typed.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [maximum_input_row_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail =
+              "table subquery did not receive its bounded typed input";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SUBQUERY-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+        exec::CanonicalTableSubqueryRequest subquery_request;
+        subquery_request.physical_dag = std::move(operator_dag);
+        subquery_request.selected_physical_node_id = node.physical_node_id;
+        subquery_request.input_batch =
+            *inputs.front().materialized_output_batch;
+        subquery_request.maximum_materialized_row_count =
+            std::max<std::size_t>(1, maximum_input_row_count);
+        subquery_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, subquery_request.physical_dag);
+        const auto materialized =
+            exec::ExecuteCanonicalTableSubquery(subquery_request);
+        if (!materialized.diagnostic.ok) {
+          step.diagnostic = materialized.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = subquery_request.input_batch.rows.size();
+        step.rows_examined = subquery_request.input_batch.rows.size();
+        step.output_row_count = materialized.output_batch.rows.size();
+        step.materialized_output_batch = materialized.output_batch;
+        step.mga_statement_context = materialized.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration MakeLiveNonrecursiveCteRegistration(
+    std::string implementation_id,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kCte;
+  registration.implementation_id = std::move(implementation_id);
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [maximum_input_row_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count ||
+            node.output_descriptor_ids != inputs.front().output_descriptor_ids) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "nonrecursive CTE did not receive its exact typed input";
+          return step;
+        }
+        const auto authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto before =
+            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+        if (!before.ok) {
+          step.diagnostic = before;
+          return step;
+        }
+        exec::DescriptorBatch output =
+            *inputs.front().materialized_output_batch;
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            output, node.output_descriptor_ids);
+        if (!validated.ok) {
+          step.diagnostic = validated;
+          return step;
+        }
+        const auto after =
+            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+        if (!after.ok) {
+          step.diagnostic = after;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = output.rows.size();
+        step.rows_examined = output.rows.size();
+        step.output_row_count = output.rows.size();
+        step.materialized_output_batch = std::move(output);
+        step.mga_statement_context = authority.statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -7035,6 +7216,22 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           return result;
         }
         break;
+      case plan::CanonicalLogicalRelationalNodeKind::kSubquery:
+        if (current->semantic_variant_id != "subquery.table.v1" ||
+            !current->bound_expression_ids.empty() ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
+      case plan::CanonicalLogicalRelationalNodeKind::kCte:
+        if (current->semantic_variant_id != "cte.bound.v1" ||
+            !current->bound_expression_ids.empty() ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
       case plan::CanonicalLogicalRelationalNodeKind::kLimit:
         if ((current->semantic_variant_id != "limit.bound-count.v1" &&
              current->semantic_variant_id !=
@@ -7126,6 +7323,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<PreparedSortRoot> prepared_sort;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
+  bool prepared_table_subquery = false;
+  std::size_t table_subquery_input_row_count = 0;
+  bool prepared_nonrecursive_cte = false;
+  std::size_t nonrecursive_cte_input_row_count = 0;
+  std::string nonrecursive_cte_implementation_id;
   std::optional<PreparedLimitRoot> prepared_limit;
   std::size_t limit_input_row_count = 0;
   std::uint64_t row_limit = 0;
@@ -7164,6 +7366,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       identity_scope, "composition.grouped-aggregate.capability");
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
+  const auto subquery_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "composition.subquery.capability");
+  const auto cte_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.cte.capability");
   const auto limit_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.limit.capability");
 
@@ -9397,6 +9603,72 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             plan::CanonicalLogicalPropertyKind::kOrdering};
         break;
       }
+      case plan::CanonicalLogicalRelationalNodeKind::kSubquery: {
+        if (node.output_descriptor_ids != input_node.output_descriptor_ids ||
+            state.result_bindings.size() != input_batch.columns.size()) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "table subquery does not preserve its bound input schema");
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, node.output_descriptor_ids);
+        if (!validated.ok) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "table subquery input: " + validated.detail);
+        }
+        const auto materialization_work =
+            std::max<std::size_t>(1, input_row_count);
+        if (!add_work(materialization_work)) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition table subquery materialization exhausted its "
+              "admitted bound");
+        }
+        prepared_table_subquery = true;
+        table_subquery_input_row_count = input_row_count;
+        auxiliary_memory = input_memory;
+        implementation_id = "subquery.table.materialize.typed.v1";
+        capability_uuid = subquery_capability_uuid;
+        transformation_rule =
+            "canonical.subquery.composed-table-materialize.v1";
+        physical_kind = exec::PhysicalNodeKind::kSubquery;
+        break;
+      }
+      case plan::CanonicalLogicalRelationalNodeKind::kCte: {
+        if (node.output_descriptor_ids != input_node.output_descriptor_ids ||
+            state.result_bindings.size() != input_batch.columns.size()) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              "nonrecursive CTE does not preserve its bound input schema");
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, node.output_descriptor_ids);
+        if (!validated.ok) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "nonrecursive CTE input: " + validated.detail);
+        }
+        const auto carriage_work =
+            std::max<std::size_t>(1, input_row_count);
+        if (!add_work(carriage_work)) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition nonrecursive CTE carriage exhausted its "
+              "admitted bound");
+        }
+        prepared_nonrecursive_cte = true;
+        nonrecursive_cte_input_row_count = input_row_count;
+        auxiliary_memory = node.shareable ? input_memory : 0;
+        nonrecursive_cte_implementation_id =
+            node.shareable ? "cte.bound.materialize.typed.v1"
+                           : "cte.bound.inline.typed.v1";
+        implementation_id = nonrecursive_cte_implementation_id;
+        capability_uuid = cte_capability_uuid;
+        transformation_rule =
+            node.shareable ? "canonical.cte.composed-materialize.v1"
+                           : "canonical.cte.composed-inline.v1";
+        physical_kind = exec::PhysicalNodeKind::kCte;
+        break;
+      }
       case plan::CanonicalLogicalRelationalNodeKind::kLimit: {
         auto prepared = PrepareLimitRoot(request.relational_dag, node,
                                          input_node, state);
@@ -9612,6 +9884,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               sort_input_row_count, sort_comparison_bound,
               request.context));
     }
+  }
+  if (prepared_table_subquery) {
+    execution_request.available_executors.push_back(
+        MakeLiveTableSubqueryRegistration(
+            subquery_capability_uuid, table_subquery_input_row_count,
+            request.context));
+  }
+  if (prepared_nonrecursive_cte) {
+    execution_request.available_executors.push_back(
+        MakeLiveNonrecursiveCteRegistration(
+            nonrecursive_cte_implementation_id, cte_capability_uuid,
+            nonrecursive_cte_input_row_count, request.context));
   }
   if (prepared_limit.has_value()) {
     execution_request.available_executors.push_back(
