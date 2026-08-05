@@ -6146,10 +6146,19 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   }
   const bool has_limit =
       root->node_kind == plan::CanonicalLogicalRelationalNodeKind::kLimit;
+  const bool fetch_first_rows_only =
+      has_limit &&
+      root->semantic_variant_id == "fetch.first-rows-only-offset.v1";
+  const bool has_offset =
+      has_limit && root->bound_expression_ids.size() == 2;
   if (has_limit &&
-      (root->semantic_variant_id != "limit.bound-count.v1" ||
+      ((root->semantic_variant_id != "limit.bound-count.v1" &&
+        root->semantic_variant_id != "limit.bound-count-offset.v1" &&
+        !fetch_first_rows_only) ||
        root->input_logical_node_ids.size() != 1 ||
-       root->bound_expression_ids.size() != 1)) {
+       (root->semantic_variant_id == "limit.bound-count.v1"
+            ? root->bound_expression_ids.size() != 1
+            : root->bound_expression_ids.size() != 2))) {
     return result;
   }
   const auto sort_node =
@@ -6172,6 +6181,9 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
        sort_input_node->semantic_variant_id !=
            "aggregate.query-distinct.v1" ||
        sort_input_node->input_logical_node_ids.size() != 1)) {
+    return result;
+  }
+  if (has_offset && !has_distinct) {
     return result;
   }
   if ((has_limit && !has_sort) ||
@@ -6402,6 +6414,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
     }
   }
   std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
   if (has_limit) {
     prepared_limit = PrepareLimitRoot(
         request.relational_dag, *root, *sort_node, projected_input);
@@ -6411,9 +6424,13 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
     std::string bound_detail;
     if (!EvaluateNonNegativeRowBound(
             &expression_runtime, root->bound_expression_ids.front(),
-            &row_limit, &bound_detail)) {
+            &row_limit, &bound_detail) ||
+        (has_offset &&
+         !EvaluateNonNegativeRowBound(
+             &expression_runtime, root->bound_expression_ids[1],
+             &row_offset, &bound_detail))) {
       return refuse(std::string(kPayloadDiagnostic),
-                    "LIMIT bound: " + bound_detail);
+                    "LIMIT/FETCH bound: " + bound_detail);
     }
   }
   const auto filtered_row_count = filtered_input.batch.rows.size();
@@ -6532,10 +6549,15 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
                         "memory budget");
   }
 
+  const auto offset_bound =
+      row_offset > filtered_row_count
+          ? filtered_row_count
+          : static_cast<std::size_t>(row_offset);
+  const auto remaining_bound = filtered_row_count - offset_bound;
   const auto output_row_bound =
       has_limit
-          ? (row_limit > filtered_row_count
-                 ? filtered_row_count
+          ? (row_limit > remaining_bound
+                 ? remaining_bound
                  : static_cast<std::size_t>(row_limit))
           : filtered_row_count;
 
@@ -6553,8 +6575,11 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
       DerivedCanonicalUuid(identity_scope, "distinct.capability");
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto limit_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "limit.capability");
+  const auto limit_capability_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      fetch_first_rows_only
+          ? "fetch.capability"
+          : (has_offset ? "limit-offset.capability" : "limit.capability"));
   const auto deterministic_tie_evidence_uuid =
       has_sort
           ? DerivedCanonicalUuid(
@@ -6565,13 +6590,30 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
                     : "inner-join-filter-project-sort.deterministic-tie")
           : std::string{};
   const std::string operation_name =
-      has_distinct ? "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/LIMIT"
-                   : (has_limit
-                          ? "INNER JOIN/FILTER/PROJECT/SORT/LIMIT"
-                          : (has_sort ? "INNER JOIN/FILTER/PROJECT/SORT"
-                                      : "INNER JOIN/FILTER/PROJECT"));
+      fetch_first_rows_only
+          ? "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/FETCH"
+          : (has_offset
+                 ? "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/LIMIT/OFFSET"
+                 : (has_distinct
+                        ? "INNER JOIN/FILTER/PROJECT/DISTINCT/SORT/LIMIT"
+                        : (has_limit
+                               ? "INNER JOIN/FILTER/PROJECT/SORT/LIMIT"
+                               : (has_sort
+                                      ? "INNER JOIN/FILTER/PROJECT/SORT"
+                                      : "INNER JOIN/FILTER/PROJECT"))));
   constexpr std::string_view kJoinImplementationId =
       "join.inner.3vl.nested.v1";
+  const std::string limit_implementation_id =
+      fetch_first_rows_only ? "fetch.native.rows-only.v1"
+                            : "limit.typed.v1";
+  const std::string limit_semantic_id =
+      fetch_first_rows_only
+          ? "canonical.fetch.first-rows-only-offset.filtered-projected-"
+            "distinct-joined-order.v1"
+          : (has_offset
+                 ? "canonical.limit.bound-count-offset.filtered-projected-"
+                   "distinct-joined-order.v1"
+                 : "canonical.limit.filtered-projected-joined-order.v1");
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& node : graph.nodes) {
     if (node.logical_node_id == left_node->logical_node_id) {
@@ -6626,21 +6668,30 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
            {plan::CanonicalLogicalPropertyKind::kOrdering}});
     } else {
       profiles.push_back(
-          {node.logical_node_id, "limit.typed.v1", limit_capability_uuid,
-           node.node_kind, exec::PhysicalNodeKind::kLimit,
-           "canonical.limit.filtered-projected-joined-order.v1",
+          {node.logical_node_id, limit_implementation_id,
+           limit_capability_uuid, node.node_kind,
+           exec::PhysicalNodeKind::kLimit, limit_semantic_id,
            output_row_bound, limit_memory, 1, 1});
     }
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
       request, profiles,
-      has_distinct
-          ? "inner-join-filter-project-distinct-sort-limit.selected-plan"
-          : (has_limit
-                 ? "inner-join-filter-project-sort-limit.selected-plan"
-                 : (has_sort
-                        ? "inner-join-filter-project-sort.selected-plan"
-                        : "inner-join-filter-project.selected-plan")),
+      fetch_first_rows_only
+          ? "inner-join-filter-project-distinct-sort-fetch.selected-plan"
+          : (has_offset
+                 ? "inner-join-filter-project-distinct-sort-limit-offset."
+                   "selected-plan"
+                 : (has_distinct
+                        ? "inner-join-filter-project-distinct-sort-limit."
+                          "selected-plan"
+                        : (has_limit
+                               ? "inner-join-filter-project-sort-limit."
+                                 "selected-plan"
+                               : (has_sort
+                                      ? "inner-join-filter-project-sort."
+                                        "selected-plan"
+                                      : "inner-join-filter-project."
+                                        "selected-plan")))),
       operation_name);
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
   result.optimizer_selected = true;
@@ -6703,8 +6754,9 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   if (has_limit) {
     execution_request.available_executors.push_back(
         MakeLiveLimitRegistration(
-            "limit.typed.v1", limit_capability_uuid, row_limit, 0, false,
-            filtered_row_count, request.context));
+            limit_implementation_id, limit_capability_uuid, row_limit,
+            row_offset, fetch_first_rows_only, filtered_row_count,
+            request.context));
   }
   execution_request.engine_execution_authorized = true;
   execution_request.result_publication_request.statement_uuid =
@@ -6712,32 +6764,46 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
-          has_distinct
-              ? "inner-join-filter-project-distinct-sort-limit."
+          fetch_first_rows_only
+              ? "inner-join-filter-project-distinct-sort-fetch."
                 "execution-attempt"
-              : (has_limit
-                     ? "inner-join-filter-project-sort-limit.execution-attempt"
-                     : (has_sort
-                            ? "inner-join-filter-project-sort."
+              : (has_offset
+                     ? "inner-join-filter-project-distinct-sort-limit-offset."
+                       "execution-attempt"
+                     : (has_distinct
+                            ? "inner-join-filter-project-distinct-sort-limit."
                               "execution-attempt"
-                            : "inner-join-filter-project.execution-attempt")));
+                            : (has_limit
+                                   ? "inner-join-filter-project-sort-limit."
+                                     "execution-attempt"
+                                   : (has_sort
+                                          ? "inner-join-filter-project-sort."
+                                            "execution-attempt"
+                                          : "inner-join-filter-project."
+                                            "execution-attempt")))));
   execution_request.result_publication_request
       .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" +
           std::to_string(request.context.local_transaction_id) + ":" +
           std::to_string(
               request.context.snapshot_visible_through_local_transaction_id),
-      has_distinct
-          ? "inner-join-filter-project-distinct-sort-limit."
+      fetch_first_rows_only
+          ? "inner-join-filter-project-distinct-sort-fetch."
             "transaction-effect-unchanged"
-          : (has_limit
-                 ? "inner-join-filter-project-sort-limit."
+          : (has_offset
+                 ? "inner-join-filter-project-distinct-sort-limit-offset."
                    "transaction-effect-unchanged"
-                 : (has_sort
-                        ? "inner-join-filter-project-sort."
+                 : (has_distinct
+                        ? "inner-join-filter-project-distinct-sort-limit."
                           "transaction-effect-unchanged"
-                        : "inner-join-filter-project."
-                          "transaction-effect-unchanged")));
+                        : (has_limit
+                               ? "inner-join-filter-project-sort-limit."
+                                 "transaction-effect-unchanged"
+                               : (has_sort
+                                      ? "inner-join-filter-project-sort."
+                                        "transaction-effect-unchanged"
+                                      : "inner-join-filter-project."
+                                        "transaction-effect-unchanged")))));
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
