@@ -2881,12 +2881,20 @@ SessionOperationResult HandleAcquireStatementContext(
   SessionOperationResult result;
   result.response_message_type = static_cast<std::uint16_t>(
       sbps::MessageType::kAcquireStatementContextResult);
-  const bool native_projection =
+  const bool native_projection_v2 =
       request.header.payload_schema_id ==
           sbps::kSchemaAcquireStatementContextRequestV2;
-  result.response_schema_id = native_projection
-                                  ? sbps::kSchemaAcquireStatementContextResultV2
-                                  : sbps::kSchemaAcquireStatementContextResultV1;
+  const bool native_projection_v3 =
+      request.header.payload_schema_id ==
+          sbps::kSchemaAcquireStatementContextRequestV3;
+  const bool native_projection =
+      native_projection_v2 || native_projection_v3;
+  result.response_schema_id =
+      native_projection_v3
+          ? sbps::kSchemaAcquireStatementContextResultV3
+          : (native_projection_v2
+                 ? sbps::kSchemaAcquireStatementContextResultV2
+                 : sbps::kSchemaAcquireStatementContextResultV1);
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
   result.session_uuid = request.header.session_uuid;
   const auto refuse = [&](std::string code, std::string detail) {
@@ -2906,7 +2914,8 @@ SessionOperationResult HandleAcquireStatementContext(
            sbps::kSchemaAcquireStatementContextRequestV1 &&
        !native_projection) ||
       request.payload.size() != kRequestBytes ||
-      GetU16(request.payload, 0) != (native_projection ? 2 : 1)) {
+      GetU16(request.payload, 0) !=
+          (native_projection_v3 ? 3 : (native_projection_v2 ? 2 : 1))) {
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_REQUEST_INVALID",
                   "schema_version_or_size_invalid");
   }
@@ -3014,7 +3023,8 @@ SessionOperationResult HandleAcquireStatementContext(
     }
   }
 
-  PutU16(&result.payload, native_projection ? 2 : 1);
+  PutU16(&result.payload,
+         native_projection_v3 ? 3 : (native_projection_v2 ? 2 : 1));
   result.payload.push_back(1);
   PutUuid(&result.payload, TextToUuid(view.statement_uuid));
   PutU64(&result.payload, view.owning_local_transaction_id);
@@ -3029,6 +3039,11 @@ SessionOperationResult HandleAcquireStatementContext(
     PutUuid(&result.payload, TextToUuid(view.bound_ast_uuid));
     PutUuid(&result.payload, TextToUuid(view.count_function_uuid));
     PutUuid(&result.payload, TextToUuid(view.sum_function_uuid));
+    if (native_projection_v3) {
+      PutUuid(&result.payload, TextToUuid(view.avg_function_uuid));
+      PutUuid(&result.payload, TextToUuid(view.min_function_uuid));
+      PutUuid(&result.payload, TextToUuid(view.max_function_uuid));
+    }
     PutU16(&result.payload,
            static_cast<std::uint16_t>(view.descriptor_profiles.size()));
     for (const auto& profile : view.descriptor_profiles) {

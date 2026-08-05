@@ -577,7 +577,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-count-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-sum-expression.v1"))
+                     "aggregate.global-sum-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-avg-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-min-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-max-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -724,16 +730,22 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               : ToUpperAscii(expression->operator_name);
       const bool count_function = function == "COUNT";
       const bool sum_function = function == "SUM";
+      const bool avg_function = function == "AVG";
+      const bool min_function = function == "MIN";
+      const bool max_function = function == "MAX";
+      const bool expression_function =
+          sum_function || avg_function || min_function || max_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
-          (!count_function && !sum_function) ||
+          (!count_function && !expression_function) ||
           expression->child_expression_ids.size() > 1 ||
-          (sum_function && expression->child_expression_ids.size() != 1) ||
+          (expression_function &&
+           expression->child_expression_ids.size() != 1) ||
           expression->literal_kind.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog global aggregate requires exact COUNT or SUM binding");
+            "catalog global aggregate requires exact COUNT, SUM, AVG, MIN, or MAX binding");
         return RefusedBoundAst(std::move(bound));
       }
       if (!expression->child_expression_ids.empty()) {
@@ -1075,12 +1087,26 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const NativeDescriptorBindingInput* aggregate_descriptor = nullptr;
     const NativeExpressionBindingInput* aggregate_expression_binding = nullptr;
     std::optional<std::uint32_t> aggregate_argument_expression_id;
+    const std::string_view aggregate_semantic =
+        aggregate_composition
+            ? std::string_view(context.relations.front().semantic_variant_id)
+            : std::string_view{};
     const bool aggregate_count =
         aggregate_composition &&
-        context.relations.front().semantic_variant_id.starts_with(
-            "aggregate.global-count-");
-    const std::string aggregate_output_name =
-        aggregate_count ? "row_count" : "total_amount";
+        aggregate_semantic.starts_with("aggregate.global-count-");
+    const std::string aggregate_output_name = [&]() {
+      if (aggregate_count) return std::string("row_count");
+      if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
+        return std::string("average_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-min-")) {
+        return std::string("minimum_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-max-")) {
+        return std::string("maximum_value");
+      }
+      return std::string("total_amount");
+    }();
     if (aggregate_composition) {
       const auto expected_aggregate_descriptor_id =
           static_cast<std::uint32_t>(relation_binding.columns.size() + 1);
@@ -1104,7 +1130,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           expression->bound_name_uuid.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog global COUNT(*) binding is incomplete");
+            "catalog global aggregate binding is incomplete");
         return RefusedBoundAst(std::move(bound));
       }
       aggregate_descriptor = descriptor->second;

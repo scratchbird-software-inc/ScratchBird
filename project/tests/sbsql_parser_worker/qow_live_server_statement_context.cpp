@@ -701,6 +701,47 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed WHERE/SUM composition did not aggregate only the "
             "visible filtered heap rows");
 
+    auto object_backed_avg = parser.RunPipeline(
+        "SELECT AVG(integer_value) FROM qow_packet7.qow_packet7_relation;",
+        true);
+    if (!object_backed_avg.accepted) PrintMessages(object_backed_avg.messages);
+    Require(object_backed_avg.accepted &&
+                object_backed_avg.server_operation_id == "query.execute" &&
+                object_backed_avg.server_cursor_uuid.empty() &&
+                object_backed_avg.server_row_count == 1 &&
+                object_backed_avg.server_result_payload.find(
+                    "average_value=2") != std::string::npos,
+            "object-backed AVG(expression) did not execute through the "
+            "engine-issued canonical aggregate registry");
+
+    auto object_backed_min = parser.RunPipeline(
+        "SELECT MIN(nullable_order_value) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!object_backed_min.accepted) PrintMessages(object_backed_min.messages);
+    Require(object_backed_min.accepted &&
+                object_backed_min.server_operation_id == "query.execute" &&
+                object_backed_min.server_cursor_uuid.empty() &&
+                object_backed_min.server_row_count == 1 &&
+                object_backed_min.server_result_payload.find(
+                    "minimum_value=10") != std::string::npos,
+            "object-backed MIN(expression) did not ignore NULL and retain the "
+            "least visible persisted value");
+
+    auto object_backed_max = parser.RunPipeline(
+        "SELECT MAX(nullable_order_value) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!object_backed_max.accepted) PrintMessages(object_backed_max.messages);
+    Require(object_backed_max.accepted &&
+                object_backed_max.server_operation_id == "query.execute" &&
+                object_backed_max.server_cursor_uuid.empty() &&
+                object_backed_max.server_row_count == 1 &&
+                object_backed_max.server_result_payload.find(
+                    "maximum_value=20") != std::string::npos,
+            "object-backed MAX(expression) did not ignore NULL and retain the "
+            "greatest visible persisted value");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

@@ -87,6 +87,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV1 = 7011;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV1 = 7012;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV2 = 7013;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV2 = 7014;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV3 = 7015;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV3 = 7016;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -858,6 +860,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV2(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV3(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 3;
+  return out;
+}
+
 bool DecodeAcquireStatementContextPayloadV1(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
@@ -906,14 +916,17 @@ bool DecodeAcquireStatementContextPayloadV1(
   return true;
 }
 
-bool DecodeAcquireStatementContextPayloadV2(
+bool DecodeAcquireStatementContextPayloadNative(
     const std::vector<std::uint8_t>& payload,
+    const std::uint16_t expected_version,
+    const bool extended_aggregate_registry,
     ParserStatementContext* context) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
-  constexpr std::size_t kNativePrefixBytes = 3 * 16 + 2;
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
-  if (context == nullptr || payload.size() < kBaseBytes + kNativePrefixBytes ||
-      GetU16(payload, 0) != 2 || payload[2] != 1) {
+  const std::size_t native_prefix_bytes =
+      (extended_aggregate_registry ? 6U : 3U) * 16U + 2U;
+  if (context == nullptr || payload.size() < kBaseBytes + native_prefix_bytes ||
+      GetU16(payload, 0) != expected_version || payload[2] != 1) {
     return false;
   }
 
@@ -930,10 +943,25 @@ bool DecodeAcquireStatementContextPayloadV2(
   offset += 16;
   const auto sum_function_uuid = GetUuid(payload, offset);
   offset += 16;
+  std::array<std::uint8_t, 16> avg_function_uuid{};
+  std::array<std::uint8_t, 16> min_function_uuid{};
+  std::array<std::uint8_t, 16> max_function_uuid{};
+  if (extended_aggregate_registry) {
+    avg_function_uuid = GetUuid(payload, offset);
+    offset += 16;
+    min_function_uuid = GetUuid(payload, offset);
+    offset += 16;
+    max_function_uuid = GetUuid(payload, offset);
+    offset += 16;
+  }
   const auto profile_count = GetU16(payload, offset);
   offset += 2;
   if (!UuidPresent(bound_ast_uuid) || !UuidPresent(count_function_uuid) ||
-      !UuidPresent(sum_function_uuid) || profile_count == 0 ||
+      !UuidPresent(sum_function_uuid) ||
+      (extended_aggregate_registry &&
+       (!UuidPresent(avg_function_uuid) || !UuidPresent(min_function_uuid) ||
+        !UuidPresent(max_function_uuid))) ||
+      profile_count == 0 ||
       profile_count > 192 ||
       payload.size() != offset +
                             static_cast<std::size_t>(profile_count) *
@@ -984,8 +1012,27 @@ bool DecodeAcquireStatementContextPayloadV2(
   decoded.bound_ast_uuid = UuidToText(bound_ast_uuid);
   decoded.count_function_uuid = UuidToText(count_function_uuid);
   decoded.sum_function_uuid = UuidToText(sum_function_uuid);
+  if (extended_aggregate_registry) {
+    decoded.avg_function_uuid = UuidToText(avg_function_uuid);
+    decoded.min_function_uuid = UuidToText(min_function_uuid);
+    decoded.max_function_uuid = UuidToText(max_function_uuid);
+  }
   *context = std::move(decoded);
   return true;
+}
+
+bool DecodeAcquireStatementContextPayloadV2(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 2, false,
+                                                     context);
+}
+
+bool DecodeAcquireStatementContextPayloadV3(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 3, true,
+                                                     context);
 }
 
 bool IsCanonicalNonzeroUuidText(std::string_view text) {
@@ -4102,10 +4149,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV2,
+                     kSchemaAcquireStatementContextRequestV3,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV2(session, transaction),
+          EncodeAcquireStatementContextPayloadV3(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4114,19 +4161,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV2 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV3 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V2 result schema.");
+          "The server did not return the native statement-context V3 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV2(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV3(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||

@@ -312,7 +312,10 @@ class NativeRelationalParser final {
       ++cursor;
     } else if (cursor + 3 < tokens_.size() &&
                (IsWord(*tokens_[cursor], "COUNT") ||
-                IsWord(*tokens_[cursor], "SUM")) &&
+                IsWord(*tokens_[cursor], "SUM") ||
+                IsWord(*tokens_[cursor], "AVG") ||
+                IsWord(*tokens_[cursor], "MIN") ||
+                IsWord(*tokens_[cursor], "MAX")) &&
                tokens_[cursor + 1]->text == "(" &&
                (tokens_[cursor + 2]->text == "*" ||
                 tokens_[cursor + 2]->kind == TokenKind::kIdentifier) &&
@@ -350,7 +353,9 @@ class NativeRelationalParser final {
     std::string global_aggregate_function;
     const bool global_aggregate =
         !AtEnd() &&
-        (IsWord(Current(), "COUNT") || IsWord(Current(), "SUM"));
+        (IsWord(Current(), "COUNT") || IsWord(Current(), "SUM") ||
+         IsWord(Current(), "AVG") || IsWord(Current(), "MIN") ||
+         IsWord(Current(), "MAX"));
     bool global_count_star = false;
     if (global_aggregate) {
       const Token& function_token = Consume();

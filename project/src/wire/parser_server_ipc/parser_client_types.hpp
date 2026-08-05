@@ -101,6 +101,9 @@ struct ParserStatementContext {
   std::string bound_ast_uuid;
   std::string count_function_uuid;
   std::string sum_function_uuid;
+  std::string avg_function_uuid;
+  std::string min_function_uuid;
+  std::string max_function_uuid;
   std::vector<DescriptorProfile> descriptor_profiles;
 
   [[nodiscard]] bool complete() const {

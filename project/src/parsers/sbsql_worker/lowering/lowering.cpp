@@ -33006,7 +33006,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-count-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-sum-expression.v1");
+               "aggregate.global-sum-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-avg-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-min-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-max-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33839,9 +33845,22 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool count_star =
           aggregate_relation->semantic_variant_id ==
           "aggregate.global-count-star.v1";
-      const auto expected_output_name =
-          count_aggregate ? std::string_view("row_count")
-                          : std::string_view("total_amount");
+      const auto expected_output_name = [&]() -> std::string_view {
+        if (count_aggregate) return "row_count";
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-avg-")) {
+          return "average_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-min-")) {
+          return "minimum_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-max-")) {
+          return "maximum_value";
+        }
+        return "total_amount";
+      }();
       if (aggregate_expression == expressions_by_id.end() ||
           aggregate_expression->second->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||

@@ -2342,8 +2342,20 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto* sum_registry_entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           scratchbird::engine::executor::CanonicalAggregateFunction::sum);
+  const auto* avg_registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::avg);
+  const auto* min_registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::min);
+  const auto* max_registry_entry =
+      scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
+          scratchbird::engine::executor::CanonicalAggregateFunction::max);
   if (count_registry_entry == nullptr || sum_registry_entry == nullptr ||
-      !count_registry_entry->executable || !sum_registry_entry->executable) {
+      avg_registry_entry == nullptr || min_registry_entry == nullptr ||
+      max_registry_entry == nullptr || !count_registry_entry->executable ||
+      !sum_registry_entry->executable || !avg_registry_entry->executable ||
+      !min_registry_entry->executable || !max_registry_entry->executable) {
     scratchbird::transaction::mga::RevokePublishedSnapshotVector(
         snapshot.snapshot_uuid);
     return fail_result(
@@ -2355,6 +2367,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   view.count_function_uuid = count_registry_entry->function_uuid;
   view.sum_function_uuid = sum_registry_entry->function_uuid;
+  view.avg_function_uuid = avg_registry_entry->function_uuid;
+  view.min_function_uuid = min_registry_entry->function_uuid;
+  view.max_function_uuid = max_registry_entry->function_uuid;
 
   std::string numeric_type_uuid;
   std::string text_type_uuid;

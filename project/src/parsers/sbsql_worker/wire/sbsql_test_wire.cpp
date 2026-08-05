@@ -385,6 +385,9 @@ BuildEngineProjectedNativeBindingContext(
       statement_context.bound_ast_uuid.empty() ||
       statement_context.count_function_uuid.empty() ||
       statement_context.sum_function_uuid.empty() ||
+      statement_context.avg_function_uuid.empty() ||
+      statement_context.min_function_uuid.empty() ||
+      statement_context.max_function_uuid.empty() ||
       statement_context.descriptor_profiles.empty()) {
     return fail("incomplete_statement_context");
   }
@@ -764,6 +767,26 @@ BuildEngineProjectedNativeBindingContext(
               : ToUpperAscii(aggregate_expression->operator_name);
       const bool count_function = function == "COUNT";
       const bool sum_function = function == "SUM";
+      const bool avg_function = function == "AVG";
+      const bool min_function = function == "MIN";
+      const bool max_function = function == "MAX";
+      const bool expression_function =
+          sum_function || avg_function || min_function || max_function;
+      const std::string_view aggregate_function_uuid = [&]() {
+        if (count_function) {
+          return std::string_view(statement_context.count_function_uuid);
+        }
+        if (sum_function) {
+          return std::string_view(statement_context.sum_function_uuid);
+        }
+        if (avg_function) {
+          return std::string_view(statement_context.avg_function_uuid);
+        }
+        if (min_function) {
+          return std::string_view(statement_context.min_function_uuid);
+        }
+        return std::string_view(statement_context.max_function_uuid);
+      }();
       const bool count_star = count_function &&
                               aggregate_expression != ast.expressions.end() &&
                               aggregate_expression->child_expression_ids.empty();
@@ -796,19 +819,16 @@ BuildEngineProjectedNativeBindingContext(
       if (aggregate_expression == ast.expressions.end() ||
           aggregate_expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
-          (!count_function && !sum_function) ||
+          (!count_function && !expression_function) ||
           (aggregate_expression->child_expression_ids.size() !=
            (count_star ? 0 : 1)) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           (count_function && result_profile->nullable) ||
-          (sum_function && !result_profile->nullable) ||
+          (expression_function && !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
-          !CanonicalUuidBytes(count_function
-                                  ? statement_context.count_function_uuid
-                                  : statement_context.sum_function_uuid)
-               .has_value()) {
+          !CanonicalUuidBytes(aggregate_function_uuid).has_value()) {
         return fail("catalog_global_aggregate_profile_unavailable");
       }
       aggregate_binding_id =
@@ -823,15 +843,26 @@ BuildEngineProjectedNativeBindingContext(
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
           {*aggregate_binding_id, *aggregate_binding_id,
-           count_function ? statement_context.count_function_uuid
-                          : statement_context.sum_function_uuid,
+           std::string(aggregate_function_uuid),
            std::nullopt});
-      aggregate_output_name = count_function ? "row_count" : "total_amount";
-      aggregate_semantic =
-          count_function
-              ? (count_star ? "aggregate.global-count-star.v1"
-                            : "aggregate.global-count-expression.v1")
-              : "aggregate.global-sum-expression.v1";
+      if (count_function) {
+        aggregate_output_name = "row_count";
+        aggregate_semantic = count_star
+                                 ? "aggregate.global-count-star.v1"
+                                 : "aggregate.global-count-expression.v1";
+      } else if (sum_function) {
+        aggregate_output_name = "total_amount";
+        aggregate_semantic = "aggregate.global-sum-expression.v1";
+      } else if (avg_function) {
+        aggregate_output_name = "average_value";
+        aggregate_semantic = "aggregate.global-avg-expression.v1";
+      } else if (min_function) {
+        aggregate_output_name = "minimum_value";
+        aggregate_semantic = "aggregate.global-min-expression.v1";
+      } else {
+        aggregate_output_name = "maximum_value";
+        aggregate_semantic = "aggregate.global-max-expression.v1";
+      }
     }
     if (limit_composition) {
       const auto numeric_profile = std::ranges::find_if(

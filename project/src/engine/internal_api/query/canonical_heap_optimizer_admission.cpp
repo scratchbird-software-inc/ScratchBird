@@ -405,7 +405,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-count-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-sum-expression.v1") ||
+             "aggregate.global-sum-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-avg-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-min-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-max-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||

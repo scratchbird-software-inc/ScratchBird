@@ -847,6 +847,18 @@ bool ValidateCanonicalAggregateResultType(
         request.result_column.nullable) {
       return true;
     }
+  } else if ((function == CanonicalAggregateFunction::min ||
+              function == CanonicalAggregateFunction::max) &&
+             !request.value_columns.empty()) {
+    const auto& input =
+        request.input_batch.columns[request.value_columns.front()];
+    if (request.result_column.nullable &&
+        ((IsCanonicalBoundedSignedIntegerDescriptor(input.descriptor) &&
+          IsType(request.result_column, "int64")) ||
+         request.result_column.descriptor.canonical_type_name ==
+             input.descriptor.canonical_type_name)) {
+      return true;
+    }
   } else if (function == CanonicalAggregateFunction::bool_and ||
              function == CanonicalAggregateFunction::bool_or ||
              function == CanonicalAggregateFunction::every) {

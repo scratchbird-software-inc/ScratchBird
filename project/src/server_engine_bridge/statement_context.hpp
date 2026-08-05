@@ -69,6 +69,9 @@ struct StatementContextReceiptView {
   std::string bound_ast_uuid;
   std::string count_function_uuid;
   std::string sum_function_uuid;
+  std::string avg_function_uuid;
+  std::string min_function_uuid;
+  std::string max_function_uuid;
   std::vector<StatementDescriptorProfile> descriptor_profiles;
 
   std::uint64_t owning_local_transaction_id = 0;
