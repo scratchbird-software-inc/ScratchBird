@@ -6591,6 +6591,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   LiveUnaryAggregateExpressionProfile global_aggregate_profile;
   LivePairStatisticalExpressionProfile pair_aggregate_profile;
   LiveStringAggregateExpressionProfile string_aggregate_profile;
+  LiveOrderedSingleCollectionExpressionProfile
+      ordered_collection_profile;
+  LiveJsonObjectAggregateExpressionProfile json_object_profile;
+  LiveListaggExpressionProfile listagg_profile;
+  LiveOrderedSetExpressionProfile ordered_set_profile;
+  LiveApproximateExpressionProfile approximate_profile;
   LiveGroupedCountSumProfile grouped_aggregate_profile;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
@@ -6769,6 +6775,18 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         string_aggregate_profile =
             MatchLiveStringAggregateExpressionProfile(
                 current->semantic_variant_id);
+        ordered_collection_profile =
+            MatchLiveOrderedSingleCollectionExpressionProfile(
+                current->semantic_variant_id);
+        json_object_profile =
+            MatchLiveJsonObjectAggregateExpressionProfile(
+                current->semantic_variant_id);
+        listagg_profile = MatchLiveListaggExpressionProfile(
+            current->semantic_variant_id);
+        ordered_set_profile = MatchLiveOrderedSetExpressionProfile(
+            current->semantic_variant_id);
+        approximate_profile = MatchLiveApproximateExpressionProfile(
+            current->semantic_variant_id);
         grouped_aggregate_profile =
             MatchLiveGroupedCountSumProfile(current->semantic_variant_id);
         registry_aggregate_composable =
@@ -6803,6 +6821,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         registry_aggregate_composable =
             registry_aggregate_composable || pair_aggregate_profile.matched ||
             string_aggregate_profile.matched ||
+            ordered_collection_profile.matched ||
+            json_object_profile.matched || listagg_profile.matched ||
+            ordered_set_profile.matched || approximate_profile.matched ||
             grouped_aggregate_profile.matched;
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
@@ -8579,17 +8600,63 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
           auxiliary_memory = aggregate_work;
           break;
         }
-        if (string_aggregate_profile.matched) {
+        if (string_aggregate_profile.matched ||
+            ordered_collection_profile.matched ||
+            json_object_profile.matched || listagg_profile.matched ||
+            ordered_set_profile.matched || approximate_profile.matched) {
+          exec::CanonicalAggregateFunction function =
+              exec::CanonicalAggregateFunction::unknown;
+          bool distinct = false;
+          bool has_filter = false;
+          bool comparison_sensitive = false;
+          std::string transformation_id;
+          if (string_aggregate_profile.matched) {
+            function = exec::CanonicalAggregateFunction::string_agg;
+            distinct = string_aggregate_profile.distinct;
+            has_filter = string_aggregate_profile.has_filter;
+            comparison_sensitive = string_aggregate_profile.ordered;
+            transformation_id =
+                string_aggregate_profile.transformation_id;
+          } else if (ordered_collection_profile.matched) {
+            function = ordered_collection_profile.function;
+            distinct = ordered_collection_profile.distinct;
+            has_filter = ordered_collection_profile.has_filter;
+            comparison_sensitive = true;
+            transformation_id =
+                ordered_collection_profile.transformation_id;
+          } else if (json_object_profile.matched) {
+            function = exec::CanonicalAggregateFunction::json_object_agg;
+            distinct = json_object_profile.distinct;
+            has_filter = json_object_profile.has_filter;
+            comparison_sensitive = true;
+            transformation_id = json_object_profile.transformation_id;
+          } else if (listagg_profile.matched) {
+            function = exec::CanonicalAggregateFunction::listagg;
+            distinct = listagg_profile.distinct;
+            has_filter = listagg_profile.has_filter;
+            comparison_sensitive = true;
+            transformation_id = listagg_profile.transformation_id;
+          } else if (ordered_set_profile.matched) {
+            function = ordered_set_profile.function;
+            distinct = ordered_set_profile.distinct;
+            has_filter = ordered_set_profile.has_filter;
+            comparison_sensitive = true;
+            transformation_id = ordered_set_profile.transformation_id;
+          } else {
+            function = approximate_profile.function;
+            distinct = approximate_profile.distinct;
+            has_filter = approximate_profile.has_filter;
+            comparison_sensitive = true;
+            transformation_id = approximate_profile.transformation_id;
+          }
           auto prepared = PrepareGlobalAggregateRoot(
               request.relational_dag, node, input_node, state,
-              exec::CanonicalAggregateFunction::string_agg, false,
-              string_aggregate_profile.distinct,
-              string_aggregate_profile.has_filter);
-          if (!prepared.ok || !prepared.result_column.nullable) {
+              function, false, distinct, has_filter);
+          if (!prepared.ok) {
             return refuse(std::string(kPayloadDiagnostic), prepared.detail);
           }
           std::uint64_t aggregate_work = input_row_count;
-          if (prepared.distinct ||
+          if (comparison_sensitive || prepared.distinct ||
               !prepared.aggregate_order_terms.empty()) {
             std::uint64_t comparison_work = 0;
             if (!CheckedMultiply(input_row_count, input_row_count,
@@ -8603,32 +8670,55 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                             &aggregate_work)) {
               return refuse(
                   "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "composition STRING_AGG work overflowed");
+                  "composition complex aggregate work overflowed");
             }
           }
           if (!add_work(aggregate_work)) {
             return refuse(
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                "composition STRING_AGG work exceeds the admitted bound");
+                "composition complex aggregate work exceeds the admitted "
+                "bound");
           }
           exec::DescriptorBatch output;
           output.columns.push_back(prepared.result_column);
           exec::DescriptorTuple tuple;
           api::EngineTypedValue placeholder;
           placeholder.descriptor = prepared.result_column.descriptor;
-          placeholder.is_null = true;
-          placeholder.state = api::EngineValueState::sql_null;
+          if (prepared.result_column.nullable) {
+            placeholder.is_null = true;
+            placeholder.state = api::EngineValueState::sql_null;
+          } else if (
+              placeholder.descriptor.canonical_type_name == "int64" ||
+              placeholder.descriptor.canonical_type_name == "real64") {
+            placeholder.encoded_value = "0";
+            placeholder.state = api::EngineValueState::value;
+          } else {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "complex aggregate non-null planning descriptor is not "
+                "cardinality-only safe");
+          }
           tuple.values.push_back(std::move(placeholder));
           output.rows.push_back(std::move(tuple));
           const auto canonical = exec::ValidateCanonicalDescriptorBatch(
               output, node.output_descriptor_ids);
-          const auto values = exec::ValidateDescriptorBatch(output);
-          if (!canonical.ok || !values.ok) {
+          // Cardinality-only planning carries a canonical SQL NULL for the
+          // derived ARRAY_AGG list descriptor; scalar value validation does
+          // not own derived collection encodings.
+          const bool derived_list_planning_descriptor =
+              output.columns.front().descriptor.canonical_type_name.rfind(
+                  "list<", 0) == 0;
+          const auto values = derived_list_planning_descriptor
+                                  ? exec::DescriptorRuntimeDiagnostic{}
+                                  : exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok ||
+              (!derived_list_planning_descriptor && !values.ok)) {
             return refuse(
                 std::string(kPayloadDiagnostic),
                 !canonical.ok
-                    ? "STRING_AGG planning state: " + canonical.detail
-                    : "STRING_AGG planning state: " + values.detail);
+                    ? "complex aggregate planning state: " +
+                          canonical.detail
+                    : "complex aggregate planning state: " + values.detail);
           }
           prepared_registry_aggregate = std::move(prepared);
           registry_aggregate_input_row_count = input_row_count;
@@ -8637,8 +8727,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               prepared_registry_aggregate->result_bindings;
           implementation_id = "aggregate.registry-core.v1";
           capability_uuid = registry_aggregate_capability_uuid;
-          transformation_rule =
-              string_aggregate_profile.transformation_id + ".composed";
+          transformation_rule = transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
           planning_values_exact = false;

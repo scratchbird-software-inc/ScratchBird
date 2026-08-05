@@ -5084,6 +5084,52 @@ sblr::SblrOperationEnvelope OrderedJsonObjectAggModifierValuesEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-COMPLEX-AGGREGATE-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenComplexAggregateLimitEnvelope(
+    sblr::SblrOperationEnvelope envelope, const std::size_t ordinal) {
+  static constexpr std::string_view kHex = "0123456789abcdef";
+  std::string ordinal_hex(2, '0');
+  ordinal_hex[0] = kHex[(ordinal >> 4U) & 0x0fU];
+  ordinal_hex[1] = kHex[ordinal & 0x0fU];
+  const auto tree_uuid = PairProfileUuid("cf00", "d0", ordinal_hex);
+  std::string aggregate_output_descriptor;
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = tree_uuid;
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "2") {
+      std::size_t output_begin = 0;
+      for (std::size_t field = 0; field < 3; ++field) {
+        output_begin = operand.value.find('|', output_begin);
+        if (output_begin == std::string::npos) break;
+        ++output_begin;
+      }
+      if (output_begin != std::string::npos) {
+        const auto output_end = operand.value.find('|', output_begin);
+        aggregate_output_descriptor = operand.value.substr(
+            output_begin, output_end - output_begin);
+      }
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "99",
+       "019f0000-0000-7300-8000-00000000cf99|"
+       "019f0000-0000-7400-8000-00000000e208|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "99", "1|-|99|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3",
+       "7|0|2|" + aggregate_output_descriptor + "|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|99|-|-|-"});
+  return envelope;
+}
+
 bool ValidateLiveValuesSpine() {
   const auto first =
       sblr::DispatchTextualRelationalQueryForContractTest({Context(), ValuesEnvelope(), {}});
@@ -8613,6 +8659,168 @@ bool ValidateNodeDrivenStringAggCompositionSpine() {
                 "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
         "exhausted node-driven STRING_AGG composition published partial "
         "evidence");
+  }
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-COMPLEX-AGGREGATE-COMPOSITION-V1
+bool ValidateNodeDrivenComplexAggregateCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  std::size_t ordinal = 0;
+  const auto validate_case = [&](sblr::SblrOperationEnvelope envelope,
+                                 const std::string& label,
+                                 const std::uint64_t exhausted_bound) {
+    const auto reference = dispatch(envelope);
+    const auto composed = NodeDrivenComplexAggregateLimitEnvelope(
+        std::move(envelope), ordinal++);
+    const auto first = dispatch(composed);
+    const auto repeated = dispatch(composed);
+    if (!first.api_result.ok) {
+      std::cerr << "complex aggregate composition case: " << label << '\n';
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    const bool has_reference_value =
+        reference.api_result.ok &&
+        reference.api_result.result_shape.rows.size() == 1 &&
+        reference.api_result.result_shape.rows[0].fields.size() == 1;
+    const bool has_composed_value =
+        first.api_result.result_shape.rows.size() == 1 &&
+        first.api_result.result_shape.rows[0].fields.size() == 1;
+    bool exact_value = false;
+    if (has_reference_value && has_composed_value) {
+      const auto& expected =
+          reference.api_result.result_shape.rows[0].fields[0];
+      const auto& observed = first.api_result.result_shape.rows[0].fields[0];
+      exact_value =
+          observed.first == expected.first &&
+          observed.second.descriptor.canonical_type_name ==
+              expected.second.descriptor.canonical_type_name &&
+          observed.second.descriptor.encoded_descriptor ==
+              expected.second.descriptor.encoded_descriptor &&
+          observed.second.state == expected.second.state &&
+          observed.second.is_null == expected.second.is_null &&
+          observed.second.encoded_value == expected.second.encoded_value &&
+          observed.second.binary_value == expected.second.binary_value;
+    }
+    bool passed = Require(
+        first.accepted && first.optimizer_admitted &&
+            first.optimizer_selected && first.physical_dag_published &&
+            first.physical_dag_executed && first.runtime_actuals_attached &&
+            first.canonical_result_published && first.api_result.ok &&
+            first.diagnostics.empty() && first.logical_node_count == 3 &&
+            first.logical_property_count == 0 &&
+            first.physical_node_count == 3 &&
+            first.canonical_result_column_count == 1 &&
+            first.canonical_result_row_count == 1 && exact_value &&
+            repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        "node-driven " + label +
+            " composition lost its aggregate value, LIMIT, descriptor, or "
+            "deterministic replay semantics");
+
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count = exhausted_bound;
+    const auto exhausted = dispatch(composed, std::move(bounded_context));
+    passed &= Require(
+        !exhausted.optimizer_selected &&
+            !exhausted.physical_dag_published &&
+            !exhausted.physical_dag_executed &&
+            !exhausted.runtime_actuals_attached &&
+            !exhausted.canonical_result_published &&
+            !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+            exhausted.canonical_result_bytes.empty() &&
+            HasApiDiagnostic(
+                exhausted,
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+        "exhausted node-driven " + label +
+            " composition published partial evidence");
+    return passed;
+  };
+
+  bool passed = true;
+  for (const bool ordered : {false, true}) {
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      passed &= validate_case(
+          StringAggModifierValuesEnvelope(ordered, modifier),
+          std::string(ordered ? "ordered " : "") + "STRING_AGG " +
+              std::string(AggregateModifierName(modifier)),
+          ordered || modifier != AggregateModifierProfile::kFilter ? 63 : 14);
+    }
+  }
+  for (const auto& profile : kOrderedSingleCollectionProfiles) {
+    passed &= validate_case(OrderedSingleCollectionValuesEnvelope(profile),
+                            std::string(profile.name), 24);
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      passed &= validate_case(
+          OrderedSingleCollectionModifierValuesEnvelope(profile, modifier),
+          std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)),
+          63);
+    }
+  }
+  passed &= validate_case(OrderedJsonObjectAggValuesEnvelope(),
+                          "JSON_OBJECT_AGG", 40);
+  for (const auto modifier : {AggregateModifierProfile::kFilter,
+                              AggregateModifierProfile::kDistinct,
+                              AggregateModifierProfile::kDistinctFilter}) {
+    passed &= validate_case(OrderedJsonObjectAggModifierValuesEnvelope(modifier),
+                            "JSON_OBJECT_AGG " +
+                                std::string(AggregateModifierName(modifier)),
+                            144);
+  }
+  for (const auto profile : {LiveListaggProfile::kOrdered,
+                             LiveListaggProfile::kOverflowTruncateWithCount,
+                             LiveListaggProfile::kOverflowTruncateWithoutCount}) {
+    passed &= validate_case(OrderedListaggExpressionValuesEnvelope(profile),
+                            "LISTAGG", 24);
+  }
+  for (const auto profile : {LiveListaggProfile::kOrdered,
+                             LiveListaggProfile::kOverflowError,
+                             LiveListaggProfile::kOverflowTruncateWithCount}) {
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      passed &= validate_case(
+          OrderedListaggModifierExpressionValuesEnvelope(profile, modifier),
+          "LISTAGG " + std::string(AggregateModifierName(modifier)), 63);
+    }
+  }
+  for (const auto& profile : kOrderedSetAggregateProfiles) {
+    passed &= validate_case(GlobalOrderedSetAggregateValuesEnvelope(profile),
+                            std::string(profile.name), 35);
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      passed &= validate_case(
+          GlobalOrderedSetAggregateModifierValuesEnvelope(profile, modifier),
+          std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)),
+          63);
+    }
+  }
+  for (const auto& profile : kApproximateAggregateProfiles) {
+    passed &= validate_case(GlobalApproximateAggregateValuesEnvelope(profile),
+                            std::string(profile.name), 48);
+    for (const auto modifier : {AggregateModifierProfile::kFilter,
+                                AggregateModifierProfile::kDistinct,
+                                AggregateModifierProfile::kDistinctFilter}) {
+      passed &= validate_case(
+          GlobalApproximateAggregateModifierValuesEnvelope(profile, modifier),
+          std::string(profile.name) + " " +
+              std::string(AggregateModifierName(modifier)),
+          63);
+    }
   }
   return passed;
 }
@@ -14294,6 +14502,7 @@ int main() {
                       ValidateNodeDrivenGroupingExpansionCompositionSpine() &&
                       ValidateNodeDrivenGroupedHavingCompositionSpine() &&
                       ValidateNodeDrivenStringAggCompositionSpine() &&
+                      ValidateNodeDrivenComplexAggregateCompositionSpine() &&
                       ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
                       ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
