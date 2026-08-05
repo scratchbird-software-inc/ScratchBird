@@ -462,6 +462,15 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_column.descriptor.encoded_descriptor = "type=integer";
   join_column.nullable = false;
   join_table.table_columns.push_back(std::move(join_column));
+  api::EngineColumnDefinition join_auxiliary_column;
+  join_auxiliary_column.ordinal = 1;
+  join_auxiliary_column.names.push_back(
+      PrimaryName("join_auxiliary_value"));
+  join_auxiliary_column.descriptor.descriptor_kind = "scalar";
+  join_auxiliary_column.descriptor.canonical_type_name = "integer";
+  join_auxiliary_column.descriptor.encoded_descriptor = "type=integer";
+  join_auxiliary_column.nullable = false;
+  join_table.table_columns.push_back(std::move(join_auxiliary_column));
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
 
@@ -534,8 +543,16 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     typed.descriptor.canonical_type_name = "integer";
     typed.descriptor.encoded_descriptor = "type=integer";
     typed.encoded_value = std::to_string(value);
+    api::EngineTypedValue auxiliary_typed;
+    auxiliary_typed.descriptor.descriptor_kind = "scalar";
+    auxiliary_typed.descriptor.canonical_type_name = "integer";
+    auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
+    auxiliary_typed.encoded_value =
+        value == 2 ? "999" : (value == 3 ? "103" : "101");
     api::EngineRowValue row;
     row.fields.push_back({"join_value", std::move(typed)});
+    row.fields.push_back(
+        {"join_auxiliary_value", std::move(auxiliary_typed)});
     join_insert.input_rows.push_back(std::move(row));
   }
   join_insert.estimated_row_count = join_insert.input_rows.size();
@@ -744,6 +761,36 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
     verify_inner_comparison(">=", 3);
     verify_inner_comparison("IS DISTINCT FROM", 7);
     verify_inner_comparison("IS NOT DISTINCT FROM", 2);
+
+    const auto verify_composite_join_predicate =
+        [&](const std::string_view predicate,
+            const std::uint64_t expected_rows) {
+          auto joined = parser.RunPipeline(
+              "SELECT * FROM qow_packet7.qow_packet7_relation INNER JOIN "
+              "qow_packet7.qow_packet7_join_relation ON " +
+                  std::string(predicate) + ";",
+              true);
+          if (!joined.accepted) PrintMessages(joined.messages);
+          Require(joined.accepted &&
+                      joined.server_operation_id == "query.execute" &&
+                      joined.server_cursor_uuid.empty() &&
+                      joined.server_row_count == expected_rows,
+                  "object-backed INNER JOIN did not execute composite typed "
+                  "predicate " +
+                      std::string(predicate));
+        };
+    verify_composite_join_predicate(
+        "integer_value = join_value AND auxiliary_value = "
+        "join_auxiliary_value",
+        1);
+    verify_composite_join_predicate(
+        "integer_value = join_value OR auxiliary_value = "
+        "join_auxiliary_value",
+        3);
+    verify_composite_join_predicate(
+        "integer_value = join_value AND auxiliary_value < "
+        "join_auxiliary_value",
+        1);
 
     const auto verify_outer_join = [&](const std::string_view join_sql,
                                        const std::uint64_t expected_rows,

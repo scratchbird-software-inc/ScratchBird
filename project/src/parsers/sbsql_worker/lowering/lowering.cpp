@@ -33938,46 +33938,87 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (predicate_join) {
       const auto predicate = expressions_by_id.find(
           catalog_join_relation->predicate_expression_ids.front());
-      const bool comparison_operator =
-          predicate != expressions_by_id.end() &&
-          predicate->second->canonical_operator_name.has_value() &&
-          (*predicate->second->canonical_operator_name == "=" ||
-           *predicate->second->canonical_operator_name == "<>" ||
-           *predicate->second->canonical_operator_name == "!=" ||
-           *predicate->second->canonical_operator_name == "<" ||
-           *predicate->second->canonical_operator_name == "<=" ||
-           *predicate->second->canonical_operator_name == ">" ||
-           *predicate->second->canonical_operator_name == ">=" ||
-           *predicate->second->canonical_operator_name ==
-               "IS DISTINCT FROM" ||
-           *predicate->second->canonical_operator_name ==
-               "IS NOT DISTINCT FROM");
-      if (descriptor_offset >= native.descriptors.size() ||
-          predicate == expressions_by_id.end() ||
-          predicate->second->expression_kind !=
-              NativeExpressionAstKind::kBinary ||
-          predicate->second->child_expression_ids.size() != 2 ||
-          !comparison_operator ||
-          predicate->second->result_descriptor_id !=
-              native.descriptors[descriptor_offset].descriptor_id ||
-          native.descriptors[descriptor_offset].nullability !=
-              BoundNullability::kNullable ||
-          std::ranges::find(
-              catalog_relations[0]->output_expression_ids,
-              predicate->second->child_expression_ids[0]) ==
-              catalog_relations[0]->output_expression_ids.end() ||
-          std::ranges::find(
-              catalog_relations[1]->output_expression_ids,
-              predicate->second->child_expression_ids[1]) ==
-              catalog_relations[1]->output_expression_ids.end() ||
-          bound.descriptor_refs[descriptor_offset] !=
-              native.descriptors[descriptor_offset].descriptor_uuid) {
+      const auto is_comparison = [](const BoundExpressionAstRecord* candidate) {
+        return candidate != nullptr &&
+               candidate->expression_kind ==
+                   NativeExpressionAstKind::kBinary &&
+               candidate->child_expression_ids.size() == 2 &&
+               candidate->canonical_operator_name.has_value() &&
+               (*candidate->canonical_operator_name == "=" ||
+                *candidate->canonical_operator_name == "<>" ||
+                *candidate->canonical_operator_name == "!=" ||
+                *candidate->canonical_operator_name == "<" ||
+                *candidate->canonical_operator_name == "<=" ||
+                *candidate->canonical_operator_name == ">" ||
+                *candidate->canonical_operator_name == ">=" ||
+                *candidate->canonical_operator_name == "IS DISTINCT FROM" ||
+                *candidate->canonical_operator_name ==
+                    "IS NOT DISTINCT FROM");
+      };
+      std::vector<const BoundExpressionAstRecord*> comparisons;
+      bool composite_predicate = false;
+      if (predicate != expressions_by_id.end() &&
+          is_comparison(predicate->second)) {
+        comparisons.push_back(predicate->second);
+      } else if (predicate != expressions_by_id.end() &&
+                 predicate->second->expression_kind ==
+                     NativeExpressionAstKind::kBinary &&
+                 predicate->second->child_expression_ids.size() == 2 &&
+                 predicate->second->canonical_operator_name.has_value() &&
+                 (*predicate->second->canonical_operator_name == "AND" ||
+                  *predicate->second->canonical_operator_name == "OR")) {
+        composite_predicate = true;
+        for (const auto child_id : predicate->second->child_expression_ids) {
+          const auto child = expressions_by_id.find(child_id);
+          if (child == expressions_by_id.end() ||
+              !is_comparison(child->second)) {
+            comparisons.clear();
+            break;
+          }
+          comparisons.push_back(child->second);
+        }
+      }
+      bool predicate_lineage_exact = !comparisons.empty();
+      for (const auto* comparison : comparisons) {
+        if (descriptor_offset >= native.descriptors.size() ||
+            comparison->result_descriptor_id !=
+                native.descriptors[descriptor_offset].descriptor_id ||
+            native.descriptors[descriptor_offset].nullability !=
+                BoundNullability::kNullable ||
+            std::ranges::find(
+                catalog_relations[0]->output_expression_ids,
+                comparison->child_expression_ids[0]) ==
+                catalog_relations[0]->output_expression_ids.end() ||
+            std::ranges::find(
+                catalog_relations[1]->output_expression_ids,
+                comparison->child_expression_ids[1]) ==
+                catalog_relations[1]->output_expression_ids.end() ||
+            bound.descriptor_refs[descriptor_offset] !=
+                native.descriptors[descriptor_offset].descriptor_uuid) {
+          predicate_lineage_exact = false;
+          break;
+        }
+        ++descriptor_offset;
+      }
+      if (predicate_lineage_exact && composite_predicate) {
+        if (descriptor_offset >= native.descriptors.size() ||
+            predicate->second->result_descriptor_id !=
+                native.descriptors[descriptor_offset].descriptor_id ||
+            native.descriptors[descriptor_offset].nullability !=
+                BoundNullability::kNullable ||
+            bound.descriptor_refs[descriptor_offset] !=
+                native.descriptors[descriptor_offset].descriptor_uuid) {
+          predicate_lineage_exact = false;
+        } else {
+          ++descriptor_offset;
+        }
+      }
+      if (!predicate_lineage_exact) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed JOIN predicate lineage is incomplete");
         return envelope;
       }
-      ++descriptor_offset;
     }
     const auto& join_outputs =
         outputs_by_relation.at(catalog_join_relation->relation_id);

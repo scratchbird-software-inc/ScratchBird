@@ -585,9 +585,8 @@ BuildEngineProjectedNativeBindingContext(
         static_cast<std::size_t>(predicate_join)) {
       return fail("catalog_join_predicate_cardinality_invalid");
     }
-    const NativeExpressionAstNode* predicate = nullptr;
-    const NativeExpressionAstNode* left_key = nullptr;
-    const NativeExpressionAstNode* right_key = nullptr;
+    std::vector<const NativeExpressionAstNode*> predicate_comparisons;
+    bool composite_predicate = false;
     if (predicate_join) {
       const auto find_expression = [&](const std::uint32_t expression_id) {
         const auto found = std::ranges::find_if(
@@ -596,36 +595,57 @@ BuildEngineProjectedNativeBindingContext(
             });
         return found == ast.expressions.end() ? nullptr : &*found;
       };
-      predicate = find_expression(
+      const auto* predicate = find_expression(
           catalog_join->predicate_expression_ids.front());
-      const bool comparison_operator =
-          predicate != nullptr &&
-          (predicate->operator_name == "=" ||
-           predicate->operator_name == "<>" ||
-           predicate->operator_name == "!=" ||
-           predicate->operator_name == "<" ||
-           predicate->operator_name == "<=" ||
-           predicate->operator_name == ">" ||
-           predicate->operator_name == ">=" ||
-           predicate->operator_name == "IS DISTINCT FROM" ||
-           predicate->operator_name == "IS NOT DISTINCT FROM");
-      if (predicate == nullptr ||
-          predicate->expression_kind != NativeExpressionAstKind::kBinary ||
-          !comparison_operator ||
-          predicate->child_expression_ids.size() != 2) {
+      const auto is_comparison = [](const NativeExpressionAstNode* candidate) {
+        return candidate != nullptr &&
+               candidate->expression_kind ==
+                   NativeExpressionAstKind::kBinary &&
+               candidate->child_expression_ids.size() == 2 &&
+               (candidate->operator_name == "=" ||
+                candidate->operator_name == "<>" ||
+                candidate->operator_name == "!=" ||
+                candidate->operator_name == "<" ||
+                candidate->operator_name == "<=" ||
+                candidate->operator_name == ">" ||
+                candidate->operator_name == ">=" ||
+                candidate->operator_name == "IS DISTINCT FROM" ||
+                candidate->operator_name == "IS NOT DISTINCT FROM");
+      };
+      if (is_comparison(predicate)) {
+        predicate_comparisons.push_back(predicate);
+      } else if (predicate != nullptr &&
+                 predicate->expression_kind ==
+                     NativeExpressionAstKind::kBinary &&
+                 predicate->child_expression_ids.size() == 2 &&
+                 (predicate->operator_name == "AND" ||
+                  predicate->operator_name == "OR")) {
+        composite_predicate = true;
+        for (const auto child_id : predicate->child_expression_ids) {
+          const auto* comparison = find_expression(child_id);
+          if (!is_comparison(comparison)) {
+            return fail("catalog_join_composite_predicate_invalid");
+          }
+          predicate_comparisons.push_back(comparison);
+        }
+      } else {
         return fail("catalog_inner_join_predicate_invalid");
       }
-      left_key = find_expression(predicate->child_expression_ids[0]);
-      right_key = find_expression(predicate->child_expression_ids[1]);
-      if (left_key == nullptr || right_key == nullptr ||
-          left_key->expression_kind !=
-              NativeExpressionAstKind::kIdentifier ||
-          right_key->expression_kind !=
-              NativeExpressionAstKind::kIdentifier ||
-          left_key->spelling.empty() || right_key->spelling.empty() ||
-          !left_key->child_expression_ids.empty() ||
-          !right_key->child_expression_ids.empty()) {
-        return fail("catalog_inner_join_key_invalid");
+      for (const auto* comparison : predicate_comparisons) {
+        const auto* left_key =
+            find_expression(comparison->child_expression_ids[0]);
+        const auto* right_key =
+            find_expression(comparison->child_expression_ids[1]);
+        if (left_key == nullptr || right_key == nullptr ||
+            left_key->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            right_key->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            left_key->spelling.empty() || right_key->spelling.empty() ||
+            !left_key->child_expression_ids.empty() ||
+            !right_key->child_expression_ids.empty()) {
+          return fail("catalog_inner_join_key_invalid");
+        }
       }
     }
 
@@ -708,35 +728,56 @@ BuildEngineProjectedNativeBindingContext(
     }
     const auto source_descriptor_count = context.descriptors.size();
     if (predicate_join) {
-      const auto left_column = std::ranges::find_if(
-          context.catalog_relations[0].columns, [&](const auto& column) {
-            return column.canonical_name_key == left_key->spelling;
-          });
-      const auto right_column = std::ranges::find_if(
-          context.catalog_relations[1].columns, [&](const auto& column) {
-            return column.canonical_name_key == right_key->spelling;
-          });
-      const auto boolean_profile = std::ranges::find_if(
-          statement_context.descriptor_profiles, [](const auto& candidate) {
-            return candidate.profile_kind == 6 && candidate.slot == 0;
-          });
-      if (left_column == context.catalog_relations[0].columns.end() ||
-          right_column == context.catalog_relations[1].columns.end() ||
-          context.descriptors[left_column->descriptor_id - 1].type_uuid !=
-              context.descriptors[right_column->descriptor_id - 1].type_uuid ||
-          boolean_profile == statement_context.descriptor_profiles.end() ||
-          !boolean_profile->nullable ||
-          !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
-          !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
-        return fail("catalog_inner_join_key_binding_unavailable");
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      for (const auto* comparison : predicate_comparisons) {
+        const auto* left_key =
+            find_expression(comparison->child_expression_ids[0]);
+        const auto* right_key =
+            find_expression(comparison->child_expression_ids[1]);
+        const auto left_column = std::ranges::find_if(
+            context.catalog_relations[0].columns, [&](const auto& column) {
+              return column.canonical_name_key == left_key->spelling;
+            });
+        const auto right_column = std::ranges::find_if(
+            context.catalog_relations[1].columns, [&](const auto& column) {
+              return column.canonical_name_key == right_key->spelling;
+            });
+        if (left_column == context.catalog_relations[0].columns.end() ||
+            right_column == context.catalog_relations[1].columns.end() ||
+            context.descriptors[left_column->descriptor_id - 1].type_uuid !=
+                context.descriptors[right_column->descriptor_id - 1]
+                    .type_uuid) {
+          return fail("catalog_inner_join_key_binding_unavailable");
+        }
       }
-      NativeDescriptorBindingInput descriptor;
-      descriptor.descriptor_id =
-          static_cast<std::uint32_t>(context.descriptors.size() + 1);
-      descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
-      descriptor.type_uuid = boolean_profile->type_uuid;
-      descriptor.nullability = BoundNullability::kNullable;
-      context.descriptors.push_back(std::move(descriptor));
+      const auto predicate_descriptor_count =
+          predicate_comparisons.size() +
+          static_cast<std::size_t>(composite_predicate);
+      for (std::size_t slot = 0; slot < predicate_descriptor_count; ++slot) {
+        const auto boolean_profile = std::ranges::find_if(
+            statement_context.descriptor_profiles, [&](const auto& candidate) {
+              return candidate.profile_kind == 6 && candidate.slot == slot;
+            });
+        if (boolean_profile == statement_context.descriptor_profiles.end() ||
+            !boolean_profile->nullable ||
+            !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+            !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
+          return fail("catalog_join_boolean_descriptor_profile_unavailable");
+        }
+        NativeDescriptorBindingInput descriptor;
+        descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
+        descriptor.type_uuid = boolean_profile->type_uuid;
+        descriptor.nullability = BoundNullability::kNullable;
+        context.descriptors.push_back(std::move(descriptor));
+      }
     }
     const auto source_output_count = context.outputs.size();
     const bool left_only_join =

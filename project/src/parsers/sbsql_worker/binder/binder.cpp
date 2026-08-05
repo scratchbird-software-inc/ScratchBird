@@ -504,14 +504,69 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool left_only_join =
         context.relations.front().semantic_variant_id == "join.left-semi.v1" ||
         context.relations.front().semantic_variant_id == "join.left-anti.v1";
+    const NativeExpressionAstNode* predicate_root = nullptr;
+    std::vector<const NativeExpressionAstNode*> predicate_comparisons;
+    bool composite_predicate = false;
+    if (predicate_join) {
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& expression) {
+              return expression.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      const auto is_comparison = [](const NativeExpressionAstNode* candidate) {
+        return candidate != nullptr &&
+               candidate->expression_kind ==
+                   NativeExpressionAstKind::kBinary &&
+               candidate->child_expression_ids.size() == 2 &&
+               (candidate->operator_name == "=" ||
+                candidate->operator_name == "<>" ||
+                candidate->operator_name == "!=" ||
+                candidate->operator_name == "<" ||
+                candidate->operator_name == "<=" ||
+                candidate->operator_name == ">" ||
+                candidate->operator_name == ">=" ||
+                candidate->operator_name == "IS DISTINCT FROM" ||
+                candidate->operator_name == "IS NOT DISTINCT FROM");
+      };
+      predicate_root = find_expression(
+          catalog_join->predicate_expression_ids.front());
+      if (is_comparison(predicate_root)) {
+        predicate_comparisons.push_back(predicate_root);
+      } else if (predicate_root != nullptr &&
+                 predicate_root->expression_kind ==
+                     NativeExpressionAstKind::kBinary &&
+                 predicate_root->child_expression_ids.size() == 2 &&
+                 (predicate_root->operator_name == "AND" ||
+                  predicate_root->operator_name == "OR")) {
+        composite_predicate = true;
+        for (const auto child_id : predicate_root->child_expression_ids) {
+          const auto* comparison = find_expression(child_id);
+          if (!is_comparison(comparison)) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                "catalog JOIN composite predicate is not exact");
+            return RefusedBoundAst(std::move(bound));
+          }
+          predicate_comparisons.push_back(comparison);
+        }
+      } else {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog JOIN predicate is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+    }
+    const auto predicate_node_count =
+        predicate_comparisons.size() +
+        static_cast<std::size_t>(composite_predicate);
     const auto join_output_count =
         left_only_join ? context.catalog_relations.front().columns.size()
                        : context.expressions.size();
     if (catalog_join->predicate_expression_ids.size() !=
             static_cast<std::size_t>(predicate_join) ||
         context.descriptors.size() !=
-            context.expressions.size() +
-                static_cast<std::size_t>(predicate_join) ||
+            context.expressions.size() + predicate_node_count ||
         context.outputs.size() !=
             context.expressions.size() + join_output_count) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
@@ -630,77 +685,78 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     std::vector<std::uint32_t> joined_output_ids;
     if (predicate_join) {
-      const auto predicate_ast = std::ranges::find_if(
-          ast.expressions, [&](const auto& expression) {
-            return expression.expression_id ==
-                   catalog_join->predicate_expression_ids.front();
-          });
-      const bool comparison_operator =
-          predicate_ast != ast.expressions.end() &&
-          (predicate_ast->operator_name == "=" ||
-           predicate_ast->operator_name == "<>" ||
-           predicate_ast->operator_name == "!=" ||
-           predicate_ast->operator_name == "<" ||
-           predicate_ast->operator_name == "<=" ||
-           predicate_ast->operator_name == ">" ||
-           predicate_ast->operator_name == ">=" ||
-           predicate_ast->operator_name == "IS DISTINCT FROM" ||
-           predicate_ast->operator_name == "IS NOT DISTINCT FROM");
-      if (predicate_ast == ast.expressions.end() ||
-          predicate_ast->expression_kind != NativeExpressionAstKind::kBinary ||
-          !comparison_operator ||
-          predicate_ast->child_expression_ids.size() != 2) {
-        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                              "catalog INNER JOIN predicate is not exact");
-        return RefusedBoundAst(std::move(bound));
-      }
-      std::array<std::uint32_t, 2> key_expression_ids{};
-      for (std::size_t source_ordinal = 0; source_ordinal < 2;
-           ++source_ordinal) {
-        const auto key_ast = std::ranges::find_if(
-            ast.expressions, [&](const auto& expression) {
-              return expression.expression_id ==
-                     predicate_ast->child_expression_ids[source_ordinal];
-            });
-        if (key_ast == ast.expressions.end() ||
-            key_ast->expression_kind !=
-                NativeExpressionAstKind::kIdentifier) {
-          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                                "catalog INNER JOIN key is not an identifier");
-          return RefusedBoundAst(std::move(bound));
+      std::vector<std::uint32_t> bound_comparison_ids;
+      for (std::size_t comparison_ordinal = 0;
+           comparison_ordinal < predicate_comparisons.size();
+           ++comparison_ordinal) {
+        const auto* predicate_ast = predicate_comparisons[comparison_ordinal];
+        std::array<std::uint32_t, 2> key_expression_ids{};
+        for (std::size_t source_ordinal = 0; source_ordinal < 2;
+             ++source_ordinal) {
+          const auto key_ast = std::ranges::find_if(
+              ast.expressions, [&](const auto& expression) {
+                return expression.expression_id ==
+                       predicate_ast->child_expression_ids[source_ordinal];
+              });
+          if (key_ast == ast.expressions.end() ||
+              key_ast->expression_kind !=
+                  NativeExpressionAstKind::kIdentifier) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                "catalog JOIN key is not an identifier");
+            return RefusedBoundAst(std::move(bound));
+          }
+          const auto& source =
+              bound.catalog_relation_sources[source_ordinal];
+          const auto column = std::ranges::find_if(
+              source.columns, [&](const auto& candidate) {
+                return candidate.canonical_name_key == key_ast->spelling;
+              });
+          if (column == source.columns.end()) {
+            AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                  "catalog JOIN key is unresolved");
+            return RefusedBoundAst(std::move(bound));
+          }
+          const auto expression = std::ranges::find_if(
+              bound.expressions, [&](const auto& candidate) {
+                return candidate.result_descriptor_id ==
+                           column->descriptor_id &&
+                       candidate.bound_name_uuid == column->column_uuid;
+              });
+          if (expression == bound.expressions.end()) {
+            AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                  "catalog JOIN key binding is absent");
+            return RefusedBoundAst(std::move(bound));
+          }
+          key_expression_ids[source_ordinal] = expression->expression_id;
         }
-        const auto& source = bound.catalog_relation_sources[source_ordinal];
-        const auto column = std::ranges::find_if(
-            source.columns, [&](const auto& candidate) {
-              return candidate.canonical_name_key == key_ast->spelling;
-            });
-        if (column == source.columns.end()) {
-          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                                "catalog INNER JOIN key is unresolved");
-          return RefusedBoundAst(std::move(bound));
-        }
-        const auto expression = std::ranges::find_if(
-            bound.expressions, [&](const auto& candidate) {
-              return candidate.result_descriptor_id == column->descriptor_id &&
-                     candidate.bound_name_uuid == column->column_uuid;
-            });
-        if (expression == bound.expressions.end()) {
-          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                                "catalog INNER JOIN key binding is absent");
-          return RefusedBoundAst(std::move(bound));
-        }
-        key_expression_ids[source_ordinal] = expression->expression_id;
-      }
-      const auto& boolean_descriptor = context.descriptors.back();
-      BoundExpressionAstRecord predicate;
-      predicate.expression_id =
-          static_cast<std::uint32_t>(bound.expressions.size() + 1);
-      predicate.expression_kind = NativeExpressionAstKind::kBinary;
-      predicate.result_descriptor_id = boolean_descriptor.descriptor_id;
-      predicate.child_expression_ids = {key_expression_ids[0],
+        const auto& boolean_descriptor =
+            context.descriptors[context.expressions.size() +
+                                comparison_ordinal];
+        BoundExpressionAstRecord predicate;
+        predicate.expression_id =
+            static_cast<std::uint32_t>(bound.expressions.size() + 1);
+        predicate.expression_kind = NativeExpressionAstKind::kBinary;
+        predicate.result_descriptor_id = boolean_descriptor.descriptor_id;
+        predicate.child_expression_ids = {key_expression_ids[0],
                                           key_expression_ids[1]};
-      predicate.canonical_operator_name = predicate_ast->operator_name;
-      bound.expressions.push_back(std::move(predicate));
+        predicate.canonical_operator_name = predicate_ast->operator_name;
+        bound_comparison_ids.push_back(predicate.expression_id);
+        bound.expressions.push_back(std::move(predicate));
+      }
+      if (composite_predicate) {
+        const auto& boolean_descriptor =
+            context.descriptors[context.expressions.size() +
+                                predicate_comparisons.size()];
+        BoundExpressionAstRecord predicate;
+        predicate.expression_id =
+            static_cast<std::uint32_t>(bound.expressions.size() + 1);
+        predicate.expression_kind = NativeExpressionAstKind::kBinary;
+        predicate.result_descriptor_id = boolean_descriptor.descriptor_id;
+        predicate.child_expression_ids = std::move(bound_comparison_ids);
+        predicate.canonical_operator_name = predicate_root->operator_name;
+        bound.expressions.push_back(std::move(predicate));
+      }
     }
 
     for (std::size_t ordinal = 0; ordinal < joined_expression_ids.size();

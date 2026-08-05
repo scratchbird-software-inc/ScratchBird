@@ -502,24 +502,27 @@ class NativeRelationalParser final {
     }
     auto right_source = parse_source(2);
     if (!right_source.has_value()) return FinishRefusal();
-    const Token* predicate_left = nullptr;
-    std::string predicate_operator;
-    const Token* predicate_right = nullptr;
-    if (join_kind != NativeJoinAstKind::kCross) {
-      if (!RequireWord("ON", "catalog_inner_join_on_required",
-                       "bounded catalog INNER JOIN requires ON") ||
-          AtEnd() || Current().kind != TokenKind::kIdentifier) {
+    struct ParsedJoinComparison {
+      const Token* left{nullptr};
+      std::string comparison_operator;
+      const Token* right{nullptr};
+    };
+    std::vector<ParsedJoinComparison> predicate_comparisons;
+    std::string predicate_boolean_operator;
+    const auto parse_join_comparison = [&]() -> bool {
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
         Refuse("catalog_inner_join_left_key_required",
-               "bounded catalog INNER JOIN requires a left key identifier");
-        return FinishRefusal();
+               "bounded catalog JOIN requires a left key identifier");
+        return false;
       }
-      predicate_left = &Consume();
+      ParsedJoinComparison comparison;
+      comparison.left = &Consume();
       if (!AtEnd() && Current().kind == TokenKind::kOperator &&
           (Current().text == "=" || Current().text == "<>" ||
            Current().text == "!=" || Current().text == "<" ||
            Current().text == "<=" || Current().text == ">" ||
            Current().text == ">=")) {
-        predicate_operator = CanonicalTokenText(Consume());
+        comparison.comparison_operator = CanonicalTokenText(Consume());
       } else if (!AtEnd() && IsWord(Current(), "IS")) {
         Consume();
         const bool negate = !AtEnd() && IsWord(Current(), "NOT");
@@ -530,24 +533,40 @@ class NativeRelationalParser final {
             !RequireWord(
                 "FROM", "catalog_join_distinct_from_required",
                 "bounded catalog JOIN requires FROM after IS [NOT] DISTINCT")) {
-          return FinishRefusal();
+          return false;
         }
-        predicate_operator = negate ? "IS NOT DISTINCT FROM"
-                                    : "IS DISTINCT FROM";
+        comparison.comparison_operator =
+            negate ? "IS NOT DISTINCT FROM" : "IS DISTINCT FROM";
       } else {
         Refuse("catalog_join_comparison_required",
                "bounded catalog JOIN requires a typed comparison predicate");
-        return FinishRefusal();
+        return false;
       }
       if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
         Refuse("catalog_inner_join_right_key_required",
-               "bounded catalog INNER JOIN requires a right key identifier");
+               "bounded catalog JOIN requires a right key identifier");
+        return false;
+      }
+      comparison.right = &Consume();
+      predicate_comparisons.push_back(std::move(comparison));
+      return true;
+    };
+    if (join_kind != NativeJoinAstKind::kCross) {
+      if (!RequireWord("ON", "catalog_inner_join_on_required",
+                       "bounded catalog JOIN requires ON") ||
+          !parse_join_comparison()) {
         return FinishRefusal();
       }
-      predicate_right = &Consume();
+      if (!AtEnd() &&
+          (IsWord(Current(), "AND") || IsWord(Current(), "OR"))) {
+        predicate_boolean_operator = CanonicalTokenText(Consume());
+        if (!parse_join_comparison()) {
+          return FinishRefusal();
+        }
+      }
     }
     const Token& query_end = join_kind != NativeJoinAstKind::kCross
-                                 ? *predicate_right
+                                 ? *predicate_comparisons.back().right
                                  : TokenForRangeEnd(right_source->range);
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
@@ -556,6 +575,7 @@ class NativeRelationalParser final {
       return FinishRefusal();
     }
 
+    std::vector<std::uint32_t> source_wildcard_ids;
     for (std::uint32_t source_id = 1; source_id <= 2; ++source_id) {
       NativeExpressionAstNode wildcard;
       wildcard.expression_id = NextExpressionId();
@@ -564,6 +584,7 @@ class NativeRelationalParser final {
       wildcard.range = TokenSourceRange(select_token);
       const auto wildcard_id = wildcard.expression_id;
       document_.expressions.push_back(std::move(wildcard));
+      source_wildcard_ids.push_back(wildcard_id);
 
       NativeRelationAstNode source_relation;
       source_relation.relation_id = source_id;
@@ -582,33 +603,49 @@ class NativeRelationalParser final {
     join.output_expression_ids =
         join_kind == NativeJoinAstKind::kLeftSemi ||
                 join_kind == NativeJoinAstKind::kLeftAnti
-            ? std::vector<std::uint32_t>{1}
-            : std::vector<std::uint32_t>{1, 2};
+            ? std::vector<std::uint32_t>{source_wildcard_ids.front()}
+            : source_wildcard_ids;
     if (join_kind != NativeJoinAstKind::kCross) {
-      NativeExpressionAstNode left_key;
-      left_key.expression_id = NextExpressionId();
-      left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
-      left_key.spelling = predicate_left->text;
-      left_key.range = TokenSourceRange(*predicate_left);
-      const auto left_key_id = left_key.expression_id;
-      document_.expressions.push_back(std::move(left_key));
+      std::vector<std::uint32_t> comparison_expression_ids;
+      for (const auto& comparison : predicate_comparisons) {
+        NativeExpressionAstNode left_key;
+        left_key.expression_id = NextExpressionId();
+        left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+        left_key.spelling = comparison.left->text;
+        left_key.range = TokenSourceRange(*comparison.left);
+        const auto left_key_id = left_key.expression_id;
+        document_.expressions.push_back(std::move(left_key));
 
-      NativeExpressionAstNode right_key;
-      right_key.expression_id = NextExpressionId();
-      right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
-      right_key.spelling = predicate_right->text;
-      right_key.range = TokenSourceRange(*predicate_right);
-      const auto right_key_id = right_key.expression_id;
-      document_.expressions.push_back(std::move(right_key));
+        NativeExpressionAstNode right_key;
+        right_key.expression_id = NextExpressionId();
+        right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+        right_key.spelling = comparison.right->text;
+        right_key.range = TokenSourceRange(*comparison.right);
+        const auto right_key_id = right_key.expression_id;
+        document_.expressions.push_back(std::move(right_key));
 
-      NativeExpressionAstNode predicate;
-      predicate.expression_id = NextExpressionId();
-      predicate.expression_kind = NativeExpressionAstKind::kBinary;
-      predicate.child_expression_ids = {left_key_id, right_key_id};
-      predicate.operator_name = predicate_operator;
-      predicate.range = Span(*predicate_left, *predicate_right);
-      join.predicate_expression_ids = {predicate.expression_id};
-      document_.expressions.push_back(std::move(predicate));
+        NativeExpressionAstNode predicate;
+        predicate.expression_id = NextExpressionId();
+        predicate.expression_kind = NativeExpressionAstKind::kBinary;
+        predicate.child_expression_ids = {left_key_id, right_key_id};
+        predicate.operator_name = comparison.comparison_operator;
+        predicate.range = Span(*comparison.left, *comparison.right);
+        comparison_expression_ids.push_back(predicate.expression_id);
+        document_.expressions.push_back(std::move(predicate));
+      }
+      if (comparison_expression_ids.size() == 1) {
+        join.predicate_expression_ids = {comparison_expression_ids.front()};
+      } else {
+        NativeExpressionAstNode predicate;
+        predicate.expression_id = NextExpressionId();
+        predicate.expression_kind = NativeExpressionAstKind::kBinary;
+        predicate.child_expression_ids = comparison_expression_ids;
+        predicate.operator_name = predicate_boolean_operator;
+        predicate.range = Span(*predicate_comparisons.front().left,
+                               *predicate_comparisons.back().right);
+        join.predicate_expression_ids = {predicate.expression_id};
+        document_.expressions.push_back(std::move(predicate));
+      }
     }
     join.range = Span(select_token, query_end);
     document_.relations.push_back(std::move(join));
