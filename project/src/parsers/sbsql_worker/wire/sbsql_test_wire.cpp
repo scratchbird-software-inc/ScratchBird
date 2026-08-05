@@ -804,11 +804,20 @@ BuildEngineProjectedNativeBindingContext(
       const bool variance_function = function == "VARIANCE";
       const bool stddev_samp_function = function == "STDDEV_SAMP";
       const bool variance_samp_function = function == "VARIANCE_SAMP";
+      const bool regr_count_function = function == "REGR_COUNT";
+      const bool pair_function =
+          function == "CORR" || function == "COVAR_POP" ||
+          function == "COVAR_SAMP" || regr_count_function ||
+          function == "REGR_AVGX" || function == "REGR_AVGY" ||
+          function == "REGR_INTERCEPT" || function == "REGR_R2" ||
+          function == "REGR_SLOPE" || function == "REGR_SXX" ||
+          function == "REGR_SXY" || function == "REGR_SYY";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           boolean_function ||
           stddev_pop_function || variance_pop_function || stddev_function ||
-          variance_function || stddev_samp_function || variance_samp_function;
+          variance_function || stddev_samp_function || variance_samp_function ||
+          pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -817,40 +826,44 @@ BuildEngineProjectedNativeBindingContext(
       const auto result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind ==
-                       (count_function ? 1 : (boolean_function ? 6 : 2)) &&
+                       ((count_function || regr_count_function)
+                            ? 1
+                            : (boolean_function ? 6 : 2)) &&
                    candidate.slot == 0;
           });
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
-          aggregate_expression->child_expression_ids.size() == 1 &&
+          aggregate_expression->child_expression_ids.size() ==
+              (pair_function ? 2 : 1) &&
           result_profile != statement_context.descriptor_profiles.end()) {
-        const auto argument = std::ranges::find_if(
-            ast.expressions, [&](const auto& candidate) {
-              return candidate.expression_id ==
-                     aggregate_expression->child_expression_ids.front();
+        argument_profile_exact = std::ranges::all_of(
+            aggregate_expression->child_expression_ids,
+            [&](const auto expression_id) {
+              const auto argument = std::ranges::find_if(
+                  ast.expressions, [&](const auto& candidate) {
+                    return candidate.expression_id == expression_id;
+                  });
+              if (argument == ast.expressions.end()) return false;
+              const auto source_expression = std::ranges::find(
+                  relation.output_expression_ids, argument->expression_id);
+              return source_expression != relation.output_expression_ids.end() &&
+                     static_cast<std::size_t>(std::distance(
+                         relation.output_expression_ids.begin(),
+                         source_expression)) < context.descriptors.size();
             });
-        if (argument != ast.expressions.end()) {
-          const auto source_expression = std::ranges::find(
-              relation.output_expression_ids, argument->expression_id);
-          if (source_expression != relation.output_expression_ids.end()) {
-            const auto source_ordinal = static_cast<std::size_t>(
-                std::distance(relation.output_expression_ids.begin(),
-                              source_expression));
-            argument_profile_exact =
-                source_ordinal < context.descriptors.size();
-          }
-        }
       }
       if (aggregate_expression == ast.expressions.end() ||
           aggregate_expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (aggregate_expression->child_expression_ids.size() !=
-           (count_star ? 0 : 1)) ||
+           (count_star ? 0 : (pair_function ? 2 : 1))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
-          (count_function && result_profile->nullable) ||
-          (expression_function && !result_profile->nullable) ||
+          ((count_function || regr_count_function) &&
+           result_profile->nullable) ||
+          (expression_function && !regr_count_function &&
+           !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
           !aggregate_function_uuid.has_value()) {
@@ -896,6 +909,42 @@ BuildEngineProjectedNativeBindingContext(
       } else if (every_function) {
         aggregate_output_name = "every_value";
         aggregate_semantic = "aggregate.global-every-expression.v1";
+      } else if (function == "CORR") {
+        aggregate_output_name = "corr_value";
+        aggregate_semantic = "aggregate.global-corr-expression.v1";
+      } else if (function == "COVAR_POP") {
+        aggregate_output_name = "covar_pop_value";
+        aggregate_semantic = "aggregate.global-covar-pop-expression.v1";
+      } else if (function == "COVAR_SAMP") {
+        aggregate_output_name = "covar_samp_value";
+        aggregate_semantic = "aggregate.global-covar-samp-expression.v1";
+      } else if (regr_count_function) {
+        aggregate_output_name = "regr_count_value";
+        aggregate_semantic = "aggregate.global-regr-count-expression.v1";
+      } else if (function == "REGR_AVGX") {
+        aggregate_output_name = "regr_avgx_value";
+        aggregate_semantic = "aggregate.global-regr-avgx-expression.v1";
+      } else if (function == "REGR_AVGY") {
+        aggregate_output_name = "regr_avgy_value";
+        aggregate_semantic = "aggregate.global-regr-avgy-expression.v1";
+      } else if (function == "REGR_INTERCEPT") {
+        aggregate_output_name = "regr_intercept_value";
+        aggregate_semantic = "aggregate.global-regr-intercept-expression.v1";
+      } else if (function == "REGR_R2") {
+        aggregate_output_name = "regr_r2_value";
+        aggregate_semantic = "aggregate.global-regr-r2-expression.v1";
+      } else if (function == "REGR_SLOPE") {
+        aggregate_output_name = "regr_slope_value";
+        aggregate_semantic = "aggregate.global-regr-slope-expression.v1";
+      } else if (function == "REGR_SXX") {
+        aggregate_output_name = "regr_sxx_value";
+        aggregate_semantic = "aggregate.global-regr-sxx-expression.v1";
+      } else if (function == "REGR_SXY") {
+        aggregate_output_name = "regr_sxy_value";
+        aggregate_semantic = "aggregate.global-regr-sxy-expression.v1";
+      } else if (function == "REGR_SYY") {
+        aggregate_output_name = "regr_syy_value";
+        aggregate_semantic = "aggregate.global-regr-syy-expression.v1";
       } else if (stddev_pop_function) {
         aggregate_output_name = "stddev_pop_value";
         aggregate_semantic = "aggregate.global-stddev-pop-expression.v1";

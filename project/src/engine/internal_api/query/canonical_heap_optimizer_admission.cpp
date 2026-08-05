@@ -419,6 +419,30 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-every-expression.v1" &&
          aggregate_node->semantic_variant_id !=
+             "aggregate.global-corr-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-covar-pop-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-covar-samp-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-count-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-avgx-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-avgy-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-intercept-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-r2-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-slope-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-sxx-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-sxy-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-regr-syy-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
              "aggregate.global-stddev-pop-expression.v1" &&
          aggregate_node->semantic_variant_id !=
              "aggregate.global-variance-pop-expression.v1" &&

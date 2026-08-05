@@ -1102,7 +1102,7 @@ LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
     std::string_view stem;
     exec::CanonicalAggregateFunction function;
   };
-  static constexpr std::array<FunctionProfile, 14> kFunctionProfiles = {{
+  static constexpr std::array<FunctionProfile, 26> kFunctionProfiles = {{
       {"count", exec::CanonicalAggregateFunction::count},
       {"sum", exec::CanonicalAggregateFunction::sum},
       {"avg", exec::CanonicalAggregateFunction::avg},
@@ -1117,6 +1117,18 @@ LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
       {"variance", exec::CanonicalAggregateFunction::variance},
       {"stddev-samp", exec::CanonicalAggregateFunction::stddev_samp},
       {"variance-samp", exec::CanonicalAggregateFunction::variance_samp},
+      {"corr", exec::CanonicalAggregateFunction::corr},
+      {"covar-pop", exec::CanonicalAggregateFunction::covar_pop},
+      {"covar-samp", exec::CanonicalAggregateFunction::covar_samp},
+      {"regr-count", exec::CanonicalAggregateFunction::regr_count},
+      {"regr-avgx", exec::CanonicalAggregateFunction::regr_avgx},
+      {"regr-avgy", exec::CanonicalAggregateFunction::regr_avgy},
+      {"regr-intercept", exec::CanonicalAggregateFunction::regr_intercept},
+      {"regr-r2", exec::CanonicalAggregateFunction::regr_r2},
+      {"regr-slope", exec::CanonicalAggregateFunction::regr_slope},
+      {"regr-sxx", exec::CanonicalAggregateFunction::regr_sxx},
+      {"regr-sxy", exec::CanonicalAggregateFunction::regr_sxy},
+      {"regr-syy", exec::CanonicalAggregateFunction::regr_syy},
   }};
 
   for (const auto& profile : kFunctionProfiles) {

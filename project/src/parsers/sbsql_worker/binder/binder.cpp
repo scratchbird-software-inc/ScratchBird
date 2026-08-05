@@ -591,6 +591,30 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-every-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
+                     "aggregate.global-corr-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-covar-pop-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-covar-samp-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-count-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-avgx-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-avgy-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-intercept-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-r2-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-slope-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-sxx-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-sxy-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-regr-syy-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
                      "aggregate.global-stddev-pop-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-variance-pop-expression.v1" &&
@@ -717,7 +741,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const NativeExpressionAstNode* filter_identifier = nullptr;
     const NativeExpressionAstNode* filter_literal = nullptr;
     const NativeExpressionAstNode* global_aggregate_expression = nullptr;
-    const NativeExpressionAstNode* global_aggregate_argument = nullptr;
+    std::vector<const NativeExpressionAstNode*> global_aggregate_arguments;
     if (aggregate_composition) {
       if (aggregate_relation->relation_source_ids.size() != 0 ||
           !aggregate_relation->values_row_ids.empty() ||
@@ -751,31 +775,38 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool avg_function = function == "AVG";
       const bool min_function = function == "MIN";
       const bool max_function = function == "MAX";
+      const bool pair_function =
+          function == "CORR" || function == "COVAR_POP" ||
+          function == "COVAR_SAMP" || function == "REGR_COUNT" ||
+          function == "REGR_AVGX" || function == "REGR_AVGY" ||
+          function == "REGR_INTERCEPT" || function == "REGR_R2" ||
+          function == "REGR_SLOPE" || function == "REGR_SXX" ||
+          function == "REGR_SXY" || function == "REGR_SYY";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
           function == "EVERY" ||
           function == "STDDEV_POP" || function == "VARIANCE_POP" ||
           function == "STDDEV" || function == "VARIANCE" ||
-          function == "STDDEV_SAMP" || function == "VARIANCE_SAMP";
+          function == "STDDEV_SAMP" || function == "VARIANCE_SAMP" ||
+          pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
-          expression->child_expression_ids.size() > 1 ||
-          (expression_function &&
-           expression->child_expression_ids.size() != 1) ||
+          (!pair_function && expression->child_expression_ids.size() > 1) ||
+          (expression_function && expression->child_expression_ids.size() !=
+                                      (pair_function ? 2 : 1)) ||
           expression->literal_kind.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
             "catalog global aggregate requires an exact supported unary binding");
         return RefusedBoundAst(std::move(bound));
       }
-      if (!expression->child_expression_ids.empty()) {
+      for (const auto argument_id : expression->child_expression_ids) {
         const auto argument = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
-              return candidate.expression_id ==
-                     expression->child_expression_ids.front();
+              return candidate.expression_id == argument_id;
             });
         if (argument == ast.expressions.end() ||
             argument->expression_kind != NativeExpressionAstKind::kIdentifier ||
@@ -788,7 +819,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               "catalog aggregate argument is not supplied by its source");
           return RefusedBoundAst(std::move(bound));
         }
-        global_aggregate_argument = &*argument;
+        global_aggregate_arguments.push_back(&*argument);
       }
       global_aggregate_expression = &*expression;
     }
@@ -1109,7 +1140,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     const NativeDescriptorBindingInput* aggregate_descriptor = nullptr;
     const NativeExpressionBindingInput* aggregate_expression_binding = nullptr;
-    std::optional<std::uint32_t> aggregate_argument_expression_id;
+    std::vector<std::uint32_t> aggregate_argument_expression_ids;
     const std::string_view aggregate_semantic =
         aggregate_composition
             ? std::string_view(context.relations.front().semantic_variant_id)
@@ -1117,6 +1148,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_count =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-count-");
+    const bool aggregate_regr_count =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-regr-count-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1136,6 +1170,41 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       if (aggregate_semantic.starts_with("aggregate.global-every-")) {
         return std::string("every_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-corr-")) {
+        return std::string("corr_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-covar-pop-")) {
+        return std::string("covar_pop_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-covar-samp-")) {
+        return std::string("covar_samp_value");
+      }
+      if (aggregate_regr_count) return std::string("regr_count_value");
+      if (aggregate_semantic.starts_with("aggregate.global-regr-avgx-")) {
+        return std::string("regr_avgx_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-avgy-")) {
+        return std::string("regr_avgy_value");
+      }
+      if (aggregate_semantic.starts_with(
+              "aggregate.global-regr-intercept-")) {
+        return std::string("regr_intercept_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-r2-")) {
+        return std::string("regr_r2_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-slope-")) {
+        return std::string("regr_slope_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-sxx-")) {
+        return std::string("regr_sxx_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-sxy-")) {
+        return std::string("regr_sxy_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-regr-syy-")) {
+        return std::string("regr_syy_value");
       }
       if (aggregate_semantic.starts_with("aggregate.global-stddev-pop-")) {
         return std::string("stddev_pop_value");
@@ -1169,8 +1238,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           });
       if (descriptor == descriptor_by_id.end() ||
           descriptor->second->nullability !=
-              (aggregate_count ? BoundNullability::kNonNull
-                               : BoundNullability::kNullable) ||
+              ((aggregate_count || aggregate_regr_count)
+                   ? BoundNullability::kNonNull
+                   : BoundNullability::kNullable) ||
           descriptor->second->collation_uuid.has_value() ||
           descriptor->second->timezone_profile_id.has_value() ||
           expression == context.expressions.end() ||
@@ -1185,7 +1255,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       aggregate_descriptor = descriptor->second;
       aggregate_expression_binding = &*expression;
-      if (global_aggregate_argument != nullptr) {
+      for (const auto* global_aggregate_argument :
+           global_aggregate_arguments) {
         const auto column = std::ranges::find_if(
             relation_binding.columns, [&](const auto& candidate) {
               return candidate.canonical_name_key ==
@@ -1197,8 +1268,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               "catalog aggregate argument column is unresolved");
           return RefusedBoundAst(std::move(bound));
         }
-        aggregate_argument_expression_id =
-            static_cast<std::uint32_t>(column->ordinal + 1);
+        aggregate_argument_expression_ids.push_back(
+            static_cast<std::uint32_t>(column->ordinal + 1));
       }
       used_descriptor_ids.insert(expected_aggregate_descriptor_id);
     }
@@ -1359,10 +1430,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             aggregate_expression_binding->descriptor_id;
         bound_expression.bound_function_uuid =
             aggregate_expression_binding->function_uuid;
-        if (aggregate_argument_expression_id.has_value()) {
-          bound_expression.child_expression_ids = {
-              *aggregate_argument_expression_id};
-        }
+        bound_expression.child_expression_ids =
+            aggregate_argument_expression_ids;
         bound.expressions.push_back(std::move(bound_expression));
         visible_expression_ids = {
             aggregate_expression_binding->expression_id};

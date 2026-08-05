@@ -304,11 +304,24 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 14> kFunctionNames{
+    static constexpr std::array<std::string_view, 26> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
-        "STDDEV_SAMP", "VARIANCE_SAMP"};
+        "STDDEV_SAMP", "VARIANCE_SAMP", "CORR",     "COVAR_POP",
+        "COVAR_SAMP",  "REGR_COUNT",   "REGR_AVGX", "REGR_AVGY",
+        "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
+        "REGR_SXY",    "REGR_SYY"};
+    const auto canonical = CanonicalTokenText(token);
+    return std::ranges::find(kFunctionNames, canonical) !=
+           kFunctionNames.end();
+  }
+
+  static bool IsBoundedCatalogPairAggregate(const Token& token) {
+    static constexpr std::array<std::string_view, 12> kFunctionNames{
+        "CORR",       "COVAR_POP",  "COVAR_SAMP", "REGR_COUNT",
+        "REGR_AVGX",  "REGR_AVGY",  "REGR_INTERCEPT", "REGR_R2",
+        "REGR_SLOPE", "REGR_SXX",   "REGR_SXY",   "REGR_SYY"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -324,11 +337,24 @@ class NativeRelationalParser final {
       ++cursor;
     } else if (cursor + 3 < tokens_.size() &&
                IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
-               tokens_[cursor + 1]->text == "(" &&
-               (tokens_[cursor + 2]->text == "*" ||
-                tokens_[cursor + 2]->kind == TokenKind::kIdentifier) &&
-               tokens_[cursor + 3]->text == ")") {
-      cursor += 4;
+               tokens_[cursor + 1]->text == "(") {
+      if (IsBoundedCatalogPairAggregate(*tokens_[cursor])) {
+        if (cursor + 5 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 3]->text != "," ||
+            tokens_[cursor + 4]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 5]->text != ")") {
+          return false;
+        }
+        cursor += 6;
+      } else {
+        if ((tokens_[cursor + 2]->text != "*" &&
+             tokens_[cursor + 2]->kind != TokenKind::kIdentifier) ||
+            tokens_[cursor + 3]->text != ")") {
+          return false;
+        }
+        cursor += 4;
+      }
     } else {
       while (cursor < tokens_.size()) {
         if (tokens_[cursor]->kind != TokenKind::kIdentifier) return false;
@@ -366,11 +392,13 @@ class NativeRelationalParser final {
     if (global_aggregate) {
       const Token& function_token = Consume();
       global_aggregate_function = CanonicalTokenText(function_token);
+      const bool pair_aggregate =
+          IsBoundedCatalogPairAggregate(function_token);
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
                          "bounded catalog aggregate requires an opening parenthesis")) {
         return FinishRefusal();
       }
-      std::optional<std::uint32_t> argument_expression_id;
+      std::vector<std::uint32_t> argument_expression_ids;
       if (AtSymbol("*")) {
         if (global_aggregate_function != "COUNT") {
           Refuse("catalog_aggregate_wildcard_unsupported",
@@ -393,9 +421,38 @@ class NativeRelationalParser final {
         argument.expression_kind = NativeExpressionAstKind::kIdentifier;
         argument.spelling = argument_token.text;
         argument.range = TokenSourceRange(argument_token);
-        argument_expression_id = argument.expression_id;
+        argument_expression_ids.push_back(argument.expression_id);
         source_projection_expression_ids.push_back(argument.expression_id);
         document_.expressions.push_back(std::move(argument));
+        if (pair_aggregate) {
+          if (!AtSymbol(",")) {
+            Refuse("catalog_aggregate_pair_separator_required",
+                   "bounded pair aggregate requires two source identifiers");
+            return FinishRefusal();
+          }
+          Consume();
+          if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+            Refuse("catalog_aggregate_pair_argument_required",
+                   "bounded pair aggregate requires a second source identifier");
+            return FinishRefusal();
+          }
+          const Token& second_argument_token = Consume();
+          if (second_argument_token.text == argument_token.text) {
+            argument_expression_ids.push_back(
+                argument_expression_ids.front());
+          } else {
+            NativeExpressionAstNode second_argument;
+            second_argument.expression_id = NextExpressionId();
+            second_argument.expression_kind =
+                NativeExpressionAstKind::kIdentifier;
+            second_argument.spelling = second_argument_token.text;
+            second_argument.range = TokenSourceRange(second_argument_token);
+            argument_expression_ids.push_back(second_argument.expression_id);
+            source_projection_expression_ids.push_back(
+                second_argument.expression_id);
+            document_.expressions.push_back(std::move(second_argument));
+          }
+        }
       } else {
         Refuse("catalog_aggregate_argument_required",
                "bounded catalog aggregate requires one source identifier");
@@ -413,9 +470,7 @@ class NativeRelationalParser final {
       aggregate.expression_id = NextExpressionId();
       aggregate.expression_kind = NativeExpressionAstKind::kFunctionCall;
       aggregate.operator_name = global_aggregate_function;
-      if (argument_expression_id.has_value()) {
-        aggregate.child_expression_ids = {*argument_expression_id};
-      }
+      aggregate.child_expression_ids = std::move(argument_expression_ids);
       aggregate.spelling = SourceSpelling(function_token, close_token);
       aggregate.range = Span(function_token, close_token);
       global_aggregate_expression_id = aggregate.expression_id;

@@ -33020,6 +33020,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-every-expression.v1" ||
            relation.semantic_variant_id ==
+               "aggregate.global-corr-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-covar-pop-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-covar-samp-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-count-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-avgx-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-avgy-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-intercept-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-r2-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-slope-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-sxx-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-sxy-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-regr-syy-expression.v1" ||
+           relation.semantic_variant_id ==
                "aggregate.global-stddev-pop-expression.v1" ||
            relation.semantic_variant_id ==
                "aggregate.global-variance-pop-expression.v1" ||
@@ -33863,6 +33887,16 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool count_star =
           aggregate_relation->semantic_variant_id ==
           "aggregate.global-count-star.v1";
+      const bool pair_aggregate =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-corr-") ||
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-covar-") ||
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-regr-");
+      const bool regr_count_aggregate =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-regr-count-");
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -33888,6 +33922,51 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-every-")) {
           return "every_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-corr-")) {
+          return "corr_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-covar-pop-")) {
+          return "covar_pop_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-covar-samp-")) {
+          return "covar_samp_value";
+        }
+        if (regr_count_aggregate) return "regr_count_value";
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-avgx-")) {
+          return "regr_avgx_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-avgy-")) {
+          return "regr_avgy_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-intercept-")) {
+          return "regr_intercept_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-r2-")) {
+          return "regr_r2_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-slope-")) {
+          return "regr_slope_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-sxx-")) {
+          return "regr_sxx_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-sxy-")) {
+          return "regr_sxy_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-regr-syy-")) {
+          return "regr_syy_value";
         }
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-pop-")) {
@@ -33920,12 +33999,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeExpressionAstKind::kFunctionCall ||
           !aggregate_expression->second->bound_function_uuid.has_value() ||
           aggregate_expression->second->child_expression_ids.size() !=
-              (count_star ? 0 : 1) ||
+              (count_star ? 0 : (pair_aggregate ? 2 : 1)) ||
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
-              (count_aggregate ? BoundNullability::kNonNull
-                               : BoundNullability::kNullable) ||
+              ((count_aggregate || regr_count_aggregate)
+                   ? BoundNullability::kNonNull
+                   : BoundNullability::kNullable) ||
           aggregate_descriptor.collation_uuid.has_value() ||
           aggregate_descriptor.timezone_profile_id.has_value() ||
           aggregate_outputs.size() != 1 ||
@@ -33940,19 +34020,21 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       if (!count_star) {
-        const auto argument = expressions_by_id.find(
-            aggregate_expression->second->child_expression_ids.front());
-        if (argument == expressions_by_id.end() ||
-            argument->second->expression_kind !=
-                NativeExpressionAstKind::kIdentifier ||
-            !argument->second->bound_name_uuid.has_value() ||
-            std::ranges::find(catalog_relation->bound_expression_ids,
-                              argument->second->expression_id) ==
-                catalog_relation->bound_expression_ids.end()) {
-          AddNativeRelationalLoweringError(
-              &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-              "typed catalog aggregate argument is not source-bound");
-          return envelope;
+        for (const auto argument_id :
+             aggregate_expression->second->child_expression_ids) {
+          const auto argument = expressions_by_id.find(argument_id);
+          if (argument == expressions_by_id.end() ||
+              argument->second->expression_kind !=
+                  NativeExpressionAstKind::kIdentifier ||
+              !argument->second->bound_name_uuid.has_value() ||
+              std::ranges::find(catalog_relation->bound_expression_ids,
+                                argument->second->expression_id) ==
+                  catalog_relation->bound_expression_ids.end()) {
+            AddNativeRelationalLoweringError(
+                &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                "typed catalog aggregate argument is not source-bound");
+            return envelope;
+          }
         }
       }
     }

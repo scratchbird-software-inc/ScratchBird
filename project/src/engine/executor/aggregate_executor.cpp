@@ -906,9 +906,10 @@ bool ValidateCanonicalAggregateInputType(
   }
   if (IsCanonicalPairStatisticalFunction(request.descriptor.function)) {
     for (const auto column : request.value_columns) {
-      const auto& type = request.input_batch.columns[column]
-                             .descriptor.canonical_type_name;
-      if (type != "int64" && type != "real64") {
+      const auto& descriptor =
+          request.input_batch.columns[column].descriptor;
+      if (!IsCanonicalBoundedSignedIntegerDescriptor(descriptor) &&
+          descriptor.canonical_type_name != "real64") {
         *diagnostic = Refusal(
             "QOW-DIAG-QRY-011-REGISTRY-TYPE-V1",
             "pair statistical aggregate requires two numeric descriptors");

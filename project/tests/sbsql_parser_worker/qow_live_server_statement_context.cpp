@@ -813,6 +813,53 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
               "complete engine-issued aggregate registry");
     }
 
+    static constexpr std::array<AggregateProof, 12>
+        kPairStatisticalAggregateProofs{{
+            {"CORR", "corr_value=1"},
+            {"COVAR_POP", "covar_pop_value=0.666666"},
+            {"COVAR_SAMP", "covar_samp_value=1"},
+            {"REGR_COUNT", "regr_count_value=3"},
+            {"REGR_AVGX", "regr_avgx_value=2"},
+            {"REGR_AVGY", "regr_avgy_value=102"},
+            {"REGR_INTERCEPT", "regr_intercept_value=100"},
+            {"REGR_R2", "regr_r2_value=1"},
+            {"REGR_SLOPE", "regr_slope_value=1"},
+            {"REGR_SXX", "regr_sxx_value=2"},
+            {"REGR_SXY", "regr_sxy_value=2"},
+            {"REGR_SYY", "regr_syy_value=2"},
+        }};
+    for (const auto& proof : kPairStatisticalAggregateProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) +
+                       "(auxiliary_value, integer_value) FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto aggregate = parser.RunPipeline(sql, true);
+      if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      Require(aggregate.accepted &&
+                  aggregate.server_operation_id == "query.execute" &&
+                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_row_count == 1 &&
+                  aggregate.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed pair statistical aggregate did not execute "
+              "through the complete engine-issued aggregate registry");
+    }
+    auto repeated_pair_argument = parser.RunPipeline(
+        "SELECT CORR(integer_value, integer_value) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!repeated_pair_argument.accepted) {
+      PrintMessages(repeated_pair_argument.messages);
+    }
+    Require(repeated_pair_argument.accepted &&
+                repeated_pair_argument.server_operation_id ==
+                    "query.execute" &&
+                repeated_pair_argument.server_cursor_uuid.empty() &&
+                repeated_pair_argument.server_row_count == 1 &&
+                repeated_pair_argument.server_result_payload.find(
+                    "corr_value=1") != std::string::npos,
+            "object-backed pair aggregate did not preserve a repeated "
+            "source argument binding");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);
