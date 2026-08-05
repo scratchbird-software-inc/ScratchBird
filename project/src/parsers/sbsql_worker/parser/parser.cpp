@@ -9,6 +9,7 @@
 #include "ast/ast.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstdint>
 #include <limits>
@@ -302,6 +303,17 @@ class NativeRelationalParser final {
            token.kind == TokenKind::kKeyword;
   }
 
+  static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
+    static constexpr std::array<std::string_view, 11> kFunctionNames{
+        "COUNT",       "SUM",          "AVG",      "MIN",
+        "MAX",         "STDDEV_POP",   "VARIANCE_POP",
+        "STDDEV",      "VARIANCE",     "STDDEV_SAMP",
+        "VARIANCE_SAMP"};
+    const auto canonical = CanonicalTokenText(token);
+    return std::ranges::find(kFunctionNames, canonical) !=
+           kFunctionNames.end();
+  }
+
   bool LooksLikeBoundedCatalogRelationSelect() const {
     // The candidate owns wildcard, simple identifier-list projection, and the
     // exact global COUNT(*) projection. Other computed projections and
@@ -311,11 +323,7 @@ class NativeRelationalParser final {
     if (tokens_[cursor]->text == "*") {
       ++cursor;
     } else if (cursor + 3 < tokens_.size() &&
-               (IsWord(*tokens_[cursor], "COUNT") ||
-                IsWord(*tokens_[cursor], "SUM") ||
-                IsWord(*tokens_[cursor], "AVG") ||
-                IsWord(*tokens_[cursor], "MIN") ||
-                IsWord(*tokens_[cursor], "MAX")) &&
+               IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
                tokens_[cursor + 1]->text == "(" &&
                (tokens_[cursor + 2]->text == "*" ||
                 tokens_[cursor + 2]->kind == TokenKind::kIdentifier) &&
@@ -353,9 +361,7 @@ class NativeRelationalParser final {
     std::string global_aggregate_function;
     const bool global_aggregate =
         !AtEnd() &&
-        (IsWord(Current(), "COUNT") || IsWord(Current(), "SUM") ||
-         IsWord(Current(), "AVG") || IsWord(Current(), "MIN") ||
-         IsWord(Current(), "MAX"));
+        IsBoundedCatalogGlobalAggregate(Current());
     bool global_count_star = false;
     if (global_aggregate) {
       const Token& function_token = Consume();

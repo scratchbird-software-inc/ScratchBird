@@ -78,6 +78,13 @@ struct ParserTransactionRouting {
 // private receipt, complete visibility vector, resource policy, and optimizer
 // state remain server/engine-owned and are intentionally absent.
 struct ParserStatementContext {
+  struct AggregateFunctionProfile {
+    std::uint16_t abi_version{0};
+    std::string builtin_id;
+    std::string function_uuid;
+    bool executable{false};
+  };
+
   struct DescriptorProfile {
     std::uint8_t profile_kind{0};
     std::uint16_t slot{0};
@@ -104,6 +111,7 @@ struct ParserStatementContext {
   std::string avg_function_uuid;
   std::string min_function_uuid;
   std::string max_function_uuid;
+  std::vector<AggregateFunctionProfile> aggregate_function_profiles;
   std::vector<DescriptorProfile> descriptor_profiles;
 
   [[nodiscard]] bool complete() const {

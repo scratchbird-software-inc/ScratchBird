@@ -89,6 +89,8 @@ constexpr std::uint32_t kSchemaAcquireStatementContextRequestV2 = 7013;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV2 = 7014;
 constexpr std::uint32_t kSchemaAcquireStatementContextRequestV3 = 7015;
 constexpr std::uint32_t kSchemaAcquireStatementContextResultV3 = 7016;
+constexpr std::uint32_t kSchemaAcquireStatementContextRequestV4 = 7017;
+constexpr std::uint32_t kSchemaAcquireStatementContextResultV4 = 7018;
 constexpr std::uint16_t kMessageHello = 1;
 constexpr std::uint16_t kMessageHelloAccept = 2;
 constexpr std::uint16_t kMessageAuthHandoff = 10;
@@ -868,6 +870,14 @@ std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV3(
   return out;
 }
 
+std::vector<std::uint8_t> EncodeAcquireStatementContextPayloadV4(
+    const ParserSessionContext& session,
+    const ParserTransactionSelector& transaction) {
+  auto out = EncodeAcquireStatementContextPayloadV1(session, transaction);
+  out[0] = 4;
+  return out;
+}
+
 bool DecodeAcquireStatementContextPayloadV1(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
@@ -920,6 +930,7 @@ bool DecodeAcquireStatementContextPayloadNative(
     const std::vector<std::uint8_t>& payload,
     const std::uint16_t expected_version,
     const bool extended_aggregate_registry,
+    const bool complete_aggregate_registry,
     ParserStatementContext* context) {
   constexpr std::size_t kBaseBytes = 2 + 1 + (6 * 16) + (2 * 8);
   constexpr std::size_t kProfileBytes = 1 + 2 + (3 * 16) + 1 + (3 * 4);
@@ -954,6 +965,40 @@ bool DecodeAcquireStatementContextPayloadNative(
     max_function_uuid = GetUuid(payload, offset);
     offset += 16;
   }
+  if (complete_aggregate_registry) {
+    if (offset + 2 > payload.size()) return false;
+    const auto aggregate_count = GetU16(payload, offset);
+    offset += 2;
+    if (aggregate_count != 43) return false;
+    std::set<std::string> builtin_ids;
+    std::set<std::string> function_uuids;
+    decoded.aggregate_function_profiles.reserve(aggregate_count);
+    for (std::uint16_t index = 0; index < aggregate_count; ++index) {
+      if (offset + 2 > payload.size()) return false;
+      ParserStatementContext::AggregateFunctionProfile profile;
+      profile.abi_version = GetU16(payload, offset);
+      offset += 2;
+      if (!ReadString(payload, &offset, &profile.builtin_id) ||
+          offset + 17 > payload.size()) {
+        return false;
+      }
+      const auto function_uuid = GetUuid(payload, offset);
+      offset += 16;
+      const auto executable = payload[offset++];
+      profile.function_uuid = UuidToText(function_uuid);
+      profile.executable = executable == 1;
+      if (profile.abi_version != 1 ||
+          !profile.builtin_id.starts_with("sb.aggregate.") ||
+          profile.builtin_id.size() <= std::string_view("sb.aggregate.").size() ||
+          !UuidPresent(function_uuid) || executable != 1 ||
+          !builtin_ids.insert(profile.builtin_id).second ||
+          !function_uuids.insert(profile.function_uuid).second) {
+        return false;
+      }
+      decoded.aggregate_function_profiles.push_back(std::move(profile));
+    }
+  }
+  if (offset + 2 > payload.size()) return false;
   const auto profile_count = GetU16(payload, offset);
   offset += 2;
   if (!UuidPresent(bound_ast_uuid) || !UuidPresent(count_function_uuid) ||
@@ -1025,6 +1070,7 @@ bool DecodeAcquireStatementContextPayloadV2(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 2, false,
+                                                     false,
                                                      context);
 }
 
@@ -1032,6 +1078,14 @@ bool DecodeAcquireStatementContextPayloadV3(
     const std::vector<std::uint8_t>& payload,
     ParserStatementContext* context) {
   return DecodeAcquireStatementContextPayloadNative(payload, 3, true,
+                                                     false,
+                                                     context);
+}
+
+bool DecodeAcquireStatementContextPayloadV4(
+    const std::vector<std::uint8_t>& payload,
+    ParserStatementContext* context) {
+  return DecodeAcquireStatementContextPayloadNative(payload, 4, true, true,
                                                      context);
 }
 
@@ -4149,10 +4203,10 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   if (!SendRequest(
           endpoint_,
           BaseHeader(kMessageAcquireStatementContextRequest,
-                     kSchemaAcquireStatementContextRequestV3,
+                     kSchemaAcquireStatementContextRequestV4,
                      session_uuid,
                      connection_uuid),
-          EncodeAcquireStatementContextPayloadV3(session, transaction),
+          EncodeAcquireStatementContextPayloadV4(session, transaction),
           &response,
           &messages,
           ActiveSocketCacheKey())) {
@@ -4161,19 +4215,19 @@ ServerStatementContextResult SbpsClient::AcquireNativeStatementContext(
   }
   if (response.header.message_type !=
           kMessageAcquireStatementContextResult ||
-      response.header.schema_id != kSchemaAcquireStatementContextResultV3 ||
+      response.header.schema_id != kSchemaAcquireStatementContextResultV4 ||
       IsErrorFrame(response)) {
     AddFrameDiagnostics(response, &messages);
     if (!IsErrorFrame(response)) {
       AddDiagnostic(
           &messages,
           "PARSER_SERVER_IPC.STATEMENT_CONTEXT_RESULT_SCHEMA_MISMATCH",
-          "The server did not return the native statement-context V3 result schema.");
+          "The server did not return the native statement-context V4 result schema.");
     }
     result.messages = std::move(messages);
     return result;
   }
-  if (!DecodeAcquireStatementContextPayloadV3(response.payload,
+  if (!DecodeAcquireStatementContextPayloadV4(response.payload,
                                                &result.context) ||
       result.context.transaction.local_transaction_id !=
           transaction.local_transaction_id ||

@@ -2336,6 +2336,11 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // Canonical aggregate function identity is catalog authority, not a
   // per-statement handle.  Publish the exact engine-owned registry rows so
   // repeated projected/HAVING references bind the same immutable functions.
+  const auto aggregate_registry_errors =
+      scratchbird::engine::executor::
+          ValidateCanonicalAggregateRuntimeRegistryV1();
+  const auto& aggregate_registry =
+      scratchbird::engine::executor::CanonicalAggregateRuntimeRegistryV1();
   const auto* count_registry_entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           scratchbird::engine::executor::CanonicalAggregateFunction::count);
@@ -2351,7 +2356,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto* max_registry_entry =
       scratchbird::engine::executor::LookupCanonicalAggregateByFunctionV1(
           scratchbird::engine::executor::CanonicalAggregateFunction::max);
-  if (count_registry_entry == nullptr || sum_registry_entry == nullptr ||
+  if (!aggregate_registry_errors.empty() || aggregate_registry.empty() ||
+      aggregate_registry.size() > 192 || count_registry_entry == nullptr ||
+      sum_registry_entry == nullptr ||
       avg_registry_entry == nullptr || min_registry_entry == nullptr ||
       max_registry_entry == nullptr || !count_registry_entry->executable ||
       !sum_registry_entry->executable || !avg_registry_entry->executable ||
@@ -2370,6 +2377,23 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.avg_function_uuid = avg_registry_entry->function_uuid;
   view.min_function_uuid = min_registry_entry->function_uuid;
   view.max_function_uuid = max_registry_entry->function_uuid;
+  view.aggregate_function_profiles.reserve(aggregate_registry.size());
+  for (const auto& entry : aggregate_registry) {
+    if (entry.abi_version != 1 || entry.builtin_id.empty() ||
+        entry.function_uuid.empty() || !entry.executable) {
+      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
+          snapshot.snapshot_uuid);
+      return fail_result(
+          SB_ENGINE_STATUS_INTERNAL_ERROR,
+          out_result,
+          4044,
+          "ENGINE.STATEMENT_CONTEXT.AGGREGATE_REGISTRY_UNAVAILABLE",
+          "engine.statement_context.aggregate_registry_unavailable");
+    }
+    view.aggregate_function_profiles.push_back(
+        {entry.abi_version, entry.builtin_id, entry.function_uuid,
+         entry.executable});
+  }
 
   std::string numeric_type_uuid;
   std::string text_type_uuid;

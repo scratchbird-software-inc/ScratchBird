@@ -742,6 +742,35 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed MAX(expression) did not ignore NULL and retain the "
             "greatest visible persisted value");
 
+    struct StatisticalAggregateProof {
+      std::string_view function;
+      std::string_view expected_payload;
+    };
+    static constexpr std::array<StatisticalAggregateProof, 6>
+        kStatisticalAggregateProofs{{
+            {"STDDEV_POP", "stddev_pop_value=0.816496"},
+            {"VARIANCE_POP", "variance_pop_value=0.666666"},
+            {"STDDEV", "stddev_value=1"},
+            {"VARIANCE", "variance_value=1"},
+            {"STDDEV_SAMP", "stddev_samp_value=1"},
+            {"VARIANCE_SAMP", "variance_samp_value=1"},
+        }};
+    for (const auto& proof : kStatisticalAggregateProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) +
+                       "(integer_value) FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto aggregate = parser.RunPipeline(sql, true);
+      if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      Require(aggregate.accepted &&
+                  aggregate.server_operation_id == "query.execute" &&
+                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_row_count == 1 &&
+                  aggregate.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed unary statistical aggregate did not execute "
+              "through the complete engine-issued aggregate registry");
+    }
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

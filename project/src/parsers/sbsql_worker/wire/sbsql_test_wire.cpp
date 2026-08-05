@@ -367,6 +367,28 @@ std::string NativeFilterSemantic(
          core + ".v1";
 }
 
+std::optional<std::string_view> EngineIssuedAggregateFunctionUuid(
+    const ParserStatementContext& statement_context,
+    std::string_view function_name) {
+  std::string builtin_id = "sb.aggregate.";
+  builtin_id.reserve(builtin_id.size() + function_name.size());
+  for (const char ch : function_name) {
+    builtin_id.push_back(static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch))));
+  }
+  const auto profile = std::ranges::find_if(
+      statement_context.aggregate_function_profiles,
+      [&](const auto& candidate) {
+        return candidate.abi_version == 1 && candidate.executable &&
+               candidate.builtin_id == builtin_id;
+      });
+  if (profile == statement_context.aggregate_function_profiles.end() ||
+      !CanonicalUuidBytes(profile->function_uuid).has_value()) {
+    return std::nullopt;
+  }
+  return profile->function_uuid;
+}
+
 std::optional<NativeRelationalBindingContext>
 BuildEngineProjectedNativeBindingContext(
     const NativeRelationalAstDocument& ast,
@@ -388,6 +410,7 @@ BuildEngineProjectedNativeBindingContext(
       statement_context.avg_function_uuid.empty() ||
       statement_context.min_function_uuid.empty() ||
       statement_context.max_function_uuid.empty() ||
+      statement_context.aggregate_function_profiles.size() != 43 ||
       statement_context.descriptor_profiles.empty()) {
     return fail("incomplete_statement_context");
   }
@@ -770,23 +793,18 @@ BuildEngineProjectedNativeBindingContext(
       const bool avg_function = function == "AVG";
       const bool min_function = function == "MIN";
       const bool max_function = function == "MAX";
+      const bool stddev_pop_function = function == "STDDEV_POP";
+      const bool variance_pop_function = function == "VARIANCE_POP";
+      const bool stddev_function = function == "STDDEV";
+      const bool variance_function = function == "VARIANCE";
+      const bool stddev_samp_function = function == "STDDEV_SAMP";
+      const bool variance_samp_function = function == "VARIANCE_SAMP";
       const bool expression_function =
-          sum_function || avg_function || min_function || max_function;
-      const std::string_view aggregate_function_uuid = [&]() {
-        if (count_function) {
-          return std::string_view(statement_context.count_function_uuid);
-        }
-        if (sum_function) {
-          return std::string_view(statement_context.sum_function_uuid);
-        }
-        if (avg_function) {
-          return std::string_view(statement_context.avg_function_uuid);
-        }
-        if (min_function) {
-          return std::string_view(statement_context.min_function_uuid);
-        }
-        return std::string_view(statement_context.max_function_uuid);
-      }();
+          sum_function || avg_function || min_function || max_function ||
+          stddev_pop_function || variance_pop_function || stddev_function ||
+          variance_function || stddev_samp_function || variance_samp_function;
+      const auto aggregate_function_uuid =
+          EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
                               aggregate_expression != ast.expressions.end() &&
                               aggregate_expression->child_expression_ids.empty();
@@ -828,7 +846,7 @@ BuildEngineProjectedNativeBindingContext(
           (expression_function && !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
-          !CanonicalUuidBytes(aggregate_function_uuid).has_value()) {
+          !aggregate_function_uuid.has_value()) {
         return fail("catalog_global_aggregate_profile_unavailable");
       }
       aggregate_binding_id =
@@ -843,7 +861,7 @@ BuildEngineProjectedNativeBindingContext(
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
           {*aggregate_binding_id, *aggregate_binding_id,
-           std::string(aggregate_function_uuid),
+           std::string(*aggregate_function_uuid),
            std::nullopt});
       if (count_function) {
         aggregate_output_name = "row_count";
@@ -859,9 +877,27 @@ BuildEngineProjectedNativeBindingContext(
       } else if (min_function) {
         aggregate_output_name = "minimum_value";
         aggregate_semantic = "aggregate.global-min-expression.v1";
-      } else {
+      } else if (max_function) {
         aggregate_output_name = "maximum_value";
         aggregate_semantic = "aggregate.global-max-expression.v1";
+      } else if (stddev_pop_function) {
+        aggregate_output_name = "stddev_pop_value";
+        aggregate_semantic = "aggregate.global-stddev-pop-expression.v1";
+      } else if (variance_pop_function) {
+        aggregate_output_name = "variance_pop_value";
+        aggregate_semantic = "aggregate.global-variance-pop-expression.v1";
+      } else if (stddev_function) {
+        aggregate_output_name = "stddev_value";
+        aggregate_semantic = "aggregate.global-stddev-expression.v1";
+      } else if (variance_function) {
+        aggregate_output_name = "variance_value";
+        aggregate_semantic = "aggregate.global-variance-expression.v1";
+      } else if (stddev_samp_function) {
+        aggregate_output_name = "stddev_samp_value";
+        aggregate_semantic = "aggregate.global-stddev-samp-expression.v1";
+      } else {
+        aggregate_output_name = "variance_samp_value";
+        aggregate_semantic = "aggregate.global-variance-samp-expression.v1";
       }
     }
     if (limit_composition) {

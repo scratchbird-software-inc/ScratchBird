@@ -33012,7 +33012,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-min-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-max-expression.v1");
+               "aggregate.global-max-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-stddev-pop-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-variance-pop-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-stddev-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-variance-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-stddev-samp-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-variance-samp-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33858,6 +33870,30 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-max-")) {
           return "maximum_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-stddev-pop-")) {
+          return "stddev_pop_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-variance-pop-")) {
+          return "variance_pop_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-stddev-samp-")) {
+          return "stddev_samp_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-variance-samp-")) {
+          return "variance_samp_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-stddev-")) {
+          return "stddev_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-variance-")) {
+          return "variance_value";
         }
         return "total_amount";
       }();

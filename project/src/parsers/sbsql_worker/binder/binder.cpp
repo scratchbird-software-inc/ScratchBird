@@ -583,7 +583,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-min-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-max-expression.v1"))
+                     "aggregate.global-max-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-stddev-pop-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-variance-pop-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-stddev-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-variance-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-stddev-samp-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-variance-samp-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -734,7 +746,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool min_function = function == "MIN";
       const bool max_function = function == "MAX";
       const bool expression_function =
-          sum_function || avg_function || min_function || max_function;
+          sum_function || avg_function || min_function || max_function ||
+          function == "STDDEV_POP" || function == "VARIANCE_POP" ||
+          function == "STDDEV" || function == "VARIANCE" ||
+          function == "STDDEV_SAMP" || function == "VARIANCE_SAMP";
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
@@ -745,7 +760,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           expression->literal_kind.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-            "catalog global aggregate requires exact COUNT, SUM, AVG, MIN, or MAX binding");
+            "catalog global aggregate requires an exact supported unary binding");
         return RefusedBoundAst(std::move(bound));
       }
       if (!expression->child_expression_ids.empty()) {
@@ -1104,6 +1119,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       if (aggregate_semantic.starts_with("aggregate.global-max-")) {
         return std::string("maximum_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-stddev-pop-")) {
+        return std::string("stddev_pop_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-variance-pop-")) {
+        return std::string("variance_pop_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-stddev-samp-")) {
+        return std::string("stddev_samp_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-variance-samp-")) {
+        return std::string("variance_samp_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
+        return std::string("stddev_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-variance-")) {
+        return std::string("variance_value");
       }
       return std::string("total_amount");
     }();

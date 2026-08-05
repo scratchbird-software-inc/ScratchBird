@@ -52,6 +52,13 @@ struct StatementDescriptorProfile {
   std::uint32_t scale = 0;
 };
 
+struct StatementAggregateFunctionProfile {
+  std::uint16_t abi_version = 0;
+  std::string builtin_id;
+  std::string function_uuid;
+  bool executable = false;
+};
+
 // Exact engine-issued view returned at acquisition. Later Packet 7 stages may
 // project the bounded parser fields from this value, but the opaque receipt
 // remains the authority presented back to the engine.
@@ -72,6 +79,7 @@ struct StatementContextReceiptView {
   std::string avg_function_uuid;
   std::string min_function_uuid;
   std::string max_function_uuid;
+  std::vector<StatementAggregateFunctionProfile> aggregate_function_profiles;
   std::vector<StatementDescriptorProfile> descriptor_profiles;
 
   std::uint64_t owning_local_transaction_id = 0;
