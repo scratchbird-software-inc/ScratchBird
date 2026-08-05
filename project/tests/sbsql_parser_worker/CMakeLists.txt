@@ -163,6 +163,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_SBSQL_PARSER_WORKER_TESTS)
     "RCP-049-BY-NAME-SET-COMPOSITION")
   set_property(TEST qow_live_values_spine_v1 APPEND PROPERTY LABELS
     "RCP-049-TYPE-RECONCILED-SET-COMPOSITION")
+  set_property(TEST qow_live_values_spine_v1 APPEND PROPERTY LABELS
+    "RCP-049-AGGREGATE-COMPOSITION")
 
   # QOW-CMAKE-QRY-019-PIVOT-V1
   add_executable(qow_qry_019_pivot_test_v1 qow_qry_019_pivot.cpp)
