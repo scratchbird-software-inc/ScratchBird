@@ -6534,6 +6534,124 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveExpressionSortRegistration(
+    std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
+    std::vector<PreparedSortExpression> expressions,
+    std::string deterministic_tie_evidence_uuid,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    const std::size_t maximum_pair_comparisons,
+    api::TypedRelationalDag relational_dag,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSort;
+  registration.implementation_id = "sort.typed.expression-row.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [order_terms = std::move(order_terms),
+       expressions = std::move(expressions),
+       deterministic_tie_evidence_uuid =
+           std::move(deterministic_tie_evidence_uuid),
+       maximum_input_row_count, maximum_pair_comparisons,
+       relational_dag = std::move(relational_dag),
+       expression_services = std::move(expression_services),
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-INPUT-V1";
+          step.diagnostic.detail =
+              "expression SORT did not receive its bounded typed input "
+              "batch";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+            input_batch, inputs.front().output_descriptor_ids);
+        if (!input_validation.ok) {
+          step.diagnostic = input_validation;
+          return step;
+        }
+        const auto mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto before =
+            exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                            dag);
+        if (!before.ok) {
+          step.diagnostic = before;
+          return step;
+        }
+        exec::DescriptorBatch expression_batch;
+        std::string expression_detail;
+        if (!MaterializeExpressionSortBatch(
+                relational_dag, expressions, input_batch,
+                expression_services, &expression_batch,
+                &expression_detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SORT-EXPRESSION-V1";
+          step.diagnostic.detail = std::move(expression_detail);
+          return step;
+        }
+
+        exec::CanonicalDescriptorSortRequest sort_request;
+        sort_request.physical_dag = dag;
+        sort_request.selected_physical_node_id = node.physical_node_id;
+        sort_request.input_batch = input_batch;
+        sort_request.order_key_batch = std::move(expression_batch);
+        sort_request.order_terms = order_terms;
+        sort_request.deterministic_tie_evidence_uuid =
+            deterministic_tie_evidence_uuid;
+        sort_request.maximum_pair_comparisons = maximum_pair_comparisons;
+        sort_request.mga_authority = mga_authority;
+        const auto sorted = exec::ExecuteCanonicalDescriptorSort(sort_request);
+        if (!sorted.diagnostic.ok) {
+          step.diagnostic = sorted.diagnostic;
+          return step;
+        }
+        const auto output_validation =
+            exec::ValidateCanonicalDescriptorBatch(
+                sorted.output_batch, node.output_descriptor_ids);
+        if (!output_validation.ok) {
+          step.diagnostic = output_validation;
+          return step;
+        }
+        const auto after =
+            exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                            dag);
+        if (!after.ok) {
+          step.diagnostic = after;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = sorted.output_batch.rows.size();
+        step.materialized_output_batch = sorted.output_batch;
+        step.mga_statement_context = sorted.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
     std::string implementation_id,
     std::string capability_uuid,
@@ -9175,18 +9293,31 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                                        expression_id) ==
                      input_node.bound_expression_ids.end();
             });
-        if (expression_ordering) {
-          // The existing exact expression-SORT route remains authoritative
-          // until the node-driven compiler carries a per-node order-key batch.
-          return refuse(std::string(kPayloadDiagnostic),
-                        "composed expression SORT awaits order-key carriage");
-        }
-        auto prepared = PrepareSortRoot(
-            request.context, request.relational_dag,
-            request.optimizer_request.logical_properties, node, input_node,
-            state);
+        auto prepared =
+            expression_ordering
+                ? PrepareExpressionSortRoot(
+                      request.context, request.relational_dag,
+                      request.optimizer_request.logical_properties, node,
+                      input_node, state, request.expression_services)
+                : PrepareSortRoot(
+                      request.context, request.relational_dag,
+                      request.optimizer_request.logical_properties, node,
+                      input_node, state);
         if (!prepared.ok) {
           return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        std::uint64_t expression_work = 0;
+        std::uint64_t expression_memory = 0;
+        if (prepared.expression_ordering &&
+            (!CheckedMultiply(input_row_count, prepared.expressions.size(),
+                              &expression_work) ||
+             !AddBatchMemoryBytes(prepared.expression_input_batch,
+                                  &expression_memory) ||
+             !add_work(expression_work))) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition expression SORT evaluation bound overflowed or "
+              "was exhausted");
         }
         std::uint64_t comparison_bound = 0;
         std::uint64_t row_order_memory = 0;
@@ -9197,11 +9328,19 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             comparison_bound > std::numeric_limits<std::size_t>::max() ||
             !CheckedAdd(comparison_bound, row_order_memory,
                         &auxiliary_memory) ||
+            (prepared.expression_ordering &&
+             (!CheckedAdd(auxiliary_memory, expression_memory,
+                          &auxiliary_memory) ||
+              !CheckedAdd(auxiliary_memory, expression_memory,
+                          &auxiliary_memory))) ||
             !add_work(comparison_bound)) {
           return refuse(
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
               "composition SORT comparison bound overflowed or was exhausted");
         }
+        const auto& order_key_batch = prepared.expression_ordering
+                                          ? prepared.expression_input_batch
+                                          : input_batch;
         std::vector<std::int8_t> comparisons(
             static_cast<std::size_t>(comparison_bound), 0);
         for (std::size_t left = 0; left < input_row_count; ++left) {
@@ -9210,8 +9349,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             int comparison = 0;
             for (const auto& term : prepared.order_terms) {
               const auto compared = exec::CompareCanonicalDescriptorOrderValues(
-                  input_batch.rows[left].values[term.column],
-                  input_batch.rows[right].values[term.column], term);
+                  order_key_batch.rows[left].values[term.column],
+                  order_key_batch.rows[right].values[term.column], term);
               if (!compared.diagnostic.ok) {
                 return refuse(std::string(kPayloadDiagnostic),
                               "SORT comparison: " +
@@ -9245,9 +9384,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             1, static_cast<std::size_t>(comparison_bound));
         state.batch = std::move(output);
         state.result_bindings = prepared_sort->result_bindings;
-        implementation_id = "sort.typed.terms.v1";
+        implementation_id = prepared_sort->expression_ordering
+                                ? "sort.typed.expression-row.v1"
+                                : "sort.typed.terms.v1";
         capability_uuid = sort_capability_uuid;
-        transformation_rule = "canonical.sort.composed-typed-terms.v1";
+        transformation_rule = prepared_sort->expression_ordering
+                                  ? "canonical.sort.composed-expression-row.v1"
+                                  : "canonical.sort.composed-typed-terms.v1";
         physical_kind = exec::PhysicalNodeKind::kSort;
         delivered_property_uuids = {prepared_sort->ordering_property_uuid};
         property_kinds = {
@@ -9452,11 +9595,23 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
         identity_scope + ":" + prepared_sort->ordering_property_uuid,
         "node-composition.deterministic-tie");
-    execution_request.available_executors.push_back(
-        MakeLiveSortRegistration(
-            std::move(prepared_sort->order_terms),
-            deterministic_tie_evidence_uuid, sort_capability_uuid,
-            sort_input_row_count, sort_comparison_bound, request.context));
+    if (prepared_sort->expression_ordering) {
+      execution_request.available_executors.push_back(
+          MakeLiveExpressionSortRegistration(
+              std::move(prepared_sort->order_terms),
+              std::move(prepared_sort->expressions),
+              deterministic_tie_evidence_uuid, sort_capability_uuid,
+              sort_input_row_count, sort_comparison_bound,
+              request.relational_dag, request.expression_services,
+              request.context));
+    } else {
+      execution_request.available_executors.push_back(
+          MakeLiveSortRegistration(
+              std::move(prepared_sort->order_terms),
+              deterministic_tie_evidence_uuid, sort_capability_uuid,
+              sort_input_row_count, sort_comparison_bound,
+              request.context));
+    }
   }
   if (prepared_limit.has_value()) {
     execution_request.available_executors.push_back(

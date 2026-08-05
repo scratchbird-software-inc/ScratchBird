@@ -1684,6 +1684,32 @@ sblr::SblrOperationEnvelope RowDependentSortValuesEnvelope() {
   return envelope;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-EXPRESSION-ORDER-KEY-CARRIAGE-V1
+sblr::SblrOperationEnvelope NodeDrivenExpressionSortLimitValuesEnvelope() {
+  auto envelope = RowDependentSortValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000cf30";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000cf31|"
+       "019f0000-0000-7400-8000-00000000cf32|2|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "22", "1|-|5|-|-|1|-|34"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "7|0|2|1,2,3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|22|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -14147,6 +14173,73 @@ bool ValidateRowDependentSortExpressionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-EXPRESSION-ORDER-KEY-CARRIAGE-V1
+bool ValidateNodeDrivenExpressionSortLimitCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == 3 &&
+           result.canonical_result_row_count == 4 &&
+           result.api_result.result_shape.columns.size() == 3 &&
+           result.api_result.result_shape.rows.size() == 4;
+  };
+  const auto first =
+      dispatch(NodeDrivenExpressionSortLimitValuesEnvelope());
+  const auto repeated =
+      dispatch(NodeDrivenExpressionSortLimitValuesEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = first.api_result.result_shape.rows;
+  bool passed = Require(
+      completed(first) && rows[0].fields.size() == 3 &&
+          rows[1].fields.size() == 3 && rows[2].fields.size() == 3 &&
+          rows[3].fields.size() == 3 &&
+          rows[0].fields[2].second.encoded_value == "2" &&
+          rows[1].fields[2].second.encoded_value == "5" &&
+          rows[2].fields[2].second.encoded_value == "6" &&
+          rows[3].fields[2].second.encoded_value == "3",
+      "node-driven expression SORT did not carry its derived key through "
+      "ordering, strip it, or feed LIMIT");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven expression SORT changed deterministic plan/result bytes");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 48;
+  const auto exhausted = dispatch(
+      NodeDrivenExpressionSortLimitValuesEnvelope(),
+      std::move(bounded_context));
+  passed &= Require(
+      exhausted.accepted && exhausted.optimizer_admitted &&
+          !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "one-unit-short expression SORT composition budget published partial "
+      "evidence");
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -14646,6 +14739,7 @@ int main() {
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
                       ValidateNodeDrivenNullCollationSetCompositionSpine() &&
+                      ValidateNodeDrivenExpressionSortLimitCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&
