@@ -5647,16 +5647,17 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
   return registration;
 }
 
-// QOW-SOURCE-RCP-049-UNARY-COMPOSITION-COMPILER-V1
-// Compile a connected object-free unary relational chain by node contract,
-// rather than by a whole-query shape name.  Existing exact profiles remain
-// preferred while this compiler grows across the remaining relational node
-// families.  This first consolidation slice admits any descriptor-valid
-// order of one FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node
-// over one canonical VALUES leaf.  Every node still executes through the
-// ordinary optimizer-published ABI-v2 DAG and its canonical executor.
+// QOW-SOURCE-RCP-049-NODE-DRIVEN-COMPOSITION-COMPILER-V1
+// Compile a connected object-free relational graph by node contract, rather
+// than by a whole-query shape name.  Existing exact profiles remain preferred
+// while this compiler grows across the remaining relational node families.
+// The compiler admits a descriptor-valid unary tail containing at most one
+// FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
+// canonical VALUES leaf or a two-VALUES accepted JOIN-kind branch.  Every
+// node still executes through the ordinary optimizer-published ABI-v2 DAG and
+// its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
-ExecuteCanonicalObjectFreeUnaryCompositionQuery(
+ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& graph = request.optimizer_request.logical_graph;
@@ -5673,6 +5674,11 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   std::vector<const plan::CanonicalLogicalRelationalNode*> reverse_chain;
   std::unordered_set<std::uint32_t> visited;
   std::unordered_set<plan::CanonicalLogicalRelationalNodeKind> unary_kinds;
+  const plan::CanonicalLogicalRelationalNode* join_left_node = nullptr;
+  const plan::CanonicalLogicalRelationalNode* join_right_node = nullptr;
+  std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
+  std::string join_component;
+  std::string join_operation_name;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
     if (!visited.insert(current->logical_node_id).second ||
@@ -5686,6 +5692,74 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
           !current->input_logical_node_ids.empty()) {
         return result;
       }
+      break;
+    }
+    if (current->node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kJoin) {
+      if (current->semantic_variant_id == "join.inner.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kInner;
+        join_component = "inner";
+        join_operation_name = "INNER JOIN";
+      } else if (current->semantic_variant_id == "join.cross.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+        join_component = "cross";
+        join_operation_name = "CROSS JOIN";
+      } else if (current->semantic_variant_id == "join.left-outer.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+        join_component = "left-outer";
+        join_operation_name = "LEFT OUTER JOIN";
+      } else if (current->semantic_variant_id == "join.right-outer.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+        join_component = "right-outer";
+        join_operation_name = "RIGHT OUTER JOIN";
+      } else if (current->semantic_variant_id == "join.full-outer.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+        join_component = "full-outer";
+        join_operation_name = "FULL OUTER JOIN";
+      } else if (current->semantic_variant_id == "join.left-semi.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
+        join_component = "left-semi";
+        join_operation_name = "LEFT SEMI JOIN";
+      } else if (current->semantic_variant_id == "join.left-anti.v1") {
+        join_kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
+        join_component = "left-anti";
+        join_operation_name = "LEFT ANTI JOIN";
+      } else {
+        return result;
+      }
+      const auto expected_expression_count =
+          *join_kind == exec::CanonicalAcceptedJoinKind::kCross ? 0U : 1U;
+      if (current->input_logical_node_ids.size() != 2 ||
+          current->input_logical_node_ids[0] ==
+              current->input_logical_node_ids[1] ||
+          current->bound_expression_ids.size() != expected_expression_count ||
+          !current->required_property_uuids.empty() ||
+          !current->delivered_property_uuids.empty()) {
+        return result;
+      }
+      const auto left = find_node(current->input_logical_node_ids[0]);
+      const auto right = find_node(current->input_logical_node_ids[1]);
+      if (left == graph.nodes.end() || right == graph.nodes.end() ||
+          left->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          right->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          left->semantic_variant_id != "values.literal-table.v1" ||
+          right->semantic_variant_id != "values.literal-table.v1" ||
+          !left->input_logical_node_ids.empty() ||
+          !right->input_logical_node_ids.empty() ||
+          !left->required_object_uuids.empty() ||
+          !right->required_object_uuids.empty() ||
+          !left->required_property_uuids.empty() ||
+          !right->required_property_uuids.empty() ||
+          !left->delivered_property_uuids.empty() ||
+          !right->delivered_property_uuids.empty() ||
+          !visited.insert(left->logical_node_id).second ||
+          !visited.insert(right->logical_node_id).second) {
+        return result;
+      }
+      join_left_node = &*left;
+      join_right_node = &*right;
       break;
     }
     if (current->input_logical_node_ids.size() != 1 ||
@@ -5739,8 +5813,10 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
     current = find_node(current->input_logical_node_ids.front());
   }
   if (reverse_chain.empty() ||
-      reverse_chain.back()->node_kind !=
-          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      (reverse_chain.back()->node_kind !=
+           plan::CanonicalLogicalRelationalNodeKind::kValues &&
+       reverse_chain.back()->node_kind !=
+           plan::CanonicalLogicalRelationalNodeKind::kJoin) ||
       visited.size() != graph.nodes.size() || sort_count > 1 ||
       (sort_count == 0 &&
        !request.optimizer_request.logical_properties.properties.empty()) ||
@@ -5767,21 +5843,22 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
     return result;
   };
   constexpr std::string_view kPayloadDiagnostic =
-      "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-PAYLOAD-V1";
+      "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-PAYLOAD-V1";
   if (!request.optimizer_admission.admitted ||
       !request.optimizer_admission.planning_allowed) {
     return refuse(
-        "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-ADMISSION-V1",
-        "node-driven unary composition lacks optimizer admission");
+        "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-ADMISSION-V1",
+        "node-driven composition lacks optimizer admission");
   }
 
-  auto state = MaterializeValues(request.relational_dag,
-                                 *reverse_chain.front(),
-                                 request.expression_services);
-  if (!state.ok) {
-    return refuse(std::string(kPayloadDiagnostic),
-                  "composition VALUES: " + state.detail);
-  }
+  MaterializedValues state;
+  std::optional<MaterializedValues> join_left_values;
+  std::optional<MaterializedValues> join_right_values;
+  std::optional<PreparedJoinRoot> prepared_join;
+  std::vector<api::EngineSqlTruthValue> join_truth_values;
+  std::size_t join_pair_count = 0;
+  std::size_t join_output_row_bound = 0;
+  std::string join_implementation_id;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag, request.expression_services);
 
@@ -5808,6 +5885,8 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
                               request.context.statement_uuid.canonical;
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.values.capability");
+  const auto join_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.join.capability");
   const auto filter_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.filter.capability");
   const auto project_capability_uuid =
@@ -5820,21 +5899,268 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
       DerivedCanonicalUuid(identity_scope, "composition.limit.capability");
 
   std::vector<LivePhysicalNodeProfile> profiles;
-  std::uint64_t values_memory = 1;
-  if (!AddBatchMemoryBytes(state.batch, &values_memory) ||
-      values_memory > request.optimizer_request.resource.memory_budget_bytes) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "composition VALUES exceeds the admitted memory budget");
-  }
-  profiles.push_back(
-      {reverse_chain.front()->logical_node_id,
-       std::string(kValuesImplementationId), values_capability_uuid,
-       plan::CanonicalLogicalRelationalNodeKind::kValues,
-       exec::PhysicalNodeKind::kValues,
-       "canonical.values.materialize.v1", state.batch.rows.size(),
-       values_memory, 0, 0});
+  std::uint64_t total_work = 0;
+  if (reverse_chain.front()->node_kind ==
+      plan::CanonicalLogicalRelationalNodeKind::kValues) {
+    state = MaterializeValues(request.relational_dag,
+                              *reverse_chain.front(),
+                              request.expression_services);
+    if (!state.ok) {
+      return refuse(std::string(kPayloadDiagnostic),
+                    "composition VALUES: " + state.detail);
+    }
+    std::uint64_t values_memory = 1;
+    if (!AddBatchMemoryBytes(state.batch, &values_memory) ||
+        values_memory >
+            request.optimizer_request.resource.memory_budget_bytes) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition VALUES exceeds the admitted memory budget");
+    }
+    profiles.push_back(
+        {reverse_chain.front()->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", state.batch.rows.size(),
+         values_memory, 0, 0});
+    total_work = state.batch.rows.size();
+  } else {
+    join_left_values = MaterializeValues(
+        request.relational_dag, *join_left_node,
+        request.expression_services);
+    join_right_values = MaterializeValues(
+        request.relational_dag, *join_right_node,
+        request.expression_services);
+    if (!join_left_values->ok || !join_right_values->ok) {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          !join_left_values->ok
+              ? "composition JOIN left VALUES: " + join_left_values->detail
+              : "composition JOIN right VALUES: " +
+                    join_right_values->detail);
+    }
+    prepared_join = PrepareJoinRoot(
+        request.relational_dag, *reverse_chain.front(), *join_left_node,
+        *join_right_node, *join_left_values, *join_right_values, *join_kind);
+    if (!prepared_join->ok) {
+      return refuse(std::string(kPayloadDiagnostic), prepared_join->detail);
+    }
 
-  std::uint64_t total_work = state.batch.rows.size();
+    const auto left_count = join_left_values->batch.rows.size();
+    const auto right_count = join_right_values->batch.rows.size();
+    if (left_count != 0 &&
+        right_count > std::numeric_limits<std::size_t>::max() / left_count) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition JOIN pair cardinality overflowed");
+    }
+    join_pair_count = left_count * right_count;
+    join_truth_values.reserve(join_pair_count);
+    if (*join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
+      join_truth_values.assign(
+          join_pair_count, api::EngineSqlTruthValue::true_value);
+    } else {
+      std::vector<api::EngineTypedValue> predicate_row_values;
+      predicate_row_values.reserve(
+          join_left_values->batch.columns.size() +
+          join_right_values->batch.columns.size());
+      for (const auto& left_row : join_left_values->batch.rows) {
+        for (const auto& right_row : join_right_values->batch.rows) {
+          predicate_row_values.clear();
+          predicate_row_values.insert(predicate_row_values.end(),
+                                      left_row.values.begin(),
+                                      left_row.values.end());
+          predicate_row_values.insert(predicate_row_values.end(),
+                                      right_row.values.begin(),
+                                      right_row.values.end());
+          api::EngineSqlTruthValue truth =
+              api::EngineSqlTruthValue::unknown;
+          std::string detail;
+          if (!expression_runtime.EvaluatePredicateForConsumer(
+                  prepared_join->predicate_expression_id,
+                  prepared_join->predicate_row_binding,
+                  predicate_row_values,
+                  api::EngineCanonicalExpressionConsumer::join, &truth,
+                  &detail)) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                "composition JOIN predicate pair " +
+                    std::to_string(join_truth_values.size()) + ": " +
+                    detail);
+          }
+          join_truth_values.push_back(truth);
+        }
+      }
+    }
+
+    std::vector<std::size_t> accepted_pairs;
+    std::vector<bool> matched_left(left_count, false);
+    std::vector<bool> matched_right(right_count, false);
+    for (std::size_t pair = 0; pair < join_truth_values.size(); ++pair) {
+      if (join_truth_values[pair] !=
+          api::EngineSqlTruthValue::true_value) {
+        continue;
+      }
+      accepted_pairs.push_back(pair);
+      matched_left[pair / right_count] = true;
+      matched_right[pair % right_count] = true;
+    }
+
+    state.ok = true;
+    const bool left_only =
+        *join_kind == exec::CanonicalAcceptedJoinKind::kLeftSemi ||
+        *join_kind == exec::CanonicalAcceptedJoinKind::kLeftAnti;
+    state.batch.columns = join_left_values->batch.columns;
+    if (!left_only) {
+      state.batch.columns.insert(state.batch.columns.end(),
+                                 join_right_values->batch.columns.begin(),
+                                 join_right_values->batch.columns.end());
+    }
+    const auto left_width = join_left_values->batch.columns.size();
+    if (*join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+        *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
+      for (std::size_t column = 0; column < left_width; ++column) {
+        state.batch.columns[column].nullable = true;
+      }
+    }
+    if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+        *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
+      for (std::size_t column = left_width;
+           column < state.batch.columns.size(); ++column) {
+        state.batch.columns[column].nullable = true;
+      }
+    }
+    const auto append_joined = [&](const std::size_t left_ordinal,
+                                   const std::size_t right_ordinal) {
+      exec::DescriptorTuple row =
+          join_left_values->batch.rows[left_ordinal];
+      const auto& right_values =
+          join_right_values->batch.rows[right_ordinal].values;
+      row.values.insert(row.values.end(), right_values.begin(),
+                        right_values.end());
+      state.batch.rows.push_back(std::move(row));
+    };
+    const auto append_unmatched_left = [&](const std::size_t left_ordinal) {
+      exec::DescriptorTuple row =
+          join_left_values->batch.rows[left_ordinal];
+      for (const auto& column : join_right_values->batch.columns) {
+        api::EngineTypedValue null_value;
+        null_value.descriptor = column.descriptor;
+        null_value.is_null = true;
+        null_value.state = api::EngineValueState::sql_null;
+        row.values.push_back(std::move(null_value));
+      }
+      state.batch.rows.push_back(std::move(row));
+    };
+    const auto append_unmatched_right = [&](const std::size_t right_ordinal) {
+      exec::DescriptorTuple row;
+      for (const auto& column : join_left_values->batch.columns) {
+        api::EngineTypedValue null_value;
+        null_value.descriptor = column.descriptor;
+        null_value.is_null = true;
+        null_value.state = api::EngineValueState::sql_null;
+        row.values.push_back(std::move(null_value));
+      }
+      const auto& right_values =
+          join_right_values->batch.rows[right_ordinal].values;
+      row.values.insert(row.values.end(), right_values.begin(),
+                        right_values.end());
+      state.batch.rows.push_back(std::move(row));
+    };
+
+    if (left_only) {
+      const bool emit_matches =
+          *join_kind == exec::CanonicalAcceptedJoinKind::kLeftSemi;
+      for (std::size_t left = 0; left < left_count; ++left) {
+        if (matched_left[left] == emit_matches) {
+          state.batch.rows.push_back(join_left_values->batch.rows[left]);
+        }
+      }
+    } else if (*join_kind ==
+               exec::CanonicalAcceptedJoinKind::kRightOuter) {
+      for (std::size_t right = 0; right < right_count; ++right) {
+        bool emitted = false;
+        for (const auto pair : accepted_pairs) {
+          if (pair % right_count == right) {
+            append_joined(pair / right_count, right);
+            emitted = true;
+          }
+        }
+        if (!emitted) append_unmatched_right(right);
+      }
+    } else if (*join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+               *join_kind ==
+                   exec::CanonicalAcceptedJoinKind::kFullOuter) {
+      std::size_t accepted = 0;
+      for (std::size_t left = 0; left < left_count; ++left) {
+        bool emitted = false;
+        while (accepted < accepted_pairs.size() &&
+               accepted_pairs[accepted] / right_count == left) {
+          append_joined(left, accepted_pairs[accepted] % right_count);
+          ++accepted;
+          emitted = true;
+        }
+        if (!emitted) append_unmatched_left(left);
+      }
+      if (*join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) {
+        for (std::size_t right = 0; right < right_count; ++right) {
+          if (!matched_right[right]) append_unmatched_right(right);
+        }
+      }
+    } else {
+      for (const auto pair : accepted_pairs) {
+        append_joined(pair / right_count, pair % right_count);
+      }
+    }
+    state.result_bindings = prepared_join->result_bindings;
+    join_output_row_bound = state.batch.rows.size();
+    join_implementation_id =
+        "join." + join_component + ".3vl.nested.v1";
+
+    std::uint64_t left_memory = 1;
+    std::uint64_t right_memory = 1;
+    std::uint64_t join_memory = 1;
+    std::uint64_t truth_memory = 0;
+    if (!AddBatchMemoryBytes(join_left_values->batch, &left_memory) ||
+        !AddBatchMemoryBytes(join_right_values->batch, &right_memory) ||
+        !AddBatchMemoryBytes(state.batch, &join_memory) ||
+        !CheckedMultiply(join_pair_count,
+                         sizeof(api::EngineSqlTruthValue), &truth_memory) ||
+        !CheckedAdd(join_memory, left_memory, &join_memory) ||
+        !CheckedAdd(join_memory, right_memory, &join_memory) ||
+        !CheckedAdd(join_memory, truth_memory, &join_memory) ||
+        join_memory >
+            request.optimizer_request.resource.memory_budget_bytes) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition JOIN exceeds the admitted memory budget");
+    }
+    profiles.push_back(
+        {join_left_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", left_count, left_memory, 0, 0});
+    profiles.push_back(
+        {join_right_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", right_count, right_memory, 0, 0});
+    profiles.push_back(
+        {reverse_chain.front()->logical_node_id, join_implementation_id,
+         join_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kJoin,
+         exec::PhysicalNodeKind::kJoin,
+         "canonical." + join_implementation_id, join_output_row_bound,
+         join_memory, 2, 2});
+    if (!CheckedAdd(left_count, right_count, &total_work) ||
+        !CheckedAdd(total_work, join_pair_count, &total_work) ||
+        total_work >
+            request.optimizer_request.resource.maximum_candidate_count) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition JOIN work exceeds the admitted bound");
+    }
+  }
   const auto add_work = [&](const std::uint64_t work) {
     return CheckedAdd(total_work, work, &total_work) &&
            total_work <=
@@ -6210,8 +6536,8 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   }
 
   const auto planning = PlanAndPublishLivePhysicalDag(
-      request, profiles, "unary-composition.selected-plan",
-      "node-driven unary composition");
+      request, profiles, "node-composition.selected-plan",
+      "node-driven composition");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
   result.optimizer_selected = true;
   result.physical_dag_published = true;
@@ -6219,15 +6545,22 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
 
   std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
-  auto values = MaterializeValues(request.relational_dag,
-                                  *reverse_chain.front(),
-                                  request.expression_services);
-  if (!values.ok) {
-    return refuse(std::string(kPayloadDiagnostic),
-                  "composition VALUES replay: " + values.detail);
+  if (join_kind.has_value()) {
+    values_batches.emplace(join_left_node->logical_node_id,
+                           std::move(join_left_values->batch));
+    values_batches.emplace(join_right_node->logical_node_id,
+                           std::move(join_right_values->batch));
+  } else {
+    auto values = MaterializeValues(request.relational_dag,
+                                    *reverse_chain.front(),
+                                    request.expression_services);
+    if (!values.ok) {
+      return refuse(std::string(kPayloadDiagnostic),
+                    "composition VALUES replay: " + values.detail);
+    }
+    values_batches.emplace(reverse_chain.front()->logical_node_id,
+                           std::move(values.batch));
   }
-  values_batches.emplace(reverse_chain.front()->logical_node_id,
-                         std::move(values.batch));
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.selected_physical_dag = planning.physical_dag;
@@ -6238,8 +6571,16 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   execution_request.available_executors.push_back(
       MakeLiveValuesRegistration(
           std::move(values_batches), values_capability_uuid,
-          "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-VALUES-V1",
-          "node-driven unary composition"));
+          "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-VALUES-V1",
+          "node-driven composition"));
+  if (prepared_join.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveJoinRegistration(
+            join_implementation_id, join_capability_uuid,
+            std::move(join_truth_values), join_pair_count,
+            join_output_row_bound, *join_kind, join_operation_name,
+            request.context));
+  }
   if (prepared_filter.has_value()) {
     execution_request.available_executors.push_back(
         MakeLiveFilterRegistration(
@@ -6264,7 +6605,7 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   if (prepared_sort.has_value()) {
     const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
         identity_scope + ":" + prepared_sort->ordering_property_uuid,
-        "unary-composition.deterministic-tie");
+        "node-composition.deterministic-tie");
     execution_request.available_executors.push_back(
         MakeLiveSortRegistration(
             std::move(prepared_sort->order_terms),
@@ -6285,14 +6626,14 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
   execution_request.result_publication_request.execution_attempt_uuid =
       DerivedCanonicalUuid(
           identity_scope + ":" + request.context.current_monotonic_ns,
-          "unary-composition.execution-attempt");
+          "node-composition.execution-attempt");
   execution_request.result_publication_request
       .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" +
           std::to_string(request.context.local_transaction_id) + ":" +
           std::to_string(
               request.context.snapshot_visible_through_local_transaction_id),
-      "unary-composition.transaction-effect-unchanged");
+      "node-composition.transaction-effect-unchanged");
   execution_request.result_publication_request.result_kind =
       exec::CanonicalResultKind::kRows;
   execution_request.result_publication_request.invocation_mode =
@@ -6309,10 +6650,10 @@ ExecuteCanonicalObjectFreeUnaryCompositionQuery(
       !execution.canonical_result_published || !execution.issues.empty()) {
     return refuse(
         execution.issues.empty()
-            ? "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-EXECUTION-V1"
+            ? "QOW-DIAG-RELATIONAL-LIVE-NODE-COMPOSITION-EXECUTION-V1"
             : execution.issues.front().diagnostic_id,
         execution.issues.empty()
-            ? "node-driven unary composition selected DAG was not completed"
+            ? "node-driven composition selected DAG was not completed"
             : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
@@ -13975,9 +14316,9 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (nested_set_operation.profile_matched) return nested_set_operation;
   auto set_operation = ExecuteCanonicalObjectFreeSetOperationQuery(request);
   if (set_operation.profile_matched) return set_operation;
-  auto unary_composition =
-      ExecuteCanonicalObjectFreeUnaryCompositionQuery(request);
-  if (unary_composition.profile_matched) return unary_composition;
+  auto node_composition =
+      ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(request);
+  if (node_composition.profile_matched) return node_composition;
   CanonicalObjectFreeValuesExecutionResult result;
   const auto refuse = [&](std::string diagnostic_id, std::string detail) {
     result.optimizer_selected = false;
