@@ -8,6 +8,7 @@
 
 #include "descriptor_value_runtime.hpp"
 
+#include "datatype_operations.hpp"
 #include "temp_spill_executor.hpp"
 
 #include <algorithm>
@@ -212,7 +213,12 @@ bool RenderAggregateJsonValue(const EngineTypedValue& value,
     return true;
   }
   const auto& type = value.descriptor.canonical_type_name;
-  if (type == "int64") {
+  const auto type_id =
+      scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type);
+  if (type_id == scratchbird::core::datatypes::CanonicalTypeId::int8 ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::int16 ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::int32 ||
+      type_id == scratchbird::core::datatypes::CanonicalTypeId::int64) {
     const auto decoded = DecodeInt64Value(value);
     if (!decoded.ok()) {
       *diagnostic = decoded.diagnostic;

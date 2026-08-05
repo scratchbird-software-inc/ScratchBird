@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 39> kFunctionNames{
+    static constexpr std::array<std::string_view, 42> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -315,7 +315,8 @@ class NativeRelationalParser final {
         "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE",
         "PERCENTILE_CONT", "PERCENTILE_DISC", "RANK", "DENSE_RANK",
         "PERCENT_RANK", "CUME_DIST", "APPROX_PERCENTILE_CONT",
-        "APPROX_PERCENTILE_DISC"};
+        "APPROX_PERCENTILE_DISC", "ARRAY_AGG", "JSON_AGG",
+        "JSON_OBJECT_AGG"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -356,6 +357,15 @@ class NativeRelationalParser final {
            function == "PERCENT_RANK" || function == "CUME_DIST";
   }
 
+  static bool IsBoundedCatalogOrderedSingleCollection(const Token& token) {
+    const auto function = CanonicalTokenText(token);
+    return function == "ARRAY_AGG" || function == "JSON_AGG";
+  }
+
+  static bool IsBoundedCatalogJsonObjectAggregate(const Token& token) {
+    return CanonicalTokenText(token) == "JSON_OBJECT_AGG";
+  }
+
   bool LooksLikeBoundedCatalogRelationSelect() const {
     // The candidate owns wildcard, simple identifier-list projection, and the
     // exact global COUNT(*) projection. Other computed projections and
@@ -382,6 +392,29 @@ class NativeRelationalParser final {
           return false;
         }
         cursor += 11;
+      } else if (IsBoundedCatalogOrderedSingleCollection(
+                     *tokens_[cursor])) {
+        if (cursor + 6 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
+            !IsWord(*tokens_[cursor + 3], "ORDER") ||
+            !IsWord(*tokens_[cursor + 4], "BY") ||
+            tokens_[cursor + 5]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 6]->text != ")") {
+          return false;
+        }
+        cursor += 7;
+      } else if (IsBoundedCatalogJsonObjectAggregate(*tokens_[cursor])) {
+        if (cursor + 8 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 3]->text != "," ||
+            tokens_[cursor + 4]->kind != TokenKind::kIdentifier ||
+            !IsWord(*tokens_[cursor + 5], "ORDER") ||
+            !IsWord(*tokens_[cursor + 6], "BY") ||
+            tokens_[cursor + 7]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 8]->text != ")") {
+          return false;
+        }
+        cursor += 9;
       } else if (IsBoundedCatalogMode(*tokens_[cursor])) {
         if (cursor + 9 >= tokens_.size() ||
             tokens_[cursor + 2]->text != ")" ||
@@ -483,6 +516,12 @@ class NativeRelationalParser final {
       const bool percentile = IsBoundedCatalogPercentile(function_token);
       const bool hypothetical_set =
           IsBoundedCatalogHypotheticalSet(function_token);
+      const bool ordered_single_collection =
+          IsBoundedCatalogOrderedSingleCollection(function_token);
+      const bool json_object_aggregate =
+          IsBoundedCatalogJsonObjectAggregate(function_token);
+      const bool ordered_collection =
+          ordered_single_collection || json_object_aggregate;
       const bool direct_numeric_ordered_set =
           percentile || hypothetical_set;
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
@@ -561,6 +600,34 @@ class NativeRelationalParser final {
                 second_argument.expression_id);
             document_.expressions.push_back(std::move(second_argument));
           }
+        } else if (json_object_aggregate) {
+          if (!AtSymbol(",")) {
+            Refuse("catalog_json_object_aggregate_separator_required",
+                   "bounded JSON_OBJECT_AGG requires key and value identifiers");
+            return FinishRefusal();
+          }
+          Consume();
+          if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+            Refuse("catalog_json_object_aggregate_value_required",
+                   "bounded JSON_OBJECT_AGG requires a value identifier");
+            return FinishRefusal();
+          }
+          const Token& value_token = Consume();
+          if (value_token.text == argument_token.text) {
+            argument_expression_ids.push_back(
+                argument_expression_ids.front());
+          } else {
+            NativeExpressionAstNode value_expression;
+            value_expression.expression_id = NextExpressionId();
+            value_expression.expression_kind =
+                NativeExpressionAstKind::kIdentifier;
+            value_expression.spelling = value_token.text;
+            value_expression.range = TokenSourceRange(value_token);
+            argument_expression_ids.push_back(value_expression.expression_id);
+            source_projection_expression_ids.push_back(
+                value_expression.expression_id);
+            document_.expressions.push_back(std::move(value_expression));
+          }
         } else if (string_aggregate || listagg) {
           if (!AtSymbol(",")) {
             Refuse("catalog_string_aggregate_separator_required",
@@ -600,6 +667,47 @@ class NativeRelationalParser final {
         Refuse("catalog_aggregate_argument_required",
                "bounded catalog aggregate requires one source identifier");
         return FinishRefusal();
+      }
+      if (ordered_collection) {
+        if (AtEnd() || !IsWord(Current(), "ORDER")) {
+          Refuse("catalog_collection_order_required",
+                 "bounded collection aggregate requires ORDER BY");
+          return FinishRefusal();
+        }
+        Consume();
+        if (AtEnd() || !IsWord(Current(), "BY")) {
+          Refuse("catalog_collection_order_by_required",
+                 "bounded collection aggregate requires ORDER BY");
+          return FinishRefusal();
+        }
+        Consume();
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_collection_order_binding_required",
+                 "bounded collection aggregate requires a persisted order identifier");
+          return FinishRefusal();
+        }
+        const Token& order_token = Consume();
+        const auto existing_order_expression = std::ranges::find_if(
+            document_.expressions, [&](const auto& candidate) {
+              return candidate.expression_kind ==
+                         NativeExpressionAstKind::kIdentifier &&
+                     candidate.spelling == order_token.text;
+            });
+        if (existing_order_expression != document_.expressions.end()) {
+          argument_expression_ids.push_back(
+              existing_order_expression->expression_id);
+        } else {
+          NativeExpressionAstNode order_expression;
+          order_expression.expression_id = NextExpressionId();
+          order_expression.expression_kind =
+              NativeExpressionAstKind::kIdentifier;
+          order_expression.spelling = order_token.text;
+          order_expression.range = TokenSourceRange(order_token);
+          argument_expression_ids.push_back(order_expression.expression_id);
+          source_projection_expression_ids.push_back(
+              order_expression.expression_id);
+          document_.expressions.push_back(std::move(order_expression));
+        }
       }
       if (!AtSymbol(")")) {
         if (!document_.messages.has_errors()) {

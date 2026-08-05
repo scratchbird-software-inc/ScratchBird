@@ -810,6 +810,13 @@ BuildEngineProjectedNativeBindingContext(
       const bool approx_median_function = function == "APPROX_MEDIAN";
       const bool string_agg_function = function == "STRING_AGG";
       const bool listagg_function = function == "LISTAGG";
+      const bool array_agg_function = function == "ARRAY_AGG";
+      const bool json_agg_function = function == "JSON_AGG";
+      const bool json_object_agg_function = function == "JSON_OBJECT_AGG";
+      const bool ordered_single_collection_function =
+          array_agg_function || json_agg_function;
+      const bool ordered_collection_function =
+          ordered_single_collection_function || json_object_agg_function;
       const bool mode_function = function == "MODE";
       const bool percentile_cont_function = function == "PERCENTILE_CONT";
       const bool percentile_disc_function = function == "PERCENTILE_DISC";
@@ -843,22 +850,36 @@ BuildEngineProjectedNativeBindingContext(
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
           string_agg_function || listagg_function || mode_function ||
-          direct_numeric_ordered_function || pair_function;
+          direct_numeric_ordered_function || pair_function ||
+          ordered_collection_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
                               aggregate_expression != ast.expressions.end() &&
                               aggregate_expression->child_expression_ids.empty();
-      const auto result_profile = std::ranges::find_if(
-          statement_context.descriptor_profiles, [&](const auto& candidate) {
-            return candidate.profile_kind ==
-                       ((string_agg_function || listagg_function)
+      const std::uint8_t result_profile_kind =
+          array_agg_function
+              ? 10
+              : ((json_agg_function || json_object_agg_function)
+                     ? 8
+                     : ((string_agg_function || listagg_function)
                             ? 4
                             : ((count_function || regr_count_function ||
                                 approx_count_distinct_function ||
                                 hypothetical_function)
                                    ? 1
-                                   : (boolean_function ? 6 : 2))) &&
+                                   : (boolean_function ? 6 : 2))));
+      const std::size_t expected_argument_count =
+          (listagg_function || json_object_agg_function)
+              ? 3
+              : ((pair_function || string_agg_function ||
+                  ordered_single_collection_function ||
+                  direct_numeric_ordered_function)
+                     ? 2
+                     : 1);
+      const auto result_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == result_profile_kind &&
                    candidate.slot == 0;
           });
       const auto direct_text_profile = std::ranges::find_if(
@@ -873,12 +894,7 @@ BuildEngineProjectedNativeBindingContext(
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
           aggregate_expression->child_expression_ids.size() ==
-              (listagg_function
-                   ? 3
-                   : ((pair_function || string_agg_function ||
-                       direct_numeric_ordered_function)
-                          ? 2
-                          : 1)) &&
+              expected_argument_count &&
           result_profile != statement_context.descriptor_profiles.end()) {
         argument_profile_exact = true;
         for (std::size_t ordinal = 0;
@@ -926,12 +942,7 @@ BuildEngineProjectedNativeBindingContext(
           (aggregate_expression->child_expression_ids.size() !=
            (count_star
                 ? 0
-                : (listagg_function
-                       ? 3
-                       : ((pair_function || string_agg_function ||
-                           direct_numeric_ordered_function)
-                              ? 2
-                              : 1)))) ||
+                : expected_argument_count)) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           ((count_function || regr_count_function ||
@@ -1105,6 +1116,18 @@ BuildEngineProjectedNativeBindingContext(
       } else if (listagg_function) {
         aggregate_output_name = "listagg_value";
         aggregate_semantic = "aggregate.global-listagg-ordered-expression.v1";
+      } else if (array_agg_function) {
+        aggregate_output_name = "array_agg_value";
+        aggregate_semantic =
+            "aggregate.global-array-agg-ordered-expression.v1";
+      } else if (json_agg_function) {
+        aggregate_output_name = "json_agg_value";
+        aggregate_semantic =
+            "aggregate.global-json-agg-ordered-expression.v1";
+      } else if (json_object_agg_function) {
+        aggregate_output_name = "json_object_agg_value";
+        aggregate_semantic =
+            "aggregate.global-json-object-agg-ordered-expression.v1";
       } else if (mode_function) {
         aggregate_output_name = "mode_value";
         aggregate_semantic = "aggregate.global-mode-ordered-expression.v1";

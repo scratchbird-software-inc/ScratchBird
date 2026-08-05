@@ -651,7 +651,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-approx-percentile-cont-ordered-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-approx-percentile-disc-ordered-expression.v1"))
+                     "aggregate.global-approx-percentile-disc-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-array-agg-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-json-agg-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-json-object-agg-ordered-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -819,6 +825,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool hypothetical_function =
           function == "RANK" || function == "DENSE_RANK" ||
           function == "PERCENT_RANK" || function == "CUME_DIST";
+      const bool ordered_single_collection_function =
+          function == "ARRAY_AGG" || function == "JSON_AGG";
+      const bool json_object_aggregate_function =
+          function == "JSON_OBJECT_AGG";
+      const bool ordered_collection_function =
+          ordered_single_collection_function ||
+          json_object_aggregate_function;
       const bool direct_numeric_ordered_function =
           percentile_function || hypothetical_function;
       const bool expression_function =
@@ -831,19 +844,23 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
           string_agg_function || listagg_function || mode_function ||
-          direct_numeric_ordered_function || pair_function;
+          direct_numeric_ordered_function || pair_function ||
+          ordered_collection_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (!pair_function && !string_agg_function && !listagg_function &&
+           !ordered_collection_function &&
            !direct_numeric_ordered_function &&
            expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
-                                      (listagg_function
+                                      ((listagg_function ||
+                                        json_object_aggregate_function)
                                            ? 3
                                            : ((pair_function ||
                                                string_agg_function ||
+                                               ordered_single_collection_function ||
                                                direct_numeric_ordered_function)
                                                   ? 2
                                                   : 1))) ||
@@ -1237,6 +1254,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_listagg =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-listagg-");
+    const bool aggregate_array_agg =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-array-agg-");
+    const bool aggregate_json_agg =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-json-agg-");
+    const bool aggregate_json_object_agg =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-json-object-agg-");
     const bool aggregate_mode =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-mode-");
@@ -1347,6 +1373,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       if (aggregate_string_agg) return std::string("string_agg_value");
       if (aggregate_listagg) return std::string("listagg_value");
+      if (aggregate_array_agg) return std::string("array_agg_value");
+      if (aggregate_json_agg) return std::string("json_agg_value");
+      if (aggregate_json_object_agg) {
+        return std::string("json_object_agg_value");
+      }
       if (aggregate_mode) return std::string("mode_value");
       if (aggregate_percentile_cont) {
         return std::string("percentile_cont_value");

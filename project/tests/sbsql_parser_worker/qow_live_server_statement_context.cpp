@@ -927,6 +927,42 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed LISTAGG did not preserve its exact WITHIN GROUP "
             "ordering and engine-typed text separator");
 
+    struct CollectionAggregateProof {
+      std::string_view expression;
+      std::string_view expected_payload;
+    };
+    static constexpr std::array<CollectionAggregateProof, 3>
+        kCollectionAggregateProofs{{
+            {"ARRAY_AGG(text_value ORDER BY integer_value)",
+             "array_agg_value=list[text:alpha;text:beta;text:alpha]"},
+            {"JSON_AGG(text_value ORDER BY integer_value)",
+             "json_agg_value=[\"alpha\",\"beta\",\"alpha\"]"},
+            {"JSON_OBJECT_AGG(text_value, auxiliary_value ORDER BY "
+             "integer_value)",
+             "json_object_agg_value={\"beta\":102,\"alpha\":103}"},
+        }};
+    for (const auto& proof : kCollectionAggregateProofs) {
+      const auto sql = "SELECT " + std::string(proof.expression) +
+                       " FROM qow_packet7.qow_packet7_relation;";
+      auto aggregate = parser.RunPipeline(sql, true);
+      if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      if (aggregate.accepted &&
+          aggregate.server_result_payload.find(proof.expected_payload) ==
+              std::string::npos) {
+        std::cerr << "collection_expression=" << proof.expression << '\n'
+                  << "collection_payload="
+                  << aggregate.server_result_payload << '\n';
+      }
+      Require(aggregate.accepted &&
+                  aggregate.server_operation_id == "query.execute" &&
+                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_row_count == 1 &&
+                  aggregate.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed ordered collection aggregate did not preserve "
+              "its canonical result and persisted ordering route");
+    }
+
     auto mode = parser.RunPipeline(
         "SELECT MODE() WITHIN GROUP (ORDER BY integer_value) FROM "
         "qow_packet7.qow_packet7_relation;",

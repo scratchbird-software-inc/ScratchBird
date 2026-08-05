@@ -33080,7 +33080,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-approx-percentile-cont-ordered-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-approx-percentile-disc-ordered-expression.v1");
+               "aggregate.global-approx-percentile-disc-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-array-agg-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-json-agg-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-json-object-agg-ordered-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33957,6 +33963,16 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool listagg =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-listagg-");
+      const bool array_agg =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-array-agg-");
+      const bool json_agg =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-json-agg-");
+      const bool json_object_agg =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-json-object-agg-");
+      const bool ordered_single_collection = array_agg || json_agg;
       const bool mode =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-mode-");
@@ -34086,6 +34102,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         }
         if (string_aggregate) return "string_agg_value";
         if (listagg) return "listagg_value";
+        if (array_agg) return "array_agg_value";
+        if (json_agg) return "json_agg_value";
+        if (json_object_agg) return "json_object_agg_value";
         if (mode) return "mode_value";
         if (percentile_cont) return "percentile_cont_value";
         if (percentile_disc) return "percentile_disc_value";
@@ -34112,9 +34131,10 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_expression->second->child_expression_ids.size() !=
               (count_star
                    ? 0
-                   : (listagg
+                   : ((listagg || json_object_agg)
                           ? 3
                           : ((pair_aggregate || string_aggregate ||
+                              ordered_single_collection ||
                               direct_numeric_ordered)
                                  ? 2
                                  : 1))) ||

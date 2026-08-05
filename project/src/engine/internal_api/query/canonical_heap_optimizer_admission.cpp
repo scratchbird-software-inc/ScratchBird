@@ -479,7 +479,13 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-approx-percentile-cont-ordered-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-approx-percentile-disc-ordered-expression.v1") ||
+             "aggregate.global-approx-percentile-disc-ordered-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-array-agg-ordered-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-json-agg-ordered-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-json-object-agg-ordered-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||
