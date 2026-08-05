@@ -704,6 +704,29 @@ sblr::SblrOperationEnvelope RowDependentProjectValuesEnvelope() {
   return envelope;
 }
 
+// RCP-034-TEST-LIVE-PROJECT-SORT-COMPOSITION-V1
+sblr::SblrOperationEnvelope ProjectedExpressionSortValuesEnvelope() {
+  auto envelope = RowDependentProjectValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uint32" &&
+        operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "6|0|2|3,2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "736f72742e72657175697265642d6f726465722e7631|5|-|"
+       "019f0000-0000-7200-8000-000000008712|"
+       "019f0000-0000-7200-8000-000000008712"});
+  envelope.operands.push_back(
+      {"relational_property_v1",
+       "019f0000-0000-7200-8000-000000008712",
+       "1|3|-|5:2:2:-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -3993,7 +4016,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 9> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 10> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4003,6 +4026,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
       UnionAllValuesEnvelope(),
       InnerJoinValuesEnvelope(),
       DistinctSortLimitValuesEnvelope(false),
+      ProjectedExpressionSortValuesEnvelope(),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5005,6 +5029,91 @@ bool ValidateRowDependentProjectExpressionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "unbound or resource-exhausted row PROJECT published partial evidence");
+  return passed;
+}
+
+// RCP-034-TEST-LIVE-PROJECT-SORT-COMPOSITION-V1
+bool ValidateProjectedExpressionSortCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == 2 &&
+           result.canonical_result_row_count == 3 &&
+           result.api_result.result_shape.columns.size() == 2 &&
+           result.api_result.result_shape.rows.size() == 3;
+  };
+
+  const auto sorted = dispatch(ProjectedExpressionSortValuesEnvelope());
+  const auto repeated = dispatch(ProjectedExpressionSortValuesEnvelope());
+  bool passed = true;
+  if (!sorted.api_result.ok) {
+    for (const auto& diagnostic : sorted.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = sorted.api_result.result_shape.rows;
+  passed &= Require(
+      completed(sorted) &&
+          rows[0].fields[0].second.encoded_value == "13" &&
+          rows[0].fields[1].second.encoded_value == "beta" &&
+          rows[1].fields[0].second.encoded_value == "12" &&
+          rows[1].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          rows[2].fields[0].second.encoded_value == "11" &&
+          rows[2].fields[1].second.encoded_value == "alpha",
+      "PROJECT/SORT did not order the materialized SELECT-list expression");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == sorted.selected_plan_uuid &&
+          repeated.canonical_result_bytes == sorted.canonical_result_bytes,
+      "PROJECT/SORT changed deterministic plan/result bytes");
+
+  auto source_only_order = ProjectedExpressionSortValuesEnvelope();
+  for (auto& operand : source_only_order.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "3") {
+      operand.value =
+          "736f72742e72657175697265642d6f726465722e7631|6|-|"
+          "019f0000-0000-7200-8000-000000008712|"
+          "019f0000-0000-7200-8000-000000008712";
+    } else if (operand.type == "relational_property_v1") {
+      operand.value = "1|3|-|6:2:2:-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 3;
+  const auto source_only_result = dispatch(std::move(source_only_order));
+  const auto exhausted_result = dispatch(
+      ProjectedExpressionSortValuesEnvelope(), std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          source_only_result,
+          "QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "source-only or resource-exhausted PROJECT/SORT published evidence");
   return passed;
 }
 
@@ -10087,6 +10196,7 @@ int main() {
                       ValidateProjectValuesSpine() &&
                       ValidateProjectRefusalIsAtomic() &&
                       ValidateRowDependentProjectExpressionSpine() &&
+                      ValidateProjectedExpressionSortCompositionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&

@@ -4806,6 +4806,126 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveValuesRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration MakeLiveProjectRegistration(
+    const PreparedProjectRoot& prepared_root,
+    std::string implementation_id,
+    std::string capability_uuid,
+    const std::size_t expected_input_row_count,
+    api::TypedRelationalDag relational_dag,
+    CanonicalRelationalExpressionRuntimeServices expression_services,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kProject;
+  registration.implementation_id = std::move(implementation_id);
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [projected_columns = prepared_root.projected_columns,
+       expression_projection = prepared_root.expression_projection,
+       expressions = prepared_root.expressions,
+       expression_output_columns =
+           prepared_root.expression_output_batch.columns,
+       relational_dag = std::move(relational_dag),
+       expression_services = std::move(expression_services),
+       expected_input_row_count, mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() !=
+                expected_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PROJECT-INPUT-V1";
+          step.diagnostic.detail =
+              "PROJECT input cardinality differs from its selected cost";
+          return step;
+        }
+        const auto& input_batch = *inputs.front().materialized_output_batch;
+        if (expression_projection) {
+          const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
+              input_batch, inputs.front().output_descriptor_ids);
+          if (!input_validation.ok) {
+            step.diagnostic = input_validation;
+            return step;
+          }
+          const auto mga_authority =
+              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+          const auto before =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!before.ok) {
+            step.diagnostic = before;
+            return step;
+          }
+          exec::DescriptorBatch output_batch;
+          std::string expression_detail;
+          if (!MaterializeExpressionProjectBatch(
+                  relational_dag, expressions, expression_output_columns,
+                  input_batch, expression_services, &output_batch,
+                  &expression_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXPRESSION-V1";
+            step.diagnostic.detail = std::move(expression_detail);
+            return step;
+          }
+          const auto output_validation =
+              exec::ValidateCanonicalDescriptorBatch(
+                  output_batch, node.output_descriptor_ids);
+          if (!output_validation.ok) {
+            step.diagnostic = output_validation;
+            return step;
+          }
+          const auto after =
+              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
+                                                              dag);
+          if (!after.ok) {
+            step.diagnostic = after;
+            return step;
+          }
+          step.result_handle_id = node.physical_node_id;
+          step.input_row_count = input_batch.rows.size();
+          step.rows_examined = input_batch.rows.size();
+          step.output_row_count = output_batch.rows.size();
+          step.materialized_output_batch = std::move(output_batch);
+          step.mga_statement_context = mga_authority.statement_context;
+          return step;
+        }
+        exec::CanonicalDescriptorProjectionRequest project_request;
+        project_request.physical_dag = dag;
+        project_request.selected_physical_node_id = node.physical_node_id;
+        project_request.input_batch = input_batch;
+        project_request.projected_columns = projected_columns;
+        project_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto project_result =
+            exec::ExecuteCanonicalDescriptorProjection(project_request);
+        if (!project_result.diagnostic.ok) {
+          step.diagnostic = project_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = project_result.output_batch.rows.size();
+        step.materialized_output_batch = project_result.output_batch;
+        step.mga_statement_context = project_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveQueryDistinctRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms,
@@ -6309,121 +6429,10 @@ ExecuteCanonicalObjectFreeProjectQuery(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-PROJECT-VALUES-V1", "PROJECT");
 
-  exec::CanonicalPhysicalExecutorRegistration project_registration;
-  project_registration.node_kind = exec::PhysicalNodeKind::kProject;
-  project_registration.implementation_id = project_implementation_id;
-  project_registration.executor_capability_uuid = project_capability_uuid;
-  project_registration.executor_capability_abi_version = 1;
-  project_registration.engine_owned = true;
-  project_registration.accepts_optimizer_publication_v2 = true;
-  project_registration.execute =
-      [projected_columns = prepared_root.projected_columns,
-       expression_projection = prepared_root.expression_projection,
-       expressions = prepared_root.expressions,
-       expression_output_columns =
-           prepared_root.expression_output_batch.columns,
-       relational_dag = request.relational_dag,
-       expression_services = request.expression_services, input_row_count,
-       mga_context = request.context](
-          const exec::TypedPhysicalNodeDag& dag,
-          const exec::PhysicalNodeRecord& node,
-          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
-        exec::CanonicalPhysicalDispatchStepResult step;
-        step.selected_plan_uuid = dag.selected_plan_uuid;
-        step.mga_statement_context = dag.mga_statement_context;
-        step.executed_physical_node_id = node.physical_node_id;
-        step.causal_counter_id = node.causal_counter_id;
-        step.output_descriptor_ids = node.output_descriptor_ids;
-        step.authority.engine_mga_snapshot_bound = true;
-        if (inputs.size() != 1 ||
-            !inputs.front().materialized_output_batch.has_value()) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-PROJECT-INPUT-V1";
-          step.diagnostic.detail =
-              "PROJECT executor did not receive one typed input batch";
-          return step;
-        }
-        const auto& input_batch = *inputs.front().materialized_output_batch;
-        if (input_batch.rows.size() != input_row_count) {
-          step.diagnostic.ok = false;
-          step.diagnostic.diagnostic_code =
-              "QOW-DIAG-RELATIONAL-LIVE-PROJECT-INPUT-V1";
-          step.diagnostic.detail =
-              "PROJECT input cardinality differs from its selected cost";
-          return step;
-        }
-        if (expression_projection) {
-          const auto input_validation = exec::ValidateCanonicalDescriptorBatch(
-              input_batch, inputs.front().output_descriptor_ids);
-          if (!input_validation.ok) {
-            step.diagnostic = input_validation;
-            return step;
-          }
-          const auto mga_authority =
-              BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-          const auto before =
-              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
-                                                              dag);
-          if (!before.ok) {
-            step.diagnostic = before;
-            return step;
-          }
-          exec::DescriptorBatch output_batch;
-          std::string expression_detail;
-          if (!MaterializeExpressionProjectBatch(
-                  relational_dag, expressions, expression_output_columns,
-                  input_batch, expression_services, &output_batch,
-                  &expression_detail)) {
-            step.diagnostic.ok = false;
-            step.diagnostic.diagnostic_code =
-                "QOW-DIAG-RELATIONAL-LIVE-PROJECT-EXPRESSION-V1";
-            step.diagnostic.detail = std::move(expression_detail);
-            return step;
-          }
-          const auto output_validation =
-              exec::ValidateCanonicalDescriptorBatch(
-                  output_batch, node.output_descriptor_ids);
-          if (!output_validation.ok) {
-            step.diagnostic = output_validation;
-            return step;
-          }
-          const auto after =
-              exec::RevalidateCanonicalExecutionMgaAuthority(mga_authority,
-                                                              dag);
-          if (!after.ok) {
-            step.diagnostic = after;
-            return step;
-          }
-          step.result_handle_id = node.physical_node_id;
-          step.input_row_count = input_batch.rows.size();
-          step.rows_examined = input_batch.rows.size();
-          step.output_row_count = output_batch.rows.size();
-          step.materialized_output_batch = std::move(output_batch);
-          step.mga_statement_context = mga_authority.statement_context;
-          return step;
-        }
-        exec::CanonicalDescriptorProjectionRequest project_request;
-        project_request.physical_dag = dag;
-        project_request.selected_physical_node_id = node.physical_node_id;
-        project_request.input_batch = input_batch;
-        project_request.projected_columns = projected_columns;
-        project_request.mga_authority =
-            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        const auto project_result =
-            exec::ExecuteCanonicalDescriptorProjection(project_request);
-        if (!project_result.diagnostic.ok) {
-          step.diagnostic = project_result.diagnostic;
-          return step;
-        }
-        step.result_handle_id = node.physical_node_id;
-        step.input_row_count = input_batch.rows.size();
-        step.rows_examined = input_batch.rows.size();
-        step.output_row_count = project_result.output_batch.rows.size();
-        step.materialized_output_batch = project_result.output_batch;
-        step.mga_statement_context = project_result.mga_statement_context;
-        return step;
-      };
+  auto project_registration = MakeLiveProjectRegistration(
+      prepared_root, project_implementation_id, project_capability_uuid,
+      input_row_count, request.relational_dag, request.expression_services,
+      request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.selected_physical_dag = planning.physical_dag;
@@ -6470,6 +6479,276 @@ ExecuteCanonicalObjectFreeProjectQuery(
             : execution.issues.front().diagnostic_id,
         execution.issues.empty()
             ? "live PROJECT selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
+// RCP-034: one selected VALUES -> computed PROJECT -> ORDER BY DAG. The
+// projected scalar batch is the sole SORT input; source-only descriptors and
+// caller-substituted payloads remain outside the route.
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeProjectSortQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 3 || root == graph.nodes.end() ||
+      root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kSort ||
+      root->semantic_variant_id != "sort.required-order.v1" ||
+      root->input_logical_node_ids.size() != 1) {
+    return result;
+  }
+  const auto project_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (project_node == graph.nodes.end() || project_node == root ||
+      project_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kProject ||
+      project_node->semantic_variant_id != "project.select-list.v1" ||
+      project_node->input_logical_node_ids.size() != 1 ||
+      project_node->bound_expression_ids.empty()) {
+    return result;
+  }
+  const auto values_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id ==
+               project_node->input_logical_node_ids.front();
+      });
+  if (values_node == graph.nodes.end() || values_node == root ||
+      values_node == project_node ||
+      values_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      values_node->semantic_variant_id != "values.literal-table.v1" ||
+      !values_node->input_logical_node_ids.empty()) {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty() ||
+        (node.logical_node_id != root->logical_node_id &&
+         (!node.required_property_uuids.empty() ||
+          !node.delivered_property_uuids.empty()))) {
+      return result;
+    }
+  }
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-ADMISSION-V1",
+                  "PROJECT/SORT composition lacks optimizer admission");
+  }
+
+  auto input = MaterializeValues(request.relational_dag, *values_node,
+                                 request.expression_services);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-PAYLOAD-V1",
+                  "PROJECT/SORT input VALUES: " + input.detail);
+  }
+  std::uint64_t expression_work = 0;
+  if (!CheckedMultiply(input.batch.rows.size(),
+                       project_node->bound_expression_ids.size(),
+                       &expression_work) ||
+      expression_work >
+          request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "PROJECT/SORT expression work exceeds the admitted "
+                  "candidate bound");
+  }
+  auto prepared_project = PrepareExpressionProjectRoot(
+      request.relational_dag, *project_node, *values_node, input,
+      request.expression_services);
+  if (!prepared_project.ok || !prepared_project.expression_projection) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-PAYLOAD-V1",
+                  prepared_project.detail.empty()
+                      ? "PROJECT/SORT requires an expression projection"
+                      : prepared_project.detail);
+  }
+  MaterializedValues projected_input;
+  projected_input.ok = true;
+  projected_input.batch = prepared_project.expression_output_batch;
+  projected_input.result_bindings = prepared_project.result_bindings;
+  auto prepared_sort = PrepareSortRoot(
+      request.context, request.relational_dag,
+      request.optimizer_request.logical_properties, *root, *project_node,
+      projected_input);
+  if (!prepared_sort.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-PAYLOAD-V1",
+                  prepared_sort.detail);
+  }
+
+  const auto row_count = input.batch.rows.size();
+  std::uint64_t input_memory = 1;
+  std::uint64_t project_output_memory = 1;
+  std::uint64_t project_memory = 0;
+  std::uint64_t comparison_count = 0;
+  std::uint64_t row_order_memory = 0;
+  std::uint64_t sort_memory = 0;
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !AddBatchMemoryBytes(prepared_project.expression_output_batch,
+                           &project_output_memory) ||
+      !CheckedAdd(input_memory, project_output_memory, &project_memory) ||
+      !CheckedMultiply(row_count, row_count, &comparison_count) ||
+      !CheckedMultiply(row_count, sizeof(std::size_t), &row_order_memory) ||
+      !CheckedAdd(project_memory, project_output_memory, &sort_memory) ||
+      !CheckedAdd(sort_memory, comparison_count, &sort_memory) ||
+      !CheckedAdd(sort_memory, row_order_memory, &sort_memory) ||
+      comparison_count > std::numeric_limits<std::size_t>::max()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "PROJECT/SORT materialization or comparison size "
+                  "overflowed");
+  }
+  if (sort_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "PROJECT/SORT exceeds the admitted memory budget");
+  }
+
+  const auto identity_scope =
+      graph.bound_sblr_tree_uuid + ":" + request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto project_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "project.capability");
+  const auto sort_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "sort.capability");
+  const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" + prepared_sort.ordering_property_uuid,
+      "project-sort.deterministic-tie");
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {values_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       row_count,
+       input_memory,
+       0,
+       0},
+      {project_node->logical_node_id,
+       "project.typed.expression-row.v1",
+       project_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kProject,
+       exec::PhysicalNodeKind::kProject,
+       "canonical.project.expression-row.v1",
+       row_count,
+       project_memory,
+       1,
+       1},
+      {root->logical_node_id,
+       "sort.typed.terms.v1",
+       sort_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kSort,
+       exec::PhysicalNodeKind::kSort,
+       "canonical.sort.projected-expression.v1",
+       row_count,
+       sort_memory,
+       1,
+       1,
+       {},
+       {prepared_sort.ordering_property_uuid},
+       {plan::CanonicalLogicalPropertyKind::kOrdering}}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "project-sort.selected-plan", "PROJECT/SORT");
+  if (!planning.ok) {
+    return refuse(planning.diagnostic_id, planning.detail);
+  }
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(values_node->logical_node_id, std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-VALUES-V1", "PROJECT/SORT");
+  auto project_registration = MakeLiveProjectRegistration(
+      prepared_project, "project.typed.expression-row.v1",
+      project_capability_uuid, row_count, request.relational_dag,
+      request.expression_services, request.context);
+  auto sort_registration = MakeLiveSortRegistration(
+      std::move(prepared_sort.order_terms),
+      deterministic_tie_evidence_uuid, sort_capability_uuid, row_count,
+      std::max<std::size_t>(1,
+                            static_cast<std::size_t>(comparison_count)),
+      request.context);
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority =
+      BuildCanonicalExecutionMgaAuthority(request.context,
+                                          planning.physical_dag);
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(project_registration));
+  execution_request.available_executors.push_back(
+      std::move(sort_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "project-sort.execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      "project-sort.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(prepared_sort.result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, row_count);
+
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-PROJECT-SORT-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "PROJECT/SORT selected DAG was not completed"
             : execution.issues.front().field_id);
   }
   result.physical_dag_executed = true;
@@ -8813,6 +9092,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   auto composition =
       ExecuteCanonicalObjectFreeDistinctSortLimitQuery(request);
   if (composition.profile_matched) return composition;
+  auto project_sort = ExecuteCanonicalObjectFreeProjectSortQuery(request);
+  if (project_sort.profile_matched) return project_sort;
   auto sort = ExecuteCanonicalObjectFreeSortQuery(request);
   if (sort.profile_matched) return sort;
   auto limit = ExecuteCanonicalObjectFreeLimitQuery(request);
