@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 30> kFunctionNames{
+    static constexpr std::array<std::string_view, 31> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -312,7 +312,7 @@ class NativeRelationalParser final {
         "COVAR_SAMP",  "REGR_COUNT",   "REGR_AVGX", "REGR_AVGY",
         "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
         "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
-        "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG"};
+        "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -336,6 +336,10 @@ class NativeRelationalParser final {
     return CanonicalTokenText(token) == "LISTAGG";
   }
 
+  static bool IsBoundedCatalogMode(const Token& token) {
+    return CanonicalTokenText(token) == "MODE";
+  }
+
   bool LooksLikeBoundedCatalogRelationSelect() const {
     // The candidate owns wildcard, simple identifier-list projection, and the
     // exact global COUNT(*) projection. Other computed projections and
@@ -347,7 +351,20 @@ class NativeRelationalParser final {
     } else if (cursor + 3 < tokens_.size() &&
                IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
                tokens_[cursor + 1]->text == "(") {
-      if (IsBoundedCatalogPairAggregate(*tokens_[cursor])) {
+      if (IsBoundedCatalogMode(*tokens_[cursor])) {
+        if (cursor + 9 >= tokens_.size() ||
+            tokens_[cursor + 2]->text != ")" ||
+            !IsWord(*tokens_[cursor + 3], "WITHIN") ||
+            !IsWord(*tokens_[cursor + 4], "GROUP") ||
+            tokens_[cursor + 5]->text != "(" ||
+            !IsWord(*tokens_[cursor + 6], "ORDER") ||
+            !IsWord(*tokens_[cursor + 7], "BY") ||
+            tokens_[cursor + 8]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 9]->text != ")") {
+          return false;
+        }
+        cursor += 10;
+      } else if (IsBoundedCatalogPairAggregate(*tokens_[cursor])) {
         if (cursor + 5 >= tokens_.size() ||
             tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
             tokens_[cursor + 3]->text != "," ||
@@ -431,6 +448,7 @@ class NativeRelationalParser final {
       const bool string_aggregate =
           IsBoundedCatalogStringAggregate(function_token);
       const bool listagg = IsBoundedCatalogListagg(function_token);
+      const bool mode = IsBoundedCatalogMode(function_token);
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
                          "bounded catalog aggregate requires an opening parenthesis")) {
         return FinishRefusal();
@@ -440,7 +458,10 @@ class NativeRelationalParser final {
       std::optional<std::size_t> reserved_aggregate_expression_index;
       std::optional<std::string> deferred_separator_spelling;
       std::optional<SourceRange> deferred_separator_range;
-      if (AtSymbol("*")) {
+      if (mode) {
+        // MODE owns no direct argument. Its ordered value is bound below
+        // from the exact WITHIN GROUP clause so source handles remain first.
+      } else if (AtSymbol("*")) {
         if (global_aggregate_function != "COUNT") {
           Refuse("catalog_aggregate_wildcard_unsupported",
                  "only bounded catalog COUNT admits a wildcard argument");
@@ -542,50 +563,53 @@ class NativeRelationalParser final {
       }
       const Token& close_token = Consume();
       const Token* aggregate_close_token = &close_token;
-      if (listagg) {
+      if (listagg || mode) {
         if (AtEnd() || !IsWord(Current(), "WITHIN")) {
-          Refuse("catalog_listagg_within_group_required",
-                 "bounded LISTAGG requires WITHIN GROUP ordering");
+          Refuse("catalog_ordered_set_within_group_required",
+                 "bounded ordered aggregate requires WITHIN GROUP ordering");
           return FinishRefusal();
         }
         Consume();
         if (AtEnd() || !IsWord(Current(), "GROUP")) {
-          Refuse("catalog_listagg_group_required",
-                 "bounded LISTAGG requires WITHIN GROUP ordering");
+          Refuse("catalog_ordered_set_group_required",
+                 "bounded ordered aggregate requires WITHIN GROUP ordering");
           return FinishRefusal();
         }
         Consume();
-        if (!RequireSymbol("(", "catalog_listagg_order_open_required",
-                           "bounded LISTAGG order requires an opening parenthesis")) {
+        if (!RequireSymbol("(", "catalog_ordered_set_order_open_required",
+                           "bounded ordered aggregate requires an opening parenthesis")) {
           return FinishRefusal();
         }
         if (AtEnd() || !IsWord(Current(), "ORDER")) {
-          Refuse("catalog_listagg_order_required",
-                 "bounded LISTAGG requires ORDER BY");
+          Refuse("catalog_ordered_set_order_required",
+                 "bounded ordered aggregate requires ORDER BY");
           return FinishRefusal();
         }
         Consume();
         if (AtEnd() || !IsWord(Current(), "BY")) {
-          Refuse("catalog_listagg_order_by_required",
-                 "bounded LISTAGG requires ORDER BY");
+          Refuse("catalog_ordered_set_order_by_required",
+                 "bounded ordered aggregate requires ORDER BY");
           return FinishRefusal();
         }
         Consume();
         if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
-          Refuse("catalog_listagg_order_binding_required",
-                 "bounded LISTAGG order requires a persisted identifier");
+          Refuse("catalog_ordered_set_order_binding_required",
+                 "bounded ordered aggregate requires a persisted identifier");
           return FinishRefusal();
         }
         const Token& order_token = Consume();
-        std::uint32_t order_expression_id =
-            argument_expression_ids.front();
-        const auto value_expression = std::ranges::find_if(
-            document_.expressions, [&](const auto& candidate) {
-              return candidate.expression_id ==
-                     argument_expression_ids.front();
-            });
-        if (value_expression == document_.expressions.end() ||
-            order_token.text != value_expression->spelling) {
+        std::uint32_t order_expression_id = 0;
+        const auto value_expression = mode
+            ? document_.expressions.end()
+            : std::ranges::find_if(
+                  document_.expressions, [&](const auto& candidate) {
+                    return candidate.expression_id ==
+                           argument_expression_ids.front();
+                  });
+        if (!mode && value_expression != document_.expressions.end() &&
+            order_token.text == value_expression->spelling) {
+          order_expression_id = argument_expression_ids.front();
+        } else {
           NativeExpressionAstNode order_expression;
           order_expression.expression_id = NextExpressionId();
           order_expression.expression_kind =
@@ -597,25 +621,27 @@ class NativeRelationalParser final {
           document_.expressions.push_back(std::move(order_expression));
         }
         if (!AtSymbol(")")) {
-          Refuse("catalog_listagg_order_close_required",
-                 "bounded LISTAGG order requires a closing parenthesis");
+          Refuse("catalog_ordered_set_order_close_required",
+                 "bounded ordered aggregate requires a closing parenthesis");
           return FinishRefusal();
         }
         aggregate_close_token = &Consume();
-        reserved_aggregate_expression_id = NextExpressionId();
-        NativeExpressionAstNode aggregate_placeholder;
-        aggregate_placeholder.expression_id =
-            *reserved_aggregate_expression_id;
-        reserved_aggregate_expression_index = document_.expressions.size();
-        document_.expressions.push_back(std::move(aggregate_placeholder));
-        NativeExpressionAstNode separator;
-        separator.expression_id = NextExpressionId();
-        separator.expression_kind = NativeExpressionAstKind::kLiteral;
-        separator.literal_kind = NativeLiteralAstKind::kString;
-        separator.spelling = *deferred_separator_spelling;
-        separator.range = *deferred_separator_range;
-        argument_expression_ids.push_back(separator.expression_id);
-        document_.expressions.push_back(std::move(separator));
+        if (listagg) {
+          reserved_aggregate_expression_id = NextExpressionId();
+          NativeExpressionAstNode aggregate_placeholder;
+          aggregate_placeholder.expression_id =
+              *reserved_aggregate_expression_id;
+          reserved_aggregate_expression_index = document_.expressions.size();
+          document_.expressions.push_back(std::move(aggregate_placeholder));
+          NativeExpressionAstNode separator;
+          separator.expression_id = NextExpressionId();
+          separator.expression_kind = NativeExpressionAstKind::kLiteral;
+          separator.literal_kind = NativeLiteralAstKind::kString;
+          separator.spelling = *deferred_separator_spelling;
+          separator.range = *deferred_separator_range;
+          argument_expression_ids.push_back(separator.expression_id);
+          document_.expressions.push_back(std::move(separator));
+        }
         argument_expression_ids.push_back(order_expression_id);
       }
       NativeExpressionAstNode aggregate;

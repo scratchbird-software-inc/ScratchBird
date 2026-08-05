@@ -633,7 +633,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-string-agg-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-listagg-ordered-expression.v1"))
+                     "aggregate.global-listagg-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-mode-ordered-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -793,6 +795,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "REGR_SXY" || function == "REGR_SYY";
       const bool string_agg_function = function == "STRING_AGG";
       const bool listagg_function = function == "LISTAGG";
+      const bool mode_function = function == "MODE";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
@@ -802,7 +805,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "STDDEV_SAMP" || function == "VARIANCE_SAMP" ||
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
-          string_agg_function || listagg_function ||
+          string_agg_function || listagg_function || mode_function ||
           pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
@@ -1201,6 +1204,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_listagg =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-listagg-");
+    const bool aggregate_mode =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-mode-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1276,6 +1282,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       if (aggregate_string_agg) return std::string("string_agg_value");
       if (aggregate_listagg) return std::string("listagg_value");
+      if (aggregate_mode) return std::string("mode_value");
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }

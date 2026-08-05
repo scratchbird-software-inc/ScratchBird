@@ -33062,7 +33062,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-string-agg-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-listagg-ordered-expression.v1");
+               "aggregate.global-listagg-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-mode-ordered-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33923,6 +33925,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool listagg =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-listagg-");
+      const bool mode =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-mode-");
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -34019,6 +34024,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         }
         if (string_aggregate) return "string_agg_value";
         if (listagg) return "listagg_value";
+        if (mode) return "mode_value";
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-")) {
           return "stddev_value";

@@ -810,6 +810,7 @@ BuildEngineProjectedNativeBindingContext(
       const bool approx_median_function = function == "APPROX_MEDIAN";
       const bool string_agg_function = function == "STRING_AGG";
       const bool listagg_function = function == "LISTAGG";
+      const bool mode_function = function == "MODE";
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -823,7 +824,8 @@ BuildEngineProjectedNativeBindingContext(
           stddev_pop_function || variance_pop_function || stddev_function ||
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
-          string_agg_function || listagg_function || pair_function;
+          string_agg_function || listagg_function || mode_function ||
+          pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -1037,9 +1039,12 @@ BuildEngineProjectedNativeBindingContext(
       } else if (string_agg_function) {
         aggregate_output_name = "string_agg_value";
         aggregate_semantic = "aggregate.global-string-agg-expression.v1";
-      } else {
+      } else if (listagg_function) {
         aggregate_output_name = "listagg_value";
         aggregate_semantic = "aggregate.global-listagg-ordered-expression.v1";
+      } else {
+        aggregate_output_name = "mode_value";
+        aggregate_semantic = "aggregate.global-mode-ordered-expression.v1";
       }
     }
     if (limit_composition) {

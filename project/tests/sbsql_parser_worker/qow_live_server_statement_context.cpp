@@ -927,6 +927,20 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed LISTAGG did not preserve its exact WITHIN GROUP "
             "ordering and engine-typed text separator");
 
+    auto mode = parser.RunPipeline(
+        "SELECT MODE() WITHIN GROUP (ORDER BY integer_value) FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!mode.accepted) PrintMessages(mode.messages);
+    Require(mode.accepted &&
+                mode.server_operation_id == "query.execute" &&
+                mode.server_cursor_uuid.empty() &&
+                mode.server_row_count == 1 &&
+                mode.server_result_payload.find("mode_value=1") !=
+                    std::string::npos,
+            "object-backed MODE did not preserve its exact WITHIN GROUP "
+            "signed-integer ordering route");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);
