@@ -33320,6 +33320,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       catalog_relations.push_back(&relation);
       if (catalog_relation == nullptr) catalog_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
+      const bool accepted_join_semantic =
+          relation.semantic_variant_id == "join.cross.v1" ||
+          relation.semantic_variant_id == "join.inner.v1";
+      const bool inner_join =
+          relation.semantic_variant_id == "join.inner.v1";
       if (catalog_join_relation != nullptr || catalog_relations.size() != 2 ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
@@ -33331,15 +33336,17 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeAggregateProjectionForm::kNone ||
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
-          !relation.predicate_expression_ids.empty() ||
+          relation.predicate_expression_ids.size() !=
+              static_cast<std::size_t>(inner_join) ||
           !relation.limit_expression_ids.empty() ||
           !relation.ordering_terms.empty() ||
           relation.bound_object_uuid.has_value() ||
-          !relation.bound_expression_ids.empty() ||
-          relation.semantic_variant_id != "join.cross.v1") {
+          relation.bound_expression_ids !=
+              relation.predicate_expression_ids ||
+          !accepted_join_semantic) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed CROSS JOIN fields do not form the accepted canonical node");
+            "typed JOIN fields do not form the accepted canonical node");
         return envelope;
       }
       std::vector<std::uint32_t> expected_outputs;
@@ -33351,7 +33358,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       if (relation.output_expression_ids != expected_outputs) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed CROSS JOIN output lineage is not the exact input concatenation");
+            "typed JOIN output lineage is not the exact input concatenation");
         return envelope;
       }
       catalog_join_relation = &relation;
@@ -33810,6 +33817,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return envelope;
     }
 
+    const bool inner_join =
+        catalog_join_relation->semantic_variant_id == "join.inner.v1";
     std::size_t descriptor_offset = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
     std::unordered_set<std::string> object_uuids;
@@ -33909,6 +33918,36 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation->output_expression_ids.begin(),
           relation->output_expression_ids.end());
     }
+    if (inner_join) {
+      const auto predicate = expressions_by_id.find(
+          catalog_join_relation->predicate_expression_ids.front());
+      if (descriptor_offset >= native.descriptors.size() ||
+          predicate == expressions_by_id.end() ||
+          predicate->second->expression_kind !=
+              NativeExpressionAstKind::kBinary ||
+          predicate->second->child_expression_ids.size() != 2 ||
+          predicate->second->canonical_operator_name != "=" ||
+          predicate->second->result_descriptor_id !=
+              native.descriptors[descriptor_offset].descriptor_id ||
+          native.descriptors[descriptor_offset].nullability !=
+              BoundNullability::kNullable ||
+          std::ranges::find(
+              catalog_relations[0]->output_expression_ids,
+              predicate->second->child_expression_ids[0]) ==
+              catalog_relations[0]->output_expression_ids.end() ||
+          std::ranges::find(
+              catalog_relations[1]->output_expression_ids,
+              predicate->second->child_expression_ids[1]) ==
+              catalog_relations[1]->output_expression_ids.end() ||
+          bound.descriptor_refs[descriptor_offset] !=
+              native.descriptors[descriptor_offset].descriptor_uuid) {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed INNER JOIN predicate lineage is incomplete");
+        return envelope;
+      }
+      ++descriptor_offset;
+    }
     const auto& join_outputs =
         outputs_by_relation.at(catalog_join_relation->relation_id);
     std::vector<std::uint32_t> join_output_ids;
@@ -33927,7 +33966,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         catalog_join_relation->output_expression_ids !=
             expected_join_projection_ids ||
         join_outputs.size() != expected_join_projection_ids.size() ||
-        native.outputs.size() != native.descriptors.size() * 2 ||
+        native.outputs.size() != expected_join_projection_ids.size() * 2 ||
         native.scopes.front().visible_projection_ids != join_output_ids) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",

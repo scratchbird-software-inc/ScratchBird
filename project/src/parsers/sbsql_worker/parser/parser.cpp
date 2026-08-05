@@ -118,8 +118,8 @@ class NativeRelationalParser final {
       return ParseGroupedAggregateSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
-        LooksLikeBoundedCatalogCrossJoinSelect()) {
-      return ParseCatalogCrossJoinSelect();
+        LooksLikeBoundedCatalogJoinSelect()) {
+      return ParseCatalogJoinSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeBoundedCatalogRelationSelect()) {
@@ -374,13 +374,14 @@ class NativeRelationalParser final {
     return CanonicalTokenText(token) == "APPROX_TOP_K";
   }
 
-  bool LooksLikeBoundedCatalogCrossJoinSelect() const {
+  bool LooksLikeBoundedCatalogJoinSelect() const {
     if (tokens_.size() < 8 || tokens_[1]->text != "*" ||
         !IsWord(*tokens_[2], "FROM")) {
       return false;
     }
     for (std::size_t index = 3; index + 1 < tokens_.size(); ++index) {
-      if (IsWord(*tokens_[index], "CROSS") &&
+      if ((IsWord(*tokens_[index], "CROSS") ||
+           IsWord(*tokens_[index], "INNER")) &&
           IsWord(*tokens_[index + 1], "JOIN")) {
         return true;
       }
@@ -388,7 +389,7 @@ class NativeRelationalParser final {
     return false;
   }
 
-  NativeRelationalAstDocument ParseCatalogCrossJoinSelect() {
+  NativeRelationalAstDocument ParseCatalogJoinSelect() {
     document_.status = NativeRelationalParseStatus::kRefused;
     if (cst_.messages.has_errors()) {
       document_.messages = cst_.messages;
@@ -439,15 +440,46 @@ class NativeRelationalParser final {
 
     auto left_source = parse_source(1);
     if (!left_source.has_value()) return FinishRefusal();
-    if (!RequireWord("CROSS", "catalog_cross_join_cross_required",
-                     "bounded catalog CROSS JOIN requires CROSS JOIN") ||
-        !RequireWord("JOIN", "catalog_cross_join_join_required",
-                     "bounded catalog CROSS JOIN requires CROSS JOIN")) {
+    const bool cross_join = !AtEnd() && IsWord(Current(), "CROSS");
+    const bool inner_join = !AtEnd() && IsWord(Current(), "INNER");
+    if ((!cross_join && !inner_join) ||
+        !RequireWord(cross_join ? "CROSS" : "INNER",
+                     "catalog_join_kind_required",
+                     "bounded catalog JOIN requires CROSS or INNER") ||
+        !RequireWord("JOIN", "catalog_join_join_required",
+                     "bounded catalog JOIN requires JOIN")) {
       return FinishRefusal();
     }
     auto right_source = parse_source(2);
     if (!right_source.has_value()) return FinishRefusal();
-    const Token& query_end = TokenForRangeEnd(right_source->range);
+    const Token* predicate_left = nullptr;
+    const Token* predicate_operator = nullptr;
+    const Token* predicate_right = nullptr;
+    if (inner_join) {
+      if (!RequireWord("ON", "catalog_inner_join_on_required",
+                       "bounded catalog INNER JOIN requires ON") ||
+          AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("catalog_inner_join_left_key_required",
+               "bounded catalog INNER JOIN requires a left key identifier");
+        return FinishRefusal();
+      }
+      predicate_left = &Consume();
+      if (AtEnd() || Current().kind != TokenKind::kOperator ||
+          Current().text != "=") {
+        Refuse("catalog_inner_join_equality_required",
+               "bounded catalog INNER JOIN requires an equality predicate");
+        return FinishRefusal();
+      }
+      predicate_operator = &Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("catalog_inner_join_right_key_required",
+               "bounded catalog INNER JOIN requires a right key identifier");
+        return FinishRefusal();
+      }
+      predicate_right = &Consume();
+    }
+    const Token& query_end = inner_join ? *predicate_right
+                                        : TokenForRangeEnd(right_source->range);
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_cross_join_clause_unsupported",
@@ -478,6 +510,32 @@ class NativeRelationalParser final {
     join.relation_kind = NativeRelationAstKind::kJoin;
     join.input_relation_ids = {1, 2};
     join.output_expression_ids = {1, 2};
+    if (inner_join) {
+      NativeExpressionAstNode left_key;
+      left_key.expression_id = NextExpressionId();
+      left_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+      left_key.spelling = predicate_left->text;
+      left_key.range = TokenSourceRange(*predicate_left);
+      const auto left_key_id = left_key.expression_id;
+      document_.expressions.push_back(std::move(left_key));
+
+      NativeExpressionAstNode right_key;
+      right_key.expression_id = NextExpressionId();
+      right_key.expression_kind = NativeExpressionAstKind::kIdentifier;
+      right_key.spelling = predicate_right->text;
+      right_key.range = TokenSourceRange(*predicate_right);
+      const auto right_key_id = right_key.expression_id;
+      document_.expressions.push_back(std::move(right_key));
+
+      NativeExpressionAstNode predicate;
+      predicate.expression_id = NextExpressionId();
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.child_expression_ids = {left_key_id, right_key_id};
+      predicate.operator_name = predicate_operator->text;
+      predicate.range = Span(*predicate_left, *predicate_right);
+      join.predicate_expression_ids = {predicate.expression_id};
+      document_.expressions.push_back(std::move(predicate));
+    }
     join.range = Span(select_token, query_end);
     document_.relations.push_back(std::move(join));
     document_.catalog_relation_sources.push_back(std::move(*left_source));

@@ -528,7 +528,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_insert.target_table.uuid.canonical =
       uuid::UuidToString(fixture->join_relation_uuid.value);
   join_insert.target_table.object_kind = "table";
-  for (const std::int64_t value : {10, 20}) {
+  for (const std::int64_t value : {2, 3}) {
     api::EngineTypedValue typed;
     typed.descriptor.descriptor_kind = "scalar";
     typed.descriptor.canonical_type_name = "integer";
@@ -701,6 +701,22 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                     "join_value") != std::string::npos,
             "object-backed native CROSS JOIN did not complete the canonical "
             "two-heap-scan route");
+
+    auto object_backed_inner_join = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation INNER JOIN "
+        "qow_packet7.qow_packet7_join_relation ON integer_value = "
+        "join_value;",
+        true);
+    if (!object_backed_inner_join.accepted) {
+      PrintMessages(object_backed_inner_join.messages);
+    }
+    Require(object_backed_inner_join.accepted &&
+                object_backed_inner_join.server_operation_id ==
+                    "query.execute" &&
+                object_backed_inner_join.server_cursor_uuid.empty() &&
+                object_backed_inner_join.server_row_count == 2,
+            "object-backed native INNER JOIN did not evaluate its typed ON "
+            "predicate over two heap scans");
 
     auto object_backed_count = parser.RunPipeline(
         "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);

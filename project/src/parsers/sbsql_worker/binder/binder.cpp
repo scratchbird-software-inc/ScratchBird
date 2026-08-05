@@ -9,6 +9,7 @@
 #include "binder/binder.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <functional>
 #include <unordered_map>
@@ -461,11 +462,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCatalogSource;
       });
-  const auto catalog_cross_join = std::ranges::find_if(
+  const auto catalog_join = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kJoin;
       });
-  if (catalog_cross_join != ast.relations.end()) {
+  if (catalog_join != ast.relations.end()) {
     std::vector<const NativeRelationAstNode*> source_relations;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
@@ -476,18 +477,28 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         source_relations.size() != 2 || ast.relations.size() != 3 ||
         context.catalog_relations.size() != 2 ||
         context.relations.size() != 1 ||
-        context.relations.front().relation_id !=
-            catalog_cross_join->relation_id ||
-        context.relations.front().semantic_variant_id != "join.cross.v1" ||
-        ast.root_relation_id != catalog_cross_join->relation_id ||
-        catalog_cross_join->input_relation_ids !=
+        context.relations.front().relation_id != catalog_join->relation_id ||
+        (context.relations.front().semantic_variant_id != "join.cross.v1" &&
+         context.relations.front().semantic_variant_id != "join.inner.v1") ||
+        ast.root_relation_id != catalog_join->relation_id ||
+        catalog_join->input_relation_ids !=
             std::vector<std::uint32_t>{source_relations[0]->relation_id,
                                        source_relations[1]->relation_id} ||
-        !catalog_cross_join->predicate_expression_ids.empty() ||
-        context.expressions.size() != context.descriptors.size() ||
-        context.outputs.size() != context.descriptors.size() * 2) {
+        catalog_join->predicate_expression_ids.size() > 1) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
-                            "catalog CROSS JOIN binding shape is incomplete");
+                            "catalog JOIN binding shape is incomplete");
+      return RefusedBoundAst(std::move(bound));
+    }
+    const bool inner_join =
+        context.relations.front().semantic_variant_id == "join.inner.v1";
+    if (catalog_join->predicate_expression_ids.size() !=
+            static_cast<std::size_t>(inner_join) ||
+        context.descriptors.size() !=
+            context.expressions.size() +
+                static_cast<std::size_t>(inner_join) ||
+        context.outputs.size() != context.expressions.size() * 2) {
+      AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
+                            "catalog JOIN predicate binding is incomplete");
       return RefusedBoundAst(std::move(bound));
     }
 
@@ -599,17 +610,80 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     std::vector<std::uint32_t> joined_output_ids;
-    for (std::size_t ordinal = 0; ordinal < context.descriptors.size();
+    if (inner_join) {
+      const auto predicate_ast = std::ranges::find_if(
+          ast.expressions, [&](const auto& expression) {
+            return expression.expression_id ==
+                   catalog_join->predicate_expression_ids.front();
+          });
+      if (predicate_ast == ast.expressions.end() ||
+          predicate_ast->expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate_ast->operator_name != "=" ||
+          predicate_ast->child_expression_ids.size() != 2) {
+        AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                              "catalog INNER JOIN predicate is not exact");
+        return RefusedBoundAst(std::move(bound));
+      }
+      std::array<std::uint32_t, 2> key_expression_ids{};
+      for (std::size_t source_ordinal = 0; source_ordinal < 2;
+           ++source_ordinal) {
+        const auto key_ast = std::ranges::find_if(
+            ast.expressions, [&](const auto& expression) {
+              return expression.expression_id ==
+                     predicate_ast->child_expression_ids[source_ordinal];
+            });
+        if (key_ast == ast.expressions.end() ||
+            key_ast->expression_kind !=
+                NativeExpressionAstKind::kIdentifier) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                "catalog INNER JOIN key is not an identifier");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto& source = bound.catalog_relation_sources[source_ordinal];
+        const auto column = std::ranges::find_if(
+            source.columns, [&](const auto& candidate) {
+              return candidate.canonical_name_key == key_ast->spelling;
+            });
+        if (column == source.columns.end()) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                "catalog INNER JOIN key is unresolved");
+          return RefusedBoundAst(std::move(bound));
+        }
+        const auto expression = std::ranges::find_if(
+            bound.expressions, [&](const auto& candidate) {
+              return candidate.result_descriptor_id == column->descriptor_id &&
+                     candidate.bound_name_uuid == column->column_uuid;
+            });
+        if (expression == bound.expressions.end()) {
+          AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                                "catalog INNER JOIN key binding is absent");
+          return RefusedBoundAst(std::move(bound));
+        }
+        key_expression_ids[source_ordinal] = expression->expression_id;
+      }
+      const auto& boolean_descriptor = context.descriptors.back();
+      BoundExpressionAstRecord predicate;
+      predicate.expression_id =
+          static_cast<std::uint32_t>(bound.expressions.size() + 1);
+      predicate.expression_kind = NativeExpressionAstKind::kBinary;
+      predicate.result_descriptor_id = boolean_descriptor.descriptor_id;
+      predicate.child_expression_ids = {key_expression_ids[0],
+                                          key_expression_ids[1]};
+      predicate.canonical_operator_name = predicate_ast->operator_name;
+      bound.expressions.push_back(std::move(predicate));
+    }
+
+    for (std::size_t ordinal = 0; ordinal < context.expressions.size();
          ++ordinal) {
-      const auto& output = context.outputs[context.descriptors.size() + ordinal];
+      const auto& output = context.outputs[context.expressions.size() + ordinal];
       const auto expression_id = static_cast<std::uint32_t>(ordinal + 1);
-      if (output.output_id != context.descriptors.size() + ordinal + 1 ||
+      if (output.output_id != context.expressions.size() + ordinal + 1 ||
           output.expression_id != expression_id ||
           output.descriptor_id != expression_id || !output.visible ||
           output.ordinal != ordinal ||
-          output.relation_id != catalog_cross_join->relation_id) {
+          output.relation_id != catalog_join->relation_id) {
         AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-OUTPUT",
-                              "catalog CROSS JOIN result projection is not exact");
+                              "catalog JOIN result projection is not exact");
         return RefusedBoundAst(std::move(bound));
       }
       BoundOutputAstRecord bound_output;
@@ -625,11 +699,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     BoundRelationAstRecord bound_join;
-    bound_join.relation_id = catalog_cross_join->relation_id;
+    bound_join.relation_id = catalog_join->relation_id;
     bound_join.relation_kind = NativeRelationAstKind::kJoin;
-    bound_join.input_relation_ids = catalog_cross_join->input_relation_ids;
+    bound_join.input_relation_ids = catalog_join->input_relation_ids;
     bound_join.output_expression_ids = joined_expression_ids;
-    bound_join.semantic_variant_id = "join.cross.v1";
+    if (inner_join) {
+      bound_join.predicate_expression_ids = {
+          bound.expressions.back().expression_id};
+      bound_join.bound_expression_ids =
+          bound_join.predicate_expression_ids;
+    }
+    bound_join.semantic_variant_id =
+        inner_join ? "join.inner.v1" : "join.cross.v1";
     bound.relations.push_back(std::move(bound_join));
 
     bound.descriptors.reserve(context.descriptors.size());

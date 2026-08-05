@@ -6093,7 +6093,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
     const exec::CanonicalAcceptedJoinKind join_kind,
     std::string operation_name,
     api::EngineRequestContext mga_context,
-    const bool runtime_bounded_inputs = false) {
+    const bool runtime_bounded_inputs = false,
+    const std::uint32_t runtime_predicate_expression_id = 0,
+    CanonicalRelationalExpressionRowBinding runtime_predicate_binding = {},
+    api::TypedRelationalDag runtime_relational_dag = {}) {
   exec::CanonicalPhysicalExecutorRegistration registration;
   registration.node_kind = exec::PhysicalNodeKind::kJoin;
   registration.implementation_id = std::move(implementation_id);
@@ -6104,7 +6107,10 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
   registration.execute =
       [predicate_truth_values = std::move(predicate_truth_values), pair_count,
        output_row_bound, join_kind, operation_name = std::move(operation_name),
-       mga_context = std::move(mga_context), runtime_bounded_inputs](
+       mga_context = std::move(mga_context), runtime_bounded_inputs,
+       runtime_predicate_expression_id,
+       runtime_predicate_binding = std::move(runtime_predicate_binding),
+       runtime_relational_dag = std::move(runtime_relational_dag)](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -6177,11 +6183,55 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
         key_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(
                 mga_context, key_request.physical_dag);
+        auto runtime_truth_values = predicate_truth_values;
+        if (runtime_bounded_inputs) {
+          runtime_truth_values.clear();
+          runtime_truth_values.reserve(actual_pair_count);
+          if (join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
+            runtime_truth_values.assign(
+                actual_pair_count, api::EngineSqlTruthValue::true_value);
+          } else {
+            if (runtime_predicate_expression_id == 0) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
+              step.diagnostic.detail =
+                  operation_name + " runtime predicate identity is absent";
+              return step;
+            }
+            CanonicalRelationalExpressionRuntime expression_runtime(
+                runtime_relational_dag, {});
+            std::vector<api::EngineTypedValue> pair_values;
+            pair_values.reserve(left_batch.columns.size() +
+                                right_batch.columns.size());
+            for (const auto& left : left_batch.rows) {
+              for (const auto& right : right_batch.rows) {
+                pair_values.clear();
+                pair_values.insert(pair_values.end(), left.values.begin(),
+                                   left.values.end());
+                pair_values.insert(pair_values.end(), right.values.begin(),
+                                   right.values.end());
+                api::EngineSqlTruthValue truth =
+                    api::EngineSqlTruthValue::unknown;
+                std::string detail;
+                if (!expression_runtime.EvaluatePredicateForConsumer(
+                        runtime_predicate_expression_id,
+                        runtime_predicate_binding, pair_values,
+                        api::EngineCanonicalExpressionConsumer::join, &truth,
+                        &detail)) {
+                  step.diagnostic.ok = false;
+                  step.diagnostic.diagnostic_code =
+                      "QOW-DIAG-RELATIONAL-LIVE-JOIN-PREDICATE-V1";
+                  step.diagnostic.detail = operation_name + ":" + detail;
+                  return step;
+                }
+                runtime_truth_values.push_back(truth);
+              }
+            }
+          }
+        }
         join_request.residual_request.residual_truth_values =
-            runtime_bounded_inputs
-                ? std::vector<api::EngineSqlTruthValue>(
-                      actual_pair_count, api::EngineSqlTruthValue::true_value)
-                : predicate_truth_values;
+            std::move(runtime_truth_values);
         join_request.residual_request.maximum_candidate_rechecks =
             std::max<std::size_t>(1, runtime_bounded_inputs
                                          ? actual_pair_count
@@ -20259,7 +20309,7 @@ ExecuteCanonicalObjectFreeValuesQuery(
   return result;
 }
 
-CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
+CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
     const CanonicalCurrentHeapExecutionRequest& input) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& dag = input.relational_dag;
@@ -20273,11 +20323,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
       join = &node;
     }
   }
+  const bool inner_join =
+      join != nullptr && join->semantic_variant_id == "join.inner.v1";
   if (dag.wire_version != 2 || scans.size() != 2 || join == nullptr ||
       dag.nodes.size() != 3 || dag.root_node_id != join->node_id ||
-      join->semantic_variant_id != "join.cross.v1" ||
+      (join->semantic_variant_id != "join.cross.v1" && !inner_join) ||
       join->input_node_ids !=
-          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id}) {
+          std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
+      join->bound_expression_ids.size() !=
+          static_cast<std::size_t>(inner_join)) {
     return result;
   }
   result.profile_matched = true;
@@ -20330,7 +20384,27 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
   const auto scan_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "heap-cross-scan.capability");
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "heap-cross-join.capability");
+      DerivedCanonicalUuid(identity_scope, inner_join
+                                               ? "heap-inner-join.capability"
+                                               : "heap-cross-join.capability");
+  CanonicalRelationalExpressionRowBinding predicate_row_binding;
+  std::string predicate_detail;
+  if (inner_join) {
+    std::vector<std::uint32_t> predicate_descriptors =
+        scans[0]->output_descriptor_ids;
+    predicate_descriptors.insert(predicate_descriptors.end(),
+                                 scans[1]->output_descriptor_ids.begin(),
+                                 scans[1]->output_descriptor_ids.end());
+    if (!PrepareInputRowBinding(
+            dag, join->bound_expression_ids.front(), predicate_descriptors,
+            &predicate_row_binding, &predicate_detail)) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-INNER-JOIN-PREDICATE-V1",
+          predicate_detail.empty()
+              ? "object-backed INNER JOIN predicate binding is not exact"
+              : predicate_detail);
+    }
+  }
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto* scan : scans) {
     LivePhysicalNodeProfile profile;
@@ -20352,10 +20426,15 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
     profiles.push_back(std::move(profile));
   }
   profiles.push_back(
-      {join->node_id, "join.cross.3vl.nested.v1", join_capability_uuid,
+      {join->node_id,
+       inner_join ? "join.inner.3vl.nested.v1"
+                  : "join.cross.3vl.nested.v1",
+       join_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kJoin,
        exec::PhysicalNodeKind::kJoin,
-       "canonical.heap.join.cross.v1", 1, 2048, 2, 2});
+       inner_join ? "canonical.heap.join.inner.v1"
+                  : "canonical.heap.join.cross.v1",
+       1, 2048, 2, 2});
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles, "heap-cross-join.selected-plan",
       "object-backed heap CROSS JOIN");
@@ -20441,10 +20520,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapCrossJoin(
   selected.available_executors.push_back(
       std::move(*heap_registration.registration));
   selected.available_executors.push_back(MakeLiveJoinRegistration(
-      "join.cross.3vl.nested.v1", join_capability_uuid, {},
+      inner_join ? "join.inner.3vl.nested.v1"
+                 : "join.cross.3vl.nested.v1",
+      join_capability_uuid, {},
       maximum_output_rows, maximum_output_rows,
-      exec::CanonicalAcceptedJoinKind::kCross,
-      "object-backed heap CROSS JOIN", input.context, true));
+      inner_join ? exec::CanonicalAcceptedJoinKind::kInner
+                 : exec::CanonicalAcceptedJoinKind::kCross,
+      inner_join ? "object-backed heap INNER JOIN"
+                 : "object-backed heap CROSS JOIN",
+      input.context, true,
+      inner_join ? join->bound_expression_ids.front() : 0,
+      std::move(predicate_row_binding), input.relational_dag));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =
       input.context.statement_uuid.canonical;
@@ -20525,7 +20611,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   if (std::ranges::count_if(dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kScan;
       }) == 2) {
-    return ExecuteCanonicalCurrentHeapCrossJoin(input);
+    return ExecuteCanonicalCurrentHeapJoin(input);
   }
   const auto scan_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {

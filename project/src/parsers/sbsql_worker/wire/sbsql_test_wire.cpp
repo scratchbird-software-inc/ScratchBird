@@ -531,11 +531,11 @@ BuildEngineProjectedNativeBindingContext(
       context.local_transaction_id,
       context.snapshot_visible_through_local_transaction_id};
 
-  const auto cross_join = std::ranges::find_if(
+  const auto catalog_join = std::ranges::find_if(
       ast.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kJoin;
       });
-  if (cross_join != ast.relations.end()) {
+  if (catalog_join != ast.relations.end()) {
     std::vector<const NativeRelationAstNode*> source_relations;
     for (const auto& relation : ast.relations) {
       if (relation.relation_kind == NativeRelationAstKind::kCatalogSource) {
@@ -544,13 +544,47 @@ BuildEngineProjectedNativeBindingContext(
     }
     if (ast.catalog_relation_sources.size() != 2 ||
         source_relations.size() != 2 || ast.relations.size() != 3 ||
-        ast.root_relation_id != cross_join->relation_id ||
-        cross_join->input_relation_ids !=
+        ast.root_relation_id != catalog_join->relation_id ||
+        catalog_join->input_relation_ids !=
             std::vector<std::uint32_t>{source_relations[0]->relation_id,
                                        source_relations[1]->relation_id} ||
-        !cross_join->predicate_expression_ids.empty() ||
+        catalog_join->predicate_expression_ids.size() > 1 ||
         resolved_object_reference_seeds.size() != 2) {
-      return fail("catalog_cross_join_shape_invalid");
+      return fail("catalog_join_shape_invalid");
+    }
+
+    const bool inner_join = !catalog_join->predicate_expression_ids.empty();
+    const NativeExpressionAstNode* predicate = nullptr;
+    const NativeExpressionAstNode* left_key = nullptr;
+    const NativeExpressionAstNode* right_key = nullptr;
+    if (inner_join) {
+      const auto find_expression = [&](const std::uint32_t expression_id) {
+        const auto found = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        return found == ast.expressions.end() ? nullptr : &*found;
+      };
+      predicate = find_expression(
+          catalog_join->predicate_expression_ids.front());
+      if (predicate == nullptr ||
+          predicate->expression_kind != NativeExpressionAstKind::kBinary ||
+          predicate->operator_name != "=" ||
+          predicate->child_expression_ids.size() != 2) {
+        return fail("catalog_inner_join_predicate_invalid");
+      }
+      left_key = find_expression(predicate->child_expression_ids[0]);
+      right_key = find_expression(predicate->child_expression_ids[1]);
+      if (left_key == nullptr || right_key == nullptr ||
+          left_key->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          right_key->expression_kind !=
+              NativeExpressionAstKind::kIdentifier ||
+          left_key->spelling.empty() || right_key->spelling.empty() ||
+          !left_key->child_expression_ids.empty() ||
+          !right_key->child_expression_ids.empty()) {
+        return fail("catalog_inner_join_key_invalid");
+      }
     }
 
     std::uint32_t binding_id = 1;
@@ -630,18 +664,51 @@ BuildEngineProjectedNativeBindingContext(
       }
       context.catalog_relations.push_back(std::move(catalog_relation));
     }
+    const auto source_descriptor_count = context.descriptors.size();
+    if (inner_join) {
+      const auto left_column = std::ranges::find_if(
+          context.catalog_relations[0].columns, [&](const auto& column) {
+            return column.canonical_name_key == left_key->spelling;
+          });
+      const auto right_column = std::ranges::find_if(
+          context.catalog_relations[1].columns, [&](const auto& column) {
+            return column.canonical_name_key == right_key->spelling;
+          });
+      const auto boolean_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 6 && candidate.slot == 0;
+          });
+      if (left_column == context.catalog_relations[0].columns.end() ||
+          right_column == context.catalog_relations[1].columns.end() ||
+          context.descriptors[left_column->descriptor_id - 1].type_uuid !=
+              context.descriptors[right_column->descriptor_id - 1].type_uuid ||
+          boolean_profile == statement_context.descriptor_profiles.end() ||
+          !boolean_profile->nullable ||
+          !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
+        return fail("catalog_inner_join_key_binding_unavailable");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
+      descriptor.type_uuid = boolean_profile->type_uuid;
+      descriptor.nullability = BoundNullability::kNullable;
+      context.descriptors.push_back(std::move(descriptor));
+    }
     const auto source_output_count = context.outputs.size();
-    for (std::size_t ordinal = 0; ordinal < context.descriptors.size();
+    for (std::size_t ordinal = 0; ordinal < source_descriptor_count;
          ++ordinal) {
       const auto binding = static_cast<std::uint32_t>(ordinal + 1);
       const auto source_output = context.outputs[ordinal];
       context.outputs.push_back(
           {static_cast<std::uint32_t>(source_output_count + ordinal + 1),
            binding, source_output.output_name_utf8, binding, true,
-           static_cast<std::uint32_t>(ordinal), cross_join->relation_id});
+           static_cast<std::uint32_t>(ordinal), catalog_join->relation_id});
     }
     context.relations.push_back(
-        {cross_join->relation_id, "join.cross.v1"});
+        {catalog_join->relation_id,
+         inner_join ? "join.inner.v1" : "join.cross.v1"});
     return context;
   }
 

@@ -204,12 +204,15 @@ CanonicalHeapOptimizerAdmissionResult BuildCanonicalCrossJoinHeapAdmission(
                     "two_heap_scans_one_cross_join");
     }
   }
+  const bool inner_join =
+      join != nullptr && join->semantic_variant_id == "join.inner.v1";
   if (scans.size() != 2 || join == nullptr || relational.nodes.size() != 3 ||
       relational.root_node_id != join->node_id ||
-      join->semantic_variant_id != "join.cross.v1" ||
+      (join->semantic_variant_id != "join.cross.v1" && !inner_join) ||
       join->input_node_ids !=
           std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
-      !join->bound_expression_ids.empty() ||
+      join->bound_expression_ids.size() !=
+          static_cast<std::size_t>(inner_join) ||
       !join->required_object_uuids.empty() || !join->values_row_ids.empty() ||
       !join->required_property_uuids.empty() ||
       !join->delivered_property_uuids.empty() ||
