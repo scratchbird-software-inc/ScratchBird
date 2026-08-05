@@ -503,6 +503,9 @@ EngineTypedValue MakeExecutorValue(const EngineDescriptor& descriptor,
   value.descriptor = descriptor;
   value.encoded_value = std::move(encoded_value);
   value.is_null = is_null;
+  value.state = is_null
+                    ? scratchbird::engine::internal_api::EngineValueState::sql_null
+                    : scratchbird::engine::internal_api::EngineValueState::value;
   return value;
 }
 

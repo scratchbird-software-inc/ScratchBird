@@ -4461,6 +4461,600 @@ CanonicalSetOperationAllResult ExecuteCanonicalSetOperationDistinct(
       request, CanonicalSetOperationQuantifier::kDistinct);
 }
 
+// QOW-SOURCE-QRY-019-PIVOT-V1
+// Reshape one optimizer-selected typed input only after grouping/FOR equality,
+// aggregate descriptors, fixed IN keys, result descriptors, resource bounds,
+// and MGA authority have all been bound. Aggregate state is delegated to the
+// canonical global aggregate registry through private engine-owned aggregate
+// requests; PIVOT owns only grouping, cell selection, and reshaping.
+CanonicalPivotResult ExecuteCanonicalPivot(
+    const CanonicalPivotRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalPivotResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+
+  const auto authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority.ok) {
+    return refuse(authority.diagnostic_code, authority.detail);
+  }
+  const PhysicalNodeRecord* pivot_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      pivot_node = &node;
+      break;
+    }
+  }
+  const std::string expected_implementation =
+      request.null_policy == CanonicalPivotNullPolicy::kInclude
+          ? "pivot.canonical.include-nulls.typed.v1"
+          : "pivot.canonical.exclude-nulls.typed.v1";
+  if (pivot_node == nullptr ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      pivot_node->node_kind != PhysicalNodeKind::kPivot ||
+      pivot_node->input_physical_node_ids.size() != 1 ||
+      pivot_node->implementation_id != expected_implementation) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-PHYSICAL-V1",
+                  "PIVOT is not the exact selected unary physical root");
+  }
+  const PhysicalNodeRecord* pivot_input_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == pivot_node->input_physical_node_ids.front()) {
+      pivot_input_node = &node;
+      break;
+    }
+  }
+  if (pivot_input_node == nullptr) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-PHYSICAL-V1",
+                  "PIVOT selected input physical node is absent");
+  }
+  if (request.null_policy != CanonicalPivotNullPolicy::kInclude &&
+      request.null_policy != CanonicalPivotNullPolicy::kExclude) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-BINDING-V1",
+                  "PIVOT NULL policy is not canonical");
+  }
+  if (request.group_key_terms.empty() || request.for_key_terms.empty() ||
+      request.in_items.empty() || request.aggregates.empty() ||
+      request.maximum_key_comparison_count == 0 ||
+      request.maximum_total_aggregate_transition_count == 0 ||
+      request.maximum_output_row_count == 0 ||
+      request.maximum_output_cell_count == 0) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-BINDING-V1",
+                  "PIVOT grouping, FOR, aggregate, IN, or resource binding is absent");
+  }
+  if (request.aggregates.size() >
+          (std::numeric_limits<std::size_t>::max() -
+           request.group_key_terms.size()) /
+              request.in_items.size()) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "PIVOT result width overflowed");
+  }
+  const auto expected_width =
+      request.group_key_terms.size() +
+      request.in_items.size() * request.aggregates.size();
+  if (request.result_columns.size() != expected_width ||
+      pivot_node->output_descriptor_ids.size() != expected_width) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-DESCRIPTOR-V1",
+                  "PIVOT result descriptor width is inconsistent");
+  }
+  for (std::size_t column = 0; column < expected_width; ++column) {
+    if (request.result_columns[column].descriptor_id == 0 ||
+        request.result_columns[column].descriptor_id !=
+            pivot_node->output_descriptor_ids[column]) {
+      return refuse("QOW-DIAG-QRY-019-PIVOT-DESCRIPTOR-V1",
+                    "PIVOT result descriptor order is not exact");
+    }
+  }
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch,
+      [&] {
+        std::vector<std::uint32_t> ids;
+        ids.reserve(request.input_batch.columns.size());
+        for (const auto& column : request.input_batch.columns) {
+          ids.push_back(column.descriptor_id);
+        }
+        return ids;
+      }());
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code,
+                  input_validation.detail);
+  }
+
+  std::set<std::size_t> key_columns;
+  const auto validate_terms = [&](const auto& terms,
+                                  const std::string_view role) {
+    for (const auto& term : terms) {
+      if (term.column >= request.input_batch.columns.size() ||
+          !key_columns.insert(term.column).second) {
+        return std::string(role) +
+               " key column is out of range or duplicated";
+      }
+      const auto validated = ValidateCanonicalDescriptorOrderTerm(
+          term, request.input_batch.columns[term.column]);
+      if (!validated.ok) {
+        return std::string(role) + " key is invalid: " +
+               validated.diagnostic_code + ":" + validated.detail;
+      }
+    }
+    return std::string{};
+  };
+  if (const auto detail = validate_terms(request.group_key_terms, "PIVOT group");
+      !detail.empty()) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-GROUP-V1", detail);
+  }
+  if (const auto detail = validate_terms(request.for_key_terms, "PIVOT FOR");
+      !detail.empty()) {
+    return refuse("QOW-DIAG-QRY-019-PIVOT-FOR-V1", detail);
+  }
+
+  for (const auto& item : request.in_items) {
+    if (item.values.size() != request.for_key_terms.size()) {
+      return refuse("QOW-DIAG-QRY-019-PIVOT-IN-V1",
+                    "PIVOT IN tuple arity differs from FOR arity");
+    }
+  }
+  for (std::size_t aggregate = 0; aggregate < request.aggregates.size();
+       ++aggregate) {
+    const auto& binding = request.aggregates[aggregate];
+    const auto& aggregate_request = binding.aggregate_template;
+    if (!aggregate_request.physical_dag.nodes.empty() ||
+        aggregate_request.selected_physical_node_id != 0 ||
+        !aggregate_request.input_batch.columns.empty() ||
+        !aggregate_request.input_batch.rows.empty() ||
+        aggregate_request.result_column.descriptor_id != 0 ||
+        binding.result_columns_by_item.size() != request.in_items.size()) {
+      return refuse("QOW-DIAG-QRY-019-PIVOT-AGGREGATE-V1",
+                    "PIVOT aggregate template carries execution authority or incomplete results");
+    }
+    for (std::size_t item = 0; item < request.in_items.size(); ++item) {
+      const auto result_column = request.group_key_terms.size() +
+                                 item * request.aggregates.size() +
+                                 aggregate;
+      if (binding.result_columns_by_item[item].descriptor_id !=
+          request.result_columns[result_column].descriptor_id) {
+        return refuse("QOW-DIAG-QRY-019-PIVOT-DESCRIPTOR-V1",
+                      "PIVOT aggregate result descriptor mapping drifted");
+      }
+    }
+  }
+
+  std::size_t key_comparisons = 0;
+  const auto keys_equal = [&](const DescriptorTuple& left,
+                              const DescriptorTuple& right,
+                              const auto& terms,
+                              bool* equal) {
+    *equal = true;
+    for (const auto& term : terms) {
+      if (key_comparisons == request.maximum_key_comparison_count) {
+        return false;
+      }
+      ++key_comparisons;
+      const auto compared = CompareCanonicalDescriptorOrderValues(
+          left.values[term.column], right.values[term.column], term);
+      if (!compared.diagnostic.ok) return false;
+      if (compared.comparison != 0) {
+        *equal = false;
+        return true;
+      }
+    }
+    return true;
+  };
+  const auto row_matches_item = [&](const DescriptorTuple& row,
+                                    const CanonicalPivotInItem& item,
+                                    bool* matches) {
+    *matches = true;
+    for (std::size_t key = 0; key < request.for_key_terms.size(); ++key) {
+      const auto& term = request.for_key_terms[key];
+      const auto& value = row.values[term.column];
+      if (request.null_policy == CanonicalPivotNullPolicy::kExclude &&
+          value.state == api::EngineValueState::sql_null) {
+        *matches = false;
+        return true;
+      }
+      if (key_comparisons == request.maximum_key_comparison_count) {
+        return false;
+      }
+      ++key_comparisons;
+      const auto compared = CompareCanonicalDescriptorOrderValues(
+          value, item.values[key], term);
+      if (!compared.diagnostic.ok) return false;
+      if (compared.comparison != 0) {
+        *matches = false;
+        return true;
+      }
+    }
+    return true;
+  };
+
+  struct PivotGroup {
+    std::size_t representative_row = 0;
+    std::vector<std::vector<std::size_t>> item_rows;
+  };
+  std::vector<PivotGroup> groups;
+  std::size_t matched_input_rows = 0;
+  for (std::size_t row = 0; row < request.input_batch.rows.size(); ++row) {
+    std::optional<std::size_t> group_index;
+    for (std::size_t group = 0; group < groups.size(); ++group) {
+      bool equal = false;
+      if (!keys_equal(request.input_batch.rows[row],
+                      request.input_batch.rows[groups[group].representative_row],
+                      request.group_key_terms, &equal)) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT grouping comparison bound was exceeded");
+      }
+      if (equal) {
+        group_index = group;
+        break;
+      }
+    }
+    if (!group_index.has_value()) {
+      if (groups.size() == request.maximum_output_row_count) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT group output bound was exceeded");
+      }
+      PivotGroup group;
+      group.representative_row = row;
+      group.item_rows.resize(request.in_items.size());
+      groups.push_back(std::move(group));
+      group_index = groups.size() - 1;
+    }
+    std::optional<std::size_t> matched_item;
+    for (std::size_t item = 0; item < request.in_items.size(); ++item) {
+      bool matches = false;
+      if (!row_matches_item(request.input_batch.rows[row],
+                            request.in_items[item], &matches)) {
+        return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                      "PIVOT IN comparison bound was exceeded");
+      }
+      if (!matches) continue;
+      if (matched_item.has_value()) {
+        return refuse("QOW-DIAG-QRY-019-PIVOT-IN-V1",
+                      "PIVOT IN items overlap under canonical equality");
+      }
+      matched_item = item;
+    }
+    if (matched_item.has_value()) {
+      groups[*group_index].item_rows[*matched_item].push_back(row);
+      ++matched_input_rows;
+    }
+  }
+  if (groups.size() != 0 &&
+      expected_width > request.maximum_output_cell_count / groups.size()) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "PIVOT output cell bound was exceeded");
+  }
+
+  DescriptorBatch output;
+  output.columns = request.result_columns;
+  std::size_t total_transitions = 0;
+  for (const auto& group : groups) {
+    DescriptorTuple output_row;
+    output_row.values.reserve(expected_width);
+    const auto& representative =
+        request.input_batch.rows[group.representative_row];
+    for (std::size_t key = 0; key < request.group_key_terms.size(); ++key) {
+      const auto source_column = request.group_key_terms[key].column;
+      DescriptorRuntimeDiagnostic cast_diagnostic;
+      auto value = CastDescriptorValue(
+          representative.values[source_column],
+          request.result_columns[key].descriptor, &cast_diagnostic);
+      if (!cast_diagnostic.ok) {
+        return refuse("QOW-DIAG-QRY-019-PIVOT-DESCRIPTOR-V1",
+                      cast_diagnostic.diagnostic_code + ":" +
+                          cast_diagnostic.detail);
+      }
+      output_row.values.push_back(std::move(value));
+    }
+    for (std::size_t item = 0; item < request.in_items.size(); ++item) {
+      DescriptorBatch cell_input;
+      cell_input.columns = request.input_batch.columns;
+      for (const auto row : group.item_rows[item]) {
+        cell_input.rows.push_back(request.input_batch.rows[row]);
+      }
+      for (std::size_t aggregate = 0;
+           aggregate < request.aggregates.size(); ++aggregate) {
+        const auto& binding = request.aggregates[aggregate];
+        auto aggregate_request = binding.aggregate_template;
+        aggregate_request.input_batch = cell_input;
+        aggregate_request.result_column =
+            binding.result_columns_by_item[item];
+        aggregate_request.mga_authority = request.mga_authority;
+        if (aggregate_request.filter_truth_values.has_value()) {
+          if (aggregate_request.filter_truth_values->size() !=
+              request.input_batch.rows.size()) {
+            return refuse("QOW-DIAG-QRY-019-PIVOT-AGGREGATE-V1",
+                          "PIVOT aggregate FILTER cardinality is not bound to the input");
+          }
+          std::vector<api::EngineSqlTruthValue> cell_filter;
+          cell_filter.reserve(group.item_rows[item].size());
+          for (const auto row : group.item_rows[item]) {
+            cell_filter.push_back((*aggregate_request.filter_truth_values)[row]);
+          }
+          aggregate_request.filter_truth_values = std::move(cell_filter);
+        }
+
+        TypedPhysicalNodeDag aggregate_dag = request.physical_dag;
+        aggregate_dag.nodes.clear();
+        // Preserve the optimizer-published ABI-v2 admission receipt on both
+        // private nodes.  The PIVOT runtime may narrow rows, but it does not
+        // mint a new statement context or execution capability.
+        PhysicalNodeRecord input_node = *pivot_input_node;
+        input_node.physical_node_id = 1;
+        input_node.relational_node_id = pivot_node->relational_node_id;
+        input_node.node_kind = PhysicalNodeKind::kValues;
+        input_node.implementation_id = "values.materialize.canonical.v1";
+        input_node.input_physical_node_ids.clear();
+        input_node.output_descriptor_ids.clear();
+        for (const auto& column : cell_input.columns) {
+          input_node.output_descriptor_ids.push_back(column.descriptor_id);
+        }
+        PhysicalNodeRecord aggregate_node = *pivot_node;
+        aggregate_node.physical_node_id = 2;
+        aggregate_node.relational_node_id = pivot_node->relational_node_id;
+        aggregate_node.node_kind = PhysicalNodeKind::kAggregate;
+        aggregate_node.implementation_id = "aggregate.registry.serial.v1";
+        aggregate_node.input_physical_node_ids = {1};
+        aggregate_node.output_descriptor_ids = {
+            aggregate_request.result_column.descriptor_id};
+        aggregate_node.causal_counter_id = pivot_node->causal_counter_id;
+        aggregate_dag.nodes = {std::move(input_node),
+                               std::move(aggregate_node)};
+        aggregate_dag.root_physical_node_id = 2;
+        aggregate_request.physical_dag = std::move(aggregate_dag);
+        aggregate_request.selected_physical_node_id = 2;
+        const auto aggregated =
+            ExecuteCanonicalAggregateRuntime(aggregate_request);
+        if (!aggregated.diagnostic.ok ||
+            aggregated.output_batch.rows.size() != 1 ||
+            aggregated.output_batch.rows.front().values.size() != 1) {
+          return refuse(
+              aggregated.diagnostic.ok
+                  ? "QOW-DIAG-QRY-019-PIVOT-AGGREGATE-V1"
+                  : aggregated.diagnostic.diagnostic_code,
+              aggregated.diagnostic.ok
+                  ? "PIVOT aggregate did not publish one canonical value"
+                  : aggregated.diagnostic.detail);
+        }
+        if (aggregated.transition_count >
+                request.maximum_total_aggregate_transition_count -
+                    total_transitions) {
+          return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                        "PIVOT aggregate transition bound was exceeded");
+        }
+        total_transitions += aggregated.transition_count;
+        output_row.values.push_back(
+            aggregated.output_batch.rows.front().values.front());
+      }
+    }
+    output.rows.push_back(std::move(output_row));
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, pivot_node->output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code,
+                  output_validation.detail);
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.input_row_count = request.input_batch.rows.size();
+  result.group_count = groups.size();
+  result.in_item_count = request.in_items.size();
+  result.aggregate_count = request.aggregates.size();
+  result.matched_input_row_count = matched_input_rows;
+  result.key_comparison_count = key_comparisons;
+  result.aggregate_transition_count = total_transitions;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = pivot_node->physical_node_id;
+  result.causal_counter_id = pivot_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+
+// QOW-SOURCE-QRY-019-UNPIVOT-V1
+CanonicalUnpivotResult ExecuteCanonicalUnpivot(
+    const CanonicalUnpivotRequest& request) {
+  namespace api = scratchbird::engine::internal_api;
+  CanonicalUnpivotResult result;
+  const auto refuse = [&](std::string code, std::string detail) {
+    result = {};
+    result.diagnostic.ok = false;
+    result.diagnostic.diagnostic_code = std::move(code);
+    result.diagnostic.detail = std::move(detail);
+    return result;
+  };
+  const auto authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!authority.ok) {
+    return refuse(authority.diagnostic_code, authority.detail);
+  }
+  const PhysicalNodeRecord* unpivot_node = nullptr;
+  for (const auto& node : request.physical_dag.nodes) {
+    if (node.physical_node_id == request.selected_physical_node_id) {
+      unpivot_node = &node;
+      break;
+    }
+  }
+  const std::string expected_implementation =
+      request.null_policy == CanonicalPivotNullPolicy::kInclude
+          ? "unpivot.canonical.include-nulls.typed.v1"
+          : "unpivot.canonical.exclude-nulls.typed.v1";
+  if (unpivot_node == nullptr ||
+      request.selected_physical_node_id !=
+          request.physical_dag.root_physical_node_id ||
+      unpivot_node->node_kind != PhysicalNodeKind::kUnpivot ||
+      unpivot_node->input_physical_node_ids.size() != 1 ||
+      unpivot_node->implementation_id != expected_implementation) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-PHYSICAL-V1",
+                  "UNPIVOT is not the exact selected unary physical root");
+  }
+  if (request.group_columns.empty() || request.in_items.empty() ||
+      request.maximum_output_row_count == 0 ||
+      request.maximum_output_cell_count == 0) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-BINDING-V1",
+                  "UNPIVOT group, IN, or resource binding is absent");
+  }
+  const auto value_column_count =
+      request.in_items.front().source_columns.size();
+  const auto expected_width =
+      request.group_columns.size() + 1 + value_column_count;
+  if (value_column_count == 0 || request.result_columns.size() != expected_width ||
+      unpivot_node->output_descriptor_ids.size() != expected_width) {
+    return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
+                  "UNPIVOT result width or value-column arity is invalid");
+  }
+  std::set<std::size_t> source_columns;
+  for (const auto column : request.group_columns) {
+    if (column >= request.input_batch.columns.size() ||
+        !source_columns.insert(column).second) {
+      return refuse("QOW-DIAG-QRY-019-UNPIVOT-BINDING-V1",
+                    "UNPIVOT group column is unresolved or duplicated");
+    }
+  }
+  for (const auto& item : request.in_items) {
+    if (item.source_columns.size() != value_column_count) {
+      return refuse("QOW-DIAG-QRY-019-UNPIVOT-IN-V1",
+                    "UNPIVOT IN item arity differs from its value-column arity");
+    }
+    for (const auto column : item.source_columns) {
+      if (column >= request.input_batch.columns.size() ||
+          source_columns.contains(column)) {
+        return refuse("QOW-DIAG-QRY-019-UNPIVOT-IN-V1",
+                      "UNPIVOT IN source column is unresolved or overlaps a group column");
+      }
+    }
+  }
+  for (std::size_t column = 0; column < expected_width; ++column) {
+    if (request.result_columns[column].descriptor_id == 0 ||
+        request.result_columns[column].descriptor_id !=
+            unpivot_node->output_descriptor_ids[column]) {
+      return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
+                    "UNPIVOT result descriptor order is not exact");
+    }
+  }
+  const auto input_validation = ValidateCanonicalDescriptorBatch(
+      request.input_batch,
+      [&] {
+        std::vector<std::uint32_t> ids;
+        ids.reserve(request.input_batch.columns.size());
+        for (const auto& column : request.input_batch.columns) {
+          ids.push_back(column.descriptor_id);
+        }
+        return ids;
+      }());
+  if (!input_validation.ok) {
+    return refuse(input_validation.diagnostic_code,
+                  input_validation.detail);
+  }
+  if (request.input_batch.rows.size() != 0 &&
+      request.in_items.size() >
+          request.maximum_output_row_count / request.input_batch.rows.size()) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "UNPIVOT maximum output row bound was exceeded");
+  }
+  const auto maximum_rows =
+      request.input_batch.rows.size() * request.in_items.size();
+  if (maximum_rows != 0 &&
+      expected_width > request.maximum_output_cell_count / maximum_rows) {
+    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                  "UNPIVOT maximum output cell bound was exceeded");
+  }
+
+  DescriptorBatch output;
+  output.columns = request.result_columns;
+  std::size_t excluded = 0;
+  for (const auto& input_row : request.input_batch.rows) {
+    for (const auto& item : request.in_items) {
+      const bool all_null = std::ranges::all_of(
+          item.source_columns, [&](const auto column) {
+            return input_row.values[column].state ==
+                   api::EngineValueState::sql_null;
+          });
+      if (request.null_policy == CanonicalPivotNullPolicy::kExclude &&
+          all_null) {
+        ++excluded;
+        continue;
+      }
+      DescriptorTuple output_row;
+      output_row.values.reserve(expected_width);
+      for (std::size_t group = 0; group < request.group_columns.size();
+           ++group) {
+        DescriptorRuntimeDiagnostic cast_diagnostic;
+        auto value = CastDescriptorValue(
+            input_row.values[request.group_columns[group]],
+            request.result_columns[group].descriptor, &cast_diagnostic);
+        if (!cast_diagnostic.ok) {
+          return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
+                        cast_diagnostic.diagnostic_code + ":" +
+                            cast_diagnostic.detail);
+        }
+        output_row.values.push_back(std::move(value));
+      }
+      DescriptorRuntimeDiagnostic label_diagnostic;
+      auto label = CastDescriptorValue(
+          item.pivot_value,
+          request.result_columns[request.group_columns.size()].descriptor,
+          &label_diagnostic);
+      if (!label_diagnostic.ok) {
+        return refuse("QOW-DIAG-QRY-019-UNPIVOT-IN-V1",
+                      label_diagnostic.diagnostic_code + ":" +
+                          label_diagnostic.detail);
+      }
+      output_row.values.push_back(std::move(label));
+      for (std::size_t value = 0; value < value_column_count; ++value) {
+        DescriptorRuntimeDiagnostic cast_diagnostic;
+        auto reshaped = CastDescriptorValue(
+            input_row.values[item.source_columns[value]],
+            request.result_columns[request.group_columns.size() + 1 + value]
+                .descriptor,
+            &cast_diagnostic);
+        if (!cast_diagnostic.ok) {
+          return refuse("QOW-DIAG-QRY-019-UNPIVOT-DESCRIPTOR-V1",
+                        cast_diagnostic.diagnostic_code + ":" +
+                            cast_diagnostic.detail);
+        }
+        output_row.values.push_back(std::move(reshaped));
+      }
+      output.rows.push_back(std::move(output_row));
+    }
+  }
+  const auto output_validation = ValidateCanonicalDescriptorBatch(
+      output, unpivot_node->output_descriptor_ids);
+  if (!output_validation.ok) {
+    return refuse(output_validation.diagnostic_code,
+                  output_validation.detail);
+  }
+  const auto result_authority = RevalidateCanonicalExecutionMgaAuthority(
+      request.mga_authority, request.physical_dag);
+  if (!result_authority.ok) {
+    return refuse(result_authority.diagnostic_code,
+                  result_authority.detail);
+  }
+  result.diagnostic = {};
+  result.output_batch = std::move(output);
+  result.input_row_count = request.input_batch.rows.size();
+  result.in_item_count = request.in_items.size();
+  result.emitted_row_count = result.output_batch.rows.size();
+  result.null_excluded_row_count = excluded;
+  result.selected_plan_uuid = request.physical_dag.selected_plan_uuid;
+  result.executed_physical_node_id = unpivot_node->physical_node_id;
+  result.causal_counter_id = unpivot_node->causal_counter_id;
+  result.mga_statement_context = request.mga_authority.statement_context;
+  return result;
+}
+
 // QOW-SOURCE-QRY-016-NESTING-V1
 // Resolve one three-operand set expression before executing either physical
 // node. INTERSECT has higher SQL precedence than UNION/EXCEPT; otherwise the

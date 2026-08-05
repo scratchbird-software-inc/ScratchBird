@@ -11840,6 +11840,284 @@ bool ValidateDistinctSortLimitRefusalIsAtomic() {
       "composition evidence");
 }
 
+sblr::SblrOperationEnvelope PivotValuesEnvelope() {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.pivot");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000019400"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000019401|"
+       "019f0000-0000-7400-8000-000000019411|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000019402|"
+       "019f0000-0000-7400-8000-000000019412|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000019403|"
+       "019f0000-0000-7400-8000-000000019413|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-000000019404|"
+       "019f0000-0000-7400-8000-000000019414|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-000000019405|"
+       "019f0000-0000-7400-8000-000000019415|1|-|-|-|-|-"},
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-000000019406|"
+       "019f0000-0000-7400-8000-000000019416|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "7",
+       "019f0000-0000-7300-8000-000000019407|"
+       "019f0000-0000-7400-8000-000000019417|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|1|-|3130"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "5", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "6", "1|-|3|-|-|1|-|3230"},
+      {"relational_expression_v1", "7", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "8", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "9", "1|-|3|-|-|1|-|35"},
+      {"relational_expression_v1", "10", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "11", "1|-|2|-|-|1|-|32"},
+      {"relational_expression_v1", "12", "1|-|3|-|-|1|-|37"},
+      {"relational_expression_v1", "13", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "14", "1|-|2|-|-|1|-|33"},
+      {"relational_expression_v1", "15", "1|-|3|-|-|1|-|313030"},
+      {"relational_expression_v1", "16",
+       "3|-|1|-|019f0000-0000-7500-8000-000000019421|-|-|-"},
+      {"relational_expression_v1", "17",
+       "3|-|2|-|019f0000-0000-7500-8000-000000019422|-|-|-"},
+      {"relational_expression_v1", "18",
+       "3|-|3|-|019f0000-0000-7500-8000-000000019423|-|-|-"},
+      {"relational_expression_v1", "19",
+       "4|18|4|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+      {"relational_expression_v1", "20",
+       "4|18|5|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-"},
+      {"relational_expression_v1", "21",
+       "4|18|6|019de5fc-2400-72e4-8549-82b2eef5a777|-|-|-|-"},
+      {"relational_expression_v1", "22",
+       "4|18|7|019de5fc-2400-784a-9aec-371f8b95b7ea|-|-|-|-"},
+      {"relational_expression_v1", "23", "1|-|2|-|-|1|-|31"},
+      {"relational_expression_v1", "24", "1|-|2|-|-|1|-|32"},
+      {"relational_output_v1", "1", "1|1|1|1|0|67726f75705f6b6579"},
+      {"relational_output_v1", "2", "1|2|2|1|1|666f725f6b6579"},
+      {"relational_output_v1", "3", "1|3|3|1|2|616d6f756e74"},
+      {"relational_output_v1", "4", "2|16|1|1|0|67726f75705f6b6579"},
+      {"relational_output_v1", "5", "2|19|4|1|1|66697273745f73756d"},
+      {"relational_output_v1", "6", "2|20|5|1|2|66697273745f636f756e74"},
+      {"relational_output_v1", "7", "2|21|6|1|3|7365636f6e645f73756d"},
+      {"relational_output_v1", "8", "2|22|7|1|4|7365636f6e645f636f756e74"},
+      {"relational_values_row_v1", "1", "1,2,3"},
+      {"relational_values_row_v1", "2", "4,5,6"},
+      {"relational_values_row_v1", "3", "7,8,9"},
+      {"relational_values_row_v1", "4", "10,11,12"},
+      {"relational_values_row_v1", "5", "13,14,15"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3|1,2,3,4,5"},
+      {"relational_node_v1", "2", "14|0|1|1,4,5,6,7|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex("pivot.fixed-aggregate-list-one-for.exclude-nulls.v1") +
+           "|16,17,19,20,21,22,23,24|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+sblr::SblrOperationEnvelope UnpivotValuesEnvelope(const bool include_nulls) {
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.unpivot");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       "019f0000-0000-7000-8000-000000019500"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "2"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-000000019501|"
+       "019f0000-0000-7400-8000-000000019511|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-000000019502|"
+       "019f0000-0000-7400-8000-000000019512|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-000000019503|"
+       "019f0000-0000-7400-8000-000000019513|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-000000019504|"
+       "019f0000-0000-7400-8000-000000019514|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-000000019505|"
+       "019f0000-0000-7400-8000-000000019515|2|-|-|-|-|-"},
+      {"relational_descriptor_v1", "6",
+       "019f0000-0000-7300-8000-000000019506|"
+       "019f0000-0000-7400-8000-000000019516|1|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|2|-|-|1|-|3130"},
+      {"relational_expression_v1", "3", "1|-|3|-|-|1|-|313030"},
+      {"relational_expression_v1", "4", "1|-|4|-|-|1|-|3230"},
+      {"relational_expression_v1", "5", "1|-|5|-|-|1|-|323030"},
+      {"relational_expression_v1", "6", "1|-|1|-|-|1|-|32"},
+      {"relational_expression_v1", "7", "1|-|2|-|-|7|-|2d"},
+      {"relational_expression_v1", "8", "1|-|3|-|-|7|-|2d"},
+      {"relational_expression_v1", "9", "1|-|4|-|-|7|-|2d"},
+      {"relational_expression_v1", "10", "1|-|5|-|-|7|-|2d"},
+      {"relational_expression_v1", "11",
+       "3|-|1|-|019f0000-0000-7500-8000-000000019521|-|-|-"},
+      {"relational_expression_v1", "12",
+       "3|-|2|-|019f0000-0000-7500-8000-000000019522|-|-|-"},
+      {"relational_expression_v1", "13",
+       "3|-|3|-|019f0000-0000-7500-8000-000000019523|-|-|-"},
+      {"relational_expression_v1", "14",
+       "3|-|4|-|019f0000-0000-7500-8000-000000019524|-|-|-"},
+      {"relational_expression_v1", "15",
+       "3|-|5|-|019f0000-0000-7500-8000-000000019525|-|-|-"},
+      {"relational_expression_v1", "16", "1|-|6|-|-|2|-|7131"},
+      {"relational_expression_v1", "17", "1|-|6|-|-|2|-|7132"},
+      {"relational_output_v1", "1", "1|1|1|1|0|67726f75705f6b6579"},
+      {"relational_output_v1", "2", "1|2|2|1|1|713161"},
+      {"relational_output_v1", "3", "1|3|3|1|2|713162"},
+      {"relational_output_v1", "4", "1|4|4|1|3|713261"},
+      {"relational_output_v1", "5", "1|5|5|1|4|713262"},
+      {"relational_output_v1", "6", "2|11|1|1|0|67726f75705f6b6579"},
+      {"relational_output_v1", "7", "2|16|6|1|1|71756172746572"},
+      {"relational_output_v1", "8", "2|12|2|1|2|616d6f756e74"},
+      {"relational_output_v1", "9", "2|13|3|1|3|62616c616e6365"},
+      {"relational_values_row_v1", "1", "1,2,3,4,5"},
+      {"relational_values_row_v1", "2", "6,7,8,9,10"},
+      {"relational_node_v1", "1", "13|0|-|1,2,3,4,5|1,2"},
+      {"relational_node_v1", "2", "15|0|1|1,6,2,3|-"},
+      {"relational_node_binding_v1", "1",
+       "76616c7565732e6c69746572616c2d7461626c652e7631|"
+       "1,2,3,4,5,6,7,8,9,10|-|-|-"},
+      {"relational_node_binding_v1", "2",
+       EncodeHex(include_nulls
+                     ? "unpivot.fixed-value-list.include-nulls.v1"
+                     : "unpivot.fixed-value-list.exclude-nulls.v1") +
+           "|11,12,13,14,15,16,17|-|-|-"},
+  };
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
+bool ValidatePivotUnpivotValuesSpine() {
+  const auto pivot = sblr::DispatchTextualRelationalQueryForContractTest(
+      {Context(), PivotValuesEnvelope(), {}});
+  const auto pivot_replay =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), PivotValuesEnvelope(), {}});
+  const auto unpivot_exclude =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), UnpivotValuesEnvelope(false), {}});
+  const auto unpivot_include =
+      sblr::DispatchTextualRelationalQueryForContractTest(
+          {Context(), UnpivotValuesEnvelope(true), {}});
+  for (const auto* result : {&pivot, &unpivot_exclude, &unpivot_include}) {
+    if (!result->api_result.ok) {
+      for (const auto& diagnostic : result->api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+  }
+  const auto traversed = [](const auto& value, const std::size_t columns,
+                            const std::size_t rows) {
+    return value.accepted && value.optimizer_admitted &&
+           value.optimizer_selected && value.physical_dag_published &&
+           value.physical_dag_executed && value.runtime_actuals_attached &&
+           value.canonical_result_published && value.api_result.ok &&
+           value.diagnostics.empty() && value.logical_node_count == 2 &&
+           value.physical_node_count == 2 &&
+           value.canonical_result_column_count == columns &&
+           value.canonical_result_row_count == rows;
+  };
+  bool passed = true;
+  passed &= Require(traversed(pivot, 5, 2),
+                    "multi-aggregate PIVOT did not traverse its selected DAG");
+  const auto& pivot_rows = pivot.api_result.result_shape.rows;
+  passed &= Require(
+      pivot_rows.size() == 2 && pivot_rows[0].fields.size() == 5 &&
+          pivot_rows[0].fields[0].second.encoded_value == "1" &&
+          pivot_rows[0].fields[1].second.encoded_value == "15" &&
+          pivot_rows[0].fields[2].second.encoded_value == "2" &&
+          pivot_rows[0].fields[3].second.encoded_value == "20" &&
+          pivot_rows[0].fields[4].second.encoded_value == "1" &&
+          pivot_rows[1].fields[0].second.encoded_value == "2" &&
+          pivot_rows[1].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          pivot_rows[1].fields[2].second.encoded_value == "0" &&
+          pivot_rows[1].fields[3].second.encoded_value == "7" &&
+          pivot_rows[1].fields[4].second.encoded_value == "1",
+      "PIVOT did not publish canonical SUM/COUNT state per fixed IN item");
+  passed &= Require(
+      pivot_replay.api_result.ok &&
+          pivot_replay.selected_plan_uuid == pivot.selected_plan_uuid &&
+          pivot_replay.canonical_result_bytes == pivot.canonical_result_bytes,
+      "identical PIVOT input changed canonical plan/result bytes");
+  passed &= Require(
+      traversed(unpivot_exclude, 4, 2) && traversed(unpivot_include, 4, 4),
+      "multi-value UNPIVOT INCLUDE/EXCLUDE NULLS did not traverse selected DAGs");
+  const auto& excluded_rows = unpivot_exclude.api_result.result_shape.rows;
+  const auto& included_rows = unpivot_include.api_result.result_shape.rows;
+  passed &= Require(
+      excluded_rows.size() == 2 && excluded_rows[0].fields.size() == 4 &&
+          excluded_rows[0].fields[0].second.encoded_value == "1" &&
+          excluded_rows[0].fields[1].second.encoded_value == "q1" &&
+          excluded_rows[0].fields[2].second.encoded_value == "10" &&
+          excluded_rows[0].fields[3].second.encoded_value == "100" &&
+          excluded_rows[1].fields[1].second.encoded_value == "q2" &&
+          excluded_rows[1].fields[2].second.encoded_value == "20" &&
+          excluded_rows[1].fields[3].second.encoded_value == "200" &&
+          included_rows.size() == 4 &&
+          included_rows[2].fields[2].second.state ==
+              api::EngineValueState::sql_null &&
+          included_rows[3].fields[3].second.state ==
+              api::EngineValueState::sql_null,
+      "UNPIVOT did not preserve multi-value rows or NULL policy");
+
+  auto malformed_pivot = PivotValuesEnvelope();
+  auto malformed_unpivot = UnpivotValuesEnvelope(false);
+  for (auto& operand : malformed_pivot.operands) {
+    if (operand.type == "relational_node_binding_v1" && operand.name == "2") {
+      operand.value =
+          EncodeHex("pivot.fixed-aggregate-list-one-for.exclude-nulls.v1") +
+          "|16,17,19,20,21,22|-|-|-";
+    }
+  }
+  for (auto& operand : malformed_unpivot.operands) {
+    if (operand.type == "relational_node_binding_v1" && operand.name == "2") {
+      operand.value =
+          EncodeHex("unpivot.fixed-value-list.exclude-nulls.v1") +
+          "|11,12,13,14,15,16|-|-|-";
+    }
+  }
+  const auto refused_payload = [](sblr::SblrOperationEnvelope envelope,
+                                  const std::string_view diagnostic) {
+    const auto value = sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), std::move(envelope), {}});
+    return value.accepted && value.optimizer_admitted &&
+           !value.optimizer_selected && !value.physical_dag_published &&
+           !value.physical_dag_executed &&
+           !value.canonical_result_published && !value.api_result.ok &&
+           value.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(value, diagnostic);
+  };
+  passed &= Require(
+      refused_payload(std::move(malformed_pivot),
+                      "QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1") &&
+          refused_payload(std::move(malformed_unpivot),
+                          "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1"),
+      "malformed PIVOT/UNPIVOT carrier published partial evidence");
+  return passed;
+}
+
 bool ValidatePayloadRefusalIsAtomic() {
   auto malformed = ValuesEnvelope();
   malformed.operands[13].value = "1|-|1|-|-|1|-|6e6f74";
@@ -11958,6 +12236,7 @@ int main() {
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
+                      ValidatePivotUnpivotValuesSpine() &&
                       ValidateGroupedCountSumValuesSpine() &&
                       ValidateGroupedCountSumRefusalIsAtomic() &&
                       ValidateRollupCountSumValuesSpine() &&

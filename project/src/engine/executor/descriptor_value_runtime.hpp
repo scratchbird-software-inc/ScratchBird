@@ -1894,6 +1894,87 @@ struct CanonicalGroupedAggregateSetRuntimeResult {
   PhysicalMgaStatementContext mga_statement_context;
 };
 
+enum class CanonicalPivotNullPolicy : std::uint8_t {
+  kExclude = 1,
+  kInclude,
+};
+
+struct CanonicalPivotInItem {
+  std::vector<scratchbird::engine::internal_api::EngineTypedValue> values;
+};
+
+struct CanonicalPivotAggregateBinding {
+  // The outer PIVOT executor supplies the selected private aggregate DAG,
+  // filtered input batch, result column, and MGA authority. Every remaining
+  // field is the exact canonical aggregate-registry request template.
+  CanonicalAggregateRuntimeRequest aggregate_template;
+  std::vector<ExecutorColumnDescriptor> result_columns_by_item;
+};
+
+struct CanonicalPivotRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<CanonicalDescriptorOrderTerm> group_key_terms;
+  std::vector<CanonicalDescriptorOrderTerm> for_key_terms;
+  std::vector<CanonicalPivotInItem> in_items;
+  std::vector<CanonicalPivotAggregateBinding> aggregates;
+  std::vector<ExecutorColumnDescriptor> result_columns;
+  CanonicalPivotNullPolicy null_policy = CanonicalPivotNullPolicy::kExclude;
+  std::size_t maximum_key_comparison_count = 1048576;
+  std::size_t maximum_total_aggregate_transition_count = 1048576;
+  std::size_t maximum_output_row_count = 1048576;
+  std::size_t maximum_output_cell_count = 16777216;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalPivotResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t input_row_count = 0;
+  std::size_t group_count = 0;
+  std::size_t in_item_count = 0;
+  std::size_t aggregate_count = 0;
+  std::size_t matched_input_row_count = 0;
+  std::size_t key_comparison_count = 0;
+  std::size_t aggregate_transition_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
+struct CanonicalUnpivotInItem {
+  std::vector<std::size_t> source_columns;
+  scratchbird::engine::internal_api::EngineTypedValue pivot_value;
+};
+
+struct CanonicalUnpivotRequest {
+  TypedPhysicalNodeDag physical_dag;
+  std::uint64_t selected_physical_node_id = 0;
+  DescriptorBatch input_batch;
+  std::vector<std::size_t> group_columns;
+  std::vector<CanonicalUnpivotInItem> in_items;
+  std::vector<ExecutorColumnDescriptor> result_columns;
+  CanonicalPivotNullPolicy null_policy = CanonicalPivotNullPolicy::kExclude;
+  std::size_t maximum_output_row_count = 1048576;
+  std::size_t maximum_output_cell_count = 16777216;
+  CanonicalExecutionMgaAuthority mga_authority;
+};
+
+struct CanonicalUnpivotResult {
+  DescriptorRuntimeDiagnostic diagnostic;
+  DescriptorBatch output_batch;
+  std::size_t input_row_count = 0;
+  std::size_t in_item_count = 0;
+  std::size_t emitted_row_count = 0;
+  std::size_t null_excluded_row_count = 0;
+  std::string selected_plan_uuid;
+  std::uint64_t executed_physical_node_id = 0;
+  std::uint64_t causal_counter_id = 0;
+  PhysicalMgaStatementContext mga_statement_context;
+};
+
 struct CanonicalGroupedAggregateSetStateSpillRequest {
   CanonicalGroupedAggregateSetRuntimeRequest grouped_request;
   std::filesystem::path spill_root;
@@ -2298,6 +2379,10 @@ CanonicalGroupedAggregateRuntimeResult ExecuteCanonicalGroupedAggregateRuntime(
 CanonicalGroupedAggregateSetRuntimeResult
 ExecuteCanonicalGroupedAggregateSetRuntime(
     const CanonicalGroupedAggregateSetRuntimeRequest& request);
+CanonicalPivotResult ExecuteCanonicalPivot(
+    const CanonicalPivotRequest& request);
+CanonicalUnpivotResult ExecuteCanonicalUnpivot(
+    const CanonicalUnpivotRequest& request);
 CanonicalGroupedAggregateSetStateSpillResult
 ExecuteCanonicalGroupedAggregateSetStateSpill(
     const CanonicalGroupedAggregateSetStateSpillRequest& request);

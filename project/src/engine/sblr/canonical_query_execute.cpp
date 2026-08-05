@@ -10566,6 +10566,1061 @@ ExecuteCanonicalObjectFreeGroupedCountSumQuery(
   return result;
 }
 
+// QOW-SOURCE-QRY-019-PIVOT-LIVE-V1
+// The bound carrier is item-major: group identifiers, one FOR identifier,
+// one aggregate expression per (IN item, aggregate), then one fixed literal
+// per IN item.  This keeps parser syntax out of execution while allowing the
+// selected physical node to consume an arbitrary aggregate list.
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreePivotQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 2 || root == graph.nodes.end() ||
+      root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kPivot ||
+      root->input_logical_node_ids.size() != 1 ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return result;
+  }
+  const bool include_nulls =
+      root->semantic_variant_id ==
+      "pivot.fixed-aggregate-list-one-for.include-nulls.v1";
+  const bool exclude_nulls =
+      root->semantic_variant_id ==
+      "pivot.fixed-aggregate-list-one-for.exclude-nulls.v1";
+  if (!include_nulls && !exclude_nulls) return result;
+  const auto input_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (input_node == graph.nodes.end() || input_node == root ||
+      input_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      input_node->semantic_variant_id != "values.literal-table.v1" ||
+      !input_node->input_logical_node_ids.empty()) {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty()) return result;
+  }
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-ADMISSION-V1",
+                  "PIVOT lacks optimizer admission");
+  }
+
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                  "PIVOT input VALUES: " + input.detail);
+  }
+  std::vector<const api::RelationalOutputRecord*> outputs;
+  for (const auto& output : request.relational_dag.outputs) {
+    if (output.relation_node_id == root->logical_node_id) {
+      outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(outputs, [](const auto* left, const auto* right) {
+    return left->ordinal < right->ordinal;
+  });
+  const auto find_expression = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(
+        request.relational_dag.expressions, [&](const auto& expression) {
+          return expression.expression_id == expression_id;
+        });
+  };
+  if (outputs.size() != root->output_descriptor_ids.size() ||
+      outputs.size() < 2 || root->bound_expression_ids.size() <=
+                                outputs.size() + 1) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                  "PIVOT output or bound-expression coverage is incomplete");
+  }
+  std::size_t group_count = 0;
+  while (group_count < outputs.size()) {
+    const auto expression = find_expression(outputs[group_count]->expression_id);
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier) {
+      break;
+    }
+    ++group_count;
+  }
+  const auto aggregate_output_count = outputs.size() - group_count;
+  const auto item_count =
+      root->bound_expression_ids.size() - outputs.size() - 1;
+  if (group_count == 0 || item_count == 0 || aggregate_output_count == 0 ||
+      aggregate_output_count % item_count != 0) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                  "PIVOT group, aggregate, or fixed IN arity is unresolved");
+  }
+  const auto aggregate_count = aggregate_output_count / item_count;
+  const auto map_identifier = [&](const std::uint32_t expression_id,
+                                  std::size_t* column,
+                                  std::string* detail) {
+    const auto expression = find_expression(expression_id);
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        !expression->child_expression_ids.empty() ||
+        !expression->bound_name_uuid.has_value() ||
+        expression->function_uuid.has_value() ||
+        expression->literal_kind.has_value() ||
+        expression->operator_name.has_value() ||
+        expression->literal_or_parameter_ref.has_value()) {
+      *detail = "PIVOT key is not an exact bound identifier";
+      return false;
+    }
+    const auto descriptor = std::ranges::find(
+        input_node->output_descriptor_ids, expression->result_descriptor_id);
+    if (descriptor == input_node->output_descriptor_ids.end() ||
+        std::ranges::count(input_node->output_descriptor_ids,
+                           expression->result_descriptor_id) != 1) {
+      *detail = "PIVOT identifier is not uniquely supplied by VALUES";
+      return false;
+    }
+    *column = static_cast<std::size_t>(std::distance(
+        input_node->output_descriptor_ids.begin(), descriptor));
+    if (*column >= input.batch.columns.size() ||
+        input.batch.columns[*column].descriptor_id !=
+            expression->result_descriptor_id) {
+      *detail = "PIVOT identifier ordinal is not descriptor-exact";
+      return false;
+    }
+    return true;
+  };
+
+  std::vector<exec::CanonicalDescriptorOrderTerm> group_terms;
+  std::vector<std::size_t> group_columns;
+  std::string detail;
+  for (std::size_t group = 0; group < group_count; ++group) {
+    if (outputs[group]->ordinal != group || !outputs[group]->visible ||
+        outputs[group]->descriptor_id != root->output_descriptor_ids[group] ||
+        outputs[group]->expression_id != root->bound_expression_ids[group]) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                    "PIVOT group output lineage is not exact");
+    }
+    std::size_t column = 0;
+    if (!map_identifier(root->bound_expression_ids[group], &column, &detail)) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1", detail);
+    }
+    exec::CanonicalDescriptorOrderTerm term;
+    term.column = column;
+    term.expression_descriptor_id = input.batch.columns[column].descriptor_id;
+    const auto validation = exec::ValidateCanonicalDescriptorOrderTerm(
+        term, input.batch.columns[column]);
+    if (!validation.ok) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                    validation.diagnostic_code + ":" + validation.detail);
+    }
+    group_columns.push_back(column);
+    group_terms.push_back(std::move(term));
+  }
+  std::size_t for_column = 0;
+  if (!map_identifier(root->bound_expression_ids[group_count], &for_column,
+                      &detail) ||
+      std::ranges::find(group_columns, for_column) != group_columns.end()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                  detail.empty() ? "PIVOT FOR key overlaps its group keys"
+                                 : detail);
+  }
+  exec::CanonicalDescriptorOrderTerm for_term;
+  for_term.column = for_column;
+  for_term.expression_descriptor_id =
+      input.batch.columns[for_column].descriptor_id;
+  const auto for_validation = exec::ValidateCanonicalDescriptorOrderTerm(
+      for_term, input.batch.columns[for_column]);
+  if (!for_validation.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                  for_validation.diagnostic_code + ":" +
+                      for_validation.detail);
+  }
+
+  const auto aggregate_expression_offset = group_count + 1;
+  for (std::size_t output = 0; output < aggregate_output_count; ++output) {
+    if (outputs[group_count + output]->ordinal != group_count + output ||
+        !outputs[group_count + output]->visible ||
+        outputs[group_count + output]->descriptor_id !=
+            root->output_descriptor_ids[group_count + output] ||
+        outputs[group_count + output]->expression_id !=
+            root->bound_expression_ids[aggregate_expression_offset + output]) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                    "PIVOT aggregate output lineage is not exact");
+    }
+  }
+
+  std::vector<std::vector<PreparedGlobalAggregateRoot>> prepared_aggregates(
+      aggregate_count);
+  for (std::size_t aggregate = 0; aggregate < aggregate_count; ++aggregate) {
+    const exec::CanonicalAggregateRegistryEntry* expected_registry = nullptr;
+    for (std::size_t item = 0; item < item_count; ++item) {
+      const auto output_ordinal =
+          group_count + item * aggregate_count + aggregate;
+      const auto expression_id =
+          root->bound_expression_ids[aggregate_expression_offset +
+                                     item * aggregate_count + aggregate];
+      const auto expression = find_expression(expression_id);
+      const auto* registry =
+          expression == request.relational_dag.expressions.end() ||
+                  !expression->function_uuid.has_value()
+              ? nullptr
+              : exec::LookupCanonicalAggregateByUuidV1(
+                    *expression->function_uuid);
+      if (registry == nullptr || !registry->executable ||
+          (expected_registry != nullptr &&
+           registry->function != expected_registry->function)) {
+        return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                      "PIVOT aggregate identity differs across fixed IN items");
+      }
+      expected_registry = registry;
+      const bool count_star =
+          registry->function == exec::CanonicalAggregateFunction::count &&
+          expression->child_expression_ids.empty();
+      auto aggregate_root = *root;
+      aggregate_root.output_descriptor_ids = {
+          root->output_descriptor_ids[output_ordinal]};
+      aggregate_root.bound_expression_ids = {expression_id};
+      auto prepared = PrepareGlobalAggregateRoot(
+          request.relational_dag, aggregate_root, *input_node, input,
+          registry->function, count_star, false, false,
+          static_cast<std::uint32_t>(output_ordinal), true);
+      if (!prepared.ok) {
+        return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                      prepared.detail);
+      }
+      if (!prepared_aggregates[aggregate].empty()) {
+        const auto& first = prepared_aggregates[aggregate].front();
+        if (prepared.aggregate_descriptor.function !=
+                first.aggregate_descriptor.function ||
+            prepared.aggregate_descriptor.count_star !=
+                first.aggregate_descriptor.count_star ||
+            prepared.value_columns != first.value_columns ||
+            prepared.value_descriptor_ids != first.value_descriptor_ids ||
+            prepared.distinct != first.distinct) {
+          return refuse(
+              "QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+              "PIVOT aggregate binding differs across fixed IN items");
+        }
+      }
+      prepared_aggregates[aggregate].push_back(std::move(prepared));
+    }
+  }
+
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag, request.expression_services);
+  std::vector<exec::CanonicalPivotInItem> in_items;
+  const auto literal_offset =
+      aggregate_expression_offset + aggregate_output_count;
+  for (std::size_t item = 0; item < item_count; ++item) {
+    const auto expression_id = root->bound_expression_ids[literal_offset + item];
+    const auto expression = find_expression(expression_id);
+    api::EngineTypedValue value;
+    std::string literal_detail;
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kLiteral ||
+        !expression->child_expression_ids.empty() ||
+        expression->bound_name_uuid.has_value() ||
+        expression->function_uuid.has_value() ||
+        !expression->literal_kind.has_value() ||
+        expression->operator_name.has_value() ||
+        !expression->literal_or_parameter_ref.has_value() ||
+        !expression_runtime.EvaluateForConsumer(
+            expression_id,
+            input.batch.columns[for_column].descriptor.canonical_type_name,
+            api::EngineCanonicalExpressionConsumer::aggregate, &value,
+            &literal_detail)) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                    "PIVOT fixed IN item is not a canonical literal: " +
+                        literal_detail);
+    }
+    in_items.push_back({{std::move(value)}});
+  }
+
+  std::vector<exec::ExecutorColumnDescriptor> result_columns;
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  result_columns.reserve(outputs.size());
+  result_bindings.reserve(outputs.size());
+  for (std::size_t group = 0; group < group_count; ++group) {
+    auto column = input.batch.columns[group_columns[group]];
+    column.stable_name = outputs[group]->output_name_utf8;
+    column.descriptor_id = outputs[group]->descriptor_id;
+    result_columns.push_back(std::move(column));
+    auto binding = input.result_bindings[group_columns[group]];
+    binding.physical_column_ordinal = group;
+    if (!binding.published_descriptor.has_value()) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-PIVOT-PAYLOAD-V1",
+                    "PIVOT group result descriptor is not publishable");
+    }
+    binding.published_descriptor->ordinal = static_cast<std::uint32_t>(group);
+    binding.published_descriptor->name_utf8 = outputs[group]->output_name_utf8;
+    result_bindings.push_back(std::move(binding));
+  }
+  for (std::size_t item = 0; item < item_count; ++item) {
+    for (std::size_t aggregate = 0; aggregate < aggregate_count; ++aggregate) {
+      result_columns.push_back(
+          prepared_aggregates[aggregate][item].result_column);
+      result_bindings.push_back(
+          prepared_aggregates[aggregate][item].result_bindings.front());
+    }
+  }
+  std::vector<exec::CanonicalPivotAggregateBinding> aggregate_bindings;
+  aggregate_bindings.reserve(aggregate_count);
+  for (std::size_t aggregate = 0; aggregate < aggregate_count; ++aggregate) {
+    const auto& prepared = prepared_aggregates[aggregate].front();
+    exec::CanonicalPivotAggregateBinding binding;
+    binding.aggregate_template.descriptor = prepared.aggregate_descriptor;
+    binding.aggregate_template.value_columns = prepared.value_columns;
+    binding.aggregate_template.value_expression_descriptor_ids =
+        prepared.value_descriptor_ids;
+    binding.aggregate_template.direct_arguments = prepared.direct_arguments;
+    binding.aggregate_template.distinct = prepared.distinct;
+    binding.aggregate_template.aggregate_order_terms =
+        prepared.aggregate_order_terms;
+    binding.aggregate_template.aggregate_separator =
+        prepared.aggregate_separator;
+    binding.aggregate_template.listagg_overflow_mode =
+        prepared.listagg_overflow_mode;
+    binding.aggregate_template.listagg_max_output_bytes =
+        prepared.listagg_max_output_bytes;
+    binding.aggregate_template.listagg_truncation_indicator =
+        prepared.listagg_truncation_indicator;
+    binding.aggregate_template.listagg_with_count = prepared.listagg_with_count;
+    binding.aggregate_template.forced_strategy =
+        exec::CanonicalAggregateExecutionStrategy::serial;
+    for (std::size_t item = 0; item < item_count; ++item) {
+      binding.result_columns_by_item.push_back(
+          prepared_aggregates[aggregate][item].result_column);
+    }
+    aggregate_bindings.push_back(std::move(binding));
+  }
+
+  const auto input_row_count = input.batch.rows.size();
+  std::uint64_t input_memory = 1;
+  std::uint64_t output_cells = 0;
+  std::uint64_t output_memory = 0;
+  std::uint64_t total_memory = 0;
+  std::uint64_t group_comparisons = 0;
+  std::uint64_t item_comparisons = 0;
+  std::uint64_t maximum_key_comparisons = 0;
+  std::uint64_t maximum_transitions = 0;
+  if (!AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedMultiply(input_row_count, outputs.size(), &output_cells) ||
+      !CheckedMultiply(output_cells, 64U, &output_memory) ||
+      !CheckedAdd(input_memory, output_memory, &total_memory) ||
+      !CheckedMultiply(input_row_count, input_row_count,
+                       &group_comparisons) ||
+      !CheckedMultiply(group_comparisons, group_count,
+                       &group_comparisons) ||
+      !CheckedMultiply(input_row_count, item_count, &item_comparisons) ||
+      !CheckedAdd(group_comparisons, item_comparisons,
+                  &maximum_key_comparisons) ||
+      !CheckedMultiply(input_row_count, aggregate_count,
+                       &maximum_transitions) ||
+      total_memory > request.optimizer_request.resource.memory_budget_bytes ||
+      maximum_key_comparisons > std::numeric_limits<std::size_t>::max() ||
+      maximum_transitions > std::numeric_limits<std::size_t>::max() ||
+      output_cells > std::numeric_limits<std::size_t>::max()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "PIVOT live cost or resource bound is invalid");
+  }
+
+  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
+                              request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto pivot_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "pivot.capability");
+  const std::string pivot_implementation_id =
+      include_nulls ? "pivot.canonical.include-nulls.typed.v1"
+                    : "pivot.canonical.exclude-nulls.typed.v1";
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {input_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       input_row_count,
+       input_memory,
+       0,
+       0},
+      {root->logical_node_id,
+       pivot_implementation_id,
+       pivot_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kPivot,
+       exec::PhysicalNodeKind::kPivot,
+       "canonical." + root->semantic_variant_id,
+       input_row_count,
+       std::max<std::uint64_t>(1, total_memory),
+       1,
+       1}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "pivot.selected-plan", "PIVOT");
+  if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(input_node->logical_node_id, std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-PIVOT-VALUES-V1", "PIVOT");
+  exec::CanonicalPhysicalExecutorRegistration pivot_registration;
+  pivot_registration.node_kind = exec::PhysicalNodeKind::kPivot;
+  pivot_registration.implementation_id = pivot_implementation_id;
+  pivot_registration.executor_capability_uuid = pivot_capability_uuid;
+  pivot_registration.executor_capability_abi_version = 1;
+  pivot_registration.engine_owned = true;
+  pivot_registration.accepts_optimizer_publication_v2 = true;
+  pivot_registration.execute =
+      [group_terms = std::move(group_terms), for_term = std::move(for_term),
+       in_items = std::move(in_items),
+       aggregate_bindings = std::move(aggregate_bindings),
+       result_columns = std::move(result_columns), include_nulls,
+       input_row_count,
+       maximum_key_comparisons = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, maximum_key_comparisons)),
+       maximum_transitions = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, maximum_transitions)),
+       maximum_output_cells = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, output_cells)),
+       maximum_state_bytes = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, total_memory)),
+       mga_context = request.context](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() !=
+                input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-PIVOT-INPUT-V1";
+          step.diagnostic.detail =
+              "PIVOT executor did not receive its exact selected input batch";
+          return step;
+        }
+        auto bindings = aggregate_bindings;
+        for (auto& binding : bindings) {
+          binding.aggregate_template.maximum_transition_count =
+              std::max<std::size_t>(1, input_row_count);
+          binding.aggregate_template.maximum_state_bytes = maximum_state_bytes;
+        }
+        exec::CanonicalPivotRequest pivot_request;
+        pivot_request.physical_dag = dag;
+        pivot_request.selected_physical_node_id = node.physical_node_id;
+        pivot_request.input_batch =
+            *inputs.front().materialized_output_batch;
+        pivot_request.group_key_terms = group_terms;
+        pivot_request.for_key_terms = {for_term};
+        pivot_request.in_items = in_items;
+        pivot_request.aggregates = std::move(bindings);
+        pivot_request.result_columns = result_columns;
+        pivot_request.null_policy =
+            include_nulls ? exec::CanonicalPivotNullPolicy::kInclude
+                          : exec::CanonicalPivotNullPolicy::kExclude;
+        pivot_request.maximum_key_comparison_count = maximum_key_comparisons;
+        pivot_request.maximum_total_aggregate_transition_count =
+            maximum_transitions;
+        pivot_request.maximum_output_row_count =
+            std::max<std::size_t>(1, input_row_count);
+        pivot_request.maximum_output_cell_count = maximum_output_cells;
+        pivot_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto pivot = exec::ExecuteCanonicalPivot(pivot_request);
+        if (!pivot.diagnostic.ok) {
+          step.diagnostic = pivot.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_row_count;
+        step.rows_examined = input_row_count;
+        step.output_row_count = pivot.output_batch.rows.size();
+        step.materialized_output_batch = pivot.output_batch;
+        step.mga_statement_context = pivot.mga_statement_context;
+        return step;
+      };
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      request.context, planning.physical_dag);
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(pivot_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(identity_scope + ":" +
+                               request.context.current_monotonic_ns,
+                           "pivot.execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      "pivot.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, input_row_count);
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-PIVOT-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "PIVOT selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
+// QOW-SOURCE-QRY-019-UNPIVOT-LIVE-V1
+// The bound carrier is item-major: group identifiers, every source value
+// identifier for each IN item, then one fixed label literal per item.  The
+// result output identifies the first item's label and value descriptors; all
+// later items must cast through those exact engine-owned descriptors.
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeUnpivotQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
+    return node.logical_node_id == graph.root_logical_node_id;
+  });
+  if (graph.nodes.size() != 2 || root == graph.nodes.end() ||
+      root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kUnpivot ||
+      root->input_logical_node_ids.size() != 1 ||
+      !request.optimizer_request.logical_properties.properties.empty()) {
+    return result;
+  }
+  const bool include_nulls =
+      root->semantic_variant_id ==
+      "unpivot.fixed-value-list.include-nulls.v1";
+  const bool exclude_nulls =
+      root->semantic_variant_id ==
+      "unpivot.fixed-value-list.exclude-nulls.v1";
+  if (!include_nulls && !exclude_nulls) return result;
+  const auto input_node =
+      std::ranges::find_if(graph.nodes, [&](const auto& node) {
+        return node.logical_node_id == root->input_logical_node_ids.front();
+      });
+  if (input_node == graph.nodes.end() || input_node == root ||
+      input_node->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      input_node->semantic_variant_id != "values.literal-table.v1" ||
+      !input_node->input_logical_node_ids.empty()) {
+    return result;
+  }
+  for (const auto& node : graph.nodes) {
+    if (!node.required_object_uuids.empty()) return result;
+  }
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result =
+        Failure(request, std::move(diagnostic_id), std::move(detail));
+    return result;
+  };
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-ADMISSION-V1",
+                  "UNPIVOT lacks optimizer admission");
+  }
+  auto input = MaterializeValues(request.relational_dag, *input_node,
+                                 request.expression_services);
+  if (!input.ok) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT input VALUES: " + input.detail);
+  }
+  std::vector<const api::RelationalOutputRecord*> outputs;
+  for (const auto& output : request.relational_dag.outputs) {
+    if (output.relation_node_id == root->logical_node_id) {
+      outputs.push_back(&output);
+    }
+  }
+  std::ranges::sort(outputs, [](const auto* left, const auto* right) {
+    return left->ordinal < right->ordinal;
+  });
+  const auto find_expression = [&](const std::uint32_t expression_id) {
+    return std::ranges::find_if(
+        request.relational_dag.expressions, [&](const auto& expression) {
+          return expression.expression_id == expression_id;
+        });
+  };
+  if (outputs.size() != root->output_descriptor_ids.size() ||
+      outputs.size() < 3 || root->bound_expression_ids.empty()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT output or bound-expression coverage is incomplete");
+  }
+  std::size_t group_count = 0;
+  while (group_count < outputs.size()) {
+    const auto expression = find_expression(outputs[group_count]->expression_id);
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier) {
+      break;
+    }
+    ++group_count;
+  }
+  if (group_count == 0 || group_count + 1 >= outputs.size()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT group, label, or value output arity is unresolved");
+  }
+  const auto label_output_expression =
+      find_expression(outputs[group_count]->expression_id);
+  if (label_output_expression == request.relational_dag.expressions.end() ||
+      label_output_expression->expression_kind !=
+          api::RelationalExpressionKind::kLiteral) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT label output is not a fixed literal");
+  }
+  const auto value_count = outputs.size() - group_count - 1;
+  const auto bound_tail_count =
+      root->bound_expression_ids.size() -
+      std::min(group_count, root->bound_expression_ids.size());
+  if (root->bound_expression_ids.size() <= group_count || value_count == 0 ||
+      bound_tail_count % (value_count + 1) != 0) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT fixed IN item/value arity is unresolved");
+  }
+  const auto item_count = bound_tail_count / (value_count + 1);
+  if (item_count == 0) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT requires at least one fixed IN item");
+  }
+  const auto source_offset = group_count;
+  const auto label_offset = group_count + item_count * value_count;
+  if (label_offset + item_count != root->bound_expression_ids.size() ||
+      outputs[group_count]->expression_id !=
+          root->bound_expression_ids[label_offset]) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT label lineage is not item-major and exact");
+  }
+
+  const auto map_identifier = [&](const std::uint32_t expression_id,
+                                  std::size_t* column,
+                                  std::string* detail) {
+    const auto expression = find_expression(expression_id);
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kIdentifier ||
+        !expression->child_expression_ids.empty() ||
+        !expression->bound_name_uuid.has_value() ||
+        expression->function_uuid.has_value() ||
+        expression->literal_kind.has_value() ||
+        expression->operator_name.has_value() ||
+        expression->literal_or_parameter_ref.has_value()) {
+      *detail = "UNPIVOT source is not an exact bound identifier";
+      return false;
+    }
+    const auto descriptor = std::ranges::find(
+        input_node->output_descriptor_ids, expression->result_descriptor_id);
+    if (descriptor == input_node->output_descriptor_ids.end() ||
+        std::ranges::count(input_node->output_descriptor_ids,
+                           expression->result_descriptor_id) != 1) {
+      *detail = "UNPIVOT identifier is not uniquely supplied by VALUES";
+      return false;
+    }
+    *column = static_cast<std::size_t>(std::distance(
+        input_node->output_descriptor_ids.begin(), descriptor));
+    if (*column >= input.batch.columns.size() ||
+        input.batch.columns[*column].descriptor_id !=
+            expression->result_descriptor_id) {
+      *detail = "UNPIVOT identifier ordinal is not descriptor-exact";
+      return false;
+    }
+    return true;
+  };
+
+  std::vector<std::size_t> group_columns;
+  std::string detail;
+  for (std::size_t group = 0; group < group_count; ++group) {
+    if (outputs[group]->ordinal != group || !outputs[group]->visible ||
+        outputs[group]->descriptor_id != root->output_descriptor_ids[group] ||
+        outputs[group]->expression_id != root->bound_expression_ids[group]) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                    "UNPIVOT group output lineage is not exact");
+    }
+    std::size_t column = 0;
+    if (!map_identifier(root->bound_expression_ids[group], &column, &detail)) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1", detail);
+    }
+    group_columns.push_back(column);
+  }
+
+  std::vector<exec::CanonicalUnpivotInItem> in_items(item_count);
+  std::vector<std::size_t> first_item_columns;
+  for (std::size_t item = 0; item < item_count; ++item) {
+    for (std::size_t value = 0; value < value_count; ++value) {
+      const auto expression_id =
+          root->bound_expression_ids[source_offset + item * value_count + value];
+      std::size_t column = 0;
+      if (!map_identifier(expression_id, &column, &detail) ||
+          std::ranges::find(group_columns, column) != group_columns.end()) {
+        return refuse(
+            "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+            detail.empty() ? "UNPIVOT source overlaps a group column" : detail);
+      }
+      if (item == 0) {
+        if (outputs[group_count + 1 + value]->expression_id != expression_id ||
+            outputs[group_count + 1 + value]->descriptor_id !=
+                input.batch.columns[column].descriptor_id) {
+          return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                        "UNPIVOT value output lineage is not exact");
+        }
+        first_item_columns.push_back(column);
+      } else if (input.batch.columns[column].descriptor.canonical_type_name !=
+                 input.batch.columns[first_item_columns[value]]
+                     .descriptor.canonical_type_name) {
+        return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                      "UNPIVOT item value types are not reconcilable");
+      }
+      in_items[item].source_columns.push_back(column);
+    }
+  }
+
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag, request.expression_services);
+  std::string label_type;
+  if (!expression_runtime.InferType(root->bound_expression_ids[label_offset],
+                                    std::nullopt, &label_type, &detail) ||
+      label_type == "null") {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT label type is unresolved: " + detail);
+  }
+  for (std::size_t item = 0; item < item_count; ++item) {
+    const auto expression_id = root->bound_expression_ids[label_offset + item];
+    const auto expression = find_expression(expression_id);
+    api::EngineTypedValue label;
+    std::string label_detail;
+    if (expression == request.relational_dag.expressions.end() ||
+        expression->expression_kind !=
+            api::RelationalExpressionKind::kLiteral ||
+        !expression->child_expression_ids.empty() ||
+        expression->bound_name_uuid.has_value() ||
+        expression->function_uuid.has_value() ||
+        !expression->literal_kind.has_value() ||
+        expression->operator_name.has_value() ||
+        !expression->literal_or_parameter_ref.has_value() ||
+        !expression_runtime.EvaluateForConsumer(
+            expression_id, label_type,
+            api::EngineCanonicalExpressionConsumer::projection, &label,
+            &label_detail) ||
+        label.state != api::EngineValueState::value || label.is_null) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                    "UNPIVOT fixed label is invalid: " + label_detail);
+    }
+    in_items[item].pivot_value = std::move(label);
+  }
+
+  std::vector<exec::ExecutorColumnDescriptor> result_columns;
+  result_columns.reserve(outputs.size());
+  for (std::size_t group = 0; group < group_count; ++group) {
+    auto column = input.batch.columns[group_columns[group]];
+    column.stable_name = outputs[group]->output_name_utf8;
+    result_columns.push_back(std::move(column));
+  }
+  const auto label_descriptor = std::ranges::find_if(
+      request.relational_dag.descriptors, [&](const auto& descriptor) {
+        return descriptor.descriptor_id == outputs[group_count]->descriptor_id;
+      });
+  if (label_descriptor == request.relational_dag.descriptors.end() ||
+      label_descriptor->descriptor_uuid !=
+          in_items.front().pivot_value.descriptor.descriptor_uuid.canonical ||
+      outputs[group_count]->output_name_utf8.empty()) {
+    return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                  "UNPIVOT label result descriptor is unresolved");
+  }
+  result_columns.push_back(
+      {outputs[group_count]->output_name_utf8,
+       in_items.front().pivot_value.descriptor,
+       label_descriptor->nullability == api::RelationalNullability::kNullable,
+       label_descriptor->descriptor_id});
+  for (std::size_t value = 0; value < value_count; ++value) {
+    auto column = input.batch.columns[first_item_columns[value]];
+    column.stable_name = outputs[group_count + 1 + value]->output_name_utf8;
+    result_columns.push_back(std::move(column));
+  }
+  std::vector<exec::CanonicalResultColumnBinding> result_bindings;
+  result_bindings.reserve(outputs.size());
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal) {
+    const auto descriptor = std::ranges::find_if(
+        request.relational_dag.descriptors, [&](const auto& candidate) {
+          return candidate.descriptor_id == outputs[ordinal]->descriptor_id;
+        });
+    if (descriptor == request.relational_dag.descriptors.end() ||
+        !outputs[ordinal]->visible || outputs[ordinal]->ordinal != ordinal ||
+        outputs[ordinal]->output_name_utf8.empty()) {
+      return refuse("QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-PAYLOAD-V1",
+                    "UNPIVOT result binding is not publishable");
+    }
+    exec::CanonicalResultColumnBinding binding;
+    binding.physical_column_ordinal = ordinal;
+    binding.visible = true;
+    binding.published_descriptor = exec::CanonicalResultColumnDescriptor{
+        static_cast<std::uint32_t>(ordinal),
+        outputs[ordinal]->output_name_utf8,
+        descriptor->descriptor_uuid,
+        descriptor->type_uuid,
+        ResultNullability(descriptor->nullability),
+        descriptor->collation_uuid,
+        descriptor->timezone_profile_id};
+    result_bindings.push_back(std::move(binding));
+  }
+
+  const auto input_row_count = input.batch.rows.size();
+  std::uint64_t maximum_output_rows = 0;
+  std::uint64_t maximum_output_cells = 0;
+  std::uint64_t input_memory = 1;
+  std::uint64_t output_memory = 0;
+  std::uint64_t total_memory = 0;
+  if (!CheckedMultiply(input_row_count, item_count, &maximum_output_rows) ||
+      !CheckedMultiply(maximum_output_rows, outputs.size(),
+                       &maximum_output_cells) ||
+      !AddBatchMemoryBytes(input.batch, &input_memory) ||
+      !CheckedMultiply(maximum_output_cells, 64U, &output_memory) ||
+      !CheckedAdd(input_memory, output_memory, &total_memory) ||
+      total_memory > request.optimizer_request.resource.memory_budget_bytes ||
+      maximum_output_rows > std::numeric_limits<std::size_t>::max() ||
+      maximum_output_cells > std::numeric_limits<std::size_t>::max()) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "UNPIVOT live cost or resource bound is invalid");
+  }
+
+  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
+                              request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "values.capability");
+  const auto unpivot_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "unpivot.capability");
+  const std::string unpivot_implementation_id =
+      include_nulls ? "unpivot.canonical.include-nulls.typed.v1"
+                    : "unpivot.canonical.exclude-nulls.typed.v1";
+  const std::vector<LivePhysicalNodeProfile> profiles = {
+      {input_node->logical_node_id,
+       std::string(kValuesImplementationId),
+       values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1",
+       input_row_count,
+       input_memory,
+       0,
+       0},
+      {root->logical_node_id,
+       unpivot_implementation_id,
+       unpivot_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kUnpivot,
+       exec::PhysicalNodeKind::kUnpivot,
+       "canonical." + root->semantic_variant_id,
+       maximum_output_rows,
+       std::max<std::uint64_t>(1, total_memory),
+       1,
+       1}};
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "unpivot.selected-plan", "UNPIVOT");
+  if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  values_batches.emplace(input_node->logical_node_id, std::move(input.batch));
+  auto values_registration = MakeLiveValuesRegistration(
+      std::move(values_batches), values_capability_uuid,
+      "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-VALUES-V1", "UNPIVOT");
+  exec::CanonicalPhysicalExecutorRegistration unpivot_registration;
+  unpivot_registration.node_kind = exec::PhysicalNodeKind::kUnpivot;
+  unpivot_registration.implementation_id = unpivot_implementation_id;
+  unpivot_registration.executor_capability_uuid = unpivot_capability_uuid;
+  unpivot_registration.executor_capability_abi_version = 1;
+  unpivot_registration.engine_owned = true;
+  unpivot_registration.accepts_optimizer_publication_v2 = true;
+  unpivot_registration.execute =
+      [group_columns = std::move(group_columns), in_items = std::move(in_items),
+       result_columns = std::move(result_columns), include_nulls,
+       input_row_count,
+       maximum_output_rows = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, maximum_output_rows)),
+       maximum_output_cells = static_cast<std::size_t>(
+           std::max<std::uint64_t>(1, maximum_output_cells)),
+       mga_context = request.context](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() !=
+                input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-INPUT-V1";
+          step.diagnostic.detail =
+              "UNPIVOT executor did not receive its exact selected input batch";
+          return step;
+        }
+        exec::CanonicalUnpivotRequest unpivot_request;
+        unpivot_request.physical_dag = dag;
+        unpivot_request.selected_physical_node_id = node.physical_node_id;
+        unpivot_request.input_batch =
+            *inputs.front().materialized_output_batch;
+        unpivot_request.group_columns = group_columns;
+        unpivot_request.in_items = in_items;
+        unpivot_request.result_columns = result_columns;
+        unpivot_request.null_policy =
+            include_nulls ? exec::CanonicalPivotNullPolicy::kInclude
+                          : exec::CanonicalPivotNullPolicy::kExclude;
+        unpivot_request.maximum_output_row_count = maximum_output_rows;
+        unpivot_request.maximum_output_cell_count = maximum_output_cells;
+        unpivot_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto unpivot = exec::ExecuteCanonicalUnpivot(unpivot_request);
+        if (!unpivot.diagnostic.ok) {
+          step.diagnostic = unpivot.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_row_count;
+        step.rows_examined = input_row_count;
+        step.output_row_count = unpivot.output_batch.rows.size();
+        step.materialized_output_batch = unpivot.output_batch;
+        step.mga_statement_context = unpivot.mga_statement_context;
+        return step;
+      };
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      request.context, planning.physical_dag);
+  execution_request.available_executors.push_back(
+      std::move(values_registration));
+  execution_request.available_executors.push_back(
+      std::move(unpivot_registration));
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(identity_scope + ":" +
+                               request.context.current_monotonic_ns,
+                           "unpivot.execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      "unpivot.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1,
+                            static_cast<std::size_t>(maximum_output_rows));
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-UNPIVOT-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "UNPIVOT selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
+}
+
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeGlobalAggregateQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -12193,6 +13248,10 @@ ExecuteCanonicalObjectFreeValuesQuery(
   request.optimizer_request.mga.statement_context = closure_mga;
   request.optimizer_admission.mga_statement_context = closure_mga;
 #endif
+  auto pivot = ExecuteCanonicalObjectFreePivotQuery(request);
+  if (pivot.profile_matched) return pivot;
+  auto unpivot = ExecuteCanonicalObjectFreeUnpivotQuery(request);
+  if (unpivot.profile_matched) return unpivot;
   auto grouped_aggregate =
       ExecuteCanonicalObjectFreeGroupedCountSumQuery(request);
   if (grouped_aggregate.profile_matched) return grouped_aggregate;
