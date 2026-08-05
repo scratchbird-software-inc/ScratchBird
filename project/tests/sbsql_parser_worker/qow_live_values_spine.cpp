@@ -894,6 +894,32 @@ FilteredProjectedDistinctSortLimitValuesEnvelope() {
   return envelope;
 }
 
+// RCP-039-TEST-LIVE-FILTER-PROJECT-DISTINCT-SORT-OFFSET-FETCH-COMPOSITION-V1
+sblr::SblrOperationEnvelope
+FilteredProjectedDistinctSortOffsetValuesEnvelope(
+    const bool fetch_first_rows_only) {
+  auto envelope = FilteredProjectedDistinctSortLimitValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value =
+          fetch_first_rows_only
+              ? "019f0000-0000-7000-8000-000000008f00"
+              : "019f0000-0000-7000-8000-000000008e00";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "6") {
+      operand.value =
+          (fetch_first_rows_only
+               ? "66657463682e66697273742d726f77732d6f6e6c792d6f66667365742e7631"
+               : "6c696d69742e626f756e642d636f756e742d6f66667365742e7631") +
+          std::string("|15,18|-|-|-");
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_expression_v1", "18", "1|-|5|-|-|1|-|31"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4183,7 +4209,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 14> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 16> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4198,6 +4224,8 @@ bool ValidateGeneralSelectExecutionBoundary() {
       FilteredProjectedSortValuesEnvelope(),
       FilteredProjectedSortLimitValuesEnvelope(),
       FilteredProjectedDistinctSortLimitValuesEnvelope(),
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(false),
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(true),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5607,6 +5635,103 @@ bool ValidateFilteredProjectedDistinctSortLimitCompositionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "invalid DISTINCT or exhausted full SQL tail published evidence");
+  return passed;
+}
+
+// RCP-039-TEST-LIVE-FILTER-PROJECT-DISTINCT-SORT-OFFSET-FETCH-COMPOSITION-V1
+bool ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 6 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 6 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 1 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 1;
+  };
+
+  bool passed = true;
+  std::string limit_selected_plan;
+  std::string fetch_selected_plan;
+  for (const bool fetch_first_rows_only : {false, true}) {
+    const auto first = dispatch(
+        FilteredProjectedDistinctSortOffsetValuesEnvelope(
+            fetch_first_rows_only));
+    const auto repeated = dispatch(
+        FilteredProjectedDistinctSortOffsetValuesEnvelope(
+            fetch_first_rows_only));
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    const auto& rows = first.api_result.result_shape.rows;
+    passed &= Require(
+        completed(first) &&
+            rows[0].fields[0].first == "safe_quotient" &&
+            rows[0].fields[0].second.encoded_value == "10",
+        std::string(fetch_first_rows_only ? "FETCH" : "LIMIT/OFFSET") +
+            " did not eliminate projected duplicates before ordering and "
+            "offset/count application");
+    passed &= Require(
+        completed(repeated) &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes,
+        std::string(fetch_first_rows_only ? "FETCH" : "LIMIT/OFFSET") +
+            " changed deterministic plan/result bytes");
+    if (fetch_first_rows_only) {
+      fetch_selected_plan = first.selected_plan_uuid;
+    } else {
+      limit_selected_plan = first.selected_plan_uuid;
+    }
+  }
+  passed &= Require(
+      !limit_selected_plan.empty() && !fetch_selected_plan.empty() &&
+          limit_selected_plan != fetch_selected_plan,
+      "full-tail LIMIT/OFFSET and FETCH collapsed to one selected plan");
+
+  auto negative_offset =
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(true);
+  for (auto& operand : negative_offset.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "18") {
+      operand.value = "1|-|5|-|-|1|-|2d31";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 8;
+  const auto negative_result = dispatch(std::move(negative_offset));
+  const auto exhausted_result = dispatch(
+      FilteredProjectedDistinctSortOffsetValuesEnvelope(false),
+      std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          negative_result,
+          "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-DISTINCT-SORT-LIMIT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "negative OFFSET or exhausted full FETCH tail published evidence");
   return passed;
 }
 
@@ -10694,6 +10819,7 @@ int main() {
                       ValidateFilteredProjectedSortCompositionSpine() &&
                       ValidateFilteredProjectedSortLimitCompositionSpine() &&
                       ValidateFilteredProjectedDistinctSortLimitCompositionSpine() &&
+                      ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&

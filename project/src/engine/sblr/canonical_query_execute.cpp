@@ -7872,6 +7872,8 @@ ExecuteCanonicalObjectFreeFilterProjectSortLimitQuery(
 
 // RCP-038: add full projected-row DISTINCT before ORDER BY and LIMIT in the
 // accepted filtered SQL tail.
+// RCP-039: carry the already signed LIMIT/OFFSET and FETCH FIRST ROWS ONLY
+// profiles through the same exact six-node causal route.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -7882,11 +7884,19 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   });
   if (graph.nodes.size() != 6 || root == graph.nodes.end() ||
       root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kLimit ||
-      root->semantic_variant_id != "limit.bound-count.v1" ||
+      (root->semantic_variant_id != "limit.bound-count.v1" &&
+       root->semantic_variant_id != "limit.bound-count-offset.v1" &&
+       root->semantic_variant_id !=
+           "fetch.first-rows-only-offset.v1") ||
       root->input_logical_node_ids.size() != 1 ||
-      root->bound_expression_ids.size() != 1) {
+      (root->semantic_variant_id == "limit.bound-count.v1"
+           ? root->bound_expression_ids.size() != 1
+           : root->bound_expression_ids.size() != 2)) {
     return result;
   }
+  const bool fetch_first_rows_only =
+      root->semantic_variant_id == "fetch.first-rows-only-offset.v1";
+  const bool has_offset = root->bound_expression_ids.size() == 2;
   const auto sort_node =
       std::ranges::find_if(graph.nodes, [&](const auto& node) {
         return node.logical_node_id == root->input_logical_node_ids.front();
@@ -8083,18 +8093,28 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
     return refuse(std::string(kPayloadDiagnostic), prepared_limit.detail);
   }
   std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
   std::string bound_detail;
   if (!EvaluateNonNegativeRowBound(
           &expression_runtime, root->bound_expression_ids.front(), &row_limit,
-          &bound_detail)) {
+          &bound_detail) ||
+      (has_offset &&
+       !EvaluateNonNegativeRowBound(
+           &expression_runtime, root->bound_expression_ids[1], &row_offset,
+           &bound_detail))) {
     return refuse(std::string(kPayloadDiagnostic),
-                  "LIMIT bound: " + bound_detail);
+                  "LIMIT/FETCH bound: " + bound_detail);
   }
 
   const auto filtered_row_count = filtered_input.batch.rows.size();
-  const auto output_row_bound =
-      row_limit > filtered_row_count
+  const auto offset_bound =
+      row_offset > filtered_row_count
           ? filtered_row_count
+          : static_cast<std::size_t>(row_offset);
+  const auto remaining_bound = filtered_row_count - offset_bound;
+  const auto output_row_bound =
+      row_limit > remaining_bound
+          ? remaining_bound
           : static_cast<std::size_t>(row_limit);
   std::uint64_t input_memory = 1;
   std::uint64_t predicate_memory = 0;
@@ -8164,11 +8184,25 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
       DerivedCanonicalUuid(identity_scope, "distinct.capability");
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "sort.capability");
-  const auto limit_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "limit.capability");
+  const auto limit_capability_uuid = DerivedCanonicalUuid(
+      identity_scope,
+      fetch_first_rows_only
+          ? "fetch.capability"
+          : (has_offset ? "limit-offset.capability" : "limit.capability"));
   const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
       identity_scope + ":" + prepared_sort.ordering_property_uuid,
       "filter-project-distinct-sort-limit.deterministic-tie");
+  const std::string limit_implementation_id =
+      fetch_first_rows_only ? "fetch.native.rows-only.v1"
+                            : "limit.typed.v1";
+  const std::string limit_semantic_id =
+      fetch_first_rows_only
+          ? "canonical.fetch.first-rows-only-offset.filtered-projected-"
+            "distinct-order.v1"
+          : (has_offset
+                 ? "canonical.limit.bound-count-offset.filtered-projected-"
+                   "distinct-order.v1"
+                 : "canonical.limit.filtered-projected-distinct-order.v1");
   const std::vector<LivePhysicalNodeProfile> profiles = {
       {values_node->logical_node_id, std::string(kValuesImplementationId),
        values_capability_uuid,
@@ -8199,14 +8233,18 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
        "canonical.sort.distinct-projected-expression.v1", filtered_row_count,
        sort_memory, 1, 1, {}, {prepared_sort.ordering_property_uuid},
        {plan::CanonicalLogicalPropertyKind::kOrdering}},
-      {root->logical_node_id, "limit.typed.v1", limit_capability_uuid,
+      {root->logical_node_id, limit_implementation_id, limit_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kLimit,
        exec::PhysicalNodeKind::kLimit,
-       "canonical.limit.filtered-projected-distinct-order.v1",
-       output_row_bound, limit_memory, 1, 1}};
+       limit_semantic_id, output_row_bound, limit_memory, 1, 1}};
   const auto planning = PlanAndPublishLivePhysicalDag(
-      request, profiles, "filter-project-distinct-sort-limit.selected-plan",
-      "FILTER/PROJECT/DISTINCT/SORT/LIMIT");
+      request, profiles,
+      fetch_first_rows_only
+          ? "filter-project-distinct-sort-fetch.selected-plan"
+          : (has_offset
+                 ? "filter-project-distinct-sort-limit-offset.selected-plan"
+                 : "filter-project-distinct-sort-limit.selected-plan"),
+      "FILTER/PROJECT/DISTINCT/SORT/LIMIT/FETCH");
   if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
   result.optimizer_selected = true;
   result.physical_dag_published = true;
@@ -8218,7 +8256,7 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
   auto values_registration = MakeLiveValuesRegistration(
       std::move(values_batches), values_capability_uuid,
       "QOW-DIAG-RELATIONAL-LIVE-FULL-SQL-TAIL-VALUES-V1",
-      "FILTER/PROJECT/DISTINCT/SORT/LIMIT");
+      "FILTER/PROJECT/DISTINCT/SORT/LIMIT/FETCH");
   auto filter_registration = MakeLiveFilterRegistration(
       std::move(predicate_truth_values), filter_capability_uuid,
       input_row_count, request.context);
@@ -8239,8 +8277,8 @@ ExecuteCanonicalObjectFreeFilterProjectDistinctSortLimitQuery(
                             static_cast<std::size_t>(sort_comparison_count)),
       request.context);
   auto limit_registration = MakeLiveLimitRegistration(
-      "limit.typed.v1", limit_capability_uuid, row_limit, 0, false,
-      filtered_row_count, request.context);
+      limit_implementation_id, limit_capability_uuid, row_limit, row_offset,
+      fetch_first_rows_only, filtered_row_count, request.context);
 
   api::CanonicalOptimizerSelectedExecutionRequest execution_request;
   execution_request.selected_physical_dag = planning.physical_dag;
