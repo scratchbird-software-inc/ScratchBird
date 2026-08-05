@@ -2722,6 +2722,32 @@ sblr::SblrOperationEnvelope GroupedCountSumValuesEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-GROUPED-COUNT-SUM-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenGroupedCountSumLimitEnvelope() {
+  auto envelope = GroupedCountSumValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000cc00";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "3";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-00000000cc01|"
+       "019f0000-0000-7400-8000-00000000e008|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "17", "1|-|5|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "3", "7|0|2|1,3,4|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "3",
+       "6c696d69742e626f756e642d636f756e742e7631|17|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope RollupCountSumValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE",
@@ -8149,6 +8175,65 @@ bool ValidateNodeDrivenPairStatisticalCompositionSpine() {
         "exhausted node-driven " + std::string(profile.name) +
             " composition published partial evidence");
   }
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-GROUPED-COUNT-SUM-COMPOSITION-V1
+bool ValidateNodeDrivenGroupedCountSumCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto first = dispatch(NodeDrivenGroupedCountSumLimitEnvelope());
+  const auto repeated = dispatch(NodeDrivenGroupedCountSumLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = first.api_result.result_shape.rows;
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted &&
+          first.optimizer_selected && first.physical_dag_published &&
+          first.physical_dag_executed && first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 3 &&
+          first.physical_node_count == 3 &&
+          first.canonical_result_column_count == 3 &&
+          first.canonical_result_row_count == 1 && rows.size() == 1 &&
+          rows[0].fields.size() == 3 &&
+          rows[0].fields[0].first == "group_key" &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[0].fields[1].first == "row_count" &&
+          rows[0].fields[1].second.encoded_value == "3" &&
+          rows[0].fields[2].first == "total_amount" &&
+          rows[0].fields[2].second.encoded_value == "25" &&
+          repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven grouped COUNT/SUM composition lost grouping, LIMIT, "
+      "or deterministic replay semantics");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 48;
+  const auto exhausted = dispatch(
+      NodeDrivenGroupedCountSumLimitEnvelope(),
+      std::move(bounded_context));
+  passed &= Require(
+      !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "exhausted node-driven grouped COUNT/SUM composition published "
+      "partial evidence");
   return passed;
 }
 
@@ -13825,6 +13910,7 @@ int main() {
                       ValidateNodeDrivenAvgExpressionCompositionSpine() &&
                       ValidateNodeDrivenStatisticalAggregateCompositionSpine() &&
                       ValidateNodeDrivenPairStatisticalCompositionSpine() &&
+                      ValidateNodeDrivenGroupedCountSumCompositionSpine() &&
                       ValidateNodeDrivenExtremumExpressionCompositionSpine() &&
                       ValidateNodeDrivenBooleanAggregateCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
