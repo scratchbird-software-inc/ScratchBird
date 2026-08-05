@@ -808,6 +808,7 @@ BuildEngineProjectedNativeBindingContext(
       const bool approx_count_distinct_function =
           function == "APPROX_COUNT_DISTINCT";
       const bool approx_median_function = function == "APPROX_MEDIAN";
+      const bool string_agg_function = function == "STRING_AGG";
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -821,7 +822,7 @@ BuildEngineProjectedNativeBindingContext(
           stddev_pop_function || variance_pop_function || stddev_function ||
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
-          pair_function;
+          string_agg_function || pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -830,39 +831,63 @@ BuildEngineProjectedNativeBindingContext(
       const auto result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind ==
-                       ((count_function || regr_count_function ||
-                         approx_count_distinct_function)
-                            ? 1
-                            : (boolean_function ? 6 : 2)) &&
+                       (string_agg_function
+                            ? 4
+                            : ((count_function || regr_count_function ||
+                                approx_count_distinct_function)
+                                   ? 1
+                                   : (boolean_function ? 6 : 2))) &&
                    candidate.slot == 0;
+          });
+      const auto direct_text_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 3 && candidate.slot == 0;
           });
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
           aggregate_expression->child_expression_ids.size() ==
-              (pair_function ? 2 : 1) &&
+              ((pair_function || string_agg_function) ? 2 : 1) &&
           result_profile != statement_context.descriptor_profiles.end()) {
-        argument_profile_exact = std::ranges::all_of(
-            aggregate_expression->child_expression_ids,
-            [&](const auto expression_id) {
-              const auto argument = std::ranges::find_if(
-                  ast.expressions, [&](const auto& candidate) {
-                    return candidate.expression_id == expression_id;
-                  });
-              if (argument == ast.expressions.end()) return false;
-              const auto source_expression = std::ranges::find(
-                  relation.output_expression_ids, argument->expression_id);
-              return source_expression != relation.output_expression_ids.end() &&
-                     static_cast<std::size_t>(std::distance(
-                         relation.output_expression_ids.begin(),
-                         source_expression)) < context.descriptors.size();
-            });
+        argument_profile_exact = true;
+        for (std::size_t ordinal = 0;
+             ordinal < aggregate_expression->child_expression_ids.size();
+             ++ordinal) {
+          const auto expression_id =
+              aggregate_expression->child_expression_ids[ordinal];
+          const auto argument = std::ranges::find_if(
+              ast.expressions, [&](const auto& candidate) {
+                return candidate.expression_id == expression_id;
+              });
+          if (argument == ast.expressions.end()) {
+            argument_profile_exact = false;
+            break;
+          }
+          if (string_agg_function && ordinal == 1) {
+            argument_profile_exact =
+                argument->expression_kind ==
+                    NativeExpressionAstKind::kLiteral &&
+                argument->literal_kind == NativeLiteralAstKind::kString &&
+                argument->child_expression_ids.empty() &&
+                argument->operator_name.empty();
+          } else {
+            const auto source_expression = std::ranges::find(
+                relation.output_expression_ids, argument->expression_id);
+            argument_profile_exact =
+                source_expression != relation.output_expression_ids.end() &&
+                static_cast<std::size_t>(std::distance(
+                    relation.output_expression_ids.begin(),
+                    source_expression)) < context.descriptors.size();
+          }
+          if (!argument_profile_exact) break;
+        }
       }
       if (aggregate_expression == ast.expressions.end() ||
           aggregate_expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (aggregate_expression->child_expression_ids.size() !=
-           (count_star ? 0 : (pair_function ? 2 : 1))) ||
+           (count_star ? 0
+                       : ((pair_function || string_agg_function) ? 2 : 1))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           ((count_function || regr_count_function ||
@@ -873,6 +898,13 @@ BuildEngineProjectedNativeBindingContext(
            !result_profile->nullable) ||
           !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(result_profile->type_uuid).has_value() ||
+          (string_agg_function &&
+           (direct_text_profile ==
+                statement_context.descriptor_profiles.end() ||
+            direct_text_profile->nullable ||
+            !CanonicalUuidBytes(direct_text_profile->descriptor_uuid)
+                 .has_value() ||
+            !CanonicalUuidBytes(direct_text_profile->type_uuid).has_value())) ||
           !aggregate_function_uuid.has_value()) {
         return fail("catalog_global_aggregate_profile_unavailable");
       }
@@ -890,6 +922,25 @@ BuildEngineProjectedNativeBindingContext(
           {*aggregate_binding_id, *aggregate_binding_id,
            std::string(*aggregate_function_uuid),
            std::nullopt});
+      if (string_agg_function) {
+        const auto separator_expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     aggregate_expression->child_expression_ids[1];
+            });
+        NativeDescriptorBindingInput separator_descriptor;
+        separator_descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        separator_descriptor.descriptor_uuid =
+            direct_text_profile->descriptor_uuid;
+        separator_descriptor.type_uuid = direct_text_profile->type_uuid;
+        separator_descriptor.nullability = BoundNullability::kNonNull;
+        context.descriptors.push_back(std::move(separator_descriptor));
+        context.expressions.push_back(
+            {separator_expression->expression_id,
+             context.descriptors.back().descriptor_id, std::nullopt,
+             std::nullopt});
+      }
       if (count_function) {
         aggregate_output_name = "row_count";
         aggregate_semantic = count_star
@@ -974,9 +1025,12 @@ BuildEngineProjectedNativeBindingContext(
         aggregate_output_name = "approx_count_distinct_value";
         aggregate_semantic =
             "aggregate.global-approx-count-distinct-expression.v1";
-      } else {
+      } else if (approx_median_function) {
         aggregate_output_name = "approx_median_value";
         aggregate_semantic = "aggregate.global-approx-median-expression.v1";
+      } else {
+        aggregate_output_name = "string_agg_value";
+        aggregate_semantic = "aggregate.global-string-agg-expression.v1";
       }
     }
     if (limit_composition) {

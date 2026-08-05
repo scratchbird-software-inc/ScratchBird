@@ -33058,7 +33058,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-approx-count-distinct-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-approx-median-expression.v1");
+               "aggregate.global-approx-median-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-string-agg-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33787,6 +33789,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         limit_relation != nullptr ? 1 : 0;
     const auto aggregate_descriptor_count =
         aggregate_relation != nullptr ? 1 : 0;
+    const bool string_aggregate_profile =
+        aggregate_relation != nullptr &&
+        aggregate_relation->semantic_variant_id ==
+            "aggregate.global-string-agg-expression.v1";
+    const auto aggregate_direct_descriptor_count =
+        string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
         catalog_filter_relation != nullptr ? 1 : 0;
     const auto visible_width = visible_outputs->size();
@@ -33803,10 +33811,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              ? limit_relation->output_expression_ids.size()
              : 0);
     if (native.descriptors.size() !=
-            width + aggregate_descriptor_count + numeric_descriptor_count +
-                filter_descriptor_count ||
+        width + aggregate_descriptor_count + numeric_descriptor_count +
+                filter_descriptor_count + aggregate_direct_descriptor_count ||
         native.expressions.size() !=
             width + aggregate_descriptor_count +
+                aggregate_direct_descriptor_count +
                 (catalog_filter_relation != nullptr ? 2 : 0) +
                 limit_expression_count ||
         native.outputs.size() != expected_output_count ||
@@ -33904,6 +33913,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool approx_count_distinct_aggregate =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-approx-count-distinct-");
+      const bool string_aggregate =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-string-agg-");
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -33998,6 +34010,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 "aggregate.global-approx-median-")) {
           return "approx_median_value";
         }
+        if (string_aggregate) return "string_agg_value";
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-")) {
           return "stddev_value";
@@ -34013,7 +34026,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               NativeExpressionAstKind::kFunctionCall ||
           !aggregate_expression->second->bound_function_uuid.has_value() ||
           aggregate_expression->second->child_expression_ids.size() !=
-              (count_star ? 0 : (pair_aggregate ? 2 : 1)) ||
+              (count_star ? 0
+                          : ((pair_aggregate || string_aggregate) ? 2 : 1)) ||
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
@@ -34035,9 +34049,44 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       if (!count_star) {
-        for (const auto argument_id :
-             aggregate_expression->second->child_expression_ids) {
+        for (std::size_t ordinal = 0;
+             ordinal <
+             aggregate_expression->second->child_expression_ids.size();
+             ++ordinal) {
+          const auto argument_id =
+              aggregate_expression->second->child_expression_ids[ordinal];
           const auto argument = expressions_by_id.find(argument_id);
+          if (string_aggregate && ordinal == 1) {
+            const auto& direct_descriptor =
+                native.descriptors[width + aggregate_descriptor_count];
+            if (argument == expressions_by_id.end() ||
+                argument->second->expression_kind !=
+                    NativeExpressionAstKind::kLiteral ||
+                argument->second->literal_kind != NativeLiteralAstKind::kString ||
+                !argument->second->child_expression_ids.empty() ||
+                argument->second->bound_name_uuid.has_value() ||
+                argument->second->bound_function_uuid.has_value() ||
+                argument->second->canonical_operator_name.has_value() ||
+                !argument->second->literal_or_parameter_ref.has_value() ||
+                argument->second->result_descriptor_id !=
+                    direct_descriptor.descriptor_id ||
+                direct_descriptor.nullability != BoundNullability::kNonNull ||
+                direct_descriptor.collation_uuid.has_value() ||
+                direct_descriptor.timezone_profile_id.has_value() ||
+                direct_descriptor.width_precision_scale.width.has_value() ||
+                direct_descriptor.width_precision_scale.precision.has_value() ||
+                direct_descriptor.width_precision_scale.scale.has_value() ||
+                !IsCanonicalBoundSourceUuid(
+                    direct_descriptor.descriptor_uuid) ||
+                !IsCanonicalBoundSourceUuid(direct_descriptor.type_uuid)) {
+              AddNativeRelationalLoweringError(
+                  &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                  "typed STRING_AGG separator is not an exact engine-issued "
+                  "text literal");
+              return envelope;
+            }
+            continue;
+          }
           if (argument == expressions_by_id.end() ||
               argument->second->expression_kind !=
                   NativeExpressionAstKind::kIdentifier ||
@@ -34055,7 +34104,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     if (numeric_descriptor_count != 0) {
       const auto& numeric_descriptor =
-          native.descriptors[width + aggregate_descriptor_count];
+          native.descriptors[width + aggregate_descriptor_count +
+                             aggregate_direct_descriptor_count];
       if (!IsCanonicalBoundSourceUuid(numeric_descriptor.descriptor_uuid) ||
           !IsCanonicalBoundSourceUuid(numeric_descriptor.type_uuid) ||
           numeric_descriptor.nullability != BoundNullability::kNonNull ||
@@ -34084,6 +34134,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     if (catalog_filter_relation != nullptr) {
       const auto& boolean_descriptor =
           native.descriptors[width + aggregate_descriptor_count +
+                             aggregate_direct_descriptor_count +
                              numeric_descriptor_count];
       const auto predicate = expressions_by_id.at(
           catalog_filter_relation->predicate_expression_ids.front());

@@ -629,7 +629,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-approx-count-distinct-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-approx-median-expression.v1"))
+                     "aggregate.global-approx-median-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-string-agg-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -746,6 +748,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const NativeExpressionAstNode* filter_literal = nullptr;
     const NativeExpressionAstNode* global_aggregate_expression = nullptr;
     std::vector<const NativeExpressionAstNode*> global_aggregate_arguments;
+    const NativeExpressionAstNode* global_aggregate_direct_literal = nullptr;
     if (aggregate_composition) {
       if (aggregate_relation->relation_source_ids.size() != 0 ||
           !aggregate_relation->values_row_ids.empty() ||
@@ -786,6 +789,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "REGR_INTERCEPT" || function == "REGR_R2" ||
           function == "REGR_SLOPE" || function == "REGR_SXX" ||
           function == "REGR_SXY" || function == "REGR_SYY";
+      const bool string_agg_function = function == "STRING_AGG";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
@@ -795,25 +799,45 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "STDDEV_SAMP" || function == "VARIANCE_SAMP" ||
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
+          string_agg_function ||
           pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
-          (!pair_function && expression->child_expression_ids.size() > 1) ||
+          (!pair_function && !string_agg_function &&
+           expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
-                                      (pair_function ? 2 : 1)) ||
+                                      ((pair_function || string_agg_function)
+                                           ? 2
+                                           : 1)) ||
           expression->literal_kind.has_value()) {
         AddBoundAstDiagnostic(
             &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
             "catalog global aggregate requires an exact supported unary binding");
         return RefusedBoundAst(std::move(bound));
       }
-      for (const auto argument_id : expression->child_expression_ids) {
+      for (std::size_t ordinal = 0;
+           ordinal < expression->child_expression_ids.size(); ++ordinal) {
+        const auto argument_id = expression->child_expression_ids[ordinal];
         const auto argument = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == argument_id;
             });
+        if (string_agg_function && ordinal == 1) {
+          if (argument == ast.expressions.end() ||
+              argument->expression_kind != NativeExpressionAstKind::kLiteral ||
+              argument->literal_kind != NativeLiteralAstKind::kString ||
+              !argument->child_expression_ids.empty() ||
+              !argument->operator_name.empty()) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+                "catalog STRING_AGG separator is not an exact text literal");
+            return RefusedBoundAst(std::move(bound));
+          }
+          global_aggregate_direct_literal = &*argument;
+          continue;
+        }
         if (argument == ast.expressions.end() ||
             argument->expression_kind != NativeExpressionAstKind::kIdentifier ||
             argument->spelling.empty() ||
@@ -1058,6 +1082,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (aggregate_composition) {
       admitted_ast_expression_ids.insert(
           global_aggregate_expression->expression_id);
+      if (global_aggregate_direct_literal != nullptr) {
+        admitted_ast_expression_ids.insert(
+            global_aggregate_direct_literal->expression_id);
+      }
     }
     if (admitted_ast_expression_ids.size() != ast.expressions.size() ||
         std::ranges::any_of(ast.expressions, [&](const auto& expression) {
@@ -1161,6 +1189,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         aggregate_composition &&
         aggregate_semantic.starts_with(
             "aggregate.global-approx-count-distinct-");
+    const bool aggregate_string_agg =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-string-agg-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1234,6 +1265,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (aggregate_semantic.starts_with("aggregate.global-approx-median-")) {
         return std::string("approx_median_value");
       }
+      if (aggregate_string_agg) return std::string("string_agg_value");
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }
@@ -1288,14 +1320,51 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         aggregate_argument_expression_ids.push_back(
             static_cast<std::uint32_t>(column->ordinal + 1));
       }
+      if (global_aggregate_direct_literal != nullptr) {
+        const auto expected_direct_descriptor_id =
+            expected_aggregate_descriptor_id + 1;
+        const auto direct_descriptor =
+            descriptor_by_id.find(expected_direct_descriptor_id);
+        const auto direct_expression = std::ranges::find_if(
+            context.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     global_aggregate_direct_literal->expression_id;
+            });
+        if (!aggregate_string_agg ||
+            direct_descriptor == descriptor_by_id.end() ||
+            direct_descriptor->second->nullability !=
+                BoundNullability::kNonNull ||
+            direct_descriptor->second->collation_uuid.has_value() ||
+            direct_descriptor->second->timezone_profile_id.has_value() ||
+            direct_descriptor->second->width_precision_scale.width.has_value() ||
+            direct_descriptor->second->width_precision_scale.precision.has_value() ||
+            direct_descriptor->second->width_precision_scale.scale.has_value() ||
+            direct_expression == context.expressions.end() ||
+            direct_expression->descriptor_id !=
+                expected_direct_descriptor_id ||
+            direct_expression->function_uuid.has_value() ||
+            direct_expression->bound_name_uuid.has_value()) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog STRING_AGG separator binding is incomplete");
+          return RefusedBoundAst(std::move(bound));
+        }
+        aggregate_argument_expression_ids.push_back(
+            global_aggregate_direct_literal->expression_id);
+        used_descriptor_ids.insert(expected_direct_descriptor_id);
+      }
       used_descriptor_ids.insert(expected_aggregate_descriptor_id);
     }
+    const auto aggregate_direct_descriptor_count =
+        global_aggregate_direct_literal != nullptr ? 1U : 0U;
     const NativeDescriptorBindingInput* numeric_descriptor = nullptr;
     if (limit_composition) {
       const auto expected_numeric_descriptor_id =
           static_cast<std::uint32_t>(
               relation_binding.columns.size() +
-              (aggregate_composition ? 2 : 1));
+              (aggregate_composition
+                   ? 2 + aggregate_direct_descriptor_count
+                   : 1));
       const auto descriptor =
           descriptor_by_id.find(expected_numeric_descriptor_id);
       if (descriptor == descriptor_by_id.end() ||
@@ -1320,6 +1389,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           static_cast<std::uint32_t>(
               relation_binding.columns.size() +
               (aggregate_composition ? 1 : 0) +
+              aggregate_direct_descriptor_count +
               (limit_composition ? 2 : 1));
       const auto descriptor =
           descriptor_by_id.find(expected_boolean_descriptor_id);
@@ -1371,7 +1441,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           (aggregate_composition ? 1 : 0) +
           (limit_composition ? visible_column_count : 0);
       if (context.expressions.size() !=
-              column_count + (aggregate_composition ? 1 : 0) ||
+              column_count + (aggregate_composition ? 1 : 0) +
+                  aggregate_direct_descriptor_count ||
           visible_column_count == 0 ||
           context.outputs.size() != expected_output_count) {
         AddBoundAstDiagnostic(
@@ -1381,6 +1452,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       bound.expressions.reserve(
           column_count + (aggregate_composition ? 1 : 0) +
+          aggregate_direct_descriptor_count +
           (filter_composition ? 3 : 0) +
           (limit_composition ? limit_relation->limit_expression_ids.size()
                              : 0));
@@ -1438,6 +1510,21 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         }
       }
       if (aggregate_composition) {
+        if (global_aggregate_direct_literal != nullptr) {
+          const auto direct_binding = std::ranges::find_if(
+              context.expressions, [&](const auto& candidate) {
+                return candidate.expression_id ==
+                       global_aggregate_direct_literal->expression_id;
+              });
+          BoundExpressionAstRecord literal;
+          literal.expression_id = direct_binding->expression_id;
+          literal.expression_kind = NativeExpressionAstKind::kLiteral;
+          literal.literal_kind = NativeLiteralAstKind::kString;
+          literal.result_descriptor_id = direct_binding->descriptor_id;
+          literal.literal_or_parameter_ref =
+              global_aggregate_direct_literal->spelling;
+          bound.expressions.push_back(std::move(literal));
+        }
         BoundExpressionAstRecord bound_expression;
         bound_expression.expression_id =
             aggregate_expression_binding->expression_id;

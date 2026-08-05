@@ -1102,7 +1102,7 @@ LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
     std::string_view stem;
     exec::CanonicalAggregateFunction function;
   };
-  static constexpr std::array<FunctionProfile, 28> kFunctionProfiles = {{
+  static constexpr std::array<FunctionProfile, 29> kFunctionProfiles = {{
       {"count", exec::CanonicalAggregateFunction::count},
       {"sum", exec::CanonicalAggregateFunction::sum},
       {"avg", exec::CanonicalAggregateFunction::avg},
@@ -1132,6 +1132,7 @@ LiveUnaryAggregateExpressionProfile MatchLiveUnaryAggregateExpressionProfile(
       {"approx-count-distinct",
        exec::CanonicalAggregateFunction::approx_count_distinct},
       {"approx-median", exec::CanonicalAggregateFunction::approx_median},
+      {"string-agg", exec::CanonicalAggregateFunction::string_agg},
   }};
 
   for (const auto& profile : kFunctionProfiles) {

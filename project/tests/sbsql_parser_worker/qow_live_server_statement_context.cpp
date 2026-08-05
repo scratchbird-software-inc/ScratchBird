@@ -896,6 +896,23 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
               "the complete engine-issued aggregate registry");
     }
 
+    auto string_aggregate = parser.RunPipeline(
+        "SELECT STRING_AGG(text_value, ',') FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    if (!string_aggregate.accepted) {
+      PrintMessages(string_aggregate.messages);
+    }
+    Require(string_aggregate.accepted &&
+                string_aggregate.server_operation_id == "query.execute" &&
+                string_aggregate.server_cursor_uuid.empty() &&
+                string_aggregate.server_row_count == 1 &&
+                string_aggregate.server_result_payload.find(
+                    "string_agg_value=alpha,beta,alpha") !=
+                    std::string::npos,
+            "object-backed STRING_AGG did not preserve its engine-typed "
+            "text separator and persisted scan order");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

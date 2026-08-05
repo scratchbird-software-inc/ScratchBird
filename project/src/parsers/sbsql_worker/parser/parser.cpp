@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 28> kFunctionNames{
+    static constexpr std::array<std::string_view, 29> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -312,7 +312,7 @@ class NativeRelationalParser final {
         "COVAR_SAMP",  "REGR_COUNT",   "REGR_AVGX", "REGR_AVGY",
         "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
         "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
-        "APPROX_MEDIAN"};
+        "APPROX_MEDIAN", "STRING_AGG"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -326,6 +326,10 @@ class NativeRelationalParser final {
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
+  }
+
+  static bool IsBoundedCatalogStringAggregate(const Token& token) {
+    return CanonicalTokenText(token) == "STRING_AGG";
   }
 
   bool LooksLikeBoundedCatalogRelationSelect() const {
@@ -344,6 +348,15 @@ class NativeRelationalParser final {
             tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
             tokens_[cursor + 3]->text != "," ||
             tokens_[cursor + 4]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 5]->text != ")") {
+          return false;
+        }
+        cursor += 6;
+      } else if (IsBoundedCatalogStringAggregate(*tokens_[cursor])) {
+        if (cursor + 5 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 3]->text != "," ||
+            tokens_[cursor + 4]->kind != TokenKind::kStringLiteral ||
             tokens_[cursor + 5]->text != ")") {
           return false;
         }
@@ -395,11 +408,15 @@ class NativeRelationalParser final {
       global_aggregate_function = CanonicalTokenText(function_token);
       const bool pair_aggregate =
           IsBoundedCatalogPairAggregate(function_token);
+      const bool string_aggregate =
+          IsBoundedCatalogStringAggregate(function_token);
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
                          "bounded catalog aggregate requires an opening parenthesis")) {
         return FinishRefusal();
       }
       std::vector<std::uint32_t> argument_expression_ids;
+      std::optional<std::uint32_t> reserved_aggregate_expression_id;
+      std::optional<std::size_t> reserved_aggregate_expression_index;
       if (AtSymbol("*")) {
         if (global_aggregate_function != "COUNT") {
           Refuse("catalog_aggregate_wildcard_unsupported",
@@ -453,6 +470,34 @@ class NativeRelationalParser final {
                 second_argument.expression_id);
             document_.expressions.push_back(std::move(second_argument));
           }
+        } else if (string_aggregate) {
+          reserved_aggregate_expression_id = NextExpressionId();
+          NativeExpressionAstNode aggregate_placeholder;
+          aggregate_placeholder.expression_id =
+              *reserved_aggregate_expression_id;
+          reserved_aggregate_expression_index = document_.expressions.size();
+          document_.expressions.push_back(
+              std::move(aggregate_placeholder));
+          if (!AtSymbol(",")) {
+            Refuse("catalog_string_aggregate_separator_required",
+                   "bounded STRING_AGG requires a text separator");
+            return FinishRefusal();
+          }
+          Consume();
+          if (AtEnd() || Current().kind != TokenKind::kStringLiteral) {
+            Refuse("catalog_string_aggregate_literal_required",
+                   "bounded STRING_AGG separator must be a text literal");
+            return FinishRefusal();
+          }
+          const Token& separator_token = Consume();
+          NativeExpressionAstNode separator;
+          separator.expression_id = NextExpressionId();
+          separator.expression_kind = NativeExpressionAstKind::kLiteral;
+          separator.literal_kind = NativeLiteralAstKind::kString;
+          separator.spelling = separator_token.text;
+          separator.range = TokenSourceRange(separator_token);
+          argument_expression_ids.push_back(separator.expression_id);
+          document_.expressions.push_back(std::move(separator));
         }
       } else {
         Refuse("catalog_aggregate_argument_required",
@@ -468,7 +513,10 @@ class NativeRelationalParser final {
       }
       const Token& close_token = Consume();
       NativeExpressionAstNode aggregate;
-      aggregate.expression_id = NextExpressionId();
+      aggregate.expression_id =
+          reserved_aggregate_expression_id.has_value()
+              ? *reserved_aggregate_expression_id
+              : NextExpressionId();
       aggregate.expression_kind = NativeExpressionAstKind::kFunctionCall;
       aggregate.operator_name = global_aggregate_function;
       aggregate.child_expression_ids = std::move(argument_expression_ids);
@@ -476,7 +524,12 @@ class NativeRelationalParser final {
       aggregate.range = Span(function_token, close_token);
       global_aggregate_expression_id = aggregate.expression_id;
       projection_expression_ids.push_back(aggregate.expression_id);
-      document_.expressions.push_back(std::move(aggregate));
+      if (reserved_aggregate_expression_index.has_value()) {
+        document_.expressions[*reserved_aggregate_expression_index] =
+            std::move(aggregate);
+      } else {
+        document_.expressions.push_back(std::move(aggregate));
+      }
     } else if (AtSymbol("*")) {
       const Token& wildcard_token = Consume();
       NativeExpressionAstNode wildcard;
