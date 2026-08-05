@@ -585,6 +585,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-max-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
+                     "aggregate.global-bool-and-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-bool-or-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-every-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
                      "aggregate.global-stddev-pop-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-variance-pop-expression.v1" &&
@@ -747,6 +753,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool max_function = function == "MAX";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
+          function == "BOOL_AND" || function == "BOOL_OR" ||
+          function == "EVERY" ||
           function == "STDDEV_POP" || function == "VARIANCE_POP" ||
           function == "STDDEV" || function == "VARIANCE" ||
           function == "STDDEV_SAMP" || function == "VARIANCE_SAMP";
@@ -1119,6 +1127,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       }
       if (aggregate_semantic.starts_with("aggregate.global-max-")) {
         return std::string("maximum_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-bool-and-")) {
+        return std::string("bool_and_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-bool-or-")) {
+        return std::string("bool_or_value");
+      }
+      if (aggregate_semantic.starts_with("aggregate.global-every-")) {
+        return std::string("every_value");
       }
       if (aggregate_semantic.starts_with("aggregate.global-stddev-pop-")) {
         return std::string("stddev_pop_value");

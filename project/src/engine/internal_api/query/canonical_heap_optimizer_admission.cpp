@@ -413,6 +413,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-max-expression.v1" &&
          aggregate_node->semantic_variant_id !=
+             "aggregate.global-bool-and-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-bool-or-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-every-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
              "aggregate.global-stddev-pop-expression.v1" &&
          aggregate_node->semantic_variant_id !=
              "aggregate.global-variance-pop-expression.v1" &&
@@ -589,6 +595,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   std::unordered_set<std::string> column_uuids;
   std::unordered_set<std::string> column_names;
   std::vector<const RelationalOutputRecord*> scan_outputs;
+  std::vector<std::string> projection_type_names;
   std::unordered_map<std::uint32_t, const RelationalExpressionRecord*>
       expressions_by_id;
   std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
@@ -599,6 +606,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     }
   }
   std::ranges::sort(scan_outputs, {}, &RelationalOutputRecord::ordinal);
+  projection_type_names.reserve(scan_outputs.size());
   for (const auto& expression : relational.expressions) {
     expressions_by_id.emplace(expression.expression_id, &expression);
   }
@@ -687,6 +695,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
                     "persisted_ordinal_descriptor_binding");
     }
+    projection_type_names.push_back(
+        column.value_descriptor.canonical_type_name);
   }
 
   const auto authorization = EvaluateMaterializedAuthorization(
@@ -771,6 +781,8 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       persisted.descriptor_uuid.canonical;
   result.current_relation_descriptor_generation =
       persisted.descriptor_generation;
+  result.current_relation_projection_type_names =
+      std::move(projection_type_names);
   return result;
 }
 

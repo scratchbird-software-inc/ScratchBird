@@ -33014,6 +33014,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-max-expression.v1" ||
            relation.semantic_variant_id ==
+               "aggregate.global-bool-and-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-bool-or-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-every-expression.v1" ||
+           relation.semantic_variant_id ==
                "aggregate.global-stddev-pop-expression.v1" ||
            relation.semantic_variant_id ==
                "aggregate.global-variance-pop-expression.v1" ||
@@ -33870,6 +33876,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-max-")) {
           return "maximum_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-bool-and-")) {
+          return "bool_and_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-bool-or-")) {
+          return "bool_or_value";
+        }
+        if (aggregate_relation->semantic_variant_id.starts_with(
+                "aggregate.global-every-")) {
+          return "every_value";
         }
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-pop-")) {

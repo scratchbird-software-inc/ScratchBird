@@ -793,6 +793,11 @@ BuildEngineProjectedNativeBindingContext(
       const bool avg_function = function == "AVG";
       const bool min_function = function == "MIN";
       const bool max_function = function == "MAX";
+      const bool bool_and_function = function == "BOOL_AND";
+      const bool bool_or_function = function == "BOOL_OR";
+      const bool every_function = function == "EVERY";
+      const bool boolean_function =
+          bool_and_function || bool_or_function || every_function;
       const bool stddev_pop_function = function == "STDDEV_POP";
       const bool variance_pop_function = function == "VARIANCE_POP";
       const bool stddev_function = function == "STDDEV";
@@ -801,6 +806,7 @@ BuildEngineProjectedNativeBindingContext(
       const bool variance_samp_function = function == "VARIANCE_SAMP";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
+          boolean_function ||
           stddev_pop_function || variance_pop_function || stddev_function ||
           variance_function || stddev_samp_function || variance_samp_function;
       const auto aggregate_function_uuid =
@@ -810,7 +816,8 @@ BuildEngineProjectedNativeBindingContext(
                               aggregate_expression->child_expression_ids.empty();
       const auto result_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
-            return candidate.profile_kind == (count_function ? 1 : 2) &&
+            return candidate.profile_kind ==
+                       (count_function ? 1 : (boolean_function ? 6 : 2)) &&
                    candidate.slot == 0;
           });
       bool argument_profile_exact = count_star;
@@ -880,6 +887,15 @@ BuildEngineProjectedNativeBindingContext(
       } else if (max_function) {
         aggregate_output_name = "maximum_value";
         aggregate_semantic = "aggregate.global-max-expression.v1";
+      } else if (bool_and_function) {
+        aggregate_output_name = "bool_and_value";
+        aggregate_semantic = "aggregate.global-bool-and-expression.v1";
+      } else if (bool_or_function) {
+        aggregate_output_name = "bool_or_value";
+        aggregate_semantic = "aggregate.global-bool-or-expression.v1";
+      } else if (every_function) {
+        aggregate_output_name = "every_value";
+        aggregate_semantic = "aggregate.global-every-expression.v1";
       } else if (stddev_pop_function) {
         aggregate_output_name = "stddev_pop_value";
         aggregate_semantic = "aggregate.global-stddev-pop-expression.v1";

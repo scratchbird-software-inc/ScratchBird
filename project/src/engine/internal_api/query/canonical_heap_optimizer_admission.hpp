@@ -14,6 +14,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 
@@ -33,6 +34,7 @@ struct CanonicalHeapOptimizerAdmissionResult {
   scratchbird::engine::optimizer::CanonicalOptimizerAdmissionResult admission;
   std::string current_relation_descriptor_uuid;
   std::uint64_t current_relation_descriptor_generation{0};
+  std::vector<std::string> current_relation_projection_type_names;
   CanonicalHeapOptimizerAdmissionIssue issue;
 };
 

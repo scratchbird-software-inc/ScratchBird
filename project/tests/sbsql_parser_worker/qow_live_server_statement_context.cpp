@@ -425,6 +425,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   nullable_order_column.descriptor.encoded_descriptor = "type=integer";
   nullable_order_column.nullable = true;
   table.table_columns.push_back(std::move(nullable_order_column));
+  api::EngineColumnDefinition boolean_column;
+  boolean_column.ordinal = 3;
+  boolean_column.names.push_back(PrimaryName("nullable_boolean_value"));
+  boolean_column.descriptor.descriptor_kind = "scalar";
+  boolean_column.descriptor.canonical_type_name = "boolean";
+  boolean_column.descriptor.encoded_descriptor = "type=boolean";
+  boolean_column.nullable = true;
+  table.table_columns.push_back(std::move(boolean_column));
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
@@ -454,11 +462,23 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     } else {
       nullable_order_typed.encoded_value = value == 1 ? "20" : "10";
     }
+    api::EngineTypedValue boolean_typed;
+    boolean_typed.descriptor.descriptor_kind = "scalar";
+    boolean_typed.descriptor.canonical_type_name = "boolean";
+    boolean_typed.descriptor.encoded_descriptor = "type=boolean";
+    if (value == 3) {
+      boolean_typed.is_null = true;
+      boolean_typed.state = api::EngineValueState::sql_null;
+    } else {
+      boolean_typed.encoded_value = value == 1 ? "true" : "false";
+    }
     api::EngineRowValue row;
     row.fields.push_back({"integer_value", std::move(typed)});
     row.fields.push_back({"auxiliary_value", std::move(auxiliary_typed)});
     row.fields.push_back(
         {"nullable_order_value", std::move(nullable_order_typed)});
+    row.fields.push_back(
+        {"nullable_boolean_value", std::move(boolean_typed)});
     insert.input_rows.push_back(std::move(row));
   }
   insert.estimated_row_count = insert.input_rows.size();
@@ -742,11 +762,11 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed MAX(expression) did not ignore NULL and retain the "
             "greatest visible persisted value");
 
-    struct StatisticalAggregateProof {
+    struct AggregateProof {
       std::string_view function;
       std::string_view expected_payload;
     };
-    static constexpr std::array<StatisticalAggregateProof, 6>
+    static constexpr std::array<AggregateProof, 6>
         kStatisticalAggregateProofs{{
             {"STDDEV_POP", "stddev_pop_value=0.816496"},
             {"VARIANCE_POP", "variance_pop_value=0.666666"},
@@ -769,6 +789,28 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                       proof.expected_payload) != std::string::npos,
               "object-backed unary statistical aggregate did not execute "
               "through the complete engine-issued aggregate registry");
+    }
+
+    static constexpr std::array<AggregateProof, 3>
+        kBooleanAggregateProofs{{
+            {"BOOL_AND", "bool_and_value=false"},
+            {"BOOL_OR", "bool_or_value=true"},
+            {"EVERY", "every_value=false"},
+        }};
+    for (const auto& proof : kBooleanAggregateProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) +
+                       "(nullable_boolean_value) FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto aggregate = parser.RunPipeline(sql, true);
+      if (!aggregate.accepted) PrintMessages(aggregate.messages);
+      Require(aggregate.accepted &&
+                  aggregate.server_operation_id == "query.execute" &&
+                  aggregate.server_cursor_uuid.empty() &&
+                  aggregate.server_row_count == 1 &&
+                  aggregate.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed boolean aggregate did not execute through the "
+              "complete engine-issued aggregate registry");
     }
 
     auto projected = parser.RunPipeline(

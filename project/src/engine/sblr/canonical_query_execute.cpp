@@ -2159,7 +2159,7 @@ PreparedGlobalAggregateRoot PrepareGlobalAggregateRoot(
       if (is_boolean && input_type != "boolean") {
         result.detail =
             "global BOOL_AND/BOOL_OR/EVERY input must be a canonical boolean "
-            "column";
+            "column; actual=" + input_type;
         return result;
       }
       if (is_string_agg && input_type != "text") {
@@ -20440,7 +20440,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
         logical_aggregate == graph.nodes.end() ||
         logical_input == graph.nodes.end() ||
         input_outputs.size() !=
-            aggregate_input_node->output_descriptor_ids.size()) {
+            aggregate_input_node->output_descriptor_ids.size() ||
+        admission.current_relation_projection_type_names.size() !=
+            input_outputs.size()) {
       return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
                     "object-backed global aggregate profile is not exact");
     }
@@ -20459,7 +20461,17 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       api::EngineDescriptor engine_descriptor;
       engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
       engine_descriptor.descriptor_kind = "scalar";
-      engine_descriptor.canonical_type_name = "int64";
+      const auto persisted_type_name =
+          admission.current_relation_projection_type_names[ordinal];
+      const auto persisted_type_id =
+          dt::CanonicalTypeIdFromStableName(persisted_type_name);
+      const bool bounded_signed =
+          persisted_type_id == dt::CanonicalTypeId::int8 ||
+          persisted_type_id == dt::CanonicalTypeId::int16 ||
+          persisted_type_id == dt::CanonicalTypeId::int32 ||
+          persisted_type_id == dt::CanonicalTypeId::int64;
+      engine_descriptor.canonical_type_name =
+          bounded_signed ? "int64" : persisted_type_name;
       engine_descriptor.encoded_descriptor =
           "type_uuid=" + descriptor->type_uuid + ";nullability=" +
           (descriptor->nullability == api::RelationalNullability::kNullable
