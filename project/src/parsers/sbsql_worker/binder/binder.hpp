@@ -168,6 +168,32 @@ struct BoundOrderingAstTerm {
   NativeNullPlacement null_placement{NativeNullPlacement::kNullsLast};
 };
 
+struct BoundWindowFrameBoundAstRecord {
+  NativeWindowFrameBoundKind bound_kind{
+      NativeWindowFrameBoundKind::kCurrentRow};
+  std::optional<std::uint32_t> offset_expression_id;
+};
+
+struct BoundWindowDefinitionAstRecord {
+  std::uint32_t window_id{0};
+  std::optional<std::string> canonical_name_key;
+  std::optional<std::uint32_t> inherited_window_id;
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<BoundOrderingAstTerm> ordering_terms;
+  std::optional<NativeWindowFrameUnit> frame_unit;
+  std::optional<BoundWindowFrameBoundAstRecord> frame_start;
+  std::optional<BoundWindowFrameBoundAstRecord> frame_end;
+  NativeWindowFrameExclusion exclusion{
+      NativeWindowFrameExclusion::kNoOthers};
+};
+
+struct BoundWindowInvocationAstRecord {
+  std::uint32_t invocation_id{0};
+  std::uint32_t function_expression_id{0};
+  std::uint32_t window_definition_id{0};
+  std::optional<std::string> output_name_utf8;
+};
+
 struct BoundRelationAstRecord {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -182,6 +208,7 @@ struct BoundRelationAstRecord {
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> limit_expression_ids;
+  std::vector<std::uint32_t> window_invocation_ids;
   std::vector<BoundOrderingAstTerm> ordering_terms;
   std::vector<std::uint32_t> bound_expression_ids;
   std::string semantic_variant_id;
@@ -241,6 +268,8 @@ struct BoundNativeRelationalDocument {
   std::vector<BoundExpressionAstRecord> expressions;
   std::vector<BoundValuesRowAstRecord> values_rows;
   std::vector<BoundGroupingSetAstRecord> grouping_sets;
+  std::vector<BoundWindowDefinitionAstRecord> window_definitions;
+  std::vector<BoundWindowInvocationAstRecord> window_invocations;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
   std::vector<BoundCatalogRelationSourceAstRecord> catalog_relation_sources;

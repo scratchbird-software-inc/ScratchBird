@@ -342,6 +342,8 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.expressions.clear();
   document.values_rows.clear();
   document.grouping_sets.clear();
+  document.window_definitions.clear();
+  document.window_invocations.clear();
   document.outputs.clear();
   document.relations.clear();
   document.catalog_relation_sources.clear();

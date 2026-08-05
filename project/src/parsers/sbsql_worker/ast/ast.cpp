@@ -1439,6 +1439,8 @@ std::string NativeRelationAstKindName(NativeRelationAstKind kind) {
     case NativeRelationAstKind::kSort: return "sort";
     case NativeRelationAstKind::kLimit: return "limit";
     case NativeRelationAstKind::kJoin: return "join";
+    case NativeRelationAstKind::kWindow: return "window";
+    case NativeRelationAstKind::kQualify: return "qualify";
   }
   return "unknown";
 }
@@ -1474,6 +1476,40 @@ std::string NativeAggregateProjectionFormName(
       return "keys_count_sum";
     case NativeAggregateProjectionForm::kKeysCountSumGrouping:
       return "keys_count_sum_grouping";
+  }
+  return "unknown";
+}
+
+std::string NativeWindowFrameUnitName(const NativeWindowFrameUnit unit) {
+  switch (unit) {
+    case NativeWindowFrameUnit::kRows: return "rows";
+    case NativeWindowFrameUnit::kRange: return "range";
+    case NativeWindowFrameUnit::kGroups: return "groups";
+  }
+  return "unknown";
+}
+
+std::string NativeWindowFrameBoundKindName(
+    const NativeWindowFrameBoundKind kind) {
+  switch (kind) {
+    case NativeWindowFrameBoundKind::kUnboundedPreceding:
+      return "unbounded_preceding";
+    case NativeWindowFrameBoundKind::kPreceding: return "preceding";
+    case NativeWindowFrameBoundKind::kCurrentRow: return "current_row";
+    case NativeWindowFrameBoundKind::kFollowing: return "following";
+    case NativeWindowFrameBoundKind::kUnboundedFollowing:
+      return "unbounded_following";
+  }
+  return "unknown";
+}
+
+std::string NativeWindowFrameExclusionName(
+    const NativeWindowFrameExclusion exclusion) {
+  switch (exclusion) {
+    case NativeWindowFrameExclusion::kNoOthers: return "no_others";
+    case NativeWindowFrameExclusion::kCurrentRow: return "current_row";
+    case NativeWindowFrameExclusion::kGroup: return "group";
+    case NativeWindowFrameExclusion::kTies: return "ties";
   }
   return "unknown";
 }

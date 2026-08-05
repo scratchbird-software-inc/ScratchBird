@@ -27,6 +27,9 @@ static_assert(
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kLimit) == 4);
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kProject) == 5);
 static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kSort) == 6);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kJoin) == 7);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kWindow) == 8);
+static_assert(static_cast<int>(sbsql::NativeRelationAstKind::kQualify) == 9);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kLiteral) == 0);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kParameter) == 1);
 static_assert(static_cast<int>(sbsql::NativeExpressionAstKind::kIdentifier) == 2);
@@ -630,6 +633,138 @@ bool ValidateFamilyBoundary() {
   return passed;
 }
 
+bool ValidateTypedWindowVocabulary() {
+  sbsql::NativeWindowDefinitionAstNode definition;
+  definition.window_id = 1;
+  definition.name = sbsql::NativeIdentifierAstNode{"ranked", false, {}};
+  definition.base_name =
+      sbsql::NativeIdentifierAstNode{"partitioned", false, {}};
+  definition.partition_expression_ids = {4, 5};
+  definition.ordering_terms = {
+      {6, sbsql::NativeSortDirection::kDescending,
+       sbsql::NativeNullPlacement::kNullsFirst, {}}};
+  definition.frame_unit = sbsql::NativeWindowFrameUnit::kGroups;
+  definition.frame_start = {sbsql::NativeWindowFrameBoundKind::kPreceding,
+                            7, {}};
+  definition.frame_end = {
+      sbsql::NativeWindowFrameBoundKind::kCurrentRow, std::nullopt, {}};
+  definition.exclusion = sbsql::NativeWindowFrameExclusion::kTies;
+
+  sbsql::NativeWindowInvocationAstNode invocation;
+  invocation.invocation_id = 1;
+  invocation.function_expression_id = 8;
+  invocation.window_definition_id = 1;
+  sbsql::NativeRelationAstNode window;
+  window.relation_id = 2;
+  window.relation_kind = sbsql::NativeRelationAstKind::kWindow;
+  window.input_relation_ids = {1};
+  window.window_invocation_ids = {invocation.invocation_id};
+
+  bool passed = true;
+  passed &= Require(
+      definition.name->spelling == "ranked" &&
+          definition.base_name->spelling == "partitioned" &&
+          definition.partition_expression_ids ==
+              std::vector<std::uint32_t>({4, 5}) &&
+          definition.frame_start->offset_expression_id == 7 &&
+          definition.exclusion == sbsql::NativeWindowFrameExclusion::kTies,
+      "typed window definition lost name, inheritance, partition, or frame state");
+  passed &= Require(
+      invocation.function_expression_id == 8 &&
+          invocation.window_definition_id == definition.window_id &&
+          window.window_invocation_ids ==
+              std::vector<std::uint32_t>({invocation.invocation_id}),
+      "typed window invocation is not independently addressable");
+  passed &= Require(
+      sbsql::NativeRelationAstKindName(
+          sbsql::NativeRelationAstKind::kWindow) == "window" &&
+          sbsql::NativeRelationAstKindName(
+              sbsql::NativeRelationAstKind::kQualify) == "qualify" &&
+          sbsql::NativeWindowFrameUnitName(
+              sbsql::NativeWindowFrameUnit::kGroups) == "groups" &&
+          sbsql::NativeWindowFrameBoundKindName(
+              sbsql::NativeWindowFrameBoundKind::kUnboundedFollowing) ==
+              "unbounded_following" &&
+          sbsql::NativeWindowFrameExclusionName(
+              sbsql::NativeWindowFrameExclusion::kTies) == "ties",
+      "typed window vocabulary names are not canonical");
+  return passed;
+}
+
+bool ValidateTypedWindowParse() {
+  constexpr std::string_view sql =
+      "SELECT ROW_NUMBER() OVER (PARTITION BY account_id ORDER BY created_at "
+      "DESC NULLS FIRST GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW EXCLUDE "
+      "TIES) AS sequence_no FROM app.events AS e;";
+  const auto native =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  bool passed = true;
+  passed &= Require(native.accepted(),
+                    "typed ROW_NUMBER OVER query was refused");
+  passed &= Require(native.root_relation_id == 2 &&
+                        native.relations.size() == 2 &&
+                        native.relations[0].relation_kind ==
+                            sbsql::NativeRelationAstKind::kCatalogSource &&
+                        native.relations[1].relation_kind ==
+                            sbsql::NativeRelationAstKind::kWindow &&
+                        native.relations[1].input_relation_ids ==
+                            std::vector<std::uint32_t>({1}) &&
+                        native.relations[1].window_invocation_ids ==
+                            std::vector<std::uint32_t>({1}),
+                    "typed window relational chain differs");
+  passed &= Require(native.window_definitions.size() == 1 &&
+                        native.window_invocations.size() == 1,
+                    "typed window definition/invocation cardinality differs");
+  if (native.window_definitions.size() == 1) {
+    const auto& definition = native.window_definitions.front();
+    passed &= Require(
+        definition.partition_expression_ids ==
+                std::vector<std::uint32_t>({2}) &&
+            definition.ordering_terms.size() == 1 &&
+            definition.ordering_terms.front().expression_id == 3 &&
+            definition.ordering_terms.front().direction ==
+                sbsql::NativeSortDirection::kDescending &&
+            definition.ordering_terms.front().null_placement ==
+                sbsql::NativeNullPlacement::kNullsFirst &&
+            definition.frame_unit == sbsql::NativeWindowFrameUnit::kGroups &&
+            definition.frame_start.has_value() &&
+            definition.frame_start->bound_kind ==
+                sbsql::NativeWindowFrameBoundKind::kPreceding &&
+            definition.frame_start->offset_expression_id == 4 &&
+            definition.frame_end.has_value() &&
+            definition.frame_end->bound_kind ==
+                sbsql::NativeWindowFrameBoundKind::kCurrentRow &&
+            definition.exclusion ==
+                sbsql::NativeWindowFrameExclusion::kTies,
+        "typed window partition/order/frame/exclusion state differs");
+  }
+  if (native.window_invocations.size() == 1) {
+    const auto& invocation = native.window_invocations.front();
+    passed &= Require(invocation.function_expression_id == 1 &&
+                          invocation.window_definition_id == 1 &&
+                          invocation.output_alias.has_value() &&
+                          invocation.output_alias->spelling == "sequence_no",
+                      "typed window invocation binding handles differ");
+  }
+  passed &= Require(native.expressions.size() == 4 &&
+                        native.expressions[0].expression_kind ==
+                            sbsql::NativeExpressionAstKind::kFunctionCall &&
+                        native.expressions[0].operator_name == "ROW_NUMBER" &&
+                        native.expressions[1].spelling == "account_id" &&
+                        native.expressions[2].spelling == "created_at" &&
+                        native.expressions[3].literal_kind ==
+                            sbsql::NativeLiteralAstKind::kNumeric,
+                    "typed window expression records differ");
+  passed &= Require(native.catalog_relation_sources.size() == 1 &&
+                        native.catalog_relation_sources.front().qualified_name
+                                .size() == 2 &&
+                        native.catalog_relation_sources.front().alias.has_value() &&
+                        native.catalog_relation_sources.front().alias->spelling ==
+                            "e",
+                    "typed window catalog source differs");
+  return passed;
+}
+
 } // namespace
 
 // QOW-TEST-QRY-001-AST-V1
@@ -644,5 +779,7 @@ int main() {
   passed &= ValidateCatalogOrderingComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
+  passed &= ValidateTypedWindowVocabulary();
+  passed &= ValidateTypedWindowParse();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

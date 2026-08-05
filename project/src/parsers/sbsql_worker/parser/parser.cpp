@@ -119,6 +119,10 @@ class NativeRelationalParser final {
       return ParseGroupedAggregateSelect();
     }
     if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
+        LooksLikeBoundedWindowSelect()) {
+      return ParseWindowSelect();
+    }
+    if (!tokens_.empty() && IsWord(*tokens_.front(), "SELECT") &&
         LooksLikeBoundedCatalogJoinSelect()) {
       return ParseCatalogJoinSelect();
     }
@@ -373,6 +377,362 @@ class NativeRelationalParser final {
 
   static bool IsBoundedCatalogApproxTopK(const Token& token) {
     return CanonicalTokenText(token) == "APPROX_TOP_K";
+  }
+
+  bool LooksLikeBoundedWindowSelect() const {
+    return tokens_.size() >= 10 &&
+           IsWord(*tokens_[1], "ROW_NUMBER") && tokens_[2]->text == "(" &&
+           tokens_[3]->text == ")" && IsWord(*tokens_[4], "OVER") &&
+           tokens_[5]->text == "(";
+  }
+
+  NativeRelationalAstDocument ParseWindowSelect() {
+    // QOW-SOURCE-RCP-050-TYPED-WINDOW-AST-V1
+    // This first typed window surface deliberately recognizes only
+    // ROW_NUMBER. The window specification itself is complete across the
+    // partition/order/frame/exclusion axes and is carried independently of
+    // the function-call expression for later engine-owned binding.
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native relational token limit exceeded");
+      return FinishRefusal();
+    }
+
+    const Token& select_token = Consume();
+    const Token& function_token = Consume();
+    if (!RequireSymbol("(", "window_function_open_required",
+                       "ROW_NUMBER requires an opening parenthesis") ||
+        !RequireSymbol(")", "window_function_close_required",
+                       "ROW_NUMBER requires a closing parenthesis") ||
+        !RequireWord("OVER", "window_over_required",
+                     "ROW_NUMBER requires OVER") ||
+        !RequireSymbol("(", "window_specification_open_required",
+                       "OVER requires an opening parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token& specification_open = Previous();
+
+    NativeExpressionAstNode function;
+    function.expression_id = NextExpressionId();
+    function.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    function.operator_name = "ROW_NUMBER";
+    function.spelling = SourceSpelling(function_token, *tokens_[3]);
+    function.range = Span(function_token, *tokens_[3]);
+    const auto function_expression_id = function.expression_id;
+    document_.expressions.push_back(std::move(function));
+
+    NativeWindowDefinitionAstNode definition;
+    definition.window_id = 1;
+    std::vector<std::uint32_t> source_expression_ids;
+    const auto parse_identifier_list =
+        [&](std::vector<std::uint32_t>* expression_ids,
+            std::vector<NativeOrderingAstTerm>* ordering_terms) -> bool {
+      while (true) {
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("window_identifier_required",
+                 "window PARTITION/ORDER terms require column identifiers");
+          return false;
+        }
+        const Token& identifier_token = Consume();
+        NativeExpressionAstNode identifier;
+        identifier.expression_id = NextExpressionId();
+        identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+        identifier.spelling = identifier_token.text;
+        identifier.range = TokenSourceRange(identifier_token);
+        const auto expression_id = identifier.expression_id;
+        document_.expressions.push_back(std::move(identifier));
+        expression_ids->push_back(expression_id);
+        source_expression_ids.push_back(expression_id);
+
+        if (ordering_terms != nullptr) {
+          NativeOrderingAstTerm term;
+          term.expression_id = expression_id;
+          term.direction = NativeSortDirection::kAscending;
+          term.null_placement = NativeNullPlacement::kNullsLast;
+          const Token* term_end = &identifier_token;
+          if (!AtEnd() &&
+              (IsWord(Current(), "ASC") || IsWord(Current(), "DESC"))) {
+            const Token& direction = Consume();
+            term.direction = IsWord(direction, "DESC")
+                                 ? NativeSortDirection::kDescending
+                                 : NativeSortDirection::kAscending;
+            term.null_placement =
+                term.direction == NativeSortDirection::kDescending
+                    ? NativeNullPlacement::kNullsFirst
+                    : NativeNullPlacement::kNullsLast;
+            term_end = &direction;
+          }
+          if (!AtEnd() && IsWord(Current(), "NULLS")) {
+            Consume();
+            if (AtEnd() ||
+                (!IsWord(Current(), "FIRST") &&
+                 !IsWord(Current(), "LAST"))) {
+              Refuse("window_null_placement_required",
+                     "window NULLS requires FIRST or LAST");
+              return false;
+            }
+            const Token& placement = Consume();
+            term.null_placement = IsWord(placement, "FIRST")
+                                      ? NativeNullPlacement::kNullsFirst
+                                      : NativeNullPlacement::kNullsLast;
+            term_end = &placement;
+          }
+          term.range = Span(identifier_token, *term_end);
+          ordering_terms->push_back(std::move(term));
+        }
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+      return true;
+    };
+
+    if (!AtEnd() && IsWord(Current(), "PARTITION")) {
+      Consume();
+      if (!RequireWord("BY", "window_partition_by_required",
+                       "window PARTITION requires BY") ||
+          !parse_identifier_list(&definition.partition_expression_ids,
+                                 nullptr)) {
+        return FinishRefusal();
+      }
+    }
+    if (!AtEnd() && IsWord(Current(), "ORDER")) {
+      Consume();
+      if (!RequireWord("BY", "window_order_by_required",
+                       "window ORDER requires BY")) {
+        return FinishRefusal();
+      }
+      std::vector<std::uint32_t> ordered_expression_ids;
+      if (!parse_identifier_list(&ordered_expression_ids,
+                                 &definition.ordering_terms)) {
+        return FinishRefusal();
+      }
+    }
+    if (definition.partition_expression_ids.empty() &&
+        definition.ordering_terms.empty()) {
+      Refuse("window_partition_or_order_required",
+             "typed ROW_NUMBER requires PARTITION BY or ORDER BY");
+      return FinishRefusal();
+    }
+
+    const auto parse_frame_bound = [&]()
+        -> std::optional<NativeWindowFrameBoundAstNode> {
+      NativeWindowFrameBoundAstNode bound;
+      const Token* first = AtEnd() ? nullptr : &Current();
+      if (first == nullptr) return std::nullopt;
+      if (IsWord(Current(), "UNBOUNDED")) {
+        Consume();
+        if (AtEnd() ||
+            (!IsWord(Current(), "PRECEDING") &&
+             !IsWord(Current(), "FOLLOWING"))) {
+          Refuse("window_unbounded_direction_required",
+                 "UNBOUNDED requires PRECEDING or FOLLOWING");
+          return std::nullopt;
+        }
+        const Token& direction = Consume();
+        bound.bound_kind = IsWord(direction, "PRECEDING")
+                               ? NativeWindowFrameBoundKind::kUnboundedPreceding
+                               : NativeWindowFrameBoundKind::kUnboundedFollowing;
+        bound.range = Span(*first, direction);
+        return bound;
+      }
+      if (IsWord(Current(), "CURRENT")) {
+        Consume();
+        if (!RequireWord("ROW", "window_current_row_required",
+                         "CURRENT requires ROW")) {
+          return std::nullopt;
+        }
+        bound.bound_kind = NativeWindowFrameBoundKind::kCurrentRow;
+        bound.range = Span(*first, Previous());
+        return bound;
+      }
+      if (Current().kind != TokenKind::kNumericLiteral) {
+        Refuse("window_frame_offset_required",
+               "window frame bound requires a nonnegative numeric offset");
+        return std::nullopt;
+      }
+      const Token& offset = Consume();
+      NativeExpressionAstNode literal;
+      literal.expression_id = NextExpressionId();
+      literal.expression_kind = NativeExpressionAstKind::kLiteral;
+      literal.literal_kind = NativeLiteralAstKind::kNumeric;
+      literal.spelling = offset.text;
+      literal.range = TokenSourceRange(offset);
+      bound.offset_expression_id = literal.expression_id;
+      document_.expressions.push_back(std::move(literal));
+      if (AtEnd() ||
+          (!IsWord(Current(), "PRECEDING") &&
+           !IsWord(Current(), "FOLLOWING"))) {
+        Refuse("window_frame_offset_direction_required",
+               "window frame offset requires PRECEDING or FOLLOWING");
+        return std::nullopt;
+      }
+      const Token& direction = Consume();
+      bound.bound_kind = IsWord(direction, "PRECEDING")
+                             ? NativeWindowFrameBoundKind::kPreceding
+                             : NativeWindowFrameBoundKind::kFollowing;
+      bound.range = Span(*first, direction);
+      return bound;
+    };
+
+    if (!AtEnd() &&
+        (IsWord(Current(), "ROWS") || IsWord(Current(), "RANGE") ||
+         IsWord(Current(), "GROUPS"))) {
+      const Token& unit = Consume();
+      definition.frame_unit =
+          IsWord(unit, "ROWS")
+              ? NativeWindowFrameUnit::kRows
+              : (IsWord(unit, "RANGE") ? NativeWindowFrameUnit::kRange
+                                        : NativeWindowFrameUnit::kGroups);
+      if (!AtEnd() && IsWord(Current(), "BETWEEN")) {
+        Consume();
+        definition.frame_start = parse_frame_bound();
+        if (!definition.frame_start.has_value() ||
+            !RequireWord("AND", "window_frame_between_and_required",
+                         "window BETWEEN requires AND")) {
+          return FinishRefusal();
+        }
+        definition.frame_end = parse_frame_bound();
+        if (!definition.frame_end.has_value()) return FinishRefusal();
+      } else {
+        definition.frame_start = parse_frame_bound();
+        if (!definition.frame_start.has_value()) return FinishRefusal();
+      }
+    }
+    if (!AtEnd() && IsWord(Current(), "EXCLUDE")) {
+      Consume();
+      if (AtEnd()) {
+        Refuse("window_exclusion_required",
+               "EXCLUDE requires CURRENT ROW, GROUP, TIES, or NO OTHERS");
+        return FinishRefusal();
+      }
+      if (IsWord(Current(), "CURRENT")) {
+        Consume();
+        if (!RequireWord("ROW", "window_exclude_current_row_required",
+                         "EXCLUDE CURRENT requires ROW")) {
+          return FinishRefusal();
+        }
+        definition.exclusion = NativeWindowFrameExclusion::kCurrentRow;
+      } else if (IsWord(Current(), "GROUP")) {
+        Consume();
+        definition.exclusion = NativeWindowFrameExclusion::kGroup;
+      } else if (IsWord(Current(), "TIES")) {
+        Consume();
+        definition.exclusion = NativeWindowFrameExclusion::kTies;
+      } else if (IsWord(Current(), "NO")) {
+        Consume();
+        if (!RequireWord("OTHERS", "window_exclude_no_others_required",
+                         "EXCLUDE NO requires OTHERS")) {
+          return FinishRefusal();
+        }
+      } else {
+        Refuse("window_exclusion_invalid",
+               "EXCLUDE requires CURRENT ROW, GROUP, TIES, or NO OTHERS");
+        return FinishRefusal();
+      }
+    }
+    if (!RequireSymbol(")", "window_specification_close_required",
+                       "OVER specification requires a closing parenthesis")) {
+      return FinishRefusal();
+    }
+    const Token& specification_close = Previous();
+    definition.range = Span(specification_open, specification_close);
+
+    NativeWindowInvocationAstNode invocation;
+    invocation.invocation_id = 1;
+    invocation.function_expression_id = function_expression_id;
+    invocation.window_definition_id = definition.window_id;
+    invocation.range = Span(function_token, specification_close);
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("window_output_alias_required",
+               "window AS requires an output alias");
+        return FinishRefusal();
+      }
+      const Token& output_alias = Consume();
+      invocation.output_alias = NativeIdentifierAstNode{
+          output_alias.text, output_alias.quoted,
+          TokenSourceRange(output_alias)};
+    }
+    if (!RequireWord("FROM", "window_from_required",
+                     "typed window SELECT requires FROM") ||
+        AtEnd() || Current().kind != TokenKind::kIdentifier) {
+      Refuse("window_relation_name_required",
+             "typed window FROM requires a catalog relation");
+      return FinishRefusal();
+    }
+
+    NativeCatalogRelationSourceAstNode source;
+    source.source_id = 1;
+    const Token& first_name = Consume();
+    const Token* last_name = &first_name;
+    source.qualified_name.push_back({first_name.text, first_name.quoted,
+                                     TokenSourceRange(first_name)});
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("window_relation_name_incomplete",
+               "typed window relation name is incomplete");
+        return FinishRefusal();
+      }
+      last_name = &Consume();
+      source.qualified_name.push_back({last_name->text, last_name->quoted,
+                                       TokenSourceRange(*last_name)});
+    }
+    source.qualified_name_range = Span(first_name, *last_name);
+    const Token* source_end = last_name;
+    if (!AtEnd() && IsWord(Current(), "AS")) {
+      Consume();
+      if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+        Refuse("window_relation_alias_required",
+               "typed window relation AS requires an alias");
+        return FinishRefusal();
+      }
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source.alias_is_explicit = true;
+      source_end = &alias;
+    } else if (!AtEnd() && Current().kind == TokenKind::kIdentifier) {
+      const Token& alias = Consume();
+      source.alias = NativeIdentifierAstNode{
+          alias.text, alias.quoted, TokenSourceRange(alias)};
+      source_end = &alias;
+    }
+    source.range = Span(first_name, *source_end);
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("window_clause_unsupported",
+             "typed window slice does not admit trailing clauses");
+      return FinishRefusal();
+    }
+
+    NativeRelationAstNode source_relation;
+    source_relation.relation_id = 1;
+    source_relation.relation_kind = NativeRelationAstKind::kCatalogSource;
+    source_relation.relation_source_ids = {source.source_id};
+    source_relation.output_expression_ids = source_expression_ids;
+    source_relation.range = Span(select_token, *source_end);
+    NativeRelationAstNode window_relation;
+    window_relation.relation_id = 2;
+    window_relation.relation_kind = NativeRelationAstKind::kWindow;
+    window_relation.input_relation_ids = {source_relation.relation_id};
+    window_relation.output_expression_ids = {function_expression_id};
+    window_relation.window_invocation_ids = {invocation.invocation_id};
+    window_relation.range = Span(select_token, *source_end);
+
+    document_.catalog_relation_sources.push_back(std::move(source));
+    document_.window_definitions.push_back(std::move(definition));
+    document_.window_invocations.push_back(std::move(invocation));
+    document_.relations.push_back(std::move(source_relation));
+    document_.relations.push_back(std::move(window_relation));
+    document_.root_relation_id = 2;
+    document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
   }
 
   bool LooksLikeBoundedCatalogJoinSelect() const {
@@ -2813,6 +3173,8 @@ class NativeRelationalParser final {
     document_.catalog_relation_sources.clear();
     document_.values_rows.clear();
     document_.grouping_sets.clear();
+    document_.window_definitions.clear();
+    document_.window_invocations.clear();
     document_.expressions.clear();
     return std::move(document_);
   }

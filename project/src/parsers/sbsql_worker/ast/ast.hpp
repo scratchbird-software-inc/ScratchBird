@@ -60,6 +60,8 @@ enum class NativeRelationAstKind {
   kProject,
   kSort,
   kJoin,
+  kWindow,
+  kQualify,
 };
 
 enum class NativeJoinAstKind {
@@ -81,6 +83,27 @@ enum class NativeSortDirection {
 enum class NativeNullPlacement {
   kNullsFirst,
   kNullsLast,
+};
+
+enum class NativeWindowFrameUnit {
+  kRows,
+  kRange,
+  kGroups,
+};
+
+enum class NativeWindowFrameBoundKind {
+  kUnboundedPreceding,
+  kPreceding,
+  kCurrentRow,
+  kFollowing,
+  kUnboundedFollowing,
+};
+
+enum class NativeWindowFrameExclusion {
+  kNoOthers,
+  kCurrentRow,
+  kGroup,
+  kTies,
 };
 
 enum class NativeRelationSourceAstKind {
@@ -195,6 +218,35 @@ struct NativeOrderingAstTerm {
   SourceRange range;
 };
 
+struct NativeWindowFrameBoundAstNode {
+  NativeWindowFrameBoundKind bound_kind{
+      NativeWindowFrameBoundKind::kCurrentRow};
+  std::optional<std::uint32_t> offset_expression_id;
+  SourceRange range;
+};
+
+struct NativeWindowDefinitionAstNode {
+  std::uint32_t window_id{0};
+  std::optional<NativeIdentifierAstNode> name;
+  std::optional<NativeIdentifierAstNode> base_name;
+  std::vector<std::uint32_t> partition_expression_ids;
+  std::vector<NativeOrderingAstTerm> ordering_terms;
+  std::optional<NativeWindowFrameUnit> frame_unit;
+  std::optional<NativeWindowFrameBoundAstNode> frame_start;
+  std::optional<NativeWindowFrameBoundAstNode> frame_end;
+  NativeWindowFrameExclusion exclusion{
+      NativeWindowFrameExclusion::kNoOthers};
+  SourceRange range;
+};
+
+struct NativeWindowInvocationAstNode {
+  std::uint32_t invocation_id{0};
+  std::uint32_t function_expression_id{0};
+  std::uint32_t window_definition_id{0};
+  std::optional<NativeIdentifierAstNode> output_alias;
+  SourceRange range;
+};
+
 struct NativeRelationAstNode {
   std::uint32_t relation_id{0};
   NativeRelationAstKind relation_kind{NativeRelationAstKind::kValues};
@@ -211,6 +263,7 @@ struct NativeRelationAstNode {
   std::vector<std::uint32_t> aggregate_expression_ids;
   std::vector<std::uint32_t> predicate_expression_ids;
   std::vector<std::uint32_t> limit_expression_ids;
+  std::vector<std::uint32_t> window_invocation_ids;
   std::vector<NativeOrderingAstTerm> ordering_terms;
   SourceRange range;
 };
@@ -222,6 +275,8 @@ struct NativeRelationalAstDocument {
   std::vector<NativeCatalogRelationSourceAstNode> catalog_relation_sources;
   std::vector<NativeValuesRowAstNode> values_rows;
   std::vector<NativeGroupingSetAstNode> grouping_sets;
+  std::vector<NativeWindowDefinitionAstNode> window_definitions;
+  std::vector<NativeWindowInvocationAstNode> window_invocations;
   std::vector<NativeExpressionAstNode> expressions;
   std::optional<NativeTemporalTableSourceRefusal> temporal_table_source_refusal;
   MessageVectorSet messages;
@@ -280,6 +335,9 @@ std::string NativeRelationSourceAstKindName(NativeRelationSourceAstKind kind);
 std::string NativeAggregateGroupingFormName(NativeAggregateGroupingForm form);
 std::string NativeAggregateProjectionFormName(
     NativeAggregateProjectionForm form);
+std::string NativeWindowFrameUnitName(NativeWindowFrameUnit unit);
+std::string NativeWindowFrameBoundKindName(NativeWindowFrameBoundKind kind);
+std::string NativeWindowFrameExclusionName(NativeWindowFrameExclusion exclusion);
 std::string NativeExpressionAstKindName(NativeExpressionAstKind kind);
 std::string NativeLiteralAstKindName(NativeLiteralAstKind kind);
 
