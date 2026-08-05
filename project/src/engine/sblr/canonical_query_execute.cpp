@@ -353,7 +353,9 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
     const MaterializedValues& right) {
   MaterializedExactSetOperation result;
   if (!prepared.ok || !left.ok || !right.ok ||
-      profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal ||
+      (profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal &&
+       profile.alignment !=
+           exec::CanonicalSetOperationAlignment::kByName) ||
       profile.type_profile != exec::CanonicalSetOperationTypeProfile::kExact ||
       profile.equality_profile !=
           exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
@@ -388,8 +390,41 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
     }
     return rows;
   };
+  exec::DescriptorBatch aligned_right = right.batch;
+  if (profile.alignment ==
+      exec::CanonicalSetOperationAlignment::kByName) {
+    std::unordered_map<std::string, std::size_t> right_ordinals;
+    for (std::size_t column = 0; column < right.batch.columns.size();
+         ++column) {
+      if (right.batch.columns[column].stable_name.empty() ||
+          !right_ordinals
+               .emplace(right.batch.columns[column].stable_name, column)
+               .second) {
+        result.values = {};
+        result.values.detail =
+            "exact BY NAME set-operation right names are not unique";
+        return result;
+      }
+    }
+    aligned_right.columns.clear();
+    aligned_right.rows.assign(right.batch.rows.size(), {});
+    for (const auto& result_column : prepared.result_columns) {
+      const auto found = right_ordinals.find(result_column.stable_name);
+      if (found == right_ordinals.end()) {
+        result.values = {};
+        result.values.detail =
+            "exact BY NAME set-operation column sets differ";
+        return result;
+      }
+      aligned_right.columns.push_back(right.batch.columns[found->second]);
+      for (std::size_t row = 0; row < right.batch.rows.size(); ++row) {
+        aligned_right.rows[row].values.push_back(
+            right.batch.rows[row].values[found->second]);
+      }
+    }
+  }
   const auto left_rows = retagged_rows(left.batch);
-  const auto right_rows = retagged_rows(right.batch);
+  const auto right_rows = retagged_rows(aligned_right);
   using SetRowKey = std::vector<std::string>;
   const auto row_key = [](const exec::DescriptorTuple& row) {
     SetRowKey key;
@@ -5915,8 +5950,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // The compiler admits a descriptor-valid unary tail containing at most one
 // FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
 // canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
-// ordinal quantified set-operation subtree. Every node still executes through
-// the ordinary optimizer-published ABI-v2 DAG and its canonical executor.
+// typed ordinal/BY NAME quantified set-operation subtree. Every node still
+// executes through the ordinary optimizer-published ABI-v2 DAG and its
+// canonical executor.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -6061,8 +6097,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         auto profile =
             MatchLiveSetOperationProfile(node->semantic_variant_id);
         if (!profile.matched ||
-            profile.alignment !=
-                exec::CanonicalSetOperationAlignment::kOrdinal ||
+            (profile.alignment !=
+                 exec::CanonicalSetOperationAlignment::kOrdinal &&
+             profile.alignment !=
+                 exec::CanonicalSetOperationAlignment::kByName) ||
             profile.type_profile !=
                 exec::CanonicalSetOperationTypeProfile::kExact ||
             profile.equality_profile !=

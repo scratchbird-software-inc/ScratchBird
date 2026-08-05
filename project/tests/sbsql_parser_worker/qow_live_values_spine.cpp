@@ -570,6 +570,32 @@ sblr::SblrOperationEnvelope SetOperationByNameValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-BY-NAME-SET-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenByNameSetLimitEnvelope() {
+  auto envelope = SetOperationByNameValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000c960";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "7",
+       "019f0000-0000-7300-8000-00000000c961|"
+       "019f0000-0000-7400-8000-00000000b111|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "9", "1|-|7|-|-|1|-|32"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|5,6|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|9|-|-|-"});
+  return envelope;
+}
+
 // RCP-046-TEST-LIVE-SET-OPERATION-NESTING-V1
 sblr::SblrOperationEnvelope SetOperationNestedValuesEnvelope(
     const bool explicit_right_grouping) {
@@ -7345,6 +7371,63 @@ bool ValidateNodeDrivenExactSetProfilesCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-BY-NAME-SET-COMPOSITION-V1
+bool ValidateNodeDrivenByNameSetCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto first = dispatch(NodeDrivenByNameSetLimitEnvelope());
+  const auto repeated = dispatch(NodeDrivenByNameSetLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = first.api_result.result_shape.rows;
+  bool passed = true;
+  passed &= Require(
+      first.accepted && first.optimizer_admitted &&
+          first.optimizer_selected && first.physical_dag_published &&
+          first.physical_dag_executed && first.runtime_actuals_attached &&
+          first.canonical_result_published && first.api_result.ok &&
+          first.diagnostics.empty() && first.logical_node_count == 4 &&
+          first.physical_node_count == 4 &&
+          first.canonical_result_column_count == 2 &&
+          first.canonical_result_row_count == 2 && rows.size() == 2 &&
+          rows[0].fields[0].first == "n" &&
+          rows[0].fields[1].first == "label" &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[0].fields[1].second.encoded_value == "10" &&
+          rows[1].fields[0].second.encoded_value == "2" &&
+          rows[1].fields[1].second.encoded_value == "20" &&
+          repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven BY NAME set composition lost aligned schema, LIMIT "
+      "semantics, or deterministic replay");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 15;
+  const auto exhausted = dispatch(NodeDrivenByNameSetLimitEnvelope(),
+                                  std::move(bounded_context));
+  passed &= Require(
+      !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "exhausted node-driven BY NAME set composition published partial "
+      "evidence");
+  return passed;
+}
+
 // RCP-049-TEST-NODE-DRIVEN-NESTED-EXACT-SET-COMPOSITION-V1
 bool ValidateNodeDrivenNestedExactSetCompositionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
@@ -12886,6 +12969,7 @@ int main() {
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
+                      ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
