@@ -802,6 +802,32 @@ sblr::SblrOperationEnvelope FilteredProjectedSortValuesEnvelope() {
   return envelope;
 }
 
+// RCP-037-TEST-LIVE-FILTER-PROJECT-SORT-LIMIT-COMPOSITION-V1
+sblr::SblrOperationEnvelope FilteredProjectedSortLimitValuesEnvelope() {
+  auto envelope = FilteredProjectedSortValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-000000008c00";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "5";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "5",
+       "019f0000-0000-7300-8000-000000008c01|"
+       "019f0000-0000-7400-8000-000000008c02|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "15", "1|-|5|-|-|1|-|31"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "5", "7|0|4|3,2|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "5",
+       "6c696d69742e626f756e642d636f756e742e7631|15|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4091,7 +4117,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 12> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 13> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4104,6 +4130,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
       ProjectedExpressionSortValuesEnvelope(),
       FilteredExpressionProjectValuesEnvelope(),
       FilteredProjectedSortValuesEnvelope(),
+      FilteredProjectedSortLimitValuesEnvelope(),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5355,6 +5382,82 @@ bool ValidateFilteredProjectedSortCompositionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "source-only or exhausted FILTER/PROJECT/SORT published evidence");
+  return passed;
+}
+
+// RCP-037-TEST-LIVE-FILTER-PROJECT-SORT-LIMIT-COMPOSITION-V1
+bool ValidateFilteredProjectedSortLimitCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 5 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 5 &&
+           result.canonical_result_column_count == 2 &&
+           result.canonical_result_row_count == 1 &&
+           result.api_result.result_shape.columns.size() == 2 &&
+           result.api_result.result_shape.rows.size() == 1;
+  };
+
+  const auto limited = dispatch(FilteredProjectedSortLimitValuesEnvelope());
+  const auto repeated = dispatch(FilteredProjectedSortLimitValuesEnvelope());
+  bool passed = true;
+  if (!limited.api_result.ok) {
+    for (const auto& diagnostic : limited.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = limited.api_result.result_shape.rows;
+  passed &= Require(
+      completed(limited) && rows[0].fields[0].first == "safe_quotient" &&
+          rows[0].fields[0].second.encoded_value == "5" &&
+          rows[0].fields[1].second.encoded_value == "beta",
+      "FILTER/PROJECT/SORT/LIMIT did not retain only the first sorted row");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == limited.selected_plan_uuid &&
+          repeated.canonical_result_bytes == limited.canonical_result_bytes,
+      "FILTER/PROJECT/SORT/LIMIT changed deterministic plan/result bytes");
+
+  auto negative_limit = FilteredProjectedSortLimitValuesEnvelope();
+  for (auto& operand : negative_limit.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "15") {
+      operand.value = "1|-|5|-|-|1|-|2d31";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 7;
+  const auto negative_result = dispatch(std::move(negative_limit));
+  const auto exhausted_result = dispatch(
+      FilteredProjectedSortLimitValuesEnvelope(),
+      std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          negative_result,
+          "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-SORT-LIMIT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "negative or exhausted FILTER/PROJECT/SORT/LIMIT published evidence");
   return passed;
 }
 
@@ -10440,6 +10543,7 @@ int main() {
                       ValidateProjectedExpressionSortCompositionSpine() &&
                       ValidateFilteredExpressionProjectCompositionSpine() &&
                       ValidateFilteredProjectedSortCompositionSpine() &&
+                      ValidateFilteredProjectedSortLimitCompositionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&
