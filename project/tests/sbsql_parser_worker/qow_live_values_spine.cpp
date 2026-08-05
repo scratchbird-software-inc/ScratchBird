@@ -828,6 +828,72 @@ sblr::SblrOperationEnvelope FilteredProjectedSortLimitValuesEnvelope() {
   return envelope;
 }
 
+// RCP-038-TEST-LIVE-FILTER-PROJECT-DISTINCT-SORT-LIMIT-COMPOSITION-V1
+sblr::SblrOperationEnvelope
+FilteredProjectedDistinctSortLimitValuesEnvelope() {
+  auto envelope = FilteredProjectedSortLimitValuesEnvelope();
+  std::erase_if(envelope.operands, [](const auto& operand) {
+    return (operand.type == "relational_output_v1" && operand.name == "4") ||
+           (operand.type == "relational_expression_v1" &&
+            operand.name == "8");
+  });
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-000000008d00";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "6";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "1") {
+      operand.value = "13|0|-|1,2|1,2,3,4";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "3") {
+      operand.value = "3|0|2|3|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "4") {
+      operand.name = "5";
+      operand.value = "6|0|4|3|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "5") {
+      operand.name = "6";
+      operand.value = "7|0|5|3|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "1") {
+      operand.value =
+          "76616c7565732e6c69746572616c2d7461626c652e7631|"
+          "1,2,3,4,9,10,16,17|-|-|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value =
+          "70726f6a6563742e73656c6563742d6c6973742e7631|5|-|-|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "4") {
+      operand.name = "5";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "5") {
+      operand.name = "6";
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "15") {
+      operand.value = "1|-|5|-|-|1|-|32";
+    } else if (operand.type == "relational_property_v1") {
+      operand.value = "1|5|-|5:1:2:-|-|-";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_expression_v1", "16", "1|-|1|-|-|1|-|33"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "17", "1|-|2|-|-|2|-|62657461"});
+  envelope.operands.push_back(
+      {"relational_values_row_v1", "4", "16,17"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "5|0|3|3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6167677265676174652e71756572792d64697374696e63742e7631|5|-|-|-"});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope LimitValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.limit");
@@ -4117,7 +4183,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
   };
 
   bool passed = true;
-  const std::array<sblr::SblrOperationEnvelope, 13> live_shapes{
+  const std::array<sblr::SblrOperationEnvelope, 14> live_shapes{
       ValuesEnvelope(),
       FilterValuesEnvelope(),
       ProjectValuesEnvelope(),
@@ -4131,6 +4197,7 @@ bool ValidateGeneralSelectExecutionBoundary() {
       FilteredExpressionProjectValuesEnvelope(),
       FilteredProjectedSortValuesEnvelope(),
       FilteredProjectedSortLimitValuesEnvelope(),
+      FilteredProjectedDistinctSortLimitValuesEnvelope(),
   };
   for (std::size_t shape = 0; shape < live_shapes.size(); ++shape) {
     const auto& envelope = live_shapes[shape];
@@ -5458,6 +5525,88 @@ bool ValidateFilteredProjectedSortLimitCompositionSpine() {
               exhausted_result,
               "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
       "negative or exhausted FILTER/PROJECT/SORT/LIMIT published evidence");
+  return passed;
+}
+
+// RCP-038-TEST-LIVE-FILTER-PROJECT-DISTINCT-SORT-LIMIT-COMPOSITION-V1
+bool ValidateFilteredProjectedDistinctSortLimitCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 6 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 6 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 2 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 2;
+  };
+
+  const auto distinct =
+      dispatch(FilteredProjectedDistinctSortLimitValuesEnvelope());
+  const auto repeated =
+      dispatch(FilteredProjectedDistinctSortLimitValuesEnvelope());
+  bool passed = true;
+  if (!distinct.api_result.ok) {
+    for (const auto& diagnostic : distinct.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = distinct.api_result.result_shape.rows;
+  passed &= Require(
+      completed(distinct) &&
+          rows[0].fields[0].first == "safe_quotient" &&
+          rows[0].fields[0].second.encoded_value == "5" &&
+          rows[1].fields[0].second.encoded_value == "10",
+      "FILTER/PROJECT/DISTINCT/SORT/LIMIT retained a projected duplicate or "
+      "changed SQL-tail order");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == distinct.selected_plan_uuid &&
+          repeated.canonical_result_bytes == distinct.canonical_result_bytes,
+      "FILTER/PROJECT/DISTINCT/SORT/LIMIT changed deterministic bytes");
+
+  auto duplicate_coverage =
+      FilteredProjectedDistinctSortLimitValuesEnvelope();
+  for (auto& operand : duplicate_coverage.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "4") {
+      operand.value =
+          "6167677265676174652e71756572792d64697374696e63742e7631|7|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 7;
+  const auto duplicate_result = dispatch(std::move(duplicate_coverage));
+  const auto exhausted_result = dispatch(
+      FilteredProjectedDistinctSortLimitValuesEnvelope(),
+      std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          duplicate_result,
+          "QOW-DIAG-RELATIONAL-LIVE-FILTER-PROJECT-DISTINCT-SORT-LIMIT-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "invalid DISTINCT or exhausted full SQL tail published evidence");
   return passed;
 }
 
@@ -10544,6 +10693,7 @@ int main() {
                       ValidateFilteredExpressionProjectCompositionSpine() &&
                       ValidateFilteredProjectedSortCompositionSpine() &&
                       ValidateFilteredProjectedSortLimitCompositionSpine() &&
+                      ValidateFilteredProjectedDistinctSortLimitCompositionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&
                       ValidateGroupedCountSumValuesSpine() &&
