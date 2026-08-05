@@ -38,6 +38,8 @@ constexpr std::string_view kCatalogEpochUuid =
 constexpr std::string_view kSecurityContextUuid =
     "019f0000-0000-7110-8000-000000008103";
 
+std::string EncodeHex(std::string_view value);
+
 bool Require(const bool condition, const std::string_view detail) {
   if (!condition) {
     std::cerr << "QOW-TEST-INTEGRATION-306-211-LIVE-VALUES-V1: "
@@ -508,12 +510,15 @@ sblr::SblrOperationEnvelope NodeDrivenExactSetProfileLimitEnvelope(
 }
 
 // RCP-049-TEST-NODE-DRIVEN-TYPE-RECONCILED-SET-COMPOSITION-V1
-sblr::SblrOperationEnvelope NodeDrivenTypeReconciledSetLimitEnvelope() {
+sblr::SblrOperationEnvelope NodeDrivenTypeReconciledSetLimitEnvelope(
+    const bool null_collation = false) {
   auto envelope = UnionAllValuesEnvelope();
   for (auto& operand : envelope.operands) {
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
-      operand.value = "019f0000-0000-7000-8000-00000000c970";
+      operand.value = null_collation
+                          ? "019f0000-0000-7000-8000-00000000c979"
+                          : "019f0000-0000-7000-8000-00000000c970";
     } else if (operand.type == "uint32" &&
                operand.name == "relational_root_node_id") {
       operand.value = "4";
@@ -535,8 +540,11 @@ sblr::SblrOperationEnvelope NodeDrivenTypeReconciledSetLimitEnvelope() {
     } else if (operand.type == "relational_node_binding_v1" &&
                operand.name == "3") {
       operand.value =
-          "7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e"
-          "747970652d7265636f6e63696c65642e7631|-|-|-|-";
+          EncodeHex(null_collation
+                        ? "set-operation.union-all.type-reconciled."
+                          "null-collation.v1"
+                        : "set-operation.union-all.type-reconciled.v1") +
+          "|-|-|-|-";
     }
   }
   envelope.operands.push_back(
@@ -617,15 +625,25 @@ sblr::SblrOperationEnvelope SetOperationByNameValuesEnvelope() {
 }
 
 // RCP-049-TEST-NODE-DRIVEN-BY-NAME-SET-COMPOSITION-V1
-sblr::SblrOperationEnvelope NodeDrivenByNameSetLimitEnvelope() {
+sblr::SblrOperationEnvelope NodeDrivenByNameSetLimitEnvelope(
+    const bool null_collation = false) {
   auto envelope = SetOperationByNameValuesEnvelope();
   for (auto& operand : envelope.operands) {
     if (operand.type == "uuid" &&
         operand.name == "relational_bound_sblr_tree_uuid") {
-      operand.value = "019f0000-0000-7000-8000-00000000c960";
+      operand.value = null_collation
+                          ? "019f0000-0000-7000-8000-00000000c969"
+                          : "019f0000-0000-7000-8000-00000000c960";
     } else if (operand.type == "uint32" &&
                operand.name == "relational_root_node_id") {
       operand.value = "4";
+    } else if (null_collation &&
+               operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value =
+          EncodeHex("set-operation.union-distinct.by-name."
+                    "null-collation.v1") +
+          "|-|-|-|-";
     }
   }
   envelope.operands.push_back(
@@ -1950,8 +1968,6 @@ sblr::SblrOperationEnvelope NodeDrivenSumExpressionLimitEnvelope() {
        "6c696d69742e626f756e642d636f756e742e7631|7|-|-|-"});
   return envelope;
 }
-
-std::string EncodeHex(std::string_view value);
 
 enum class UnaryAggregateKind {
   kCount,
@@ -7872,6 +7888,145 @@ bool ValidateNodeDrivenExactSetProfilesCompositionSpine() {
         "node-driven exact quantified set profile lost semantics, identity, "
         "or deterministic replay");
   }
+  return passed;
+}
+
+// RCP-049-TEST-NODE-DRIVEN-NULL-COLLATION-SET-COMPOSITION-V1
+bool ValidateNodeDrivenNullCollationSetCompositionSpine() {
+  struct ProfileExpectation {
+    std::string semantic_variant;
+    std::string tree_uuid;
+    std::vector<std::string> values;
+    std::uint64_t exhausted_bound;
+  };
+  const std::array<ProfileExpectation, 6> profiles{{
+      {"set-operation.union-all.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf20",
+       {"1", "2", "null", "2", "3", "null"}, 12},
+      {"set-operation.union-distinct.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf21",
+       {"1", "2", "null", "3"}, 42},
+      {"set-operation.intersect-all.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf22", {"2", "null"}, 42},
+      {"set-operation.intersect-distinct.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf23", {"2", "null"}, 42},
+      {"set-operation.except-all.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf24", {"1"}, 42},
+      {"set-operation.except-distinct.null-collation.v1",
+       "019f0000-0000-7000-8000-00000000cf25", {"1"}, 42},
+  }};
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto no_publication = [](const auto& result) {
+    return !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1");
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& profile : profiles) {
+    const auto envelope = NodeDrivenExactSetProfileLimitEnvelope(
+        EncodeHex(profile.semantic_variant), profile.tree_uuid);
+    const auto first = dispatch(envelope);
+    const auto repeated = dispatch(envelope);
+    if (!first.api_result.ok) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+      }
+    }
+    bool values_match =
+        first.accepted && first.optimizer_admitted &&
+        first.optimizer_selected && first.physical_dag_published &&
+        first.physical_dag_executed && first.runtime_actuals_attached &&
+        first.canonical_result_published && first.api_result.ok &&
+        first.diagnostics.empty() && first.logical_node_count == 4 &&
+        first.physical_node_count == 4 &&
+        first.canonical_result_column_count == 1 &&
+        first.canonical_result_row_count == profile.values.size() &&
+        first.api_result.result_shape.rows.size() == profile.values.size();
+    if (values_match) {
+      for (std::size_t row = 0; row < profile.values.size(); ++row) {
+        const auto& value =
+            first.api_result.result_shape.rows[row].fields[0].second;
+        values_match &= profile.values[row] == "null"
+                            ? value.state == api::EngineValueState::sql_null
+                            : value.encoded_value == profile.values[row];
+      }
+    }
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count =
+        profile.exhausted_bound;
+    const auto exhausted = dispatch(envelope, std::move(bounded_context));
+    passed &= Require(
+        values_match && repeated.api_result.ok &&
+            repeated.selected_plan_uuid == first.selected_plan_uuid &&
+            repeated.canonical_result_bytes == first.canonical_result_bytes &&
+            selected_plans.insert(first.selected_plan_uuid).second &&
+            no_publication(exhausted),
+        "node-driven " + profile.semantic_variant +
+            " lost NULL equality, multiplicity, replay, identity, or atomic "
+            "resource exhaustion");
+  }
+
+  const auto type_reconciled =
+      dispatch(NodeDrivenTypeReconciledSetLimitEnvelope(true));
+  const auto type_reconciled_replay =
+      dispatch(NodeDrivenTypeReconciledSetLimitEnvelope(true));
+  auto type_bounded_context = Context();
+  type_bounded_context.optimizer_maximum_candidate_count = 18;
+  const auto type_exhausted = dispatch(
+      NodeDrivenTypeReconciledSetLimitEnvelope(true),
+      std::move(type_bounded_context));
+  const auto& type_rows = type_reconciled.api_result.result_shape.rows;
+  passed &= Require(
+      type_reconciled.api_result.ok && type_rows.size() == 4 &&
+          type_rows[0].fields[0].second.encoded_value == "1" &&
+          type_rows[1].fields[0].second.encoded_value == "2" &&
+          type_rows[2].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          type_rows[3].fields[0].second.encoded_value == "2" &&
+          type_reconciled_replay.api_result.ok &&
+          type_reconciled_replay.selected_plan_uuid ==
+              type_reconciled.selected_plan_uuid &&
+          type_reconciled_replay.canonical_result_bytes ==
+              type_reconciled.canonical_result_bytes &&
+          no_publication(type_exhausted),
+      "type-reconciled NULL-collation set composition lost its cast, NULL, "
+      "replay, or atomic exhaustion contract");
+
+  const auto by_name = dispatch(NodeDrivenByNameSetLimitEnvelope(true));
+  const auto by_name_replay =
+      dispatch(NodeDrivenByNameSetLimitEnvelope(true));
+  auto by_name_bounded_context = Context();
+  by_name_bounded_context.optimizer_maximum_candidate_count = 20;
+  const auto by_name_exhausted = dispatch(
+      NodeDrivenByNameSetLimitEnvelope(true),
+      std::move(by_name_bounded_context));
+  const auto& by_name_rows = by_name.api_result.result_shape.rows;
+  passed &= Require(
+      by_name.api_result.ok && by_name_rows.size() == 2 &&
+          by_name_rows[0].fields[0].first == "n" &&
+          by_name_rows[0].fields[1].first == "label" &&
+          by_name_rows[0].fields[0].second.encoded_value == "1" &&
+          by_name_rows[0].fields[1].second.encoded_value == "10" &&
+          by_name_rows[1].fields[0].second.encoded_value == "2" &&
+          by_name_rows[1].fields[1].second.encoded_value == "20" &&
+          by_name_replay.api_result.ok &&
+          by_name_replay.selected_plan_uuid == by_name.selected_plan_uuid &&
+          by_name_replay.canonical_result_bytes ==
+              by_name.canonical_result_bytes &&
+          no_publication(by_name_exhausted),
+      "BY NAME NULL-collation set composition lost alignment, replay, or "
+      "atomic exhaustion");
   return passed;
 }
 
@@ -14490,6 +14645,7 @@ int main() {
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
+                      ValidateNodeDrivenNullCollationSetCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&

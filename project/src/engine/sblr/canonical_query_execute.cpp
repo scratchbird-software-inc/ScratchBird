@@ -362,8 +362,11 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
            exec::CanonicalSetOperationTypeProfile::kExact &&
        profile.type_profile !=
            exec::CanonicalSetOperationTypeProfile::kLosslessImplicit) ||
-      profile.equality_profile !=
-          exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
+      (profile.equality_profile !=
+           exec::CanonicalSetOperationEqualityProfile::kExactTyped &&
+       profile.equality_profile !=
+           exec::CanonicalSetOperationEqualityProfile::
+               kNullEqualBoundCollation) ||
       !CheckedAdd(left.batch.rows.size(), right.batch.rows.size(),
                   &result.output_bound) ||
       !CheckedMultiply(result.output_bound, result.output_bound,
@@ -531,6 +534,76 @@ MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
   right_keys.reserve(right_rows.size());
   for (const auto& row : left_rows) left_keys.push_back(row_key(row));
   for (const auto& row : right_rows) right_keys.push_back(row_key(row));
+
+  if (profile.equality_profile ==
+      exec::CanonicalSetOperationEqualityProfile::
+          kNullEqualBoundCollation) {
+    for (const auto& binding : prepared.collation_bindings) {
+      if (binding.result_column >= prepared.result_columns.size()) {
+        result.values = {};
+        result.values.detail =
+            "set-operation planning collation column is out of range";
+        return result;
+      }
+      std::vector<const api::EngineTypedValue*> representatives;
+      const auto classify = [&](const api::EngineTypedValue& value,
+                                std::string* equality_key) {
+        if (equality_key == nullptr) return false;
+        if (value.state == api::EngineValueState::sql_null) {
+          *equality_key = "collation:null";
+          return true;
+        }
+        for (std::size_t index = 0; index < representatives.size(); ++index) {
+          dt::DatatypeComparisonRequest comparison_request;
+          comparison_request.left.type_id = dt::CanonicalTypeId::character;
+          comparison_request.left.encoded_value =
+              representatives[index]->encoded_value;
+          comparison_request.right.type_id = dt::CanonicalTypeId::character;
+          comparison_request.right.encoded_value = value.encoded_value;
+          comparison_request.case_insensitive_character_compare =
+              binding.text_seed.collation_case_insensitive;
+          comparison_request.text_seed = binding.text_seed;
+          const auto compared = dt::CompareDatatypeValues(comparison_request);
+          if (!compared.ok()) {
+            result.values.detail =
+                compared.diagnostic.diagnostic_code.empty()
+                    ? "set-operation planning collation comparison refused"
+                    : compared.diagnostic.diagnostic_code;
+            return false;
+          }
+          if (compared.comparison == 0) {
+            *equality_key = "collation:" + std::to_string(index);
+            return true;
+          }
+        }
+        representatives.push_back(&value);
+        *equality_key =
+            "collation:" + std::to_string(representatives.size() - 1);
+        return true;
+      };
+      const auto classify_rows = [&](const std::vector<exec::DescriptorTuple>& rows,
+                                     std::vector<SetRowKey>* keys) {
+        if (keys == nullptr || keys->size() != rows.size()) return false;
+        for (std::size_t row = 0; row < rows.size(); ++row) {
+          if (!classify(rows[row].values[binding.result_column],
+                        &(*keys)[row][binding.result_column])) {
+            return false;
+          }
+        }
+        return true;
+      };
+      if (!classify_rows(left_rows, &left_keys) ||
+          !classify_rows(right_rows, &right_keys)) {
+        const auto detail = result.values.detail.empty()
+                                ? "set-operation planning collation key "
+                                  "classification refused"
+                                : result.values.detail;
+        result.values = {};
+        result.values.detail = detail;
+        return result;
+      }
+    }
+  }
 
   result.values.batch.rows.reserve(result.output_bound);
   const bool distinct =
@@ -6722,8 +6795,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                  exec::CanonicalSetOperationTypeProfile::kExact &&
              profile.type_profile !=
                  exec::CanonicalSetOperationTypeProfile::kLosslessImplicit) ||
-            profile.equality_profile !=
-                exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
+            (profile.equality_profile !=
+                 exec::CanonicalSetOperationEqualityProfile::kExactTyped &&
+             profile.equality_profile !=
+                 exec::CanonicalSetOperationEqualityProfile::
+                     kNullEqualBoundCollation) ||
             node->input_logical_node_ids.size() != 2 ||
             node->input_logical_node_ids[0] ==
                 node->input_logical_node_ids[1] ||
