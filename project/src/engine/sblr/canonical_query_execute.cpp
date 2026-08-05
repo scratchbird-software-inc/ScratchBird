@@ -6590,6 +6590,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   bool registry_aggregate_composable = false;
   LiveUnaryAggregateExpressionProfile global_aggregate_profile;
   LivePairStatisticalExpressionProfile pair_aggregate_profile;
+  LiveStringAggregateExpressionProfile string_aggregate_profile;
   LiveGroupedCountSumProfile grouped_aggregate_profile;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
@@ -6765,6 +6766,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         pair_aggregate_profile =
             MatchLivePairStatisticalExpressionProfile(
                 current->semantic_variant_id);
+        string_aggregate_profile =
+            MatchLiveStringAggregateExpressionProfile(
+                current->semantic_variant_id);
         grouped_aggregate_profile =
             MatchLiveGroupedCountSumProfile(current->semantic_variant_id);
         registry_aggregate_composable =
@@ -6798,6 +6802,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         registry_aggregate_composable =
             registry_aggregate_composable || pair_aggregate_profile.matched ||
+            string_aggregate_profile.matched ||
             grouped_aggregate_profile.matched;
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
@@ -6912,6 +6917,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::uint64_t row_offset = 0;
   bool fetch_first_rows_only = false;
   std::string limit_implementation_id;
+  bool planning_values_exact = true;
 
   const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
                               request.context.statement_uuid.canonical;
@@ -7354,6 +7360,15 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     std::vector<std::string> required_property_uuids;
     std::vector<std::string> delivered_property_uuids;
     std::vector<plan::CanonicalLogicalPropertyKind> property_kinds;
+
+    if (!planning_values_exact &&
+        node.node_kind !=
+            plan::CanonicalLogicalRelationalNodeKind::kLimit) {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          "composed aggregate planning placeholder only admits a direct "
+          "LIMIT/FETCH consumer");
+    }
 
     switch (node.node_kind) {
       case plan::CanonicalLogicalRelationalNodeKind::kFilter: {
@@ -8562,6 +8577,71 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               pair_aggregate_profile.transformation_id + ".composed";
           physical_kind = exec::PhysicalNodeKind::kAggregate;
           auxiliary_memory = aggregate_work;
+          break;
+        }
+        if (string_aggregate_profile.matched) {
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state,
+              exec::CanonicalAggregateFunction::string_agg, false,
+              string_aggregate_profile.distinct,
+              string_aggregate_profile.has_filter);
+          if (!prepared.ok || !prepared.result_column.nullable) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct ||
+              !prepared.aggregate_order_terms.empty()) {
+            std::uint64_t comparison_work = 0;
+            if (!CheckedMultiply(input_row_count, input_row_count,
+                                 &comparison_work) ||
+                !CheckedMultiply(
+                    comparison_work,
+                    std::max<std::size_t>(1,
+                        prepared.value_columns.size()),
+                    &comparison_work) ||
+                !CheckedAdd(aggregate_work, comparison_work,
+                            &aggregate_work)) {
+              return refuse(
+                  "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "composition STRING_AGG work overflowed");
+            }
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition STRING_AGG work exceeds the admitted bound");
+          }
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue placeholder;
+          placeholder.descriptor = prepared.result_column.descriptor;
+          placeholder.is_null = true;
+          placeholder.state = api::EngineValueState::sql_null;
+          tuple.values.push_back(std::move(placeholder));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "STRING_AGG planning state: " + canonical.detail
+                    : "STRING_AGG planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          transformation_rule =
+              string_aggregate_profile.transformation_id + ".composed";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          planning_values_exact = false;
           break;
         }
         if (grouped_aggregate_profile.matched) {
