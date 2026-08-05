@@ -10877,11 +10877,11 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                    "admitted heap row-by-width shape overflows size_t");
   }
 
-  // QOW-SOURCE-QRY-004-HEAP-FULL-WIDTH-V1
-  // The leaf scan accepts one complete, ordinal-preserving bijection from the
-  // optimizer relation outputs through identifier bindings and descriptors.
-  // Projection, reorder, aliases, hidden outputs, and subsets remain outside
-  // this deliberately bounded profile.
+  // QOW-SOURCE-QRY-004-HEAP-PROJECTED-WIDTH-V1
+  // The leaf scan accepts one visible, one-to-one mapping in requested output
+  // order from optimizer outputs through identifier bindings and descriptors.
+  // Persisted column UUIDs select a bounded subset; aliases, hidden outputs,
+  // and duplicate bindings remain outside this profile.
   std::vector<const api::RelationalExpressionRecord*> expressions;
   std::vector<const api::RelationalTypeDescriptor*> relational_descriptors;
   expressions.reserve(output_width);
@@ -10964,10 +10964,10 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   }
 
   if (read.descriptor.columns.empty() ||
-      read.descriptor.columns.size() != output_width ||
+      read.descriptor.columns.size() < output_width ||
       read.descriptor.columns.size() > kMaximumHeapOutputColumns) {
     return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
-                   "persisted relation width differs from the complete binding",
+                   "persisted relation width cannot satisfy the projected binding",
                    true);
   }
   std::size_t materialized_cell_count = 0;
@@ -10984,24 +10984,46 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
   std::vector<std::string> column_uuids;
   std::unordered_set<std::string> persisted_column_uuids;
   std::unordered_set<std::string> persisted_column_names;
+  std::vector<const api::MgaRelationColumnStorageDescriptor*>
+      projected_columns;
+  for (std::size_t persisted_ordinal = 0;
+       persisted_ordinal < read.descriptor.columns.size();
+       ++persisted_ordinal) {
+    const auto& column = read.descriptor.columns[persisted_ordinal];
+    if (column.ordinal != persisted_ordinal ||
+        !IsCanonicalHeapBindingUuid(column.column_uuid.canonical) ||
+        !persisted_column_uuids.insert(column.column_uuid.canonical).second ||
+        column.canonical_name_key.empty() ||
+        !persisted_column_names.insert(column.canonical_name_key).second) {
+      return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                     "persisted relation column identities are incomplete",
+                     true);
+    }
+  }
   output_descriptors.reserve(output_width);
   column_uuids.reserve(output_width);
+  projected_columns.reserve(output_width);
   batch.columns.reserve(output_width);
   for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
-    const auto& column = read.descriptor.columns[ordinal];
     const auto& output = *outputs[ordinal];
     const auto& expression = *expressions[ordinal];
     const auto& relational_descriptor = *relational_descriptors[ordinal];
+    const auto persisted_column = std::ranges::find_if(
+        read.descriptor.columns, [&](const auto& candidate) {
+          return candidate.column_uuid.canonical ==
+                 *expression.bound_name_uuid;
+        });
+    if (persisted_column == read.descriptor.columns.end()) {
+      return invalid("SB_DIAG_MGA_READ_RELATION_DESCRIPTOR_INVALID",
+                     "projected column UUID is absent from persisted relation",
+                     true);
+    }
+    const auto& column = *persisted_column;
     const auto persisted_type_uuid = ExactHeapDescriptorField(
         column.value_descriptor.encoded_descriptor, "type_uuid");
     const bool nullable = relational_descriptor.nullability ==
                           api::RelationalNullability::kNullable;
-    if (column.ordinal != ordinal ||
-        !IsCanonicalHeapBindingUuid(column.column_uuid.canonical) ||
-        !persisted_column_uuids.insert(column.column_uuid.canonical).second ||
-        column.column_uuid.canonical != *expression.bound_name_uuid ||
-        column.canonical_name_key.empty() ||
-        !persisted_column_names.insert(column.canonical_name_key).second ||
+    if (column.column_uuid.canonical != *expression.bound_name_uuid ||
         output.output_name_utf8 != column.canonical_name_key ||
         column.value_descriptor.descriptor_uuid.canonical !=
             relational_descriptor.descriptor_uuid ||
@@ -11028,6 +11050,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                      "persisted ordinal column descriptor differs from binding",
                      true);
     }
+    projected_columns.push_back(&column);
     api::EngineDescriptor output_descriptor;
     output_descriptor.descriptor_uuid =
         column.value_descriptor.descriptor_uuid;
@@ -11079,7 +11102,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                      true);
     }
     const auto& stored_row = read.visible_rows[row_index];
-    if (stored_row.values.size() != output_width) {
+    if (stored_row.values.size() != read.descriptor.columns.size()) {
       return invalid("QOW-DIAG-QRY-004-HEAP-VALUE-V1",
                      "stored row width differs from persisted descriptor width",
                      true);
@@ -11087,7 +11110,7 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
     DescriptorTuple tuple;
     tuple.values.reserve(output_width);
     for (std::size_t ordinal = 0; ordinal < output_width; ++ordinal) {
-      const auto& column = read.descriptor.columns[ordinal];
+      const auto& column = *projected_columns[ordinal];
       const std::string* encoded_value = nullptr;
       for (const auto& [name, value] : stored_row.values) {
         if (name != column.canonical_name_key) { continue; }

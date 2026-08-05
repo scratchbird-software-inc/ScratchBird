@@ -520,7 +520,47 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
 
     const auto& relation = *source_relation;
     const auto& source = ast.catalog_relation_sources.front();
-    const auto& wildcard = ast.expressions.front();
+    const auto wildcard = std::ranges::find_if(
+        ast.expressions, [&](const auto& candidate) {
+          return relation.output_expression_ids.size() == 1 &&
+                 candidate.expression_id ==
+                     relation.output_expression_ids.front() &&
+                 candidate.expression_kind ==
+                     NativeExpressionAstKind::kWildcard;
+        });
+    const bool wildcard_projection = wildcard != ast.expressions.end();
+    std::vector<const NativeExpressionAstNode*> projection_identifiers;
+    std::unordered_set<std::string> projection_names;
+    if (!wildcard_projection) {
+      projection_identifiers.reserve(relation.output_expression_ids.size());
+      for (const auto expression_id : relation.output_expression_ids) {
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.expressions.end() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->spelling.empty() ||
+            !expression->child_expression_ids.empty() ||
+            !expression->operator_name.empty() ||
+            !projection_names.insert(expression->spelling).second) {
+          AddBoundAstDiagnostic(
+              &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+              "catalog projection requires unique source identifiers");
+          return RefusedBoundAst(std::move(bound));
+        }
+        projection_identifiers.push_back(&*expression);
+      }
+    }
+    const bool projection_syntax_exact =
+        wildcard_projection
+            ? (!wildcard->literal_kind.has_value() &&
+               wildcard->child_expression_ids.empty() &&
+               wildcard->spelling == "*" && wildcard->operator_name.empty())
+            : !projection_identifiers.empty();
+    const auto projection_ast_count =
+        wildcard_projection ? 1U : projection_identifiers.size();
     if ((!filter_composition && !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
@@ -528,8 +568,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         relation.relation_source_ids !=
             std::vector<std::uint32_t>{source.source_id} ||
         !relation.values_row_ids.empty() ||
-        relation.output_expression_ids !=
-            std::vector<std::uint32_t>{wildcard.expression_id} ||
+        relation.output_expression_ids.empty() ||
         relation.aggregate_grouping_form != NativeAggregateGroupingForm::kNone ||
         relation.aggregate_projection_form !=
             NativeAggregateProjectionForm::kNone ||
@@ -544,11 +583,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         }) ||
         (source.alias.has_value() && source.alias->spelling.empty()) ||
         (!source.alias.has_value() && source.alias_is_explicit) ||
-        wildcard.expression_id == 0 ||
-        wildcard.expression_kind != NativeExpressionAstKind::kWildcard ||
-        wildcard.literal_kind.has_value() ||
-        !wildcard.child_expression_ids.empty() || wildcard.spelling != "*" ||
-        !wildcard.operator_name.empty()) {
+        !projection_syntax_exact) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog relation AST is outside the bounded source profile");
       return RefusedBoundAst(std::move(bound));
@@ -560,7 +595,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (!filter_relation->relation_source_ids.empty() ||
           !filter_relation->values_row_ids.empty() ||
           filter_relation->output_expression_ids !=
-              std::vector<std::uint32_t>{wildcard.expression_id} ||
+              relation.output_expression_ids ||
           filter_relation->aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
           filter_relation->aggregate_projection_form !=
@@ -639,12 +674,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
     if (limit_composition) {
       if (ast.expressions.size() !=
-              1 + (filter_composition ? 3 : 0) +
+              projection_ast_count + (filter_composition ? 3 : 0) +
                   limit_relation->limit_expression_ids.size() ||
           !limit_relation->relation_source_ids.empty() ||
           !limit_relation->values_row_ids.empty() ||
           limit_relation->output_expression_ids !=
-              std::vector<std::uint32_t>{wildcard.expression_id} ||
+              relation.output_expression_ids ||
           limit_relation->aggregate_grouping_form !=
               NativeAggregateGroupingForm::kNone ||
           limit_relation->aggregate_projection_form !=
@@ -687,7 +722,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         }
       }
     } else if (ast.expressions.size() !=
-               1 + (filter_composition ? 3 : 0)) {
+               projection_ast_count + (filter_composition ? 3 : 0)) {
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
           "catalog source expression cardinality is outside its bounded chain");
@@ -710,6 +745,18 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       AddBoundAstDiagnostic(
           &bound, "QOW-DIAG-BOUNDAST-RELATION",
           "catalog relation requires caller-supplied bound UUID and epoch evidence");
+      return RefusedBoundAst(std::move(bound));
+    }
+    if (!wildcard_projection &&
+        (projection_identifiers.size() != relation_binding.columns.size() ||
+         !std::ranges::equal(
+             projection_identifiers, relation_binding.columns,
+             [](const auto* expression, const auto& column) {
+               return expression->spelling == column.canonical_name_key;
+             }))) {
+      AddBoundAstDiagnostic(
+          &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+          "catalog source projection differs from its resolved column order");
       return RefusedBoundAst(std::move(bound));
     }
 

@@ -524,12 +524,12 @@ bool ValidateTemporalTableSourceRefusal() {
   const auto ordinary_select = sbsql::BuildAst(
       sbsql::BuildCst("SELECT system_time FROM account_history;"));
   passed &= Require(
-      !ordinary_select.native_relational.recognized() &&
+      ordinary_select.native_relational.accepted() &&
           !ordinary_select.exact_refusal_required &&
           !HasParserDiagnostic(
               ordinary_select.messages,
               "QOW-DIAG-QRY-006-TEMPORAL-REFUSAL-V1"),
-      "ordinary temporal-named projection was confused with a table source");
+      "ordinary temporal-named projection was confused with temporal table syntax");
   return passed;
 }
 

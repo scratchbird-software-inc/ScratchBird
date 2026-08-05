@@ -480,6 +480,53 @@ BuildEngineProjectedNativeBindingContext(
       return fail("catalog_source_projection_authority_incomplete");
     }
 
+    std::vector<std::size_t> selected_column_indexes;
+    const bool wildcard_projection =
+        relation.output_expression_ids.size() == 1 &&
+        ast.expressions.front().expression_id ==
+            relation.output_expression_ids.front() &&
+        ast.expressions.front().expression_kind ==
+            NativeExpressionAstKind::kWildcard;
+    if (wildcard_projection) {
+      selected_column_indexes.reserve(projection.columns.size());
+      for (std::size_t index = 0; index < projection.columns.size(); ++index) {
+        selected_column_indexes.push_back(index);
+      }
+    } else {
+      selected_column_indexes.reserve(relation.output_expression_ids.size());
+      for (const auto expression_id : relation.output_expression_ids) {
+        const auto expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id == expression_id;
+            });
+        if (expression == ast.expressions.end() ||
+            expression->expression_kind !=
+                NativeExpressionAstKind::kIdentifier ||
+            expression->spelling.empty() ||
+            !expression->child_expression_ids.empty() ||
+            !expression->operator_name.empty()) {
+          return fail("catalog_projection_expression_invalid");
+        }
+        const auto column = std::ranges::find_if(
+            projection.columns, [&](const auto& candidate) {
+              return candidate.canonical_name_key == expression->spelling;
+            });
+        if (column == projection.columns.end()) {
+          return fail("catalog_projection_column_unresolved");
+        }
+        const auto index = static_cast<std::size_t>(
+            std::distance(projection.columns.begin(), column));
+        if (std::ranges::find(selected_column_indexes, index) !=
+            selected_column_indexes.end()) {
+          return fail("catalog_projection_column_duplicate");
+        }
+        selected_column_indexes.push_back(index);
+      }
+    }
+    if (selected_column_indexes.empty()) {
+      return fail("catalog_projection_column_empty");
+    }
+
     NativeCatalogRelationBindingInput catalog_relation;
     catalog_relation.source_id = source.source_id;
     catalog_relation.resolution_state =
@@ -490,13 +537,14 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.catalog_generation_id = resolved.catalog_epoch;
     catalog_relation.security_epoch = resolved.security_epoch;
     catalog_relation.resource_epoch = projection.validated_resource_epoch;
-    catalog_relation.columns.reserve(projection.columns.size());
+    catalog_relation.columns.reserve(selected_column_indexes.size());
     context.descriptors.reserve(
-        projection.columns.size() +
+        selected_column_indexes.size() +
         (limit_composition ? 1 : 0) +
         (filter_composition ? 1 : 0));
-    context.expressions.reserve(projection.columns.size());
-    context.outputs.reserve(projection.columns.size() * ast.relations.size());
+    context.expressions.reserve(selected_column_indexes.size());
+    context.outputs.reserve(selected_column_indexes.size() *
+                            ast.relations.size());
     // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
     // type identities are distinct engine-owned values. Decode only the exact
     // persisted descriptor fields transported by the selected-transaction
@@ -597,11 +645,13 @@ BuildEngineProjectedNativeBindingContext(
       }
       return fields;
     };
-    for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
-      const auto& column = projection.columns[ordinal];
+    for (std::size_t ordinal = 0; ordinal < selected_column_indexes.size();
+         ++ordinal) {
+      const auto selected_index = selected_column_indexes[ordinal];
+      const auto& column = projection.columns[selected_index];
       const auto expected_ordinal = static_cast<std::uint32_t>(ordinal);
       const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
-      if (column.ordinal != expected_ordinal || column.column_uuid.empty() ||
+      if (column.ordinal != selected_index || column.column_uuid.empty() ||
           column.canonical_name_key.empty() ||
           !CanonicalUuidBytes(column.type_descriptor_uuid).has_value()) {
         return fail("catalog_source_column_projection_incomplete");
@@ -678,9 +728,9 @@ BuildEngineProjectedNativeBindingContext(
       if (downstream.relation_id == source_relation->relation_id) continue;
       const auto first_output_id =
           static_cast<std::uint32_t>(context.outputs.size() + 1);
-      for (std::size_t ordinal = 0; ordinal < projection.columns.size();
+      for (std::size_t ordinal = 0; ordinal < selected_column_indexes.size();
            ++ordinal) {
-        const auto& column = projection.columns[ordinal];
+        const auto& column = projection.columns[selected_column_indexes[ordinal]];
         const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
         context.outputs.push_back(
             {first_output_id + static_cast<std::uint32_t>(ordinal), binding_id,

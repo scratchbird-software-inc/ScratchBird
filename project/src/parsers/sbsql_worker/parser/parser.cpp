@@ -302,11 +302,22 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedCatalogRelationSelect() const {
-    // The candidate owns only this exact prefix. Projection expressions,
-    // aggregate scans, and every other SELECT shape remain available to their
-    // established parser routes.
-    return tokens_.size() >= 3 && tokens_[1]->text == "*" &&
-           IsWord(*tokens_[2], "FROM");
+    // The candidate owns wildcard or simple identifier-list projection only.
+    // Computed projections, aggregates, and every other SELECT shape remain
+    // available to their established parser routes.
+    if (tokens_.size() < 3) return false;
+    std::size_t cursor = 1;
+    if (tokens_[cursor]->text == "*") {
+      ++cursor;
+    } else {
+      while (cursor < tokens_.size()) {
+        if (tokens_[cursor]->kind != TokenKind::kIdentifier) return false;
+        ++cursor;
+        if (cursor >= tokens_.size() || tokens_[cursor]->text != ",") break;
+        ++cursor;
+      }
+    }
+    return cursor < tokens_.size() && IsWord(*tokens_[cursor], "FROM");
   }
 
   NativeRelationalAstDocument ParseCatalogRelationSelect() {
@@ -324,19 +335,35 @@ class NativeRelationalParser final {
     }
 
     const Token& select_token = Consume();
-    if (!AtSymbol("*")) {
-      Refuse("catalog_select_wildcard_required",
-             "bounded catalog SELECT requires an explicit wildcard projection");
-      return FinishRefusal();
+    std::vector<std::uint32_t> projection_expression_ids;
+    if (AtSymbol("*")) {
+      const Token& wildcard_token = Consume();
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = wildcard_token.text;
+      wildcard.range = TokenSourceRange(wildcard_token);
+      projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+    } else {
+      while (true) {
+        if (AtEnd() || Current().kind != TokenKind::kIdentifier) {
+          Refuse("catalog_select_projection_identifier_required",
+                 "bounded catalog SELECT projection requires an identifier");
+          return FinishRefusal();
+        }
+        const Token& identifier_token = Consume();
+        NativeExpressionAstNode identifier;
+        identifier.expression_id = NextExpressionId();
+        identifier.expression_kind = NativeExpressionAstKind::kIdentifier;
+        identifier.spelling = identifier_token.text;
+        identifier.range = TokenSourceRange(identifier_token);
+        projection_expression_ids.push_back(identifier.expression_id);
+        document_.expressions.push_back(std::move(identifier));
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
     }
-    const Token& wildcard_token = Consume();
-    NativeExpressionAstNode wildcard;
-    wildcard.expression_id = NextExpressionId();
-    const auto wildcard_expression_id = wildcard.expression_id;
-    wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
-    wildcard.spelling = wildcard_token.text;
-    wildcard.range = TokenSourceRange(wildcard_token);
-    document_.expressions.push_back(std::move(wildcard));
 
     if (!RequireWord("FROM", "catalog_select_from_required",
                      "bounded catalog SELECT requires FROM")) {
@@ -487,7 +514,7 @@ class NativeRelationalParser final {
     relation.relation_id = 1;
     relation.relation_kind = NativeRelationAstKind::kCatalogSource;
     relation.relation_source_ids = {source.source_id};
-    relation.output_expression_ids = {wildcard_expression_id};
+    relation.output_expression_ids = projection_expression_ids;
     relation.range = Span(select_token, *source_end);
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
@@ -497,7 +524,7 @@ class NativeRelationalParser final {
       filter.relation_id = 2;
       filter.relation_kind = NativeRelationAstKind::kFilter;
       filter.input_relation_ids = {1};
-      filter.output_expression_ids = {wildcard_expression_id};
+      filter.output_expression_ids = projection_expression_ids;
       filter.predicate_expression_ids = {*predicate_expression_id};
       filter.range = Span(
           select_token,
@@ -511,7 +538,7 @@ class NativeRelationalParser final {
       limit.relation_id = document_.root_relation_id + 1;
       limit.relation_kind = NativeRelationAstKind::kLimit;
       limit.input_relation_ids = {document_.root_relation_id};
-      limit.output_expression_ids = {wildcard_expression_id};
+      limit.output_expression_ids = projection_expression_ids;
       limit.limit_expression_ids = std::move(limit_expression_ids);
       limit.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(limit));

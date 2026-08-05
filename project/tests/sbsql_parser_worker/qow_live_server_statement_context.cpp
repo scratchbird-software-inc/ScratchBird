@@ -409,6 +409,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   column.descriptor.encoded_descriptor = "type=integer";
   column.nullable = true;
   table.table_columns.push_back(std::move(column));
+  api::EngineColumnDefinition auxiliary_column;
+  auxiliary_column.ordinal = 1;
+  auxiliary_column.names.push_back(PrimaryName("auxiliary_value"));
+  auxiliary_column.descriptor.descriptor_kind = "scalar";
+  auxiliary_column.descriptor.canonical_type_name = "integer";
+  auxiliary_column.descriptor.encoded_descriptor = "type=integer";
+  auxiliary_column.nullable = true;
+  table.table_columns.push_back(std::move(auxiliary_column));
   RequireEngineOk(api::EngineCreateTable(table),
                   "object-backed fixture table create failed");
 
@@ -423,8 +431,14 @@ void CreateObjectBackedRelation(Fixture* fixture) {
     typed.descriptor.canonical_type_name = "integer";
     typed.descriptor.encoded_descriptor = "type=integer";
     typed.encoded_value = std::to_string(value);
+    api::EngineTypedValue auxiliary_typed;
+    auxiliary_typed.descriptor.descriptor_kind = "scalar";
+    auxiliary_typed.descriptor.canonical_type_name = "integer";
+    auxiliary_typed.descriptor.encoded_descriptor = "type=integer";
+    auxiliary_typed.encoded_value = std::to_string(100 + value);
     api::EngineRowValue row;
     row.fields.push_back({"integer_value", std::move(typed)});
+    row.fields.push_back({"auxiliary_value", std::move(auxiliary_typed)});
     insert.input_rows.push_back(std::move(row));
   }
   insert.estimated_row_count = insert.input_rows.size();
@@ -572,6 +586,73 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed.server_cursor_uuid.empty() &&
                 object_backed.server_row_count == 3,
             "object-backed native SELECT did not complete the full live route");
+
+    auto projected = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
+    if (!projected.accepted) PrintMessages(projected.messages);
+    Require(projected.accepted &&
+                projected.server_operation_id == "query.execute" &&
+                projected.server_cursor_uuid.empty() &&
+                projected.server_row_count == 3 &&
+                projected.server_result_payload.find("integer_value") !=
+                    std::string::npos &&
+                projected.server_result_payload.find("auxiliary_value") ==
+                    std::string::npos,
+            "object-backed source projection did not publish only its bound "
+            "persisted column");
+
+    auto reordered_projection = parser.RunPipeline(
+        "SELECT auxiliary_value, integer_value FROM "
+        "qow_packet7.qow_packet7_relation LIMIT 1;",
+        true);
+    if (!reordered_projection.accepted) {
+      PrintMessages(reordered_projection.messages);
+    }
+    const auto auxiliary_position =
+        reordered_projection.server_result_payload.find("auxiliary_value");
+    const auto integer_position =
+        reordered_projection.server_result_payload.find("integer_value");
+    Require(reordered_projection.accepted &&
+                reordered_projection.server_operation_id == "query.execute" &&
+                reordered_projection.server_cursor_uuid.empty() &&
+                reordered_projection.server_row_count == 1 &&
+                auxiliary_position != std::string::npos &&
+                integer_position != std::string::npos &&
+                auxiliary_position < integer_position,
+            "object-backed reordered projection/LIMIT did not preserve its "
+            "selected result order");
+
+    auto projected_filter = parser.RunPipeline(
+        "SELECT integer_value FROM qow_packet7.qow_packet7_relation WHERE "
+        "integer_value >= 2 LIMIT 1;",
+        true);
+    if (!projected_filter.accepted) {
+      PrintMessages(projected_filter.messages);
+    }
+    Require(projected_filter.accepted &&
+                projected_filter.server_operation_id == "query.execute" &&
+                projected_filter.server_cursor_uuid.empty() &&
+                projected_filter.server_row_count == 1 &&
+                projected_filter.server_result_payload.find(
+                    "integer_value") != std::string::npos &&
+                projected_filter.server_result_payload.find(
+                    "auxiliary_value") == std::string::npos,
+            "object-backed projection/WHERE/LIMIT did not preserve its bound "
+            "source column");
+
+    auto missing_projection = parser.RunPipeline(
+        "SELECT missing_value FROM qow_packet7.qow_packet7_relation;", true);
+    Require(!missing_projection.accepted &&
+                missing_projection.server_operation_id.empty(),
+            "object-backed projection admitted an unresolved source column");
+
+    auto duplicate_projection = parser.RunPipeline(
+        "SELECT integer_value, integer_value FROM "
+        "qow_packet7.qow_packet7_relation;",
+        true);
+    Require(!duplicate_projection.accepted &&
+                duplicate_projection.server_operation_id.empty(),
+            "object-backed projection admitted a duplicate source column");
 
     struct FilterCase {
       std::string_view predicate;

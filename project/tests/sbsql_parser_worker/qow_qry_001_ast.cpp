@@ -422,6 +422,43 @@ bool ValidateCatalogFilterComposition() {
   return passed;
 }
 
+bool ValidateCatalogProjectionComposition() {
+  constexpr std::string_view sql =
+      "SELECT amount, order_id FROM app.orders WHERE amount >= 10 LIMIT 2;";
+  const auto native =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  bool passed = true;
+  passed &= Require(native.accepted(),
+                    "catalog projection composition was refused");
+  passed &= Require(native.root_relation_id == 3 &&
+                        native.relations.size() == 3 &&
+                        native.expressions.size() == 6,
+                    "catalog projection composition shape differs");
+  if (native.relations.size() == 3) {
+    passed &= Require(
+        native.relations[0].output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}) &&
+            native.relations[1].output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}) &&
+            native.relations[2].output_expression_ids ==
+                std::vector<std::uint32_t>({1, 2}),
+        "catalog projection identifiers did not cross the operator chain");
+  }
+  if (native.expressions.size() == 6) {
+    passed &= Require(
+        native.expressions[0].expression_kind ==
+                sbsql::NativeExpressionAstKind::kIdentifier &&
+            native.expressions[0].spelling == "amount" &&
+            native.expressions[1].expression_kind ==
+                sbsql::NativeExpressionAstKind::kIdentifier &&
+            native.expressions[1].spelling == "order_id" &&
+            native.expressions[4].child_expression_ids ==
+                std::vector<std::uint32_t>({3, 4}),
+        "catalog projection expression identities differ");
+  }
+  return passed;
+}
+
 bool ValidateCatalogRelationRefusal() {
   constexpr std::string_view malformed[] = {
       "SELECT * FROM;",
@@ -474,7 +511,7 @@ bool ValidateCatalogRelationRefusal() {
   }
 
   constexpr std::string_view out_of_slice_sql =
-      "SELECT name FROM app.orders;";
+      "SELECT name || 'suffix' FROM app.orders;";
   const auto out_of_slice = sbsql::ParseNativeRelationalAst(
       sbsql::BuildCst(out_of_slice_sql));
   passed &= Require(!out_of_slice.recognized() &&
@@ -482,7 +519,7 @@ bool ValidateCatalogRelationRefusal() {
                         out_of_slice.relations.empty() &&
                         out_of_slice.catalog_relation_sources.empty() &&
                         out_of_slice.expressions.empty(),
-                    "non-wildcard catalog projection entered the bounded route");
+                    "computed catalog projection entered the bounded route");
   return passed;
 }
 
@@ -514,6 +551,7 @@ int main() {
   passed &= ValidateCatalogRelationSourceFamily();
   passed &= ValidateCatalogLimitComposition();
   passed &= ValidateCatalogFilterComposition();
+  passed &= ValidateCatalogProjectionComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

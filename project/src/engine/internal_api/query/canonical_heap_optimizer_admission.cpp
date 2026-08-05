@@ -424,7 +424,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       persisted.descriptor_generation == 0 ||
       (persisted.descriptor_status != "production_descriptor" &&
        persisted.descriptor_status != "metadata_bridge_vetted_descriptor") ||
-      persisted.columns.size() != width) {
+      persisted.columns.size() < width) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-DESCRIPTOR-V1",
                   "current_persisted_local_heap_descriptor");
   }
@@ -464,7 +464,21 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
     }
     const auto& expression = *expression_it->second;
     const auto& descriptor = *descriptor_it->second;
-    const auto& column = persisted.columns[ordinal];
+    if (!expression.bound_name_uuid.has_value() ||
+        !IsCanonicalUuid(*expression.bound_name_uuid)) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "scan_column_uuid_binding");
+    }
+    const auto persisted_column = std::ranges::find_if(
+        persisted.columns, [&](const auto& candidate) {
+          return candidate.column_uuid.canonical ==
+                 *expression.bound_name_uuid;
+        });
+    if (persisted_column == persisted.columns.end()) {
+      return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-BINDING-V1",
+                    "scan_projected_column_resolution");
+    }
+    const auto& column = *persisted_column;
     const auto persisted_type_uuid = ExactDescriptorField(
         column.value_descriptor.encoded_descriptor, "type_uuid");
     const bool nullable =
@@ -479,8 +493,6 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         expression.expression_kind != RelationalExpressionKind::kIdentifier ||
         !expression.child_expression_ids.empty() ||
         expression.result_descriptor_id != output.descriptor_id ||
-        !expression.bound_name_uuid.has_value() ||
-        !IsCanonicalUuid(*expression.bound_name_uuid) ||
         expression.function_uuid.has_value() || expression.literal_kind.has_value() ||
         expression.operator_name.has_value() ||
         expression.literal_or_parameter_ref.has_value() ||
@@ -493,7 +505,6 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          !IsCanonicalUuid(*descriptor.collation_uuid)) ||
         (descriptor.timezone_profile_id.has_value() &&
          descriptor.timezone_profile_id->empty()) ||
-        column.ordinal != ordinal ||
         !IsCanonicalUuid(column.column_uuid.canonical) ||
         !column_uuids.insert(column.column_uuid.canonical).second ||
         column.column_uuid.canonical != *expression.bound_name_uuid ||
