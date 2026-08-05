@@ -507,6 +507,52 @@ sblr::SblrOperationEnvelope NodeDrivenExactSetProfileLimitEnvelope(
   return envelope;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-TYPE-RECONCILED-SET-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenTypeReconciledSetLimitEnvelope() {
+  auto envelope = UnionAllValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000c970";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "1") {
+      operand.value =
+          "019f0000-0000-7300-8000-00000000c971|"
+          "019f0000-0000-7400-8000-00000000c972|2|-|-|8|-|-";
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "2") {
+      operand.value =
+          "019f0000-0000-7300-8000-00000000c973|"
+          "019f0000-0000-7400-8000-00000000c974|2|-|-|64|-|-";
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "3") {
+      operand.value =
+          "019f0000-0000-7300-8000-00000000c975|"
+          "019f0000-0000-7400-8000-00000000c974|2|-|-|64|-|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value =
+          "7365742d6f7065726174696f6e2e756e696f6e2d616c6c2e"
+          "747970652d7265636f6e63696c65642e7631|-|-|-|-";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000c976|"
+       "019f0000-0000-7400-8000-00000000c974|1|-|-|64|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "7", "1|-|4|-|-|1|-|34"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|7|-|-|-"});
+  return envelope;
+}
+
 // RCP-046-TEST-LIVE-SET-OPERATION-BY-NAME-V1
 sblr::SblrOperationEnvelope SetOperationByNameValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -7371,6 +7417,70 @@ bool ValidateNodeDrivenExactSetProfilesCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-TYPE-RECONCILED-SET-COMPOSITION-V1
+bool ValidateNodeDrivenTypeReconciledSetCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto first = dispatch(NodeDrivenTypeReconciledSetLimitEnvelope());
+  const auto repeated =
+      dispatch(NodeDrivenTypeReconciledSetLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  const auto& rows = first.api_result.result_shape.rows;
+  bool values_match =
+      first.accepted && first.optimizer_admitted &&
+      first.optimizer_selected && first.physical_dag_published &&
+      first.physical_dag_executed && first.runtime_actuals_attached &&
+      first.canonical_result_published && first.api_result.ok &&
+      first.diagnostics.empty() && first.logical_node_count == 4 &&
+      first.physical_node_count == 4 &&
+      first.canonical_result_column_count == 1 &&
+      first.canonical_result_row_count == 4 && rows.size() == 4;
+  if (values_match) {
+    const std::array<std::string_view, 4> expected{"1", "2", "null", "2"};
+    for (std::size_t row = 0; row < expected.size(); ++row) {
+      const auto& value = rows[row].fields[0].second;
+      values_match &= value.descriptor.canonical_type_name == "int64" &&
+                      (expected[row] == "null"
+                           ? value.state == api::EngineValueState::sql_null
+                           : value.encoded_value == expected[row]);
+    }
+  }
+  bool passed = true;
+  passed &= Require(
+      values_match && repeated.api_result.ok &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven type-reconciled set composition did not losslessly cast "
+      "int8 to int64 before LIMIT or changed deterministic replay");
+
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 18;
+  const auto exhausted = dispatch(
+      NodeDrivenTypeReconciledSetLimitEnvelope(),
+      std::move(bounded_context));
+  passed &= Require(
+      !exhausted.optimizer_selected &&
+          !exhausted.physical_dag_published &&
+          !exhausted.physical_dag_executed &&
+          !exhausted.runtime_actuals_attached &&
+          !exhausted.canonical_result_published &&
+          !exhausted.api_result.ok && exhausted.physical_node_count == 0 &&
+          exhausted.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(
+              exhausted,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "exhausted type-reconciled set composition published partial "
+      "evidence");
+  return passed;
+}
+
 // RCP-049-TEST-NODE-DRIVEN-BY-NAME-SET-COMPOSITION-V1
 bool ValidateNodeDrivenByNameSetCompositionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
@@ -12969,6 +13079,7 @@ int main() {
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
                       ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateNodeDrivenExactSetProfilesCompositionSpine() &&
+                      ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenNestedExactSetCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&

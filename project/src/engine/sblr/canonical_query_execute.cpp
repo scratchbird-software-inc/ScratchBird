@@ -334,7 +334,7 @@ struct PreparedLiveSetNode {
   std::size_t maximum_equality_comparison_count{0};
 };
 
-struct MaterializedExactSetOperation {
+struct MaterializedSetOperationPlanningState {
   MaterializedValues values;
   std::uint64_t output_bound{0};
   std::uint64_t comparison_bound{0};
@@ -346,17 +346,20 @@ bool CheckedAdd(std::uint64_t left, std::uint64_t right,
 bool CheckedMultiply(std::uint64_t left, std::uint64_t right,
                      std::uint64_t* result);
 
-MaterializedExactSetOperation MaterializeExactSetOperation(
+MaterializedSetOperationPlanningState MaterializeSetOperationPlanningState(
     const PreparedSetOperationRoot& prepared,
     const LiveSetOperationProfile& profile,
     const MaterializedValues& left,
     const MaterializedValues& right) {
-  MaterializedExactSetOperation result;
+  MaterializedSetOperationPlanningState result;
   if (!prepared.ok || !left.ok || !right.ok ||
       (profile.alignment != exec::CanonicalSetOperationAlignment::kOrdinal &&
        profile.alignment !=
            exec::CanonicalSetOperationAlignment::kByName) ||
-      profile.type_profile != exec::CanonicalSetOperationTypeProfile::kExact ||
+      (profile.type_profile !=
+           exec::CanonicalSetOperationTypeProfile::kExact &&
+       profile.type_profile !=
+           exec::CanonicalSetOperationTypeProfile::kLosslessImplicit) ||
       profile.equality_profile !=
           exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
       !CheckedAdd(left.batch.rows.size(), right.batch.rows.size(),
@@ -364,7 +367,7 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
       !CheckedMultiply(result.output_bound, result.output_bound,
                        &result.comparison_bound)) {
     result.values.detail =
-        "exact set-operation materialization contract or bound is invalid";
+        "set-operation planning-state contract or bound is invalid";
     return result;
   }
   result.work_bound =
@@ -390,6 +393,7 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
     }
     return rows;
   };
+  exec::DescriptorBatch reconciled_left = left.batch;
   exec::DescriptorBatch aligned_right = right.batch;
   if (profile.alignment ==
       exec::CanonicalSetOperationAlignment::kByName) {
@@ -402,7 +406,7 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
                .second) {
         result.values = {};
         result.values.detail =
-            "exact BY NAME set-operation right names are not unique";
+            "BY NAME set-operation right names are not unique";
         return result;
       }
     }
@@ -413,7 +417,7 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
       if (found == right_ordinals.end()) {
         result.values = {};
         result.values.detail =
-            "exact BY NAME set-operation column sets differ";
+            "BY NAME set-operation column sets differ";
         return result;
       }
       aligned_right.columns.push_back(right.batch.columns[found->second]);
@@ -423,7 +427,84 @@ MaterializedExactSetOperation MaterializeExactSetOperation(
       }
     }
   }
-  const auto left_rows = retagged_rows(left.batch);
+  if (profile.type_profile ==
+      exec::CanonicalSetOperationTypeProfile::kLosslessImplicit) {
+    std::string conversion_detail;
+    const auto reconcile_batch = [&](exec::DescriptorBatch* batch) {
+      if (batch == nullptr ||
+          batch->columns.size() != prepared.result_columns.size()) {
+        conversion_detail =
+            "type-reconciled set-operation arity changed";
+        return false;
+      }
+      for (std::size_t column = 0; column < batch->columns.size(); ++column) {
+        const auto source_type = dt::CanonicalTypeIdFromStableName(
+            batch->columns[column].descriptor.canonical_type_name);
+        const auto target_type = dt::CanonicalTypeIdFromStableName(
+            prepared.result_columns[column].descriptor.canonical_type_name);
+        const auto category =
+            dt::ClassifyDatatypeCast(source_type, target_type);
+        if (source_type == dt::CanonicalTypeId::unknown ||
+            target_type == dt::CanonicalTypeId::unknown ||
+            (category != dt::DatatypeCastCategory::identity &&
+             category !=
+                 dt::DatatypeCastCategory::lossless_implicit)) {
+          conversion_detail =
+              "set-operation planning cast is not lossless implicit";
+          return false;
+        }
+        for (auto& row : batch->rows) {
+          dt::DatatypeCastRequest conversion;
+          conversion.value.type_id = source_type;
+          conversion.value.encoded_value =
+              row.values[column].encoded_value;
+          conversion.value.is_null =
+              row.values[column].state ==
+              api::EngineValueState::sql_null;
+          conversion.target_type_id = target_type;
+          const auto cast = dt::CastDatatypeValue(conversion);
+          if (!cast.ok()) {
+            conversion_detail =
+                cast.diagnostic.diagnostic_code.empty()
+                    ? "set-operation planning lossless cast refused"
+                    : cast.diagnostic.diagnostic_code;
+            return false;
+          }
+          row.values[column].descriptor =
+              prepared.result_columns[column].descriptor;
+          row.values[column].encoded_value = cast.value.encoded_value;
+          row.values[column].binary_value.clear();
+          row.values[column].is_null = cast.value.is_null;
+          row.values[column].state =
+              cast.value.is_null ? api::EngineValueState::sql_null
+                                 : api::EngineValueState::value;
+        }
+        batch->columns[column].descriptor =
+            prepared.result_columns[column].descriptor;
+        batch->columns[column].nullable =
+            prepared.result_columns[column].nullable;
+      }
+      return true;
+    };
+    if (!reconcile_batch(&reconciled_left) ||
+        !reconcile_batch(&aligned_right)) {
+      result.values = {};
+      result.values.detail = std::move(conversion_detail);
+      return result;
+    }
+    std::uint64_t conversion_count = 0;
+    if (!CheckedMultiply(result.output_bound,
+                         prepared.result_columns.size(),
+                         &conversion_count) ||
+        !CheckedAdd(result.work_bound, conversion_count,
+                    &result.work_bound)) {
+      result.values = {};
+      result.values.detail =
+          "set-operation conversion work bound overflowed";
+      return result;
+    }
+  }
+  const auto left_rows = retagged_rows(reconciled_left);
   const auto right_rows = retagged_rows(aligned_right);
   using SetRowKey = std::vector<std::string>;
   const auto row_key = [](const exec::DescriptorTuple& row) {
@@ -5950,9 +6031,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // The compiler admits a descriptor-valid unary tail containing at most one
 // FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
 // canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
-// typed ordinal/BY NAME quantified set-operation subtree. Every node still
-// executes through the ordinary optimizer-published ABI-v2 DAG and its
-// canonical executor.
+// or losslessly reconciled ordinal/BY NAME quantified set-operation subtree.
+// Every node still executes through the ordinary optimizer-published ABI-v2
+// DAG and its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -6101,8 +6182,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                  exec::CanonicalSetOperationAlignment::kOrdinal &&
              profile.alignment !=
                  exec::CanonicalSetOperationAlignment::kByName) ||
-            profile.type_profile !=
-                exec::CanonicalSetOperationTypeProfile::kExact ||
+            (profile.type_profile !=
+                 exec::CanonicalSetOperationTypeProfile::kExact &&
+             profile.type_profile !=
+                 exec::CanonicalSetOperationTypeProfile::kLosslessImplicit) ||
             profile.equality_profile !=
                 exec::CanonicalSetOperationEqualityProfile::kExactTyped ||
             node->input_logical_node_ids.size() != 2 ||
@@ -6599,7 +6682,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         if (!prepared.ok) {
           return refuse(std::string(kPayloadDiagnostic), prepared.detail);
         }
-        auto materialized = MaterializeExactSetOperation(
+        auto materialized = MaterializeSetOperationPlanningState(
             prepared, set_profiles.at(node_id), left->second, right->second);
         if (!materialized.values.ok ||
             materialized.output_bound >
