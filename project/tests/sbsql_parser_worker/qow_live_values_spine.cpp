@@ -2068,6 +2068,59 @@ sblr::SblrOperationEnvelope NodeDrivenCorrelationLimitEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-RECURSIVE-CTE-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenRecursiveCteLimitEnvelope(
+    const bool distinct) {
+  const std::string semantic_variant =
+      distinct
+          ? "cte.recursive-union-distinct-int64-increment.v1"
+          : "cte.recursive-union-all-int64-increment.v1";
+  auto envelope = sblr::MakeSblrEnvelope(
+      "query.execute", "SBLR_QUERY_EXECUTE",
+      distinct ? "qow.live.cte.recursive-union-distinct"
+               : "qow.live.cte.recursive-union-all");
+  envelope.result_shape = "query_execute_result";
+  envelope.requires_transaction_context = true;
+  envelope.operands = {
+      {"uint16", "relational_wire_version", "2"},
+      {"uuid", "relational_bound_sblr_tree_uuid",
+       distinct ? "019f0000-0000-7000-8000-00000000cfc1"
+                : "019f0000-0000-7000-8000-00000000cfc0"},
+      {"uuid", "relational_catalog_epoch_uuid", std::string(kCatalogEpochUuid)},
+      {"uuid", "relational_security_context_uuid",
+       std::string(kSecurityContextUuid)},
+      {"uint32", "relational_root_node_id", "4"},
+      {"relational_descriptor_v1", "1",
+       "019f0000-0000-7300-8000-00000000cfc2|"
+       "019f0000-0000-7400-8000-00000000cfc3|2|-|-|-|-|-"},
+      {"relational_expression_v1", "1", "1|-|1|-|-|1|-|31"},
+      {"relational_expression_v1", "2", "1|-|1|-|-|1|-|3031"},
+      {"relational_expression_v1", "3", "1|-|1|-|-|1|-|34"},
+      {"relational_expression_v1", "4", "1|-|1|-|-|1|-|3130"},
+      {"relational_output_v1", "1", "1|1|1|1|0|6e"},
+      {"relational_values_row_v1", "1", "1"},
+      {"relational_node_v1", "1",
+       distinct ? "13|0|-|1|1,2" : "13|0|-|1|1"},
+      {"relational_node_v1", "2", "11|0|-|1|-"},
+      {"relational_node_v1", "3", "12|0|1,2|1|-"},
+      {"relational_node_v1", "4", "7|0|3|1|-"},
+      {"relational_node_binding_v1", "1",
+       std::string("76616c7565732e6c69746572616c2d7461626c652e7631|") +
+           (distinct ? "1,2|-|-|-" : "1|-|-|-")},
+      {"relational_node_binding_v1", "2",
+       EncodeHex("cte.recursive-term-int64-increment.v1") + "|-|-|-|-"},
+      {"relational_node_binding_v1", "3",
+       EncodeHex(semantic_variant) + "|3|-|-|-"},
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|4|-|-|-"},
+  };
+  if (distinct) {
+    envelope.operands.push_back(
+        {"relational_values_row_v1", "2", "2"});
+  }
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -15086,6 +15139,91 @@ bool ValidateNodeDrivenCorrelatedLateralCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-RECURSIVE-CTE-COMPOSITION-V1
+bool ValidateNodeDrivenRecursiveCteCompositionSpine() {
+  struct RecursiveCase {
+    bool distinct;
+    std::uint64_t exhausted_candidate_bound;
+  };
+  constexpr std::array<RecursiveCase, 2> cases{{
+      {false, 9},
+      {true, 14},
+  }};
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto no_publication = [](const auto& result) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(
+               result, "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1");
+  };
+
+  bool passed = true;
+  std::unordered_set<std::string> selected_plans;
+  for (const auto& proof : cases) {
+    const auto envelope =
+        NodeDrivenRecursiveCteLimitEnvelope(proof.distinct);
+    const auto first = dispatch(envelope);
+    const auto replay = dispatch(envelope);
+    auto bounded_context = Context();
+    bounded_context.optimizer_maximum_candidate_count =
+        proof.exhausted_candidate_bound;
+    const auto exhausted = dispatch(envelope, std::move(bounded_context));
+    bool values_match = first.api_result.ok &&
+                        first.api_result.result_shape.rows.size() == 4;
+    if (values_match) {
+      for (std::size_t row = 0; row < 4; ++row) {
+        const auto& value =
+            first.api_result.result_shape.rows[row].fields[0].second;
+        values_match = values_match && !value.is_null &&
+                       value.state == api::EngineValueState::value &&
+                       value.encoded_value == std::to_string(row + 1);
+      }
+    }
+    const bool case_passed =
+        first.accepted && first.optimizer_admitted &&
+        first.optimizer_selected && first.physical_dag_published &&
+        first.physical_dag_executed && first.runtime_actuals_attached &&
+        first.canonical_result_published && first.api_result.ok &&
+        first.logical_node_count == 4 && first.physical_node_count == 4 &&
+        first.canonical_result_column_count == 1 &&
+        first.canonical_result_row_count == 4 && values_match &&
+        replay.api_result.ok &&
+        replay.selected_plan_uuid == first.selected_plan_uuid &&
+        replay.canonical_result_bytes == first.canonical_result_bytes &&
+        selected_plans.insert(first.selected_plan_uuid).second &&
+        no_publication(exhausted);
+    passed &= Require(
+        case_passed,
+        proof.distinct
+            ? "recursive CTE UNION DISTINCT composition was not canonical"
+            : "recursive CTE UNION ALL composition was not canonical");
+    if (!case_passed) {
+      for (const auto& diagnostic : first.api_result.diagnostics) {
+        std::cerr << (proof.distinct ? "recursive distinct" :
+                                       "recursive all")
+                  << ": " << diagnostic.code << ": "
+                  << diagnostic.detail << '\n';
+      }
+      for (const auto& diagnostic : exhausted.api_result.diagnostics) {
+        std::cerr << (proof.distinct ? "recursive distinct exhausted" :
+                                       "recursive all exhausted")
+                  << ": " << diagnostic.code << ": "
+                  << diagnostic.detail << '\n';
+      }
+    }
+  }
+  return passed;
+}
+
 bool ValidateDistinctSortLimitValuesSpine() {
   bool passed = true;
   std::string limit_selected_plan;
@@ -15590,6 +15728,7 @@ int main() {
                       ValidateNodeDrivenScalarRowSubqueryCompositionSpine() &&
                       ValidateNodeDrivenPredicateSubqueryCompositionSpine() &&
                       ValidateNodeDrivenCorrelatedLateralCompositionSpine() &&
+                      ValidateNodeDrivenRecursiveCteCompositionSpine() &&
                       ValidateNodeDrivenTypeReconciledSetCompositionSpine() &&
                       ValidateNodeDrivenByNameSetCompositionSpine() &&
                       ValidateNodeDrivenCountStarCompositionSpine() &&

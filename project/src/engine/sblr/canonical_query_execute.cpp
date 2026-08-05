@@ -873,6 +873,49 @@ LiveLateralSubqueryProfile MatchLiveLateralSubqueryProfile(
   return profile;
 }
 
+struct LiveRecursiveCteProfile {
+  bool matched{false};
+  exec::CanonicalRecursiveCteUnionMode union_mode =
+      exec::CanonicalRecursiveCteUnionMode::kAll;
+  bool emit_current_duplicate{false};
+  std::string implementation_id;
+  std::string transformation_id;
+};
+
+LiveRecursiveCteProfile MatchLiveRecursiveCteProfile(
+    const std::string_view semantic_variant_id) {
+  LiveRecursiveCteProfile profile;
+  if (semantic_variant_id ==
+      "cte.recursive-union-all-int64-increment.v1") {
+    profile.matched = true;
+    profile.union_mode = exec::CanonicalRecursiveCteUnionMode::kAll;
+    profile.implementation_id = "cte.recursive.union-all.typed.v1";
+  } else if (semantic_variant_id ==
+             "cte.recursive-union-distinct-int64-increment.v1") {
+    profile.matched = true;
+    profile.union_mode = exec::CanonicalRecursiveCteUnionMode::kDistinct;
+    profile.emit_current_duplicate = true;
+    profile.implementation_id =
+        "cte.recursive.union-distinct-int64.typed.v1";
+  }
+  if (profile.matched) {
+    profile.transformation_id =
+        "canonical." + std::string(semantic_variant_id);
+  }
+  return profile;
+}
+
+struct PreparedRecursiveCteRoot {
+  LiveRecursiveCteProfile profile;
+  std::vector<exec::ExecutorColumnDescriptor> anchor_columns;
+  std::int64_t upper_bound{0};
+  std::size_t anchor_row_count{0};
+  std::size_t maximum_iteration_count{0};
+  std::size_t maximum_working_row_count{0};
+  std::size_t maximum_result_row_count{0};
+  std::size_t rows_examined{0};
+};
+
 struct PreparedGlobalAggregateRoot {
   bool ok{false};
   bool count_star{false};
@@ -7582,6 +7625,201 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveRecursiveCteTermRegistration(
+    std::vector<exec::ExecutorColumnDescriptor> columns,
+    std::string capability_uuid,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kCte;
+  registration.implementation_id =
+      "cte.recursive-term.int64-increment.typed.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [columns = std::move(columns),
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (!inputs.empty() || columns.size() !=
+                                   node.output_descriptor_ids.size()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "recursive CTE term binding did not preserve its schema";
+          return step;
+        }
+        exec::DescriptorBatch output;
+        output.columns = columns;
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            output, node.output_descriptor_ids);
+        const auto authority =
+            BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        const auto revalidated =
+            exec::RevalidateCanonicalExecutionMgaAuthority(authority, dag);
+        if (!validated.ok || !revalidated.ok) {
+          step.diagnostic = validated.ok ? revalidated : validated;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.materialized_output_batch = std::move(output);
+        step.mga_statement_context = authority.statement_context;
+        return step;
+      };
+  return registration;
+}
+
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveRecursiveCteRegistration(
+    PreparedRecursiveCteRoot prepared,
+    std::string capability_uuid,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kRecursiveCte;
+  registration.implementation_id = prepared.profile.implementation_id;
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared = std::move(prepared),
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 2 ||
+            !inputs[0].materialized_output_batch.has_value() ||
+            !inputs[1].materialized_output_batch.has_value() ||
+            inputs[0].materialized_output_batch->rows.size() !=
+                prepared.anchor_row_count ||
+            !inputs[1].materialized_output_batch->rows.empty() ||
+            inputs[0].output_descriptor_ids !=
+                inputs[1].output_descriptor_ids ||
+            node.output_descriptor_ids != inputs[0].output_descriptor_ids) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+          step.diagnostic.detail =
+              "recursive CTE did not receive its exact anchor and term "
+              "bindings";
+          return step;
+        }
+
+        exec::TypedPhysicalNodeDag operator_dag;
+        std::string detail;
+        if (!BuildOperatorLocalPhysicalDag(
+                dag, node.physical_node_id, &operator_dag, &detail)) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+          step.diagnostic.detail = std::move(detail);
+          return step;
+        }
+
+        exec::CanonicalRecursiveCteUnionRequest recursive;
+        recursive.union_mode = prepared.profile.union_mode;
+        auto& working = recursive.working_request;
+        working.physical_dag = std::move(operator_dag);
+        working.selected_physical_node_id = node.physical_node_id;
+        working.anchor_batch = *inputs[0].materialized_output_batch;
+        working.maximum_iteration_count =
+            std::max<std::size_t>(1, prepared.maximum_iteration_count);
+        working.maximum_working_row_count =
+            std::max<std::size_t>(1, prepared.maximum_working_row_count);
+        working.maximum_result_row_count =
+            std::max<std::size_t>(1, prepared.maximum_result_row_count);
+        working.recursive_step =
+            [upper_bound = prepared.upper_bound,
+             emit_current_duplicate =
+                 prepared.profile.emit_current_duplicate](
+                const exec::DescriptorBatch& current,
+                const std::size_t) {
+              exec::DescriptorBatch next;
+              next.columns = current.columns;
+              for (const auto& row : current.rows) {
+                if (row.values.size() != 1) {
+                  throw std::runtime_error(
+                      "recursive int64 term received a ragged row");
+                }
+                const auto& value = row.values.front();
+                if (emit_current_duplicate) {
+                  next.rows.push_back(row);
+                }
+                if (value.state == api::EngineValueState::sql_null ||
+                    value.is_null) {
+                  continue;
+                }
+                const auto decoded = exec::DecodeInt64Value(value);
+                if (!decoded.ok()) {
+                  throw std::runtime_error(
+                      decoded.diagnostic.diagnostic_code + ":" +
+                      decoded.diagnostic.detail);
+                }
+                if (decoded.value >= upper_bound) continue;
+                api::EngineTypedValue incremented;
+                incremented.descriptor = value.descriptor;
+                incremented.encoded_value =
+                    std::to_string(decoded.value + 1);
+                incremented.state = api::EngineValueState::value;
+                next.rows.push_back({{std::move(incremented)}});
+              }
+              return next;
+            };
+        working.mga_authority = BuildCanonicalExecutionMgaAuthority(
+            mga_context, working.physical_dag);
+
+        const auto result = exec::ExecuteCanonicalRecursiveCteUnion(recursive);
+        if (!result.working_result.diagnostic.ok) {
+          step.diagnostic = result.working_result.diagnostic;
+          return step;
+        }
+        const auto validated = exec::ValidateCanonicalDescriptorBatch(
+            result.working_result.output_batch,
+            node.output_descriptor_ids);
+        if (!validated.ok ||
+            result.working_result.output_batch.rows.size() >
+                prepared.maximum_result_row_count) {
+          step.diagnostic = validated;
+          if (validated.ok) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-RECURSIVE-CTE-INPUT-V1";
+            step.diagnostic.detail =
+                "recursive CTE result exceeded its planned bound";
+          }
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = prepared.anchor_row_count;
+        step.rows_examined = prepared.rows_examined;
+        step.output_row_count =
+            result.working_result.output_batch.rows.size();
+        step.materialized_output_batch =
+            result.working_result.output_batch;
+        step.mga_statement_context = result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 // QOW-SOURCE-RCP-049-NODE-DRIVEN-COMPOSITION-COMPILER-V1
 // Compile a connected object-free relational graph by node contract, rather
 // than by a whole-query shape name.  Existing exact profiles remain preferred
@@ -7615,6 +7853,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
   LiveLateralSubqueryProfile lateral_subquery_profile;
   bool correlated_subquery_base = false;
+  LiveRecursiveCteProfile recursive_cte_profile;
+  const plan::CanonicalLogicalRelationalNode* recursive_anchor_node = nullptr;
+  const plan::CanonicalLogicalRelationalNode* recursive_term_node = nullptr;
+  bool recursive_cte_base = false;
   std::string join_component;
   std::string join_operation_name;
   std::unordered_map<
@@ -7763,6 +8005,53 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       join_right_node = &*inner;
       correlated_subquery_base = true;
       break;
+    }
+    if (current->node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte) {
+      recursive_cte_profile =
+          MatchLiveRecursiveCteProfile(current->semantic_variant_id);
+      if (recursive_cte_profile.matched) {
+        if (current->input_logical_node_ids.size() != 2 ||
+            current->input_logical_node_ids[0] ==
+                current->input_logical_node_ids[1] ||
+            current->bound_expression_ids.size() != 1 ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        const auto anchor =
+            find_node(current->input_logical_node_ids[0]);
+        const auto term = find_node(current->input_logical_node_ids[1]);
+        if (anchor == graph.nodes.end() || term == graph.nodes.end() ||
+            anchor->node_kind !=
+                plan::CanonicalLogicalRelationalNodeKind::kValues ||
+            anchor->semantic_variant_id != "values.literal-table.v1" ||
+            !anchor->input_logical_node_ids.empty() ||
+            term->node_kind !=
+                plan::CanonicalLogicalRelationalNodeKind::kCte ||
+            term->semantic_variant_id !=
+                "cte.recursive-term-int64-increment.v1" ||
+            !term->input_logical_node_ids.empty() ||
+            !term->bound_expression_ids.empty() ||
+            anchor->output_descriptor_ids !=
+                term->output_descriptor_ids ||
+            current->output_descriptor_ids !=
+                anchor->output_descriptor_ids ||
+            !anchor->required_object_uuids.empty() ||
+            !term->required_object_uuids.empty() ||
+            !anchor->required_property_uuids.empty() ||
+            !term->required_property_uuids.empty() ||
+            !anchor->delivered_property_uuids.empty() ||
+            !term->delivered_property_uuids.empty() ||
+            !visited.insert(anchor->logical_node_id).second ||
+            !visited.insert(term->logical_node_id).second) {
+          return result;
+        }
+        recursive_anchor_node = &*anchor;
+        recursive_term_node = &*term;
+        recursive_cte_base = true;
+        break;
+      }
     }
     if (current->node_kind ==
         plan::CanonicalLogicalRelationalNodeKind::kSetOperation) {
@@ -7977,6 +8266,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
            plan::CanonicalLogicalRelationalNodeKind::kJoin &&
        reverse_chain.back()->node_kind !=
            plan::CanonicalLogicalRelationalNodeKind::kSetOperation &&
+       !(recursive_cte_base &&
+         reverse_chain.back()->node_kind ==
+             plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte) &&
        !(correlated_subquery_base &&
          reverse_chain.back()->node_kind ==
              plan::CanonicalLogicalRelationalNodeKind::kSubquery)) ||
@@ -8062,6 +8354,7 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   bool prepared_nonrecursive_cte = false;
   std::size_t nonrecursive_cte_input_row_count = 0;
   std::string nonrecursive_cte_implementation_id;
+  std::optional<PreparedRecursiveCteRoot> prepared_recursive_cte;
   std::optional<PreparedLimitRoot> prepared_limit;
   std::size_t limit_input_row_count = 0;
   std::uint64_t row_limit = 0;
@@ -8104,6 +8397,10 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       identity_scope, "composition.subquery.capability");
   const auto cte_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.cte.capability");
+  const auto recursive_term_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "composition.recursive-cte-term.capability");
+  const auto recursive_root_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "composition.recursive-cte-root.capability");
   const auto limit_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.limit.capability");
 
@@ -8252,7 +8549,225 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         planning.values.ok = true;
         return planning;
       };
-  if (reverse_chain.front()->node_kind ==
+  if (recursive_cte_base &&
+      reverse_chain.front()->node_kind ==
+          plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte) {
+    auto anchor = MaterializeValues(
+        request.relational_dag, *recursive_anchor_node,
+        request.expression_services);
+    if (!anchor.ok || anchor.batch.columns.size() != 1 ||
+        anchor.batch.columns.front().descriptor.canonical_type_name !=
+            "int64") {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          anchor.ok
+              ? "recursive CTE anchor is not one typed int64 column"
+              : "recursive CTE anchor: " + anchor.detail);
+    }
+    std::uint64_t upper_bound = 0;
+    std::string bound_detail;
+    if (!EvaluateNonNegativeRowBound(
+            &expression_runtime,
+            reverse_chain.front()->bound_expression_ids.front(),
+            &upper_bound, &bound_detail) ||
+        upper_bound > static_cast<std::uint64_t>(
+                          std::numeric_limits<std::int64_t>::max())) {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          "recursive CTE upper bound: " + bound_detail);
+    }
+
+    const auto row_key = [](const exec::DescriptorTuple& row,
+                            std::string* key,
+                            std::string* detail) {
+      if (row.values.size() != 1) {
+        *detail = "recursive CTE row is ragged";
+        return false;
+      }
+      const auto& value = row.values.front();
+      if (value.state == api::EngineValueState::sql_null ||
+          value.is_null) {
+        *key = "null";
+        return true;
+      }
+      const auto decoded = exec::DecodeInt64Value(value);
+      if (!decoded.ok()) {
+        *detail = decoded.diagnostic.diagnostic_code + ":" +
+                  decoded.diagnostic.detail;
+        return false;
+      }
+      *key = "int64:" + std::to_string(decoded.value);
+      return true;
+    };
+
+    exec::DescriptorBatch accumulated;
+    accumulated.columns = anchor.batch.columns;
+    exec::DescriptorBatch working;
+    working.columns = anchor.batch.columns;
+    std::unordered_set<std::string> seen;
+    std::string recursion_detail;
+    for (const auto& row : anchor.batch.rows) {
+      if (recursive_cte_profile.union_mode ==
+          exec::CanonicalRecursiveCteUnionMode::kDistinct) {
+        std::string key;
+        if (!row_key(row, &key, &recursion_detail)) {
+          return refuse(std::string(kPayloadDiagnostic), recursion_detail);
+        }
+        if (!seen.insert(std::move(key)).second) continue;
+      }
+      accumulated.rows.push_back(row);
+      working.rows.push_back(row);
+    }
+
+    std::size_t iteration_count = 0;
+    std::size_t maximum_working = working.rows.size();
+    std::uint64_t recursive_work = 0;
+    while (!working.rows.empty()) {
+      if (iteration_count ==
+          request.optimizer_request.resource.maximum_candidate_count) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+            "recursive CTE did not converge within its admitted bound");
+      }
+      ++iteration_count;
+      exec::DescriptorBatch generated;
+      generated.columns = working.columns;
+      for (const auto& row : working.rows) {
+        const auto& value = row.values.front();
+        if (recursive_cte_profile.emit_current_duplicate) {
+          generated.rows.push_back(row);
+        }
+        if (value.state == api::EngineValueState::sql_null ||
+            value.is_null) {
+          continue;
+        }
+        const auto decoded = exec::DecodeInt64Value(value);
+        if (!decoded.ok()) {
+          return refuse(
+              std::string(kPayloadDiagnostic),
+              decoded.diagnostic.diagnostic_code + ":" +
+                  decoded.diagnostic.detail);
+        }
+        if (decoded.value >= static_cast<std::int64_t>(upper_bound)) {
+          continue;
+        }
+        api::EngineTypedValue incremented;
+        incremented.descriptor = value.descriptor;
+        incremented.encoded_value =
+            std::to_string(decoded.value + 1);
+        incremented.state = api::EngineValueState::value;
+        generated.rows.push_back({{std::move(incremented)}});
+      }
+      if (!CheckedAdd(recursive_work, working.rows.size(),
+                      &recursive_work) ||
+          !CheckedAdd(recursive_work, generated.rows.size(),
+                      &recursive_work)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+            "recursive CTE work overflowed");
+      }
+      if (recursive_cte_profile.union_mode ==
+          exec::CanonicalRecursiveCteUnionMode::kDistinct) {
+        exec::DescriptorBatch distinct;
+        distinct.columns = generated.columns;
+        for (const auto& row : generated.rows) {
+          std::string key;
+          if (!row_key(row, &key, &recursion_detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          recursion_detail);
+          }
+          if (seen.insert(std::move(key)).second) {
+            distinct.rows.push_back(row);
+          }
+        }
+        generated = std::move(distinct);
+      }
+      if (generated.rows.size() >
+          request.optimizer_request.resource.maximum_candidate_count -
+              std::min<std::size_t>(
+                  accumulated.rows.size(),
+                  request.optimizer_request.resource
+                      .maximum_candidate_count)) {
+        return refuse(
+            "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+            "recursive CTE result exceeded its admitted bound");
+      }
+      accumulated.rows.insert(accumulated.rows.end(),
+                              generated.rows.begin(),
+                              generated.rows.end());
+      maximum_working =
+          std::max(maximum_working, generated.rows.size());
+      working = std::move(generated);
+    }
+    const auto recursive_validated =
+        exec::ValidateCanonicalDescriptorBatch(
+            accumulated,
+            reverse_chain.front()->output_descriptor_ids);
+    if (!recursive_validated.ok) {
+      return refuse(std::string(kPayloadDiagnostic),
+                    "recursive CTE result: " +
+                        recursive_validated.detail);
+    }
+
+    std::uint64_t anchor_memory = 1;
+    std::uint64_t result_memory = 1;
+    std::uint64_t recursive_memory = 1;
+    if (!AddBatchMemoryBytes(anchor.batch, &anchor_memory) ||
+        !AddBatchMemoryBytes(accumulated, &result_memory) ||
+        !CheckedAdd(anchor_memory, result_memory, &recursive_memory) ||
+        recursive_memory >
+            request.optimizer_request.resource.memory_budget_bytes ||
+        !CheckedAdd(total_work, anchor.batch.rows.size(), &total_work) ||
+        !CheckedAdd(total_work, 1, &total_work) ||
+        !CheckedAdd(total_work, std::max<std::uint64_t>(1, recursive_work),
+                    &total_work) ||
+        total_work >
+            request.optimizer_request.resource.maximum_candidate_count) {
+      return refuse(
+          "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+          "recursive CTE exceeds an admitted resource bound");
+    }
+
+    PreparedRecursiveCteRoot prepared;
+    prepared.profile = recursive_cte_profile;
+    prepared.anchor_columns = anchor.batch.columns;
+    prepared.upper_bound = static_cast<std::int64_t>(upper_bound);
+    prepared.anchor_row_count = anchor.batch.rows.size();
+    prepared.maximum_iteration_count =
+        std::max<std::size_t>(1, iteration_count);
+    prepared.maximum_working_row_count =
+        std::max<std::size_t>(1, maximum_working);
+    prepared.maximum_result_row_count =
+        std::max<std::size_t>(1, accumulated.rows.size());
+    prepared.rows_examined = static_cast<std::size_t>(recursive_work);
+    prepared_recursive_cte = prepared;
+
+    profiles.push_back(
+        {recursive_anchor_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", anchor.batch.rows.size(),
+         anchor_memory, 0, 0});
+    profiles.push_back(
+        {recursive_term_node->logical_node_id,
+         "cte.recursive-term.int64-increment.typed.v1",
+         recursive_term_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kCte,
+         exec::PhysicalNodeKind::kCte,
+         "canonical.cte.recursive-term-int64-increment.v1", 0, 1, 0, 0});
+    profiles.push_back(
+        {reverse_chain.front()->logical_node_id,
+         recursive_cte_profile.implementation_id,
+         recursive_root_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kRecursiveCte,
+         exec::PhysicalNodeKind::kRecursiveCte,
+         recursive_cte_profile.transformation_id,
+         accumulated.rows.size(), recursive_memory, 2, 2});
+    state.ok = true;
+    state.batch = std::move(accumulated);
+    state.result_bindings = anchor.result_bindings;
+  } else if (reverse_chain.front()->node_kind ==
       plan::CanonicalLogicalRelationalNodeKind::kValues) {
     state = MaterializeValues(request.relational_dag,
                               *reverse_chain.front(),
@@ -11116,6 +11631,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         values_batches.emplace(node_id, std::move(materialized.batch));
       }
     }
+  } else if (recursive_cte_base) {
+    auto anchor = MaterializeValues(
+        request.relational_dag, *recursive_anchor_node,
+        request.expression_services);
+    if (!anchor.ok) {
+      return refuse(std::string(kPayloadDiagnostic),
+                    "recursive CTE anchor replay: " + anchor.detail);
+    }
+    values_batches.emplace(recursive_anchor_node->logical_node_id,
+                           std::move(anchor.batch));
   } else {
     auto values = MaterializeValues(request.relational_dag,
                                     *reverse_chain.front(),
@@ -11263,6 +11788,16 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         MakeLiveNonrecursiveCteRegistration(
             nonrecursive_cte_implementation_id, cte_capability_uuid,
             nonrecursive_cte_input_row_count, request.context));
+  }
+  if (prepared_recursive_cte.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveRecursiveCteTermRegistration(
+            prepared_recursive_cte->anchor_columns,
+            recursive_term_capability_uuid, request.context));
+    execution_request.available_executors.push_back(
+        MakeLiveRecursiveCteRegistration(
+            std::move(*prepared_recursive_cte),
+            recursive_root_capability_uuid, request.context));
   }
   if (prepared_limit.has_value()) {
     execution_request.available_executors.push_back(
