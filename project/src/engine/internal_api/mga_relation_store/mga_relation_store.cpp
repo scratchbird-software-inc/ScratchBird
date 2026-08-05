@@ -11028,8 +11028,36 @@ CanonicalHeapRelationAcquisitionResult ExecuteCanonicalHeapRelationAcquisition(
                      "persisted ordinal column descriptor differs from binding",
                      true);
     }
-    auto output_descriptor = column.value_descriptor;
+    api::EngineDescriptor output_descriptor;
+    output_descriptor.descriptor_uuid =
+        column.value_descriptor.descriptor_uuid;
     output_descriptor.descriptor_kind = "scalar";
+    output_descriptor.canonical_type_name =
+        column.value_descriptor.canonical_type_name;
+    output_descriptor.encoded_descriptor =
+        "type_uuid=" + relational_descriptor.type_uuid +
+        ";nullability=" + (nullable ? "nullable" : "non_null");
+    if (relational_descriptor.collation_uuid.has_value()) {
+      output_descriptor.encoded_descriptor +=
+          ";collation_uuid=" + *relational_descriptor.collation_uuid;
+    }
+    if (relational_descriptor.timezone_profile_id.has_value()) {
+      output_descriptor.encoded_descriptor +=
+          ";timezone_profile_id=" +
+          *relational_descriptor.timezone_profile_id;
+    }
+    if (relational_descriptor.width.has_value()) {
+      output_descriptor.encoded_descriptor +=
+          ";width=" + std::to_string(*relational_descriptor.width);
+    }
+    if (relational_descriptor.precision.has_value()) {
+      output_descriptor.encoded_descriptor +=
+          ";precision=" + std::to_string(*relational_descriptor.precision);
+    }
+    if (relational_descriptor.scale.has_value()) {
+      output_descriptor.encoded_descriptor +=
+          ";scale=" + std::to_string(*relational_descriptor.scale);
+    }
     batch.columns.push_back({column.canonical_name_key,
                              output_descriptor,
                              column.nullable,

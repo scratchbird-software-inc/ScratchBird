@@ -756,6 +756,16 @@ bool CanonicalRelationalExpressionRuntime::InferTypeInternal(
       }
       auto type_name = BoundLiteralType(
           expression, *descriptor->second, expected_type);
+      if (!expected_type.has_value()) {
+        std::string descriptor_type;
+        std::string descriptor_detail;
+        if (ResolveDescriptorType(*descriptor->second, &descriptor_type,
+                                  &descriptor_detail) &&
+            LiteralKindAdmitsType(*expression.literal_kind,
+                                  descriptor_type)) {
+          type_name = std::move(descriptor_type);
+        }
+      }
       if (type_name == "null" && !expected_type.has_value()) {
         std::string descriptor_type;
         std::string descriptor_detail;

@@ -262,11 +262,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       std::to_string(issue.node_id));
   }
   if (relational.wire_version != 2 || relational.nodes.empty() ||
-      relational.nodes.size() > 2) {
+      relational.nodes.size() > 3) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                  "heap_scan_with_optional_limit_root");
+                  "heap_scan_with_optional_filter_limit_root");
   }
   const RelationalDagNode* scan_node = nullptr;
+  const RelationalDagNode* filter_node = nullptr;
   const RelationalDagNode* limit_node = nullptr;
   for (const auto& candidate : relational.nodes) {
     if (candidate.node_kind == RelationalDagNodeKind::kScan) {
@@ -275,6 +276,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       "one_heap_scan_leaf");
       }
       scan_node = &candidate;
+    } else if (candidate.node_kind == RelationalDagNodeKind::kFilter) {
+      if (filter_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_optional_heap_filter");
+      }
+      filter_node = &candidate;
     } else if (candidate.node_kind == RelationalDagNodeKind::kLimit) {
       if (limit_node != nullptr) {
         return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
@@ -283,18 +290,35 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
       limit_node = &candidate;
     } else {
       return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                    "heap_scan_limit_node_kinds");
+                    "heap_scan_filter_limit_node_kinds");
     }
   }
+  const auto* terminal_node =
+      limit_node != nullptr ? limit_node
+                            : (filter_node != nullptr ? filter_node : scan_node);
+  const auto expected_limit_input =
+      filter_node != nullptr ? filter_node->node_id
+                             : (scan_node == nullptr ? 0 : scan_node->node_id);
   if (scan_node == nullptr ||
-      relational.root_node_id !=
-          (limit_node == nullptr ? scan_node->node_id
-                                 : limit_node->node_id) ||
-      (limit_node == nullptr && relational.nodes.size() != 1) ||
-      (limit_node != nullptr &&
-       (relational.nodes.size() != 2 ||
-        limit_node->input_node_ids !=
+      relational.root_node_id != terminal_node->node_id ||
+      relational.nodes.size() !=
+          1 + static_cast<std::size_t>(filter_node != nullptr) +
+              static_cast<std::size_t>(limit_node != nullptr) ||
+      (filter_node != nullptr &&
+       (filter_node->input_node_ids !=
             std::vector<std::uint32_t>{scan_node->node_id} ||
+        filter_node->semantic_variant_id !=
+            "filter.catalog-column-numeric-comparison.v1" ||
+        filter_node->bound_expression_ids.size() != 1 ||
+        filter_node->output_descriptor_ids !=
+            scan_node->output_descriptor_ids ||
+        !filter_node->required_object_uuids.empty() ||
+        !filter_node->values_row_ids.empty() ||
+        !filter_node->required_property_uuids.empty() ||
+        !filter_node->delivered_property_uuids.empty())) ||
+      (limit_node != nullptr &&
+       (limit_node->input_node_ids !=
+            std::vector<std::uint32_t>{expected_limit_input} ||
         (limit_node->semantic_variant_id != "limit.bound-count.v1" &&
          limit_node->semantic_variant_id !=
              "limit.bound-count-offset.v1") ||
@@ -309,7 +333,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         !limit_node->required_property_uuids.empty() ||
         !limit_node->delivered_property_uuids.empty()))) {
     return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
-                  "heap_scan_optional_limit_shape");
+                  "heap_scan_optional_filter_limit_shape");
   }
   const auto& node = *scan_node;
   if (node.node_kind != RelationalDagNodeKind::kScan ||

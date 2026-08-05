@@ -79,10 +79,10 @@ struct CanonicalCurrentHeapExecutionRequest {
 
 // QOW-SOURCE-PACKET7-OBJECT-BACKED-HEAP-ROUTE-V1
 // Accepts the current relation.source.v1 profile and its exact optional
-// LIMIT/OFFSET composition. Catalog, authorization, descriptor, optimizer,
-// physical-plan, and MGA evidence are derived and revalidated by existing
-// engine-owned components; the caller supplies no object snapshot, physical
-// DAG, or visibility authority.
+// source-bound WHERE and LIMIT/OFFSET compositions. Catalog, authorization,
+// descriptor, optimizer, physical-plan, and MGA evidence are derived and
+// revalidated by existing engine-owned components; the caller supplies no
+// object snapshot, physical DAG, or visibility authority.
 CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const CanonicalCurrentHeapExecutionRequest& request);
 

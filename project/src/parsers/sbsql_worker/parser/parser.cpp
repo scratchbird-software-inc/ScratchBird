@@ -393,8 +393,44 @@ class NativeRelationalParser final {
     }
     source.range = Span(first_name_token, *source_end);
 
+    std::optional<std::uint32_t> predicate_expression_id;
+    if (!AtEnd() && IsWord(Current(), "WHERE")) {
+      Consume();
+      predicate_expression_id = ParseExpression(0, 0);
+      if (!predicate_expression_id.has_value()) return FinishRefusal();
+      const auto& predicate =
+          document_.expressions[*predicate_expression_id - 1];
+      const NativeExpressionAstNode* left = nullptr;
+      const NativeExpressionAstNode* right = nullptr;
+      if (predicate.expression_kind == NativeExpressionAstKind::kBinary &&
+          predicate.child_expression_ids.size() == 2) {
+        left = &document_.expressions[predicate.child_expression_ids[0] - 1];
+        right = &document_.expressions[predicate.child_expression_ids[1] - 1];
+      }
+      const bool accepted_operator =
+          predicate.operator_name == "=" || predicate.operator_name == "<>" ||
+          predicate.operator_name == "!=" || predicate.operator_name == "<" ||
+          predicate.operator_name == "<=" || predicate.operator_name == ">" ||
+          predicate.operator_name == ">=";
+      if (left == nullptr || right == nullptr || !accepted_operator ||
+          left->expression_kind != NativeExpressionAstKind::kIdentifier ||
+          right->expression_kind != NativeExpressionAstKind::kLiteral ||
+          right->literal_kind != NativeLiteralAstKind::kNumeric ||
+          !left->child_expression_ids.empty() ||
+          !right->child_expression_ids.empty()) {
+        Refuse("catalog_select_where_profile_unsupported",
+               "bounded catalog WHERE requires an identifier comparison to "
+               "an unsigned numeric literal");
+        return FinishRefusal();
+      }
+    }
+
     std::vector<std::uint32_t> limit_expression_ids;
     const Token* query_end = source_end;
+    if (predicate_expression_id.has_value()) {
+      query_end = &TokenForRangeEnd(
+          document_.expressions[*predicate_expression_id - 1].range);
+    }
     if (!AtEnd() && IsWord(Current(), "LIMIT")) {
       Consume();
       const auto parse_row_bound = [&](const std::string_view diagnostic_id,
@@ -456,16 +492,30 @@ class NativeRelationalParser final {
     document_.catalog_relation_sources.push_back(std::move(source));
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
+    if (predicate_expression_id.has_value()) {
+      NativeRelationAstNode filter;
+      filter.relation_id = 2;
+      filter.relation_kind = NativeRelationAstKind::kFilter;
+      filter.input_relation_ids = {1};
+      filter.output_expression_ids = {wildcard_expression_id};
+      filter.predicate_expression_ids = {*predicate_expression_id};
+      filter.range = Span(
+          select_token,
+          TokenForRangeEnd(
+              document_.expressions[*predicate_expression_id - 1].range));
+      document_.relations.push_back(std::move(filter));
+      document_.root_relation_id = 2;
+    }
     if (!limit_expression_ids.empty()) {
       NativeRelationAstNode limit;
-      limit.relation_id = 2;
+      limit.relation_id = document_.root_relation_id + 1;
       limit.relation_kind = NativeRelationAstKind::kLimit;
-      limit.input_relation_ids = {1};
+      limit.input_relation_ids = {document_.root_relation_id};
       limit.output_expression_ids = {wildcard_expression_id};
       limit.limit_expression_ids = std::move(limit_expression_ids);
       limit.range = Span(select_token, *query_end);
       document_.relations.push_back(std::move(limit));
-      document_.root_relation_id = 2;
+      document_.root_relation_id = document_.relations.back().relation_id;
     }
     document_.status = NativeRelationalParseStatus::kAccepted;
     return std::move(document_);

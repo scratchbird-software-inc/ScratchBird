@@ -573,6 +573,44 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed.server_row_count == 3,
             "object-backed native SELECT did not complete the full live route");
 
+    struct FilterCase {
+      std::string_view predicate;
+      std::size_t expected_rows;
+    };
+    constexpr std::array<FilterCase, 7> kFilterCases = {{
+        {"= 2", 1}, {"<> 2", 2}, {"!= 2", 2}, {"< 2", 1},
+        {"<= 2", 2}, {"> 2", 1},  {">= 2", 2},
+    }};
+    for (const auto& filter_case : kFilterCases) {
+      auto filtered = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation WHERE "
+          "integer_value " +
+              std::string(filter_case.predicate) + ";",
+          true);
+      if (!filtered.accepted) PrintMessages(filtered.messages);
+      Require(filtered.accepted &&
+                  filtered.server_operation_id == "query.execute" &&
+                  filtered.server_cursor_uuid.empty() &&
+                  filtered.server_row_count == filter_case.expected_rows,
+              "object-backed native SELECT WHERE comparison did not complete "
+              "the full live route");
+    }
+
+    auto object_backed_filter_limit = parser.RunPipeline(
+        "SELECT * FROM qow_packet7.qow_packet7_relation WHERE integer_value "
+        ">= 2 LIMIT 1;",
+        true);
+    if (!object_backed_filter_limit.accepted) {
+      PrintMessages(object_backed_filter_limit.messages);
+    }
+    Require(object_backed_filter_limit.accepted &&
+                object_backed_filter_limit.server_operation_id ==
+                    "query.execute" &&
+                object_backed_filter_limit.server_cursor_uuid.empty() &&
+                object_backed_filter_limit.server_row_count == 1,
+            "object-backed native SELECT WHERE/LIMIT did not complete the "
+            "full live route");
+
     auto object_backed_limit = parser.RunPipeline(
         "SELECT * FROM qow_packet7.qow_packet7_relation LIMIT 1;", true);
     if (!object_backed_limit.accepted) {

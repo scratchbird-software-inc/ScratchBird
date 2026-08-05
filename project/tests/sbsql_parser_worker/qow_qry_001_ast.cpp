@@ -362,6 +362,66 @@ bool ValidateCatalogLimitComposition() {
   return passed;
 }
 
+bool ValidateCatalogFilterComposition() {
+  constexpr std::string_view sql =
+      "SELECT * FROM app.orders WHERE amount >= 10 LIMIT 2;";
+  const auto native =
+      sbsql::ParseNativeRelationalAst(sbsql::BuildCst(sql));
+  bool passed = true;
+  passed &= Require(native.accepted(),
+                    "catalog WHERE/LIMIT composition was refused");
+  passed &= Require(native.root_relation_id == 3,
+                    "catalog WHERE/LIMIT root identity differs");
+  passed &= Require(native.relations.size() == 3,
+                    "catalog WHERE/LIMIT relation cardinality differs");
+  passed &= Require(native.expressions.size() == 5,
+                    "catalog WHERE/LIMIT expression cardinality differs");
+  if (native.relations.size() == 3) {
+    const auto& source = native.relations[0];
+    const auto& filter = native.relations[1];
+    const auto& limit = native.relations[2];
+    passed &= Require(
+        source.relation_kind ==
+                sbsql::NativeRelationAstKind::kCatalogSource &&
+            filter.relation_kind == sbsql::NativeRelationAstKind::kFilter &&
+            filter.input_relation_ids == std::vector<std::uint32_t>({1}) &&
+            filter.predicate_expression_ids ==
+                std::vector<std::uint32_t>({4}) &&
+            limit.relation_kind == sbsql::NativeRelationAstKind::kLimit &&
+            limit.input_relation_ids == std::vector<std::uint32_t>({2}) &&
+            limit.limit_expression_ids ==
+                std::vector<std::uint32_t>({5}),
+        "catalog WHERE/LIMIT relation linkage differs");
+    passed &= Require(
+        SourceForRange(sql, source.range) == "SELECT * FROM app.orders" &&
+            SourceForRange(sql, filter.range) ==
+                "SELECT * FROM app.orders WHERE amount >= 10" &&
+            SourceForRange(sql, limit.range) ==
+                "SELECT * FROM app.orders WHERE amount >= 10 LIMIT 2",
+        "catalog WHERE/LIMIT relation ranges differ");
+  }
+  if (native.expressions.size() == 5) {
+    const auto& identifier = native.expressions[1];
+    const auto& literal = native.expressions[2];
+    const auto& predicate = native.expressions[3];
+    passed &= Require(
+        identifier.expression_kind ==
+                sbsql::NativeExpressionAstKind::kIdentifier &&
+            identifier.spelling == "amount" &&
+            literal.expression_kind ==
+                sbsql::NativeExpressionAstKind::kLiteral &&
+            literal.literal_kind == sbsql::NativeLiteralAstKind::kNumeric &&
+            literal.spelling == "10" &&
+            predicate.expression_kind ==
+                sbsql::NativeExpressionAstKind::kBinary &&
+            predicate.operator_name == ">=" &&
+            predicate.child_expression_ids ==
+                std::vector<std::uint32_t>({2, 3}),
+        "catalog WHERE predicate expression differs");
+  }
+  return passed;
+}
+
 bool ValidateCatalogRelationRefusal() {
   constexpr std::string_view malformed[] = {
       "SELECT * FROM;",
@@ -379,6 +439,11 @@ bool ValidateCatalogRelationRefusal() {
       "SELECT * FROM app.orders LIMIT 1 OFFSET;",
       "SELECT * FROM app.orders LIMIT 1 OFFSET -1;",
       "SELECT * FROM app.orders OFFSET 1;",
+      "SELECT * FROM app.orders WHERE;",
+      "SELECT * FROM app.orders WHERE amount;",
+      "SELECT * FROM app.orders WHERE amount = 'ten';",
+      "SELECT * FROM app.orders WHERE 10 < amount;",
+      "SELECT * FROM app.orders WHERE amount > 1 AND amount < 3;",
   };
 
   bool passed = true;
@@ -448,6 +513,7 @@ int main() {
   passed &= ValidateMalformedRefusal();
   passed &= ValidateCatalogRelationSourceFamily();
   passed &= ValidateCatalogLimitComposition();
+  passed &= ValidateCatalogFilterComposition();
   passed &= ValidateCatalogRelationRefusal();
   passed &= ValidateFamilyBoundary();
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;

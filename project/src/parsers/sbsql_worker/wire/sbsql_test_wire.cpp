@@ -422,17 +422,35 @@ BuildEngineProjectedNativeBindingContext(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind == NativeRelationAstKind::kLimit;
         });
-    const bool limit_composition =
-        ast.relations.size() == 2 &&
-        source_relation != ast.relations.end() &&
-        limit_relation != ast.relations.end() &&
-        ast.root_relation_id == limit_relation->relation_id &&
-        limit_relation->input_relation_ids ==
+    const auto filter_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kFilter;
+        });
+    if (source_relation == ast.relations.end()) {
+      return fail("catalog_source_projection_cardinality_invalid");
+    }
+    const bool filter_composition =
+        filter_relation != ast.relations.end() &&
+        filter_relation->input_relation_ids ==
             std::vector<std::uint32_t>{source_relation->relation_id};
+    const bool limit_composition = limit_relation != ast.relations.end();
+    const auto expected_root =
+        limit_composition ? limit_relation->relation_id
+                          : (filter_composition ? filter_relation->relation_id
+                                                : source_relation->relation_id);
+    const auto expected_limit_input =
+        filter_composition ? filter_relation->relation_id
+                           : source_relation->relation_id;
+    const bool catalog_chain =
+        ast.relations.size() ==
+            1 + static_cast<std::size_t>(filter_composition) +
+                static_cast<std::size_t>(limit_composition) &&
+        ast.root_relation_id == expected_root &&
+        (!limit_composition ||
+         limit_relation->input_relation_ids ==
+             std::vector<std::uint32_t>{expected_limit_input});
     if (ast.catalog_relation_sources.size() != 1 ||
-        source_relation == ast.relations.end() ||
-        (ast.relations.size() != 1 && !limit_composition) ||
-        ast.root_relation_id == 0 ||
+        !catalog_chain || ast.root_relation_id == 0 ||
         resolved_object_reference_seeds.size() != 1) {
       return fail("catalog_source_projection_cardinality_invalid");
     }
@@ -446,7 +464,8 @@ BuildEngineProjectedNativeBindingContext(
         resolved.object_class == "materialized_view" ||
         resolved.object_class == "external_table" ||
         resolved.object_class == "foreign_table";
-    if ((!limit_composition && relation.relation_id != ast.root_relation_id) ||
+    if ((!filter_composition && !limit_composition &&
+         relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         relation.relation_source_ids !=
             std::vector<std::uint32_t>{source.source_id} ||
@@ -472,11 +491,12 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.security_epoch = resolved.security_epoch;
     catalog_relation.resource_epoch = projection.validated_resource_epoch;
     catalog_relation.columns.reserve(projection.columns.size());
-    context.descriptors.reserve(projection.columns.size() +
-                                (limit_composition ? 1 : 0));
+    context.descriptors.reserve(
+        projection.columns.size() +
+        (limit_composition ? 1 : 0) +
+        (filter_composition ? 1 : 0));
     context.expressions.reserve(projection.columns.size());
-    context.outputs.reserve(projection.columns.size() *
-                            (limit_composition ? 2 : 1));
+    context.outputs.reserve(projection.columns.size() * ast.relations.size());
     // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
     // type identities are distinct engine-owned values. Decode only the exact
     // persisted descriptor fields transported by the selected-transaction
@@ -624,7 +644,7 @@ BuildEngineProjectedNativeBindingContext(
           numeric_profile->nullable ||
           !CanonicalUuidBytes(numeric_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(numeric_profile->type_uuid).has_value()) {
-        return fail("catalog_limit_numeric_descriptor_profile_unavailable");
+        return fail("catalog_numeric_descriptor_profile_unavailable");
       }
       NativeDescriptorBindingInput descriptor;
       descriptor.descriptor_id =
@@ -634,16 +654,38 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = BoundNullability::kNonNull;
       context.descriptors.push_back(std::move(descriptor));
 
-      const auto first_limit_output_id =
-          static_cast<std::uint32_t>(projection.columns.size() + 1);
+    }
+    if (filter_composition) {
+      const auto boolean_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [](const auto& candidate) {
+            return candidate.profile_kind == 6 && candidate.slot == 0;
+          });
+      if (boolean_profile == statement_context.descriptor_profiles.end() ||
+          !boolean_profile->nullable ||
+          !CanonicalUuidBytes(boolean_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(boolean_profile->type_uuid).has_value()) {
+        return fail("catalog_filter_boolean_descriptor_profile_unavailable");
+      }
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      descriptor.descriptor_uuid = boolean_profile->descriptor_uuid;
+      descriptor.type_uuid = boolean_profile->type_uuid;
+      descriptor.nullability = BoundNullability::kNullable;
+      context.descriptors.push_back(std::move(descriptor));
+    }
+    for (const auto& downstream : ast.relations) {
+      if (downstream.relation_id == source_relation->relation_id) continue;
+      const auto first_output_id =
+          static_cast<std::uint32_t>(context.outputs.size() + 1);
       for (std::size_t ordinal = 0; ordinal < projection.columns.size();
            ++ordinal) {
         const auto& column = projection.columns[ordinal];
         const auto binding_id = static_cast<std::uint32_t>(ordinal + 1);
         context.outputs.push_back(
-            {first_limit_output_id + static_cast<std::uint32_t>(ordinal),
-             binding_id, column.canonical_name_key, binding_id, true,
-             static_cast<std::uint32_t>(ordinal), limit_relation->relation_id});
+            {first_output_id + static_cast<std::uint32_t>(ordinal), binding_id,
+             column.canonical_name_key, binding_id, true,
+             static_cast<std::uint32_t>(ordinal), downstream.relation_id});
       }
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
