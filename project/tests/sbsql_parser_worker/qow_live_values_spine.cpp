@@ -439,6 +439,32 @@ sblr::SblrOperationEnvelope UnionAllValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+// RCP-049-TEST-NODE-DRIVEN-UNION-ALL-COMPOSITION-V1
+sblr::SblrOperationEnvelope NodeDrivenUnionAllLimitEnvelope() {
+  auto envelope = UnionAllValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000c930";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "4";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "4",
+       "019f0000-0000-7300-8000-00000000c931|"
+       "019f0000-0000-7400-8000-000000008402|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_expression_v1", "7", "1|-|4|-|-|1|-|34"});
+  envelope.operands.push_back(
+      {"relational_node_v1", "4", "7|0|3|3|-"});
+  envelope.operands.push_back(
+      {"relational_node_binding_v1", "4",
+       "6c696d69742e626f756e642d636f756e742e7631|7|-|-|-"});
+  return envelope;
+}
+
 // RCP-046-TEST-LIVE-SET-OPERATION-PROFILES-V1
 sblr::SblrOperationEnvelope SetOperationValuesEnvelope(
     const std::string& semantic_variant_hex,
@@ -7119,6 +7145,82 @@ bool ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-UNION-ALL-COMPOSITION-V1
+bool ValidateNodeDrivenUnionAllCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 4 &&
+           result.logical_property_count == 0 &&
+           result.physical_node_count == 4 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 4 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 4;
+  };
+
+  const auto first = dispatch(NodeDrivenUnionAllLimitEnvelope());
+  const auto repeated = dispatch(NodeDrivenUnionAllLimitEnvelope());
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  bool passed = true;
+  const auto& rows = first.api_result.result_shape.rows;
+  passed &= Require(
+      completed(first) &&
+          rows[0].fields[0].second.encoded_value == "1" &&
+          rows[1].fields[0].second.encoded_value == "2" &&
+          rows[2].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          rows[3].fields[0].second.encoded_value == "2",
+      "node-driven UNION ALL/LIMIT composition lost operand order, "
+      "multiplicity, or typed NULL state");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven UNION ALL composition changed deterministic plan/result "
+      "bytes");
+
+  auto malformed = NodeDrivenUnionAllLimitEnvelope();
+  for (auto& operand : malformed.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "3") {
+      operand.value = "9|0|1,1|3|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 11;
+  const auto malformed_result = dispatch(std::move(malformed));
+  const auto exhausted_result = dispatch(
+      NodeDrivenUnionAllLimitEnvelope(), std::move(bounded_context));
+  const auto no_publication = [](const auto& result) {
+    return !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty();
+  };
+  passed &= Require(
+      no_publication(malformed_result) &&
+          no_publication(exhausted_result) &&
+          HasApiDiagnostic(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "malformed or resource-exhausted node-driven UNION ALL composition "
+      "published partial evidence");
+  return passed;
+}
+
 // RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
 bool ValidateEmptyFilteredExpressionProjectionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
@@ -12564,6 +12666,7 @@ int main() {
                       ValidateNodeDrivenUnaryCompositionSpine() &&
                       ValidateNodeDrivenJoinCompositionSpine() &&
                       ValidateNodeDrivenAcceptedJoinKindsCompositionSpine() &&
+                      ValidateNodeDrivenUnionAllCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&

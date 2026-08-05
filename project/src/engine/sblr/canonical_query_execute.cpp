@@ -5424,6 +5424,118 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveJoinRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration MakeLiveSetOperationRegistration(
+    LiveSetOperationProfile set_profile,
+    PreparedSetOperationRoot prepared,
+    std::string capability_uuid,
+    const std::size_t maximum_output_row_count,
+    const std::size_t maximum_equality_comparison_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kSetOperation;
+  registration.implementation_id = set_profile.implementation_id;
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [set_profile = std::move(set_profile), prepared = std::move(prepared),
+       maximum_output_row_count, maximum_equality_comparison_count,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 2 ||
+            !inputs[0].materialized_output_batch.has_value() ||
+            !inputs[1].materialized_output_batch.has_value()) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
+          step.diagnostic.detail =
+              "set-operation executor did not receive two typed input batches";
+          return step;
+        }
+        exec::CanonicalSetOperationAllRequest set_request;
+        set_request.physical_dag = dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          std::unordered_set<std::uint64_t> execution_view_nodes;
+          std::vector<std::uint64_t> execution_view_pending{
+              node.physical_node_id};
+          while (!execution_view_pending.empty()) {
+            const auto physical_node_id = execution_view_pending.back();
+            execution_view_pending.pop_back();
+            if (!execution_view_nodes.insert(physical_node_id).second) {
+              continue;
+            }
+            const auto found = std::ranges::find_if(
+                dag.nodes, [&](const auto& candidate) {
+                  return candidate.physical_node_id == physical_node_id;
+                });
+            if (found == dag.nodes.end()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-SET-INPUT-V1";
+              step.diagnostic.detail =
+                  "set-operation execution view is unresolved";
+              return step;
+            }
+            execution_view_pending.insert(
+                execution_view_pending.end(),
+                found->input_physical_node_ids.begin(),
+                found->input_physical_node_ids.end());
+          }
+          std::erase_if(set_request.physical_dag.nodes,
+                        [&](const auto& candidate) {
+                          return !execution_view_nodes.contains(
+                              candidate.physical_node_id);
+                        });
+          set_request.physical_dag.root_physical_node_id =
+              node.physical_node_id;
+        }
+        set_request.selected_physical_node_id = node.physical_node_id;
+        set_request.left_batch = *inputs[0].materialized_output_batch;
+        set_request.right_batch = *inputs[1].materialized_output_batch;
+        set_request.result_columns = prepared.result_columns;
+        set_request.operation = set_profile.operation;
+        set_request.alignment = set_profile.alignment;
+        set_request.quantifier = set_profile.quantifier;
+        set_request.equality_profile = set_profile.equality_profile;
+        set_request.type_profile = set_profile.type_profile;
+        set_request.collation_bindings = prepared.collation_bindings;
+        set_request.maximum_equality_comparison_count =
+            std::max<std::size_t>(1, maximum_equality_comparison_count);
+        set_request.maximum_output_row_count =
+            std::max<std::size_t>(1, maximum_output_row_count);
+        set_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+            mga_context, set_request.physical_dag);
+        const auto set_result =
+            set_profile.quantifier ==
+                    exec::CanonicalSetOperationQuantifier::kAll
+                ? exec::ExecuteCanonicalSetOperationAll(set_request)
+                : exec::ExecuteCanonicalSetOperationDistinct(set_request);
+        if (!set_result.diagnostic.ok) {
+          step.diagnostic = set_result.diagnostic;
+          return step;
+        }
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = set_result.left_input_row_count +
+                               set_result.right_input_row_count;
+        step.rows_examined = step.input_row_count;
+        step.output_row_count = set_result.output_batch.rows.size();
+        step.materialized_output_batch = set_result.output_batch;
+        step.mga_statement_context = set_result.mga_statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration
 MakeLiveQueryDistinctRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> equality_terms,
@@ -5653,9 +5765,9 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
 // while this compiler grows across the remaining relational node families.
 // The compiler admits a descriptor-valid unary tail containing at most one
 // FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node over either one
-// canonical VALUES leaf or a two-VALUES accepted JOIN-kind branch.  Every
-// node still executes through the ordinary optimizer-published ABI-v2 DAG and
-// its canonical executor.
+// canonical VALUES leaf, a two-VALUES accepted JOIN-kind branch, or an exact
+// ordinal UNION ALL branch. Every node still executes through the ordinary
+// optimizer-published ABI-v2 DAG and its canonical executor.
 CanonicalObjectFreeValuesExecutionResult
 ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
@@ -5679,6 +5791,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
   std::string join_component;
   std::string join_operation_name;
+  const plan::CanonicalLogicalRelationalNode* set_left_node = nullptr;
+  const plan::CanonicalLogicalRelationalNode* set_right_node = nullptr;
+  LiveSetOperationProfile set_profile;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
     if (!visited.insert(current->logical_node_id).second ||
@@ -5762,6 +5877,45 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       join_right_node = &*right;
       break;
     }
+    if (current->node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kSetOperation) {
+      set_profile = MatchLiveSetOperationProfile(
+          current->semantic_variant_id);
+      if (!set_profile.matched ||
+          current->semantic_variant_id != "set-operation.union-all.v1" ||
+          current->input_logical_node_ids.size() != 2 ||
+          current->input_logical_node_ids[0] ==
+              current->input_logical_node_ids[1] ||
+          !current->bound_expression_ids.empty() ||
+          !current->required_property_uuids.empty() ||
+          !current->delivered_property_uuids.empty()) {
+        return result;
+      }
+      const auto left = find_node(current->input_logical_node_ids[0]);
+      const auto right = find_node(current->input_logical_node_ids[1]);
+      if (left == graph.nodes.end() || right == graph.nodes.end() ||
+          left->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          right->node_kind !=
+              plan::CanonicalLogicalRelationalNodeKind::kValues ||
+          left->semantic_variant_id != "values.literal-table.v1" ||
+          right->semantic_variant_id != "values.literal-table.v1" ||
+          !left->input_logical_node_ids.empty() ||
+          !right->input_logical_node_ids.empty() ||
+          !left->required_object_uuids.empty() ||
+          !right->required_object_uuids.empty() ||
+          !left->required_property_uuids.empty() ||
+          !right->required_property_uuids.empty() ||
+          !left->delivered_property_uuids.empty() ||
+          !right->delivered_property_uuids.empty() ||
+          !visited.insert(left->logical_node_id).second ||
+          !visited.insert(right->logical_node_id).second) {
+        return result;
+      }
+      set_left_node = &*left;
+      set_right_node = &*right;
+      break;
+    }
     if (current->input_logical_node_ids.size() != 1 ||
         !unary_kinds.insert(current->node_kind).second) {
       return result;
@@ -5816,7 +5970,9 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       (reverse_chain.back()->node_kind !=
            plan::CanonicalLogicalRelationalNodeKind::kValues &&
        reverse_chain.back()->node_kind !=
-           plan::CanonicalLogicalRelationalNodeKind::kJoin) ||
+           plan::CanonicalLogicalRelationalNodeKind::kJoin &&
+       reverse_chain.back()->node_kind !=
+           plan::CanonicalLogicalRelationalNodeKind::kSetOperation) ||
       visited.size() != graph.nodes.size() || sort_count > 1 ||
       (sort_count == 0 &&
        !request.optimizer_request.logical_properties.properties.empty()) ||
@@ -5859,6 +6015,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t join_pair_count = 0;
   std::size_t join_output_row_bound = 0;
   std::string join_implementation_id;
+  std::optional<MaterializedValues> set_left_values;
+  std::optional<MaterializedValues> set_right_values;
+  std::optional<PreparedSetOperationRoot> prepared_set;
+  std::size_t set_output_row_bound = 0;
+  std::size_t set_comparison_bound = 0;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag, request.expression_services);
 
@@ -5887,6 +6048,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       DerivedCanonicalUuid(identity_scope, "composition.values.capability");
   const auto join_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.join.capability");
+  const auto set_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.set.capability");
   const auto filter_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.filter.capability");
   const auto project_capability_uuid =
@@ -5924,7 +6087,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
          "canonical.values.materialize.v1", state.batch.rows.size(),
          values_memory, 0, 0});
     total_work = state.batch.rows.size();
-  } else {
+  } else if (reverse_chain.front()->node_kind ==
+             plan::CanonicalLogicalRelationalNodeKind::kJoin) {
     join_left_values = MaterializeValues(
         request.relational_dag, *join_left_node,
         request.expression_services);
@@ -6159,6 +6323,100 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             request.optimizer_request.resource.maximum_candidate_count) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
                     "composition JOIN work exceeds the admitted bound");
+    }
+  } else {
+    set_left_values = MaterializeValues(
+        request.relational_dag, *set_left_node,
+        request.expression_services);
+    set_right_values = MaterializeValues(
+        request.relational_dag, *set_right_node,
+        request.expression_services);
+    if (!set_left_values->ok || !set_right_values->ok) {
+      return refuse(
+          std::string(kPayloadDiagnostic),
+          !set_left_values->ok
+              ? "composition SET left VALUES: " + set_left_values->detail
+              : "composition SET right VALUES: " +
+                    set_right_values->detail);
+    }
+    prepared_set = PrepareSetOperationRoot(
+        request.context, request.relational_dag, *reverse_chain.front(),
+        *set_left_values, *set_right_values, set_profile);
+    if (!prepared_set->ok) {
+      return refuse(std::string(kPayloadDiagnostic), prepared_set->detail);
+    }
+
+    std::uint64_t output_bound = 0;
+    std::uint64_t comparison_bound = 0;
+    const auto left_count = set_left_values->batch.rows.size();
+    const auto right_count = set_right_values->batch.rows.size();
+    if (!CheckedAdd(left_count, right_count, &output_bound) ||
+        !CheckedMultiply(output_bound, output_bound, &comparison_bound) ||
+        output_bound > std::numeric_limits<std::size_t>::max() ||
+        comparison_bound > std::numeric_limits<std::size_t>::max()) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition SET row/comparison bound overflowed");
+    }
+    set_output_row_bound = static_cast<std::size_t>(output_bound);
+    set_comparison_bound = std::max<std::size_t>(
+        1, static_cast<std::size_t>(comparison_bound));
+
+    state.ok = true;
+    state.batch.columns = prepared_set->result_columns;
+    const auto append_retagged_rows = [&](const exec::DescriptorBatch& batch) {
+      for (const auto& source : batch.rows) {
+        auto row = source;
+        for (std::size_t column = 0; column < row.values.size(); ++column) {
+          row.values[column].descriptor =
+              prepared_set->result_columns[column].descriptor;
+        }
+        state.batch.rows.push_back(std::move(row));
+      }
+    };
+    state.batch.rows.reserve(set_output_row_bound);
+    append_retagged_rows(set_left_values->batch);
+    append_retagged_rows(set_right_values->batch);
+    state.result_bindings = prepared_set->result_bindings;
+
+    std::uint64_t left_memory = 1;
+    std::uint64_t right_memory = 1;
+    std::uint64_t set_memory = 1;
+    if (!AddBatchMemoryBytes(set_left_values->batch, &left_memory) ||
+        !AddBatchMemoryBytes(set_right_values->batch, &right_memory) ||
+        !AddBatchMemoryBytes(state.batch, &set_memory) ||
+        !CheckedAdd(set_memory, left_memory, &set_memory) ||
+        !CheckedAdd(set_memory, right_memory, &set_memory) ||
+        !CheckedAdd(set_memory, output_bound, &set_memory) ||
+        set_memory >
+            request.optimizer_request.resource.memory_budget_bytes) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition SET exceeds the admitted memory budget");
+    }
+    profiles.push_back(
+        {set_left_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", left_count, left_memory, 0, 0});
+    profiles.push_back(
+        {set_right_node->logical_node_id,
+         std::string(kValuesImplementationId), values_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kValues,
+         exec::PhysicalNodeKind::kValues,
+         "canonical.values.materialize.v1", right_count, right_memory, 0, 0});
+    profiles.push_back(
+        {reverse_chain.front()->logical_node_id,
+         set_profile.implementation_id, set_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kSetOperation,
+         exec::PhysicalNodeKind::kSetOperation,
+         set_profile.physical_semantic_id, set_output_row_bound,
+         set_memory, 2, 2});
+    if (!CheckedAdd(left_count, right_count, &total_work) ||
+        !CheckedAdd(total_work, output_bound, &total_work) ||
+        total_work >
+            request.optimizer_request.resource.maximum_candidate_count) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition SET work exceeds the admitted bound");
     }
   }
   const auto add_work = [&](const std::uint64_t work) {
@@ -6550,6 +6808,11 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
                            std::move(join_left_values->batch));
     values_batches.emplace(join_right_node->logical_node_id,
                            std::move(join_right_values->batch));
+  } else if (set_left_node != nullptr) {
+    values_batches.emplace(set_left_node->logical_node_id,
+                           std::move(set_left_values->batch));
+    values_batches.emplace(set_right_node->logical_node_id,
+                           std::move(set_right_values->batch));
   } else {
     auto values = MaterializeValues(request.relational_dag,
                                     *reverse_chain.front(),
@@ -6580,6 +6843,12 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             std::move(join_truth_values), join_pair_count,
             join_output_row_bound, *join_kind, join_operation_name,
             request.context));
+  }
+  if (prepared_set.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveSetOperationRegistration(
+            set_profile, std::move(*prepared_set), set_capability_uuid,
+            set_output_row_bound, set_comparison_bound, request.context));
   }
   if (prepared_filter.has_value()) {
     execution_request.available_executors.push_back(
