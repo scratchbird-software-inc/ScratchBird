@@ -475,7 +475,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
          aggregate_node->semantic_variant_id !=
              "aggregate.global-percent-rank-hypothetical-expression.v1" &&
          aggregate_node->semantic_variant_id !=
-             "aggregate.global-cume-dist-hypothetical-expression.v1") ||
+             "aggregate.global-cume-dist-hypothetical-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-approx-percentile-cont-ordered-expression.v1" &&
+         aggregate_node->semantic_variant_id !=
+             "aggregate.global-approx-percentile-disc-ordered-expression.v1") ||
         aggregate_node->bound_expression_ids.size() != 1 ||
         aggregate_node->output_descriptor_ids.size() != 1 ||
         !aggregate_node->required_object_uuids.empty() ||

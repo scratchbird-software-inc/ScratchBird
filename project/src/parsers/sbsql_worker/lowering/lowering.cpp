@@ -33076,7 +33076,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-percent-rank-hypothetical-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-cume-dist-hypothetical-expression.v1");
+               "aggregate.global-cume-dist-hypothetical-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-approx-percentile-cont-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-approx-percentile-disc-ordered-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33822,7 +33826,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          aggregate_relation->semantic_variant_id ==
              "aggregate.global-percent-rank-hypothetical-expression.v1" ||
          aggregate_relation->semantic_variant_id ==
-             "aggregate.global-cume-dist-hypothetical-expression.v1");
+             "aggregate.global-cume-dist-hypothetical-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-approx-percentile-cont-ordered-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-approx-percentile-disc-ordered-expression.v1");
     const auto aggregate_direct_descriptor_count =
         string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
@@ -33958,7 +33966,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool percentile_disc =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-percentile-disc-");
-      const bool percentile = percentile_cont || percentile_disc;
+      const bool approx_percentile_cont =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-approx-percentile-cont-");
+      const bool approx_percentile_disc =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-approx-percentile-disc-");
+      const bool percentile =
+          percentile_cont || percentile_disc || approx_percentile_cont ||
+          approx_percentile_disc;
       const bool rank =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-rank-hypothetical-");
@@ -34073,6 +34089,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (mode) return "mode_value";
         if (percentile_cont) return "percentile_cont_value";
         if (percentile_disc) return "percentile_disc_value";
+        if (approx_percentile_cont) return "approx_percentile_cont_value";
+        if (approx_percentile_disc) return "approx_percentile_disc_value";
         if (rank) return "rank_value";
         if (dense_rank) return "dense_rank_value";
         if (percent_rank) return "percent_rank_value";

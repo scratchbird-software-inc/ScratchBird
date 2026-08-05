@@ -813,8 +813,13 @@ BuildEngineProjectedNativeBindingContext(
       const bool mode_function = function == "MODE";
       const bool percentile_cont_function = function == "PERCENTILE_CONT";
       const bool percentile_disc_function = function == "PERCENTILE_DISC";
+      const bool approx_percentile_cont_function =
+          function == "APPROX_PERCENTILE_CONT";
+      const bool approx_percentile_disc_function =
+          function == "APPROX_PERCENTILE_DISC";
       const bool percentile_function =
-          percentile_cont_function || percentile_disc_function;
+          percentile_cont_function || percentile_disc_function ||
+          approx_percentile_cont_function || approx_percentile_disc_function;
       const bool rank_function = function == "RANK";
       const bool dense_rank_function = function == "DENSE_RANK";
       const bool percent_rank_function = function == "PERCENT_RANK";
@@ -1111,6 +1116,14 @@ BuildEngineProjectedNativeBindingContext(
         aggregate_output_name = "percentile_disc_value";
         aggregate_semantic =
             "aggregate.global-percentile-disc-ordered-expression.v1";
+      } else if (approx_percentile_cont_function) {
+        aggregate_output_name = "approx_percentile_cont_value";
+        aggregate_semantic =
+            "aggregate.global-approx-percentile-cont-ordered-expression.v1";
+      } else if (approx_percentile_disc_function) {
+        aggregate_output_name = "approx_percentile_disc_value";
+        aggregate_semantic =
+            "aggregate.global-approx-percentile-disc-ordered-expression.v1";
       } else if (rank_function) {
         aggregate_output_name = "rank_value";
         aggregate_semantic =

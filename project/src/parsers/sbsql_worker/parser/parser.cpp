@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 37> kFunctionNames{
+    static constexpr std::array<std::string_view, 39> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -314,7 +314,8 @@ class NativeRelationalParser final {
         "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
         "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE",
         "PERCENTILE_CONT", "PERCENTILE_DISC", "RANK", "DENSE_RANK",
-        "PERCENT_RANK", "CUME_DIST"};
+        "PERCENT_RANK", "CUME_DIST", "APPROX_PERCENTILE_CONT",
+        "APPROX_PERCENTILE_DISC"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -344,7 +345,9 @@ class NativeRelationalParser final {
 
   static bool IsBoundedCatalogPercentile(const Token& token) {
     const auto function = CanonicalTokenText(token);
-    return function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC";
+    return function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC" ||
+           function == "APPROX_PERCENTILE_CONT" ||
+           function == "APPROX_PERCENTILE_DISC";
   }
 
   static bool IsBoundedCatalogHypotheticalSet(const Token& token) {

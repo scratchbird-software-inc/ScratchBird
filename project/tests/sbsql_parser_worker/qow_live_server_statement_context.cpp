@@ -941,11 +941,17 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed MODE did not preserve its exact WITHIN GROUP "
             "signed-integer ordering route");
 
-    static constexpr std::array<AggregateProof, 2> kPercentileProofs{{
+    static constexpr std::array<AggregateProof, 4> kPercentileProofs{{
         {"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY integer_value)",
          "percentile_cont_value=2"},
         {"PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY integer_value)",
          "percentile_disc_value=2"},
+        {"APPROX_PERCENTILE_CONT(0.5) WITHIN GROUP "
+         "(ORDER BY integer_value)",
+         "approx_percentile_cont_value=2"},
+        {"APPROX_PERCENTILE_DISC(0.5) WITHIN GROUP "
+         "(ORDER BY integer_value)",
+         "approx_percentile_disc_value=2"},
     }};
     for (const auto& proof : kPercentileProofs) {
       const auto sql = "SELECT " + std::string(proof.function) + " FROM "
