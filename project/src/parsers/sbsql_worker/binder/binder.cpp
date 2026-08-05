@@ -635,7 +635,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                  context.relations.front().semantic_variant_id !=
                      "aggregate.global-listagg-ordered-expression.v1" &&
                  context.relations.front().semantic_variant_id !=
-                     "aggregate.global-mode-ordered-expression.v1"))
+                     "aggregate.global-mode-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-percentile-cont-ordered-expression.v1" &&
+                 context.relations.front().semantic_variant_id !=
+                     "aggregate.global-percentile-disc-ordered-expression.v1"))
              : !context.relations.empty()) ||
         (aggregate_composition && (sort_composition || project_composition)) ||
         context.catalog_relations.size() != 1 ||
@@ -796,6 +800,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const bool string_agg_function = function == "STRING_AGG";
       const bool listagg_function = function == "LISTAGG";
       const bool mode_function = function == "MODE";
+      const bool percentile_function =
+          function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC";
       const bool expression_function =
           sum_function || avg_function || min_function || max_function ||
           function == "BOOL_AND" || function == "BOOL_OR" ||
@@ -806,18 +812,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           function == "APPROX_COUNT_DISTINCT" ||
           function == "APPROX_MEDIAN" ||
           string_agg_function || listagg_function || mode_function ||
-          pair_function;
+          percentile_function || pair_function;
       if (expression == ast.expressions.end() ||
           expression->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           (!count_function && !expression_function) ||
           (!pair_function && !string_agg_function && !listagg_function &&
+           !percentile_function &&
            expression->child_expression_ids.size() > 1) ||
           (expression_function && expression->child_expression_ids.size() !=
                                       (listagg_function
                                            ? 3
                                            : ((pair_function ||
-                                               string_agg_function)
+                                               string_agg_function ||
+                                               percentile_function)
                                                   ? 2
                                                   : 1))) ||
           expression->literal_kind.has_value()) {
@@ -833,15 +841,20 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             ast.expressions, [&](const auto& candidate) {
               return candidate.expression_id == argument_id;
             });
-        if ((string_agg_function || listagg_function) && ordinal == 1) {
+        const bool direct_text =
+            (string_agg_function || listagg_function) && ordinal == 1;
+        const bool direct_numeric = percentile_function && ordinal == 0;
+        if (direct_text || direct_numeric) {
           if (argument == ast.expressions.end() ||
               argument->expression_kind != NativeExpressionAstKind::kLiteral ||
-              argument->literal_kind != NativeLiteralAstKind::kString ||
+              argument->literal_kind !=
+                  (direct_text ? NativeLiteralAstKind::kString
+                               : NativeLiteralAstKind::kNumeric) ||
               !argument->child_expression_ids.empty() ||
               !argument->operator_name.empty()) {
             AddBoundAstDiagnostic(
                 &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
-                "catalog STRING_AGG separator is not an exact text literal");
+                "catalog aggregate direct argument is not an exact literal");
             return RefusedBoundAst(std::move(bound));
           }
           global_aggregate_direct_literal = &*argument;
@@ -1207,6 +1220,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const bool aggregate_mode =
         aggregate_composition &&
         aggregate_semantic.starts_with("aggregate.global-mode-");
+    const bool aggregate_percentile_cont =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-percentile-cont-");
+    const bool aggregate_percentile_disc =
+        aggregate_composition &&
+        aggregate_semantic.starts_with("aggregate.global-percentile-disc-");
     const std::string aggregate_output_name = [&]() {
       if (aggregate_count) return std::string("row_count");
       if (aggregate_semantic.starts_with("aggregate.global-avg-")) {
@@ -1283,6 +1302,12 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       if (aggregate_string_agg) return std::string("string_agg_value");
       if (aggregate_listagg) return std::string("listagg_value");
       if (aggregate_mode) return std::string("mode_value");
+      if (aggregate_percentile_cont) {
+        return std::string("percentile_cont_value");
+      }
+      if (aggregate_percentile_disc) {
+        return std::string("percentile_disc_value");
+      }
       if (aggregate_semantic.starts_with("aggregate.global-stddev-")) {
         return std::string("stddev_value");
       }
@@ -1347,7 +1372,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
               return candidate.expression_id ==
                      global_aggregate_direct_literal->expression_id;
             });
-        if ((!aggregate_string_agg && !aggregate_listagg) ||
+        if ((!aggregate_string_agg && !aggregate_listagg &&
+             !aggregate_percentile_cont && !aggregate_percentile_disc) ||
             direct_descriptor == descriptor_by_id.end() ||
             direct_descriptor->second->nullability !=
                 BoundNullability::kNonNull ||
@@ -1369,6 +1395,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         if (aggregate_listagg) {
           aggregate_argument_expression_ids.insert(
               aggregate_argument_expression_ids.begin() + 1,
+              global_aggregate_direct_literal->expression_id);
+        } else if (aggregate_percentile_cont || aggregate_percentile_disc) {
+          aggregate_argument_expression_ids.insert(
+              aggregate_argument_expression_ids.begin(),
               global_aggregate_direct_literal->expression_id);
         } else {
           aggregate_argument_expression_ids.push_back(
@@ -1542,7 +1572,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           BoundExpressionAstRecord literal;
           literal.expression_id = direct_binding->expression_id;
           literal.expression_kind = NativeExpressionAstKind::kLiteral;
-          literal.literal_kind = NativeLiteralAstKind::kString;
+          literal.literal_kind = global_aggregate_direct_literal->literal_kind;
           literal.result_descriptor_id = direct_binding->descriptor_id;
           literal.literal_or_parameter_ref =
               global_aggregate_direct_literal->spelling;

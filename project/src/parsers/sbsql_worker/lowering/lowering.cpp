@@ -33064,7 +33064,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
            relation.semantic_variant_id ==
                "aggregate.global-listagg-ordered-expression.v1" ||
            relation.semantic_variant_id ==
-               "aggregate.global-mode-ordered-expression.v1");
+               "aggregate.global-mode-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-percentile-cont-ordered-expression.v1" ||
+           relation.semantic_variant_id ==
+               "aggregate.global-percentile-disc-ordered-expression.v1");
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33798,7 +33802,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (aggregate_relation->semantic_variant_id ==
              "aggregate.global-string-agg-expression.v1" ||
          aggregate_relation->semantic_variant_id ==
-             "aggregate.global-listagg-ordered-expression.v1");
+             "aggregate.global-listagg-ordered-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-percentile-cont-ordered-expression.v1" ||
+         aggregate_relation->semantic_variant_id ==
+             "aggregate.global-percentile-disc-ordered-expression.v1");
     const auto aggregate_direct_descriptor_count =
         string_aggregate_profile ? 1 : 0;
     const auto filter_descriptor_count =
@@ -33928,6 +33936,13 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       const bool mode =
           aggregate_relation->semantic_variant_id.starts_with(
               "aggregate.global-mode-");
+      const bool percentile_cont =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-percentile-cont-");
+      const bool percentile_disc =
+          aggregate_relation->semantic_variant_id.starts_with(
+              "aggregate.global-percentile-disc-");
+      const bool percentile = percentile_cont || percentile_disc;
       const auto expected_output_name = [&]() -> std::string_view {
         if (count_aggregate) return "row_count";
         if (aggregate_relation->semantic_variant_id.starts_with(
@@ -34025,6 +34040,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         if (string_aggregate) return "string_agg_value";
         if (listagg) return "listagg_value";
         if (mode) return "mode_value";
+        if (percentile_cont) return "percentile_cont_value";
+        if (percentile_disc) return "percentile_disc_value";
         if (aggregate_relation->semantic_variant_id.starts_with(
                 "aggregate.global-stddev-")) {
           return "stddev_value";
@@ -34044,7 +34061,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                    ? 0
                    : (listagg
                           ? 3
-                          : ((pair_aggregate || string_aggregate) ? 2 : 1))) ||
+                          : ((pair_aggregate || string_aggregate || percentile)
+                                 ? 2
+                                 : 1))) ||
           aggregate_expression->second->result_descriptor_id !=
               aggregate_descriptor.descriptor_id ||
           aggregate_descriptor.nullability !=
@@ -34073,13 +34092,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           const auto argument_id =
               aggregate_expression->second->child_expression_ids[ordinal];
           const auto argument = expressions_by_id.find(argument_id);
-          if ((string_aggregate || listagg) && ordinal == 1) {
+          const bool direct_text =
+              (string_aggregate || listagg) && ordinal == 1;
+          const bool direct_numeric = percentile && ordinal == 0;
+          if (direct_text || direct_numeric) {
             const auto& direct_descriptor =
                 native.descriptors[width + aggregate_descriptor_count];
             if (argument == expressions_by_id.end() ||
                 argument->second->expression_kind !=
                     NativeExpressionAstKind::kLiteral ||
-                argument->second->literal_kind != NativeLiteralAstKind::kString ||
+                argument->second->literal_kind !=
+                    (direct_text ? NativeLiteralAstKind::kString
+                                 : NativeLiteralAstKind::kNumeric) ||
                 !argument->second->child_expression_ids.empty() ||
                 argument->second->bound_name_uuid.has_value() ||
                 argument->second->bound_function_uuid.has_value() ||
@@ -34098,8 +34122,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 !IsCanonicalBoundSourceUuid(direct_descriptor.type_uuid)) {
               AddNativeRelationalLoweringError(
                   &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-                  "typed STRING_AGG separator is not an exact engine-issued "
-                  "text literal");
+                  "typed aggregate direct argument is not an exact "
+                  "engine-issued literal");
               return envelope;
             }
             continue;

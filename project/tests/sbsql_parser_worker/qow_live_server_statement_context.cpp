@@ -941,6 +941,27 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
             "object-backed MODE did not preserve its exact WITHIN GROUP "
             "signed-integer ordering route");
 
+    static constexpr std::array<AggregateProof, 2> kPercentileProofs{{
+        {"PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY integer_value)",
+         "percentile_cont_value=2"},
+        {"PERCENTILE_DISC(0.5) WITHIN GROUP (ORDER BY integer_value)",
+         "percentile_disc_value=2"},
+    }};
+    for (const auto& proof : kPercentileProofs) {
+      const auto sql = "SELECT " + std::string(proof.function) + " FROM "
+                       "qow_packet7.qow_packet7_relation;";
+      auto percentile = parser.RunPipeline(sql, true);
+      if (!percentile.accepted) PrintMessages(percentile.messages);
+      Require(percentile.accepted &&
+                  percentile.server_operation_id == "query.execute" &&
+                  percentile.server_cursor_uuid.empty() &&
+                  percentile.server_row_count == 1 &&
+                  percentile.server_result_payload.find(
+                      proof.expected_payload) != std::string::npos,
+              "object-backed percentile did not preserve its exact numeric "
+              "fraction and persisted WITHIN GROUP ordering route");
+    }
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

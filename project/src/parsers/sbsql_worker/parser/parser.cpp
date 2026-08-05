@@ -304,7 +304,7 @@ class NativeRelationalParser final {
   }
 
   static bool IsBoundedCatalogGlobalAggregate(const Token& token) {
-    static constexpr std::array<std::string_view, 31> kFunctionNames{
+    static constexpr std::array<std::string_view, 33> kFunctionNames{
         "COUNT",       "SUM",          "AVG",      "MIN",
         "MAX",         "BOOL_AND",     "BOOL_OR",  "EVERY",
         "STDDEV_POP",  "VARIANCE_POP", "STDDEV",   "VARIANCE",
@@ -312,7 +312,8 @@ class NativeRelationalParser final {
         "COVAR_SAMP",  "REGR_COUNT",   "REGR_AVGX", "REGR_AVGY",
         "REGR_INTERCEPT", "REGR_R2",   "REGR_SLOPE", "REGR_SXX",
         "REGR_SXY",    "REGR_SYY",     "APPROX_COUNT_DISTINCT",
-        "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE"};
+        "APPROX_MEDIAN", "STRING_AGG",  "LISTAGG", "MODE",
+        "PERCENTILE_CONT", "PERCENTILE_DISC"};
     const auto canonical = CanonicalTokenText(token);
     return std::ranges::find(kFunctionNames, canonical) !=
            kFunctionNames.end();
@@ -340,6 +341,11 @@ class NativeRelationalParser final {
     return CanonicalTokenText(token) == "MODE";
   }
 
+  static bool IsBoundedCatalogPercentile(const Token& token) {
+    const auto function = CanonicalTokenText(token);
+    return function == "PERCENTILE_CONT" || function == "PERCENTILE_DISC";
+  }
+
   bool LooksLikeBoundedCatalogRelationSelect() const {
     // The candidate owns wildcard, simple identifier-list projection, and the
     // exact global COUNT(*) projection. Other computed projections and
@@ -351,7 +357,21 @@ class NativeRelationalParser final {
     } else if (cursor + 3 < tokens_.size() &&
                IsBoundedCatalogGlobalAggregate(*tokens_[cursor]) &&
                tokens_[cursor + 1]->text == "(") {
-      if (IsBoundedCatalogMode(*tokens_[cursor])) {
+      if (IsBoundedCatalogPercentile(*tokens_[cursor])) {
+        if (cursor + 10 >= tokens_.size() ||
+            tokens_[cursor + 2]->kind != TokenKind::kNumericLiteral ||
+            tokens_[cursor + 3]->text != ")" ||
+            !IsWord(*tokens_[cursor + 4], "WITHIN") ||
+            !IsWord(*tokens_[cursor + 5], "GROUP") ||
+            tokens_[cursor + 6]->text != "(" ||
+            !IsWord(*tokens_[cursor + 7], "ORDER") ||
+            !IsWord(*tokens_[cursor + 8], "BY") ||
+            tokens_[cursor + 9]->kind != TokenKind::kIdentifier ||
+            tokens_[cursor + 10]->text != ")") {
+          return false;
+        }
+        cursor += 11;
+      } else if (IsBoundedCatalogMode(*tokens_[cursor])) {
         if (cursor + 9 >= tokens_.size() ||
             tokens_[cursor + 2]->text != ")" ||
             !IsWord(*tokens_[cursor + 3], "WITHIN") ||
@@ -449,6 +469,7 @@ class NativeRelationalParser final {
           IsBoundedCatalogStringAggregate(function_token);
       const bool listagg = IsBoundedCatalogListagg(function_token);
       const bool mode = IsBoundedCatalogMode(function_token);
+      const bool percentile = IsBoundedCatalogPercentile(function_token);
       if (!RequireSymbol("(", "catalog_aggregate_open_required",
                          "bounded catalog aggregate requires an opening parenthesis")) {
         return FinishRefusal();
@@ -458,7 +479,18 @@ class NativeRelationalParser final {
       std::optional<std::size_t> reserved_aggregate_expression_index;
       std::optional<std::string> deferred_separator_spelling;
       std::optional<SourceRange> deferred_separator_range;
-      if (mode) {
+      std::optional<std::string> deferred_numeric_spelling;
+      std::optional<SourceRange> deferred_numeric_range;
+      if (percentile) {
+        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral) {
+          Refuse("catalog_percentile_fraction_required",
+                 "bounded percentile aggregate requires a numeric fraction");
+          return FinishRefusal();
+        }
+        const Token& fraction_token = Consume();
+        deferred_numeric_spelling = fraction_token.text;
+        deferred_numeric_range = TokenSourceRange(fraction_token);
+      } else if (mode) {
         // MODE owns no direct argument. Its ordered value is bound below
         // from the exact WITHIN GROUP clause so source handles remain first.
       } else if (AtSymbol("*")) {
@@ -563,7 +595,7 @@ class NativeRelationalParser final {
       }
       const Token& close_token = Consume();
       const Token* aggregate_close_token = &close_token;
-      if (listagg || mode) {
+      if (listagg || mode || percentile) {
         if (AtEnd() || !IsWord(Current(), "WITHIN")) {
           Refuse("catalog_ordered_set_within_group_required",
                  "bounded ordered aggregate requires WITHIN GROUP ordering");
@@ -599,14 +631,15 @@ class NativeRelationalParser final {
         }
         const Token& order_token = Consume();
         std::uint32_t order_expression_id = 0;
-        const auto value_expression = mode
+        const auto value_expression = (mode || percentile)
             ? document_.expressions.end()
             : std::ranges::find_if(
                   document_.expressions, [&](const auto& candidate) {
                     return candidate.expression_id ==
                            argument_expression_ids.front();
                   });
-        if (!mode && value_expression != document_.expressions.end() &&
+        if (!mode && !percentile &&
+            value_expression != document_.expressions.end() &&
             order_token.text == value_expression->spelling) {
           order_expression_id = argument_expression_ids.front();
         } else {
@@ -641,6 +674,21 @@ class NativeRelationalParser final {
           separator.range = *deferred_separator_range;
           argument_expression_ids.push_back(separator.expression_id);
           document_.expressions.push_back(std::move(separator));
+        } else if (percentile) {
+          reserved_aggregate_expression_id = NextExpressionId();
+          NativeExpressionAstNode aggregate_placeholder;
+          aggregate_placeholder.expression_id =
+              *reserved_aggregate_expression_id;
+          reserved_aggregate_expression_index = document_.expressions.size();
+          document_.expressions.push_back(std::move(aggregate_placeholder));
+          NativeExpressionAstNode fraction;
+          fraction.expression_id = NextExpressionId();
+          fraction.expression_kind = NativeExpressionAstKind::kLiteral;
+          fraction.literal_kind = NativeLiteralAstKind::kNumeric;
+          fraction.spelling = *deferred_numeric_spelling;
+          fraction.range = *deferred_numeric_range;
+          argument_expression_ids.push_back(fraction.expression_id);
+          document_.expressions.push_back(std::move(fraction));
         }
         argument_expression_ids.push_back(order_expression_id);
       }

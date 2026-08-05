@@ -811,6 +811,10 @@ BuildEngineProjectedNativeBindingContext(
       const bool string_agg_function = function == "STRING_AGG";
       const bool listagg_function = function == "LISTAGG";
       const bool mode_function = function == "MODE";
+      const bool percentile_cont_function = function == "PERCENTILE_CONT";
+      const bool percentile_disc_function = function == "PERCENTILE_DISC";
+      const bool percentile_function =
+          percentile_cont_function || percentile_disc_function;
       const bool pair_function =
           function == "CORR" || function == "COVAR_POP" ||
           function == "COVAR_SAMP" || regr_count_function ||
@@ -825,7 +829,7 @@ BuildEngineProjectedNativeBindingContext(
           variance_function || stddev_samp_function || variance_samp_function ||
           approx_count_distinct_function || approx_median_function ||
           string_agg_function || listagg_function || mode_function ||
-          pair_function;
+          percentile_function || pair_function;
       const auto aggregate_function_uuid =
           EngineIssuedAggregateFunctionUuid(statement_context, function);
       const bool count_star = count_function &&
@@ -846,12 +850,19 @@ BuildEngineProjectedNativeBindingContext(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind == 3 && candidate.slot == 0;
           });
+      const auto direct_numeric_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 1 && candidate.slot == 0;
+          });
       bool argument_profile_exact = count_star;
       if (!count_star && aggregate_expression != ast.expressions.end() &&
           aggregate_expression->child_expression_ids.size() ==
               (listagg_function
                    ? 3
-                   : ((pair_function || string_agg_function) ? 2 : 1)) &&
+                   : ((pair_function || string_agg_function ||
+                       percentile_function)
+                          ? 2
+                          : 1)) &&
           result_profile != statement_context.descriptor_profiles.end()) {
         argument_profile_exact = true;
         for (std::size_t ordinal = 0;
@@ -867,11 +878,16 @@ BuildEngineProjectedNativeBindingContext(
             argument_profile_exact = false;
             break;
           }
-          if ((string_agg_function || listagg_function) && ordinal == 1) {
+          const bool direct_text =
+              (string_agg_function || listagg_function) && ordinal == 1;
+          const bool direct_numeric = percentile_function && ordinal == 0;
+          if (direct_text || direct_numeric) {
             argument_profile_exact =
                 argument->expression_kind ==
                     NativeExpressionAstKind::kLiteral &&
-                argument->literal_kind == NativeLiteralAstKind::kString &&
+                argument->literal_kind ==
+                    (direct_text ? NativeLiteralAstKind::kString
+                                 : NativeLiteralAstKind::kNumeric) &&
                 argument->child_expression_ids.empty() &&
                 argument->operator_name.empty();
           } else {
@@ -895,7 +911,10 @@ BuildEngineProjectedNativeBindingContext(
                 ? 0
                 : (listagg_function
                        ? 3
-                       : ((pair_function || string_agg_function) ? 2 : 1)))) ||
+                       : ((pair_function || string_agg_function ||
+                           percentile_function)
+                              ? 2
+                              : 1)))) ||
           !argument_profile_exact ||
           result_profile == statement_context.descriptor_profiles.end() ||
           ((count_function || regr_count_function ||
@@ -913,6 +932,14 @@ BuildEngineProjectedNativeBindingContext(
             !CanonicalUuidBytes(direct_text_profile->descriptor_uuid)
                  .has_value() ||
             !CanonicalUuidBytes(direct_text_profile->type_uuid).has_value())) ||
+          (percentile_function &&
+           (direct_numeric_profile ==
+                statement_context.descriptor_profiles.end() ||
+            direct_numeric_profile->nullable ||
+            !CanonicalUuidBytes(direct_numeric_profile->descriptor_uuid)
+                 .has_value() ||
+            !CanonicalUuidBytes(direct_numeric_profile->type_uuid)
+                 .has_value())) ||
           !aggregate_function_uuid.has_value()) {
         return fail("catalog_global_aggregate_profile_unavailable");
       }
@@ -946,6 +973,24 @@ BuildEngineProjectedNativeBindingContext(
         context.descriptors.push_back(std::move(separator_descriptor));
         context.expressions.push_back(
             {separator_expression->expression_id,
+             context.descriptors.back().descriptor_id, std::nullopt,
+             std::nullopt});
+      } else if (percentile_function) {
+        const auto direct_expression = std::ranges::find_if(
+            ast.expressions, [&](const auto& candidate) {
+              return candidate.expression_id ==
+                     aggregate_expression->child_expression_ids.front();
+            });
+        NativeDescriptorBindingInput direct_descriptor;
+        direct_descriptor.descriptor_id =
+            static_cast<std::uint32_t>(context.descriptors.size() + 1);
+        direct_descriptor.descriptor_uuid =
+            direct_numeric_profile->descriptor_uuid;
+        direct_descriptor.type_uuid = direct_numeric_profile->type_uuid;
+        direct_descriptor.nullability = BoundNullability::kNonNull;
+        context.descriptors.push_back(std::move(direct_descriptor));
+        context.expressions.push_back(
+            {direct_expression->expression_id,
              context.descriptors.back().descriptor_id, std::nullopt,
              std::nullopt});
       }
@@ -1042,9 +1087,17 @@ BuildEngineProjectedNativeBindingContext(
       } else if (listagg_function) {
         aggregate_output_name = "listagg_value";
         aggregate_semantic = "aggregate.global-listagg-ordered-expression.v1";
-      } else {
+      } else if (mode_function) {
         aggregate_output_name = "mode_value";
         aggregate_semantic = "aggregate.global-mode-ordered-expression.v1";
+      } else if (percentile_cont_function) {
+        aggregate_output_name = "percentile_cont_value";
+        aggregate_semantic =
+            "aggregate.global-percentile-cont-ordered-expression.v1";
+      } else {
+        aggregate_output_name = "percentile_disc_value";
+        aggregate_semantic =
+            "aggregate.global-percentile-disc-ordered-expression.v1";
       }
     }
     if (limit_composition) {
