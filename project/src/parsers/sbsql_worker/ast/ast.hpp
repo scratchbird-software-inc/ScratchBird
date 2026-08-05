@@ -62,6 +62,17 @@ enum class NativeRelationAstKind {
   kJoin,
 };
 
+enum class NativeJoinAstKind {
+  kNone,
+  kCross,
+  kInner,
+  kLeftOuter,
+  kRightOuter,
+  kFullOuter,
+  kLeftSemi,
+  kLeftAnti,
+};
+
 enum class NativeSortDirection {
   kAscending,
   kDescending,
@@ -191,6 +202,7 @@ struct NativeRelationAstNode {
       NativeAggregateGroupingForm::kNone};
   NativeAggregateProjectionForm aggregate_projection_form{
       NativeAggregateProjectionForm::kNone};
+  NativeJoinAstKind join_kind{NativeJoinAstKind::kNone};
   std::vector<std::uint32_t> input_relation_ids;
   std::vector<std::uint32_t> relation_source_ids;
   std::vector<std::uint32_t> values_row_ids;

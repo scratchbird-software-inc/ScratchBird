@@ -33322,9 +33322,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     } else if (relation.relation_kind == NativeRelationAstKind::kJoin) {
       const bool accepted_join_semantic =
           relation.semantic_variant_id == "join.cross.v1" ||
-          relation.semantic_variant_id == "join.inner.v1";
-      const bool inner_join =
-          relation.semantic_variant_id == "join.inner.v1";
+          relation.semantic_variant_id == "join.inner.v1" ||
+          relation.semantic_variant_id == "join.left-outer.v1" ||
+          relation.semantic_variant_id == "join.right-outer.v1" ||
+          relation.semantic_variant_id == "join.full-outer.v1";
+      const bool predicate_join =
+          relation.semantic_variant_id != "join.cross.v1";
       if (catalog_join_relation != nullptr || catalog_relations.size() != 2 ||
           relation.input_relation_ids !=
               std::vector<std::uint32_t>{catalog_relations[0]->relation_id,
@@ -33337,7 +33340,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.grouping_key_expression_ids.empty() ||
           !relation.aggregate_expression_ids.empty() ||
           relation.predicate_expression_ids.size() !=
-              static_cast<std::size_t>(inner_join) ||
+              static_cast<std::size_t>(predicate_join) ||
           !relation.limit_expression_ids.empty() ||
           !relation.ordering_terms.empty() ||
           relation.bound_object_uuid.has_value() ||
@@ -33817,8 +33820,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return envelope;
     }
 
-    const bool inner_join =
-        catalog_join_relation->semantic_variant_id == "join.inner.v1";
+    const bool predicate_join =
+        catalog_join_relation->semantic_variant_id != "join.cross.v1";
     std::size_t descriptor_offset = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
     std::unordered_set<std::string> object_uuids;
@@ -33918,7 +33921,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           relation->output_expression_ids.begin(),
           relation->output_expression_ids.end());
     }
-    if (inner_join) {
+    if (predicate_join) {
       const auto predicate = expressions_by_id.find(
           catalog_join_relation->predicate_expression_ids.front());
       if (descriptor_offset >= native.descriptors.size() ||
@@ -33943,7 +33946,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
               native.descriptors[descriptor_offset].descriptor_uuid) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "typed INNER JOIN predicate lineage is incomplete");
+            "typed JOIN predicate lineage is incomplete");
         return envelope;
       }
       ++descriptor_offset;

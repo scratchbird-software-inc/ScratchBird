@@ -460,7 +460,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_column.descriptor.descriptor_kind = "scalar";
   join_column.descriptor.canonical_type_name = "integer";
   join_column.descriptor.encoded_descriptor = "type=integer";
-  join_column.nullable = false;
+  join_column.nullable = true;
   join_table.table_columns.push_back(std::move(join_column));
   RequireEngineOk(api::EngineCreateTable(join_table),
                   "object-backed join fixture table create failed");
@@ -528,7 +528,7 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   join_insert.target_table.uuid.canonical =
       uuid::UuidToString(fixture->join_relation_uuid.value);
   join_insert.target_table.object_kind = "table";
-  for (const std::int64_t value : {2, 3}) {
+  for (const std::int64_t value : {2, 3, 4}) {
     api::EngineTypedValue typed;
     typed.descriptor.descriptor_kind = "scalar";
     typed.descriptor.canonical_type_name = "integer";
@@ -542,8 +542,8 @@ void CreateObjectBackedRelation(Fixture* fixture) {
   const auto join_inserted = api::EngineInsertRows(join_insert);
   RequireEngineOk(join_inserted,
                   "object-backed join fixture row insert failed");
-  Require(join_inserted.inserted_count == 2,
-          "object-backed join fixture did not insert two rows");
+  Require(join_inserted.inserted_count == 3,
+          "object-backed join fixture did not insert three rows");
 
   api::EngineCommitTransactionRequest commit;
   commit.context = context;
@@ -696,7 +696,7 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed_cross_join.server_operation_id ==
                     "query.execute" &&
                 object_backed_cross_join.server_cursor_uuid.empty() &&
-                object_backed_cross_join.server_row_count == 6 &&
+                object_backed_cross_join.server_row_count == 9 &&
                 object_backed_cross_join.server_result_payload.find(
                     "join_value") != std::string::npos,
             "object-backed native CROSS JOIN did not complete the canonical "
@@ -717,6 +717,32 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed_inner_join.server_row_count == 2,
             "object-backed native INNER JOIN did not evaluate its typed ON "
             "predicate over two heap scans");
+
+    const auto verify_outer_join = [&](const std::string_view join_sql,
+                                       const std::uint64_t expected_rows,
+                                       const std::string_view label) {
+      auto joined = parser.RunPipeline(
+          "SELECT * FROM qow_packet7.qow_packet7_relation " +
+              std::string(join_sql) +
+              " qow_packet7.qow_packet7_join_relation ON integer_value = "
+              "join_value;",
+          true);
+      if (!joined.accepted) PrintMessages(joined.messages);
+      Require(joined.accepted &&
+                  joined.server_operation_id == "query.execute" &&
+                  joined.server_cursor_uuid.empty() &&
+                  joined.server_row_count == expected_rows,
+              label);
+    };
+    verify_outer_join("LEFT OUTER JOIN", 3,
+                      "object-backed LEFT OUTER JOIN did not preserve its "
+                      "unmatched left row");
+    verify_outer_join("RIGHT OUTER JOIN", 3,
+                      "object-backed RIGHT OUTER JOIN did not preserve its "
+                      "unmatched right row");
+    verify_outer_join("FULL OUTER JOIN", 4,
+                      "object-backed FULL OUTER JOIN did not preserve both "
+                      "unmatched sides");
 
     auto object_backed_count = parser.RunPipeline(
         "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);

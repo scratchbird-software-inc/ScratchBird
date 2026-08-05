@@ -553,11 +553,38 @@ BuildEngineProjectedNativeBindingContext(
       return fail("catalog_join_shape_invalid");
     }
 
-    const bool inner_join = !catalog_join->predicate_expression_ids.empty();
+    std::string join_semantic;
+    switch (catalog_join->join_kind) {
+      case NativeJoinAstKind::kCross:
+        join_semantic = "join.cross.v1";
+        break;
+      case NativeJoinAstKind::kInner:
+        join_semantic = "join.inner.v1";
+        break;
+      case NativeJoinAstKind::kLeftOuter:
+        join_semantic = "join.left-outer.v1";
+        break;
+      case NativeJoinAstKind::kRightOuter:
+        join_semantic = "join.right-outer.v1";
+        break;
+      case NativeJoinAstKind::kFullOuter:
+        join_semantic = "join.full-outer.v1";
+        break;
+      case NativeJoinAstKind::kNone:
+      case NativeJoinAstKind::kLeftSemi:
+      case NativeJoinAstKind::kLeftAnti:
+        return fail("catalog_join_kind_invalid");
+    }
+    const bool predicate_join =
+        catalog_join->join_kind != NativeJoinAstKind::kCross;
+    if (catalog_join->predicate_expression_ids.size() !=
+        static_cast<std::size_t>(predicate_join)) {
+      return fail("catalog_join_predicate_cardinality_invalid");
+    }
     const NativeExpressionAstNode* predicate = nullptr;
     const NativeExpressionAstNode* left_key = nullptr;
     const NativeExpressionAstNode* right_key = nullptr;
-    if (inner_join) {
+    if (predicate_join) {
       const auto find_expression = [&](const std::uint32_t expression_id) {
         const auto found = std::ranges::find_if(
             ast.expressions, [&](const auto& candidate) {
@@ -665,7 +692,7 @@ BuildEngineProjectedNativeBindingContext(
       context.catalog_relations.push_back(std::move(catalog_relation));
     }
     const auto source_descriptor_count = context.descriptors.size();
-    if (inner_join) {
+    if (predicate_join) {
       const auto left_column = std::ranges::find_if(
           context.catalog_relations[0].columns, [&](const auto& column) {
             return column.canonical_name_key == left_key->spelling;
@@ -696,6 +723,22 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = BoundNullability::kNullable;
       context.descriptors.push_back(std::move(descriptor));
     }
+    const auto source_is_nullable = [&](const std::size_t source_ordinal) {
+      return std::ranges::all_of(
+          context.catalog_relations[source_ordinal].columns,
+          [&](const auto& column) {
+            return context.descriptors[column.descriptor_id - 1].nullability ==
+                   BoundNullability::kNullable;
+          });
+    };
+    if (((catalog_join->join_kind == NativeJoinAstKind::kRightOuter ||
+          catalog_join->join_kind == NativeJoinAstKind::kFullOuter) &&
+         !source_is_nullable(0)) ||
+        ((catalog_join->join_kind == NativeJoinAstKind::kLeftOuter ||
+          catalog_join->join_kind == NativeJoinAstKind::kFullOuter) &&
+         !source_is_nullable(1))) {
+      return fail("catalog_outer_join_nullable_descriptor_required");
+    }
     const auto source_output_count = context.outputs.size();
     for (std::size_t ordinal = 0; ordinal < source_descriptor_count;
          ++ordinal) {
@@ -707,8 +750,7 @@ BuildEngineProjectedNativeBindingContext(
            static_cast<std::uint32_t>(ordinal), catalog_join->relation_id});
     }
     context.relations.push_back(
-        {catalog_join->relation_id,
-         inner_join ? "join.inner.v1" : "join.cross.v1"});
+        {catalog_join->relation_id, std::move(join_semantic)});
     return context;
   }
 

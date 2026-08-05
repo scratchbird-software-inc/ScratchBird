@@ -20323,15 +20323,41 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
       join = &node;
     }
   }
-  const bool inner_join =
-      join != nullptr && join->semantic_variant_id == "join.inner.v1";
+  auto join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+  std::string join_component;
+  std::string join_operation;
+  if (join != nullptr) {
+    if (join->semantic_variant_id == "join.cross.v1") {
+      join_component = "cross";
+      join_operation = "CROSS JOIN";
+    } else if (join->semantic_variant_id == "join.inner.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kInner;
+      join_component = "inner";
+      join_operation = "INNER JOIN";
+    } else if (join->semantic_variant_id == "join.left-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+      join_component = "left-outer";
+      join_operation = "LEFT OUTER JOIN";
+    } else if (join->semantic_variant_id == "join.right-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+      join_component = "right-outer";
+      join_operation = "RIGHT OUTER JOIN";
+    } else if (join->semantic_variant_id == "join.full-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+      join_component = "full-outer";
+      join_operation = "FULL OUTER JOIN";
+    }
+  }
+  const bool accepted_join = !join_component.empty();
+  const bool predicate_join =
+      accepted_join && join_kind != exec::CanonicalAcceptedJoinKind::kCross;
   if (dag.wire_version != 2 || scans.size() != 2 || join == nullptr ||
       dag.nodes.size() != 3 || dag.root_node_id != join->node_id ||
-      (join->semantic_variant_id != "join.cross.v1" && !inner_join) ||
+      !accepted_join ||
       join->input_node_ids !=
           std::vector<std::uint32_t>{scans[0]->node_id, scans[1]->node_id} ||
       join->bound_expression_ids.size() !=
-          static_cast<std::size_t>(inner_join)) {
+          static_cast<std::size_t>(predicate_join)) {
     return result;
   }
   result.profile_matched = true;
@@ -20384,12 +20410,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   const auto scan_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "heap-cross-scan.capability");
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, inner_join
-                                               ? "heap-inner-join.capability"
-                                               : "heap-cross-join.capability");
+      DerivedCanonicalUuid(identity_scope,
+                           "heap-" + join_component + ".capability");
   CanonicalRelationalExpressionRowBinding predicate_row_binding;
   std::string predicate_detail;
-  if (inner_join) {
+  if (predicate_join) {
     std::vector<std::uint32_t> predicate_descriptors =
         scans[0]->output_descriptor_ids;
     predicate_descriptors.insert(predicate_descriptors.end(),
@@ -20399,9 +20424,9 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
             dag, join->bound_expression_ids.front(), predicate_descriptors,
             &predicate_row_binding, &predicate_detail)) {
       return refuse(
-          "QOW-DIAG-PACKET7-OBJECT-HEAP-INNER-JOIN-PREDICATE-V1",
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-JOIN-PREDICATE-V1",
           predicate_detail.empty()
-              ? "object-backed INNER JOIN predicate binding is not exact"
+              ? "object-backed JOIN predicate binding is not exact"
               : predicate_detail);
     }
   }
@@ -20427,13 +20452,11 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   }
   profiles.push_back(
       {join->node_id,
-       inner_join ? "join.inner.3vl.nested.v1"
-                  : "join.cross.3vl.nested.v1",
+       "join." + join_component + ".3vl.nested.v1",
        join_capability_uuid,
        plan::CanonicalLogicalRelationalNodeKind::kJoin,
        exec::PhysicalNodeKind::kJoin,
-       inner_join ? "canonical.heap.join.inner.v1"
-                  : "canonical.heap.join.cross.v1",
+       "canonical.heap.join." + join_component + ".v1",
        1, 2048, 2, 2});
   const auto physical = PlanAndPublishLivePhysicalDag(
       planning_request, profiles, "heap-cross-join.selected-plan",
@@ -20520,16 +20543,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapJoin(
   selected.available_executors.push_back(
       std::move(*heap_registration.registration));
   selected.available_executors.push_back(MakeLiveJoinRegistration(
-      inner_join ? "join.inner.3vl.nested.v1"
-                 : "join.cross.3vl.nested.v1",
+      "join." + join_component + ".3vl.nested.v1",
       join_capability_uuid, {},
       maximum_output_rows, maximum_output_rows,
-      inner_join ? exec::CanonicalAcceptedJoinKind::kInner
-                 : exec::CanonicalAcceptedJoinKind::kCross,
-      inner_join ? "object-backed heap INNER JOIN"
-                 : "object-backed heap CROSS JOIN",
+      join_kind, "object-backed heap " + join_operation,
       input.context, true,
-      inner_join ? join->bound_expression_ids.front() : 0,
+      predicate_join ? join->bound_expression_ids.front() : 0,
       std::move(predicate_row_binding), input.relational_dag));
   selected.engine_execution_authorized = true;
   selected.result_publication_request.statement_uuid =

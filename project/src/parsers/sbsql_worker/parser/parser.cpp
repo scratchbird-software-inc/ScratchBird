@@ -380,9 +380,18 @@ class NativeRelationalParser final {
       return false;
     }
     for (std::size_t index = 3; index + 1 < tokens_.size(); ++index) {
-      if ((IsWord(*tokens_[index], "CROSS") ||
-           IsWord(*tokens_[index], "INNER")) &&
-          IsWord(*tokens_[index + 1], "JOIN")) {
+      const bool accepted_kind =
+          IsWord(*tokens_[index], "CROSS") ||
+          IsWord(*tokens_[index], "INNER") ||
+          IsWord(*tokens_[index], "LEFT") ||
+          IsWord(*tokens_[index], "RIGHT") ||
+          IsWord(*tokens_[index], "FULL");
+      if (accepted_kind && IsWord(*tokens_[index + 1], "JOIN")) {
+        return true;
+      }
+      if (accepted_kind && index + 2 < tokens_.size() &&
+          IsWord(*tokens_[index + 1], "OUTER") &&
+          IsWord(*tokens_[index + 2], "JOIN")) {
         return true;
       }
     }
@@ -440,12 +449,36 @@ class NativeRelationalParser final {
 
     auto left_source = parse_source(1);
     if (!left_source.has_value()) return FinishRefusal();
-    const bool cross_join = !AtEnd() && IsWord(Current(), "CROSS");
-    const bool inner_join = !AtEnd() && IsWord(Current(), "INNER");
-    if ((!cross_join && !inner_join) ||
-        !RequireWord(cross_join ? "CROSS" : "INNER",
+    NativeJoinAstKind join_kind = NativeJoinAstKind::kNone;
+    std::string_view join_word;
+    if (!AtEnd() && IsWord(Current(), "CROSS")) {
+      join_kind = NativeJoinAstKind::kCross;
+      join_word = "CROSS";
+    } else if (!AtEnd() && IsWord(Current(), "INNER")) {
+      join_kind = NativeJoinAstKind::kInner;
+      join_word = "INNER";
+    } else if (!AtEnd() && IsWord(Current(), "LEFT")) {
+      join_kind = NativeJoinAstKind::kLeftOuter;
+      join_word = "LEFT";
+    } else if (!AtEnd() && IsWord(Current(), "RIGHT")) {
+      join_kind = NativeJoinAstKind::kRightOuter;
+      join_word = "RIGHT";
+    } else if (!AtEnd() && IsWord(Current(), "FULL")) {
+      join_kind = NativeJoinAstKind::kFullOuter;
+      join_word = "FULL";
+    }
+    if (join_kind == NativeJoinAstKind::kNone ||
+        !RequireWord(join_word,
                      "catalog_join_kind_required",
-                     "bounded catalog JOIN requires CROSS or INNER") ||
+                     "bounded catalog JOIN kind is required")) {
+      return FinishRefusal();
+    }
+    const bool outer_join =
+        join_kind == NativeJoinAstKind::kLeftOuter ||
+        join_kind == NativeJoinAstKind::kRightOuter ||
+        join_kind == NativeJoinAstKind::kFullOuter;
+    if (outer_join && !AtEnd() && IsWord(Current(), "OUTER")) Consume();
+    if (
         !RequireWord("JOIN", "catalog_join_join_required",
                      "bounded catalog JOIN requires JOIN")) {
       return FinishRefusal();
@@ -455,7 +488,7 @@ class NativeRelationalParser final {
     const Token* predicate_left = nullptr;
     const Token* predicate_operator = nullptr;
     const Token* predicate_right = nullptr;
-    if (inner_join) {
+    if (join_kind != NativeJoinAstKind::kCross) {
       if (!RequireWord("ON", "catalog_inner_join_on_required",
                        "bounded catalog INNER JOIN requires ON") ||
           AtEnd() || Current().kind != TokenKind::kIdentifier) {
@@ -478,8 +511,9 @@ class NativeRelationalParser final {
       }
       predicate_right = &Consume();
     }
-    const Token& query_end = inner_join ? *predicate_right
-                                        : TokenForRangeEnd(right_source->range);
+    const Token& query_end = join_kind != NativeJoinAstKind::kCross
+                                 ? *predicate_right
+                                 : TokenForRangeEnd(right_source->range);
     if (AtSymbol(";")) Consume();
     if (!AtEnd()) {
       Refuse("catalog_cross_join_clause_unsupported",
@@ -508,9 +542,10 @@ class NativeRelationalParser final {
     NativeRelationAstNode join;
     join.relation_id = 3;
     join.relation_kind = NativeRelationAstKind::kJoin;
+    join.join_kind = join_kind;
     join.input_relation_ids = {1, 2};
     join.output_expression_ids = {1, 2};
-    if (inner_join) {
+    if (join_kind != NativeJoinAstKind::kCross) {
       NativeExpressionAstNode left_key;
       left_key.expression_id = NextExpressionId();
       left_key.expression_kind = NativeExpressionAstKind::kIdentifier;

@@ -479,7 +479,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         context.relations.size() != 1 ||
         context.relations.front().relation_id != catalog_join->relation_id ||
         (context.relations.front().semantic_variant_id != "join.cross.v1" &&
-         context.relations.front().semantic_variant_id != "join.inner.v1") ||
+         context.relations.front().semantic_variant_id != "join.inner.v1" &&
+         context.relations.front().semantic_variant_id !=
+             "join.left-outer.v1" &&
+         context.relations.front().semantic_variant_id !=
+             "join.right-outer.v1" &&
+         context.relations.front().semantic_variant_id !=
+             "join.full-outer.v1") ||
         ast.root_relation_id != catalog_join->relation_id ||
         catalog_join->input_relation_ids !=
             std::vector<std::uint32_t>{source_relations[0]->relation_id,
@@ -489,13 +495,13 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                             "catalog JOIN binding shape is incomplete");
       return RefusedBoundAst(std::move(bound));
     }
-    const bool inner_join =
-        context.relations.front().semantic_variant_id == "join.inner.v1";
+    const bool predicate_join =
+        context.relations.front().semantic_variant_id != "join.cross.v1";
     if (catalog_join->predicate_expression_ids.size() !=
-            static_cast<std::size_t>(inner_join) ||
+            static_cast<std::size_t>(predicate_join) ||
         context.descriptors.size() !=
             context.expressions.size() +
-                static_cast<std::size_t>(inner_join) ||
+                static_cast<std::size_t>(predicate_join) ||
         context.outputs.size() != context.expressions.size() * 2) {
       AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-RELATION",
                             "catalog JOIN predicate binding is incomplete");
@@ -610,7 +616,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     }
 
     std::vector<std::uint32_t> joined_output_ids;
-    if (inner_join) {
+    if (predicate_join) {
       const auto predicate_ast = std::ranges::find_if(
           ast.expressions, [&](const auto& expression) {
             return expression.expression_id ==
@@ -703,14 +709,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     bound_join.relation_kind = NativeRelationAstKind::kJoin;
     bound_join.input_relation_ids = catalog_join->input_relation_ids;
     bound_join.output_expression_ids = joined_expression_ids;
-    if (inner_join) {
+    if (predicate_join) {
       bound_join.predicate_expression_ids = {
           bound.expressions.back().expression_id};
       bound_join.bound_expression_ids =
           bound_join.predicate_expression_ids;
     }
     bound_join.semantic_variant_id =
-        inner_join ? "join.inner.v1" : "join.cross.v1";
+        context.relations.front().semantic_variant_id;
     bound.relations.push_back(std::move(bound_join));
 
     bound.descriptors.reserve(context.descriptors.size());
