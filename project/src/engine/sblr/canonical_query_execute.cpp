@@ -5965,6 +5965,145 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveCountStarRegistration(
   return registration;
 }
 
+exec::CanonicalPhysicalExecutorRegistration
+MakeLiveAggregateRegistryRegistration(
+    PreparedGlobalAggregateRoot prepared,
+    std::string capability_uuid,
+    const std::size_t maximum_input_row_count,
+    api::EngineRequestContext mga_context) {
+  exec::CanonicalPhysicalExecutorRegistration registration;
+  registration.node_kind = exec::PhysicalNodeKind::kAggregate;
+  registration.implementation_id = "aggregate.registry-core.v1";
+  registration.executor_capability_uuid = std::move(capability_uuid);
+  registration.executor_capability_abi_version = 1;
+  registration.engine_owned = true;
+  registration.accepts_optimizer_publication_v2 = true;
+  registration.execute =
+      [prepared = std::move(prepared), maximum_input_row_count,
+       mga_context = std::move(mga_context)](
+          const exec::TypedPhysicalNodeDag& dag,
+          const exec::PhysicalNodeRecord& node,
+          const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
+        exec::CanonicalPhysicalDispatchStepResult step;
+        step.selected_plan_uuid = dag.selected_plan_uuid;
+        step.mga_statement_context = dag.mga_statement_context;
+        step.executed_physical_node_id = node.physical_node_id;
+        step.causal_counter_id = node.causal_counter_id;
+        step.output_descriptor_ids = node.output_descriptor_ids;
+        step.authority.engine_mga_snapshot_bound = true;
+        if (inputs.size() != 1 ||
+            !inputs.front().materialized_output_batch.has_value() ||
+            inputs.front().materialized_output_batch->rows.size() >
+                maximum_input_row_count) {
+          step.diagnostic.ok = false;
+          step.diagnostic.diagnostic_code =
+              "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+          step.diagnostic.detail =
+              "aggregate registry did not receive its bounded typed input";
+          return step;
+        }
+        exec::TypedPhysicalNodeDag execution_dag = dag;
+        if (node.physical_node_id != dag.root_physical_node_id) {
+          std::unordered_set<std::uint64_t> execution_view_nodes;
+          std::vector<std::uint64_t> execution_view_pending{
+              node.physical_node_id};
+          while (!execution_view_pending.empty()) {
+            const auto physical_node_id = execution_view_pending.back();
+            execution_view_pending.pop_back();
+            if (!execution_view_nodes.insert(physical_node_id).second) {
+              continue;
+            }
+            const auto found = std::ranges::find_if(
+                dag.nodes, [&](const auto& candidate) {
+                  return candidate.physical_node_id == physical_node_id;
+                });
+            if (found == dag.nodes.end()) {
+              step.diagnostic.ok = false;
+              step.diagnostic.diagnostic_code =
+                  "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+              step.diagnostic.detail =
+                  "aggregate registry execution view is unresolved";
+              return step;
+            }
+            execution_view_pending.insert(
+                execution_view_pending.end(),
+                found->input_physical_node_ids.begin(),
+                found->input_physical_node_ids.end());
+          }
+          std::erase_if(execution_dag.nodes, [&](const auto& candidate) {
+            return !execution_view_nodes.contains(
+                candidate.physical_node_id);
+          });
+          execution_dag.root_physical_node_id = node.physical_node_id;
+        }
+        const auto& input_batch =
+            *inputs.front().materialized_output_batch;
+        std::optional<std::vector<api::EngineSqlTruthValue>>
+            filter_truth_values;
+        if (prepared.filter_column.has_value()) {
+          std::vector<api::EngineSqlTruthValue> materialized_filter;
+          std::string filter_detail;
+          if (!MaterializeAggregateFilterTruthValues(
+                  input_batch, *prepared.filter_column,
+                  prepared.filter_descriptor_id, &materialized_filter,
+                  &filter_detail)) {
+            step.diagnostic.ok = false;
+            step.diagnostic.diagnostic_code =
+                "QOW-DIAG-RELATIONAL-LIVE-AGGREGATE-INPUT-V1";
+            step.diagnostic.detail = std::move(filter_detail);
+            return step;
+          }
+          filter_truth_values = std::move(materialized_filter);
+        }
+        exec::CanonicalAggregateRuntimeRequest aggregate_request;
+        aggregate_request.physical_dag = std::move(execution_dag);
+        aggregate_request.selected_physical_node_id = node.physical_node_id;
+        aggregate_request.descriptor = prepared.aggregate_descriptor;
+        aggregate_request.input_batch = input_batch;
+        aggregate_request.value_columns = prepared.value_columns;
+        aggregate_request.value_expression_descriptor_ids =
+            prepared.value_descriptor_ids;
+        aggregate_request.direct_arguments = prepared.direct_arguments;
+        aggregate_request.result_column = prepared.result_column;
+        aggregate_request.filter_truth_values =
+            std::move(filter_truth_values);
+        aggregate_request.distinct = prepared.distinct;
+        aggregate_request.aggregate_order_terms =
+            prepared.aggregate_order_terms;
+        aggregate_request.aggregate_separator =
+            prepared.aggregate_separator;
+        aggregate_request.listagg_overflow_mode =
+            prepared.listagg_overflow_mode;
+        aggregate_request.listagg_max_output_bytes =
+            prepared.listagg_max_output_bytes;
+        aggregate_request.listagg_truncation_indicator =
+            prepared.listagg_truncation_indicator;
+        aggregate_request.listagg_with_count =
+            prepared.listagg_with_count;
+        aggregate_request.forced_strategy =
+            exec::CanonicalAggregateExecutionStrategy::serial;
+        aggregate_request.mga_authority =
+            BuildCanonicalExecutionMgaAuthority(
+                mga_context, aggregate_request.physical_dag);
+        const auto aggregate_result =
+            exec::ExecuteCanonicalAggregateRuntime(aggregate_request);
+        if (!aggregate_result.diagnostic.ok) {
+          step.diagnostic = aggregate_result.diagnostic;
+          return step;
+        }
+        step.authority = aggregate_result.authority;
+        step.result_handle_id = node.physical_node_id;
+        step.input_row_count = input_batch.rows.size();
+        step.rows_examined = input_batch.rows.size();
+        step.output_row_count = aggregate_result.output_batch.rows.size();
+        step.materialized_output_batch = aggregate_result.output_batch;
+        step.mga_statement_context =
+            aggregate_request.mga_authority.statement_context;
+        return step;
+      };
+  return registration;
+}
+
 exec::CanonicalPhysicalExecutorRegistration MakeLiveSortRegistration(
     std::vector<exec::CanonicalDescriptorOrderTerm> order_terms,
     std::string deterministic_tie_evidence_uuid,
@@ -6161,6 +6300,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::unordered_map<std::uint32_t, LiveSetOperationProfile>
       set_profiles;
   bool count_star_aggregate = false;
+  bool count_expression_aggregate = false;
+  LiveUnaryAggregateExpressionProfile global_aggregate_profile;
   std::size_t sort_count = 0;
   while (current != graph.nodes.end()) {
     if (!visited.insert(current->logical_node_id).second ||
@@ -6327,12 +6468,17 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
         }
         break;
       case plan::CanonicalLogicalRelationalNodeKind::kAggregate:
-        count_star_aggregate =
-            current->semantic_variant_id ==
-            "aggregate.global-count-star.v1";
+        global_aggregate_profile =
+            MatchLiveUnaryAggregateExpressionProfile(
+                current->semantic_variant_id);
+        count_star_aggregate = global_aggregate_profile.count_star;
+        count_expression_aggregate =
+            global_aggregate_profile.matched &&
+            global_aggregate_profile.function ==
+                exec::CanonicalAggregateFunction::count;
         if ((current->semantic_variant_id !=
                  "aggregate.query-distinct.v1" &&
-             !count_star_aggregate) ||
+             !count_expression_aggregate) ||
             !current->required_property_uuids.empty() ||
             !current->delivered_property_uuids.empty()) {
           return result;
@@ -6429,6 +6575,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
   std::size_t distinct_comparison_bound = 0;
   std::optional<PreparedGlobalAggregateRoot> prepared_count_star;
   std::size_t count_star_input_row_count = 0;
+  std::optional<PreparedGlobalAggregateRoot> prepared_registry_aggregate;
+  std::size_t registry_aggregate_input_row_count = 0;
   std::optional<PreparedSortRoot> prepared_sort;
   std::size_t sort_input_row_count = 0;
   std::size_t sort_comparison_bound = 0;
@@ -6463,6 +6611,8 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
       DerivedCanonicalUuid(identity_scope, "composition.distinct.capability");
   const auto count_star_capability_uuid = DerivedCanonicalUuid(
       identity_scope, "composition.count-star.capability");
+  const auto registry_aggregate_capability_uuid = DerivedCanonicalUuid(
+      identity_scope, "composition.aggregate-registry.capability");
   const auto sort_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
   const auto limit_capability_uuid =
@@ -7034,6 +7184,102 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
               std::numeric_limits<std::int64_t>::digits10 + 2;
           break;
         }
+        if (global_aggregate_profile.matched &&
+            global_aggregate_profile.function ==
+                exec::CanonicalAggregateFunction::count) {
+          auto prepared = PrepareGlobalAggregateRoot(
+              request.relational_dag, node, input_node, state,
+              exec::CanonicalAggregateFunction::count, false,
+              global_aggregate_profile.distinct,
+              global_aggregate_profile.has_filter);
+          if (!prepared.ok || prepared.value_columns.size() != 1) {
+            return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+          }
+          std::optional<std::vector<api::EngineSqlTruthValue>>
+              filter_truth_values;
+          if (prepared.filter_column.has_value()) {
+            std::vector<api::EngineSqlTruthValue> materialized_filter;
+            std::string filter_detail;
+            if (!MaterializeAggregateFilterTruthValues(
+                    input_batch, *prepared.filter_column,
+                    prepared.filter_descriptor_id, &materialized_filter,
+                    &filter_detail)) {
+              return refuse(std::string(kPayloadDiagnostic),
+                            std::move(filter_detail));
+            }
+            filter_truth_values = std::move(materialized_filter);
+          }
+          std::set<std::string> distinct_values;
+          std::size_t count_value = 0;
+          const auto value_column = prepared.value_columns.front();
+          for (std::size_t row = 0; row < input_batch.rows.size(); ++row) {
+            if (filter_truth_values.has_value() &&
+                (*filter_truth_values)[row] !=
+                    api::EngineSqlTruthValue::true_value) {
+              continue;
+            }
+            const auto& value = input_batch.rows[row].values[value_column];
+            if (value.state == api::EngineValueState::sql_null ||
+                value.is_null) {
+              continue;
+            }
+            if (prepared.distinct) {
+              std::string key = value.descriptor.canonical_type_name + ":" +
+                                value.encoded_value + ":";
+              key.append(
+                  reinterpret_cast<const char*>(value.binary_value.data()),
+                  value.binary_value.size());
+              if (!distinct_values.insert(std::move(key)).second) continue;
+            }
+            ++count_value;
+          }
+          std::uint64_t aggregate_work = input_row_count;
+          if (prepared.distinct &&
+              !CheckedMultiply(input_row_count, input_row_count,
+                               &aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                "composition COUNT(DISTINCT) work bound overflowed");
+          }
+          if (!add_work(aggregate_work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition COUNT(expression) work exceeds the admitted "
+                "bound");
+          }
+          exec::DescriptorBatch output;
+          output.columns.push_back(prepared.result_column);
+          exec::DescriptorTuple tuple;
+          api::EngineTypedValue count;
+          count.descriptor = prepared.result_column.descriptor;
+          count.encoded_value = std::to_string(count_value);
+          count.is_null = false;
+          count.state = api::EngineValueState::value;
+          tuple.values.push_back(std::move(count));
+          output.rows.push_back(std::move(tuple));
+          const auto canonical = exec::ValidateCanonicalDescriptorBatch(
+              output, node.output_descriptor_ids);
+          const auto values = exec::ValidateDescriptorBatch(output);
+          if (!canonical.ok || !values.ok) {
+            return refuse(
+                std::string(kPayloadDiagnostic),
+                !canonical.ok
+                    ? "COUNT(expression) planning state: " + canonical.detail
+                    : "COUNT(expression) planning state: " + values.detail);
+          }
+          prepared_registry_aggregate = std::move(prepared);
+          registry_aggregate_input_row_count = input_row_count;
+          state.batch = std::move(output);
+          state.result_bindings =
+              prepared_registry_aggregate->result_bindings;
+          implementation_id = "aggregate.registry-core.v1";
+          capability_uuid = registry_aggregate_capability_uuid;
+          transformation_rule =
+              "canonical.aggregate.composed-global-count-expression.v1";
+          physical_kind = exec::PhysicalNodeKind::kAggregate;
+          auxiliary_memory = aggregate_work;
+          break;
+        }
         auto prepared = PrepareQueryDistinctRoot(
             request.context, request.relational_dag, node, input_node, state);
         if (!prepared.ok) {
@@ -7368,6 +7614,13 @@ ExecuteCanonicalObjectFreeNodeDrivenCompositionQuery(
             prepared_count_star->result_column,
             count_star_capability_uuid, count_star_input_row_count,
             request.context));
+  }
+  if (prepared_registry_aggregate.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveAggregateRegistryRegistration(
+            *prepared_registry_aggregate,
+            registry_aggregate_capability_uuid,
+            registry_aggregate_input_row_count, request.context));
   }
   if (prepared_sort.has_value()) {
     const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
