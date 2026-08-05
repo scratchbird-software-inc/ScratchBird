@@ -457,7 +457,9 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
     }
   }
 
-  std::unordered_set<std::size_t> bound_ordinals;
+  std::unordered_map<std::size_t,
+                     CanonicalRelationalExpressionRowSlotKind>
+      bound_ordinals;
   std::unordered_set<std::uint32_t> bound_expression_ids;
   for (const auto& slot : row_binding.slots) {
     if (!bound_expression_ids.insert(slot.expression_id).second) {
@@ -465,7 +467,13 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
       *refusal_detail = "materialized row slot expression is duplicated";
       return false;
     }
-    if (!bound_ordinals.insert(slot.row_ordinal).second) {
+    const auto [bound_ordinal, inserted_ordinal] =
+        bound_ordinals.emplace(slot.row_ordinal, slot.slot_kind);
+    if (!inserted_ordinal &&
+        (bound_ordinal->second !=
+             CanonicalRelationalExpressionRowSlotKind::input_identifier ||
+         slot.slot_kind !=
+             CanonicalRelationalExpressionRowSlotKind::input_identifier)) {
       prepared->values_by_expression.clear();
       *refusal_detail = "materialized row slot ordinal is duplicated";
       return false;
@@ -503,13 +511,27 @@ bool CanonicalRelationalExpressionRuntime::PrepareRowBinding(
         !bound_expression.literal_kind.has_value() &&
         !bound_expression.operator_name.has_value() &&
         !bound_expression.literal_or_parameter_ref.has_value();
+    const bool exact_input_identifier =
+        consumer == api::EngineCanonicalExpressionConsumer::join &&
+        bound_expression.expression_kind ==
+            api::RelationalExpressionKind::kIdentifier &&
+        bound_expression.child_expression_ids.empty() &&
+        bound_expression.bound_name_uuid.has_value() &&
+        IsCanonicalUuid(*bound_expression.bound_name_uuid) &&
+        !bound_expression.function_uuid.has_value() &&
+        !bound_expression.literal_kind.has_value() &&
+        !bound_expression.operator_name.has_value() &&
+        !bound_expression.literal_or_parameter_ref.has_value();
     const bool exact_slot_kind =
         (slot.slot_kind ==
              CanonicalRelationalExpressionRowSlotKind::materialized_function &&
          exact_materialized_function) ||
         (slot.slot_kind ==
              CanonicalRelationalExpressionRowSlotKind::grouping_key &&
-         exact_grouping_key);
+         exact_grouping_key) ||
+        (slot.slot_kind ==
+             CanonicalRelationalExpressionRowSlotKind::input_identifier &&
+         exact_input_identifier);
     if (!exact_slot_kind) {
       prepared->values_by_expression.clear();
       *refusal_detail =

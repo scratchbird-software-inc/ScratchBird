@@ -532,6 +532,34 @@ sblr::SblrOperationEnvelope AcceptedJoinValuesEnvelope(
   return envelope;
 }
 
+// RCP-030-TEST-LIVE-ROW-DEPENDENT-JOIN-PREDICATE-V1
+sblr::SblrOperationEnvelope RowDependentJoinValuesEnvelope() {
+  auto envelope = InnerJoinValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "3") {
+      operand.value = "1|-|2|-|-|1|-|32";
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "4") {
+      operand.value = "1|-|2|-|-|1|-|33";
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "5") {
+      operand.value = "6|6,7|3|-|-|-|3d|-";
+    }
+  }
+  const auto first_output = std::ranges::find_if(
+      envelope.operands, [](const auto& operand) {
+        return operand.type == "relational_output_v1";
+      });
+  envelope.operands.insert(
+      first_output,
+      {{"relational_expression_v1", "6",
+        "3|-|1|-|019f0000-0000-7500-8000-000000008511|-|-|-"},
+       {"relational_expression_v1", "7",
+        "3|-|2|-|019f0000-0000-7500-8000-000000008512|-|-|-"}});
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope FilterValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.filter");
@@ -4392,6 +4420,145 @@ bool ValidateAcceptedJoinKindsSpine() {
           HasApiDiagnostic(missing_nullable_authority,
                            "QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1"),
       "outer join without nullable descriptor authority published evidence");
+  return passed;
+}
+
+// RCP-030-TEST-LIVE-ROW-DEPENDENT-JOIN-PREDICATE-V1
+bool ValidateRowDependentJoinPredicateSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::size_t columns,
+                            const std::size_t rows) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == columns &&
+           result.canonical_result_row_count == rows &&
+           result.api_result.result_shape.columns.size() == columns &&
+           result.api_result.result_shape.rows.size() == rows;
+  };
+
+  const auto inner = dispatch(RowDependentJoinValuesEnvelope());
+  const auto repeated = dispatch(RowDependentJoinValuesEnvelope());
+  bool passed = true;
+  passed &= Require(
+      completed(inner, 2, 1) &&
+          inner.api_result.result_shape.rows[0].fields[0]
+                  .second.encoded_value == "2" &&
+          inner.api_result.result_shape.rows[0].fields[1]
+                  .second.encoded_value == "2",
+      "row-dependent INNER JOIN did not select its descriptor-bound pair");
+  passed &= Require(
+      completed(repeated, 2, 1) &&
+          repeated.selected_plan_uuid == inner.selected_plan_uuid &&
+          repeated.canonical_result_bytes == inner.canonical_result_bytes,
+      "row-dependent INNER JOIN changed deterministic plan/result bytes");
+
+  auto duplicates = RowDependentJoinValuesEnvelope();
+  for (auto& operand : duplicates.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        (operand.name == "1" || operand.name == "2" ||
+         operand.name == "3" || operand.name == "4")) {
+      const auto descriptor =
+          operand.name == "1" || operand.name == "2" ? "1" : "2";
+      operand.value = "1|-|" + std::string(descriptor) + "|-|-|1|-|32";
+    }
+  }
+  const auto duplicate_result = dispatch(std::move(duplicates));
+  passed &= Require(
+      completed(duplicate_result, 2, 4) &&
+          std::ranges::all_of(
+              duplicate_result.api_result.result_shape.rows,
+              [](const auto& row) {
+                return row.fields.size() == 2 &&
+                       row.fields[0].second.encoded_value == "2" &&
+                       row.fields[1].second.encoded_value == "2";
+              }),
+      "row-dependent INNER JOIN lost duplicate pair multiplicity");
+
+  auto left_outer = RowDependentJoinValuesEnvelope();
+  for (auto& operand : left_outer.operands) {
+    if (operand.type == "relational_node_binding_v1" &&
+        operand.name == "3") {
+      operand.value =
+          "6a6f696e2e6c6566742d6f757465722e7631|5|-|-|-";
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "2") {
+      const auto marker = operand.value.find("|1|-|-|-|-|-");
+      if (marker != std::string::npos) operand.value[marker + 1] = '2';
+    } else if (operand.type == "relational_expression_v1" &&
+               operand.name == "4") {
+      operand.value = "1|-|2|-|-|7|-|2d";
+    }
+  }
+  const auto outer_result = dispatch(left_outer);
+  const auto typed_unmatched = std::ranges::find_if(
+      outer_result.api_result.result_shape.rows, [](const auto& row) {
+        return row.fields.size() == 2 &&
+               row.fields[0].second.encoded_value == "1" &&
+               row.fields[1].second.state ==
+                   api::EngineValueState::sql_null;
+      });
+  passed &= Require(
+      completed(outer_result, 2, 2) &&
+          typed_unmatched != outer_result.api_result.result_shape.rows.end(),
+      "row-dependent LEFT OUTER JOIN lost FALSE/UNKNOWN nonmatch extension");
+
+  auto anti = std::move(left_outer);
+  for (auto& operand : anti.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "3") {
+      operand.value = "4|0|1,2|1|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value =
+          "6a6f696e2e6c6566742d616e74692e7631|5|-|-|-";
+    }
+  }
+  const auto anti_result = dispatch(std::move(anti));
+  passed &= Require(
+      completed(anti_result, 1, 1) &&
+          anti_result.api_result.result_shape.rows[0].fields[0]
+                  .second.encoded_value == "1",
+      "row-dependent LEFT ANTI JOIN treated SQL UNKNOWN as a match");
+
+  auto unbound = RowDependentJoinValuesEnvelope();
+  for (auto& operand : unbound.operands) {
+    if (operand.type == "relational_expression_v1" &&
+        operand.name == "7") {
+      operand.value =
+          "3|-|3|-|019f0000-0000-7500-8000-000000008512|-|-|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 3;
+  const auto unbound_result = dispatch(std::move(unbound));
+  const auto exhausted_result = dispatch(RowDependentJoinValuesEnvelope(),
+                                         std::move(bounded_context));
+  const auto refused_before_publication = [](const auto& result,
+                                             const std::string_view code) {
+    return result.accepted && result.optimizer_admitted &&
+           !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty() &&
+           HasApiDiagnostic(result, code);
+  };
+  passed &= Require(
+      refused_before_publication(
+          unbound_result, "QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1") &&
+          refused_before_publication(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "unbound or resource-exhausted row predicate published partial evidence");
   return passed;
 }
 
@@ -9581,6 +9748,7 @@ int main() {
                       ValidateInnerJoinThreeValuedPredicate() &&
                       ValidateInnerJoinRefusalIsAtomic() &&
                       ValidateAcceptedJoinKindsSpine() &&
+                      ValidateRowDependentJoinPredicateSpine() &&
                       ValidateFilterValuesSpine() &&
                       ValidateFilterThreeValuedPredicate() &&
                       ValidateFilterRefusalIsAtomic() &&

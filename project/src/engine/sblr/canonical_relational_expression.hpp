@@ -32,6 +32,10 @@ namespace scratchbird::engine::sblr {
 enum class CanonicalRelationalExpressionRowSlotKind : std::uint8_t {
   materialized_function = 0,
   grouping_key = 1,
+  // One descriptor-exact input column consumed by a row-dependent canonical
+  // predicate.  This is deliberately separate from a grouping key: JOIN and
+  // other row consumers may read it, but it never gains aggregate authority.
+  input_identifier = 2,
 };
 
 struct CanonicalRelationalExpressionRowSlotBinding {

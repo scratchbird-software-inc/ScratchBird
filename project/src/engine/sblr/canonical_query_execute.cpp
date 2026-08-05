@@ -306,6 +306,8 @@ struct PreparedSetOperationRoot {
 
 struct PreparedJoinRoot {
   bool ok{false};
+  std::uint32_t predicate_expression_id{0};
+  CanonicalRelationalExpressionRowBinding predicate_row_binding;
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
 };
@@ -3543,6 +3545,11 @@ PreparedJoinRoot PrepareJoinRoot(
     const MaterializedValues& right,
     const exec::CanonicalAcceptedJoinKind join_kind) {
   PreparedJoinRoot result;
+  std::vector<std::uint32_t> predicate_descriptors =
+      left_node.output_descriptor_ids;
+  predicate_descriptors.insert(predicate_descriptors.end(),
+                               right_node.output_descriptor_ids.begin(),
+                               right_node.output_descriptor_ids.end());
   std::vector<std::uint32_t> expected_descriptors =
       left_node.output_descriptor_ids;
   const bool left_only =
@@ -3586,6 +3593,63 @@ PreparedJoinRoot PrepareJoinRoot(
     result.detail =
         "outer join right NULL extension lacks nullable descriptor authority";
     return result;
+  }
+
+  if (join_kind != exec::CanonicalAcceptedJoinKind::kCross) {
+    if (root.bound_expression_ids.size() != 1) {
+      result.detail = "join predicate root identity is not exact";
+      return result;
+    }
+    result.predicate_expression_id = root.bound_expression_ids.front();
+    result.predicate_row_binding.row_descriptor_ids = predicate_descriptors;
+
+    std::unordered_map<std::uint32_t, std::size_t> predicate_ordinals;
+    for (std::size_t ordinal = 0; ordinal < predicate_descriptors.size();
+         ++ordinal) {
+      if (!predicate_ordinals.emplace(predicate_descriptors[ordinal], ordinal)
+               .second) {
+        result.detail =
+            "join predicate input descriptor identity is ambiguous";
+        return result;
+      }
+    }
+    std::unordered_map<std::uint32_t,
+                       const api::RelationalExpressionRecord*>
+        expressions;
+    for (const auto& expression : dag.expressions) {
+      expressions.emplace(expression.expression_id, &expression);
+    }
+    std::unordered_set<std::uint32_t> reachable;
+    std::vector<std::uint32_t> pending{result.predicate_expression_id};
+    while (!pending.empty()) {
+      const auto expression_id = pending.back();
+      pending.pop_back();
+      if (!reachable.insert(expression_id).second) continue;
+      const auto expression = expressions.find(expression_id);
+      if (expression == expressions.end()) {
+        result.predicate_row_binding = {};
+        result.detail = "join predicate has a dangling expression child";
+        return result;
+      }
+      if (expression->second->expression_kind ==
+          api::RelationalExpressionKind::kIdentifier) {
+        const auto ordinal = predicate_ordinals.find(
+            expression->second->result_descriptor_id);
+        if (ordinal == predicate_ordinals.end()) {
+          result.predicate_row_binding = {};
+          result.detail =
+              "join predicate identifier is not supplied by either input";
+          return result;
+        }
+        result.predicate_row_binding.slots.push_back(
+            {expression_id, expression->second->result_descriptor_id,
+             ordinal->second,
+             CanonicalRelationalExpressionRowSlotKind::input_identifier});
+      }
+      pending.insert(pending.end(),
+                     expression->second->child_expression_ids.begin(),
+                     expression->second->child_expression_ids.end());
+    }
   }
 
   std::size_t published_ordinal = 0;
@@ -4875,20 +4939,6 @@ ExecuteCanonicalObjectFreeJoinQuery(
                   prepared_root.detail);
   }
 
-  api::EngineSqlTruthValue predicate_truth =
-      api::EngineSqlTruthValue::true_value;
-  std::string predicate_detail;
-  CanonicalRelationalExpressionRuntime expression_runtime(
-      request.relational_dag, request.expression_services);
-  if (*join_kind != exec::CanonicalAcceptedJoinKind::kCross &&
-      !expression_runtime.EvaluatePredicateForConsumer(
-          root->bound_expression_ids.front(),
-          api::EngineCanonicalExpressionConsumer::join, &predicate_truth,
-          &predicate_detail)) {
-    return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
-                  operation_name + " predicate: " + predicate_detail);
-  }
-
   const auto left_count = left.batch.rows.size();
   const auto right_count = right.batch.rows.size();
   if (left_count != 0 &&
@@ -4898,15 +4948,94 @@ ExecuteCanonicalObjectFreeJoinQuery(
                       " pair cardinality overflowed");
   }
   const auto pair_count = left_count * right_count;
-  const bool predicate_passes =
-      predicate_truth == api::EngineSqlTruthValue::true_value;
-  const auto matched_left_count =
-      predicate_passes && right_count != 0 ? left_count : 0;
-  const auto matched_right_count =
-      predicate_passes && left_count != 0 ? right_count : 0;
+  if (pair_count >
+      request.optimizer_request.resource.maximum_candidate_count) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live " + operation_name +
+                      " pair evaluation exceeds the admitted candidate bound");
+  }
+
+  std::uint64_t left_memory = 1;
+  std::uint64_t right_memory = 1;
+  if (!AddBatchMemoryBytes(left.batch, &left_memory) ||
+      !AddBatchMemoryBytes(right.batch, &right_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live " + operation_name + " input size overflowed");
+  }
+  std::uint64_t total_memory = 0;
+  std::uint64_t predicate_memory = 0;
+  if (!CheckedAdd(left_memory, right_memory, &total_memory) ||
+      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
+                       &predicate_memory) ||
+      !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                  "live " + operation_name +
+                      " predicate state size overflowed");
+  }
+  if (total_memory >
+      request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "live " + operation_name +
+                      " predicate state exceeds the admitted memory budget");
+  }
+
+  std::vector<api::EngineSqlTruthValue> predicate_truth_values;
+  predicate_truth_values.reserve(pair_count);
+  std::vector<bool> matched_left(left_count, false);
+  std::vector<bool> matched_right(right_count, false);
+  std::size_t matched_pair_count = 0;
+  if (*join_kind == exec::CanonicalAcceptedJoinKind::kCross) {
+    predicate_truth_values.assign(
+        pair_count, api::EngineSqlTruthValue::true_value);
+    std::fill(matched_left.begin(), matched_left.end(), right_count != 0);
+    std::fill(matched_right.begin(), matched_right.end(), left_count != 0);
+    matched_pair_count = pair_count;
+  } else {
+    CanonicalRelationalExpressionRuntime expression_runtime(
+        request.relational_dag, request.expression_services);
+    std::vector<api::EngineTypedValue> predicate_row_values;
+    predicate_row_values.reserve(left.batch.columns.size() +
+                                 right.batch.columns.size());
+    for (std::size_t left_ordinal = 0; left_ordinal < left_count;
+         ++left_ordinal) {
+      for (std::size_t right_ordinal = 0; right_ordinal < right_count;
+           ++right_ordinal) {
+        predicate_row_values.clear();
+        const auto& left_values = left.batch.rows[left_ordinal].values;
+        const auto& right_values = right.batch.rows[right_ordinal].values;
+        predicate_row_values.insert(predicate_row_values.end(),
+                                    left_values.begin(), left_values.end());
+        predicate_row_values.insert(predicate_row_values.end(),
+                                    right_values.begin(), right_values.end());
+        api::EngineSqlTruthValue predicate_truth =
+            api::EngineSqlTruthValue::unknown;
+        std::string predicate_detail;
+        if (!expression_runtime.EvaluatePredicateForConsumer(
+                prepared_root.predicate_expression_id,
+                prepared_root.predicate_row_binding, predicate_row_values,
+                api::EngineCanonicalExpressionConsumer::join,
+                &predicate_truth, &predicate_detail)) {
+          return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
+                        operation_name + " predicate pair " +
+                            std::to_string(predicate_truth_values.size()) +
+                            ": " + predicate_detail);
+        }
+        predicate_truth_values.push_back(predicate_truth);
+        if (predicate_truth == api::EngineSqlTruthValue::true_value) {
+          matched_left[left_ordinal] = true;
+          matched_right[right_ordinal] = true;
+          ++matched_pair_count;
+        }
+      }
+    }
+  }
+  const auto matched_left_count = static_cast<std::size_t>(
+      std::ranges::count(matched_left, true));
+  const auto matched_right_count = static_cast<std::size_t>(
+      std::ranges::count(matched_right, true));
   const auto unmatched_left_count = left_count - matched_left_count;
   const auto unmatched_right_count = right_count - matched_right_count;
-  std::size_t output_row_bound = predicate_passes ? pair_count : 0;
+  std::size_t output_row_bound = matched_pair_count;
   const auto add_output_rows = [&](const std::size_t additional) {
     if (additional > std::numeric_limits<std::size_t>::max() -
                          output_row_bound) {
@@ -4946,40 +5075,36 @@ ExecuteCanonicalObjectFreeJoinQuery(
       break;
   }
 
-  std::uint64_t left_memory = 1;
-  std::uint64_t right_memory = 1;
-  if (!AddBatchMemoryBytes(left.batch, &left_memory) ||
-      !AddBatchMemoryBytes(right.batch, &right_memory)) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live " + operation_name + " input size overflowed");
-  }
-  std::uint64_t total_memory = 0;
-  std::uint64_t predicate_memory = 0;
-  if (!CheckedAdd(left_memory, right_memory, &total_memory) ||
-      !CheckedMultiply(pair_count, sizeof(api::EngineSqlTruthValue),
-                       &predicate_memory) ||
-      !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
-    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live " + operation_name +
-                      " predicate state size overflowed");
-  }
   if (output_row_bound != 0) {
-    const auto left_payload_memory = left_memory - 1;
-    const auto right_payload_memory = right_memory - 1;
-    std::uint64_t matched_left_memory = 0;
-    std::uint64_t matched_right_memory = 0;
     std::uint64_t output_memory = output_row_bound;
+    const auto add_tuple_memory = [&](const exec::DescriptorTuple& tuple) {
+      for (const auto& value : tuple.values) {
+        if (!CheckedAdd(output_memory, value.encoded_value.size(),
+                        &output_memory)) {
+          return false;
+        }
+      }
+      return true;
+    };
     bool output_memory_valid = true;
     if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftSemi) {
-      output_memory_valid =
-          CheckedAdd(output_memory,
-                     matched_left_count == 0 ? 0 : left_payload_memory,
-                     &output_memory);
+      for (std::size_t left_ordinal = 0;
+           output_memory_valid && left_ordinal < left_count;
+           ++left_ordinal) {
+        if (matched_left[left_ordinal]) {
+          output_memory_valid =
+              add_tuple_memory(left.batch.rows[left_ordinal]);
+        }
+      }
     } else if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftAnti) {
-      output_memory_valid =
-          CheckedAdd(output_memory,
-                     unmatched_left_count == 0 ? 0 : left_payload_memory,
-                     &output_memory);
+      for (std::size_t left_ordinal = 0;
+           output_memory_valid && left_ordinal < left_count;
+           ++left_ordinal) {
+        if (!matched_left[left_ordinal]) {
+          output_memory_valid =
+              add_tuple_memory(left.batch.rows[left_ordinal]);
+        }
+      }
     } else {
       const bool emits_unmatched_left =
           *join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
@@ -4987,25 +5112,37 @@ ExecuteCanonicalObjectFreeJoinQuery(
       const bool emits_unmatched_right =
           *join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
           *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
-      output_memory_valid =
-          CheckedMultiply(left_payload_memory,
-                          predicate_passes ? right_count : 0,
-                          &matched_left_memory) &&
-          CheckedMultiply(right_payload_memory,
-                          predicate_passes ? left_count : 0,
-                          &matched_right_memory) &&
-          CheckedAdd(output_memory, matched_left_memory, &output_memory) &&
-          CheckedAdd(output_memory, matched_right_memory, &output_memory) &&
-          CheckedAdd(output_memory,
-                     !emits_unmatched_left || unmatched_left_count == 0
-                         ? 0
-                         : left_payload_memory,
-                     &output_memory) &&
-          CheckedAdd(output_memory,
-                     !emits_unmatched_right || unmatched_right_count == 0
-                         ? 0
-                         : right_payload_memory,
-                     &output_memory);
+      for (std::size_t pair = 0;
+           output_memory_valid && pair < predicate_truth_values.size();
+           ++pair) {
+        if (predicate_truth_values[pair] !=
+            api::EngineSqlTruthValue::true_value) {
+          continue;
+        }
+        const auto left_ordinal = pair / right_count;
+        const auto right_ordinal = pair % right_count;
+        output_memory_valid =
+            add_tuple_memory(left.batch.rows[left_ordinal]) &&
+            add_tuple_memory(right.batch.rows[right_ordinal]);
+      }
+      for (std::size_t left_ordinal = 0;
+           output_memory_valid && emits_unmatched_left &&
+           left_ordinal < left_count;
+           ++left_ordinal) {
+        if (!matched_left[left_ordinal]) {
+          output_memory_valid =
+              add_tuple_memory(left.batch.rows[left_ordinal]);
+        }
+      }
+      for (std::size_t right_ordinal = 0;
+           output_memory_valid && emits_unmatched_right &&
+           right_ordinal < right_count;
+           ++right_ordinal) {
+        if (!matched_right[right_ordinal]) {
+          output_memory_valid =
+              add_tuple_memory(right.batch.rows[right_ordinal]);
+        }
+      }
     }
     if (!output_memory_valid ||
         !CheckedAdd(total_memory, output_memory, &total_memory)) {
@@ -5083,7 +5220,8 @@ ExecuteCanonicalObjectFreeJoinQuery(
   join_registration.engine_owned = true;
   join_registration.accepts_optimizer_publication_v2 = true;
   join_registration.execute =
-      [predicate_truth, pair_count, output_row_bound,
+      [predicate_truth_values = std::move(predicate_truth_values), pair_count,
+       output_row_bound,
        join_kind = *join_kind, operation_name,
        mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
@@ -5140,8 +5278,8 @@ ExecuteCanonicalObjectFreeJoinQuery(
         key_request.right_batch = right_batch;
         key_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
-        join_request.residual_request.residual_truth_values.assign(
-            pair_count, predicate_truth);
+        join_request.residual_request.residual_truth_values =
+            predicate_truth_values;
         join_request.residual_request.maximum_candidate_rechecks =
             std::max<std::size_t>(1, pair_count);
         join_request.join_kind = join_kind;
