@@ -2121,6 +2121,39 @@ sblr::SblrOperationEnvelope NodeDrivenRecursiveCteLimitEnvelope(
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+sblr::SblrOperationEnvelope
+NodeDrivenRecursiveSearchCycleLimitEnvelope() {
+  auto envelope = NodeDrivenRecursiveCteLimitEnvelope(false);
+  envelope.trace_key = "qow.live.cte.recursive-search-cycle";
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000cfc4";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "3") {
+      operand.value = "12|0|1,2|1,2,3|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "4") {
+      operand.value = "7|0|3|1,2,3|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value =
+          EncodeHex(
+              "cte.recursive-search-breadth-cycle-int64-increment.v1") +
+          "|3|-|-|-";
+    }
+  }
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "2",
+       "019f0000-0000-7300-8000-00000000cfc5|"
+       "019f0000-0000-7400-8000-00000000cfc6|1|-|-|-|-|-"});
+  envelope.operands.push_back(
+      {"relational_descriptor_v1", "3",
+       "019f0000-0000-7300-8000-00000000cfc7|"
+       "019f0000-0000-7400-8000-00000000cfc8|1|-|-|-|-|-"});
+  return FinalizeStatementContextEnvelope(std::move(envelope));
+}
+
 sblr::SblrOperationEnvelope DistinctSortLimitValuesEnvelope(
     const bool fetch_first_rows_only) {
   auto envelope = sblr::MakeSblrEnvelope(
@@ -15219,6 +15252,59 @@ bool ValidateNodeDrivenRecursiveCteCompositionSpine() {
                   << ": " << diagnostic.code << ": "
                   << diagnostic.detail << '\n';
       }
+    }
+  }
+  const auto search_envelope =
+      NodeDrivenRecursiveSearchCycleLimitEnvelope();
+  const auto search = dispatch(search_envelope);
+  const auto search_replay = dispatch(search_envelope);
+  auto search_bounded_context = Context();
+  search_bounded_context.optimizer_maximum_candidate_count = 20;
+  const auto search_exhausted =
+      dispatch(search_envelope, std::move(search_bounded_context));
+  bool search_values_match =
+      search.api_result.ok &&
+      search.api_result.result_shape.rows.size() == 5 &&
+      search.api_result.result_shape.columns.size() == 3;
+  constexpr std::array<std::string_view, 5> expected_values{
+      "1", "2", "3", "4", "1"};
+  if (search_values_match) {
+    for (std::size_t row = 0; row < expected_values.size(); ++row) {
+      const auto& fields =
+          search.api_result.result_shape.rows[row].fields;
+      search_values_match =
+          search_values_match && fields.size() == 3 &&
+          fields[0].second.encoded_value == expected_values[row] &&
+          fields[1].second.encoded_value == std::to_string(row + 1) &&
+          fields[2].second.encoded_value ==
+              (row + 1 == expected_values.size() ? "true" : "false");
+    }
+  }
+  const bool search_passed =
+      search.accepted && search.optimizer_admitted &&
+      search.optimizer_selected && search.physical_dag_published &&
+      search.physical_dag_executed && search.runtime_actuals_attached &&
+      search.canonical_result_published && search.api_result.ok &&
+      search.logical_node_count == 4 && search.physical_node_count == 4 &&
+      search.canonical_result_column_count == 3 &&
+      search.canonical_result_row_count == 5 && search_values_match &&
+      search_replay.api_result.ok &&
+      search_replay.selected_plan_uuid == search.selected_plan_uuid &&
+      search_replay.canonical_result_bytes ==
+          search.canonical_result_bytes &&
+      selected_plans.insert(search.selected_plan_uuid).second &&
+      no_publication(search_exhausted);
+  passed &= Require(
+      search_passed,
+      "recursive CTE SEARCH/CYCLE composition was not canonical");
+  if (!search_passed) {
+    for (const auto& diagnostic : search.api_result.diagnostics) {
+      std::cerr << "recursive search/cycle: " << diagnostic.code << ": "
+                << diagnostic.detail << '\n';
+    }
+    for (const auto& diagnostic : search_exhausted.api_result.diagnostics) {
+      std::cerr << "recursive search/cycle exhausted: "
+                << diagnostic.code << ": " << diagnostic.detail << '\n';
     }
   }
   return passed;
