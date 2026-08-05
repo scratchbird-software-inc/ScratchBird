@@ -607,6 +607,53 @@ void VerifyFullParserServerRoute(const Fixture& fixture) {
                 object_backed.server_row_count == 3,
             "object-backed native SELECT did not complete the full live route");
 
+    auto object_backed_count = parser.RunPipeline(
+        "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation;", true);
+    if (!object_backed_count.accepted) {
+      PrintMessages(object_backed_count.messages);
+    }
+    Require(object_backed_count.accepted &&
+                object_backed_count.server_operation_id == "query.execute" &&
+                object_backed_count.server_cursor_uuid.empty() &&
+                object_backed_count.server_row_count == 1 &&
+                object_backed_count.server_result_payload.find("row_count=3") !=
+                    std::string::npos,
+            "object-backed global COUNT(*) did not complete the canonical "
+            "heap aggregate route");
+
+    auto object_backed_filtered_count = parser.RunPipeline(
+        "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation WHERE "
+        "integer_value >= 2;",
+        true);
+    if (!object_backed_filtered_count.accepted) {
+      PrintMessages(object_backed_filtered_count.messages);
+    }
+    Require(object_backed_filtered_count.accepted &&
+                object_backed_filtered_count.server_operation_id ==
+                    "query.execute" &&
+                object_backed_filtered_count.server_cursor_uuid.empty() &&
+                object_backed_filtered_count.server_row_count == 1 &&
+                object_backed_filtered_count.server_result_payload.find(
+                    "row_count=2") != std::string::npos,
+            "object-backed WHERE/global COUNT(*) composition did not preserve "
+            "the filtered MGA heap input");
+
+    auto object_backed_count_limit = parser.RunPipeline(
+        "SELECT COUNT(*) FROM qow_packet7.qow_packet7_relation LIMIT 1;",
+        true);
+    if (!object_backed_count_limit.accepted) {
+      PrintMessages(object_backed_count_limit.messages);
+    }
+    Require(object_backed_count_limit.accepted &&
+                object_backed_count_limit.server_operation_id ==
+                    "query.execute" &&
+                object_backed_count_limit.server_cursor_uuid.empty() &&
+                object_backed_count_limit.server_row_count == 1 &&
+                object_backed_count_limit.server_result_payload.find(
+                    "row_count=3") != std::string::npos,
+            "object-backed global COUNT(*)/LIMIT composition did not publish "
+            "its aggregate result");
+
     auto projected = parser.RunPipeline(
         "SELECT integer_value FROM qow_packet7.qow_packet7_relation;", true);
     if (!projected.accepted) PrintMessages(projected.messages);

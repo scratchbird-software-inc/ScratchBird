@@ -426,6 +426,10 @@ BuildEngineProjectedNativeBindingContext(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind == NativeRelationAstKind::kFilter;
         });
+    const auto aggregate_relation = std::ranges::find_if(
+        ast.relations, [](const auto& relation) {
+          return relation.relation_kind == NativeRelationAstKind::kAggregate;
+        });
     const auto project_relation = std::ranges::find_if(
         ast.relations, [](const auto& relation) {
           return relation.relation_kind == NativeRelationAstKind::kProject;
@@ -457,34 +461,55 @@ BuildEngineProjectedNativeBindingContext(
         project_relation->input_relation_ids ==
             std::vector<std::uint32_t>{expected_project_predecessor} &&
         !project_relation->output_expression_ids.empty();
+    const auto expected_aggregate_predecessor =
+        filter_composition ? filter_relation->relation_id
+                           : source_relation->relation_id;
+    const bool aggregate_composition =
+        aggregate_relation != ast.relations.end() &&
+        aggregate_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{expected_aggregate_predecessor} &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kGlobalUnary &&
+        aggregate_relation->aggregate_expression_ids.size() == 1 &&
+        aggregate_relation->output_expression_ids ==
+            aggregate_relation->aggregate_expression_ids;
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition ? limit_relation->relation_id
-                          : (project_composition
+                          : (aggregate_composition
+                                 ? aggregate_relation->relation_id
+                                 : (project_composition
                                  ? project_relation->relation_id
                                  : (sort_composition
                                         ? sort_relation->relation_id
                                         : (filter_composition
                                                ? filter_relation->relation_id
-                                               : source_relation->relation_id)));
+                                               : source_relation->relation_id))));
     const auto expected_limit_input =
-        project_composition
+        aggregate_composition
+            ? aggregate_relation->relation_id
+            : (project_composition
             ? project_relation->relation_id
             : (sort_composition
                    ? sort_relation->relation_id
                    : (filter_composition ? filter_relation->relation_id
-                                         : source_relation->relation_id));
+                                         : source_relation->relation_id)));
     const bool catalog_chain =
         ast.relations.size() ==
             1 + static_cast<std::size_t>(filter_composition) +
                 static_cast<std::size_t>(sort_composition) +
                 static_cast<std::size_t>(project_composition) +
+                static_cast<std::size_t>(aggregate_composition) +
                 static_cast<std::size_t>(limit_composition) &&
         ast.root_relation_id == expected_root &&
         (!limit_composition ||
          limit_relation->input_relation_ids ==
              std::vector<std::uint32_t>{expected_limit_input});
     if (ast.catalog_relation_sources.size() != 1 ||
+        (aggregate_composition &&
+         (sort_composition || project_composition)) ||
         !catalog_chain || ast.root_relation_id == 0 ||
         resolved_object_reference_seeds.size() != 1) {
       return fail("catalog_source_projection_cardinality_invalid");
@@ -500,6 +525,7 @@ BuildEngineProjectedNativeBindingContext(
         resolved.object_class == "external_table" ||
         resolved.object_class == "foreign_table";
     if ((!filter_composition && !sort_composition && !project_composition &&
+         !aggregate_composition &&
          !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
@@ -576,9 +602,11 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.columns.reserve(source_column_indexes.size());
     context.descriptors.reserve(
         source_column_indexes.size() +
+        (aggregate_composition ? 1 : 0) +
         (limit_composition ? 1 : 0) +
         (filter_composition ? 1 : 0));
-    context.expressions.reserve(source_column_indexes.size());
+    context.expressions.reserve(source_column_indexes.size() +
+                                (aggregate_composition ? 1 : 0));
     context.outputs.reserve(source_column_indexes.size() *
                             ast.relations.size());
     // QOW-SOURCE-PACKET7-PERSISTED-TYPE-BINDING-V1: catalog descriptor and
@@ -721,10 +749,46 @@ BuildEngineProjectedNativeBindingContext(
           {expected_ordinal, column.column_uuid, binding_id,
            column.canonical_name_key});
     }
-    if (limit_composition) {
-      const auto numeric_profile = std::ranges::find_if(
+    std::optional<std::uint32_t> aggregate_binding_id;
+    if (aggregate_composition) {
+      const auto count_expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   aggregate_relation->aggregate_expression_ids.front();
+          });
+      const auto count_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [](const auto& candidate) {
             return candidate.profile_kind == 1 && candidate.slot == 0;
+          });
+      if (count_expression == ast.expressions.end() ||
+          count_expression->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(count_expression->operator_name) != "COUNT" ||
+          !count_expression->child_expression_ids.empty() ||
+          count_profile == statement_context.descriptor_profiles.end() ||
+          count_profile->nullable ||
+          !CanonicalUuidBytes(count_profile->descriptor_uuid).has_value() ||
+          !CanonicalUuidBytes(count_profile->type_uuid).has_value() ||
+          !CanonicalUuidBytes(statement_context.count_function_uuid).has_value()) {
+        return fail("catalog_global_count_profile_unavailable");
+      }
+      aggregate_binding_id =
+          static_cast<std::uint32_t>(context.descriptors.size() + 1);
+      NativeDescriptorBindingInput descriptor;
+      descriptor.descriptor_id = *aggregate_binding_id;
+      descriptor.descriptor_uuid = count_profile->descriptor_uuid;
+      descriptor.type_uuid = count_profile->type_uuid;
+      descriptor.nullability = BoundNullability::kNonNull;
+      context.descriptors.push_back(std::move(descriptor));
+      context.expressions.push_back(
+          {*aggregate_binding_id, *aggregate_binding_id,
+           statement_context.count_function_uuid, std::nullopt});
+    }
+    if (limit_composition) {
+      const auto numeric_profile = std::ranges::find_if(
+          statement_context.descriptor_profiles, [&](const auto& candidate) {
+            return candidate.profile_kind == 1 &&
+                   candidate.slot == (aggregate_composition ? 1 : 0);
           });
       if (numeric_profile == statement_context.descriptor_profiles.end() ||
           numeric_profile->nullable ||
@@ -762,6 +826,17 @@ BuildEngineProjectedNativeBindingContext(
     }
     for (const auto& downstream : ast.relations) {
       if (downstream.relation_id == source_relation->relation_id) continue;
+      if (aggregate_composition &&
+          (downstream.relation_id == aggregate_relation->relation_id ||
+           (limit_composition &&
+            downstream.relation_id == limit_relation->relation_id))) {
+        const auto output_id =
+            static_cast<std::uint32_t>(context.outputs.size() + 1);
+        context.outputs.push_back(
+            {output_id, *aggregate_binding_id, "row_count",
+             *aggregate_binding_id, true, 0, downstream.relation_id});
+        continue;
+      }
       std::vector<std::size_t> downstream_source_ordinals;
       if (wildcard_projection) {
         downstream_source_ordinals.reserve(source_column_indexes.size());
@@ -801,6 +876,10 @@ BuildEngineProjectedNativeBindingContext(
              column.canonical_name_key, binding_id, true,
              static_cast<std::uint32_t>(ordinal), downstream.relation_id});
       }
+    }
+    if (aggregate_composition) {
+      context.relations.push_back(
+          {aggregate_relation->relation_id, "aggregate.global-count-star.v1"});
     }
     context.catalog_relations.push_back(std::move(catalog_relation));
     return context;

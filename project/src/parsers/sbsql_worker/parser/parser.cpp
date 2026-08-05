@@ -303,13 +303,19 @@ class NativeRelationalParser final {
   }
 
   bool LooksLikeBoundedCatalogRelationSelect() const {
-    // The candidate owns wildcard or simple identifier-list projection only.
-    // Computed projections, aggregates, and every other SELECT shape remain
-    // available to their established parser routes.
+    // The candidate owns wildcard, simple identifier-list projection, and the
+    // exact global COUNT(*) projection. Other computed projections and
+    // aggregates remain available to their established parser routes.
     if (tokens_.size() < 3) return false;
     std::size_t cursor = 1;
     if (tokens_[cursor]->text == "*") {
       ++cursor;
+    } else if (cursor + 3 < tokens_.size() &&
+               IsWord(*tokens_[cursor], "COUNT") &&
+               tokens_[cursor + 1]->text == "(" &&
+               tokens_[cursor + 2]->text == "*" &&
+               tokens_[cursor + 3]->text == ")") {
+      cursor += 4;
     } else {
       while (cursor < tokens_.size()) {
         if (tokens_[cursor]->kind != TokenKind::kIdentifier) return false;
@@ -337,7 +343,42 @@ class NativeRelationalParser final {
 
     const Token& select_token = Consume();
     std::vector<std::uint32_t> projection_expression_ids;
-    if (AtSymbol("*")) {
+    std::vector<std::uint32_t> source_projection_expression_ids;
+    std::optional<std::uint32_t> global_count_expression_id;
+    const bool global_count_star = !AtEnd() && IsWord(Current(), "COUNT");
+    if (global_count_star) {
+      const Token& count_token = Consume();
+      if (!RequireSymbol("(", "catalog_count_star_open_required",
+                         "bounded catalog COUNT(*) requires an opening parenthesis") ||
+          !RequireSymbol("*", "catalog_count_star_wildcard_required",
+                         "bounded catalog aggregate requires COUNT(*)") ||
+          !AtSymbol(")")) {
+        if (!document_.messages.has_errors()) {
+          Refuse("catalog_count_star_close_required",
+                 "bounded catalog COUNT(*) requires a closing parenthesis");
+        }
+        return FinishRefusal();
+      }
+      const Token& close_token = Consume();
+
+      NativeExpressionAstNode wildcard;
+      wildcard.expression_id = NextExpressionId();
+      wildcard.expression_kind = NativeExpressionAstKind::kWildcard;
+      wildcard.spelling = "*";
+      wildcard.range = TokenSourceRange(count_token);
+      source_projection_expression_ids.push_back(wildcard.expression_id);
+      document_.expressions.push_back(std::move(wildcard));
+
+      NativeExpressionAstNode count;
+      count.expression_id = NextExpressionId();
+      count.expression_kind = NativeExpressionAstKind::kFunctionCall;
+      count.operator_name = "COUNT";
+      count.spelling = SourceSpelling(count_token, close_token);
+      count.range = Span(count_token, close_token);
+      global_count_expression_id = count.expression_id;
+      projection_expression_ids.push_back(count.expression_id);
+      document_.expressions.push_back(std::move(count));
+    } else if (AtSymbol("*")) {
       const Token& wildcard_token = Consume();
       NativeExpressionAstNode wildcard;
       wildcard.expression_id = NextExpressionId();
@@ -345,6 +386,7 @@ class NativeRelationalParser final {
       wildcard.spelling = wildcard_token.text;
       wildcard.range = TokenSourceRange(wildcard_token);
       projection_expression_ids.push_back(wildcard.expression_id);
+      source_projection_expression_ids.push_back(wildcard.expression_id);
       document_.expressions.push_back(std::move(wildcard));
     } else {
       while (true) {
@@ -360,6 +402,7 @@ class NativeRelationalParser final {
         identifier.spelling = identifier_token.text;
         identifier.range = TokenSourceRange(identifier_token);
         projection_expression_ids.push_back(identifier.expression_id);
+        source_projection_expression_ids.push_back(identifier.expression_id);
         document_.expressions.push_back(std::move(identifier));
         if (!AtSymbol(",")) break;
         Consume();
@@ -453,9 +496,10 @@ class NativeRelationalParser final {
         return FinishRefusal();
       }
       const bool wildcard_projection =
-          projection_expression_ids.size() == 1 &&
+          global_count_star ||
+          (projection_expression_ids.size() == 1 &&
           document_.expressions[projection_expression_ids.front() - 1]
-                  .expression_kind == NativeExpressionAstKind::kWildcard;
+                  .expression_kind == NativeExpressionAstKind::kWildcard);
       const bool predicate_is_projected = std::ranges::any_of(
           projection_expression_ids, [&](const auto expression_id) {
             const auto& projection =
@@ -479,6 +523,11 @@ class NativeRelationalParser final {
           document_.expressions[*predicate_expression_id - 1].range);
     }
     if (!AtEnd() && IsWord(Current(), "ORDER")) {
+      if (global_count_star) {
+        Refuse("catalog_aggregate_order_unsupported",
+               "bounded catalog COUNT(*) does not admit ORDER BY");
+        return FinishRefusal();
+      }
       Consume();
       if (!RequireWord("BY", "catalog_select_order_by_required",
                        "bounded catalog SELECT ORDER requires BY")) {
@@ -628,7 +677,7 @@ class NativeRelationalParser final {
     relation.relation_id = 1;
     relation.relation_kind = NativeRelationAstKind::kCatalogSource;
     relation.relation_source_ids = {source.source_id};
-    relation.output_expression_ids = projection_expression_ids;
+    relation.output_expression_ids = source_projection_expression_ids;
     if (hidden_predicate_expression_id.has_value()) {
       relation.output_expression_ids.push_back(
           *hidden_predicate_expression_id);
@@ -677,6 +726,20 @@ class NativeRelationalParser final {
       project.range = Span(
           select_token, *query_end);
       document_.relations.push_back(std::move(project));
+      document_.root_relation_id = document_.relations.back().relation_id;
+    }
+    if (global_count_star) {
+      NativeRelationAstNode aggregate;
+      aggregate.relation_id = document_.root_relation_id + 1;
+      aggregate.relation_kind = NativeRelationAstKind::kAggregate;
+      aggregate.aggregate_grouping_form = NativeAggregateGroupingForm::kNone;
+      aggregate.aggregate_projection_form =
+          NativeAggregateProjectionForm::kGlobalUnary;
+      aggregate.input_relation_ids = {document_.root_relation_id};
+      aggregate.output_expression_ids = {*global_count_expression_id};
+      aggregate.aggregate_expression_ids = {*global_count_expression_id};
+      aggregate.range = Span(select_token, *query_end);
+      document_.relations.push_back(std::move(aggregate));
       document_.root_relation_id = document_.relations.back().relation_id;
     }
     if (!limit_expression_ids.empty()) {

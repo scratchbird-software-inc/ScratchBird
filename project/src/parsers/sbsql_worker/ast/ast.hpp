@@ -88,6 +88,7 @@ enum class NativeAggregateProjectionForm {
   kKeyCountSum,
   kKeysCountSum,
   kKeysCountSumGrouping,
+  kGlobalUnary,
 };
 
 enum class NativeExpressionAstKind {

@@ -475,6 +475,10 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.relations, [](const auto& candidate) {
           return candidate.relation_kind == NativeRelationAstKind::kFilter;
         });
+    const auto aggregate_relation = std::ranges::find_if(
+        ast.relations, [](const auto& candidate) {
+          return candidate.relation_kind == NativeRelationAstKind::kAggregate;
+        });
     const auto project_relation = std::ranges::find_if(
         ast.relations, [](const auto& candidate) {
           return candidate.relation_kind == NativeRelationAstKind::kProject;
@@ -508,11 +512,23 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         project_relation->input_relation_ids ==
             std::vector<std::uint32_t>{expected_project_predecessor} &&
         !project_relation->output_expression_ids.empty();
+    const auto expected_aggregate_predecessor =
+        filter_composition
+            ? filter_relation->relation_id
+            : (source_relation == ast.relations.end()
+                   ? 0
+                   : source_relation->relation_id);
+    const bool aggregate_composition =
+        aggregate_relation != ast.relations.end() &&
+        aggregate_relation->input_relation_ids ==
+            std::vector<std::uint32_t>{expected_aggregate_predecessor};
     const bool limit_composition = limit_relation != ast.relations.end();
     const auto expected_root =
         limit_composition
             ? limit_relation->relation_id
-            : (project_composition
+            : (aggregate_composition
+                   ? aggregate_relation->relation_id
+                   : (project_composition
                    ? project_relation->relation_id
                    : (sort_composition
                           ? sort_relation->relation_id
@@ -520,9 +536,11 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                                  ? filter_relation->relation_id
                                  : (source_relation == ast.relations.end()
                                         ? 0
-                                        : source_relation->relation_id))));
+                                        : source_relation->relation_id)))));
     const auto expected_limit_input =
-        project_composition
+        aggregate_composition
+            ? aggregate_relation->relation_id
+            : (project_composition
             ? project_relation->relation_id
             : (sort_composition
                    ? sort_relation->relation_id
@@ -530,13 +548,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
                           ? filter_relation->relation_id
                           : (source_relation == ast.relations.end()
                                  ? 0
-                                 : source_relation->relation_id)));
+                                 : source_relation->relation_id))));
     const bool catalog_chain =
         source_relation != ast.relations.end() &&
         ast.relations.size() ==
             1 + static_cast<std::size_t>(filter_composition) +
                 static_cast<std::size_t>(sort_composition) +
                 static_cast<std::size_t>(project_composition) +
+                static_cast<std::size_t>(aggregate_composition) +
                 static_cast<std::size_t>(limit_composition) &&
         ast.root_relation_id == expected_root &&
         (!limit_composition ||
@@ -549,7 +568,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         ast.catalog_relation_sources.size() != 1 ||
         ast.root_relation_id == 0 || !ast.values_rows.empty() ||
         !ast.grouping_sets.empty() || ast.expressions.empty() ||
-        !context.relations.empty() || context.catalog_relations.size() != 1 ||
+        (aggregate_composition
+             ? (context.relations.size() != 1 ||
+                context.relations.front().relation_id !=
+                    aggregate_relation->relation_id ||
+                context.relations.front().semantic_variant_id !=
+                    "aggregate.global-count-star.v1")
+             : !context.relations.empty()) ||
+        (aggregate_composition && (sort_composition || project_composition)) ||
+        context.catalog_relations.size() != 1 ||
         (expanded_projection &&
          (context.expressions.empty() || context.outputs.empty()))) {
       AddBoundAstDiagnostic(
@@ -561,13 +588,15 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const auto& relation = *source_relation;
     const auto& source = ast.catalog_relation_sources.front();
     const auto& visible_projection_expression_ids =
-        project_composition ? project_relation->output_expression_ids
-                            : relation.output_expression_ids;
+        aggregate_composition
+            ? aggregate_relation->output_expression_ids
+            : (project_composition ? project_relation->output_expression_ids
+                                   : relation.output_expression_ids);
     const auto wildcard = std::ranges::find_if(
         ast.expressions, [&](const auto& candidate) {
-          return visible_projection_expression_ids.size() == 1 &&
+          return relation.output_expression_ids.size() == 1 &&
                  candidate.expression_id ==
-                     visible_projection_expression_ids.front() &&
+                     relation.output_expression_ids.front() &&
                  candidate.expression_kind ==
                      NativeExpressionAstKind::kWildcard;
         });
@@ -626,7 +655,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
             : !projection_identifiers.empty();
     const auto projection_ast_count =
         wildcard_projection ? 1U : projection_identifiers.size();
-    if ((!filter_composition && !project_composition && !limit_composition &&
+    if ((!filter_composition && !project_composition && !aggregate_composition &&
+         !limit_composition &&
          relation.relation_id != ast.root_relation_id) ||
         relation.relation_kind != NativeRelationAstKind::kCatalogSource ||
         !relation.input_relation_ids.empty() ||
@@ -657,6 +687,44 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     const NativeExpressionAstNode* filter_predicate = nullptr;
     const NativeExpressionAstNode* filter_identifier = nullptr;
     const NativeExpressionAstNode* filter_literal = nullptr;
+    const NativeExpressionAstNode* global_count_expression = nullptr;
+    if (aggregate_composition) {
+      if (aggregate_relation->relation_source_ids.size() != 0 ||
+          !aggregate_relation->values_row_ids.empty() ||
+          aggregate_relation->aggregate_grouping_form !=
+              NativeAggregateGroupingForm::kNone ||
+          aggregate_relation->aggregate_projection_form !=
+              NativeAggregateProjectionForm::kGlobalUnary ||
+          !aggregate_relation->grouping_key_expression_ids.empty() ||
+          aggregate_relation->aggregate_expression_ids.size() != 1 ||
+          aggregate_relation->output_expression_ids !=
+              aggregate_relation->aggregate_expression_ids ||
+          !aggregate_relation->predicate_expression_ids.empty() ||
+          !aggregate_relation->limit_expression_ids.empty() ||
+          !aggregate_relation->ordering_terms.empty()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-RELATION",
+            "catalog global aggregate AST is outside the bounded profile");
+        return RefusedBoundAst(std::move(bound));
+      }
+      const auto expression = std::ranges::find_if(
+          ast.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   aggregate_relation->aggregate_expression_ids.front();
+          });
+      if (expression == ast.expressions.end() ||
+          expression->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          ToUpperAscii(expression->operator_name) != "COUNT" ||
+          !expression->child_expression_ids.empty() ||
+          expression->literal_kind.has_value()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "catalog global aggregate requires exact COUNT(*) binding");
+        return RefusedBoundAst(std::move(bound));
+      }
+      global_count_expression = &*expression;
+    }
     if (filter_composition) {
       if (!filter_relation->relation_source_ids.empty() ||
           !filter_relation->values_row_ids.empty() ||
@@ -883,6 +951,9 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           limit_relation->limit_expression_ids.begin(),
           limit_relation->limit_expression_ids.end());
     }
+    if (aggregate_composition) {
+      admitted_ast_expression_ids.insert(global_count_expression->expression_id);
+    }
     if (admitted_ast_expression_ids.size() != ast.expressions.size() ||
         std::ranges::any_of(ast.expressions, [&](const auto& expression) {
           return !admitted_ast_expression_ids.contains(
@@ -968,10 +1039,42 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           {column.ordinal, column.column_uuid, column.descriptor_id,
            column.canonical_name_key});
     }
+    const NativeDescriptorBindingInput* aggregate_descriptor = nullptr;
+    const NativeExpressionBindingInput* aggregate_expression_binding = nullptr;
+    if (aggregate_composition) {
+      const auto expected_aggregate_descriptor_id =
+          static_cast<std::uint32_t>(relation_binding.columns.size() + 1);
+      const auto descriptor =
+          descriptor_by_id.find(expected_aggregate_descriptor_id);
+      const auto expression = std::ranges::find_if(
+          context.expressions, [&](const auto& candidate) {
+            return candidate.expression_id ==
+                   expected_aggregate_descriptor_id;
+          });
+      if (descriptor == descriptor_by_id.end() ||
+          descriptor->second->nullability != BoundNullability::kNonNull ||
+          descriptor->second->collation_uuid.has_value() ||
+          descriptor->second->timezone_profile_id.has_value() ||
+          expression == context.expressions.end() ||
+          expression->descriptor_id != expected_aggregate_descriptor_id ||
+          !expression->function_uuid.has_value() ||
+          !IsNonNullCanonicalUuid(*expression->function_uuid) ||
+          expression->bound_name_uuid.has_value()) {
+        AddBoundAstDiagnostic(
+            &bound, "QOW-DIAG-BOUNDAST-EXPRESSION",
+            "catalog global COUNT(*) binding is incomplete");
+        return RefusedBoundAst(std::move(bound));
+      }
+      aggregate_descriptor = descriptor->second;
+      aggregate_expression_binding = &*expression;
+      used_descriptor_ids.insert(expected_aggregate_descriptor_id);
+    }
     const NativeDescriptorBindingInput* numeric_descriptor = nullptr;
     if (limit_composition) {
       const auto expected_numeric_descriptor_id =
-          static_cast<std::uint32_t>(relation_binding.columns.size() + 1);
+          static_cast<std::uint32_t>(
+              relation_binding.columns.size() +
+              (aggregate_composition ? 2 : 1));
       const auto descriptor =
           descriptor_by_id.find(expected_numeric_descriptor_id);
       if (descriptor == descriptor_by_id.end() ||
@@ -995,6 +1098,7 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       const auto expected_boolean_descriptor_id =
           static_cast<std::uint32_t>(
               relation_binding.columns.size() +
+              (aggregate_composition ? 1 : 0) +
               (limit_composition ? 2 : 1));
       const auto descriptor =
           descriptor_by_id.find(expected_boolean_descriptor_id);
@@ -1034,14 +1138,19 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
     if (expanded_projection) {
       const auto column_count = relation_binding.columns.size();
       const auto visible_column_count =
-          project_composition ? projection_identifiers.size() : column_count;
+          aggregate_composition
+              ? 1
+              : (project_composition ? projection_identifiers.size()
+                                     : column_count);
       const auto expected_output_count =
           column_count +
           (filter_composition ? column_count : 0) +
           (sort_composition ? column_count : 0) +
           (project_composition ? visible_column_count : 0) +
+          (aggregate_composition ? 1 : 0) +
           (limit_composition ? visible_column_count : 0);
-      if (context.expressions.size() != column_count ||
+      if (context.expressions.size() !=
+              column_count + (aggregate_composition ? 1 : 0) ||
           visible_column_count == 0 ||
           context.outputs.size() != expected_output_count) {
         AddBoundAstDiagnostic(
@@ -1050,7 +1159,8 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         return RefusedBoundAst(std::move(bound));
       }
       bound.expressions.reserve(
-          column_count + (filter_composition ? 3 : 0) +
+          column_count + (aggregate_composition ? 1 : 0) +
+          (filter_composition ? 3 : 0) +
           (limit_composition ? limit_relation->limit_expression_ids.size()
                              : 0));
       bound.outputs.reserve(expected_output_count);
@@ -1101,17 +1211,73 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
         bound_output.ordinal = output.ordinal;
         bound.outputs.push_back(std::move(bound_output));
         expanded_expression_ids.push_back(expression.expression_id);
-        if (!filter_composition && !project_composition && !limit_composition) {
+        if (!filter_composition && !project_composition &&
+            !aggregate_composition && !limit_composition) {
           expanded_output_ids.push_back(output.output_id);
         }
       }
-      visible_expression_ids = project_composition
-                                   ? project_relation->output_expression_ids
-                                   : expanded_expression_ids;
+      if (aggregate_composition) {
+        BoundExpressionAstRecord bound_expression;
+        bound_expression.expression_id =
+            aggregate_expression_binding->expression_id;
+        bound_expression.expression_kind =
+            NativeExpressionAstKind::kFunctionCall;
+        bound_expression.result_descriptor_id =
+            aggregate_expression_binding->descriptor_id;
+        bound_expression.bound_function_uuid =
+            aggregate_expression_binding->function_uuid;
+        bound.expressions.push_back(std::move(bound_expression));
+        visible_expression_ids = {
+            aggregate_expression_binding->expression_id};
+      } else {
+        visible_expression_ids = project_composition
+                                     ? project_relation->output_expression_ids
+                                     : expanded_expression_ids;
+      }
       std::size_t output_index = column_count;
       for (std::size_t relation_ordinal = 1;
            relation_ordinal < ast.relations.size(); ++relation_ordinal) {
         const auto& downstream = ast.relations[relation_ordinal];
+        if (aggregate_composition &&
+            (downstream.relation_id == aggregate_relation->relation_id ||
+             (limit_composition &&
+              downstream.relation_id == limit_relation->relation_id))) {
+          if (output_index >= context.outputs.size()) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                "catalog aggregate output evidence is missing");
+            return RefusedBoundAst(std::move(bound));
+          }
+          const auto& output = context.outputs[output_index];
+          const auto expected_output_id =
+              static_cast<std::uint32_t>(output_index + 1);
+          if (output.output_id != expected_output_id ||
+              output.relation_id != downstream.relation_id ||
+              output.expression_id !=
+                  aggregate_expression_binding->expression_id ||
+              output.output_name_utf8 != "row_count" ||
+              output.descriptor_id != aggregate_descriptor->descriptor_id ||
+              !output.visible || output.ordinal != 0) {
+            AddBoundAstDiagnostic(
+                &bound, "QOW-DIAG-BOUNDAST-OUTPUT",
+                "catalog aggregate output does not match COUNT(*) binding");
+            return RefusedBoundAst(std::move(bound));
+          }
+          BoundOutputAstRecord bound_output;
+          bound_output.output_id = output.output_id;
+          bound_output.relation_id = output.relation_id;
+          bound_output.expression_id = output.expression_id;
+          bound_output.output_name_utf8 = output.output_name_utf8;
+          bound_output.descriptor_id = output.descriptor_id;
+          bound_output.visible = output.visible;
+          bound_output.ordinal = output.ordinal;
+          bound.outputs.push_back(std::move(bound_output));
+          if (downstream.relation_id == ast.root_relation_id) {
+            expanded_output_ids.push_back(output.output_id);
+          }
+          ++output_index;
+          continue;
+        }
         std::vector<std::size_t> source_ordinals;
         if (wildcard_projection) {
           source_ordinals.reserve(column_count);
@@ -1226,6 +1392,24 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
           "filter.catalog-column-numeric-comparison.v1";
       bound.relations.push_back(std::move(bound_filter));
     }
+    if (aggregate_composition) {
+      BoundRelationAstRecord bound_aggregate;
+      bound_aggregate.relation_id = aggregate_relation->relation_id;
+      bound_aggregate.relation_kind = NativeRelationAstKind::kAggregate;
+      bound_aggregate.aggregate_grouping_form =
+          NativeAggregateGroupingForm::kNone;
+      bound_aggregate.aggregate_projection_form =
+          NativeAggregateProjectionForm::kGlobalUnary;
+      bound_aggregate.input_relation_ids = {
+          filter_composition ? filter_relation->relation_id
+                             : relation.relation_id};
+      bound_aggregate.output_expression_ids = visible_expression_ids;
+      bound_aggregate.aggregate_expression_ids = visible_expression_ids;
+      bound_aggregate.bound_expression_ids = visible_expression_ids;
+      bound_aggregate.semantic_variant_id =
+          "aggregate.global-count-star.v1";
+      bound.relations.push_back(std::move(bound_aggregate));
+    }
     if (sort_composition) {
       BoundRelationAstRecord bound_sort;
       bound_sort.relation_id = sort_relation->relation_id;
@@ -1298,12 +1482,14 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
       bound_limit.relation_id = limit_relation->relation_id;
       bound_limit.relation_kind = NativeRelationAstKind::kLimit;
       bound_limit.input_relation_ids = {
-          project_composition
+          aggregate_composition
+              ? aggregate_relation->relation_id
+              : (project_composition
               ? project_relation->relation_id
               : (sort_composition
                      ? sort_relation->relation_id
                      : (filter_composition ? filter_relation->relation_id
-                                           : relation.relation_id))};
+                                           : relation.relation_id)))};
       bound_limit.output_expression_ids = visible_expression_ids;
       bound_limit.limit_expression_ids = bound_limit_expression_ids;
       bound_limit.bound_expression_ids =

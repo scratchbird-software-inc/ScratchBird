@@ -20238,6 +20238,10 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kSort;
       });
+  const auto aggregate_node = std::ranges::find_if(
+      dag.nodes, [](const auto& node) {
+        return node.node_kind == api::RelationalDagNodeKind::kAggregate;
+      });
   const auto limit_node = std::ranges::find_if(
       dag.nodes, [](const auto& node) {
         return node.node_kind == api::RelationalDagNodeKind::kLimit;
@@ -20245,11 +20249,14 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   const bool filter_composition = filter_node != dag.nodes.end();
   const bool project_composition = project_node != dag.nodes.end();
   const bool sort_composition = sort_node != dag.nodes.end();
+  const bool aggregate_composition = aggregate_node != dag.nodes.end();
   const bool limit_composition = limit_node != dag.nodes.end();
   const auto expected_root =
       limit_composition
           ? limit_node->node_id
-          : (project_composition
+          : (aggregate_composition
+                 ? aggregate_node->node_id
+                 : (project_composition
                  ? project_node->node_id
                  : (sort_composition
                         ? sort_node->node_id
@@ -20257,26 +20264,29 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
                                ? filter_node->node_id
                                : (scan_node == dag.nodes.end()
                                       ? 0
-                                      : scan_node->node_id))));
+                                      : scan_node->node_id)))));
   const auto expected_project_input =
       sort_composition
           ? sort_node->node_id
           : (filter_composition ? filter_node->node_id : 0);
   const auto expected_limit_input =
-      project_composition
+      aggregate_composition
+          ? aggregate_node->node_id
+          : (project_composition
           ? project_node->node_id
           : (sort_composition
                  ? sort_node->node_id
                  : (filter_composition
                         ? filter_node->node_id
                         : (scan_node == dag.nodes.end() ? 0
-                                                       : scan_node->node_id)));
+                                                       : scan_node->node_id))));
   const bool exact_composition =
       scan_node != dag.nodes.end() &&
       dag.nodes.size() ==
           1 + static_cast<std::size_t>(filter_composition) +
               static_cast<std::size_t>(sort_composition) +
               static_cast<std::size_t>(project_composition) +
+              static_cast<std::size_t>(aggregate_composition) +
               static_cast<std::size_t>(limit_composition) &&
       dag.root_node_id == expected_root &&
       (!filter_composition ||
@@ -20290,6 +20300,12 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
            std::vector<std::uint32_t>{
                filter_composition ? filter_node->node_id
                                   : scan_node->node_id}) &&
+      (!aggregate_composition ||
+       (aggregate_node->input_node_ids ==
+            std::vector<std::uint32_t>{
+                filter_composition ? filter_node->node_id
+                                   : scan_node->node_id} &&
+        !project_composition && !sort_composition)) &&
       (!limit_composition ||
        limit_node->input_node_ids ==
            std::vector<std::uint32_t>{expected_limit_input});
@@ -20393,6 +20409,87 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
          exec::PhysicalNodeKind::kFilter,
          "canonical.heap.filter.catalog-column-numeric-comparison.v1",
          1, 1024, 1, 1});
+  }
+  PreparedGlobalAggregateRoot prepared_heap_aggregate;
+  std::string aggregate_capability_uuid;
+  if (aggregate_composition) {
+    const auto aggregate_profile =
+        MatchLiveUnaryAggregateExpressionProfile(
+            aggregate_node->semantic_variant_id);
+    const auto logical_aggregate = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.logical_node_id == aggregate_node->node_id;
+        });
+    const auto aggregate_input_node =
+        filter_composition ? &*filter_node : &*scan_node;
+    const auto logical_input = std::ranges::find_if(
+        graph.nodes, [&](const auto& candidate) {
+          return candidate.logical_node_id == aggregate_input_node->node_id;
+        });
+    MaterializedValues planning_input;
+    std::vector<const api::RelationalOutputRecord*> input_outputs;
+    for (const auto& output : dag.outputs) {
+      if (output.relation_node_id == aggregate_input_node->node_id) {
+        input_outputs.push_back(&output);
+      }
+    }
+    std::ranges::sort(input_outputs, {},
+                      &api::RelationalOutputRecord::ordinal);
+    if (!aggregate_profile.matched || !aggregate_profile.count_star ||
+        aggregate_profile.distinct || aggregate_profile.has_filter ||
+        logical_aggregate == graph.nodes.end() ||
+        logical_input == graph.nodes.end() ||
+        input_outputs.size() !=
+            aggregate_input_node->output_descriptor_ids.size()) {
+      return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
+                    "object-backed global COUNT(*) profile is not exact");
+    }
+    for (std::size_t ordinal = 0; ordinal < input_outputs.size(); ++ordinal) {
+      const auto descriptor = std::ranges::find_if(
+          dag.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id ==
+                   aggregate_input_node->output_descriptor_ids[ordinal];
+          });
+      if (descriptor == dag.descriptors.end() ||
+          input_outputs[ordinal]->ordinal != ordinal ||
+          input_outputs[ordinal]->descriptor_id != descriptor->descriptor_id) {
+        return refuse("QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
+                      "object-backed aggregate input descriptor is unresolved");
+      }
+      api::EngineDescriptor engine_descriptor;
+      engine_descriptor.descriptor_uuid.canonical = descriptor->descriptor_uuid;
+      engine_descriptor.descriptor_kind = "scalar";
+      engine_descriptor.canonical_type_name = "catalog_scalar";
+      engine_descriptor.encoded_descriptor =
+          "type_uuid=" + descriptor->type_uuid + ";nullability=" +
+          (descriptor->nullability == api::RelationalNullability::kNullable
+               ? "nullable"
+               : "non_null");
+      planning_input.batch.columns.push_back(
+          {input_outputs[ordinal]->output_name_utf8, engine_descriptor,
+           descriptor->nullability == api::RelationalNullability::kNullable,
+           descriptor->descriptor_id});
+      planning_input.result_bindings.push_back({ordinal, false, std::nullopt});
+    }
+    planning_input.ok = true;
+    prepared_heap_aggregate = PrepareGlobalAggregateRoot(
+        dag, *logical_aggregate, *logical_input, planning_input,
+        aggregate_profile.function, true, false, false);
+    if (!prepared_heap_aggregate.ok) {
+      return refuse(
+          "QOW-DIAG-PACKET7-OBJECT-HEAP-AGGREGATE-V1",
+          prepared_heap_aggregate.detail.empty()
+              ? "object-backed global COUNT(*) binding is unresolved"
+              : prepared_heap_aggregate.detail);
+    }
+    aggregate_capability_uuid =
+        DerivedCanonicalUuid(identity_scope, "heap-aggregate.capability");
+    profiles.push_back(
+        {aggregate_node->node_id, "aggregate.count-star.v1",
+         aggregate_capability_uuid,
+         plan::CanonicalLogicalRelationalNodeKind::kAggregate,
+         exec::PhysicalNodeKind::kAggregate,
+         aggregate_profile.transformation_id, 1, 1024, 1, 1});
   }
   std::vector<plan::CanonicalLogicalPropertyOrderingTerm> heap_order_terms;
   std::vector<std::size_t> heap_order_columns;
@@ -20532,21 +20629,25 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
       planning_request, profiles,
       limit_composition
           ? "heap-limit.selected-plan"
-          : (project_composition
+          : (aggregate_composition
+                 ? "heap-aggregate.selected-plan"
+                 : (project_composition
                  ? "heap-project.selected-plan"
                  : (sort_composition
                         ? "heap-sort.selected-plan"
                         : (filter_composition ? "heap-filter.selected-plan"
-                                              : "heap-scan.selected-plan"))),
+                                              : "heap-scan.selected-plan")))),
       limit_composition
           ? "object-backed heap LIMIT composition"
-          : (project_composition
+          : (aggregate_composition
+                 ? "object-backed heap global COUNT(*) composition"
+                 : (project_composition
                  ? "object-backed heap hidden-column PROJECT composition"
                  : (sort_composition
                         ? "object-backed heap ORDER BY composition"
                         : (filter_composition
                                ? "object-backed heap WHERE composition"
-                               : "object-backed heap scan"))));
+                               : "object-backed heap scan")))));
   if (!physical.ok) {
     return refuse(
         physical.diagnostic_id.empty()
@@ -20586,7 +20687,7 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
   }
 
   if (filter_composition || sort_composition || project_composition ||
-      limit_composition) {
+      aggregate_composition || limit_composition) {
     exec::CanonicalHeapPhysicalDagDispatchRequest heap_request;
     heap_request.context = &input.context;
     heap_request.relational_dag = &input.relational_dag;
@@ -20619,11 +20720,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
     const auto* publication_node =
         limit_composition
             ? &*limit_node
-            : (project_composition
+            : (aggregate_composition
+                   ? &*aggregate_node
+                   : (project_composition
                    ? &*project_node
                    : (sort_composition
                           ? &*sort_node
-                          : (filter_composition ? &*filter_node : &*scan_node)));
+                          : (filter_composition ? &*filter_node : &*scan_node))));
     for (const auto& output : dag.outputs) {
       if (output.relation_node_id == publication_node->node_id) {
         ordered_outputs.push_back(&output);
@@ -20650,6 +20753,13 @@ CanonicalObjectFreeValuesExecutionResult ExecuteCanonicalCurrentHeapQuery(
               filter_node->bound_expression_ids.front(), filter_row_binding,
               input.relational_dag, {}, filter_capability_uuid,
               maximum_output_rows, input.context));
+    }
+    if (aggregate_composition) {
+      selected.available_executors.push_back(
+          MakeLiveCountStarRegistration(
+              prepared_heap_aggregate.result_column,
+              aggregate_capability_uuid, maximum_output_rows,
+              input.context));
     }
     if (sort_composition) {
       selected.available_executors.push_back(

@@ -32986,6 +32986,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       }
       values_relation = &relation;
     } else if (relation.relation_kind == NativeRelationAstKind::kAggregate) {
+      const auto* expected_global_input =
+          catalog_filter_relation != nullptr ? catalog_filter_relation
+                                             : catalog_relation;
+      const bool global_catalog_profile =
+          expected_global_input != nullptr &&
+          relation.input_relation_ids ==
+              std::vector<std::uint32_t>{expected_global_input->relation_id} &&
+          relation.aggregate_grouping_form ==
+              NativeAggregateGroupingForm::kNone &&
+          relation.aggregate_projection_form ==
+              NativeAggregateProjectionForm::kGlobalUnary &&
+          relation.grouping_key_expression_ids.empty() &&
+          relation.aggregate_expression_ids.size() == 1 &&
+          relation.output_expression_ids ==
+              relation.aggregate_expression_ids &&
+          relation.bound_expression_ids == relation.output_expression_ids &&
+          relation.semantic_variant_id == "aggregate.global-count-star.v1";
       const bool projects_key_count_sum =
           relation.aggregate_projection_form ==
           NativeAggregateProjectionForm::kKeyCountSum;
@@ -33017,16 +33034,19 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           !relation.values_row_ids.empty() ||
           !relation.predicate_expression_ids.empty() ||
           !relation.limit_expression_ids.empty() ||
-          relation.grouping_key_expression_ids.size() !=
-              (one_key_profile ? 1 : 2) ||
-          relation.aggregate_expression_ids.size() != 2 ||
-          (!one_key_profile && !two_key_profile) ||
-          relation.output_expression_ids.size() != expected_output_count ||
+          (!global_catalog_profile &&
+           relation.grouping_key_expression_ids.size() !=
+              (one_key_profile ? 1 : 2)) ||
+          (!global_catalog_profile &&
+           relation.aggregate_expression_ids.size() != 2) ||
+          (!global_catalog_profile && !one_key_profile && !two_key_profile) ||
+          (!global_catalog_profile &&
+           relation.output_expression_ids.size() != expected_output_count) ||
           relation.bound_expression_ids != relation.output_expression_ids ||
-          relation.semantic_variant_id !=
+          (!global_catalog_profile && relation.semantic_variant_id !=
               ExpectedNativeAggregateSemanticVariant(
                   relation.aggregate_grouping_form,
-                  relation.aggregate_projection_form)) {
+                  relation.aggregate_projection_form))) {
         AddNativeRelationalLoweringError(
             &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
             "typed aggregate fields are outside the bounded native profile");
@@ -33218,13 +33238,15 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         return envelope;
       }
       const auto limit_input_relation =
-          catalog_project_relation != nullptr
+          aggregate_relation != nullptr
+              ? aggregate_relation
+              : (catalog_project_relation != nullptr
               ? catalog_project_relation
               : (catalog_sort_relation != nullptr
                      ? catalog_sort_relation
                      : (catalog_filter_relation != nullptr
                             ? catalog_filter_relation
-                            : catalog_relation));
+                            : catalog_relation)));
       if (limit_relation != nullptr ||
           relation.relation_id != native.root_relation_id ||
           relation.input_relation_ids !=
@@ -33258,25 +33280,36 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
   const bool catalog_graph_is_exact =
       catalog_relation != nullptr && values_relation == nullptr &&
-      aggregate_relation == nullptr && filter_relation == nullptr &&
+      filter_relation == nullptr &&
+      (aggregate_relation == nullptr ||
+       (aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kGlobalUnary)) &&
       (catalog_project_relation == nullptr ||
        (catalog_sort_relation != nullptr ||
         catalog_filter_relation != nullptr)) &&
+      (aggregate_relation == nullptr ||
+       (catalog_project_relation == nullptr &&
+        catalog_sort_relation == nullptr)) &&
       native.relations.size() ==
           1 + static_cast<std::size_t>(catalog_filter_relation != nullptr) +
               static_cast<std::size_t>(catalog_project_relation != nullptr) +
               static_cast<std::size_t>(catalog_sort_relation != nullptr) +
+              static_cast<std::size_t>(aggregate_relation != nullptr) +
               static_cast<std::size_t>(limit_relation != nullptr) &&
       native.root_relation_id ==
           (limit_relation != nullptr
                ? limit_relation->relation_id
-               : (catalog_project_relation != nullptr
+               : (aggregate_relation != nullptr
+                      ? aggregate_relation->relation_id
+                      : (catalog_project_relation != nullptr
                       ? catalog_project_relation->relation_id
                       : (catalog_sort_relation != nullptr
                              ? catalog_sort_relation->relation_id
                              : (catalog_filter_relation != nullptr
                                     ? catalog_filter_relation->relation_id
-                                    : catalog_relation->relation_id)))) &&
+                                    : catalog_relation->relation_id))))) &&
       native.values_rows.empty() && native.grouping_sets.empty();
   const bool values_graph_is_exact =
       catalog_relation == nullptr && limit_relation == nullptr &&
@@ -33680,6 +33713,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         &source_outputs;
     if (limit_relation != nullptr) {
       visible_outputs = &outputs_by_relation.at(limit_relation->relation_id);
+    } else if (aggregate_relation != nullptr) {
+      visible_outputs = &outputs_by_relation.at(aggregate_relation->relation_id);
     } else if (catalog_project_relation != nullptr) {
       visible_outputs =
           &outputs_by_relation.at(catalog_project_relation->relation_id);
@@ -33694,6 +33729,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         limit_relation == nullptr ? 0 : limit_relation->limit_expression_ids.size();
     const auto numeric_descriptor_count =
         limit_relation != nullptr ? 1 : 0;
+    const auto aggregate_descriptor_count =
+        aggregate_relation != nullptr ? 1 : 0;
     const auto filter_descriptor_count =
         catalog_filter_relation != nullptr ? 1 : 0;
     const auto visible_width = visible_outputs->size();
@@ -33703,13 +33740,18 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         (catalog_project_relation != nullptr
              ? catalog_project_relation->output_expression_ids.size()
              : 0) +
+        (aggregate_relation != nullptr
+             ? aggregate_relation->output_expression_ids.size()
+             : 0) +
         (limit_relation != nullptr
              ? limit_relation->output_expression_ids.size()
              : 0);
     if (native.descriptors.size() !=
-            width + numeric_descriptor_count + filter_descriptor_count ||
+            width + aggregate_descriptor_count + numeric_descriptor_count +
+                filter_descriptor_count ||
         native.expressions.size() !=
-            width + (catalog_filter_relation != nullptr ? 2 : 0) +
+            width + aggregate_descriptor_count +
+                (catalog_filter_relation != nullptr ? 2 : 0) +
                 limit_expression_count ||
         native.outputs.size() != expected_output_count ||
         catalog_relation->output_expression_ids.size() != width ||
@@ -33781,8 +33823,38 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       previous_expression_id = expression.expression_id;
       previous_output_id = output.output_id;
     }
+    if (aggregate_relation != nullptr) {
+      const auto& aggregate_descriptor = native.descriptors[width];
+      const auto aggregate_expression = expressions_by_id.find(
+          aggregate_relation->aggregate_expression_ids.front());
+      const auto& aggregate_outputs =
+          outputs_by_relation.at(aggregate_relation->relation_id);
+      if (aggregate_expression == expressions_by_id.end() ||
+          aggregate_expression->second->expression_kind !=
+              NativeExpressionAstKind::kFunctionCall ||
+          !aggregate_expression->second->bound_function_uuid.has_value() ||
+          !aggregate_expression->second->child_expression_ids.empty() ||
+          aggregate_expression->second->result_descriptor_id !=
+              aggregate_descriptor.descriptor_id ||
+          aggregate_descriptor.nullability !=
+              BoundNullability::kNonNull ||
+          aggregate_descriptor.collation_uuid.has_value() ||
+          aggregate_descriptor.timezone_profile_id.has_value() ||
+          aggregate_outputs.size() != 1 ||
+          aggregate_outputs.front()->expression_id !=
+              aggregate_expression->second->expression_id ||
+          aggregate_outputs.front()->descriptor_id !=
+              aggregate_descriptor.descriptor_id ||
+          aggregate_outputs.front()->output_name_utf8 != "row_count") {
+        AddNativeRelationalLoweringError(
+            &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+            "typed catalog COUNT(*) binding is incomplete");
+        return envelope;
+      }
+    }
     if (numeric_descriptor_count != 0) {
-      const auto& numeric_descriptor = native.descriptors[width];
+      const auto& numeric_descriptor =
+          native.descriptors[width + aggregate_descriptor_count];
       if (!IsCanonicalBoundSourceUuid(numeric_descriptor.descriptor_uuid) ||
           !IsCanonicalBoundSourceUuid(numeric_descriptor.type_uuid) ||
           numeric_descriptor.nullability != BoundNullability::kNonNull ||
@@ -33810,7 +33882,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     if (catalog_filter_relation != nullptr) {
       const auto& boolean_descriptor =
-          native.descriptors[width + numeric_descriptor_count];
+          native.descriptors[width + aggregate_descriptor_count +
+                             numeric_descriptor_count];
       const auto predicate = expressions_by_id.at(
           catalog_filter_relation->predicate_expression_ids.front());
       if (!IsCanonicalBoundSourceUuid(boolean_descriptor.descriptor_uuid) ||
@@ -33857,6 +33930,28 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       for (std::size_t ordinal = 0; ordinal < downstream_outputs.size();
            ++ordinal) {
         const auto& downstream_output = *downstream_outputs[ordinal];
+        if (aggregate_relation != nullptr &&
+            (downstream.relation_id == aggregate_relation->relation_id ||
+             (limit_relation != nullptr &&
+              downstream.relation_id == limit_relation->relation_id))) {
+          const auto& aggregate_output = *outputs_by_relation
+                                              .at(aggregate_relation->relation_id)
+                                              .front();
+          if (downstream_output.expression_id !=
+                  aggregate_output.expression_id ||
+              downstream_output.descriptor_id !=
+                  aggregate_output.descriptor_id ||
+              downstream_output.output_name_utf8 !=
+                  aggregate_output.output_name_utf8 ||
+              downstream_output.ordinal != ordinal ||
+              !downstream_output.visible) {
+            AddNativeRelationalLoweringError(
+                &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
+                "typed catalog aggregate lineage is not preserved");
+            return envelope;
+          }
+          continue;
+        }
         const auto source_output = std::ranges::find_if(
             source_outputs, [&](const auto* candidate) {
               return candidate->expression_id ==
@@ -33888,13 +33983,25 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   }
 
   if (aggregate_relation != nullptr) {
+    const bool global_catalog_profile =
+        catalog_relation != nullptr &&
+        aggregate_relation->aggregate_grouping_form ==
+            NativeAggregateGroupingForm::kNone &&
+        aggregate_relation->aggregate_projection_form ==
+            NativeAggregateProjectionForm::kGlobalUnary;
     const bool one_key_profile =
         aggregate_relation->aggregate_grouping_form ==
             NativeAggregateGroupingForm::kSimple &&
         aggregate_relation->aggregate_projection_form ==
             NativeAggregateProjectionForm::kKeyCountSum;
     const bool output_shape_matches =
-        one_key_profile
+        global_catalog_profile
+            ? aggregate_relation->output_expression_ids.size() == 1 &&
+                  aggregate_relation->grouping_key_expression_ids.empty() &&
+                  aggregate_relation->aggregate_expression_ids.size() == 1 &&
+                  aggregate_relation->output_expression_ids ==
+                      aggregate_relation->aggregate_expression_ids
+            : one_key_profile
             ? aggregate_relation->output_expression_ids.size() == 3 &&
                   aggregate_relation->grouping_key_expression_ids.size() == 1 &&
                   aggregate_relation->aggregate_expression_ids.size() == 2 &&

@@ -270,6 +270,7 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   const RelationalDagNode* filter_node = nullptr;
   const RelationalDagNode* project_node = nullptr;
   const RelationalDagNode* sort_node = nullptr;
+  const RelationalDagNode* aggregate_node = nullptr;
   const RelationalDagNode* limit_node = nullptr;
   for (const auto& candidate : relational.nodes) {
     if (candidate.node_kind == RelationalDagNodeKind::kScan) {
@@ -296,6 +297,12 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                       "one_optional_heap_sort");
       }
       sort_node = &candidate;
+    } else if (candidate.node_kind == RelationalDagNodeKind::kAggregate) {
+      if (aggregate_node != nullptr) {
+        return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
+                      "one_optional_heap_aggregate");
+      }
+      aggregate_node = &candidate;
     } else if (candidate.node_kind == RelationalDagNodeKind::kLimit) {
       if (limit_node != nullptr) {
         return Refuse("QOW-DIAG-QRY-004-HEAP-OPTIMIZER-PROFILE-V1",
@@ -309,31 +316,38 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
   }
   const auto* terminal_node =
       limit_node != nullptr ? limit_node
-                            : (project_node != nullptr
+                            : (aggregate_node != nullptr
+                                   ? aggregate_node
+                                   : (project_node != nullptr
                                    ? project_node
                                    : (sort_node != nullptr
                                           ? sort_node
                                           : (filter_node != nullptr ? filter_node
-                                                                    : scan_node)));
+                                                                    : scan_node))));
   const auto expected_project_input =
       sort_node != nullptr
           ? sort_node->node_id
           : (filter_node == nullptr ? 0 : filter_node->node_id);
   const auto expected_limit_input =
-      project_node != nullptr
+      aggregate_node != nullptr
+          ? aggregate_node->node_id
+          : (project_node != nullptr
           ? project_node->node_id
           : (sort_node != nullptr
                  ? sort_node->node_id
                  : (filter_node != nullptr
                         ? filter_node->node_id
-                        : (scan_node == nullptr ? 0 : scan_node->node_id)));
+                        : (scan_node == nullptr ? 0 : scan_node->node_id))));
   if (scan_node == nullptr ||
       relational.root_node_id != terminal_node->node_id ||
       relational.nodes.size() !=
           1 + static_cast<std::size_t>(filter_node != nullptr) +
               static_cast<std::size_t>(project_node != nullptr) +
               static_cast<std::size_t>(sort_node != nullptr) +
+              static_cast<std::size_t>(aggregate_node != nullptr) +
               static_cast<std::size_t>(limit_node != nullptr) ||
+      (aggregate_node != nullptr &&
+       (project_node != nullptr || sort_node != nullptr)) ||
       (filter_node != nullptr &&
        (filter_node->input_node_ids !=
             std::vector<std::uint32_t>{scan_node->node_id} ||
@@ -381,6 +395,19 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
         sort_node->required_property_uuids.size() != 1 ||
         sort_node->delivered_property_uuids !=
             sort_node->required_property_uuids)) ||
+      (aggregate_node != nullptr &&
+       (aggregate_node->input_node_ids !=
+            std::vector<std::uint32_t>{
+                filter_node != nullptr ? filter_node->node_id
+                                       : scan_node->node_id} ||
+        aggregate_node->semantic_variant_id !=
+            "aggregate.global-count-star.v1" ||
+        aggregate_node->bound_expression_ids.size() != 1 ||
+        aggregate_node->output_descriptor_ids.size() != 1 ||
+        !aggregate_node->required_object_uuids.empty() ||
+        !aggregate_node->values_row_ids.empty() ||
+        !aggregate_node->required_property_uuids.empty() ||
+        !aggregate_node->delivered_property_uuids.empty())) ||
       (limit_node != nullptr &&
        (limit_node->input_node_ids !=
             std::vector<std::uint32_t>{expected_limit_input} ||
@@ -392,9 +419,11 @@ BuildCanonicalCurrentHeapOptimizerAdmission(
                  ? 1
                  : 2) ||
         limit_node->output_descriptor_ids !=
-            (project_node != nullptr
+            (aggregate_node != nullptr
+                 ? aggregate_node->output_descriptor_ids
+                 : (project_node != nullptr
                  ? project_node->output_descriptor_ids
-                 : scan_node->output_descriptor_ids) ||
+                 : scan_node->output_descriptor_ids)) ||
         !limit_node->required_object_uuids.empty() ||
         !limit_node->values_row_ids.empty() ||
         !limit_node->required_property_uuids.empty() ||
