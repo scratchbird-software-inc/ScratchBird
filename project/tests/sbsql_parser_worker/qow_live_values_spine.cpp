@@ -1278,6 +1278,31 @@ FilteredProjectedDistinctSortOffsetValuesEnvelope(
   return envelope;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-UNARY-COMPOSITION-V1
+// Exercise a legal order that no enumerated whole-query route recognizes:
+// VALUES -> LIMIT -> FILTER -> PROJECT -> DISTINCT -> SORT.  The logical node
+// IDs deliberately remain non-topological in the carrier; optimizer
+// publication and physical dispatch must follow the typed dependency edges.
+sblr::SblrOperationEnvelope NodeDrivenUnaryCompositionEnvelope() {
+  auto envelope = FilteredProjectedDistinctSortLimitValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "uuid" &&
+        operand.name == "relational_bound_sblr_tree_uuid") {
+      operand.value = "019f0000-0000-7000-8000-00000000c900";
+    } else if (operand.type == "uint32" &&
+               operand.name == "relational_root_node_id") {
+      operand.value = "5";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "2") {
+      operand.value = "2|0|6|1,2|-";
+    } else if (operand.type == "relational_node_v1" &&
+               operand.name == "6") {
+      operand.value = "7|0|1|1,2|-";
+    }
+  }
+  return envelope;
+}
+
 // RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
 sblr::SblrOperationEnvelope RejectAllFilteredRows(
     sblr::SblrOperationEnvelope envelope) {
@@ -6791,6 +6816,80 @@ bool ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() {
   return passed;
 }
 
+// RCP-049-TEST-NODE-DRIVEN-UNARY-COMPOSITION-V1
+bool ValidateNodeDrivenUnaryCompositionSpine() {
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope,
+                           api::EngineRequestContext context = Context()) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {std::move(context), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed && result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 6 &&
+           result.logical_property_count == 1 &&
+           result.physical_node_count == 6 &&
+           result.canonical_result_column_count == 1 &&
+           result.canonical_result_row_count == 1 &&
+           result.api_result.result_shape.columns.size() == 1 &&
+           result.api_result.result_shape.rows.size() == 1;
+  };
+
+  const auto first = dispatch(NodeDrivenUnaryCompositionEnvelope());
+  const auto repeated = dispatch(NodeDrivenUnaryCompositionEnvelope());
+  bool passed = true;
+  if (!first.api_result.ok) {
+    for (const auto& diagnostic : first.api_result.diagnostics) {
+      std::cerr << diagnostic.code << ": " << diagnostic.detail << '\n';
+    }
+  }
+  passed &= Require(
+      completed(first) &&
+          first.api_result.result_shape.rows[0].fields[0].first ==
+              "safe_quotient" &&
+          first.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "10",
+      "node-driven LIMIT/FILTER/PROJECT/DISTINCT/SORT did not execute "
+      "dependency order and canonical semantics");
+  passed &= Require(
+      completed(repeated) &&
+          repeated.selected_plan_uuid == first.selected_plan_uuid &&
+          repeated.canonical_result_bytes == first.canonical_result_bytes,
+      "node-driven unary composition changed deterministic plan/result bytes");
+
+  auto malformed = NodeDrivenUnaryCompositionEnvelope();
+  for (auto& operand : malformed.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "2") {
+      operand.value = "2|0|999|1,2|-";
+    }
+  }
+  auto bounded_context = Context();
+  bounded_context.optimizer_maximum_candidate_count = 10;
+  const auto malformed_result = dispatch(std::move(malformed));
+  const auto exhausted_result = dispatch(
+      NodeDrivenUnaryCompositionEnvelope(), std::move(bounded_context));
+  const auto no_publication = [](const auto& result) {
+    return !result.optimizer_selected && !result.physical_dag_published &&
+           !result.physical_dag_executed &&
+           !result.runtime_actuals_attached &&
+           !result.canonical_result_published && !result.api_result.ok &&
+           result.physical_node_count == 0 &&
+           result.canonical_result_bytes.empty();
+  };
+  passed &= Require(
+      no_publication(malformed_result) &&
+          no_publication(exhausted_result) &&
+          HasApiDiagnostic(
+              exhausted_result,
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1"),
+      "malformed or resource-exhausted node-driven composition published "
+      "partial evidence");
+  return passed;
+}
+
 // RCP-040-TEST-LIVE-EMPTY-FILTERED-EXPRESSION-PROJECTION-V1
 bool ValidateEmptyFilteredExpressionProjectionSpine() {
   const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
@@ -12233,6 +12332,7 @@ int main() {
                       ValidateFilteredProjectedSortLimitCompositionSpine() &&
                       ValidateFilteredProjectedDistinctSortLimitCompositionSpine() &&
                       ValidateFilteredProjectedDistinctSortOffsetFetchCompositionSpine() &&
+                      ValidateNodeDrivenUnaryCompositionSpine() &&
                       ValidateEmptyFilteredExpressionProjectionSpine() &&
                       ValidateLimitValuesSpine() &&
                       ValidateLimitRefusalIsAtomic() &&

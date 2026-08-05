@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <sstream>
@@ -5644,6 +5645,687 @@ exec::CanonicalPhysicalExecutorRegistration MakeLiveLimitRegistration(
         return step;
       };
   return registration;
+}
+
+// QOW-SOURCE-RCP-049-UNARY-COMPOSITION-COMPILER-V1
+// Compile a connected object-free unary relational chain by node contract,
+// rather than by a whole-query shape name.  Existing exact profiles remain
+// preferred while this compiler grows across the remaining relational node
+// families.  This first consolidation slice admits any descriptor-valid
+// order of one FILTER, PROJECT, query DISTINCT, SORT, and LIMIT/FETCH node
+// over one canonical VALUES leaf.  Every node still executes through the
+// ordinary optimizer-published ABI-v2 DAG and its canonical executor.
+CanonicalObjectFreeValuesExecutionResult
+ExecuteCanonicalObjectFreeUnaryCompositionQuery(
+    const CanonicalObjectFreeValuesExecutionRequest& request) {
+  CanonicalObjectFreeValuesExecutionResult result;
+  const auto& graph = request.optimizer_request.logical_graph;
+  if (graph.nodes.size() < 3) return result;
+
+  const auto find_node = [&](const std::uint32_t node_id) {
+    return std::ranges::find_if(graph.nodes, [&](const auto& node) {
+      return node.logical_node_id == node_id;
+    });
+  };
+  auto current = find_node(graph.root_logical_node_id);
+  if (current == graph.nodes.end()) return result;
+
+  std::vector<const plan::CanonicalLogicalRelationalNode*> reverse_chain;
+  std::unordered_set<std::uint32_t> visited;
+  std::unordered_set<plan::CanonicalLogicalRelationalNodeKind> unary_kinds;
+  std::size_t sort_count = 0;
+  while (current != graph.nodes.end()) {
+    if (!visited.insert(current->logical_node_id).second ||
+        !current->required_object_uuids.empty()) {
+      return result;
+    }
+    reverse_chain.push_back(&*current);
+    if (current->node_kind ==
+        plan::CanonicalLogicalRelationalNodeKind::kValues) {
+      if (current->semantic_variant_id != "values.literal-table.v1" ||
+          !current->input_logical_node_ids.empty()) {
+        return result;
+      }
+      break;
+    }
+    if (current->input_logical_node_ids.size() != 1 ||
+        !unary_kinds.insert(current->node_kind).second) {
+      return result;
+    }
+    switch (current->node_kind) {
+      case plan::CanonicalLogicalRelationalNodeKind::kFilter:
+        if (current->semantic_variant_id != "filter.where.v1" ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
+      case plan::CanonicalLogicalRelationalNodeKind::kProject:
+        if (current->semantic_variant_id != "project.select-list.v1" ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
+      case plan::CanonicalLogicalRelationalNodeKind::kAggregate:
+        if (current->semantic_variant_id != "aggregate.query-distinct.v1" ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
+      case plan::CanonicalLogicalRelationalNodeKind::kSort:
+        ++sort_count;
+        if (current->semantic_variant_id != "sort.required-order.v1" ||
+            current->required_property_uuids.size() != 1 ||
+            current->delivered_property_uuids.size() != 1) {
+          return result;
+        }
+        break;
+      case plan::CanonicalLogicalRelationalNodeKind::kLimit:
+        if ((current->semantic_variant_id != "limit.bound-count.v1" &&
+             current->semantic_variant_id !=
+                 "limit.bound-count-offset.v1" &&
+             current->semantic_variant_id !=
+                 "fetch.first-rows-only-offset.v1") ||
+            !current->required_property_uuids.empty() ||
+            !current->delivered_property_uuids.empty()) {
+          return result;
+        }
+        break;
+      default:
+        return result;
+    }
+    current = find_node(current->input_logical_node_ids.front());
+  }
+  if (reverse_chain.empty() ||
+      reverse_chain.back()->node_kind !=
+          plan::CanonicalLogicalRelationalNodeKind::kValues ||
+      visited.size() != graph.nodes.size() || sort_count > 1 ||
+      (sort_count == 0 &&
+       !request.optimizer_request.logical_properties.properties.empty()) ||
+      (sort_count == 1 &&
+       request.optimizer_request.logical_properties.properties.size() != 1)) {
+    return result;
+  }
+  std::ranges::reverse(reverse_chain);
+
+  result.profile_matched = true;
+  const auto refuse = [&](std::string diagnostic_id, std::string detail) {
+    result.optimizer_selected = false;
+    result.physical_dag_published = false;
+    result.physical_dag_executed = false;
+    result.runtime_actuals_attached = false;
+    result.canonical_result_published = false;
+    result.physical_node_count = 0;
+    result.canonical_result_column_count = 0;
+    result.canonical_result_row_count = 0;
+    result.selected_plan_uuid.clear();
+    result.canonical_result_bytes.clear();
+    result.api_result = Failure(request, std::move(diagnostic_id),
+                                std::move(detail));
+    return result;
+  };
+  constexpr std::string_view kPayloadDiagnostic =
+      "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-PAYLOAD-V1";
+  if (!request.optimizer_admission.admitted ||
+      !request.optimizer_admission.planning_allowed) {
+    return refuse(
+        "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-ADMISSION-V1",
+        "node-driven unary composition lacks optimizer admission");
+  }
+
+  auto state = MaterializeValues(request.relational_dag,
+                                 *reverse_chain.front(),
+                                 request.expression_services);
+  if (!state.ok) {
+    return refuse(std::string(kPayloadDiagnostic),
+                  "composition VALUES: " + state.detail);
+  }
+  CanonicalRelationalExpressionRuntime expression_runtime(
+      request.relational_dag, request.expression_services);
+
+  std::optional<PreparedFilterRoot> prepared_filter;
+  std::vector<api::EngineSqlTruthValue> filter_truth_values;
+  std::size_t filter_input_row_count = 0;
+  std::optional<PreparedProjectRoot> prepared_project;
+  std::size_t project_input_row_count = 0;
+  std::string project_implementation_id;
+  std::optional<PreparedDistinctRoot> prepared_distinct;
+  std::size_t distinct_input_row_count = 0;
+  std::size_t distinct_comparison_bound = 0;
+  std::optional<PreparedSortRoot> prepared_sort;
+  std::size_t sort_input_row_count = 0;
+  std::size_t sort_comparison_bound = 0;
+  std::optional<PreparedLimitRoot> prepared_limit;
+  std::size_t limit_input_row_count = 0;
+  std::uint64_t row_limit = 0;
+  std::uint64_t row_offset = 0;
+  bool fetch_first_rows_only = false;
+  std::string limit_implementation_id;
+
+  const auto identity_scope = graph.bound_sblr_tree_uuid + ":" +
+                              request.context.statement_uuid.canonical;
+  const auto values_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.values.capability");
+  const auto filter_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.filter.capability");
+  const auto project_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.project.capability");
+  const auto distinct_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.distinct.capability");
+  const auto sort_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.sort.capability");
+  const auto limit_capability_uuid =
+      DerivedCanonicalUuid(identity_scope, "composition.limit.capability");
+
+  std::vector<LivePhysicalNodeProfile> profiles;
+  std::uint64_t values_memory = 1;
+  if (!AddBatchMemoryBytes(state.batch, &values_memory) ||
+      values_memory > request.optimizer_request.resource.memory_budget_bytes) {
+    return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                  "composition VALUES exceeds the admitted memory budget");
+  }
+  profiles.push_back(
+      {reverse_chain.front()->logical_node_id,
+       std::string(kValuesImplementationId), values_capability_uuid,
+       plan::CanonicalLogicalRelationalNodeKind::kValues,
+       exec::PhysicalNodeKind::kValues,
+       "canonical.values.materialize.v1", state.batch.rows.size(),
+       values_memory, 0, 0});
+
+  std::uint64_t total_work = state.batch.rows.size();
+  const auto add_work = [&](const std::uint64_t work) {
+    return CheckedAdd(total_work, work, &total_work) &&
+           total_work <=
+               request.optimizer_request.resource.maximum_candidate_count;
+  };
+  for (std::size_t index = 1; index < reverse_chain.size(); ++index) {
+    const auto& node = *reverse_chain[index];
+    const auto& input_node = *reverse_chain[index - 1];
+    const auto input_batch = state.batch;
+    const auto input_bindings = state.result_bindings;
+    const auto input_row_count = input_batch.rows.size();
+    std::uint64_t input_memory = 1;
+    if (!AddBatchMemoryBytes(input_batch, &input_memory)) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                    "composition input memory overflowed");
+    }
+
+    std::string implementation_id;
+    std::string capability_uuid;
+    std::string transformation_rule;
+    exec::PhysicalNodeKind physical_kind = exec::PhysicalNodeKind::kValues;
+    std::uint64_t auxiliary_memory = 0;
+    std::vector<std::string> required_property_uuids;
+    std::vector<std::string> delivered_property_uuids;
+    std::vector<plan::CanonicalLogicalPropertyKind> property_kinds;
+
+    switch (node.node_kind) {
+      case plan::CanonicalLogicalRelationalNodeKind::kFilter: {
+        auto prepared = PrepareFilterRoot(request.relational_dag, node,
+                                          input_node, state);
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        std::vector<api::EngineSqlTruthValue> truth_values;
+        truth_values.reserve(input_row_count);
+        exec::DescriptorBatch output;
+        output.columns = input_batch.columns;
+        output.rows.reserve(input_row_count);
+        for (const auto& row : input_batch.rows) {
+          api::EngineSqlTruthValue truth = api::EngineSqlTruthValue::unknown;
+          std::string detail;
+          if (!expression_runtime.EvaluatePredicateForConsumer(
+                  prepared.predicate_expression_id,
+                  prepared.predicate_row_binding, row.values,
+                  api::EngineCanonicalExpressionConsumer::filter, &truth,
+                  &detail)) {
+            return refuse(std::string(kPayloadDiagnostic),
+                          "FILTER row " +
+                              std::to_string(truth_values.size()) + ": " +
+                              detail);
+          }
+          truth_values.push_back(truth);
+          if (truth == api::EngineSqlTruthValue::true_value) {
+            output.rows.push_back(row);
+          }
+        }
+        if (!add_work(input_row_count)) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                        "composition FILTER work exceeds the admitted bound");
+        }
+        prepared_filter = std::move(prepared);
+        filter_truth_values = std::move(truth_values);
+        filter_input_row_count = input_row_count;
+        state.batch = std::move(output);
+        state.result_bindings = input_bindings;
+        implementation_id = "filter.3vl.row.v1";
+        capability_uuid = filter_capability_uuid;
+        transformation_rule = "canonical.filter.composed-row.3vl.v1";
+        physical_kind = exec::PhysicalNodeKind::kFilter;
+        if (!CheckedMultiply(input_row_count,
+                             sizeof(api::EngineSqlTruthValue),
+                             &auxiliary_memory)) {
+          return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                        "composition FILTER state memory overflowed");
+        }
+        break;
+      }
+      case plan::CanonicalLogicalRelationalNodeKind::kProject: {
+        auto prepared = node.bound_expression_ids.empty()
+            ? PrepareDescriptorDirectProjectRoot(
+                  request.relational_dag, node, input_node, state)
+            : PrepareExpressionProjectRoot(
+                  request.relational_dag, node, input_node, state,
+                  request.expression_services);
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        exec::DescriptorBatch output;
+        if (prepared.expression_projection) {
+          output = prepared.expression_output_batch;
+          std::uint64_t work = 0;
+          if (!CheckedMultiply(input_row_count,
+                               prepared.expressions.size(), &work) ||
+              !add_work(work)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition PROJECT work exceeds the admitted bound");
+          }
+        } else {
+          output.columns.reserve(prepared.projected_columns.size());
+          for (const auto column : prepared.projected_columns) {
+            output.columns.push_back(input_batch.columns[column]);
+          }
+          output.rows.reserve(input_row_count);
+          for (const auto& row : input_batch.rows) {
+            exec::DescriptorTuple projected;
+            projected.values.reserve(prepared.projected_columns.size());
+            for (const auto column : prepared.projected_columns) {
+              projected.values.push_back(row.values[column]);
+            }
+            output.rows.push_back(std::move(projected));
+          }
+          if (!add_work(input_row_count)) {
+            return refuse(
+                "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                "composition PROJECT work exceeds the admitted bound");
+          }
+        }
+        prepared_project = std::move(prepared);
+        project_input_row_count = input_row_count;
+        project_implementation_id =
+            prepared_project->expression_projection
+                ? "project.typed.expression-row.v1"
+                : "project.typed.row.v1";
+        state.batch = std::move(output);
+        state.result_bindings = prepared_project->result_bindings;
+        implementation_id = project_implementation_id;
+        capability_uuid = project_capability_uuid;
+        transformation_rule = prepared_project->expression_projection
+            ? "canonical.project.composed-expression-row.v1"
+            : "canonical.project.composed-descriptor-row.v1";
+        physical_kind = exec::PhysicalNodeKind::kProject;
+        break;
+      }
+      case plan::CanonicalLogicalRelationalNodeKind::kAggregate: {
+        auto prepared = PrepareQueryDistinctRoot(
+            request.context, request.relational_dag, node, input_node, state);
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        std::uint64_t pair_count = 0;
+        std::uint64_t pair_value_count = 0;
+        std::uint64_t self_value_count = 0;
+        std::uint64_t comparison_bound = 0;
+        if (!CheckedMultiply(input_row_count, input_row_count, &pair_count) ||
+            !CheckedMultiply(pair_count, input_batch.columns.size(),
+                             &pair_value_count) ||
+            !CheckedMultiply(input_row_count, input_batch.columns.size(),
+                             &self_value_count) ||
+            !CheckedAdd(pair_value_count, self_value_count,
+                        &comparison_bound) ||
+            comparison_bound > std::numeric_limits<std::size_t>::max() ||
+            !add_work(comparison_bound)) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition DISTINCT comparison bound overflowed or was exhausted");
+        }
+        std::vector<std::size_t> representatives;
+        representatives.reserve(input_row_count);
+        for (std::size_t row = 0; row < input_row_count; ++row) {
+          bool duplicate = false;
+          for (const auto representative : representatives) {
+            bool equal = true;
+            for (const auto& term : prepared.equality_terms) {
+              const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+                  input_batch.rows[row].values[term.column],
+                  input_batch.rows[representative].values[term.column], term);
+              if (!compared.diagnostic.ok) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "DISTINCT comparison: " +
+                                  compared.diagnostic.detail);
+              }
+              if (compared.comparison != 0) {
+                equal = false;
+                break;
+              }
+            }
+            if (equal) {
+              duplicate = true;
+              break;
+            }
+          }
+          if (!duplicate) representatives.push_back(row);
+        }
+        exec::DescriptorBatch output;
+        output.columns = input_batch.columns;
+        output.rows.reserve(representatives.size());
+        for (const auto row : representatives) {
+          output.rows.push_back(input_batch.rows[row]);
+        }
+        prepared_distinct = std::move(prepared);
+        distinct_input_row_count = input_row_count;
+        distinct_comparison_bound =
+            std::max<std::size_t>(1,
+                static_cast<std::size_t>(comparison_bound));
+        state.batch = std::move(output);
+        state.result_bindings = prepared_distinct->result_bindings;
+        implementation_id = "aggregate.query-distinct.typed.v1";
+        capability_uuid = distinct_capability_uuid;
+        transformation_rule =
+            "canonical.aggregate.composed-query-distinct.v1";
+        physical_kind = exec::PhysicalNodeKind::kAggregate;
+        auxiliary_memory = comparison_bound;
+        break;
+      }
+      case plan::CanonicalLogicalRelationalNodeKind::kSort: {
+        const bool expression_ordering = std::ranges::any_of(
+            node.bound_expression_ids, [&](const auto expression_id) {
+              return std::ranges::find(input_node.bound_expression_ids,
+                                       expression_id) ==
+                     input_node.bound_expression_ids.end();
+            });
+        if (expression_ordering) {
+          // The existing exact expression-SORT route remains authoritative
+          // until the node-driven compiler carries a per-node order-key batch.
+          return refuse(std::string(kPayloadDiagnostic),
+                        "composed expression SORT awaits order-key carriage");
+        }
+        auto prepared = PrepareSortRoot(
+            request.context, request.relational_dag,
+            request.optimizer_request.logical_properties, node, input_node,
+            state);
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        std::uint64_t comparison_bound = 0;
+        std::uint64_t row_order_memory = 0;
+        if (!CheckedMultiply(input_row_count, input_row_count,
+                             &comparison_bound) ||
+            !CheckedMultiply(input_row_count, sizeof(std::size_t),
+                             &row_order_memory) ||
+            comparison_bound > std::numeric_limits<std::size_t>::max() ||
+            !CheckedAdd(comparison_bound, row_order_memory,
+                        &auxiliary_memory) ||
+            !add_work(comparison_bound)) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition SORT comparison bound overflowed or was exhausted");
+        }
+        std::vector<std::int8_t> comparisons(
+            static_cast<std::size_t>(comparison_bound), 0);
+        for (std::size_t left = 0; left < input_row_count; ++left) {
+          for (std::size_t right = left + 1; right < input_row_count;
+               ++right) {
+            int comparison = 0;
+            for (const auto& term : prepared.order_terms) {
+              const auto compared = exec::CompareCanonicalDescriptorOrderValues(
+                  input_batch.rows[left].values[term.column],
+                  input_batch.rows[right].values[term.column], term);
+              if (!compared.diagnostic.ok) {
+                return refuse(std::string(kPayloadDiagnostic),
+                              "SORT comparison: " +
+                                  compared.diagnostic.detail);
+              }
+              comparison = compared.comparison;
+              if (comparison != 0) break;
+            }
+            comparisons[left * input_row_count + right] =
+                static_cast<std::int8_t>(comparison);
+            comparisons[right * input_row_count + left] =
+                static_cast<std::int8_t>(-comparison);
+          }
+        }
+        std::vector<std::size_t> row_order(input_row_count);
+        std::iota(row_order.begin(), row_order.end(), 0);
+        std::stable_sort(row_order.begin(), row_order.end(),
+                         [&](const auto left, const auto right) {
+                           return comparisons[left * input_row_count + right] <
+                                  0;
+                         });
+        exec::DescriptorBatch output;
+        output.columns = input_batch.columns;
+        output.rows.reserve(input_row_count);
+        for (const auto row : row_order) {
+          output.rows.push_back(input_batch.rows[row]);
+        }
+        prepared_sort = std::move(prepared);
+        sort_input_row_count = input_row_count;
+        sort_comparison_bound = std::max<std::size_t>(
+            1, static_cast<std::size_t>(comparison_bound));
+        state.batch = std::move(output);
+        state.result_bindings = prepared_sort->result_bindings;
+        implementation_id = "sort.typed.terms.v1";
+        capability_uuid = sort_capability_uuid;
+        transformation_rule = "canonical.sort.composed-typed-terms.v1";
+        physical_kind = exec::PhysicalNodeKind::kSort;
+        delivered_property_uuids = {prepared_sort->ordering_property_uuid};
+        property_kinds = {
+            plan::CanonicalLogicalPropertyKind::kOrdering};
+        break;
+      }
+      case plan::CanonicalLogicalRelationalNodeKind::kLimit: {
+        auto prepared = PrepareLimitRoot(request.relational_dag, node,
+                                         input_node, state);
+        if (!prepared.ok) {
+          return refuse(std::string(kPayloadDiagnostic), prepared.detail);
+        }
+        fetch_first_rows_only =
+            node.semantic_variant_id ==
+            "fetch.first-rows-only-offset.v1";
+        const bool has_offset = node.bound_expression_ids.size() == 2;
+        const auto expected_arity =
+            node.semantic_variant_id == "limit.bound-count.v1" ? 1U : 2U;
+        if (node.bound_expression_ids.size() != expected_arity) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "LIMIT/FETCH bound arity is not exact");
+        }
+        std::string detail;
+        if (!EvaluateNonNegativeRowBound(
+                &expression_runtime, node.bound_expression_ids.front(),
+                &row_limit, &detail) ||
+            (has_offset &&
+             !EvaluateNonNegativeRowBound(
+                 &expression_runtime, node.bound_expression_ids[1],
+                 &row_offset, &detail))) {
+          return refuse(std::string(kPayloadDiagnostic),
+                        "LIMIT/FETCH bound: " + detail);
+        }
+        const auto offset = row_offset > input_row_count
+                                ? input_row_count
+                                : static_cast<std::size_t>(row_offset);
+        const auto remaining = input_row_count - offset;
+        const auto count = row_limit > remaining
+                               ? remaining
+                               : static_cast<std::size_t>(row_limit);
+        exec::DescriptorBatch output;
+        output.columns = input_batch.columns;
+        output.rows.reserve(count);
+        for (std::size_t row = 0; row < count; ++row) {
+          output.rows.push_back(input_batch.rows[offset + row]);
+        }
+        if (!add_work(node.bound_expression_ids.size())) {
+          return refuse(
+              "QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+              "composition LIMIT/FETCH work exceeds the admitted bound");
+        }
+        prepared_limit = std::move(prepared);
+        limit_input_row_count = input_row_count;
+        state.batch = std::move(output);
+        state.result_bindings = prepared_limit->result_bindings;
+        limit_implementation_id = fetch_first_rows_only
+            ? "fetch.native.rows-only.v1"
+            : "limit.typed.v1";
+        implementation_id = limit_implementation_id;
+        capability_uuid = limit_capability_uuid;
+        transformation_rule = fetch_first_rows_only
+            ? "canonical.fetch.composed-first-rows-only-offset.v1"
+            : "canonical.limit.composed-bound-count-offset.v1";
+        physical_kind = exec::PhysicalNodeKind::kLimit;
+        break;
+      }
+      default:
+        return refuse(std::string(kPayloadDiagnostic),
+                      "composition node kind changed after shape admission");
+    }
+
+    std::uint64_t output_memory = 1;
+    std::uint64_t operator_memory = 0;
+    if (!AddBatchMemoryBytes(state.batch, &output_memory) ||
+        !CheckedAdd(input_memory, output_memory, &operator_memory) ||
+        !CheckedAdd(operator_memory, auxiliary_memory, &operator_memory) ||
+        operator_memory >
+            request.optimizer_request.resource.memory_budget_bytes) {
+      return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
+                    "composition node exceeds the admitted memory budget");
+    }
+    profiles.push_back(
+        {node.logical_node_id, implementation_id, capability_uuid,
+         node.node_kind, physical_kind, transformation_rule,
+         state.batch.rows.size(), operator_memory, 1, 1,
+         std::move(required_property_uuids),
+         std::move(delivered_property_uuids), std::move(property_kinds)});
+  }
+
+  const auto planning = PlanAndPublishLivePhysicalDag(
+      request, profiles, "unary-composition.selected-plan",
+      "node-driven unary composition");
+  if (!planning.ok) return refuse(planning.diagnostic_id, planning.detail);
+  result.optimizer_selected = true;
+  result.physical_dag_published = true;
+  result.physical_node_count = planning.physical_dag.nodes.size();
+  result.selected_plan_uuid = planning.physical_dag.selected_plan_uuid;
+
+  std::unordered_map<std::uint64_t, exec::DescriptorBatch> values_batches;
+  auto values = MaterializeValues(request.relational_dag,
+                                  *reverse_chain.front(),
+                                  request.expression_services);
+  if (!values.ok) {
+    return refuse(std::string(kPayloadDiagnostic),
+                  "composition VALUES replay: " + values.detail);
+  }
+  values_batches.emplace(reverse_chain.front()->logical_node_id,
+                         std::move(values.batch));
+
+  api::CanonicalOptimizerSelectedExecutionRequest execution_request;
+  execution_request.selected_physical_dag = planning.physical_dag;
+  execution_request.pre_access_statistics_snapshot_uuid =
+      planning.physical_dag.statistics_snapshot_uuid;
+  execution_request.mga_authority = BuildCanonicalExecutionMgaAuthority(
+      request.context, planning.physical_dag);
+  execution_request.available_executors.push_back(
+      MakeLiveValuesRegistration(
+          std::move(values_batches), values_capability_uuid,
+          "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-VALUES-V1",
+          "node-driven unary composition"));
+  if (prepared_filter.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveFilterRegistration(
+            std::move(filter_truth_values), filter_capability_uuid,
+            filter_input_row_count, request.context));
+  }
+  if (prepared_project.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveProjectRegistration(
+            *prepared_project, project_implementation_id,
+            project_capability_uuid, project_input_row_count,
+            request.relational_dag, request.expression_services,
+            request.context));
+  }
+  if (prepared_distinct.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveQueryDistinctRegistration(
+            std::move(prepared_distinct->equality_terms),
+            distinct_capability_uuid, distinct_input_row_count,
+            distinct_comparison_bound, request.context));
+  }
+  if (prepared_sort.has_value()) {
+    const auto deterministic_tie_evidence_uuid = DerivedCanonicalUuid(
+        identity_scope + ":" + prepared_sort->ordering_property_uuid,
+        "unary-composition.deterministic-tie");
+    execution_request.available_executors.push_back(
+        MakeLiveSortRegistration(
+            std::move(prepared_sort->order_terms),
+            deterministic_tie_evidence_uuid, sort_capability_uuid,
+            sort_input_row_count, sort_comparison_bound, request.context));
+  }
+  if (prepared_limit.has_value()) {
+    execution_request.available_executors.push_back(
+        MakeLiveLimitRegistration(
+            limit_implementation_id, limit_capability_uuid, row_limit,
+            row_offset, fetch_first_rows_only, limit_input_row_count,
+            request.context));
+  }
+
+  execution_request.engine_execution_authorized = true;
+  execution_request.result_publication_request.statement_uuid =
+      request.context.statement_uuid.canonical;
+  execution_request.result_publication_request.execution_attempt_uuid =
+      DerivedCanonicalUuid(
+          identity_scope + ":" + request.context.current_monotonic_ns,
+          "unary-composition.execution-attempt");
+  execution_request.result_publication_request
+      .transaction_effect_evidence_uuid = DerivedCanonicalUuid(
+      identity_scope + ":" +
+          std::to_string(request.context.local_transaction_id) + ":" +
+          std::to_string(
+              request.context.snapshot_visible_through_local_transaction_id),
+      "unary-composition.transaction-effect-unchanged");
+  execution_request.result_publication_request.result_kind =
+      exec::CanonicalResultKind::kRows;
+  execution_request.result_publication_request.invocation_mode =
+      exec::CanonicalResultInvocationMode::kDirect;
+  execution_request.result_publication_request.column_bindings =
+      std::move(state.result_bindings);
+  execution_request.result_publication_request.maximum_row_count =
+      std::max<std::size_t>(1, state.batch.rows.size());
+
+  const auto execution =
+      ExecuteSelectedWithMgaGuard(request.context, execution_request);
+  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
+      !execution.causal_counters_attached ||
+      !execution.canonical_result_published || !execution.issues.empty()) {
+    return refuse(
+        execution.issues.empty()
+            ? "QOW-DIAG-RELATIONAL-LIVE-UNARY-COMPOSITION-EXECUTION-V1"
+            : execution.issues.front().diagnostic_id,
+        execution.issues.empty()
+            ? "node-driven unary composition selected DAG was not completed"
+            : execution.issues.front().field_id);
+  }
+  result.physical_dag_executed = true;
+  result.runtime_actuals_attached = execution.runtime_actuals.accepted;
+  result.canonical_result_published = execution.result_publication.published;
+  result.canonical_result_column_count =
+      execution.result_publication.envelope.column_descriptors.size();
+  result.canonical_result_row_count =
+      execution.result_publication.row_stream.rows.size();
+  result.canonical_result_bytes =
+      execution.result_publication.canonical_envelope_bytes;
+  result.api_result = SuccessfulApiResult(request, execution);
+  return result;
 }
 
 CanonicalObjectFreeValuesExecutionResult
@@ -13293,6 +13975,9 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (nested_set_operation.profile_matched) return nested_set_operation;
   auto set_operation = ExecuteCanonicalObjectFreeSetOperationQuery(request);
   if (set_operation.profile_matched) return set_operation;
+  auto unary_composition =
+      ExecuteCanonicalObjectFreeUnaryCompositionQuery(request);
+  if (unary_composition.profile_matched) return unary_composition;
   CanonicalObjectFreeValuesExecutionResult result;
   const auto refuse = [&](std::string diagnostic_id, std::string detail) {
     result.optimizer_selected = false;
