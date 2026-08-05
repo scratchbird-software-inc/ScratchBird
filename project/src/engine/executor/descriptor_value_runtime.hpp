@@ -927,6 +927,13 @@ struct CanonicalJoinKindRequest {
   CanonicalAcceptedJoinKind join_kind =
       CanonicalAcceptedJoinKind::kLeftOuter;
   bool conditionless_predicate = false;
+  // The live canonical SBLR route may carry an already-bound ON truth matrix
+  // rather than a decomposed equality-key/residual pair.  When this profile
+  // is selected, residual_truth_values is the complete row-pair matrix and
+  // key_terms must be empty.  The engine still validates every truth value,
+  // the physical input/output shape, and the MGA statement authority before
+  // materializing any row.
+  bool bound_pair_truth_profile = false;
   std::size_t maximum_output_rows = 1048576;
 };
 

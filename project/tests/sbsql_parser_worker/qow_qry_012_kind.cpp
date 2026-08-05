@@ -326,6 +326,43 @@ bool ValidateJoinKind() {
                         result.output_batch.columns[3].nullable,
                     "full outer join did not preserve both nullable sides");
 
+  // RCP-029-TEST-QRY-012-BOUND-TRUTH-JOIN-V1
+  request = Request();
+  request.residual_request.key_request.key_terms.clear();
+  request.residual_request.residual_truth_values.assign(
+      12, api::EngineSqlTruthValue::false_value);
+  request.bound_pair_truth_profile = true;
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(
+      result.diagnostic.ok && result.matched_pair_count == 0 &&
+          result.unmatched_left_row_count == 4 &&
+          result.output_batch.rows.size() == 4 &&
+          IsNull(result.output_batch.rows[0].values[2]) &&
+          IsNull(result.output_batch.rows[3].values[3]),
+      "bound pair-truth LEFT OUTER route lost unmatched typed rows");
+
+  request.residual_request.residual_truth_values[11] =
+      static_cast<api::EngineSqlTruthValue>(99);
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(
+      !result.diagnostic.ok && result.output_batch.rows.empty() &&
+          result.output_batch.columns.empty() &&
+          result.selected_plan_uuid.empty() &&
+          result.executed_physical_node_id == 0 &&
+          result.causal_counter_id == 0,
+      "invalid bound pair truth published partial join-kind evidence");
+
+  request = Request();
+  request.residual_request.key_request.key_terms.clear();
+  request.residual_request.residual_truth_values.assign(
+      12, api::EngineSqlTruthValue::false_value);
+  request.bound_pair_truth_profile = true;
+  request.join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+  result = exec::ExecuteCanonicalJoinKind(request);
+  passed &= Require(!result.diagnostic.ok && result.output_batch.rows.empty(),
+                    "CROSS join accepted a filtering bound truth matrix");
+
   request = Request();
   request.join_kind = static_cast<exec::CanonicalAcceptedJoinKind>(99);
   result = exec::ExecuteCanonicalJoinKind(request);

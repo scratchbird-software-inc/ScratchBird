@@ -484,6 +484,54 @@ sblr::SblrOperationEnvelope InnerJoinValuesEnvelope() {
   return FinalizeStatementContextEnvelope(std::move(envelope));
 }
 
+enum class JoinPredicateTruth : std::uint8_t {
+  kTrue = 1,
+  kFalse,
+  kUnknown,
+};
+
+sblr::SblrOperationEnvelope AcceptedJoinValuesEnvelope(
+    const std::string_view semantic_variant_hex,
+    const std::string_view root_output_descriptors,
+    const bool conditionless,
+    const JoinPredicateTruth predicate_truth,
+    const bool left_nullable,
+    const bool right_nullable) {
+  auto envelope = InnerJoinValuesEnvelope();
+  for (auto& operand : envelope.operands) {
+    if (operand.type == "relational_node_v1" && operand.name == "3") {
+      operand.value = "4|0|1,2|" + std::string(root_output_descriptors) + "|-";
+    } else if (operand.type == "relational_node_binding_v1" &&
+               operand.name == "3") {
+      operand.value = std::string(semantic_variant_hex) +
+                      (conditionless ? "|-|-|-|-" : "|5|-|-|-");
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "1" && left_nullable) {
+      const auto marker = operand.value.find("|1|-|-|-|-|-");
+      if (marker != std::string::npos) operand.value[marker + 1] = '2';
+    } else if (operand.type == "relational_descriptor_v1" &&
+               operand.name == "2" && right_nullable) {
+      const auto marker = operand.value.find("|1|-|-|-|-|-");
+      if (marker != std::string::npos) operand.value[marker + 1] = '2';
+    } else if (!conditionless &&
+               operand.type == "relational_expression_v1" &&
+               operand.name == "5") {
+      switch (predicate_truth) {
+        case JoinPredicateTruth::kTrue:
+          operand.value = "1|-|3|-|-|6|-|54525545";
+          break;
+        case JoinPredicateTruth::kFalse:
+          operand.value = "1|-|3|-|-|6|-|46414c5345";
+          break;
+        case JoinPredicateTruth::kUnknown:
+          operand.value = "1|-|3|-|-|7|-|2d";
+          break;
+      }
+    }
+  }
+  return envelope;
+}
+
 sblr::SblrOperationEnvelope FilterValuesEnvelope() {
   auto envelope = sblr::MakeSblrEnvelope(
       "query.execute", "SBLR_QUERY_EXECUTE", "qow.live.values.filter");
@@ -4220,6 +4268,131 @@ bool ValidateInnerJoinRefusalIsAtomic() {
       refused_atomically(std::move(invalid_output)) &&
           refused_atomically(std::move(unbound_identifier)),
       "invalid or source-unbound INNER JOIN published partial evidence");
+}
+
+// RCP-029-TEST-LIVE-ACCEPTED-JOIN-KINDS-V1
+bool ValidateAcceptedJoinKindsSpine() {
+  using Truth = JoinPredicateTruth;
+  const auto dispatch = [](sblr::SblrOperationEnvelope envelope) {
+    return sblr::DispatchTextualRelationalQueryForContractTest(
+        {Context(), std::move(envelope), {}});
+  };
+  const auto completed = [](const sblr::SblrDispatchResult& result,
+                            const std::size_t columns,
+                            const std::size_t rows) {
+    return result.accepted && result.optimizer_admitted &&
+           result.optimizer_selected && result.physical_dag_published &&
+           result.physical_dag_executed &&
+           result.runtime_actuals_attached &&
+           result.canonical_result_published && result.api_result.ok &&
+           result.diagnostics.empty() && result.logical_node_count == 3 &&
+           result.physical_node_count == 3 &&
+           result.canonical_result_column_count == columns &&
+           result.canonical_result_row_count == rows &&
+           result.api_result.result_shape.columns.size() == columns &&
+           result.api_result.result_shape.rows.size() == rows;
+  };
+
+  const auto cross = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e63726f73732e7631", "1,2", true,
+      Truth::kTrue, false, false));
+  const auto left = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e6c6566742d6f757465722e7631", "1,2", false,
+      Truth::kFalse, false, true));
+  const auto right = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e72696768742d6f757465722e7631", "1,2", false,
+      Truth::kFalse, true, false));
+  const auto full = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e66756c6c2d6f757465722e7631", "1,2", false,
+      Truth::kFalse, true, true));
+  const auto semi = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e6c6566742d73656d692e7631", "1", false,
+      Truth::kTrue, false, false));
+  const auto anti = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e6c6566742d616e74692e7631", "1", false,
+      Truth::kFalse, false, false));
+  const auto anti_unknown = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e6c6566742d616e74692e7631", "1", false,
+      Truth::kUnknown, false, false));
+
+  bool passed = true;
+  passed &= Require(completed(cross, 2, 4),
+                    "live CROSS JOIN did not publish its Cartesian result");
+  passed &= Require(
+      completed(left, 2, 2) &&
+          left.api_result.result_shape.rows[0].fields[0].second.encoded_value ==
+              "1" &&
+          left.api_result.result_shape.rows[0].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          left.api_result.result_shape.rows[1].fields[0].second.encoded_value ==
+              "2" &&
+          left.api_result.result_shape.rows[1].fields[1].second.state ==
+              api::EngineValueState::sql_null,
+      "live LEFT OUTER JOIN lost left order or typed NULL extension");
+  passed &= Require(
+      completed(right, 2, 2) &&
+          right.api_result.result_shape.rows[0].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          right.api_result.result_shape.rows[0].fields[1].second.encoded_value ==
+              "a" &&
+          right.api_result.result_shape.rows[1].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          right.api_result.result_shape.rows[1].fields[1].second.encoded_value ==
+              "b",
+      "live RIGHT OUTER JOIN lost right order or typed NULL extension");
+  passed &= Require(
+      completed(full, 2, 4) &&
+          full.api_result.result_shape.rows[0].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          full.api_result.result_shape.rows[1].fields[1].second.state ==
+              api::EngineValueState::sql_null &&
+          full.api_result.result_shape.rows[2].fields[0].second.state ==
+              api::EngineValueState::sql_null &&
+          full.api_result.result_shape.rows[3].fields[0].second.state ==
+              api::EngineValueState::sql_null,
+      "live FULL OUTER JOIN did not preserve both unmatched sides");
+  passed &= Require(
+      completed(semi, 1, 2) &&
+          semi.api_result.result_shape.rows[0].fields[0].second.encoded_value ==
+              "1" &&
+          semi.api_result.result_shape.rows[1].fields[0].second.encoded_value ==
+              "2",
+      "live LEFT SEMI JOIN did not emit each matching left row once");
+  passed &= Require(
+      completed(anti, 1, 2) &&
+          anti.api_result.result_shape.rows[0].fields[0].second.encoded_value ==
+              "1" &&
+          anti.api_result.result_shape.rows[1].fields[0].second.encoded_value ==
+              "2",
+      "live LEFT ANTI JOIN did not emit each unmatched left row once");
+  passed &= Require(
+      completed(anti_unknown, 1, 2) &&
+          anti_unknown.api_result.result_shape.rows[0]
+                  .fields[0]
+                  .second.encoded_value == "1" &&
+          anti_unknown.api_result.result_shape.rows[1]
+                  .fields[0]
+                  .second.encoded_value == "2",
+      "live LEFT ANTI JOIN treated SQL UNKNOWN as a match");
+
+  const auto missing_nullable_authority = dispatch(AcceptedJoinValuesEnvelope(
+      "6a6f696e2e6c6566742d6f757465722e7631", "1,2", false,
+      Truth::kFalse, false, false));
+  passed &= Require(
+      missing_nullable_authority.accepted &&
+          missing_nullable_authority.optimizer_admitted &&
+          !missing_nullable_authority.optimizer_selected &&
+          !missing_nullable_authority.physical_dag_published &&
+          !missing_nullable_authority.physical_dag_executed &&
+          !missing_nullable_authority.runtime_actuals_attached &&
+          !missing_nullable_authority.canonical_result_published &&
+          !missing_nullable_authority.api_result.ok &&
+          missing_nullable_authority.physical_node_count == 0 &&
+          missing_nullable_authority.canonical_result_bytes.empty() &&
+          HasApiDiagnostic(missing_nullable_authority,
+                           "QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1"),
+      "outer join without nullable descriptor authority published evidence");
+  return passed;
 }
 
 bool ValidateFilterValuesSpine() {
@@ -9407,6 +9580,7 @@ int main() {
                       ValidateInnerJoinValuesSpine() &&
                       ValidateInnerJoinThreeValuedPredicate() &&
                       ValidateInnerJoinRefusalIsAtomic() &&
+                      ValidateAcceptedJoinKindsSpine() &&
                       ValidateFilterValuesSpine() &&
                       ValidateFilterThreeValuedPredicate() &&
                       ValidateFilterRefusalIsAtomic() &&

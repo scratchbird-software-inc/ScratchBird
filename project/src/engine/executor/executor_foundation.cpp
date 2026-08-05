@@ -1737,7 +1737,89 @@ CanonicalJoinKindResult ExecuteCanonicalJoinKind(
   std::string selected_plan_uuid;
   std::uint64_t executed_physical_node_id = 0;
   std::uint64_t causal_counter_id = 0;
-  if (request.conditionless_predicate) {
+  if (request.bound_pair_truth_profile) {
+    if (request.conditionless_predicate || !key_request.key_terms.empty() ||
+        request.residual_request.maximum_candidate_rechecks == 0 ||
+        request.residual_request.residual_truth_values.size() != pair_count ||
+        pair_count > request.residual_request.maximum_candidate_rechecks) {
+      return refuse("bound join truth matrix contract is invalid or exhausted");
+    }
+
+    const PhysicalNodeRecord* selected_node = nullptr;
+    const PhysicalNodeRecord* left_node = nullptr;
+    const PhysicalNodeRecord* right_node = nullptr;
+    for (const auto& node : key_request.physical_dag.nodes) {
+      if (node.physical_node_id == key_request.selected_physical_node_id) {
+        selected_node = &node;
+      }
+    }
+    if (selected_node == nullptr ||
+        selected_node->physical_node_id !=
+            key_request.physical_dag.root_physical_node_id ||
+        selected_node->node_kind != PhysicalNodeKind::kJoin ||
+        selected_node->input_physical_node_ids.size() != 2 ||
+        selected_node->input_physical_node_ids[0] ==
+            selected_node->input_physical_node_ids[1]) {
+      return refuse("bound join truth route is not one selected two-input root");
+    }
+    for (const auto& node : key_request.physical_dag.nodes) {
+      if (node.physical_node_id ==
+          selected_node->input_physical_node_ids[0]) {
+        left_node = &node;
+      }
+      if (node.physical_node_id ==
+          selected_node->input_physical_node_ids[1]) {
+        right_node = &node;
+      }
+    }
+    if (left_node == nullptr || right_node == nullptr) {
+      return refuse("bound join truth input identity is unresolved");
+    }
+    const auto left_validation = ValidateCanonicalDescriptorBatch(
+        key_request.left_batch, left_node->output_descriptor_ids);
+    const auto right_validation = ValidateCanonicalDescriptorBatch(
+        key_request.right_batch, right_node->output_descriptor_ids);
+    if (!left_validation.ok || !right_validation.ok) {
+      const auto& diagnostic =
+          !left_validation.ok ? left_validation : right_validation;
+      return refuse(diagnostic.diagnostic_code + ":" + diagnostic.detail);
+    }
+
+    std::vector<std::uint32_t> expected_output_descriptor_ids =
+        left_node->output_descriptor_ids;
+    if (request.join_kind != CanonicalAcceptedJoinKind::kLeftSemi &&
+        request.join_kind != CanonicalAcceptedJoinKind::kLeftAnti) {
+      expected_output_descriptor_ids.insert(
+          expected_output_descriptor_ids.end(),
+          right_node->output_descriptor_ids.begin(),
+          right_node->output_descriptor_ids.end());
+    }
+    if (selected_node->output_descriptor_ids !=
+        expected_output_descriptor_ids) {
+      return refuse("bound join truth output schema is not canonical");
+    }
+
+    accepted_pair_indices.reserve(pair_count);
+    for (std::size_t pair = 0; pair < pair_count; ++pair) {
+      bool passes = false;
+      std::string refusal_detail;
+      if (!api::QowPredicateConsumerPassesV1(
+              request.residual_request.residual_truth_values[pair],
+              api::EnginePredicateConsumer::join_on, &passes,
+              &refusal_detail)) {
+        return refuse("bound join truth at pair " + std::to_string(pair) +
+                      " is invalid:" + refusal_detail);
+      }
+      if (request.join_kind == CanonicalAcceptedJoinKind::kCross &&
+          !passes) {
+        return refuse("CROSS join bound truth matrix is not conditionless");
+      }
+      if (passes) accepted_pair_indices.push_back(pair);
+    }
+    selected_plan_uuid = key_request.physical_dag.selected_plan_uuid;
+    executed_physical_node_id = selected_node->physical_node_id;
+    causal_counter_id = selected_node->causal_counter_id;
+  } else if (request.conditionless_predicate) {
     const PhysicalNodeRecord* conditionless_node = nullptr;
     for (const auto& node : key_request.physical_dag.nodes) {
       if (node.physical_node_id ==

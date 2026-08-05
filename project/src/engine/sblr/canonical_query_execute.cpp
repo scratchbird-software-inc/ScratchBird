@@ -304,7 +304,7 @@ struct PreparedSetOperationRoot {
   std::string detail;
 };
 
-struct PreparedInnerJoinRoot {
+struct PreparedJoinRoot {
   bool ok{false};
   std::vector<exec::CanonicalResultColumnBinding> result_bindings;
   std::string detail;
@@ -3534,31 +3534,57 @@ PreparedFilterRoot PrepareFilterRoot(
   return result;
 }
 
-PreparedInnerJoinRoot PrepareInnerJoinRoot(
+PreparedJoinRoot PrepareJoinRoot(
     const api::TypedRelationalDag& dag,
     const plan::CanonicalLogicalRelationalNode& root,
     const plan::CanonicalLogicalRelationalNode& left_node,
     const plan::CanonicalLogicalRelationalNode& right_node,
     const MaterializedValues& left,
-    const MaterializedValues& right) {
-  PreparedInnerJoinRoot result;
-  std::vector<std::uint32_t> concatenated_descriptors =
+    const MaterializedValues& right,
+    const exec::CanonicalAcceptedJoinKind join_kind) {
+  PreparedJoinRoot result;
+  std::vector<std::uint32_t> expected_descriptors =
       left_node.output_descriptor_ids;
-  concatenated_descriptors.insert(concatenated_descriptors.end(),
-                                  right_node.output_descriptor_ids.begin(),
-                                  right_node.output_descriptor_ids.end());
+  const bool left_only =
+      join_kind == exec::CanonicalAcceptedJoinKind::kLeftSemi ||
+      join_kind == exec::CanonicalAcceptedJoinKind::kLeftAnti;
+  if (!left_only) {
+    expected_descriptors.insert(expected_descriptors.end(),
+                                right_node.output_descriptor_ids.begin(),
+                                right_node.output_descriptor_ids.end());
+  }
   if (root.output_descriptor_ids.empty() ||
-      root.output_descriptor_ids != concatenated_descriptors ||
+      root.output_descriptor_ids != expected_descriptors ||
       left.result_bindings.size() != left.batch.columns.size() ||
       right.result_bindings.size() != right.batch.columns.size()) {
-    result.detail = "inner-join output does not concatenate both bound inputs";
+    result.detail = "join output does not preserve its accepted bound shape";
     return result;
   }
   if (std::ranges::any_of(dag.outputs, [&](const auto& output) {
         return output.relation_node_id == root.logical_node_id;
       })) {
+    result.detail = "join root output lineage is not admitted by this profile";
+    return result;
+  }
+  const auto columns_are_nullable = [](const exec::DescriptorBatch& batch) {
+    return std::ranges::all_of(batch.columns, [](const auto& column) {
+      return column.nullable &&
+             column.descriptor.encoded_descriptor.find(
+                 "nullability=nullable") != std::string::npos;
+    });
+  };
+  if ((join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
+      !columns_are_nullable(left.batch)) {
     result.detail =
-        "inner-join root output lineage is not admitted by this profile";
+        "outer join left NULL extension lacks nullable descriptor authority";
+    return result;
+  }
+  if ((join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+       join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter) &&
+      !columns_are_nullable(right.batch)) {
+    result.detail =
+        "outer join right NULL extension lacks nullable descriptor authority";
     return result;
   }
 
@@ -3579,9 +3605,10 @@ PreparedInnerJoinRoot PrepareInnerJoinRoot(
     return true;
   };
   if (!append_bindings(left.result_bindings, 0) ||
-      !append_bindings(right.result_bindings, left.batch.columns.size())) {
+      (!left_only &&
+       !append_bindings(right.result_bindings, left.batch.columns.size()))) {
     result.result_bindings.clear();
-    result.detail = "inner-join visible result binding is incomplete";
+    result.detail = "join visible result binding is incomplete";
     return result;
   }
   result.ok = true;
@@ -4727,19 +4754,55 @@ ExecuteCanonicalObjectFreeUnionAllQuery(
 }
 
 CanonicalObjectFreeValuesExecutionResult
-ExecuteCanonicalObjectFreeInnerJoinQuery(
+ExecuteCanonicalObjectFreeJoinQuery(
     const CanonicalObjectFreeValuesExecutionRequest& request) {
   CanonicalObjectFreeValuesExecutionResult result;
   const auto& graph = request.optimizer_request.logical_graph;
   const auto root = std::ranges::find_if(graph.nodes, [&](const auto& node) {
     return node.logical_node_id == graph.root_logical_node_id;
   });
+  std::optional<exec::CanonicalAcceptedJoinKind> join_kind;
+  std::string join_component;
+  std::string operation_name;
+  if (root != graph.nodes.end()) {
+    if (root->semantic_variant_id == "join.inner.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kInner;
+      join_component = "inner";
+      operation_name = "INNER JOIN";
+    } else if (root->semantic_variant_id == "join.cross.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kCross;
+      join_component = "cross";
+      operation_name = "CROSS JOIN";
+    } else if (root->semantic_variant_id == "join.left-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftOuter;
+      join_component = "left-outer";
+      operation_name = "LEFT OUTER JOIN";
+    } else if (root->semantic_variant_id == "join.right-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kRightOuter;
+      join_component = "right-outer";
+      operation_name = "RIGHT OUTER JOIN";
+    } else if (root->semantic_variant_id == "join.full-outer.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kFullOuter;
+      join_component = "full-outer";
+      operation_name = "FULL OUTER JOIN";
+    } else if (root->semantic_variant_id == "join.left-semi.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftSemi;
+      join_component = "left-semi";
+      operation_name = "LEFT SEMI JOIN";
+    } else if (root->semantic_variant_id == "join.left-anti.v1") {
+      join_kind = exec::CanonicalAcceptedJoinKind::kLeftAnti;
+      join_component = "left-anti";
+      operation_name = "LEFT ANTI JOIN";
+    }
+  }
+  const auto expected_expression_count =
+      join_kind == exec::CanonicalAcceptedJoinKind::kCross ? 0U : 1U;
   if (graph.nodes.size() != 3 || root == graph.nodes.end() ||
       root->node_kind != plan::CanonicalLogicalRelationalNodeKind::kJoin ||
-      root->semantic_variant_id != "join.inner.v1" ||
+      !join_kind.has_value() ||
       root->input_logical_node_ids.size() != 2 ||
       root->input_logical_node_ids[0] == root->input_logical_node_ids[1] ||
-      root->bound_expression_ids.size() != 1 ||
+      root->bound_expression_ids.size() != expected_expression_count ||
       !request.optimizer_request.logical_properties.properties.empty()) {
     return result;
   }
@@ -4788,7 +4851,8 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   if (!request.optimizer_admission.admitted ||
       !request.optimizer_admission.planning_allowed) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-ADMISSION-V1",
-                  "live INNER JOIN execution lacks optimizer admission");
+                  "live " + operation_name +
+                      " execution lacks optimizer admission");
   }
 
   auto left = MaterializeValues(request.relational_dag, *left_node,
@@ -4803,24 +4867,26 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
                   "right VALUES: " + right.detail);
   }
-  auto prepared_root = PrepareInnerJoinRoot(
-      request.relational_dag, *root, *left_node, *right_node, left, right);
+  auto prepared_root = PrepareJoinRoot(request.relational_dag, *root,
+                                       *left_node, *right_node, left, right,
+                                       *join_kind);
   if (!prepared_root.ok) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
                   prepared_root.detail);
   }
 
   api::EngineSqlTruthValue predicate_truth =
-      api::EngineSqlTruthValue::unknown;
+      api::EngineSqlTruthValue::true_value;
   std::string predicate_detail;
   CanonicalRelationalExpressionRuntime expression_runtime(
       request.relational_dag, request.expression_services);
-  if (!expression_runtime.EvaluatePredicateForConsumer(
+  if (*join_kind != exec::CanonicalAcceptedJoinKind::kCross &&
+      !expression_runtime.EvaluatePredicateForConsumer(
           root->bound_expression_ids.front(),
           api::EngineCanonicalExpressionConsumer::join, &predicate_truth,
           &predicate_detail)) {
     return refuse("QOW-DIAG-RELATIONAL-LIVE-JOIN-PAYLOAD-V1",
-                  "INNER JOIN predicate: " + predicate_detail);
+                  operation_name + " predicate: " + predicate_detail);
   }
 
   const auto left_count = left.batch.rows.size();
@@ -4828,18 +4894,64 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   if (left_count != 0 &&
       right_count > std::numeric_limits<std::size_t>::max() / left_count) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live INNER JOIN pair cardinality overflowed");
+                  "live " + operation_name +
+                      " pair cardinality overflowed");
   }
   const auto pair_count = left_count * right_count;
-  const auto output_row_bound =
-      predicate_truth == api::EngineSqlTruthValue::true_value ? pair_count : 0;
+  const bool predicate_passes =
+      predicate_truth == api::EngineSqlTruthValue::true_value;
+  const auto matched_left_count =
+      predicate_passes && right_count != 0 ? left_count : 0;
+  const auto matched_right_count =
+      predicate_passes && left_count != 0 ? right_count : 0;
+  const auto unmatched_left_count = left_count - matched_left_count;
+  const auto unmatched_right_count = right_count - matched_right_count;
+  std::size_t output_row_bound = predicate_passes ? pair_count : 0;
+  const auto add_output_rows = [&](const std::size_t additional) {
+    if (additional > std::numeric_limits<std::size_t>::max() -
+                         output_row_bound) {
+      return false;
+    }
+    output_row_bound += additional;
+    return true;
+  };
+  switch (*join_kind) {
+    case exec::CanonicalAcceptedJoinKind::kLeftOuter:
+      if (!add_output_rows(unmatched_left_count)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live LEFT OUTER JOIN output cardinality overflowed");
+      }
+      break;
+    case exec::CanonicalAcceptedJoinKind::kRightOuter:
+      if (!add_output_rows(unmatched_right_count)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live RIGHT OUTER JOIN output cardinality overflowed");
+      }
+      break;
+    case exec::CanonicalAcceptedJoinKind::kFullOuter:
+      if (!add_output_rows(unmatched_left_count) ||
+          !add_output_rows(unmatched_right_count)) {
+        return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
+                      "live FULL OUTER JOIN output cardinality overflowed");
+      }
+      break;
+    case exec::CanonicalAcceptedJoinKind::kLeftSemi:
+      output_row_bound = matched_left_count;
+      break;
+    case exec::CanonicalAcceptedJoinKind::kLeftAnti:
+      output_row_bound = unmatched_left_count;
+      break;
+    case exec::CanonicalAcceptedJoinKind::kCross:
+    case exec::CanonicalAcceptedJoinKind::kInner:
+      break;
+  }
 
   std::uint64_t left_memory = 1;
   std::uint64_t right_memory = 1;
   if (!AddBatchMemoryBytes(left.batch, &left_memory) ||
       !AddBatchMemoryBytes(right.batch, &right_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live INNER JOIN input size overflowed");
+                  "live " + operation_name + " input size overflowed");
   }
   std::uint64_t total_memory = 0;
   std::uint64_t predicate_memory = 0;
@@ -4848,25 +4960,64 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
                        &predicate_memory) ||
       !CheckedAdd(total_memory, predicate_memory, &total_memory)) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                  "live INNER JOIN predicate state size overflowed");
+                  "live " + operation_name +
+                      " predicate state size overflowed");
   }
   if (output_row_bound != 0) {
-    std::uint64_t repeated_left = 0;
-    std::uint64_t repeated_right = 0;
-    std::uint64_t output_memory = 0;
-    if (!CheckedMultiply(left_memory, right_count, &repeated_left) ||
-        !CheckedMultiply(right_memory, left_count, &repeated_right) ||
-        !CheckedAdd(repeated_left, repeated_right, &output_memory) ||
-        !CheckedAdd(output_memory, pair_count, &output_memory) ||
+    const auto left_payload_memory = left_memory - 1;
+    const auto right_payload_memory = right_memory - 1;
+    std::uint64_t matched_left_memory = 0;
+    std::uint64_t matched_right_memory = 0;
+    std::uint64_t output_memory = output_row_bound;
+    bool output_memory_valid = true;
+    if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftSemi) {
+      output_memory_valid =
+          CheckedAdd(output_memory,
+                     matched_left_count == 0 ? 0 : left_payload_memory,
+                     &output_memory);
+    } else if (*join_kind == exec::CanonicalAcceptedJoinKind::kLeftAnti) {
+      output_memory_valid =
+          CheckedAdd(output_memory,
+                     unmatched_left_count == 0 ? 0 : left_payload_memory,
+                     &output_memory);
+    } else {
+      const bool emits_unmatched_left =
+          *join_kind == exec::CanonicalAcceptedJoinKind::kLeftOuter ||
+          *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
+      const bool emits_unmatched_right =
+          *join_kind == exec::CanonicalAcceptedJoinKind::kRightOuter ||
+          *join_kind == exec::CanonicalAcceptedJoinKind::kFullOuter;
+      output_memory_valid =
+          CheckedMultiply(left_payload_memory,
+                          predicate_passes ? right_count : 0,
+                          &matched_left_memory) &&
+          CheckedMultiply(right_payload_memory,
+                          predicate_passes ? left_count : 0,
+                          &matched_right_memory) &&
+          CheckedAdd(output_memory, matched_left_memory, &output_memory) &&
+          CheckedAdd(output_memory, matched_right_memory, &output_memory) &&
+          CheckedAdd(output_memory,
+                     !emits_unmatched_left || unmatched_left_count == 0
+                         ? 0
+                         : left_payload_memory,
+                     &output_memory) &&
+          CheckedAdd(output_memory,
+                     !emits_unmatched_right || unmatched_right_count == 0
+                         ? 0
+                         : right_payload_memory,
+                     &output_memory);
+    }
+    if (!output_memory_valid ||
         !CheckedAdd(total_memory, output_memory, &total_memory)) {
       return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-OVERFLOW-V1",
-                    "live INNER JOIN output size overflowed");
+                    "live " + operation_name + " output size overflowed");
     }
   }
   if (total_memory >
       request.optimizer_request.resource.memory_budget_bytes) {
     return refuse("QOW-DIAG-OPTIMIZER-SEARCH-COST-VECTOR-V1",
-                  "live INNER JOIN exceeds the admitted memory budget");
+                  "live " + operation_name +
+                      " exceeds the admitted memory budget");
   }
 
   const auto identity_scope =
@@ -4874,12 +5025,15 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   const auto values_capability_uuid =
       DerivedCanonicalUuid(identity_scope, "values.capability");
   const auto join_capability_uuid =
-      DerivedCanonicalUuid(identity_scope, "inner-join.capability");
+      DerivedCanonicalUuid(identity_scope,
+                           "join." + join_component + ".capability");
+  const auto join_implementation_id =
+      "join." + join_component + ".3vl.nested.v1";
   std::vector<LivePhysicalNodeProfile> profiles;
   for (const auto& node : graph.nodes) {
     const bool values =
         node.node_kind == plan::CanonicalLogicalRelationalNodeKind::kValues;
-    std::uint64_t node_rows = pair_count;
+    std::uint64_t node_rows = output_row_bound;
     std::uint64_t node_memory = total_memory;
     if (node.logical_node_id == left_node->logical_node_id) {
       node_rows = left_count;
@@ -4891,20 +5045,21 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
     profiles.push_back(
         {node.logical_node_id,
          values ? std::string(kValuesImplementationId)
-                : std::string("join.inner.3vl.nested.v1"),
+                : join_implementation_id,
          values ? values_capability_uuid : join_capability_uuid,
          node.node_kind,
          values ? exec::PhysicalNodeKind::kValues
                 : exec::PhysicalNodeKind::kJoin,
          values ? "canonical.values.materialize.v1"
-                : "canonical.join.inner.3vl.nested.v1",
+                : "canonical." + join_implementation_id,
          node_rows,
          node_memory,
          values ? 0U : 2U,
          values ? 0U : 2U});
   }
   const auto planning = PlanAndPublishLivePhysicalDag(
-      request, profiles, "join.selected-plan", "INNER JOIN");
+      request, profiles, "join." + join_component + ".selected-plan",
+      operation_name);
   if (!planning.ok) {
     return refuse(planning.diagnostic_id, planning.detail);
   }
@@ -4918,17 +5073,19 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
   values_batches.emplace(right_node->logical_node_id, std::move(right.batch));
   auto values_registration = MakeLiveValuesRegistration(
       std::move(values_batches), values_capability_uuid,
-      "QOW-DIAG-RELATIONAL-LIVE-JOIN-VALUES-V1", "INNER JOIN");
+      "QOW-DIAG-RELATIONAL-LIVE-JOIN-VALUES-V1", operation_name);
 
   exec::CanonicalPhysicalExecutorRegistration join_registration;
   join_registration.node_kind = exec::PhysicalNodeKind::kJoin;
-  join_registration.implementation_id = "join.inner.3vl.nested.v1";
+  join_registration.implementation_id = join_implementation_id;
   join_registration.executor_capability_uuid = join_capability_uuid;
   join_registration.executor_capability_abi_version = 1;
   join_registration.engine_owned = true;
   join_registration.accepts_optimizer_publication_v2 = true;
   join_registration.execute =
-      [predicate_truth, pair_count, mga_context = request.context](
+      [predicate_truth, pair_count, output_row_bound,
+       join_kind = *join_kind, operation_name,
+       mga_context = request.context](
           const exec::TypedPhysicalNodeDag& dag,
           const exec::PhysicalNodeRecord& node,
           const std::vector<exec::CanonicalPhysicalDispatchInput>& inputs) {
@@ -4945,8 +5102,8 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail =
-              "INNER JOIN executor did not receive two typed input batches";
+          step.diagnostic.detail = operation_name +
+              " executor did not receive two typed input batches";
           return step;
         }
         const auto& left_batch = *inputs[0].materialized_output_batch;
@@ -4958,7 +5115,8 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail = "INNER JOIN pair cardinality overflowed";
+          step.diagnostic.detail =
+              operation_name + " pair cardinality overflowed";
           return step;
         }
         const auto actual_pair_count =
@@ -4970,22 +5128,28 @@ ExecuteCanonicalObjectFreeInnerJoinQuery(
           step.diagnostic.ok = false;
           step.diagnostic.diagnostic_code =
               "QOW-DIAG-RELATIONAL-LIVE-JOIN-INPUT-V1";
-          step.diagnostic.detail =
-              "INNER JOIN input cardinality differs or overflows its "
-              "selected cost";
+          step.diagnostic.detail = operation_name +
+              " input cardinality differs or overflows its selected cost";
           return step;
         }
-        exec::CanonicalDescriptorInnerJoinRequest join_request;
-        join_request.physical_dag = dag;
-        join_request.selected_physical_node_id = node.physical_node_id;
-        join_request.left_batch = left_batch;
-        join_request.right_batch = right_batch;
-        join_request.pair_truth_values.assign(pair_count, predicate_truth);
-        join_request.consumer = api::EnginePredicateConsumer::join_on;
-        join_request.mga_authority =
+        exec::CanonicalJoinKindRequest join_request;
+        auto& key_request = join_request.residual_request.key_request;
+        key_request.physical_dag = dag;
+        key_request.selected_physical_node_id = node.physical_node_id;
+        key_request.left_batch = left_batch;
+        key_request.right_batch = right_batch;
+        key_request.mga_authority =
             BuildCanonicalExecutionMgaAuthority(mga_context, dag);
+        join_request.residual_request.residual_truth_values.assign(
+            pair_count, predicate_truth);
+        join_request.residual_request.maximum_candidate_rechecks =
+            std::max<std::size_t>(1, pair_count);
+        join_request.join_kind = join_kind;
+        join_request.bound_pair_truth_profile = true;
+        join_request.maximum_output_rows =
+            std::max<std::size_t>(1, output_row_bound);
         const auto join_result =
-            exec::ExecuteCanonicalDescriptorInnerJoin(join_request);
+            exec::ExecuteCanonicalJoinKind(join_request);
         if (!join_result.diagnostic.ok) {
           step.diagnostic = join_result.diagnostic;
           return step;
@@ -7828,8 +7992,8 @@ ExecuteCanonicalObjectFreeValuesQuery(
   if (project.profile_matched) return project;
   auto filter = ExecuteCanonicalObjectFreeFilterQuery(request);
   if (filter.profile_matched) return filter;
-  auto inner_join = ExecuteCanonicalObjectFreeInnerJoinQuery(request);
-  if (inner_join.profile_matched) return inner_join;
+  auto join = ExecuteCanonicalObjectFreeJoinQuery(request);
+  if (join.profile_matched) return join;
   auto set_operation = ExecuteCanonicalObjectFreeUnionAllQuery(request);
   if (set_operation.profile_matched) return set_operation;
   CanonicalObjectFreeValuesExecutionResult result;
